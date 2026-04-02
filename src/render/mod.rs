@@ -4,6 +4,8 @@ pub mod metrics;
 pub mod spacing;
 pub mod layout;
 pub mod emit;
+#[cfg(feature = "raster")]
+pub mod raster;
 
 use crate::ast::{DisplayStyle, MathExpr};
 use crate::error::Result;

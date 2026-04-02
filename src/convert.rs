@@ -42,6 +42,10 @@ fn parse(input: &str, format: Format, config: &Config) -> Result<ParseResult> {
         Format::Svg => Err(crate::error::Error::Unsupported(
             "SVG is an output-only format and cannot be parsed".into(),
         )),
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
+            "raster formats (PNG/JPEG) are output-only and cannot be parsed".into(),
+        )),
     }
 }
 
@@ -57,6 +61,10 @@ fn write(expr: &MathExpr, format: Format, config: &Config) -> Result<String> {
             let options = crate::render::RenderOptions::default();
             crate::render::render_to_svg(expr, &options)
         }
+        #[cfg(feature = "raster")]
+        Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
+            "raster formats produce binary output; use render_to_image() instead".into(),
+        )),
     }
 }
 
@@ -116,6 +124,31 @@ impl ConvertResult {
     #[cfg(feature = "render")]
     pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
         crate::render::render_to_svg(&self.parsed.expr, options)
+    }
+
+    #[cfg(feature = "raster")]
+    pub fn to_png(&self) -> Result<Vec<u8>> {
+        let options = crate::render::raster::RasterOptions::default();
+        crate::render::raster::render_to_image(&self.parsed.expr, &options)
+    }
+
+    #[cfg(feature = "raster")]
+    pub fn to_png_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
+        crate::render::raster::render_to_image(&self.parsed.expr, options)
+    }
+
+    #[cfg(feature = "raster")]
+    pub fn to_jpeg(&self) -> Result<Vec<u8>> {
+        let options = crate::render::raster::RasterOptions {
+            format: crate::render::raster::ImageFormat::Jpeg,
+            ..crate::render::raster::RasterOptions::default()
+        };
+        crate::render::raster::render_to_image(&self.parsed.expr, &options)
+    }
+
+    #[cfg(feature = "raster")]
+    pub fn to_jpeg_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
+        crate::render::raster::render_to_image(&self.parsed.expr, options)
     }
 
     /// Access the parsed AST for inspection or transformation.

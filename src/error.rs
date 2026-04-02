@@ -118,4 +118,8 @@ pub enum Format {
     UnicodeMath,
     #[cfg(feature = "render")]
     Svg,
+    #[cfg(feature = "raster")]
+    Png,
+    #[cfg(feature = "raster")]
+    Jpeg,
 }

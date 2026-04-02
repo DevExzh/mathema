@@ -13,6 +13,9 @@ clap = { version = "4", features = ["derive"] }
 phf = { version = "0.11", features = ["macros"] }
 serde = { version = "1", features = ["derive"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
+fontdue = { version = "0.9", optional = true }
+tiny-skia = { version = "0.11", optional = true }
+jpeg-encoder = { version = "0.6", optional = true }
 
 [dev-dependencies]
 proptest = "1"
@@ -23,6 +26,7 @@ default = []
 serde = ["dep:serde"]
 wasm = ["wasm-bindgen"]
 render = []
+raster = ["render", "dep:fontdue", "dep:tiny-skia", "dep:jpeg-encoder"]
 
 [[bench]]
 name = "benchmark"
