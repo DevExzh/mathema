@@ -1,14 +1,11 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod ast;
+pub mod convert;
+pub mod error;
+pub mod reader;
+pub mod unicode;
+pub mod writer;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+// Re-export the public API
+pub use ast::{MathExpr, MathNode};
+pub use convert::{convert, convert_with, from_latex, from_latex_with, from_mathml, from_mathml_with, from_omml, from_omml_with, from_mtef, from_mtef_with, from_unicode_math, from_unicode_math_with, ConvertResult};
+pub use error::{Config, Error, Format, ParseResult, Result, Strictness};

@@ -2,5 +2,13 @@
 name = "mathema"
 version = "0.1.0"
 edition = "2024"
+description = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and UnicodeMath via a shared AST"
+license = "MIT"
 
 [dependencies]
+nom = "7"
+quick-xml = "0.37"
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
