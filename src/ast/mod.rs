@@ -11,17 +11,12 @@ pub struct MathExpr {
     pub display: DisplayStyle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DisplayStyle {
     Block,
+    #[default]
     Inline,
-}
-
-impl Default for DisplayStyle {
-    fn default() -> Self {
-        DisplayStyle::Inline
-    }
 }
 
 /// The core math AST node. 26 variants covering the union of all target formats.

@@ -31,6 +31,9 @@ pub enum Error {
     #[error("XML error: {0}")]
     Xml(#[from] quick_xml::Error),
 
+    #[error("render error: {message}")]
+    Render { message: String },
+
     #[error("unsupported construct: {0}")]
     Unsupported(String),
 
@@ -80,18 +83,13 @@ impl ParseResult {
 }
 
 /// Strictness mode for parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Strictness {
     /// Reject malformed input immediately with a detailed error.
+    #[default]
     Strict,
     /// Recover where possible, collect warnings in diagnostics.
     Lenient,
-}
-
-impl Default for Strictness {
-    fn default() -> Self {
-        Strictness::Strict
-    }
 }
 
 /// Configuration for readers and writers.
@@ -118,4 +116,6 @@ pub enum Format {
     Omml,
     Mtef,
     UnicodeMath,
+    #[cfg(feature = "render")]
+    Svg,
 }

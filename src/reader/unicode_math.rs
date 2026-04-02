@@ -379,7 +379,7 @@ fn parse_operator_word(input: &str) -> IResult<&str, MathNode> {
     for op in &ops {
         if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>(*op)(input) {
             // Make sure it's not followed by an alphanumeric char
-            if rest.chars().next().map_or(true, |c| !c.is_alphanumeric()) {
+            if rest.chars().next().is_none_or(|c| !c.is_alphanumeric()) {
                 let has_limits = matches!(*op, "lim" | "liminf" | "limsup" | "sup" | "inf" | "max" | "min");
                 return Ok((
                     rest,
@@ -402,7 +402,7 @@ fn parse_operator_word(input: &str) -> IResult<&str, MathNode> {
 }
 
 fn parse_symbol(input: &str) -> IResult<&str, MathNode> {
-    let (input, ch) = satisfy(|c| is_math_symbol(c))(input)?;
+    let (input, ch) = satisfy(is_math_symbol)(input)?;
     let kind = classify_unicode_symbol(ch);
     // Skip whitespace after binary/relation operators
     let input = if matches!(kind, SymbolKind::BinaryOp | SymbolKind::Relation) {

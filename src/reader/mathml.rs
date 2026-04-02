@@ -187,12 +187,11 @@ impl<'a> MathmlParser<'a> {
             "mi" => {
                 let mathvariant = get_attr(start, "mathvariant");
                 let text = self.read_text_content(name)?;
-                if let Some(variant) = mathvariant {
-                    if let Some(style) = mathvariant_to_style(&variant) {
-                        if style != TextStyle::Italic {
-                            return Ok(MathNode::Styled(style, vec![MathNode::Identifier(text)]));
-                        }
-                    }
+                if let Some(variant) = mathvariant
+                    && let Some(style) = mathvariant_to_style(&variant)
+                    && style != TextStyle::Italic
+                {
+                    return Ok(MathNode::Styled(style, vec![MathNode::Identifier(text)]));
                 }
                 Ok(MathNode::Identifier(text))
             },
@@ -273,16 +272,15 @@ impl<'a> MathmlParser<'a> {
                 let children = self.parse_children(name)?;
                 let (base, over) = two_children(children)?;
                 // Check if this is an accent
-                if let MathNode::Symbol(_, ref s) = over {
-                    if let Some(ch) = s.chars().next() {
-                        if is_combining_accent(ch) {
-                            return Ok(MathNode::Accent {
-                                base: Box::new(base),
-                                accent: ch,
-                                position: AccentPosition::Above,
-                            });
-                        }
-                    }
+                if let MathNode::Symbol(_, ref s) = over
+                    && let Some(ch) = s.chars().next()
+                    && is_combining_accent(ch)
+                {
+                    return Ok(MathNode::Accent {
+                        base: Box::new(base),
+                        accent: ch,
+                        position: AccentPosition::Above,
+                    });
                 }
                 Ok(MathNode::Overscript {
                     base: Box::new(base),
@@ -362,10 +360,10 @@ impl<'a> MathmlParser<'a> {
             "mstyle" => {
                 let mathvariant = get_attr(start, "mathvariant");
                 let children = self.parse_children(name)?;
-                if let Some(variant) = mathvariant {
-                    if let Some(style) = mathvariant_to_style(&variant) {
-                        return Ok(MathNode::Styled(style, children));
-                    }
+                if let Some(variant) = mathvariant
+                    && let Some(style) = mathvariant_to_style(&variant)
+                {
+                    return Ok(MathNode::Styled(style, children));
                 }
                 Ok(flatten(children))
             },
@@ -618,7 +616,7 @@ fn parse_multiscripts(children: Vec<MathNode>) -> Result<MathNode> {
     }
 
     if found_pre && remaining.len() >= 2 {
-        let pre_sub = remaining.get(0).cloned();
+        let pre_sub = remaining.first().cloned();
         let pre_sup = remaining.get(1).cloned();
         let is_empty = |n: &MathNode| matches!(n, MathNode::Row(v) if v.is_empty());
         Ok(MathNode::PreScripts {

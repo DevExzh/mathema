@@ -296,28 +296,24 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "sty" {
-                        if let Some(val) = get_val_attr(&e) {
-                            sty = match val.as_str() {
-                                "p" => "p",
-                                "i" => "i",
-                                "b" => "b",
-                                "bi" => "bi",
-                                _ => "p",
-                            };
-                        }
-                    } else if name == "scr" {
-                        if let Some(val) = get_val_attr(&e) {
-                            scr = match val.as_str() {
-                                "roman" => "roman",
-                                "script" => "script",
-                                "fraktur" => "fraktur",
-                                "double-struck" => "double-struck",
-                                "sans-serif" => "sans-serif",
-                                "monospace" => "monospace",
-                                _ => "roman",
-                            };
-                        }
+                    if name == "sty" && let Some(val) = get_val_attr(&e) {
+                        sty = match val.as_str() {
+                            "p" => "p",
+                            "i" => "i",
+                            "b" => "b",
+                            "bi" => "bi",
+                            _ => "p",
+                        };
+                    } else if name == "scr" && let Some(val) = get_val_attr(&e) {
+                        scr = match val.as_str() {
+                            "roman" => "roman",
+                            "script" => "script",
+                            "fraktur" => "fraktur",
+                            "double-struck" => "double-struck",
+                            "sans-serif" => "sans-serif",
+                            "monospace" => "monospace",
+                            _ => "roman",
+                        };
                     }
                     if matches!(self.reader.read_event(), Ok(Event::Start(_))) {
                         // Skip nested content
@@ -374,16 +370,14 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "type" {
-                        if let Some(val) = get_val_attr(&e) {
-                            kind = match val.as_str() {
-                                "bar" => FractionKind::Normal,
-                                "noBar" => FractionKind::NoBar,
-                                "skw" => FractionKind::Skewed,
-                                "lin" => FractionKind::Inline,
-                                _ => FractionKind::Normal,
-                            };
-                        }
+                    if name == "type" && let Some(val) = get_val_attr(&e) {
+                        kind = match val.as_str() {
+                            "bar" => FractionKind::Normal,
+                            "noBar" => FractionKind::NoBar,
+                            "skw" => FractionKind::Skewed,
+                            "lin" => FractionKind::Inline,
+                            _ => FractionKind::Normal,
+                        };
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -440,10 +434,8 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "degHide" {
-                        if let Some(val) = get_val_attr(&e) {
-                            deg_hide = val == "1" || val == "on" || val == "true";
-                        }
+                    if name == "degHide" && let Some(val) = get_val_attr(&e) {
+                        deg_hide = val == "1" || val == "on" || val == "true";
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -597,10 +589,10 @@ impl<'a> OmmlParser<'a> {
                     let name = local_name(&e);
                     match name.as_str() {
                         "chr" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                if let Some(c) = val.chars().next() {
-                                    chr = c;
-                                }
+                            if let Some(val) = get_val_attr(&e)
+                                && let Some(c) = val.chars().next()
+                            {
+                                chr = c;
                             }
                         },
                         "limLoc" => {
@@ -674,12 +666,11 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "chr" {
-                        if let Some(val) = get_val_attr(&e) {
-                            if let Some(c) = val.chars().next() {
-                                chr = c;
-                            }
-                        }
+                    if name == "chr"
+                        && let Some(val) = get_val_attr(&e)
+                        && let Some(c) = val.chars().next()
+                    {
+                        chr = c;
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -740,10 +731,8 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "pos" {
-                        if let Some(val) = get_val_attr(&e) {
-                            top = val != "bot";
-                        }
+                    if name == "pos" && let Some(val) = get_val_attr(&e) {
+                        top = val != "bot";
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -1074,10 +1063,10 @@ impl<'a> OmmlParser<'a> {
                     let name = local_name(&e);
                     match name.as_str() {
                         "chr" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                if let Some(c) = val.chars().next() {
-                                    chr = c;
-                                }
+                            if let Some(val) = get_val_attr(&e)
+                                && let Some(c) = val.chars().next()
+                            {
+                                chr = c;
                             }
                         },
                         "pos" => {

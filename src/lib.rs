@@ -2,6 +2,8 @@ pub mod ast;
 pub mod convert;
 pub mod error;
 pub mod reader;
+#[cfg(feature = "render")]
+pub mod render;
 pub mod unicode;
 #[cfg(feature = "wasm")]
 pub mod wasm;

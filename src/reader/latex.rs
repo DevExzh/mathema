@@ -143,18 +143,18 @@ fn parse_element(input: &str) -> IResult<&str, MathNode> {
         let (trimmed, _) = ws(input)?;
         if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\limits")(trimmed) {
             // Ensure \limits is not followed by more alpha (e.g. \limitset)
-            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
+            if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
                 let mut new_attr = attr.clone();
                 new_attr.limit_style = LimitStyle::AboveBelow;
                 return parse_scripts(rest, MathNode::Operator(new_attr));
             }
         }
-        if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(trimmed) {
-            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
-                let mut new_attr = attr.clone();
-                new_attr.limit_style = LimitStyle::SubSup;
-                return parse_scripts(rest, MathNode::Operator(new_attr));
-            }
+        if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(trimmed)
+            && rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic())
+        {
+            let mut new_attr = attr.clone();
+            new_attr.limit_style = LimitStyle::SubSup;
+            return parse_scripts(rest, MathNode::Operator(new_attr));
         }
     }
 
@@ -235,7 +235,7 @@ fn parse_nary_rest(input: &str, op_node: MathNode) -> IResult<&str, MathNode> {
     // Check for \limits or \nolimits
     let (input, limit_style) =
         if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\limits")(input) {
-            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
+            if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
                 (rest, LimitStyle::AboveBelow)
             } else {
                 (input, LimitStyle::Default)
@@ -243,7 +243,7 @@ fn parse_nary_rest(input: &str, op_node: MathNode) -> IResult<&str, MathNode> {
         } else if let Ok((rest, _)) =
             tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(input)
         {
-            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
+            if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
                 (rest, LimitStyle::SubSup)
             } else {
                 (input, LimitStyle::Default)
@@ -803,8 +803,8 @@ fn parse_text<'a>(input: &'a str, cmd_name: &str) -> IResult<&'a str, MathNode> 
     };
     let (input, _) = ws(input)?;
     let (input, _) = char('{')(input)?;
-    let (input, text) = take_while1(|c: char| c != '}')(input)
-        .or_else(|_: nom::Err<nom::error::Error<&str>>| Ok((input, "")))?;
+    let (input, text) = take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
+        .unwrap_or((input, ""));
     let (input, _) = char('}')(input)?;
     Ok((input, MathNode::Text(style, text.to_string())))
 }
@@ -847,8 +847,8 @@ fn parse_underset(input: &str) -> IResult<&str, MathNode> {
 fn parse_operatorname(input: &str) -> IResult<&str, MathNode> {
     let (input, _) = ws(input)?;
     let (input, _) = char('{')(input)?;
-    let (input, name) = take_while1(|c: char| c != '}')(input)
-        .or_else(|_: nom::Err<nom::error::Error<&str>>| Ok((input, "")))?;
+    let (input, name) = take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
+        .unwrap_or((input, ""));
     let (input, _) = char('}')(input)?;
     Ok((
         input,
@@ -879,31 +879,30 @@ fn parse_styled_binom(input: &str, kind: FractionKind) -> IResult<&str, MathNode
 fn parse_not(input: &str) -> IResult<&str, MathNode> {
     let (input, _) = ws(input)?;
     // Try direct character negation: \not= \not< \not>
-    if let Some(first) = input.chars().next() {
-        if let Some(negated) = negate_char(first) {
-            let rest = &input[first.len_utf8()..];
-            return Ok((
-                rest,
-                MathNode::Symbol(SymbolKind::Relation, negated.to_string()),
-            ));
-        }
+    if let Some(first) = input.chars().next()
+        && let Some(negated) = negate_char(first)
+    {
+        let rest = &input[first.len_utf8()..];
+        return Ok((
+            rest,
+            MathNode::Symbol(SymbolKind::Relation, negated.to_string()),
+        ));
     }
     // Try command negation: \not\in, \not\subset, etc.
-    if input.starts_with('\\') {
-        let after_backslash = &input[1..];
+    if let Some(after_backslash) = input.strip_prefix('\\') {
         let cmd_end = after_backslash
             .find(|c: char| !c.is_ascii_alphabetic())
             .unwrap_or(after_backslash.len());
         if cmd_end > 0 {
             let cmd = &after_backslash[..cmd_end];
-            if let Some(unicode) = latex_to_unicode(cmd) {
-                if let Some(negated) = negate_char(unicode) {
-                    let rest = &after_backslash[cmd_end..];
-                    return Ok((
-                        rest,
-                        MathNode::Symbol(SymbolKind::Relation, negated.to_string()),
-                    ));
-                }
+            if let Some(unicode) = latex_to_unicode(cmd)
+                && let Some(negated) = negate_char(unicode)
+            {
+                let rest = &after_backslash[cmd_end..];
+                return Ok((
+                    rest,
+                    MathNode::Symbol(SymbolKind::Relation, negated.to_string()),
+                ));
             }
         }
     }
@@ -1039,8 +1038,9 @@ fn parse_color_discard(input: &str) -> IResult<&str, MathNode> {
     // \color{name} — consume the color argument, return empty
     let (input, _) = ws(input)?;
     let (input, _) = char('{')(input)?;
-    let (input, _color) = take_while1(|c: char| c != '}')(input)
-        .or_else(|_: nom::Err<nom::error::Error<&str>>| Ok((input, "")))?;
+    let (input, _color) =
+        take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
+            .unwrap_or((input, ""));
     let (input, _) = char('}')(input)?;
     Ok((input, MathNode::Row(vec![])))
 }
@@ -1049,8 +1049,9 @@ fn parse_textcolor(input: &str) -> IResult<&str, MathNode> {
     // \textcolor{name}{content} — consume color, return content
     let (input, _) = ws(input)?;
     let (input, _) = char('{')(input)?;
-    let (input, _color) = take_while1(|c: char| c != '}')(input)
-        .or_else(|_: nom::Err<nom::error::Error<&str>>| Ok((input, "")))?;
+    let (input, _color) =
+        take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
+            .unwrap_or((input, ""));
     let (input, _) = char('}')(input)?;
     let (input, content) = parse_required_group(input)?;
     Ok((input, content))

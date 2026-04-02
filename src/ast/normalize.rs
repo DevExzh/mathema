@@ -35,13 +35,12 @@ fn normalize_nodes(nodes: &mut Vec<MathNode>) {
     // Phase 3: merge adjacent Text nodes with the same style
     let mut merged = Vec::with_capacity(flattened.len());
     for node in flattened {
-        if let MathNode::Text(style, ref text) = node {
-            if let Some(MathNode::Text(prev_style, prev_text)) = merged.last_mut() {
-                if *prev_style == style {
-                    prev_text.push_str(text);
-                    continue;
-                }
-            }
+        if let MathNode::Text(style, ref text) = node
+            && let Some(MathNode::Text(prev_style, prev_text)) = merged.last_mut()
+            && *prev_style == style
+        {
+            prev_text.push_str(text);
+            continue;
         }
         merged.push(node);
     }

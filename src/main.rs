@@ -24,8 +24,11 @@ fn parse_format(s: &str) -> Result<Format, String> {
         "omml" => Ok(Format::Omml),
         "mtef" => Ok(Format::Mtef),
         "unicodemath" | "unicode-math" | "um" => Ok(Format::UnicodeMath),
+        #[cfg(feature = "render")]
+        "svg" => Ok(Format::Svg),
         _ => Err(format!(
-            "unknown format '{s}'. Expected: latex, mathml, omml, mtef, unicodemath"
+            "unknown format '{s}'. Expected: latex, mathml, omml, mtef, unicodemath{}",
+            if cfg!(feature = "render") { ", svg" } else { "" }
         )),
     }
 }

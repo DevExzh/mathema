@@ -85,7 +85,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
         return Ok(vec![]);
     }
     let chars: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if chars.len() % 2 != 0 {
+    if !chars.len().is_multiple_of(2) {
         return Err(Error::Unsupported("MTEF hex string has odd length".into()));
     }
     let mut out = Vec::with_capacity(chars.len() / 2);
@@ -244,7 +244,7 @@ impl<'a> MtefParser<'a> {
                 self.version = 1;
                 self.platform = 1; // Win
             },
-            2 | 3 | 4 => {
+            2..=4 => {
                 self.platform = self.read_byte()?;
                 let _product = self.read_byte()?;
                 let _ver = self.read_byte()?;
@@ -652,13 +652,8 @@ impl<'a> MtefParser<'a> {
 
     fn skip_font_record(&mut self) -> Result<()> {
         // FONT record: font index (in v5, read font_def_index)
-        if self.version >= 5 {
-            let _tface = self.read_byte()?;
-            let _style = self.read_byte()?;
-        } else {
-            let _tface = self.read_byte()?;
-            let _style = self.read_byte()?;
-        }
+        let _tface = self.read_byte()?;
+        let _style = self.read_byte()?;
         Ok(())
     }
 
@@ -1008,7 +1003,7 @@ fn template_to_ast(selector: u8, variation: u16, mut slots: Vec<Vec<MathNode>>) 
 }
 
 fn parse_nary_slots(
-    slots: &mut Vec<Vec<MathNode>>,
+    slots: &mut [Vec<MathNode>],
     variation: u16,
 ) -> (Option<Box<MathNode>>, Option<Box<MathNode>>, MathNode) {
     let v = variation & 0x0F;

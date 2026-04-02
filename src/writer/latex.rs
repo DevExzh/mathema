@@ -24,12 +24,7 @@ fn write_nodes(buf: &mut String, nodes: &[MathNode]) {
 }
 
 fn needs_space(prev: Option<&MathNode>, _curr: &MathNode) -> bool {
-    match prev {
-        Some(MathNode::Operator(_)) => true,
-        Some(MathNode::Symbol(SymbolKind::BinaryOp, _)) => true,
-        Some(MathNode::Symbol(SymbolKind::Relation, _)) => true,
-        _ => false,
-    }
+    matches!(prev, Some(MathNode::Operator(_)) | Some(MathNode::Symbol(SymbolKind::BinaryOp, _)) | Some(MathNode::Symbol(SymbolKind::Relation, _)))
 }
 
 fn write_node(buf: &mut String, node: &MathNode) {
@@ -80,20 +75,19 @@ fn write_node(buf: &mut String, node: &MathNode) {
             content,
         } => {
             // Detect binom pattern: \left( \frac[NoBar]{n}{k} \right)
-            if open == "(" && close == ")" && content.len() == 1 {
-                if let Some(FencedItem::Element(MathNode::Fraction {
+            if open == "(" && close == ")" && content.len() == 1
+                && let Some(FencedItem::Element(MathNode::Fraction {
                     kind: FractionKind::NoBar,
                     num,
                     den,
                 })) = content.first()
-                {
-                    buf.push_str("\\binom{");
-                    write_node(buf, num);
-                    buf.push_str("}{");
-                    write_node(buf, den);
-                    buf.push('}');
-                    return;
-                }
+            {
+                buf.push_str("\\binom{");
+                write_node(buf, num);
+                buf.push_str("}{");
+                write_node(buf, den);
+                buf.push('}');
+                return;
             }
             buf.push_str("\\left");
             write_delim(buf, open);
@@ -443,7 +437,7 @@ fn is_simple_token(node: &MathNode) -> bool {
     match node {
         MathNode::Number(s) => s.len() == 1,
         MathNode::Identifier(s) => s.chars().count() == 1,
-        MathNode::Symbol(_, s) => s.chars().count() == 1 && s.chars().next().map_or(false, |c| c.is_ascii()),
+        MathNode::Symbol(_, s) => s.chars().count() == 1 && s.chars().next().is_some_and(|c| c.is_ascii()),
         _ => false,
     }
 }

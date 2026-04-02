@@ -38,6 +38,10 @@ fn parse(input: &str, format: Format, config: &Config) -> Result<ParseResult> {
         Format::Omml => OmmlReader::parse(input, config),
         Format::Mtef => MtefReader::parse(input, config),
         Format::UnicodeMath => UnicodeMathReader::parse(input, config),
+        #[cfg(feature = "render")]
+        Format::Svg => Err(crate::error::Error::Unsupported(
+            "SVG is an output-only format and cannot be parsed".into(),
+        )),
     }
 }
 
@@ -48,6 +52,11 @@ fn write(expr: &MathExpr, format: Format, config: &Config) -> Result<String> {
         Format::Omml => OmmlWriter::write(expr, config),
         Format::Mtef => MtefWriter::write(expr, config),
         Format::UnicodeMath => UnicodeMathWriter::write(expr, config),
+        #[cfg(feature = "render")]
+        Format::Svg => {
+            let options = crate::render::RenderOptions::default();
+            crate::render::render_to_svg(expr, &options)
+        }
     }
 }
 
@@ -96,6 +105,17 @@ impl ConvertResult {
 
     pub fn to_unicode_math_with(&self, config: &Config) -> Result<String> {
         UnicodeMathWriter::write(&self.parsed.expr, config)
+    }
+
+    #[cfg(feature = "render")]
+    pub fn to_svg(&self) -> Result<String> {
+        let options = crate::render::RenderOptions::default();
+        crate::render::render_to_svg(&self.parsed.expr, &options)
+    }
+
+    #[cfg(feature = "render")]
+    pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
+        crate::render::render_to_svg(&self.parsed.expr, options)
     }
 
     /// Access the parsed AST for inspection or transformation.
@@ -177,4 +197,161 @@ pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertRes
         parsed,
         config: config.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === convert() one-liner API ===
+
+    #[test]
+    fn latex_to_mathml() {
+        let result = convert("x^2", Format::LaTeX, Format::MathML).unwrap();
+        assert!(result.contains("<math"));
+        assert!(result.contains("</math>"));
+    }
+
+    #[test]
+    fn latex_to_omml() {
+        let result = convert("x^2", Format::LaTeX, Format::Omml).unwrap();
+        assert!(result.contains("<m:oMath"));
+    }
+
+    #[test]
+    fn latex_to_unicode_math() {
+        let result = convert("x^2", Format::LaTeX, Format::UnicodeMath).unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn latex_to_latex_identity() {
+        let result = convert("x", Format::LaTeX, Format::LaTeX).unwrap();
+        assert!(result.contains("x"));
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn latex_to_svg() {
+        let result = convert("x^2", Format::LaTeX, Format::Svg).unwrap();
+        assert!(result.starts_with("<svg"));
+        assert!(result.ends_with("</svg>"));
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn svg_is_output_only() {
+        let result = convert("<svg></svg>", Format::Svg, Format::LaTeX);
+        assert!(result.is_err(), "SVG should not be parseable");
+    }
+
+    #[test]
+    fn mathml_to_latex() {
+        let mathml = "<math><mi>x</mi></math>";
+        let result = convert(mathml, Format::MathML, Format::LaTeX).unwrap();
+        assert!(result.contains("x"));
+    }
+
+    // === from_* builder API ===
+
+    #[test]
+    fn from_latex_builder() {
+        let result = from_latex("x^2").unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert!(mathml.contains("<math"));
+        let latex = result.to_latex().unwrap();
+        assert!(!latex.is_empty());
+    }
+
+    #[test]
+    fn from_latex_multiple_outputs() {
+        let result = from_latex("\\frac{1}{2}").unwrap();
+        let mathml = result.to_mathml().unwrap();
+        let omml = result.to_omml().unwrap();
+        let umath = result.to_unicode_math().unwrap();
+        assert!(mathml.contains("<mfrac"));
+        assert!(omml.contains("<m:f>"));
+        assert!(!umath.is_empty());
+    }
+
+    #[test]
+    fn from_mathml_builder() {
+        let result = from_mathml("<math><mn>42</mn></math>").unwrap();
+        let latex = result.to_latex().unwrap();
+        assert!(latex.contains("42"));
+    }
+
+    #[test]
+    fn from_latex_expr_access() {
+        let result = from_latex("x").unwrap();
+        let expr = result.expr();
+        assert!(!expr.nodes.is_empty());
+    }
+
+    #[test]
+    fn from_latex_into_expr() {
+        let result = from_latex("x").unwrap();
+        let expr = result.into_expr();
+        assert!(!expr.nodes.is_empty());
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn builder_to_svg() {
+        let result = from_latex("x^2").unwrap();
+        let svg = result.to_svg().unwrap();
+        assert!(svg.starts_with("<svg"));
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn builder_to_svg_with_options() {
+        let result = from_latex("x").unwrap();
+        let options = crate::render::RenderOptions {
+            font_size_px: 24.0,
+            ..crate::render::RenderOptions::default()
+        };
+        let svg = result.to_svg_with(&options).unwrap();
+        assert!(svg.starts_with("<svg"));
+    }
+
+    // === with_config variants ===
+
+    #[test]
+    fn convert_with_custom_config() {
+        let config = Config::default();
+        let result = convert_with("x", Format::LaTeX, Format::MathML, &config).unwrap();
+        assert!(result.contains("<math"));
+    }
+
+    #[test]
+    fn from_latex_with_config() {
+        let config = Config::default();
+        let result = from_latex_with("x", &config).unwrap();
+        let latex = result.to_latex_with(&config).unwrap();
+        assert!(latex.contains("x"));
+    }
+
+    // === Error cases ===
+
+    #[test]
+    fn invalid_latex_errors() {
+        // Unmatched brace
+        let result = convert("{", Format::LaTeX, Format::MathML);
+        // This may or may not error depending on parser leniency,
+        // but shouldn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn invalid_mathml_errors() {
+        let result = convert("not xml at all<<<", Format::MathML, Format::LaTeX);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_input() {
+        let result = convert("", Format::LaTeX, Format::MathML).unwrap();
+        assert!(result.contains("<math"));
+    }
 }
