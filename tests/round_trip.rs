@@ -1,10 +1,12 @@
-use mathema::{Config, Format, convert, from_latex, from_mathml};
+use mathema::{Config, Format, convert, from_latex, from_mathml, from_omml, from_unicode_math};
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
 use mathema::writer::Writer;
 use mathema::writer::latex::LatexWriter;
 use mathema::reader::mathml::MathmlReader;
 use mathema::writer::mathml::MathmlWriter;
+use mathema::writer::omml::OmmlWriter;
+use mathema::writer::unicode_math::UnicodeMathWriter;
 
 /// Helper: parse LaTeX, write LaTeX, verify structural equivalence.
 fn latex_roundtrip(input: &str) {
@@ -433,4 +435,262 @@ fn golden_integral() {
     let latex = "\\int_{0}^{1} f";
     let mathml = convert(latex, Format::LaTeX, Format::MathML).unwrap();
     assert!(mathml.contains("\u{222B}"));
+}
+
+// =========================================================================
+// OMML cross-format tests
+// =========================================================================
+
+#[test]
+fn latex_to_omml_fraction() {
+    let omml = convert("\\frac{1}{2}", Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains("<m:f>"));
+    assert!(omml.contains("<m:num>"));
+    assert!(omml.contains("<m:den>"));
+}
+
+#[test]
+fn latex_to_omml_superscript() {
+    let omml = convert("x^2", Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains("<m:sSup>"));
+}
+
+#[test]
+fn latex_to_omml_subscript() {
+    let omml = convert("x_i", Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains("<m:sSub>"));
+}
+
+#[test]
+fn latex_to_omml_sqrt() {
+    let omml = convert("\\sqrt{x}", Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains("<m:rad>"));
+}
+
+#[test]
+fn latex_to_omml_sum() {
+    let omml = convert("\\sum_{i=0}^{n} a", Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains("<m:nary>"));
+    assert!(omml.contains("\u{2211}"));
+}
+
+#[test]
+fn latex_to_omml_parentheses() {
+    let omml = convert("\\left( x \\right)", Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains("<m:d>"));
+}
+
+#[test]
+fn latex_to_omml_accent() {
+    let omml = convert("\\hat{x}", Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains("<m:acc>"));
+}
+
+#[test]
+fn latex_to_omml_matrix() {
+    let config = Config::default();
+    let parsed = LatexReader::parse("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", &config).unwrap();
+    let omml = OmmlWriter::write(&parsed.expr, &config).unwrap();
+    assert!(omml.contains("<m:m>"));
+    assert!(omml.contains("<m:mr>"));
+}
+
+#[test]
+fn omml_to_latex_fraction() {
+    let omml = convert("\\frac{a}{b}", Format::LaTeX, Format::Omml).unwrap();
+    let latex = convert(&omml, Format::Omml, Format::LaTeX).unwrap();
+    assert!(latex.contains("\\frac"));
+}
+
+#[test]
+fn omml_to_mathml_superscript() {
+    let omml = convert("x^2", Format::LaTeX, Format::Omml).unwrap();
+    let mathml = convert(&omml, Format::Omml, Format::MathML).unwrap();
+    assert!(mathml.contains("<msup>"));
+}
+
+#[test]
+fn builder_api_latex_to_omml() {
+    let result = from_latex("x^2 + 1").unwrap();
+    let omml = result.to_omml().unwrap();
+    assert!(omml.contains("<m:oMath"));
+    assert!(omml.contains("<m:sSup>"));
+}
+
+#[test]
+fn builder_api_omml_roundtrip() {
+    let omml = convert("\\frac{1}{2}", Format::LaTeX, Format::Omml).unwrap();
+    let result = from_omml(&omml).unwrap();
+    let latex = result.to_latex().unwrap();
+    assert!(latex.contains("\\frac"));
+}
+
+// =========================================================================
+// UnicodeMath cross-format tests
+// =========================================================================
+
+#[test]
+fn latex_to_unicode_math_fraction() {
+    let um = convert("\\frac{a}{b}", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert!(um.contains('/'));
+}
+
+#[test]
+fn latex_to_unicode_math_superscript() {
+    let um = convert("x^2", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert!(um.contains("x^2") || um.contains("x^(2)"));
+}
+
+#[test]
+fn latex_to_unicode_math_subscript() {
+    let um = convert("x_i", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert!(um.contains("x_i") || um.contains("x_(i)"));
+}
+
+#[test]
+fn latex_to_unicode_math_sqrt() {
+    let um = convert("\\sqrt{x}", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert!(um.contains('\u{221A}'));
+}
+
+#[test]
+fn latex_to_unicode_math_sum() {
+    let um = convert("\\sum_{i=0}^{n} a", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert!(um.contains('\u{2211}'));
+}
+
+#[test]
+fn latex_to_unicode_math_matrix() {
+    let config = Config::default();
+    let parsed = LatexReader::parse("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", &config).unwrap();
+    let um = UnicodeMathWriter::write(&parsed.expr, &config).unwrap();
+    assert!(um.contains('\u{25A0}'));
+    assert!(um.contains('&'));
+    assert!(um.contains('@'));
+}
+
+#[test]
+fn latex_to_unicode_math_text() {
+    let um = convert("\\text{hello}", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert!(um.contains("\"hello\""));
+}
+
+#[test]
+fn unicode_math_to_latex_fraction() {
+    let um = "a/b";
+    let latex = convert(um, Format::UnicodeMath, Format::LaTeX).unwrap();
+    assert!(latex.contains("\\frac"));
+}
+
+#[test]
+fn unicode_math_to_mathml_superscript() {
+    let um = "x^2";
+    let mathml = convert(um, Format::UnicodeMath, Format::MathML).unwrap();
+    assert!(mathml.contains("<msup>"));
+}
+
+#[test]
+fn builder_api_latex_to_unicode_math() {
+    let result = from_latex("x^2 + 1").unwrap();
+    let um = result.to_unicode_math().unwrap();
+    assert!(um.contains("x^2") || um.contains("x^(2)"));
+}
+
+#[test]
+fn builder_api_unicode_math_roundtrip() {
+    let result = from_unicode_math("x^2").unwrap();
+    let latex = result.to_latex().unwrap();
+    assert!(latex.contains("x^"));
+}
+
+// =========================================================================
+// MTEF cross-format tests
+// =========================================================================
+
+#[test]
+fn latex_to_mtef_and_back() {
+    let mtef = convert("\\frac{1}{2}", Format::LaTeX, Format::Mtef).unwrap();
+    // MTEF output is hex-encoded
+    assert!(mtef.chars().all(|c| c.is_ascii_hexdigit()));
+    // Convert back
+    let latex = convert(&mtef, Format::Mtef, Format::LaTeX).unwrap();
+    assert!(latex.contains("\\frac"));
+}
+
+#[test]
+fn latex_to_mtef_sqrt() {
+    let mtef = convert("\\sqrt{x}", Format::LaTeX, Format::Mtef).unwrap();
+    let latex = convert(&mtef, Format::Mtef, Format::LaTeX).unwrap();
+    assert!(latex.contains("\\sqrt"));
+}
+
+#[test]
+fn latex_to_mtef_superscript() {
+    let mtef = convert("x^2", Format::LaTeX, Format::Mtef).unwrap();
+    let mathml = convert(&mtef, Format::Mtef, Format::MathML).unwrap();
+    assert!(mathml.contains("<msup>"));
+}
+
+#[test]
+fn builder_api_latex_to_mtef() {
+    let result = from_latex("x^2").unwrap();
+    let mtef = result.to_mtef().unwrap();
+    assert!(!mtef.is_empty());
+    assert!(mtef.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+// =========================================================================
+// Five-format quadratic formula
+// =========================================================================
+
+#[test]
+fn quadratic_formula_all_formats() {
+    let latex = "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}";
+    let config = Config::default();
+    let parsed = LatexReader::parse(latex, &config).unwrap();
+
+    // LaTeX round-trip
+    let latex_out = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert!(latex_out.contains("\\frac"));
+
+    // MathML
+    let mathml = MathmlWriter::write(&parsed.expr, &config).unwrap();
+    assert!(mathml.contains("<mfrac>"));
+    assert!(mathml.contains("<msqrt>"));
+
+    // OMML
+    let omml = OmmlWriter::write(&parsed.expr, &config).unwrap();
+    assert!(omml.contains("<m:f>"));
+    assert!(omml.contains("<m:rad>"));
+
+    // UnicodeMath
+    let um = UnicodeMathWriter::write(&parsed.expr, &config).unwrap();
+    assert!(um.contains('/'));
+    assert!(um.contains('\u{221A}'));
+
+    // MTEF (hex)
+    let mtef = convert(latex, Format::LaTeX, Format::Mtef).unwrap();
+    assert!(!mtef.is_empty());
+}
+
+// =========================================================================
+// Convert API: all format pairs
+// =========================================================================
+
+#[test]
+fn convert_latex_to_all() {
+    let input = "x^2";
+    for fmt in [Format::MathML, Format::Omml, Format::UnicodeMath, Format::Mtef] {
+        let output = convert(input, Format::LaTeX, fmt).unwrap();
+        assert!(!output.is_empty(), "LaTeX -> {fmt:?} produced empty output");
+    }
+}
+
+#[test]
+fn convert_mathml_to_all() {
+    let input = "<math><msup><mi>x</mi><mn>2</mn></msup></math>";
+    for fmt in [Format::LaTeX, Format::Omml, Format::UnicodeMath, Format::Mtef] {
+        let output = convert(input, Format::MathML, fmt).unwrap();
+        assert!(!output.is_empty(), "MathML -> {fmt:?} produced empty output");
+    }
 }
