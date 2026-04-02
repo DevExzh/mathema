@@ -9,6 +9,17 @@ license = "MIT"
 nom = "7"
 quick-xml = "0.37"
 thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[features]
+default = []
+wasm = ["wasm-bindgen"]
+
+[[bench]]
+name = "benchmark"
+harness = false

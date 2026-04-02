@@ -1,0 +1,41 @@
+[package]
+name = "mathema-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.mathema]
+path = ".."
+
+[[bin]]
+name = "fuzz_latex"
+path = "fuzz_targets/fuzz_latex.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_mathml"
+path = "fuzz_targets/fuzz_mathml.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_omml"
+path = "fuzz_targets/fuzz_omml.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_mtef"
+path = "fuzz_targets/fuzz_mtef.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_unicode_math"
+path = "fuzz_targets/fuzz_unicode_math.rs"
+doc = false
+
+[workspace]

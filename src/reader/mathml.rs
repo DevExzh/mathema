@@ -2,7 +2,7 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 
 use crate::ast::*;
-use crate::error::{Config, Error, ParseResult, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness};
 use crate::reader::Reader as MathReader;
 
 pub struct MathmlReader;
@@ -13,10 +13,44 @@ impl MathReader for MathmlReader {
         if trimmed.is_empty() {
             return Ok(ParseResult::new(MathExpr::new(vec![], config.display)));
         }
-        let mut parser = MathmlParser::new(trimmed)?;
-        let nodes = parser.parse_root()?;
-        let display = parser.display.unwrap_or(config.display);
-        Ok(ParseResult::new(MathExpr::new(nodes, display)))
+        let parser_result = MathmlParser::new(trimmed);
+        let mut parser = match parser_result {
+            Ok(p) => p,
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    return Ok(ParseResult::with_diagnostics(
+                        MathExpr::new(vec![], config.display),
+                        vec![Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!("MathML initialization failed (recovered): {e}"),
+                            span: None,
+                        }],
+                    ));
+                }
+                return Err(e);
+            }
+        };
+        match parser.parse_root() {
+            Ok(nodes) => {
+                let display = parser.display.unwrap_or(config.display);
+                Ok(ParseResult::new(MathExpr::new(nodes, display)))
+            }
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    let display = parser.display.unwrap_or(config.display);
+                    Ok(ParseResult::with_diagnostics(
+                        MathExpr::new(vec![], display),
+                        vec![Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!("MathML parse error (recovered): {e}"),
+                            span: None,
+                        }],
+                    ))
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

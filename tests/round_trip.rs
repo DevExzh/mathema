@@ -1,4 +1,4 @@
-use mathema::{Config, Format, convert, from_latex, from_mathml, from_omml, from_unicode_math};
+use mathema::{Config, Format, Strictness, convert, from_latex, from_mathml, from_omml, from_unicode_math};
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
 use mathema::writer::Writer;
@@ -693,4 +693,86 @@ fn convert_mathml_to_all() {
         let output = convert(input, Format::MathML, fmt).unwrap();
         assert!(!output.is_empty(), "MathML -> {fmt:?} produced empty output");
     }
+}
+
+// =========================================================================
+// Lenient error recovery tests
+// =========================================================================
+
+fn lenient_config() -> Config {
+    Config {
+        strictness: Strictness::Lenient,
+        ..Config::default()
+    }
+}
+
+#[test]
+fn lenient_latex_trailing_input() {
+    let config = lenient_config();
+    let result = LatexReader::parse("x^2 }", &config);
+    assert!(result.is_ok(), "lenient mode should recover from trailing input");
+    let parsed = result.unwrap();
+    assert!(!parsed.expr.nodes.is_empty());
+    assert!(parsed.has_warnings());
+}
+
+#[test]
+fn strict_latex_trailing_input_fails() {
+    let config = Config::default();
+    let result = LatexReader::parse("x^2 }", &config);
+    assert!(result.is_err());
+}
+
+#[test]
+fn lenient_latex_malformed_command() {
+    let config = lenient_config();
+    let result = LatexReader::parse("\\frac{a}", &config);
+    assert!(result.is_ok(), "lenient mode should recover from malformed commands");
+    let parsed = result.unwrap();
+    assert!(parsed.has_warnings());
+}
+
+#[test]
+fn lenient_mathml_invalid_xml() {
+    let config = lenient_config();
+    let result = MathmlReader::parse("<math><mi>x</mi><broken", &config);
+    assert!(result.is_ok(), "lenient MathML should recover from invalid XML");
+    let parsed = result.unwrap();
+    assert!(parsed.has_warnings());
+}
+
+#[test]
+fn strict_mathml_invalid_xml_fails() {
+    let config = Config::default();
+    let result = MathmlReader::parse("<math><mi>x</mi><broken", &config);
+    assert!(result.is_err());
+}
+
+#[test]
+fn lenient_mtef_invalid_hex() {
+    use mathema::reader::mtef::MtefReader;
+    let config = lenient_config();
+    let result = MtefReader::parse("zzzz", &config);
+    assert!(result.is_ok(), "lenient MTEF should recover from invalid hex");
+    let parsed = result.unwrap();
+    assert!(parsed.has_warnings());
+}
+
+#[test]
+fn strict_mtef_invalid_hex_fails() {
+    use mathema::reader::mtef::MtefReader;
+    let config = Config::default();
+    let result = MtefReader::parse("zzzz", &config);
+    assert!(result.is_err());
+}
+
+#[test]
+fn lenient_preserves_valid_parse() {
+    let strict = Config::default();
+    let lenient = lenient_config();
+    let input = "x^2 + 1";
+    let strict_result = LatexReader::parse(input, &strict).unwrap();
+    let lenient_result = LatexReader::parse(input, &lenient).unwrap();
+    assert_eq!(strict_result.expr, lenient_result.expr);
+    assert!(!lenient_result.has_warnings());
 }

@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::error::{Config, Error, ParseResult, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness};
 use crate::reader::Reader;
 
 pub struct MtefReader;
@@ -7,26 +7,75 @@ pub struct MtefReader;
 impl Reader for MtefReader {
     /// Parse MTEF binary input. Accepts hex-encoded binary string.
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
-        let bytes = hex_decode(input)?;
+        let bytes = match hex_decode(input) {
+            Ok(b) => b,
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    return Ok(ParseResult::with_diagnostics(
+                        MathExpr::inline(vec![]),
+                        vec![Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!("MTEF hex decode failed (recovered): {e}"),
+                            span: None,
+                        }],
+                    ));
+                }
+                return Err(e);
+            }
+        };
         Self::parse_bytes(&bytes, config)
     }
 }
 
 impl MtefReader {
     /// Parse raw MTEF binary bytes.
-    pub fn parse_bytes(bytes: &[u8], _config: &Config) -> Result<ParseResult> {
+    pub fn parse_bytes(bytes: &[u8], config: &Config) -> Result<ParseResult> {
         if bytes.is_empty() {
             return Ok(ParseResult::new(MathExpr::inline(vec![])));
         }
         let mut parser = MtefParser::new(bytes);
-        parser.parse_header()?;
-        let nodes = parser.parse_object_list()?;
-        let display = if parser.inline {
-            DisplayStyle::Inline
-        } else {
-            DisplayStyle::Block
-        };
-        Ok(ParseResult::new(MathExpr { nodes, display }))
+        if let Err(e) = parser.parse_header() {
+            if config.strictness == Strictness::Lenient {
+                return Ok(ParseResult::with_diagnostics(
+                    MathExpr::inline(vec![]),
+                    vec![Diagnostic {
+                        kind: DiagnosticKind::Warning,
+                        message: format!("MTEF header parse failed (recovered): {e}"),
+                        span: None,
+                    }],
+                ));
+            }
+            return Err(e);
+        }
+        match parser.parse_object_list() {
+            Ok(nodes) => {
+                let display = if parser.inline {
+                    DisplayStyle::Inline
+                } else {
+                    DisplayStyle::Block
+                };
+                Ok(ParseResult::new(MathExpr { nodes, display }))
+            }
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    let display = if parser.inline {
+                        DisplayStyle::Inline
+                    } else {
+                        DisplayStyle::Block
+                    };
+                    Ok(ParseResult::with_diagnostics(
+                        MathExpr { nodes: vec![], display },
+                        vec![Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!("MTEF parse error (recovered): {e}"),
+                            span: None,
+                        }],
+                    ))
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

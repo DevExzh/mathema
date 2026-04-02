@@ -3,6 +3,8 @@ pub mod convert;
 pub mod error;
 pub mod reader;
 pub mod unicode;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod writer;
 
 // Re-export the public API

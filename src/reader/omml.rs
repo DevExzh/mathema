@@ -2,7 +2,7 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 
 use crate::ast::*;
-use crate::error::{Config, Error, ParseResult, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness};
 use crate::reader::Reader as MathReader;
 
 pub struct OmmlReader;
@@ -13,9 +13,40 @@ impl MathReader for OmmlReader {
         if trimmed.is_empty() {
             return Ok(ParseResult::new(MathExpr::new(vec![], config.display)));
         }
-        let mut parser = OmmlParser::new(trimmed)?;
-        let nodes = parser.parse_root()?;
-        Ok(ParseResult::new(MathExpr::new(nodes, config.display)))
+        let parser_result = OmmlParser::new(trimmed);
+        let mut parser = match parser_result {
+            Ok(p) => p,
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    return Ok(ParseResult::with_diagnostics(
+                        MathExpr::new(vec![], config.display),
+                        vec![Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!("OMML initialization failed (recovered): {e}"),
+                            span: None,
+                        }],
+                    ));
+                }
+                return Err(e);
+            }
+        };
+        match parser.parse_root() {
+            Ok(nodes) => Ok(ParseResult::new(MathExpr::new(nodes, config.display))),
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    Ok(ParseResult::with_diagnostics(
+                        MathExpr::new(vec![], config.display),
+                        vec![Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!("OMML parse error (recovered): {e}"),
+                            span: None,
+                        }],
+                    ))
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

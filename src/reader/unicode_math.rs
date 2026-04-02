@@ -7,19 +7,35 @@ use nom::sequence::preceded;
 use nom::IResult;
 
 use crate::ast::*;
-use crate::error::{Config, Error, ParseResult, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness};
 use crate::reader::Reader;
 
 pub struct UnicodeMathReader;
 
 impl Reader for UnicodeMathReader {
-    fn parse(input: &str, _config: &Config) -> Result<ParseResult> {
+    fn parse(input: &str, config: &Config) -> Result<ParseResult> {
         let input = input.trim();
         if input.is_empty() {
             return Ok(ParseResult::new(MathExpr::inline(vec![])));
         }
-        let nodes = parse_expr_list(input)?;
-        Ok(ParseResult::new(MathExpr::inline(nodes)))
+        match parse_expr_list(input) {
+            Ok(nodes) => Ok(ParseResult::new(MathExpr::inline(nodes))),
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    // Total failure: treat entire input as text
+                    Ok(ParseResult::with_diagnostics(
+                        MathExpr::inline(vec![MathNode::Text(TextStyle::Normal, input.into())]),
+                        vec![Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!("UnicodeMath parse error (recovered as text): {e}"),
+                            span: None,
+                        }],
+                    ))
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 }
 

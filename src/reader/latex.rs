@@ -7,7 +7,7 @@ use nom::multi::{many0, separated_list0};
 use nom::sequence::{delimited, preceded, tuple};
 
 use crate::ast::*;
-use crate::error::{Config, Error, ParseResult, Result, Span, Strictness};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Span, Strictness};
 use crate::reader::Reader;
 use crate::unicode::symbols::{
     is_nary_command, is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
@@ -31,15 +31,85 @@ impl Reader for LatexReader {
                         span: Some(Span::new(input.len() - rest.len(), input.len())),
                     })
                 } else {
-                    Ok(ParseResult::new(MathExpr::new(nodes, config.display)))
+                    let mut diagnostics = vec![Diagnostic {
+                        kind: DiagnosticKind::Warning,
+                        message: format!("ignored trailing input: {rest:?}"),
+                        span: Some(Span::new(input.len() - rest.len(), input.len())),
+                    }];
+                    let mut result_nodes = nodes;
+                    // Try to recover more content from the remainder
+                    let recovered = parse_lenient_remainder(rest, &mut diagnostics);
+                    result_nodes.extend(recovered);
+                    Ok(ParseResult::with_diagnostics(
+                        MathExpr::new(result_nodes, config.display),
+                        diagnostics,
+                    ))
                 }
             },
-            Err(e) => Err(Error::LatexParse {
-                message: format!("parse error: {e}"),
-                span: None,
-            }),
+            Err(e) => {
+                if config.strictness == Strictness::Lenient {
+                    let mut diagnostics = Vec::new();
+                    let nodes = parse_lenient_remainder(trimmed, &mut diagnostics);
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::Warning,
+                        message: format!("parse error (recovered): {e}"),
+                        span: None,
+                    });
+                    Ok(ParseResult::with_diagnostics(
+                        MathExpr::new(nodes, config.display),
+                        diagnostics,
+                    ))
+                } else {
+                    Err(Error::LatexParse {
+                        message: format!("parse error: {e}"),
+                        span: None,
+                    })
+                }
+            },
         }
     }
+}
+
+/// Lenient recovery: try to parse as much as possible, skipping bad characters.
+fn parse_lenient_remainder(mut input: &str, diagnostics: &mut Vec<Diagnostic>) -> Vec<MathNode> {
+    let mut nodes = Vec::new();
+    while !input.is_empty() {
+        match parse_node_list(input) {
+            Ok(("", parsed)) => {
+                nodes.extend(parsed);
+                break;
+            }
+            Ok((rest, parsed)) => {
+                nodes.extend(parsed);
+                // Skip one character and continue
+                if let Some(ch) = rest.chars().next() {
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::Warning,
+                        message: format!("skipped unexpected character: {ch:?}"),
+                        span: None,
+                    });
+                    input = &rest[ch.len_utf8()..];
+                } else {
+                    break;
+                }
+            }
+            Err(_) => {
+                // Skip one character and try again
+                if let Some(ch) = input.chars().next() {
+                    nodes.push(MathNode::Text(TextStyle::Normal, ch.to_string()));
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::Warning,
+                        message: format!("treated as text: {ch:?}"),
+                        span: None,
+                    });
+                    input = &input[ch.len_utf8()..];
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    nodes
 }
 
 // ---------------------------------------------------------------------------
