@@ -577,13 +577,13 @@ fn dispatch_command<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode
 
         // --- Greek letters and other symbols ---
         _ => {
-            if let Some(entry) = lookup_command(name) {
-                if entry.kind == SymbolKind::Alphabetic {
-                    Ok((input, MathNode::Identifier(entry.unicode.to_string())))
+            if let Some((unicode, kind)) = lookup_command(name) {
+                if kind == SymbolKind::Alphabetic {
+                    Ok((input, MathNode::Identifier(unicode.to_string())))
                 } else {
                     Ok((
                         input,
-                        MathNode::Symbol(entry.kind, entry.unicode.to_string()),
+                        MathNode::Symbol(kind, unicode.to_string()),
                     ))
                 }
             } else {

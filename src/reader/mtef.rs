@@ -211,6 +211,10 @@ impl<'a> MtefParser<'a> {
         Ok(lo | (hi << 8))
     }
 
+    fn skip_bytes(&mut self, n: usize) {
+        self.pos = (self.pos + n).min(self.data.len());
+    }
+
     fn read_null_terminated_string(&mut self) -> Result<String> {
         let start = self.pos;
         while self.pos < self.data.len() && self.data[self.pos] != 0 {
@@ -290,7 +294,7 @@ impl<'a> MtefParser<'a> {
         let b2 = self.read_byte()?;
         if b1 == 128 && b2 == 128 {
             // long nudge: 4 more bytes
-            self.pos += 4;
+            self.skip_bytes(4);
         }
         Ok(())
     }
@@ -357,7 +361,7 @@ impl<'a> MtefParser<'a> {
                 _ => {
                     // Unknown record, try to recover
                     if self.pos == saved_pos {
-                        self.pos += 1;
+                        self.skip_bytes(1);
                     }
                 },
             }
@@ -640,7 +644,7 @@ impl<'a> MtefParser<'a> {
         let count = self.read_byte()? as usize;
         for _ in 0..count {
             if self.remaining() >= 2 {
-                self.pos += 2;
+                self.skip_bytes(2);
             }
         }
         Ok(())
@@ -663,7 +667,7 @@ impl<'a> MtefParser<'a> {
         let code = self.read_byte()?;
         if code == 101 {
             // explicit point size (2 bytes)
-            self.pos += 2;
+            self.skip_bytes(2);
         }
         Ok(())
     }
@@ -672,7 +676,7 @@ impl<'a> MtefParser<'a> {
         if self.version >= 5 {
             let _color_def_index = self.read_u16_le()?;
         } else {
-            self.pos += 2; // RGB-ish
+            self.skip_bytes(2); // RGB-ish
         }
         Ok(())
     }
@@ -680,7 +684,7 @@ impl<'a> MtefParser<'a> {
     fn skip_color_def(&mut self) -> Result<()> {
         let _options = self.read_byte()?;
         // RGB values
-        self.pos += 6; // 3 x u16
+        self.skip_bytes(6); // 3 x u16
         let _name = self.read_null_terminated_string()?;
         Ok(())
     }
@@ -699,21 +703,21 @@ impl<'a> MtefParser<'a> {
                 // sizes: read count + data
                 let count = self.read_byte()? as usize;
                 for _ in 0..count {
-                    self.pos += 2; // 16-bit size
+                    self.skip_bytes(2); // 16-bit size
                 }
             }
             if option & 0x02 != 0 {
                 // spacing: read count + data
                 let count = self.read_byte()? as usize;
                 for _ in 0..count {
-                    self.pos += 2;
+                    self.skip_bytes(2);
                 }
             }
             if option & 0x04 != 0 {
                 // styles: read count + data
                 let count = self.read_byte()? as usize;
                 for _ in 0..count {
-                    self.pos += 2;
+                    self.skip_bytes(2);
                 }
             }
         }

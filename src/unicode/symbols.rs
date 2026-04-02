@@ -1,403 +1,570 @@
-use crate::ast::SymbolKind;
+use phf::{phf_map, phf_set};
 
-/// A symbol entry mapping a LaTeX command to a Unicode character and its math class.
-#[derive(Debug, Clone, Copy)]
-pub struct SymbolEntry {
-    pub command: &'static str,
-    pub unicode: char,
-    pub kind: SymbolKind,
-}
+use crate::ast::SymbolKind;
+use SymbolKind::*;
+
+// ---------------------------------------------------------------------------
+// LaTeX command → (Unicode character, SymbolKind)
+// ---------------------------------------------------------------------------
+
+static LATEX_TO_UNICODE: phf::Map<&'static str, (char, SymbolKind)> = phf_map! {
+    // === Uppercase commands ===
+    "Delta" => ('\u{0394}', Alphabetic),
+    "Downarrow" => ('\u{21D3}', Relation),
+    "Gamma" => ('\u{0393}', Alphabetic),
+    "Im" => ('\u{2111}', Ordinary),
+    "Lambda" => ('\u{039B}', Alphabetic),
+    "Leftarrow" => ('\u{21D0}', Relation),
+    "Leftrightarrow" => ('\u{21D4}', Relation),
+    "Longleftarrow" => ('\u{27F8}', Relation),
+    "Longrightarrow" => ('\u{27F9}', Relation),
+    "Omega" => ('\u{03A9}', Alphabetic),
+    "Phi" => ('\u{03A6}', Alphabetic),
+    "Pi" => ('\u{03A0}', Alphabetic),
+    "Psi" => ('\u{03A8}', Alphabetic),
+    "Re" => ('\u{211C}', Ordinary),
+    "Rightarrow" => ('\u{21D2}', Relation),
+    "Sigma" => ('\u{03A3}', Alphabetic),
+    "Theta" => ('\u{0398}', Alphabetic),
+    "Uparrow" => ('\u{21D1}', Relation),
+    "Updownarrow" => ('\u{21D5}', Relation),
+    "Upsilon" => ('\u{03A5}', Alphabetic),
+    "Xi" => ('\u{039E}', Alphabetic),
+
+    // === Lowercase commands ===
+    "aleph" => ('\u{2135}', Ordinary),
+    "alpha" => ('\u{03B1}', Alphabetic),
+    "amalg" => ('\u{2A3F}', BinaryOp),
+    "angle" => ('\u{2220}', Ordinary),
+    "approx" => ('\u{2248}', Relation),
+    "ast" => ('\u{2217}', BinaryOp),
+    "asymp" => ('\u{224D}', Relation),
+    "backprime" => ('\u{2035}', Ordinary),
+    "because" => ('\u{2235}', Relation),
+    "beta" => ('\u{03B2}', Alphabetic),
+    "beth" => ('\u{2136}', Ordinary),
+    "bigcap" => ('\u{22C2}', LargeOp),
+    "bigcup" => ('\u{22C3}', LargeOp),
+    "bigodot" => ('\u{2A00}', LargeOp),
+    "bigoplus" => ('\u{2A01}', LargeOp),
+    "bigotimes" => ('\u{2A02}', LargeOp),
+    "bigsqcup" => ('\u{2A06}', LargeOp),
+    "bigtriangledown" => ('\u{25BD}', BinaryOp),
+    "bigtriangleup" => ('\u{25B3}', BinaryOp),
+    "biguplus" => ('\u{2A04}', LargeOp),
+    "bigvee" => ('\u{22C1}', LargeOp),
+    "bigwedge" => ('\u{22C0}', LargeOp),
+    "bot" => ('\u{22A5}', Ordinary),
+    "bowtie" => ('\u{22C8}', Relation),
+    "bullet" => ('\u{2219}', BinaryOp),
+    "cap" => ('\u{2229}', BinaryOp),
+    "cdot" => ('\u{22C5}', BinaryOp),
+    "cdots" => ('\u{22EF}', Ordinary),
+    "chi" => ('\u{03C7}', Alphabetic),
+    "circ" => ('\u{2218}', BinaryOp),
+    "clubsuit" => ('\u{2663}', Ordinary),
+    "colon" => (':', Punctuation),
+    "complement" => ('\u{2201}', Ordinary),
+    "cong" => ('\u{2245}', Relation),
+    "coprod" => ('\u{2210}', LargeOp),
+    "cup" => ('\u{222A}', BinaryOp),
+    "dagger" => ('\u{2020}', BinaryOp),
+    "daleth" => ('\u{2138}', Ordinary),
+    "dashv" => ('\u{22A3}', Relation),
+    "ddagger" => ('\u{2021}', BinaryOp),
+    "ddots" => ('\u{22F1}', Ordinary),
+    "degree" => ('\u{00B0}', Ordinary),
+    "delta" => ('\u{03B4}', Alphabetic),
+    "diamond" => ('\u{22C4}', BinaryOp),
+    "diamondsuit" => ('\u{2666}', Ordinary),
+    "div" => ('\u{00F7}', BinaryOp),
+    "doteq" => ('\u{2250}', Relation),
+    "dots" => ('\u{2026}', Ordinary),
+    "downarrow" => ('\u{2193}', Relation),
+    "ell" => ('\u{2113}', Ordinary),
+    "emptyset" => ('\u{2205}', Ordinary),
+    "epsilon" => ('\u{03F5}', Alphabetic),
+    "equiv" => ('\u{2261}', Relation),
+    "eta" => ('\u{03B7}', Alphabetic),
+    "eth" => ('\u{00F0}', Ordinary),
+    "exists" => ('\u{2203}', Ordinary),
+    "flat" => ('\u{266D}', Ordinary),
+    "forall" => ('\u{2200}', Ordinary),
+    "gamma" => ('\u{03B3}', Alphabetic),
+    "ge" => ('\u{2265}', Relation),
+    "geq" => ('\u{2265}', Relation),
+    "geqslant" => ('\u{2A7E}', Relation),
+    "gg" => ('\u{226B}', Relation),
+    "gimel" => ('\u{2137}', Ordinary),
+    "hbar" => ('\u{210F}', Ordinary),
+    "heartsuit" => ('\u{2665}', Ordinary),
+    "hookleftarrow" => ('\u{21A9}', Relation),
+    "hookrightarrow" => ('\u{21AA}', Relation),
+    "iff" => ('\u{27FA}', Relation),
+    "iiint" => ('\u{222D}', LargeOp),
+    "iint" => ('\u{222C}', LargeOp),
+    "imath" => ('\u{0131}', Ordinary),
+    "implies" => ('\u{27F9}', Relation),
+    "in" => ('\u{2208}', Relation),
+    "infty" => ('\u{221E}', Ordinary),
+    "int" => ('\u{222B}', LargeOp),
+    "iota" => ('\u{03B9}', Alphabetic),
+    "jmath" => ('\u{0237}', Ordinary),
+    "kappa" => ('\u{03BA}', Alphabetic),
+    "lVert" => ('\u{2016}', Open),
+    "lambda" => ('\u{03BB}', Alphabetic),
+    "land" => ('\u{2227}', BinaryOp),
+    "langle" => ('\u{27E8}', Open),
+    "lbrace" => ('{', Open),
+    "lbrack" => ('[', Open),
+    "lceil" => ('\u{2308}', Open),
+    "ldots" => ('\u{2026}', Ordinary),
+    "le" => ('\u{2264}', Relation),
+    "leftarrow" => ('\u{2190}', Relation),
+    "leftharpoondown" => ('\u{21BD}', Relation),
+    "leftharpoonup" => ('\u{21BC}', Relation),
+    "leftrightarrow" => ('\u{2194}', Relation),
+    "leq" => ('\u{2264}', Relation),
+    "leqslant" => ('\u{2A7D}', Relation),
+    "lfloor" => ('\u{230A}', Open),
+    "ll" => ('\u{226A}', Relation),
+    "lnot" => ('\u{00AC}', Ordinary),
+    "longleftarrow" => ('\u{27F5}', Relation),
+    "longleftrightarrow" => ('\u{27F7}', Relation),
+    "longmapsto" => ('\u{27FC}', Relation),
+    "longrightarrow" => ('\u{27F6}', Relation),
+    "lor" => ('\u{2228}', BinaryOp),
+    "lvert" => ('|', Open),
+    "mapsto" => ('\u{21A6}', Relation),
+    "measuredangle" => ('\u{2221}', Ordinary),
+    "mid" => ('\u{2223}', Relation),
+    "models" => ('\u{22A8}', Relation),
+    "mp" => ('\u{2213}', BinaryOp),
+    "mu" => ('\u{03BC}', Alphabetic),
+    "nabla" => ('\u{2207}', Ordinary),
+    "natural" => ('\u{266E}', Ordinary),
+    "ne" => ('\u{2260}', Relation),
+    "nearrow" => ('\u{2197}', Relation),
+    "neg" => ('\u{00AC}', Ordinary),
+    "neq" => ('\u{2260}', Relation),
+    "nexists" => ('\u{2204}', Ordinary),
+    "ngeq" => ('\u{2271}', Relation),
+    "ni" => ('\u{220B}', Relation),
+    "nleq" => ('\u{2270}', Relation),
+    "nmid" => ('\u{2224}', Relation),
+    "notin" => ('\u{2209}', Relation),
+    "nprec" => ('\u{2280}', Relation),
+    "nsubseteq" => ('\u{2288}', Relation),
+    "nsucc" => ('\u{2281}', Relation),
+    "nsupseteq" => ('\u{2289}', Relation),
+    "nu" => ('\u{03BD}', Alphabetic),
+    "nwarrow" => ('\u{2196}', Relation),
+    "odot" => ('\u{2299}', BinaryOp),
+    "oint" => ('\u{222E}', LargeOp),
+    "omega" => ('\u{03C9}', Alphabetic),
+    "ominus" => ('\u{2296}', BinaryOp),
+    "oplus" => ('\u{2295}', BinaryOp),
+    "oslash" => ('\u{2298}', BinaryOp),
+    "otimes" => ('\u{2297}', BinaryOp),
+    "parallel" => ('\u{2225}', Relation),
+    "partial" => ('\u{2202}', Ordinary),
+    "perp" => ('\u{22A5}', Relation),
+    "phi" => ('\u{03D5}', Alphabetic),
+    "pi" => ('\u{03C0}', Alphabetic),
+    "pm" => ('\u{00B1}', BinaryOp),
+    "prec" => ('\u{227A}', Relation),
+    "preceq" => ('\u{2AAF}', Relation),
+    "prime" => ('\u{2032}', Ordinary),
+    "prod" => ('\u{220F}', LargeOp),
+    "propto" => ('\u{221D}', Relation),
+    "psi" => ('\u{03C8}', Alphabetic),
+    "rVert" => ('\u{2016}', Close),
+    "rangle" => ('\u{27E9}', Close),
+    "rbrace" => ('}', Close),
+    "rbrack" => (']', Close),
+    "rceil" => ('\u{2309}', Close),
+    "rfloor" => ('\u{230B}', Close),
+    "rho" => ('\u{03C1}', Alphabetic),
+    "rightarrow" => ('\u{2192}', Relation),
+    "rightharpoondown" => ('\u{21C1}', Relation),
+    "rightharpoonup" => ('\u{21C0}', Relation),
+    "rightleftharpoons" => ('\u{21CC}', Relation),
+    "rvert" => ('|', Close),
+    "searrow" => ('\u{2198}', Relation),
+    "setminus" => ('\u{2216}', BinaryOp),
+    "sharp" => ('\u{266F}', Ordinary),
+    "sigma" => ('\u{03C3}', Alphabetic),
+    "sim" => ('\u{223C}', Relation),
+    "simeq" => ('\u{2243}', Relation),
+    "spadesuit" => ('\u{2660}', Ordinary),
+    "sqcap" => ('\u{2293}', BinaryOp),
+    "sqcup" => ('\u{2294}', BinaryOp),
+    "sqsubseteq" => ('\u{2291}', Relation),
+    "sqsupseteq" => ('\u{2292}', Relation),
+    "square" => ('\u{25A1}', Ordinary),
+    "star" => ('\u{22C6}', BinaryOp),
+    "subset" => ('\u{2282}', Relation),
+    "subseteq" => ('\u{2286}', Relation),
+    "succ" => ('\u{227B}', Relation),
+    "succeq" => ('\u{2AB0}', Relation),
+    "sum" => ('\u{2211}', LargeOp),
+    "supset" => ('\u{2283}', Relation),
+    "supseteq" => ('\u{2287}', Relation),
+    "surd" => ('\u{221A}', Ordinary),
+    "swarrow" => ('\u{2199}', Relation),
+    "tau" => ('\u{03C4}', Alphabetic),
+    "therefore" => ('\u{2234}', Relation),
+    "theta" => ('\u{03B8}', Alphabetic),
+    "times" => ('\u{00D7}', BinaryOp),
+    "to" => ('\u{2192}', Relation),
+    "top" => ('\u{22A4}', Ordinary),
+    "triangle" => ('\u{25B3}', Ordinary),
+    "triangleleft" => ('\u{25C1}', BinaryOp),
+    "triangleright" => ('\u{25B7}', BinaryOp),
+    "uparrow" => ('\u{2191}', Relation),
+    "updownarrow" => ('\u{2195}', Relation),
+    "upsilon" => ('\u{03C5}', Alphabetic),
+    "varepsilon" => ('\u{03B5}', Alphabetic),
+    "varkappa" => ('\u{03F0}', Alphabetic),
+    "varnothing" => ('\u{2205}', Ordinary),
+    "varphi" => ('\u{03C6}', Alphabetic),
+    "varpi" => ('\u{03D6}', Alphabetic),
+    "varrho" => ('\u{03F1}', Alphabetic),
+    "varsigma" => ('\u{03C2}', Alphabetic),
+    "vartheta" => ('\u{03D1}', Alphabetic),
+    "vdash" => ('\u{22A2}', Relation),
+    "vdots" => ('\u{22EE}', Ordinary),
+    "vee" => ('\u{2228}', BinaryOp),
+    "wedge" => ('\u{2227}', BinaryOp),
+    "wp" => ('\u{2118}', Ordinary),
+    "wr" => ('\u{2240}', BinaryOp),
+    "xi" => ('\u{03BE}', Alphabetic),
+    "zeta" => ('\u{03B6}', Alphabetic),
+};
+
+// ---------------------------------------------------------------------------
+// Unicode character → (preferred LaTeX command, SymbolKind)
+// One entry per unique character; for duplicates, the most standard name wins.
+// ---------------------------------------------------------------------------
+
+static UNICODE_TO_LATEX: phf::Map<char, (&'static str, SymbolKind)> = phf_map! {
+    ':' => ("colon", Punctuation),
+    '[' => ("lbrack", Open),
+    ']' => ("rbrack", Close),
+    '{' => ("lbrace", Open),
+    '|' => ("lvert", Open),
+    '}' => ("rbrace", Close),
+    '\u{00AC}' => ("neg", Ordinary),
+    '\u{00B0}' => ("degree", Ordinary),
+    '\u{00B1}' => ("pm", BinaryOp),
+    '\u{00D7}' => ("times", BinaryOp),
+    '\u{00F0}' => ("eth", Ordinary),
+    '\u{00F7}' => ("div", BinaryOp),
+    '\u{0131}' => ("imath", Ordinary),
+    '\u{0237}' => ("jmath", Ordinary),
+    '\u{0393}' => ("Gamma", Alphabetic),
+    '\u{0394}' => ("Delta", Alphabetic),
+    '\u{0398}' => ("Theta", Alphabetic),
+    '\u{039B}' => ("Lambda", Alphabetic),
+    '\u{039E}' => ("Xi", Alphabetic),
+    '\u{03A0}' => ("Pi", Alphabetic),
+    '\u{03A3}' => ("Sigma", Alphabetic),
+    '\u{03A5}' => ("Upsilon", Alphabetic),
+    '\u{03A6}' => ("Phi", Alphabetic),
+    '\u{03A8}' => ("Psi", Alphabetic),
+    '\u{03A9}' => ("Omega", Alphabetic),
+    '\u{03B1}' => ("alpha", Alphabetic),
+    '\u{03B2}' => ("beta", Alphabetic),
+    '\u{03B3}' => ("gamma", Alphabetic),
+    '\u{03B4}' => ("delta", Alphabetic),
+    '\u{03B5}' => ("varepsilon", Alphabetic),
+    '\u{03B6}' => ("zeta", Alphabetic),
+    '\u{03B7}' => ("eta", Alphabetic),
+    '\u{03B8}' => ("theta", Alphabetic),
+    '\u{03B9}' => ("iota", Alphabetic),
+    '\u{03BA}' => ("kappa", Alphabetic),
+    '\u{03BB}' => ("lambda", Alphabetic),
+    '\u{03BC}' => ("mu", Alphabetic),
+    '\u{03BD}' => ("nu", Alphabetic),
+    '\u{03BE}' => ("xi", Alphabetic),
+    '\u{03C0}' => ("pi", Alphabetic),
+    '\u{03C1}' => ("rho", Alphabetic),
+    '\u{03C2}' => ("varsigma", Alphabetic),
+    '\u{03C3}' => ("sigma", Alphabetic),
+    '\u{03C4}' => ("tau", Alphabetic),
+    '\u{03C5}' => ("upsilon", Alphabetic),
+    '\u{03C6}' => ("varphi", Alphabetic),
+    '\u{03C7}' => ("chi", Alphabetic),
+    '\u{03C8}' => ("psi", Alphabetic),
+    '\u{03C9}' => ("omega", Alphabetic),
+    '\u{03D1}' => ("vartheta", Alphabetic),
+    '\u{03D5}' => ("phi", Alphabetic),
+    '\u{03D6}' => ("varpi", Alphabetic),
+    '\u{03F0}' => ("varkappa", Alphabetic),
+    '\u{03F1}' => ("varrho", Alphabetic),
+    '\u{03F5}' => ("epsilon", Alphabetic),
+    '\u{2016}' => ("lVert", Open),
+    '\u{2020}' => ("dagger", BinaryOp),
+    '\u{2021}' => ("ddagger", BinaryOp),
+    '\u{2026}' => ("ldots", Ordinary),
+    '\u{2032}' => ("prime", Ordinary),
+    '\u{2035}' => ("backprime", Ordinary),
+    '\u{210F}' => ("hbar", Ordinary),
+    '\u{2111}' => ("Im", Ordinary),
+    '\u{2113}' => ("ell", Ordinary),
+    '\u{2118}' => ("wp", Ordinary),
+    '\u{211C}' => ("Re", Ordinary),
+    '\u{2135}' => ("aleph", Ordinary),
+    '\u{2136}' => ("beth", Ordinary),
+    '\u{2137}' => ("gimel", Ordinary),
+    '\u{2138}' => ("daleth", Ordinary),
+    '\u{2190}' => ("leftarrow", Relation),
+    '\u{2191}' => ("uparrow", Relation),
+    '\u{2192}' => ("rightarrow", Relation),
+    '\u{2193}' => ("downarrow", Relation),
+    '\u{2194}' => ("leftrightarrow", Relation),
+    '\u{2195}' => ("updownarrow", Relation),
+    '\u{2196}' => ("nwarrow", Relation),
+    '\u{2197}' => ("nearrow", Relation),
+    '\u{2198}' => ("searrow", Relation),
+    '\u{2199}' => ("swarrow", Relation),
+    '\u{21A6}' => ("mapsto", Relation),
+    '\u{21A9}' => ("hookleftarrow", Relation),
+    '\u{21AA}' => ("hookrightarrow", Relation),
+    '\u{21BC}' => ("leftharpoonup", Relation),
+    '\u{21BD}' => ("leftharpoondown", Relation),
+    '\u{21C0}' => ("rightharpoonup", Relation),
+    '\u{21C1}' => ("rightharpoondown", Relation),
+    '\u{21CC}' => ("rightleftharpoons", Relation),
+    '\u{21D0}' => ("Leftarrow", Relation),
+    '\u{21D1}' => ("Uparrow", Relation),
+    '\u{21D2}' => ("Rightarrow", Relation),
+    '\u{21D3}' => ("Downarrow", Relation),
+    '\u{21D4}' => ("Leftrightarrow", Relation),
+    '\u{21D5}' => ("Updownarrow", Relation),
+    '\u{2200}' => ("forall", Ordinary),
+    '\u{2201}' => ("complement", Ordinary),
+    '\u{2202}' => ("partial", Ordinary),
+    '\u{2203}' => ("exists", Ordinary),
+    '\u{2204}' => ("nexists", Ordinary),
+    '\u{2205}' => ("emptyset", Ordinary),
+    '\u{2207}' => ("nabla", Ordinary),
+    '\u{2208}' => ("in", Relation),
+    '\u{2209}' => ("notin", Relation),
+    '\u{220B}' => ("ni", Relation),
+    '\u{220F}' => ("prod", LargeOp),
+    '\u{2210}' => ("coprod", LargeOp),
+    '\u{2211}' => ("sum", LargeOp),
+    '\u{2213}' => ("mp", BinaryOp),
+    '\u{2216}' => ("setminus", BinaryOp),
+    '\u{2217}' => ("ast", BinaryOp),
+    '\u{2218}' => ("circ", BinaryOp),
+    '\u{2219}' => ("bullet", BinaryOp),
+    '\u{221A}' => ("surd", Ordinary),
+    '\u{221D}' => ("propto", Relation),
+    '\u{221E}' => ("infty", Ordinary),
+    '\u{2220}' => ("angle", Ordinary),
+    '\u{2221}' => ("measuredangle", Ordinary),
+    '\u{2223}' => ("mid", Relation),
+    '\u{2224}' => ("nmid", Relation),
+    '\u{2225}' => ("parallel", Relation),
+    '\u{2227}' => ("wedge", BinaryOp),
+    '\u{2228}' => ("vee", BinaryOp),
+    '\u{2229}' => ("cap", BinaryOp),
+    '\u{222A}' => ("cup", BinaryOp),
+    '\u{222B}' => ("int", LargeOp),
+    '\u{222C}' => ("iint", LargeOp),
+    '\u{222D}' => ("iiint", LargeOp),
+    '\u{222E}' => ("oint", LargeOp),
+    '\u{2234}' => ("therefore", Relation),
+    '\u{2235}' => ("because", Relation),
+    '\u{223C}' => ("sim", Relation),
+    '\u{2240}' => ("wr", BinaryOp),
+    '\u{2243}' => ("simeq", Relation),
+    '\u{2245}' => ("cong", Relation),
+    '\u{2248}' => ("approx", Relation),
+    '\u{224D}' => ("asymp", Relation),
+    '\u{2250}' => ("doteq", Relation),
+    '\u{2260}' => ("neq", Relation),
+    '\u{2261}' => ("equiv", Relation),
+    '\u{2264}' => ("leq", Relation),
+    '\u{2265}' => ("geq", Relation),
+    '\u{226A}' => ("ll", Relation),
+    '\u{226B}' => ("gg", Relation),
+    '\u{2270}' => ("nleq", Relation),
+    '\u{2271}' => ("ngeq", Relation),
+    '\u{227A}' => ("prec", Relation),
+    '\u{227B}' => ("succ", Relation),
+    '\u{2280}' => ("nprec", Relation),
+    '\u{2281}' => ("nsucc", Relation),
+    '\u{2282}' => ("subset", Relation),
+    '\u{2283}' => ("supset", Relation),
+    '\u{2286}' => ("subseteq", Relation),
+    '\u{2287}' => ("supseteq", Relation),
+    '\u{2288}' => ("nsubseteq", Relation),
+    '\u{2289}' => ("nsupseteq", Relation),
+    '\u{2291}' => ("sqsubseteq", Relation),
+    '\u{2292}' => ("sqsupseteq", Relation),
+    '\u{2293}' => ("sqcap", BinaryOp),
+    '\u{2294}' => ("sqcup", BinaryOp),
+    '\u{2295}' => ("oplus", BinaryOp),
+    '\u{2296}' => ("ominus", BinaryOp),
+    '\u{2297}' => ("otimes", BinaryOp),
+    '\u{2298}' => ("oslash", BinaryOp),
+    '\u{2299}' => ("odot", BinaryOp),
+    '\u{22A2}' => ("vdash", Relation),
+    '\u{22A3}' => ("dashv", Relation),
+    '\u{22A4}' => ("top", Ordinary),
+    '\u{22A5}' => ("bot", Ordinary),
+    '\u{22A8}' => ("models", Relation),
+    '\u{22C0}' => ("bigwedge", LargeOp),
+    '\u{22C1}' => ("bigvee", LargeOp),
+    '\u{22C2}' => ("bigcap", LargeOp),
+    '\u{22C3}' => ("bigcup", LargeOp),
+    '\u{22C4}' => ("diamond", BinaryOp),
+    '\u{22C5}' => ("cdot", BinaryOp),
+    '\u{22C6}' => ("star", BinaryOp),
+    '\u{22C8}' => ("bowtie", Relation),
+    '\u{22EE}' => ("vdots", Ordinary),
+    '\u{22EF}' => ("cdots", Ordinary),
+    '\u{22F1}' => ("ddots", Ordinary),
+    '\u{2308}' => ("lceil", Open),
+    '\u{2309}' => ("rceil", Close),
+    '\u{230A}' => ("lfloor", Open),
+    '\u{230B}' => ("rfloor", Close),
+    '\u{25A1}' => ("square", Ordinary),
+    '\u{25B3}' => ("triangle", Ordinary),
+    '\u{25B7}' => ("triangleright", BinaryOp),
+    '\u{25BD}' => ("bigtriangledown", BinaryOp),
+    '\u{25C1}' => ("triangleleft", BinaryOp),
+    '\u{2660}' => ("spadesuit", Ordinary),
+    '\u{2663}' => ("clubsuit", Ordinary),
+    '\u{2665}' => ("heartsuit", Ordinary),
+    '\u{2666}' => ("diamondsuit", Ordinary),
+    '\u{266D}' => ("flat", Ordinary),
+    '\u{266E}' => ("natural", Ordinary),
+    '\u{266F}' => ("sharp", Ordinary),
+    '\u{27E8}' => ("langle", Open),
+    '\u{27E9}' => ("rangle", Close),
+    '\u{27F5}' => ("longleftarrow", Relation),
+    '\u{27F6}' => ("longrightarrow", Relation),
+    '\u{27F7}' => ("longleftrightarrow", Relation),
+    '\u{27F8}' => ("Longleftarrow", Relation),
+    '\u{27F9}' => ("Longrightarrow", Relation),
+    '\u{27FA}' => ("iff", Relation),
+    '\u{27FC}' => ("longmapsto", Relation),
+    '\u{2A00}' => ("bigodot", LargeOp),
+    '\u{2A01}' => ("bigoplus", LargeOp),
+    '\u{2A02}' => ("bigotimes", LargeOp),
+    '\u{2A04}' => ("biguplus", LargeOp),
+    '\u{2A06}' => ("bigsqcup", LargeOp),
+    '\u{2A3F}' => ("amalg", BinaryOp),
+    '\u{2A7D}' => ("leqslant", Relation),
+    '\u{2A7E}' => ("geqslant", Relation),
+    '\u{2AAF}' => ("preceq", Relation),
+    '\u{2AB0}' => ("succeq", Relation),
+};
+
+// ---------------------------------------------------------------------------
+// N-ary operator Unicode → LaTeX command name
+// ---------------------------------------------------------------------------
+
+static NARY_OP_LATEX: phf::Map<char, &'static str> = phf_map! {
+    '\u{220F}' => "prod",
+    '\u{2210}' => "coprod",
+    '\u{2211}' => "sum",
+    '\u{222B}' => "int",
+    '\u{222C}' => "iint",
+    '\u{222D}' => "iiint",
+    '\u{222E}' => "oint",
+    '\u{22C0}' => "bigwedge",
+    '\u{22C1}' => "bigvee",
+    '\u{22C2}' => "bigcap",
+    '\u{22C3}' => "bigcup",
+    '\u{2A00}' => "bigodot",
+    '\u{2A01}' => "bigoplus",
+    '\u{2A02}' => "bigotimes",
+    '\u{2A04}' => "biguplus",
+    '\u{2A06}' => "bigsqcup",
+};
+
+// ---------------------------------------------------------------------------
+// Sets for classification checks
+// ---------------------------------------------------------------------------
+
+static NARY_COMMANDS: phf::Set<&'static str> = phf_set! {
+    "sum", "prod", "coprod", "int", "iint", "iiint", "oint",
+    "bigcap", "bigcup", "bigwedge", "bigvee",
+    "bigodot", "bigoplus", "bigotimes", "biguplus", "bigsqcup",
+};
+
+static OPERATOR_COMMANDS: phf::Set<&'static str> = phf_set! {
+    "sin", "cos", "tan", "sec", "csc", "cot",
+    "arcsin", "arccos", "arctan",
+    "sinh", "cosh", "tanh", "coth",
+    "log", "ln", "lg", "exp",
+    "lim", "liminf", "limsup",
+    "sup", "inf", "min", "max",
+    "det", "dim", "ker", "hom", "arg", "deg",
+    "gcd", "lcm", "sgn",
+    "Pr", "Var", "Cov", "supp", "mod",
+};
+
+static LIMIT_OPERATORS: phf::Set<&'static str> = phf_set! {
+    "lim", "liminf", "limsup", "sup", "inf", "min", "max", "det", "gcd", "Pr",
+};
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 /// Look up a Unicode character by LaTeX command name (without backslash).
-/// Uses binary search on the sorted symbol table.
 pub fn latex_to_unicode(command: &str) -> Option<char> {
-    SYMBOLS
-        .binary_search_by_key(&command, |e| e.command)
-        .ok()
-        .map(|i| SYMBOLS[i].unicode)
+    LATEX_TO_UNICODE.get(command).map(|&(ch, _)| ch)
 }
 
 /// Look up a LaTeX command name for a Unicode character.
 pub fn unicode_to_latex(ch: char) -> Option<&'static str> {
-    SYMBOLS
-        .iter()
-        .find(|e| e.unicode == ch)
-        .map(|e| e.command)
+    UNICODE_TO_LATEX.get(&ch).map(|&(cmd, _)| cmd)
 }
 
 /// Look up the math symbol kind for a Unicode character.
 pub fn symbol_kind(ch: char) -> SymbolKind {
-    SYMBOLS
-        .iter()
-        .find(|e| e.unicode == ch)
-        .map(|e| e.kind)
+    UNICODE_TO_LATEX
+        .get(&ch)
+        .map(|&(_, kind)| kind)
         .unwrap_or(SymbolKind::Ordinary)
 }
 
-/// Look up a symbol entry by LaTeX command name.
-/// Uses binary search on the sorted symbol table.
-pub fn lookup_command(command: &str) -> Option<&'static SymbolEntry> {
-    SYMBOLS
-        .binary_search_by_key(&command, |e| e.command)
-        .ok()
-        .map(|i| &SYMBOLS[i])
+/// Look up a symbol by LaTeX command name.
+/// Returns `(unicode_char, symbol_kind)`.
+pub fn lookup_command(command: &str) -> Option<(char, SymbolKind)> {
+    LATEX_TO_UNICODE.get(command).copied()
 }
-
-use SymbolKind::*;
-
-/// Symbol table sorted by command name for binary search.
-/// IMPORTANT: Entries MUST be sorted by `command` in Rust's default string ordering.
-pub static SYMBOLS: &[SymbolEntry] = &[
-    // === Uppercase commands (ASCII uppercase < lowercase) ===
-    SymbolEntry { command: "Delta", unicode: '\u{0394}', kind: Alphabetic },
-    SymbolEntry { command: "Downarrow", unicode: '\u{21D3}', kind: Relation },
-    SymbolEntry { command: "Gamma", unicode: '\u{0393}', kind: Alphabetic },
-    SymbolEntry { command: "Im", unicode: '\u{2111}', kind: Ordinary },
-    SymbolEntry { command: "Lambda", unicode: '\u{039B}', kind: Alphabetic },
-    SymbolEntry { command: "Leftarrow", unicode: '\u{21D0}', kind: Relation },
-    SymbolEntry { command: "Leftrightarrow", unicode: '\u{21D4}', kind: Relation },
-    SymbolEntry { command: "Longleftarrow", unicode: '\u{27F8}', kind: Relation },
-    SymbolEntry { command: "Longrightarrow", unicode: '\u{27F9}', kind: Relation },
-    SymbolEntry { command: "Omega", unicode: '\u{03A9}', kind: Alphabetic },
-    SymbolEntry { command: "Phi", unicode: '\u{03A6}', kind: Alphabetic },
-    SymbolEntry { command: "Pi", unicode: '\u{03A0}', kind: Alphabetic },
-    SymbolEntry { command: "Psi", unicode: '\u{03A8}', kind: Alphabetic },
-    SymbolEntry { command: "Re", unicode: '\u{211C}', kind: Ordinary },
-    SymbolEntry { command: "Rightarrow", unicode: '\u{21D2}', kind: Relation },
-    SymbolEntry { command: "Sigma", unicode: '\u{03A3}', kind: Alphabetic },
-    SymbolEntry { command: "Theta", unicode: '\u{0398}', kind: Alphabetic },
-    SymbolEntry { command: "Uparrow", unicode: '\u{21D1}', kind: Relation },
-    SymbolEntry { command: "Updownarrow", unicode: '\u{21D5}', kind: Relation },
-    SymbolEntry { command: "Upsilon", unicode: '\u{03A5}', kind: Alphabetic },
-    SymbolEntry { command: "Xi", unicode: '\u{039E}', kind: Alphabetic },
-
-    // === Lowercase commands ===
-    SymbolEntry { command: "aleph", unicode: '\u{2135}', kind: Ordinary },
-    SymbolEntry { command: "alpha", unicode: '\u{03B1}', kind: Alphabetic },
-    SymbolEntry { command: "amalg", unicode: '\u{2A3F}', kind: BinaryOp },
-    SymbolEntry { command: "angle", unicode: '\u{2220}', kind: Ordinary },
-    SymbolEntry { command: "approx", unicode: '\u{2248}', kind: Relation },
-    SymbolEntry { command: "ast", unicode: '\u{2217}', kind: BinaryOp },
-    SymbolEntry { command: "asymp", unicode: '\u{224D}', kind: Relation },
-    SymbolEntry { command: "backprime", unicode: '\u{2035}', kind: Ordinary },
-    SymbolEntry { command: "because", unicode: '\u{2235}', kind: Relation },
-    SymbolEntry { command: "beta", unicode: '\u{03B2}', kind: Alphabetic },
-    SymbolEntry { command: "beth", unicode: '\u{2136}', kind: Ordinary },
-    SymbolEntry { command: "bigcap", unicode: '\u{22C2}', kind: LargeOp },
-    SymbolEntry { command: "bigcup", unicode: '\u{22C3}', kind: LargeOp },
-    SymbolEntry { command: "bigodot", unicode: '\u{2A00}', kind: LargeOp },
-    SymbolEntry { command: "bigoplus", unicode: '\u{2A01}', kind: LargeOp },
-    SymbolEntry { command: "bigotimes", unicode: '\u{2A02}', kind: LargeOp },
-    SymbolEntry { command: "bigsqcup", unicode: '\u{2A06}', kind: LargeOp },
-    SymbolEntry { command: "bigtriangledown", unicode: '\u{25BD}', kind: BinaryOp },
-    SymbolEntry { command: "bigtriangleup", unicode: '\u{25B3}', kind: BinaryOp },
-    SymbolEntry { command: "biguplus", unicode: '\u{2A04}', kind: LargeOp },
-    SymbolEntry { command: "bigvee", unicode: '\u{22C1}', kind: LargeOp },
-    SymbolEntry { command: "bigwedge", unicode: '\u{22C0}', kind: LargeOp },
-    SymbolEntry { command: "bot", unicode: '\u{22A5}', kind: Ordinary },
-    SymbolEntry { command: "bowtie", unicode: '\u{22C8}', kind: Relation },
-    SymbolEntry { command: "bullet", unicode: '\u{2219}', kind: BinaryOp },
-    SymbolEntry { command: "cap", unicode: '\u{2229}', kind: BinaryOp },
-    SymbolEntry { command: "cdot", unicode: '\u{22C5}', kind: BinaryOp },
-    SymbolEntry { command: "cdots", unicode: '\u{22EF}', kind: Ordinary },
-    SymbolEntry { command: "chi", unicode: '\u{03C7}', kind: Alphabetic },
-    SymbolEntry { command: "circ", unicode: '\u{2218}', kind: BinaryOp },
-    SymbolEntry { command: "clubsuit", unicode: '\u{2663}', kind: Ordinary },
-    SymbolEntry { command: "colon", unicode: ':', kind: Punctuation },
-    SymbolEntry { command: "complement", unicode: '\u{2201}', kind: Ordinary },
-    SymbolEntry { command: "cong", unicode: '\u{2245}', kind: Relation },
-    SymbolEntry { command: "coprod", unicode: '\u{2210}', kind: LargeOp },
-    SymbolEntry { command: "cup", unicode: '\u{222A}', kind: BinaryOp },
-    SymbolEntry { command: "dagger", unicode: '\u{2020}', kind: BinaryOp },
-    SymbolEntry { command: "daleth", unicode: '\u{2138}', kind: Ordinary },
-    SymbolEntry { command: "dashv", unicode: '\u{22A3}', kind: Relation },
-    SymbolEntry { command: "ddagger", unicode: '\u{2021}', kind: BinaryOp },
-    SymbolEntry { command: "ddots", unicode: '\u{22F1}', kind: Ordinary },
-    SymbolEntry { command: "degree", unicode: '\u{00B0}', kind: Ordinary },
-    SymbolEntry { command: "delta", unicode: '\u{03B4}', kind: Alphabetic },
-    SymbolEntry { command: "diamond", unicode: '\u{22C4}', kind: BinaryOp },
-    SymbolEntry { command: "diamondsuit", unicode: '\u{2666}', kind: Ordinary },
-    SymbolEntry { command: "div", unicode: '\u{00F7}', kind: BinaryOp },
-    SymbolEntry { command: "doteq", unicode: '\u{2250}', kind: Relation },
-    SymbolEntry { command: "dots", unicode: '\u{2026}', kind: Ordinary },
-    SymbolEntry { command: "downarrow", unicode: '\u{2193}', kind: Relation },
-    SymbolEntry { command: "ell", unicode: '\u{2113}', kind: Ordinary },
-    SymbolEntry { command: "emptyset", unicode: '\u{2205}', kind: Ordinary },
-    SymbolEntry { command: "epsilon", unicode: '\u{03F5}', kind: Alphabetic },
-    SymbolEntry { command: "equiv", unicode: '\u{2261}', kind: Relation },
-    SymbolEntry { command: "eta", unicode: '\u{03B7}', kind: Alphabetic },
-    SymbolEntry { command: "eth", unicode: '\u{00F0}', kind: Ordinary },
-    SymbolEntry { command: "exists", unicode: '\u{2203}', kind: Ordinary },
-    SymbolEntry { command: "flat", unicode: '\u{266D}', kind: Ordinary },
-    SymbolEntry { command: "forall", unicode: '\u{2200}', kind: Ordinary },
-    SymbolEntry { command: "gamma", unicode: '\u{03B3}', kind: Alphabetic },
-    SymbolEntry { command: "ge", unicode: '\u{2265}', kind: Relation },
-    SymbolEntry { command: "geq", unicode: '\u{2265}', kind: Relation },
-    SymbolEntry { command: "geqslant", unicode: '\u{2A7E}', kind: Relation },
-    SymbolEntry { command: "gg", unicode: '\u{226B}', kind: Relation },
-    SymbolEntry { command: "gimel", unicode: '\u{2137}', kind: Ordinary },
-    SymbolEntry { command: "hbar", unicode: '\u{210F}', kind: Ordinary },
-    SymbolEntry { command: "heartsuit", unicode: '\u{2665}', kind: Ordinary },
-    SymbolEntry { command: "hookleftarrow", unicode: '\u{21A9}', kind: Relation },
-    SymbolEntry { command: "hookrightarrow", unicode: '\u{21AA}', kind: Relation },
-    SymbolEntry { command: "iff", unicode: '\u{27FA}', kind: Relation },
-    SymbolEntry { command: "iiint", unicode: '\u{222D}', kind: LargeOp },
-    SymbolEntry { command: "iint", unicode: '\u{222C}', kind: LargeOp },
-    SymbolEntry { command: "imath", unicode: '\u{0131}', kind: Ordinary },
-    SymbolEntry { command: "implies", unicode: '\u{27F9}', kind: Relation },
-
-    SymbolEntry { command: "in", unicode: '\u{2208}', kind: Relation },
-    SymbolEntry { command: "infty", unicode: '\u{221E}', kind: Ordinary },
-    SymbolEntry { command: "int", unicode: '\u{222B}', kind: LargeOp },
-    SymbolEntry { command: "iota", unicode: '\u{03B9}', kind: Alphabetic },
-    SymbolEntry { command: "jmath", unicode: '\u{0237}', kind: Ordinary },
-    SymbolEntry { command: "kappa", unicode: '\u{03BA}', kind: Alphabetic },
-    SymbolEntry { command: "lVert", unicode: '\u{2016}', kind: Open },
-    SymbolEntry { command: "lambda", unicode: '\u{03BB}', kind: Alphabetic },
-    SymbolEntry { command: "land", unicode: '\u{2227}', kind: BinaryOp },
-    SymbolEntry { command: "langle", unicode: '\u{27E8}', kind: Open },
-    SymbolEntry { command: "lbrace", unicode: '{', kind: Open },
-    SymbolEntry { command: "lbrack", unicode: '[', kind: Open },
-    SymbolEntry { command: "lceil", unicode: '\u{2308}', kind: Open },
-    SymbolEntry { command: "ldots", unicode: '\u{2026}', kind: Ordinary },
-    SymbolEntry { command: "le", unicode: '\u{2264}', kind: Relation },
-    SymbolEntry { command: "leftarrow", unicode: '\u{2190}', kind: Relation },
-    SymbolEntry { command: "leftharpoondown", unicode: '\u{21BD}', kind: Relation },
-    SymbolEntry { command: "leftharpoonup", unicode: '\u{21BC}', kind: Relation },
-    SymbolEntry { command: "leftrightarrow", unicode: '\u{2194}', kind: Relation },
-    SymbolEntry { command: "leq", unicode: '\u{2264}', kind: Relation },
-    SymbolEntry { command: "leqslant", unicode: '\u{2A7D}', kind: Relation },
-    SymbolEntry { command: "lfloor", unicode: '\u{230A}', kind: Open },
-    SymbolEntry { command: "ll", unicode: '\u{226A}', kind: Relation },
-    SymbolEntry { command: "lnot", unicode: '\u{00AC}', kind: Ordinary },
-    SymbolEntry { command: "longleftarrow", unicode: '\u{27F5}', kind: Relation },
-    SymbolEntry { command: "longleftrightarrow", unicode: '\u{27F7}', kind: Relation },
-    SymbolEntry { command: "longmapsto", unicode: '\u{27FC}', kind: Relation },
-    SymbolEntry { command: "longrightarrow", unicode: '\u{27F6}', kind: Relation },
-    SymbolEntry { command: "lor", unicode: '\u{2228}', kind: BinaryOp },
-    SymbolEntry { command: "lvert", unicode: '|', kind: Open },
-    SymbolEntry { command: "mapsto", unicode: '\u{21A6}', kind: Relation },
-    SymbolEntry { command: "measuredangle", unicode: '\u{2221}', kind: Ordinary },
-    SymbolEntry { command: "mid", unicode: '\u{2223}', kind: Relation },
-    SymbolEntry { command: "models", unicode: '\u{22A8}', kind: Relation },
-    SymbolEntry { command: "mp", unicode: '\u{2213}', kind: BinaryOp },
-    SymbolEntry { command: "mu", unicode: '\u{03BC}', kind: Alphabetic },
-    SymbolEntry { command: "nabla", unicode: '\u{2207}', kind: Ordinary },
-    SymbolEntry { command: "natural", unicode: '\u{266E}', kind: Ordinary },
-    SymbolEntry { command: "ne", unicode: '\u{2260}', kind: Relation },
-    SymbolEntry { command: "nearrow", unicode: '\u{2197}', kind: Relation },
-    SymbolEntry { command: "neg", unicode: '\u{00AC}', kind: Ordinary },
-    SymbolEntry { command: "neq", unicode: '\u{2260}', kind: Relation },
-    SymbolEntry { command: "nexists", unicode: '\u{2204}', kind: Ordinary },
-    SymbolEntry { command: "ngeq", unicode: '\u{2271}', kind: Relation },
-    SymbolEntry { command: "ni", unicode: '\u{220B}', kind: Relation },
-    SymbolEntry { command: "nleq", unicode: '\u{2270}', kind: Relation },
-    SymbolEntry { command: "nmid", unicode: '\u{2224}', kind: Relation },
-    SymbolEntry { command: "notin", unicode: '\u{2209}', kind: Relation },
-    SymbolEntry { command: "nprec", unicode: '\u{2280}', kind: Relation },
-    SymbolEntry { command: "nsubseteq", unicode: '\u{2288}', kind: Relation },
-    SymbolEntry { command: "nsucc", unicode: '\u{2281}', kind: Relation },
-    SymbolEntry { command: "nsupseteq", unicode: '\u{2289}', kind: Relation },
-    SymbolEntry { command: "nu", unicode: '\u{03BD}', kind: Alphabetic },
-    SymbolEntry { command: "nwarrow", unicode: '\u{2196}', kind: Relation },
-    SymbolEntry { command: "odot", unicode: '\u{2299}', kind: BinaryOp },
-    SymbolEntry { command: "oint", unicode: '\u{222E}', kind: LargeOp },
-    SymbolEntry { command: "omega", unicode: '\u{03C9}', kind: Alphabetic },
-    SymbolEntry { command: "ominus", unicode: '\u{2296}', kind: BinaryOp },
-    SymbolEntry { command: "oplus", unicode: '\u{2295}', kind: BinaryOp },
-    SymbolEntry { command: "oslash", unicode: '\u{2298}', kind: BinaryOp },
-    SymbolEntry { command: "otimes", unicode: '\u{2297}', kind: BinaryOp },
-    SymbolEntry { command: "parallel", unicode: '\u{2225}', kind: Relation },
-    SymbolEntry { command: "partial", unicode: '\u{2202}', kind: Ordinary },
-    SymbolEntry { command: "perp", unicode: '\u{22A5}', kind: Relation },
-    SymbolEntry { command: "phi", unicode: '\u{03D5}', kind: Alphabetic },
-    SymbolEntry { command: "pi", unicode: '\u{03C0}', kind: Alphabetic },
-    SymbolEntry { command: "pm", unicode: '\u{00B1}', kind: BinaryOp },
-    SymbolEntry { command: "prec", unicode: '\u{227A}', kind: Relation },
-    SymbolEntry { command: "preceq", unicode: '\u{2AAF}', kind: Relation },
-    SymbolEntry { command: "prime", unicode: '\u{2032}', kind: Ordinary },
-    SymbolEntry { command: "prod", unicode: '\u{220F}', kind: LargeOp },
-    SymbolEntry { command: "propto", unicode: '\u{221D}', kind: Relation },
-    SymbolEntry { command: "psi", unicode: '\u{03C8}', kind: Alphabetic },
-    SymbolEntry { command: "rVert", unicode: '\u{2016}', kind: Close },
-    SymbolEntry { command: "rangle", unicode: '\u{27E9}', kind: Close },
-    SymbolEntry { command: "rbrace", unicode: '}', kind: Close },
-    SymbolEntry { command: "rbrack", unicode: ']', kind: Close },
-    SymbolEntry { command: "rceil", unicode: '\u{2309}', kind: Close },
-    SymbolEntry { command: "rfloor", unicode: '\u{230B}', kind: Close },
-    SymbolEntry { command: "rho", unicode: '\u{03C1}', kind: Alphabetic },
-    SymbolEntry { command: "rightarrow", unicode: '\u{2192}', kind: Relation },
-    SymbolEntry { command: "rightharpoondown", unicode: '\u{21C1}', kind: Relation },
-    SymbolEntry { command: "rightharpoonup", unicode: '\u{21C0}', kind: Relation },
-    SymbolEntry { command: "rightleftharpoons", unicode: '\u{21CC}', kind: Relation },
-    SymbolEntry { command: "rvert", unicode: '|', kind: Close },
-    SymbolEntry { command: "searrow", unicode: '\u{2198}', kind: Relation },
-    SymbolEntry { command: "setminus", unicode: '\u{2216}', kind: BinaryOp },
-    SymbolEntry { command: "sharp", unicode: '\u{266F}', kind: Ordinary },
-    SymbolEntry { command: "sigma", unicode: '\u{03C3}', kind: Alphabetic },
-    SymbolEntry { command: "sim", unicode: '\u{223C}', kind: Relation },
-    SymbolEntry { command: "simeq", unicode: '\u{2243}', kind: Relation },
-    SymbolEntry { command: "spadesuit", unicode: '\u{2660}', kind: Ordinary },
-    SymbolEntry { command: "sqcap", unicode: '\u{2293}', kind: BinaryOp },
-    SymbolEntry { command: "sqcup", unicode: '\u{2294}', kind: BinaryOp },
-    SymbolEntry { command: "sqsubseteq", unicode: '\u{2291}', kind: Relation },
-    SymbolEntry { command: "sqsupseteq", unicode: '\u{2292}', kind: Relation },
-    SymbolEntry { command: "square", unicode: '\u{25A1}', kind: Ordinary },
-    SymbolEntry { command: "star", unicode: '\u{22C6}', kind: BinaryOp },
-    SymbolEntry { command: "subset", unicode: '\u{2282}', kind: Relation },
-    SymbolEntry { command: "subseteq", unicode: '\u{2286}', kind: Relation },
-    SymbolEntry { command: "succ", unicode: '\u{227B}', kind: Relation },
-    SymbolEntry { command: "succeq", unicode: '\u{2AB0}', kind: Relation },
-    SymbolEntry { command: "sum", unicode: '\u{2211}', kind: LargeOp },
-    SymbolEntry { command: "supset", unicode: '\u{2283}', kind: Relation },
-    SymbolEntry { command: "supseteq", unicode: '\u{2287}', kind: Relation },
-    SymbolEntry { command: "surd", unicode: '\u{221A}', kind: Ordinary },
-    SymbolEntry { command: "swarrow", unicode: '\u{2199}', kind: Relation },
-    SymbolEntry { command: "tau", unicode: '\u{03C4}', kind: Alphabetic },
-    SymbolEntry { command: "therefore", unicode: '\u{2234}', kind: Relation },
-    SymbolEntry { command: "theta", unicode: '\u{03B8}', kind: Alphabetic },
-    SymbolEntry { command: "times", unicode: '\u{00D7}', kind: BinaryOp },
-    SymbolEntry { command: "to", unicode: '\u{2192}', kind: Relation },
-    SymbolEntry { command: "top", unicode: '\u{22A4}', kind: Ordinary },
-    SymbolEntry { command: "triangle", unicode: '\u{25B3}', kind: Ordinary },
-    SymbolEntry { command: "triangleleft", unicode: '\u{25C1}', kind: BinaryOp },
-    SymbolEntry { command: "triangleright", unicode: '\u{25B7}', kind: BinaryOp },
-    SymbolEntry { command: "uparrow", unicode: '\u{2191}', kind: Relation },
-    SymbolEntry { command: "updownarrow", unicode: '\u{2195}', kind: Relation },
-    SymbolEntry { command: "upsilon", unicode: '\u{03C5}', kind: Alphabetic },
-    SymbolEntry { command: "varepsilon", unicode: '\u{03B5}', kind: Alphabetic },
-    SymbolEntry { command: "varkappa", unicode: '\u{03F0}', kind: Alphabetic },
-    SymbolEntry { command: "varnothing", unicode: '\u{2205}', kind: Ordinary },
-    SymbolEntry { command: "varphi", unicode: '\u{03C6}', kind: Alphabetic },
-    SymbolEntry { command: "varpi", unicode: '\u{03D6}', kind: Alphabetic },
-    SymbolEntry { command: "varrho", unicode: '\u{03F1}', kind: Alphabetic },
-    SymbolEntry { command: "varsigma", unicode: '\u{03C2}', kind: Alphabetic },
-    SymbolEntry { command: "vartheta", unicode: '\u{03D1}', kind: Alphabetic },
-    SymbolEntry { command: "vdash", unicode: '\u{22A2}', kind: Relation },
-    SymbolEntry { command: "vdots", unicode: '\u{22EE}', kind: Ordinary },
-    SymbolEntry { command: "vee", unicode: '\u{2228}', kind: BinaryOp },
-    SymbolEntry { command: "wedge", unicode: '\u{2227}', kind: BinaryOp },
-    SymbolEntry { command: "wp", unicode: '\u{2118}', kind: Ordinary },
-    SymbolEntry { command: "wr", unicode: '\u{2240}', kind: BinaryOp },
-    SymbolEntry { command: "xi", unicode: '\u{03BE}', kind: Alphabetic },
-    SymbolEntry { command: "zeta", unicode: '\u{03B6}', kind: Alphabetic },
-];
 
 /// Look up the LaTeX command for an n-ary operator Unicode character.
 pub fn nary_op_to_latex(ch: char) -> Option<&'static str> {
-    match ch {
-        '\u{2211}' => Some("sum"),
-        '\u{220F}' => Some("prod"),
-        '\u{2210}' => Some("coprod"),
-        '\u{222B}' => Some("int"),
-        '\u{222C}' => Some("iint"),
-        '\u{222D}' => Some("iiint"),
-        '\u{222E}' => Some("oint"),
-        '\u{22C2}' => Some("bigcap"),
-        '\u{22C3}' => Some("bigcup"),
-        '\u{22C0}' => Some("bigwedge"),
-        '\u{22C1}' => Some("bigvee"),
-        '\u{2A00}' => Some("bigodot"),
-        '\u{2A01}' => Some("bigoplus"),
-        '\u{2A02}' => Some("bigotimes"),
-        '\u{2A04}' => Some("biguplus"),
-        '\u{2A06}' => Some("bigsqcup"),
-        _ => None,
-    }
+    NARY_OP_LATEX.get(&ch).copied()
 }
 
 /// Check whether a LaTeX command is an n-ary (large) operator.
 pub fn is_nary_command(command: &str) -> bool {
-    matches!(
-        command,
-        "sum"
-            | "prod"
-            | "coprod"
-            | "int"
-            | "iint"
-            | "iiint"
-            | "oint"
-            | "bigcap"
-            | "bigcup"
-            | "bigwedge"
-            | "bigvee"
-            | "bigodot"
-            | "bigoplus"
-            | "bigotimes"
-            | "biguplus"
-            | "bigsqcup"
-    )
+    NARY_COMMANDS.contains(command)
 }
 
 /// Check whether a LaTeX command is a named operator (like sin, cos, lim).
 pub fn is_operator_command(command: &str) -> bool {
-    matches!(
-        command,
-        "sin"
-            | "cos"
-            | "tan"
-            | "sec"
-            | "csc"
-            | "cot"
-            | "arcsin"
-            | "arccos"
-            | "arctan"
-            | "sinh"
-            | "cosh"
-            | "tanh"
-            | "coth"
-            | "log"
-            | "ln"
-            | "lg"
-            | "exp"
-            | "lim"
-            | "liminf"
-            | "limsup"
-            | "sup"
-            | "inf"
-            | "min"
-            | "max"
-            | "det"
-            | "dim"
-            | "ker"
-            | "hom"
-            | "arg"
-            | "deg"
-            | "gcd"
-            | "lcm"
-            | "sgn"
-            | "Pr"
-            | "Var"
-            | "Cov"
-            | "supp"
-            | "mod"
-    )
+    OPERATOR_COMMANDS.contains(command)
 }
 
 /// Whether a named operator uses limit-style placement by default.
 pub fn operator_has_limits(name: &str) -> bool {
-    matches!(
-        name,
-        "lim" | "liminf" | "limsup" | "sup" | "inf" | "min" | "max" | "det" | "gcd" | "Pr"
-    )
+    LIMIT_OPERATORS.contains(name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn symbols_sorted() {
-        // Verify the table is properly sorted for binary search
-        for window in SYMBOLS.windows(2) {
-            assert!(
-                window[0].command < window[1].command,
-                "SYMBOLS not sorted: {:?} should come before {:?}",
-                window[0].command,
-                window[1].command,
-            );
-        }
-    }
 
     #[test]
     fn greek_lookup() {
@@ -483,15 +650,26 @@ mod tests {
     }
 
     #[test]
-    fn lookup_command_binary_search() {
-        let entry = lookup_command("alpha").unwrap();
-        assert_eq!(entry.unicode, '\u{03B1}');
-        assert_eq!(entry.kind, SymbolKind::Alphabetic);
+    fn lookup_command_returns_tuple() {
+        let (ch, kind) = lookup_command("alpha").unwrap();
+        assert_eq!(ch, '\u{03B1}');
+        assert_eq!(kind, SymbolKind::Alphabetic);
 
-        let entry = lookup_command("sum").unwrap();
-        assert_eq!(entry.unicode, '\u{2211}');
-        assert_eq!(entry.kind, SymbolKind::LargeOp);
+        let (ch, kind) = lookup_command("sum").unwrap();
+        assert_eq!(ch, '\u{2211}');
+        assert_eq!(kind, SymbolKind::LargeOp);
 
         assert!(lookup_command("nonexistent").is_none());
+    }
+
+    #[test]
+    fn duplicate_commands_resolve() {
+        // Both aliases should resolve
+        assert_eq!(latex_to_unicode("le"), latex_to_unicode("leq"));
+        assert_eq!(latex_to_unicode("ge"), latex_to_unicode("geq"));
+        assert_eq!(latex_to_unicode("ne"), latex_to_unicode("neq"));
+        assert_eq!(latex_to_unicode("lnot"), latex_to_unicode("neg"));
+        assert_eq!(latex_to_unicode("dots"), latex_to_unicode("ldots"));
+        assert_eq!(latex_to_unicode("to"), latex_to_unicode("rightarrow"));
     }
 }
