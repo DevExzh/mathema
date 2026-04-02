@@ -454,6 +454,7 @@ dependencies = [
  "nom",
  "proptest",
  "quick-xml",
+ "serde",
  "thiserror",
  "wasm-bindgen",
 ]

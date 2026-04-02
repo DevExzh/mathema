@@ -1,7 +1,7 @@
 use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::unicode::fonts::style_to_latex_font;
-use crate::unicode::symbols::{nary_op_to_latex, unicode_to_latex};
+use crate::unicode::symbols::{is_operator_command, nary_op_to_latex, unicode_to_latex};
 use crate::writer::Writer;
 
 pub struct LatexWriter;
@@ -39,8 +39,14 @@ fn write_node(buf: &mut String, node: &MathNode) {
         MathNode::Identifier(s) => write_identifier(buf, s),
 
         MathNode::Operator(attr) => {
-            buf.push('\\');
-            buf.push_str(&attr.name);
+            if is_operator_command(&attr.name) {
+                buf.push('\\');
+                buf.push_str(&attr.name);
+            } else {
+                buf.push_str("\\operatorname{");
+                buf.push_str(&attr.name);
+                buf.push('}');
+            }
         },
 
         MathNode::Symbol(kind, s) => write_symbol(buf, *kind, s),
@@ -73,6 +79,22 @@ fn write_node(buf: &mut String, node: &MathNode) {
             close,
             content,
         } => {
+            // Detect binom pattern: \left( \frac[NoBar]{n}{k} \right)
+            if open == "(" && close == ")" && content.len() == 1 {
+                if let Some(FencedItem::Element(MathNode::Fraction {
+                    kind: FractionKind::NoBar,
+                    num,
+                    den,
+                })) = content.first()
+                {
+                    buf.push_str("\\binom{");
+                    write_node(buf, num);
+                    buf.push_str("}{");
+                    write_node(buf, den);
+                    buf.push('}');
+                    return;
+                }
+            }
             buf.push_str("\\left");
             write_delim(buf, open);
             buf.push(' ');
@@ -223,13 +245,18 @@ fn write_node(buf: &mut String, node: &MathNode) {
             sub,
             sup,
             body,
-            limits: _,
+            limits,
         } => {
             if let Some(cmd) = nary_op_to_latex(*op) {
                 buf.push('\\');
                 buf.push_str(cmd);
             } else {
                 buf.push(*op);
+            }
+            match limits {
+                LimitStyle::AboveBelow => buf.push_str("\\limits"),
+                LimitStyle::SubSup => buf.push_str("\\nolimits"),
+                LimitStyle::Default => {},
             }
             if let Some(s) = sub {
                 buf.push('_');
@@ -413,10 +440,12 @@ fn write_braced(buf: &mut String, node: &MathNode) {
 }
 
 fn is_simple_token(node: &MathNode) -> bool {
-    matches!(
-        node,
-        MathNode::Number(s) if s.len() == 1
-    ) || matches!(node, MathNode::Identifier(s) if s.len() <= 4) // handles single chars and greek
+    match node {
+        MathNode::Number(s) => s.len() == 1,
+        MathNode::Identifier(s) => s.chars().count() == 1,
+        MathNode::Symbol(_, s) => s.chars().count() == 1 && s.chars().next().map_or(false, |c| c.is_ascii()),
+        _ => false,
+    }
 }
 
 fn is_line_symbol(node: &MathNode) -> bool {

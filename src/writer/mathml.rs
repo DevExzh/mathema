@@ -4,6 +4,7 @@ use std::io::Cursor;
 
 use crate::ast::*;
 use crate::error::{Config, Result};
+use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
 use crate::writer::Writer as MathWriter;
 
 pub struct MathmlWriter;
@@ -64,6 +65,18 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                     elem.push_attribute(("fence", "true"));
                 },
                 _ => {},
+            }
+            // Enrich from operator dictionary
+            if let Some(ch) = s.chars().next() {
+                let form = symbol_kind_to_form(*kind);
+                if let Some(entry) = lookup_operator_any(ch, form) {
+                    if entry.stretchy {
+                        elem.push_attribute(("stretchy", "true"));
+                    }
+                    if entry.form != OperatorForm::Infix {
+                        elem.push_attribute(("form", crate::unicode::operators::form_str(entry.form)));
+                    }
+                }
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             w.write_event(Event::Text(BytesText::new(s)))

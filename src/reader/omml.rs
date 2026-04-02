@@ -78,7 +78,7 @@ impl<'a> OmmlParser<'a> {
                 Ok(Event::Eof) => return Ok(vec![]),
                 Ok(_) => continue,
                 Err(e) => {
-                    return Err(Error::MathmlParse {
+                    return Err(Error::OmmlParse {
                         message: format!("OMML XML error: {e}"),
                     });
                 },
@@ -128,7 +128,7 @@ impl<'a> OmmlParser<'a> {
                 },
                 Ok(Event::Eof) => break,
                 Err(e) => {
-                    return Err(Error::MathmlParse {
+                    return Err(Error::OmmlParse {
                         message: format!("OMML XML error in <{parent_tag}>: {e}"),
                     });
                 },
@@ -289,7 +289,8 @@ impl<'a> OmmlParser<'a> {
     }
 
     fn parse_run_properties(&mut self) -> Result<TextStyle> {
-        let mut style = TextStyle::Normal;
+        let mut sty = "p"; // default: plain
+        let mut scr = "roman"; // default: roman
         let tag = "rPr";
         loop {
             match self.reader.read_event() {
@@ -297,12 +298,24 @@ impl<'a> OmmlParser<'a> {
                     let name = local_name(&e);
                     if name == "sty" {
                         if let Some(val) = get_val_attr(&e) {
-                            style = match val.as_str() {
-                                "p" => TextStyle::Normal,
-                                "i" => TextStyle::Italic,
-                                "b" => TextStyle::Bold,
-                                "bi" => TextStyle::BoldItalic,
-                                _ => TextStyle::Normal,
+                            sty = match val.as_str() {
+                                "p" => "p",
+                                "i" => "i",
+                                "b" => "b",
+                                "bi" => "bi",
+                                _ => "p",
+                            };
+                        }
+                    } else if name == "scr" {
+                        if let Some(val) = get_val_attr(&e) {
+                            scr = match val.as_str() {
+                                "roman" => "roman",
+                                "script" => "script",
+                                "fraktur" => "fraktur",
+                                "double-struck" => "double-struck",
+                                "sans-serif" => "sans-serif",
+                                "monospace" => "monospace",
+                                _ => "roman",
                             };
                         }
                     }
@@ -319,7 +332,7 @@ impl<'a> OmmlParser<'a> {
                 _ => continue,
             }
         }
-        Ok(style)
+        Ok(combine_omml_style(sty, scr))
     }
 
     fn parse_fraction(&mut self) -> Result<MathNode> {
@@ -1244,6 +1257,34 @@ fn classify_op_char(ch: char) -> SymbolKind {
         '|' | '\u{2016}' => SymbolKind::Fence,
         '\u{2211}' | '\u{220F}' | '\u{222B}' => SymbolKind::LargeOp,
         _ => SymbolKind::Ordinary,
+    }
+}
+
+/// Combine OMML `sty` (p/i/b/bi) and `scr` (roman/script/fraktur/...) into a TextStyle.
+fn combine_omml_style(sty: &str, scr: &str) -> TextStyle {
+    match scr {
+        "script" => match sty {
+            "b" | "bi" => TextStyle::BoldScript,
+            _ => TextStyle::Script,
+        },
+        "fraktur" => match sty {
+            "b" | "bi" => TextStyle::BoldFraktur,
+            _ => TextStyle::Fraktur,
+        },
+        "double-struck" => TextStyle::DoubleStruck,
+        "sans-serif" => match sty {
+            "b" => TextStyle::SansSerifBold,
+            "i" => TextStyle::SansSerifItalic,
+            "bi" => TextStyle::SansSerifBoldItalic,
+            _ => TextStyle::SansSerif,
+        },
+        "monospace" => TextStyle::Monospace,
+        _ => match sty {
+            "i" => TextStyle::Italic,
+            "b" => TextStyle::Bold,
+            "bi" => TextStyle::BoldItalic,
+            _ => TextStyle::Normal,
+        },
     }
 }
 

@@ -138,6 +138,26 @@ fn parse_element(input: &str) -> IResult<&str, MathNode> {
         return parse_nary_rest(input, base);
     }
 
+    // Check for \limits/\nolimits after Operator nodes
+    if let MathNode::Operator(ref attr) = base {
+        let (trimmed, _) = ws(input)?;
+        if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\limits")(trimmed) {
+            // Ensure \limits is not followed by more alpha (e.g. \limitset)
+            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
+                let mut new_attr = attr.clone();
+                new_attr.limit_style = LimitStyle::AboveBelow;
+                return parse_scripts(rest, MathNode::Operator(new_attr));
+            }
+        }
+        if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(trimmed) {
+            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
+                let mut new_attr = attr.clone();
+                new_attr.limit_style = LimitStyle::SubSup;
+                return parse_scripts(rest, MathNode::Operator(new_attr));
+            }
+        }
+    }
+
     parse_scripts(input, base)
 }
 
@@ -211,6 +231,28 @@ fn parse_nary_rest(input: &str, op_node: MathNode) -> IResult<&str, MathNode> {
     let op_char = s.chars().next().unwrap_or('\u{2211}');
 
     let (input, _) = ws(input)?;
+
+    // Check for \limits or \nolimits
+    let (input, limit_style) =
+        if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\limits")(input) {
+            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
+                (rest, LimitStyle::AboveBelow)
+            } else {
+                (input, LimitStyle::Default)
+            }
+        } else if let Ok((rest, _)) =
+            tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(input)
+        {
+            if rest.chars().next().map_or(true, |c| !c.is_ascii_alphabetic()) {
+                (rest, LimitStyle::SubSup)
+            } else {
+                (input, LimitStyle::Default)
+            }
+        } else {
+            (input, LimitStyle::Default)
+        };
+
+    let (input, _) = ws(input)?;
     let (input, limits) = parse_optional_limits(input)?;
     let (input, _) = ws(input)?;
 
@@ -225,7 +267,7 @@ fn parse_nary_rest(input: &str, op_node: MathNode) -> IResult<&str, MathNode> {
             sub: limits.0.map(Box::new),
             sup: limits.1.map(Box::new),
             body: Box::new(body),
-            limits: LimitStyle::Default,
+            limits: limit_style,
         },
     ))
 }
@@ -462,6 +504,54 @@ fn dispatch_command<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode
 
         // --- Environments ---
         "begin" => parse_environment(input),
+
+        // --- Overset / Underset ---
+        "overset" => parse_overset(input),
+        "underset" => parse_underset(input),
+        "stackrel" => parse_overset(input),
+
+        // --- Operatorname ---
+        "operatorname" => parse_operatorname(input),
+
+        // --- Additional binomials ---
+        "dbinom" => parse_styled_binom(input, FractionKind::Display),
+        "tbinom" => parse_styled_binom(input, FractionKind::Inline),
+
+        // --- Negation ---
+        "not" => parse_not(input),
+
+        // --- Mod operators ---
+        "bmod" => Ok((
+            input,
+            MathNode::Operator(OperatorAttr {
+                name: "mod".into(),
+                limit_style: LimitStyle::Default,
+            }),
+        )),
+        "pmod" => parse_pmod(input),
+        "pod" => parse_pmod(input),
+
+        // --- Extensible arrows ---
+        "xleftarrow" => parse_extensible_arrow(input, '\u{2190}'),
+        "xrightarrow" => parse_extensible_arrow(input, '\u{2192}'),
+
+        // --- Substack ---
+        "substack" => parse_substack(input),
+
+        // --- Sized delimiters ---
+        "big" | "Big" | "bigg" | "Bigg" | "bigl" | "bigr" | "Bigl" | "Bigr" | "biggl"
+        | "biggr" | "Biggl" | "Biggr" | "bigm" | "Bigm" | "biggm" | "Biggm" => {
+            parse_big_delim(input, name)
+        },
+
+        // --- Style commands (silently consume) ---
+        "displaystyle" | "textstyle" | "scriptstyle" | "scriptscriptstyle" => {
+            Ok((input, MathNode::Row(vec![])))
+        },
+
+        // --- Color (consume color arg, return content) ---
+        "color" => parse_color_discard(input),
+        "textcolor" => parse_textcolor(input),
 
         // --- N-ary operators ---
         name if is_nary_command(name) => {
@@ -728,6 +818,244 @@ fn parse_math_font<'a>(input: &'a str, cmd_name: &str) -> IResult<&'a str, MathN
     }
 }
 
+fn parse_overset(input: &str) -> IResult<&str, MathNode> {
+    let (input, over) = parse_required_group(input)?;
+    let (input, base) = parse_required_group(input)?;
+    Ok((
+        input,
+        MathNode::Overscript {
+            base: Box::new(base),
+            over: Box::new(over),
+            movable_limits: false,
+        },
+    ))
+}
+
+fn parse_underset(input: &str) -> IResult<&str, MathNode> {
+    let (input, under) = parse_required_group(input)?;
+    let (input, base) = parse_required_group(input)?;
+    Ok((
+        input,
+        MathNode::Underscript {
+            base: Box::new(base),
+            under: Box::new(under),
+            movable_limits: false,
+        },
+    ))
+}
+
+fn parse_operatorname(input: &str) -> IResult<&str, MathNode> {
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, name) = take_while1(|c: char| c != '}')(input)
+        .or_else(|_: nom::Err<nom::error::Error<&str>>| Ok((input, "")))?;
+    let (input, _) = char('}')(input)?;
+    Ok((
+        input,
+        MathNode::Operator(OperatorAttr {
+            name: name.to_string(),
+            limit_style: LimitStyle::Default,
+        }),
+    ))
+}
+
+fn parse_styled_binom(input: &str, kind: FractionKind) -> IResult<&str, MathNode> {
+    let (input, top) = parse_required_group(input)?;
+    let (input, bottom) = parse_required_group(input)?;
+    Ok((
+        input,
+        MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![FencedItem::Element(MathNode::Fraction {
+                kind,
+                num: Box::new(top),
+                den: Box::new(bottom),
+            })],
+        },
+    ))
+}
+
+fn parse_not(input: &str) -> IResult<&str, MathNode> {
+    let (input, _) = ws(input)?;
+    // Try direct character negation: \not= \not< \not>
+    if let Some(first) = input.chars().next() {
+        if let Some(negated) = negate_char(first) {
+            let rest = &input[first.len_utf8()..];
+            return Ok((
+                rest,
+                MathNode::Symbol(SymbolKind::Relation, negated.to_string()),
+            ));
+        }
+    }
+    // Try command negation: \not\in, \not\subset, etc.
+    if input.starts_with('\\') {
+        let after_backslash = &input[1..];
+        let cmd_end = after_backslash
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(after_backslash.len());
+        if cmd_end > 0 {
+            let cmd = &after_backslash[..cmd_end];
+            if let Some(unicode) = latex_to_unicode(cmd) {
+                if let Some(negated) = negate_char(unicode) {
+                    let rest = &after_backslash[cmd_end..];
+                    return Ok((
+                        rest,
+                        MathNode::Symbol(SymbolKind::Relation, negated.to_string()),
+                    ));
+                }
+            }
+        }
+    }
+    // Fallback: combining solidus overlay
+    Ok((
+        input,
+        MathNode::Symbol(SymbolKind::Ordinary, "\u{0338}".to_string()),
+    ))
+}
+
+fn negate_char(ch: char) -> Option<char> {
+    match ch {
+        '=' => Some('\u{2260}'),        // ≠
+        '<' => Some('\u{226E}'),        // ≮
+        '>' => Some('\u{226F}'),        // ≯
+        '\u{2208}' => Some('\u{2209}'), // ∉
+        '\u{2282}' => Some('\u{2284}'), // ⊄
+        '\u{2283}' => Some('\u{2285}'), // ⊅
+        '\u{2286}' => Some('\u{2288}'), // ⊈
+        '\u{2287}' => Some('\u{2289}'), // ⊉
+        '\u{2261}' => Some('\u{2262}'), // ≢
+        '\u{223C}' => Some('\u{2241}'), // ≁
+        '\u{2264}' => Some('\u{2270}'), // ≰
+        '\u{2265}' => Some('\u{2271}'), // ≱
+        '\u{227A}' => Some('\u{2280}'), // ⊀
+        '\u{227B}' => Some('\u{2281}'), // ⊁
+        '\u{2203}' => Some('\u{2204}'), // ∄
+        _ => None,
+    }
+}
+
+fn parse_pmod(input: &str) -> IResult<&str, MathNode> {
+    let (input, content) = parse_required_group(input)?;
+    Ok((
+        input,
+        MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![
+                FencedItem::Element(MathNode::Operator(OperatorAttr {
+                    name: "mod".into(),
+                    limit_style: LimitStyle::Default,
+                })),
+                FencedItem::Element(MathNode::Space(Rational::new(5, 18))),
+                FencedItem::Element(content),
+            ],
+        },
+    ))
+}
+
+fn parse_extensible_arrow(input: &str, arrow: char) -> IResult<&str, MathNode> {
+    let (input, _) = ws(input)?;
+    // Optional below: \xrightarrow[below]{above}
+    let (input, below) = opt(delimited(char('['), parse_node_list, char(']')))(input)?;
+    let (input, above) = parse_required_group(input)?;
+
+    let base = MathNode::Symbol(SymbolKind::Relation, arrow.to_string());
+
+    match below {
+        Some(below_nodes) => Ok((
+            input,
+            MathNode::UnderOver {
+                base: Box::new(base),
+                under: Box::new(flatten_row(below_nodes)),
+                over: Box::new(above),
+                movable_limits: false,
+            },
+        )),
+        None => Ok((
+            input,
+            MathNode::Overscript {
+                base: Box::new(base),
+                over: Box::new(above),
+                movable_limits: false,
+            },
+        )),
+    }
+}
+
+fn parse_substack(input: &str) -> IResult<&str, MathNode> {
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, rows) = separated_list0(parse_row_separator, parse_table_cell)(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = char('}')(input)?;
+
+    let table_rows: Vec<Vec<Vec<MathNode>>> = rows.into_iter().map(|cell| vec![cell]).collect();
+    let columns = vec![ColumnAlign::Center];
+
+    Ok((input, MathNode::Array { columns, rows: table_rows }))
+}
+
+fn parse_big_delim<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode> {
+    let factor = match name {
+        "big" | "bigl" | "bigr" | "bigm" => Rational::new(6, 5),
+        "Big" | "Bigl" | "Bigr" | "Bigm" => Rational::new(9, 5),
+        "bigg" | "biggl" | "biggr" | "biggm" => Rational::new(12, 5),
+        "Bigg" | "Biggl" | "Biggr" | "Biggm" => Rational::new(3, 1),
+        _ => Rational::new(6, 5),
+    };
+    let (input, _) = ws(input)?;
+    let (input, delim_node) = parse_big_delim_arg(input)?;
+    Ok((
+        input,
+        MathNode::Scaled {
+            factor,
+            content: Box::new(delim_node),
+        },
+    ))
+}
+
+fn parse_big_delim_arg(input: &str) -> IResult<&str, MathNode> {
+    alt((
+        map(char('('), |_| MathNode::Symbol(SymbolKind::Open, "(".into())),
+        map(char(')'), |_| {
+            MathNode::Symbol(SymbolKind::Close, ")".into())
+        }),
+        map(char('['), |_| MathNode::Symbol(SymbolKind::Open, "[".into())),
+        map(char(']'), |_| {
+            MathNode::Symbol(SymbolKind::Close, "]".into())
+        }),
+        map(char('|'), |_| {
+            MathNode::Symbol(SymbolKind::Fence, "|".into())
+        }),
+        map(char('/'), |_| {
+            MathNode::Symbol(SymbolKind::Ordinary, "/".into())
+        }),
+        parse_command,
+    ))(input)
+}
+
+fn parse_color_discard(input: &str) -> IResult<&str, MathNode> {
+    // \color{name} — consume the color argument, return empty
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, _color) = take_while1(|c: char| c != '}')(input)
+        .or_else(|_: nom::Err<nom::error::Error<&str>>| Ok((input, "")))?;
+    let (input, _) = char('}')(input)?;
+    Ok((input, MathNode::Row(vec![])))
+}
+
+fn parse_textcolor(input: &str) -> IResult<&str, MathNode> {
+    // \textcolor{name}{content} — consume color, return content
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, _color) = take_while1(|c: char| c != '}')(input)
+        .or_else(|_: nom::Err<nom::error::Error<&str>>| Ok((input, "")))?;
+    let (input, _) = char('}')(input)?;
+    let (input, content) = parse_required_group(input)?;
+    Ok((input, content))
+}
+
 // ---------------------------------------------------------------------------
 // Environments
 // ---------------------------------------------------------------------------
@@ -745,6 +1073,10 @@ fn parse_environment(input: &str) -> IResult<&str, MathNode> {
         },
         "cases" => parse_cases_env(input),
         "aligned" | "align" | "align*" => parse_align_env(input, env_name),
+        "gather" | "gather*" => parse_gather_env(input, env_name),
+        "equation" | "equation*" => parse_equation_env(input, env_name),
+        "multline" | "multline*" => parse_multline_env(input, env_name),
+        "split" => parse_align_env(input, env_name),
         _ => {
             // Unknown environment - try to parse as generic array
             parse_array_env(input, env_name)
@@ -839,6 +1171,51 @@ fn parse_align_env<'a>(input: &'a str, env_name: &str) -> IResult<&'a str, MathN
     let (input, _) = char('}')(input)?;
 
     let columns = vec![ColumnAlign::Right, ColumnAlign::Left];
+    Ok((input, MathNode::Array { columns, rows }))
+}
+
+fn parse_gather_env<'a>(input: &'a str, env_name: &str) -> IResult<&'a str, MathNode> {
+    let (input, rows) = parse_table_body(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = tag("\\end")(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, _) = tag(env_name)(input)?;
+    let (input, _) = char('}')(input)?;
+
+    let columns = vec![ColumnAlign::Center];
+    Ok((input, MathNode::Array { columns, rows }))
+}
+
+fn parse_equation_env<'a>(input: &'a str, env_name: &str) -> IResult<&'a str, MathNode> {
+    // equation environment: parse content (stopping at \end), strip the wrapper
+    let (input, nodes) = many0(preceded(|i| ws(i), parse_cell_element))(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = tag("\\end")(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, _) = tag(env_name)(input)?;
+    let (input, _) = char('}')(input)?;
+
+    Ok((input, flatten_row(nodes)))
+}
+
+fn parse_multline_env<'a>(input: &'a str, env_name: &str) -> IResult<&'a str, MathNode> {
+    let (input, rows) = parse_table_body(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = tag("\\end")(input)?;
+    let (input, _) = ws(input)?;
+    let (input, _) = char('{')(input)?;
+    let (input, _) = tag(env_name)(input)?;
+    let (input, _) = char('}')(input)?;
+
+    // First row left, last row right, middle centered
+    let num_rows = rows.len();
+    let columns: Vec<ColumnAlign> = if num_rows <= 1 {
+        vec![ColumnAlign::Center]
+    } else {
+        vec![ColumnAlign::Left] // simplified: single column, left-aligned
+    };
     Ok((input, MathNode::Array { columns, rows }))
 }
 
@@ -1077,5 +1454,163 @@ mod tests {
         assert!(result.is_ok());
         let nodes = result.unwrap().expr.nodes;
         assert!(nodes.len() >= 3); // x, =, fraction
+    }
+
+    // === Phase B: New command tests ===
+
+    #[test]
+    fn operatorname() {
+        let node = parse_one("\\operatorname{Tr}");
+        if let MathNode::Operator(attr) = &node {
+            assert_eq!(attr.name, "Tr");
+        } else {
+            panic!("expected Operator, got {node:?}");
+        }
+    }
+
+    #[test]
+    fn overset() {
+        let node = parse_one("\\overset{\\sim}{=}");
+        assert!(matches!(node, MathNode::Overscript { .. }));
+    }
+
+    #[test]
+    fn underset() {
+        let node = parse_one("\\underset{n}{\\max}");
+        assert!(matches!(node, MathNode::Underscript { .. }));
+    }
+
+    #[test]
+    fn stackrel() {
+        let node = parse_one("\\stackrel{\\text{def}}{=}");
+        assert!(matches!(node, MathNode::Overscript { .. }));
+    }
+
+    #[test]
+    fn not_equals() {
+        let nodes = parse("\\not=");
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(&nodes[0], MathNode::Symbol(SymbolKind::Relation, s) if s == "\u{2260}"));
+    }
+
+    #[test]
+    fn not_in() {
+        let nodes = parse("\\not\\in");
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(&nodes[0], MathNode::Symbol(SymbolKind::Relation, s) if s == "\u{2209}"));
+    }
+
+    #[test]
+    fn sum_limits() {
+        let nodes = parse("\\sum\\limits_{i=0}^{n} a");
+        assert_eq!(nodes.len(), 1);
+        if let MathNode::Nary { limits, .. } = &nodes[0] {
+            assert_eq!(*limits, LimitStyle::AboveBelow);
+        } else {
+            panic!("expected Nary");
+        }
+    }
+
+    #[test]
+    fn sum_nolimits() {
+        let nodes = parse("\\sum\\nolimits_{i=0}^{n} a");
+        assert_eq!(nodes.len(), 1);
+        if let MathNode::Nary { limits, .. } = &nodes[0] {
+            assert_eq!(*limits, LimitStyle::SubSup);
+        } else {
+            panic!("expected Nary");
+        }
+    }
+
+    #[test]
+    fn lim_limits() {
+        let nodes = parse("\\lim\\limits_{x \\to 0}");
+        // \lim is an Operator; with \limits it gets AboveBelow, then scripts attach
+        assert!(!nodes.is_empty());
+    }
+
+    #[test]
+    fn big_paren() {
+        let node = parse_one("\\big(");
+        assert!(matches!(node, MathNode::Scaled { .. }));
+    }
+
+    #[test]
+    fn bigg_bracket() {
+        let node = parse_one("\\Bigg[");
+        if let MathNode::Scaled { factor, .. } = &node {
+            assert_eq!(*factor, Rational::new(3, 1));
+        } else {
+            panic!("expected Scaled");
+        }
+    }
+
+    #[test]
+    fn pmod() {
+        let node = parse_one("\\pmod{n}");
+        assert!(matches!(node, MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn bmod() {
+        let node = parse_one("\\bmod");
+        assert!(matches!(node, MathNode::Operator(_)));
+    }
+
+    #[test]
+    fn dbinom() {
+        let node = parse_one("\\dbinom{n}{k}");
+        assert!(matches!(node, MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn xrightarrow() {
+        let node = parse_one("\\xrightarrow{f}");
+        assert!(matches!(node, MathNode::Overscript { .. }));
+    }
+
+    #[test]
+    fn xrightarrow_with_below() {
+        let node = parse_one("\\xrightarrow[g]{f}");
+        assert!(matches!(node, MathNode::UnderOver { .. }));
+    }
+
+    #[test]
+    fn substack() {
+        let node = parse_one("\\substack{i < n \\\\ j > 0}");
+        assert!(matches!(node, MathNode::Array { .. }));
+    }
+
+    #[test]
+    fn color_ignored() {
+        let nodes = parse("\\color{red} x");
+        // \color{red} produces an empty Row, then x
+        assert!(nodes.len() >= 1);
+    }
+
+    #[test]
+    fn textcolor() {
+        let node = parse_one("\\textcolor{blue}{x}");
+        assert!(matches!(node, MathNode::Identifier(_)));
+    }
+
+    #[test]
+    fn displaystyle_ignored() {
+        let nodes = parse("\\displaystyle x");
+        // \displaystyle produces an empty Row, then x
+        assert!(nodes.len() >= 1);
+    }
+
+    #[test]
+    fn gather_env() {
+        let node = parse_one("\\begin{gather} a \\\\ b \\end{gather}");
+        assert!(matches!(node, MathNode::Array { .. }));
+    }
+
+    #[test]
+    fn equation_env() {
+        let node = parse_one("\\begin{equation} x = 1 \\end{equation}");
+        // equation env returns its content directly
+        assert!(!matches!(node, MathNode::Array { .. }));
     }
 }

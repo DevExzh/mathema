@@ -371,15 +371,16 @@ fn parse_number(input: &str) -> IResult<&str, MathNode> {
 fn parse_operator_word(input: &str) -> IResult<&str, MathNode> {
     // Common operator names
     let ops = [
-        "sin", "cos", "tan", "sec", "csc", "cot", "sinh", "cosh", "tanh",
-        "arcsin", "arccos", "arctan", "log", "ln", "exp", "lim", "sup",
-        "inf", "max", "min", "det", "dim", "ker", "hom", "deg", "gcd",
+        "sin", "cos", "tan", "sec", "csc", "cot", "sinh", "cosh", "tanh", "coth",
+        "arcsin", "arccos", "arctan", "log", "ln", "lg", "exp", "lim", "liminf",
+        "limsup", "sup", "inf", "max", "min", "det", "dim", "ker", "hom", "arg",
+        "deg", "gcd", "lcm", "sgn", "Pr", "Var", "Cov", "supp", "mod",
     ];
     for op in &ops {
         if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>(*op)(input) {
             // Make sure it's not followed by an alphanumeric char
             if rest.chars().next().map_or(true, |c| !c.is_alphanumeric()) {
-                let has_limits = matches!(*op, "lim" | "sup" | "inf" | "max" | "min");
+                let has_limits = matches!(*op, "lim" | "liminf" | "limsup" | "sup" | "inf" | "max" | "min");
                 return Ok((
                     rest,
                     MathNode::Operator(OperatorAttr {

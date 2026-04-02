@@ -1,15 +1,18 @@
+pub mod normalize;
 pub mod visit;
 
 use std::fmt;
 
 /// A complete math expression with display mode.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MathExpr {
     pub nodes: Vec<MathNode>,
     pub display: DisplayStyle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DisplayStyle {
     Block,
     Inline,
@@ -23,6 +26,7 @@ impl Default for DisplayStyle {
 
 /// The core math AST node. 26 variants covering the union of all target formats.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MathNode {
     // === Leaf nodes ===
     /// Numeric literal: "3.14", "42"
@@ -153,6 +157,7 @@ pub enum MathNode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SymbolKind {
     Ordinary,
     LargeOp,
@@ -166,6 +171,7 @@ pub enum SymbolKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextStyle {
     Normal,
     Bold,
@@ -184,6 +190,7 @@ pub enum TextStyle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FractionKind {
     Normal,
     Display,
@@ -193,6 +200,7 @@ pub enum FractionKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColumnAlign {
     Left,
     Center,
@@ -200,12 +208,14 @@ pub enum ColumnAlign {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AccentPosition {
     Above,
     Below,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StrokeKind {
     Forward,
     Backward,
@@ -215,6 +225,7 @@ pub enum StrokeKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LimitStyle {
     /// Context-dependent (display vs inline)
     Default,
@@ -225,12 +236,14 @@ pub enum LimitStyle {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FencedItem {
     Element(MathNode),
     Middle(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OperatorAttr {
     pub name: String,
     pub limit_style: LimitStyle,
@@ -239,6 +252,7 @@ pub struct OperatorAttr {
 /// Exact rational number for spacing (avoids floating-point imprecision).
 /// Invariant: `den` must be non-zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rational {
     pub num: i32,
     pub den: u32,

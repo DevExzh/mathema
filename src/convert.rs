@@ -26,7 +26,8 @@ pub fn convert(input: &str, from: Format, to: Format) -> Result<String> {
 
 /// Conversion with custom configuration.
 pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> Result<String> {
-    let parsed = parse(input, from, config)?;
+    let mut parsed = parse(input, from, config)?;
+    crate::ast::normalize::normalize_expr(&mut parsed.expr);
     write(&parsed.expr, to, config)
 }
 

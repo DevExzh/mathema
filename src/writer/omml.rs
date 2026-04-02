@@ -355,21 +355,14 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
         MathNode::Scaled { content, .. } => write_node(w, content),
 
         MathNode::Styled(style, children) => {
-            let sty = match style {
-                TextStyle::Normal => "p",
-                TextStyle::Bold => "b",
-                TextStyle::Italic => "i",
-                TextStyle::BoldItalic => "bi",
-                _ => "p",
-            };
-            // Wrap each child run with the style
+            let (sty, scr) = decompose_style(*style);
             for child in children {
                 match child {
                     MathNode::Identifier(s) | MathNode::Number(s) => {
-                        write_run(w, s, Some(sty))?;
+                        write_styled_run(w, s, sty, scr)?;
                     },
                     MathNode::Text(_, s) => {
-                        write_run(w, s, Some(sty))?;
+                        write_styled_run(w, s, sty, scr)?;
                     },
                     _ => write_node(w, child)?,
                 }
@@ -409,6 +402,42 @@ fn write_run(w: &mut XmlW, text: &str, style: Option<&str>) -> Result<()> {
         .map_err(io_err)?;
     end(w, "m:t")?;
     end(w, "m:r")
+}
+
+/// Write a run with both sty and optional scr attributes.
+fn write_styled_run(w: &mut XmlW, text: &str, sty: &str, scr: Option<&str>) -> Result<()> {
+    start(w, "m:r")?;
+    start(w, "m:rPr")?;
+    write_val_elem(w, "m:sty", sty)?;
+    if let Some(s) = scr {
+        write_val_elem(w, "m:scr", s)?;
+    }
+    end(w, "m:rPr")?;
+    start(w, "m:t")?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(io_err)?;
+    end(w, "m:t")?;
+    end(w, "m:r")
+}
+
+/// Decompose a TextStyle into OMML (sty, scr) pair.
+fn decompose_style(style: TextStyle) -> (&'static str, Option<&'static str>) {
+    match style {
+        TextStyle::Normal => ("p", None),
+        TextStyle::Bold => ("b", None),
+        TextStyle::Italic => ("i", None),
+        TextStyle::BoldItalic => ("bi", None),
+        TextStyle::Script => ("p", Some("script")),
+        TextStyle::BoldScript => ("b", Some("script")),
+        TextStyle::Fraktur => ("p", Some("fraktur")),
+        TextStyle::BoldFraktur => ("b", Some("fraktur")),
+        TextStyle::DoubleStruck => ("p", Some("double-struck")),
+        TextStyle::SansSerif => ("p", Some("sans-serif")),
+        TextStyle::SansSerifBold => ("b", Some("sans-serif")),
+        TextStyle::SansSerifItalic => ("i", Some("sans-serif")),
+        TextStyle::SansSerifBoldItalic => ("bi", Some("sans-serif")),
+        TextStyle::Monospace => ("p", Some("monospace")),
+    }
 }
 
 fn write_e(w: &mut XmlW, node: &MathNode) -> Result<()> {
