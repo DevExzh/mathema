@@ -1206,7 +1206,7 @@ fn classify_run_text_styled(text: &str, style: TextStyle) -> MathNode {
     }
     // Single character
     if text.chars().count() == 1 {
-        let ch = text.chars().next().unwrap();
+        let ch = text.chars().next().expect("count is 1");
         return match classify_omml_char(ch) {
             CharClass::Letter => {
                 if style != TextStyle::Normal && style != TextStyle::Italic {

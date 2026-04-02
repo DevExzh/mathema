@@ -11,7 +11,7 @@ pub struct MathExpr {
     pub display: DisplayStyle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DisplayStyle {
     Block,
@@ -151,7 +151,7 @@ pub enum MathNode {
     Styled(TextStyle, Vec<MathNode>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SymbolKind {
     Ordinary,
@@ -165,7 +165,7 @@ pub enum SymbolKind {
     Alphabetic,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextStyle {
     Normal,
@@ -184,7 +184,7 @@ pub enum TextStyle {
     BoldFraktur,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FractionKind {
     Normal,
@@ -194,7 +194,7 @@ pub enum FractionKind {
     Skewed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColumnAlign {
     Left,
@@ -202,14 +202,14 @@ pub enum ColumnAlign {
     Right,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AccentPosition {
     Above,
     Below,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StrokeKind {
     Forward,
@@ -219,7 +219,7 @@ pub enum StrokeKind {
     Vertical,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LimitStyle {
     /// Context-dependent (display vs inline)
@@ -246,7 +246,7 @@ pub struct OperatorAttr {
 
 /// Exact rational number for spacing (avoids floating-point imprecision).
 /// Invariant: `den` must be non-zero.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rational {
     pub num: i32,
@@ -254,19 +254,23 @@ pub struct Rational {
 }
 
 impl Rational {
+    #[must_use]
     pub fn new(num: i32, den: u32) -> Self {
         assert!(den > 0, "Rational denominator must be non-zero");
         Self { num, den }
     }
 
+    #[must_use]
     pub fn zero() -> Self {
         Self { num: 0, den: 1 }
     }
 
+    #[must_use]
     pub fn one() -> Self {
         Self { num: 1, den: 1 }
     }
 
+    #[must_use]
     pub fn as_f64(self) -> f64 {
         self.num as f64 / self.den as f64
     }
@@ -283,10 +287,12 @@ impl fmt::Display for Rational {
 }
 
 impl MathExpr {
+    #[must_use]
     pub fn new(nodes: Vec<MathNode>, display: DisplayStyle) -> Self {
         Self { nodes, display }
     }
 
+    #[must_use]
     pub fn inline(nodes: Vec<MathNode>) -> Self {
         Self {
             nodes,
@@ -294,11 +300,132 @@ impl MathExpr {
         }
     }
 
+    #[must_use]
     pub fn block(nodes: Vec<MathNode>) -> Self {
         Self {
             nodes,
             display: DisplayStyle::Block,
         }
+    }
+}
+
+/// Maximum allowed AST nesting depth for safe recursive traversal.
+pub const MAX_AST_DEPTH: usize = 128;
+
+/// Validate that AST nesting does not exceed the maximum depth.
+/// Call before any recursive AST traversal (writing, rendering, normalization)
+/// to prevent stack overflow on maliciously deep or programmatically-constructed trees.
+pub fn validate_ast_depth(expr: &MathExpr) -> crate::error::Result<()> {
+    for node in &expr.nodes {
+        check_node_depth(node, 0)?;
+    }
+    Ok(())
+}
+
+fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
+    if depth > MAX_AST_DEPTH {
+        return Err(crate::error::Error::Unsupported(format!(
+            "AST nesting exceeds maximum depth of {MAX_AST_DEPTH}"
+        )));
+    }
+    let d = depth + 1;
+    match node {
+        MathNode::Number(_)
+        | MathNode::Identifier(_)
+        | MathNode::Operator(_)
+        | MathNode::Symbol(_, _)
+        | MathNode::Text(_, _)
+        | MathNode::Space(_) => Ok(()),
+
+        MathNode::Row(children) | MathNode::Styled(_, children) => {
+            for child in children {
+                check_node_depth(child, d)?;
+            }
+            Ok(())
+        },
+        MathNode::Fenced { content, .. } => {
+            for item in content {
+                if let FencedItem::Element(n) = item {
+                    check_node_depth(n, d)?;
+                }
+            }
+            Ok(())
+        },
+        MathNode::Subscript { base, sub } => {
+            check_node_depth(base, d)?;
+            check_node_depth(sub, d)
+        },
+        MathNode::Superscript { base, sup } => {
+            check_node_depth(base, d)?;
+            check_node_depth(sup, d)
+        },
+        MathNode::SubSup { base, sub, sup } => {
+            check_node_depth(base, d)?;
+            check_node_depth(sub, d)?;
+            check_node_depth(sup, d)
+        },
+        MathNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            check_node_depth(base, d)?;
+            if let Some(s) = pre_sub {
+                check_node_depth(s, d)?;
+            }
+            if let Some(s) = pre_sup {
+                check_node_depth(s, d)?;
+            }
+            Ok(())
+        },
+        MathNode::Overscript { base, over, .. } => {
+            check_node_depth(base, d)?;
+            check_node_depth(over, d)
+        },
+        MathNode::Underscript { base, under, .. } => {
+            check_node_depth(base, d)?;
+            check_node_depth(under, d)
+        },
+        MathNode::UnderOver {
+            base, under, over, ..
+        } => {
+            check_node_depth(base, d)?;
+            check_node_depth(under, d)?;
+            check_node_depth(over, d)
+        },
+        MathNode::Fraction { num, den, .. } => {
+            check_node_depth(num, d)?;
+            check_node_depth(den, d)
+        },
+        MathNode::Sqrt(inner) => check_node_depth(inner, d),
+        MathNode::Root { index, radicand } => {
+            check_node_depth(index, d)?;
+            check_node_depth(radicand, d)
+        },
+        MathNode::Nary { sub, sup, body, .. } => {
+            if let Some(s) = sub {
+                check_node_depth(s, d)?;
+            }
+            if let Some(s) = sup {
+                check_node_depth(s, d)?;
+            }
+            check_node_depth(body, d)
+        },
+        MathNode::Accent { base, .. } => check_node_depth(base, d),
+        MathNode::Array { rows, .. } => {
+            for row in rows {
+                for cell in row {
+                    for n in cell {
+                        check_node_depth(n, d)?;
+                    }
+                }
+            }
+            Ok(())
+        },
+        MathNode::Phantom(inner) | MathNode::Boxed(inner) => check_node_depth(inner, d),
+        MathNode::Cancel { content, .. } | MathNode::Scaled { content, .. } => {
+            check_node_depth(content, d)
+        },
     }
 }
 
@@ -324,7 +451,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "non-zero")]
     fn rational_zero_den() {
-        Rational::new(1, 0);
+        let _ = Rational::new(1, 0);
     }
 
     #[test]

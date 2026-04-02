@@ -24,6 +24,7 @@ impl GlyphMetrics {
     }
 
     /// Total vertical extent (height + depth).
+    #[must_use]
     pub fn total_height(self) -> f64 {
         self.height + self.depth
     }

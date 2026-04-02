@@ -509,35 +509,41 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
 
 fn flatten(mut nodes: Vec<MathNode>) -> MathNode {
     if nodes.len() == 1 {
-        nodes.remove(0)
+        // pop() is O(1) vs remove(0) which is O(n)
+        nodes.pop().expect("len is 1")
     } else {
         MathNode::Row(nodes)
     }
 }
 
 fn two_children(mut children: Vec<MathNode>) -> Result<(MathNode, MathNode)> {
-    if children.len() < 2 {
-        while children.len() < 2 {
-            children.push(MathNode::Row(vec![]));
-        }
+    while children.len() < 2 {
+        children.push(MathNode::Row(vec![]));
     }
-    let mut it = children.into_iter();
-    Ok((it.next().unwrap(), it.next().unwrap()))
+    let mut drain = children.drain(..2);
+    // Safety: padded to >= 2 elements above
+    let first = drain.next().expect("padded to >= 2");
+    let second = drain.next().expect("padded to >= 2");
+    Ok((first, second))
 }
 
 fn three_children(mut children: Vec<MathNode>) -> Result<(MathNode, MathNode, MathNode)> {
     while children.len() < 3 {
         children.push(MathNode::Row(vec![]));
     }
-    let mut it = children.into_iter();
-    Ok((it.next().unwrap(), it.next().unwrap(), it.next().unwrap()))
+    let mut drain = children.drain(..3);
+    // Safety: padded to >= 3 elements above
+    let first = drain.next().expect("padded to >= 3");
+    let second = drain.next().expect("padded to >= 3");
+    let third = drain.next().expect("padded to >= 3");
+    Ok((first, second, third))
 }
 
 fn classify_text(text: &str) -> MathNode {
     let trimmed = text.trim();
     if trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') && !trimmed.is_empty() {
         MathNode::Number(trimmed.to_string())
-    } else if trimmed.len() == 1 && trimmed.chars().next().unwrap().is_alphabetic() {
+    } else if trimmed.len() == 1 && trimmed.starts_with(|c: char| c.is_alphabetic()) {
         MathNode::Identifier(trimmed.to_string())
     } else {
         MathNode::Text(TextStyle::Normal, trimmed.to_string())
@@ -562,15 +568,13 @@ fn classify_mo(text: &str) -> SymbolKind {
     }
 }
 
+// All individual chars (0302–0308) are within the 0300–036F range,
+// so the range check alone is sufficient.
 fn is_combining_accent(ch: char) -> bool {
     matches!(
         ch,
         '\u{0300}'..='\u{036F}' | '\u{20D0}'..='\u{20FF}'
-    ) || ch == '\u{0302}'
-        || ch == '\u{0303}'
-        || ch == '\u{0304}'
-        || ch == '\u{0307}'
-        || ch == '\u{0308}'
+    )
 }
 
 fn parse_em_width(s: &str) -> Rational {

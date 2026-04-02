@@ -152,15 +152,20 @@ fn parse_group(input: &str) -> IResult<&str, MathNode> {
     alt((parse_paren_group, parse_bracket_group, parse_brace_group))(input)
 }
 
+/// Flatten a single-element Vec into its element, or wrap in Row.
+fn flatten_single(mut nodes: Vec<MathNode>) -> MathNode {
+    if nodes.len() == 1 {
+        nodes.pop().expect("len is 1")
+    } else {
+        MathNode::Row(nodes)
+    }
+}
+
 fn parse_paren_group(input: &str) -> IResult<&str, MathNode> {
     let (input, _) = nom_char('(')(input)?;
     let (input, children) = many0(parse_element)(input)?;
     let (input, _) = nom_char(')')(input)?;
-    let content = if children.len() == 1 {
-        children.into_iter().next().unwrap()
-    } else {
-        MathNode::Row(children)
-    };
+    let content = flatten_single(children);
     Ok((
         input,
         MathNode::Fenced {
@@ -175,11 +180,7 @@ fn parse_bracket_group(input: &str) -> IResult<&str, MathNode> {
     let (input, _) = nom_char('[')(input)?;
     let (input, children) = many0(parse_non_bracket_element)(input)?;
     let (input, _) = nom_char(']')(input)?;
-    let content = if children.len() == 1 {
-        children.into_iter().next().unwrap()
-    } else {
-        MathNode::Row(children)
-    };
+    let content = flatten_single(children);
     Ok((
         input,
         MathNode::Fenced {
@@ -205,11 +206,7 @@ fn parse_brace_group(input: &str) -> IResult<&str, MathNode> {
     let (input, _) = nom_char('{')(input)?;
     let (input, children) = many0(parse_non_brace_element)(input)?;
     let (input, _) = nom_char('}')(input)?;
-    let content = if children.len() == 1 {
-        children.into_iter().next().unwrap()
-    } else {
-        MathNode::Row(children)
-    };
+    let content = flatten_single(children);
     Ok((
         input,
         MathNode::Fenced {

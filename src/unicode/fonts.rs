@@ -134,6 +134,10 @@ fn script_offset(ch: char) -> Option<u32> {
         'M' => Some(0x2133),
         'R' => Some(0x211B),
         'A'..='Z' => Some(0x1D49C + (ch as u32 - b'A' as u32)),
+        // Lowercase letters with dedicated codepoints (SMP slots are unassigned)
+        'e' => Some(0x212F),
+        'g' => Some(0x210A),
+        'o' => Some(0x2134),
         'a'..='z' => Some(0x1D4B6 + (ch as u32 - b'a' as u32)),
         _ => None,
     }

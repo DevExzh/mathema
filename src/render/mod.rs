@@ -36,6 +36,7 @@ impl Default for RenderOptions {
 
 impl RenderOptions {
     /// Resolve whether display mode is active, considering expr metadata.
+    #[must_use]
     pub fn is_display(&self, expr: &MathExpr) -> bool {
         self.display_mode
             .unwrap_or(expr.display == DisplayStyle::Block)
@@ -44,6 +45,7 @@ impl RenderOptions {
 
 /// Render a math expression to an SVG string.
 pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String> {
+    crate::ast::validate_ast_depth(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {

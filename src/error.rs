@@ -1,7 +1,7 @@
 use crate::ast::{DisplayStyle, MathExpr};
 
 /// Position span in source input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -40,7 +40,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DiagnosticKind {
     Warning,
     Info,
@@ -72,6 +72,7 @@ impl ParseResult {
         Self { expr, diagnostics }
     }
 
+    #[must_use]
     pub fn has_warnings(&self) -> bool {
         self.diagnostics
             .iter()
@@ -80,7 +81,7 @@ impl ParseResult {
 }
 
 /// Strictness mode for parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Strictness {
     /// Reject malformed input immediately with a detailed error.
     #[default]
@@ -90,7 +91,9 @@ pub enum Strictness {
 }
 
 /// Configuration for readers and writers.
-#[derive(Debug, Clone)]
+// Both fields are `Copy`, so deriving `Copy` avoids unnecessary `.clone()` calls
+// across all `from_*_with` conversion functions.
+#[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub strictness: Strictness,
     pub display: DisplayStyle,
@@ -106,7 +109,7 @@ impl Default for Config {
 }
 
 /// Supported formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Format {
     LaTeX,
     MathML,

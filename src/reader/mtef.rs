@@ -82,30 +82,33 @@ impl MtefReader {
     }
 }
 
+/// Decode hex string to bytes, skipping whitespace.
+/// Avoids intermediate Vec<char> allocation by working with ASCII bytes directly.
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
     if s.is_empty() {
         return Ok(vec![]);
     }
-    let chars: Vec<char> = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if !chars.len().is_multiple_of(2) {
+    // All valid hex chars are ASCII, so byte iteration is safe
+    let hex_bytes: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if !hex_bytes.len().is_multiple_of(2) {
         return Err(Error::Unsupported("MTEF hex string has odd length".into()));
     }
-    let mut out = Vec::with_capacity(chars.len() / 2);
-    for chunk in chars.chunks(2) {
-        let hi = hex_val(chunk[0])?;
-        let lo = hex_val(chunk[1])?;
+    let mut out = Vec::with_capacity(hex_bytes.len() / 2);
+    for pair in hex_bytes.chunks_exact(2) {
+        let hi = hex_val_byte(pair[0])?;
+        let lo = hex_val_byte(pair[1])?;
         out.push((hi << 4) | lo);
     }
     Ok(out)
 }
 
-fn hex_val(c: char) -> Result<u8> {
-    match c {
-        '0'..='9' => Ok(c as u8 - b'0'),
-        'a'..='f' => Ok(c as u8 - b'a' + 10),
-        'A'..='F' => Ok(c as u8 - b'A' + 10),
-        _ => Err(Error::Unsupported(format!("invalid hex char: {c}"))),
+fn hex_val_byte(b: u8) -> Result<u8> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(b - b'a' + 10),
+        b'A'..=b'F' => Ok(b - b'A' + 10),
+        _ => Err(Error::Unsupported(format!("invalid hex char: {}", b as char))),
     }
 }
 
@@ -722,10 +725,10 @@ impl<'a> MtefParser<'a> {
     }
 }
 
-fn wrap_nodes(nodes: Vec<MathNode>) -> MathNode {
+fn wrap_nodes(mut nodes: Vec<MathNode>) -> MathNode {
     match nodes.len() {
         0 => MathNode::Row(vec![]),
-        1 => nodes.into_iter().next().unwrap(),
+        1 => nodes.pop().expect("len is 1"),
         _ => MathNode::Row(nodes),
     }
 }

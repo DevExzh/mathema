@@ -17,6 +17,15 @@ pub enum AtomType {
 
 /// Classify a MathNode into its atom type for spacing purposes.
 pub fn classify_node(node: &MathNode) -> AtomType {
+    classify_node_depth(node, 0)
+}
+
+/// Depth-limited classification to prevent stack overflow on malicious ASTs.
+fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
+    // Bail to safe default if recursion is too deep
+    if depth > crate::ast::MAX_AST_DEPTH {
+        return AtomType::Ord;
+    }
     match node {
         MathNode::Number(_) => AtomType::Ord,
         MathNode::Identifier(_) => AtomType::Ord,
@@ -29,7 +38,7 @@ pub fn classify_node(node: &MathNode) -> AtomType {
             SymbolKind::Open => AtomType::Open,
             SymbolKind::Close => AtomType::Close,
             SymbolKind::Punctuation => AtomType::Punct,
-            SymbolKind::Fence => AtomType::Open, // treat as open by default
+            SymbolKind::Fence => AtomType::Open,
         },
         MathNode::Text(..) => AtomType::Ord,
         MathNode::Space(_) => AtomType::Ord,
@@ -41,19 +50,19 @@ pub fn classify_node(node: &MathNode) -> AtomType {
         MathNode::Subscript { base, .. }
         | MathNode::Superscript { base, .. }
         | MathNode::SubSup { base, .. }
-        | MathNode::PreScripts { base, .. } => classify_node(base),
+        | MathNode::PreScripts { base, .. } => classify_node_depth(base, depth + 1),
         MathNode::Overscript { base, .. }
         | MathNode::Underscript { base, .. }
-        | MathNode::UnderOver { base, .. } => classify_node(base),
-        MathNode::Accent { base, .. } => classify_node(base),
+        | MathNode::UnderOver { base, .. } => classify_node_depth(base, depth + 1),
+        MathNode::Accent { base, .. } => classify_node_depth(base, depth + 1),
         MathNode::Array { .. } => AtomType::Inner,
         MathNode::Phantom(_) => AtomType::Ord,
         MathNode::Boxed(_) => AtomType::Inner,
-        MathNode::Cancel { content, .. } => classify_node(content),
-        MathNode::Scaled { content, .. } => classify_node(content),
+        MathNode::Cancel { content, .. } => classify_node_depth(content, depth + 1),
+        MathNode::Scaled { content, .. } => classify_node_depth(content, depth + 1),
         MathNode::Styled(_, children) => {
             if let Some(first) = children.first() {
-                classify_node(first)
+                classify_node_depth(first, depth + 1)
             } else {
                 AtomType::Ord
             }

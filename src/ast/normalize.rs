@@ -8,13 +8,13 @@ use crate::ast::*;
 /// 3. Merge adjacent Text nodes with the same style
 /// 4. Remove empty Rows from node lists
 pub fn normalize_expr(expr: &mut MathExpr) {
-    normalize_nodes(&mut expr.nodes);
+    normalize_nodes_depth(&mut expr.nodes, 0);
 }
 
-fn normalize_nodes(nodes: &mut Vec<MathNode>) {
+fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
     // Phase 1: recursively normalize each child
     for node in nodes.iter_mut() {
-        normalize_node_recursive(node);
+        normalize_node_depth(node, depth);
     }
 
     // Phase 2: flatten Row children into the parent list
@@ -48,112 +48,118 @@ fn normalize_nodes(nodes: &mut Vec<MathNode>) {
     *nodes = merged;
 }
 
-fn normalize_node_recursive(node: &mut MathNode) {
+fn normalize_node_depth(node: &mut MathNode, depth: usize) {
+    // Stop recursing if AST is pathologically deep
+    if depth > super::MAX_AST_DEPTH {
+        return;
+    }
+    let d = depth + 1;
     match node {
         MathNode::Row(children) => {
-            normalize_nodes(children);
+            normalize_nodes_depth(children, d);
             // Unwrap single-child Row
             if children.len() == 1 {
-                *node = children.pop().unwrap();
+                // Safety: len checked to be exactly 1
+                *node = children.pop().expect("len is 1");
             }
         },
 
         MathNode::Fenced { content, .. } => {
             for item in content.iter_mut() {
                 if let FencedItem::Element(n) = item {
-                    normalize_node_recursive(n);
+                    normalize_node_depth(n, d);
                 }
             }
         },
 
         MathNode::Subscript { base, sub } => {
-            normalize_node_recursive(base);
-            normalize_node_recursive(sub);
+            normalize_node_depth(base, d);
+            normalize_node_depth(sub, d);
         },
         MathNode::Superscript { base, sup } => {
-            normalize_node_recursive(base);
-            normalize_node_recursive(sup);
+            normalize_node_depth(base, d);
+            normalize_node_depth(sup, d);
         },
         MathNode::SubSup { base, sub, sup } => {
-            normalize_node_recursive(base);
-            normalize_node_recursive(sub);
-            normalize_node_recursive(sup);
+            normalize_node_depth(base, d);
+            normalize_node_depth(sub, d);
+            normalize_node_depth(sup, d);
         },
         MathNode::PreScripts {
             base,
             pre_sub,
             pre_sup,
         } => {
-            normalize_node_recursive(base);
+            normalize_node_depth(base, d);
             if let Some(s) = pre_sub {
-                normalize_node_recursive(s);
+                normalize_node_depth(s, d);
             }
             if let Some(s) = pre_sup {
-                normalize_node_recursive(s);
+                normalize_node_depth(s, d);
             }
         },
 
         MathNode::Overscript { base, over, .. } => {
-            normalize_node_recursive(base);
-            normalize_node_recursive(over);
+            normalize_node_depth(base, d);
+            normalize_node_depth(over, d);
         },
         MathNode::Underscript { base, under, .. } => {
-            normalize_node_recursive(base);
-            normalize_node_recursive(under);
+            normalize_node_depth(base, d);
+            normalize_node_depth(under, d);
         },
         MathNode::UnderOver {
             base, under, over, ..
         } => {
-            normalize_node_recursive(base);
-            normalize_node_recursive(under);
-            normalize_node_recursive(over);
+            normalize_node_depth(base, d);
+            normalize_node_depth(under, d);
+            normalize_node_depth(over, d);
         },
 
         MathNode::Fraction { num, den, .. } => {
-            normalize_node_recursive(num);
-            normalize_node_recursive(den);
+            normalize_node_depth(num, d);
+            normalize_node_depth(den, d);
         },
         MathNode::Sqrt(inner) => {
-            normalize_node_recursive(inner);
+            normalize_node_depth(inner, d);
         },
         MathNode::Root { index, radicand } => {
-            normalize_node_recursive(index);
-            normalize_node_recursive(radicand);
+            normalize_node_depth(index, d);
+            normalize_node_depth(radicand, d);
         },
 
         MathNode::Nary { sub, sup, body, .. } => {
             if let Some(s) = sub {
-                normalize_node_recursive(s);
+                normalize_node_depth(s, d);
             }
             if let Some(s) = sup {
-                normalize_node_recursive(s);
+                normalize_node_depth(s, d);
             }
-            normalize_node_recursive(body);
+            normalize_node_depth(body, d);
         },
 
         MathNode::Accent { base, .. } => {
-            normalize_node_recursive(base);
+            normalize_node_depth(base, d);
         },
 
         MathNode::Array { rows, .. } => {
             for row in rows.iter_mut() {
                 for cell in row.iter_mut() {
-                    normalize_nodes(cell);
+                    normalize_nodes_depth(cell, d);
                 }
             }
         },
 
         MathNode::Phantom(inner) | MathNode::Boxed(inner) => {
-            normalize_node_recursive(inner);
+            normalize_node_depth(inner, d);
         },
         MathNode::Cancel { content, .. } => {
-            normalize_node_recursive(content);
+            normalize_node_depth(content, d);
         },
         MathNode::Scaled { content, .. } => {
-            normalize_node_recursive(content);
+            normalize_node_depth(content, d);
         },
         MathNode::Styled(_, children) => {
-            normalize_nodes(children);
+            normalize_nodes_depth(children, d);
         },
 
         // Leaf nodes: nothing to normalize

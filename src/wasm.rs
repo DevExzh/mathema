@@ -47,38 +47,42 @@ pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
     do_convert(input, from_fmt, to_fmt).map_err(to_js_err)
 }
 
-/// Parse LaTeX and return MathML.
+/// Parse LaTeX, normalize the AST, and return MathML.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_expr(&mut parsed.expr);
     MathmlWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }
 
-/// Parse LaTeX and return OMML.
+/// Parse LaTeX, normalize the AST, and return OMML.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_expr(&mut parsed.expr);
     OmmlWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }
 
-/// Parse LaTeX and return UnicodeMath.
+/// Parse LaTeX, normalize the AST, and return UnicodeMath.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_expr(&mut parsed.expr);
     UnicodeMathWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }
 
-/// Parse LaTeX and return the re-serialized (normalized) LaTeX.
+/// Parse LaTeX, normalize, and return the re-serialized (normalized) LaTeX.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn normalize_latex(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_expr(&mut parsed.expr);
     LatexWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }

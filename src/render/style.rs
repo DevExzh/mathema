@@ -14,6 +14,7 @@ pub enum MathStyle {
 
 impl MathStyle {
     /// Style for superscripts (TeXBook: D→S, T→S, S→SS, SS→SS; cramped stays cramped).
+    #[must_use]
     pub fn sup(self) -> Self {
         match self {
             Self::Display | Self::Text => Self::Script,
@@ -24,11 +25,13 @@ impl MathStyle {
     }
 
     /// Style for subscripts (always cramped version of sup style).
+    #[must_use]
     pub fn sub(self) -> Self {
         self.sup().cramped()
     }
 
     /// Style for fraction numerator (D→T, T→S, S→SS, SS→SS).
+    #[must_use]
     pub fn fracnum(self) -> Self {
         match self {
             Self::Display => Self::Text,
@@ -41,11 +44,13 @@ impl MathStyle {
     }
 
     /// Style for fraction denominator (always cramped version of fracnum).
+    #[must_use]
     pub fn fracden(self) -> Self {
         self.fracnum().cramped()
     }
 
     /// Cramped version of this style.
+    #[must_use]
     pub fn cramped(self) -> Self {
         match self {
             Self::Display | Self::DisplayCramped => Self::DisplayCramped,
@@ -55,6 +60,7 @@ impl MathStyle {
         }
     }
 
+    #[must_use]
     pub fn is_cramped(self) -> bool {
         matches!(
             self,
@@ -65,12 +71,14 @@ impl MathStyle {
         )
     }
 
+    #[must_use]
     pub fn is_display(self) -> bool {
         matches!(self, Self::Display | Self::DisplayCramped)
     }
 
     /// Font size multiplier relative to base size.
     /// Display/Text = 1.0, Script = 0.7, ScriptScript = 0.5
+    #[must_use]
     pub fn size_multiplier(self) -> f64 {
         match self {
             Self::Display | Self::DisplayCramped | Self::Text | Self::TextCramped => 1.0,

@@ -342,9 +342,9 @@ fn parse_braced_group(input: &str) -> IResult<&str, MathNode> {
     Ok((input, flatten_row(nodes)))
 }
 
-fn flatten_row(nodes: Vec<MathNode>) -> MathNode {
+fn flatten_row(mut nodes: Vec<MathNode>) -> MathNode {
     if nodes.len() == 1 {
-        nodes.into_iter().next().unwrap()
+        nodes.pop().expect("len is 1")
     } else {
         MathNode::Row(nodes)
     }

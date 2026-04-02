@@ -206,8 +206,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         MathNode::Number(s) => layout_text_run(s, ctx, false),
         MathNode::Identifier(s) => {
             if s.chars().count() == 1 {
-                // Single-char identifiers are italic
-                LayoutBox::glyph(s.chars().next().unwrap(), ctx.style)
+                // Single-char identifiers are italic; chars().next() is safe
+                // because chars().count() == 1 guarantees at least one char
+                LayoutBox::glyph(s.chars().next().expect("non-empty checked"), ctx.style)
             } else {
                 layout_text_run(s, ctx, false)
             }

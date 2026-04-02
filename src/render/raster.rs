@@ -67,6 +67,7 @@ impl Default for RasterOptions {
 
 /// Render a math expression directly to raster image bytes (PNG or JPEG).
 pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u8>> {
+    crate::ast::validate_ast_depth(expr)?;
     let style = if options.render.is_display(expr) {
         MathStyle::Display
     } else {
@@ -77,10 +78,21 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
 
+    // Guard against excessive dimensions that could cause OOM
+    const MAX_PIXMAP_DIMENSION: u32 = 8192;
+
     let width = (root.width * em + padding * 2.0).ceil().max(1.0) as u32;
     let height = ((root.height + root.depth) * em + padding * 2.0)
         .ceil()
         .max(1.0) as u32;
+
+    if width > MAX_PIXMAP_DIMENSION || height > MAX_PIXMAP_DIMENSION {
+        return Err(crate::error::Error::Render {
+            message: format!(
+                "image dimensions {width}x{height} exceed maximum of {MAX_PIXMAP_DIMENSION}x{MAX_PIXMAP_DIMENSION}"
+            ),
+        });
+    }
 
     let mut pixmap = Pixmap::new(width, height).ok_or_else(|| crate::error::Error::Render {
         message: format!("failed to create {width}x{height} pixmap"),

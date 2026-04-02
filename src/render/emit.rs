@@ -4,6 +4,26 @@ use std::fmt::Write;
 use super::RenderOptions;
 use super::layout::{BoxKind, LayoutBox};
 
+/// Wrapper that escapes a string for safe use in XML/SVG attributes.
+/// Prevents attribute injection via `"`, `<`, `>`, `&`, `'` in user-controlled values.
+struct XmlAttrEscape<'a>(&'a str);
+
+impl std::fmt::Display for XmlAttrEscape<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for ch in self.0.chars() {
+            match ch {
+                '<' => f.write_str("&lt;")?,
+                '>' => f.write_str("&gt;")?,
+                '&' => f.write_str("&amp;")?,
+                '"' => f.write_str("&quot;")?,
+                '\'' => f.write_str("&apos;")?,
+                _ => f.write_char(ch)?,
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Emit the final SVG string from a laid-out box tree.
 pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     let em = options.font_size_px;
@@ -49,8 +69,8 @@ fn emit_box(
                 x = x,
                 y = y,
                 fs = font_size,
-                ff = &options.font_family,
-                color = &options.fg_color,
+                ff = XmlAttrEscape(&options.font_family),
+                color = XmlAttrEscape(&options.fg_color),
             );
             write_escaped_char(svg, *ch);
             svg.push_str("</text>");
@@ -85,7 +105,7 @@ fn emit_box(
                 ry = ry,
                 w = w_px,
                 h = th_px,
-                color = &options.fg_color,
+                color = XmlAttrEscape(&options.fg_color),
             );
         },
 
@@ -101,8 +121,8 @@ fn emit_box(
                 x = x,
                 y = y,
                 fs = font_size,
-                ff = &options.font_family,
-                color = &options.fg_color,
+                ff = XmlAttrEscape(&options.font_family),
+                color = XmlAttrEscape(&options.fg_color),
             );
             write_escaped_char(svg, *ch);
             svg.push_str("</text>");
@@ -120,14 +140,15 @@ fn emit_box(
                 tx = tx,
                 ty = ty,
                 s = em,
-                path = path,
-                color = &options.fg_color,
+                path = XmlAttrEscape(path),
+                color = XmlAttrEscape(&options.fg_color),
             );
         },
 
         BoxKind::Color { color, child } => {
             // Use the color as a group wrapper
-            let _ = write!(svg, r#"<g fill="{color}" stroke="{color}">"#);
+            let _ = write!(svg, r#"<g fill="{color}" stroke="{color}">"#,
+                color = XmlAttrEscape(color));
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box(svg, &child.layout, cx, cy, em, options);
@@ -151,7 +172,7 @@ fn emit_box(
                 ry = ry,
                 w = w_px,
                 h = h_px,
-                color = &options.fg_color,
+                color = XmlAttrEscape(&options.fg_color),
             );
 
             // Content

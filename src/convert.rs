@@ -27,6 +27,7 @@ pub fn convert(input: &str, from: Format, to: Format) -> Result<String> {
 /// Conversion with custom configuration.
 pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> Result<String> {
     let mut parsed = parse(input, from, config)?;
+    crate::ast::validate_ast_depth(&parsed.expr)?;
     crate::ast::normalize::normalize_expr(&mut parsed.expr);
     write(&parsed.expr, to, config)
 }
@@ -152,11 +153,13 @@ impl ConvertResult {
     }
 
     /// Access the parsed AST for inspection or transformation.
+    #[must_use]
     pub fn expr(&self) -> &MathExpr {
         &self.parsed.expr
     }
 
     /// Take ownership of the parsed AST.
+    #[must_use]
     pub fn into_expr(self) -> MathExpr {
         self.parsed.expr
     }
@@ -172,7 +175,7 @@ pub fn from_latex_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let parsed = LatexReader::parse(input, config)?;
     Ok(ConvertResult {
         parsed,
-        config: config.clone(),
+        config: *config,
     })
 }
 
@@ -186,7 +189,7 @@ pub fn from_mathml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let parsed = MathmlReader::parse(input, config)?;
     Ok(ConvertResult {
         parsed,
-        config: config.clone(),
+        config: *config,
     })
 }
 
@@ -200,7 +203,7 @@ pub fn from_omml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let parsed = OmmlReader::parse(input, config)?;
     Ok(ConvertResult {
         parsed,
-        config: config.clone(),
+        config: *config,
     })
 }
 
@@ -214,7 +217,7 @@ pub fn from_mtef_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let parsed = MtefReader::parse(input, config)?;
     Ok(ConvertResult {
         parsed,
-        config: config.clone(),
+        config: *config,
     })
 }
 
@@ -228,7 +231,7 @@ pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertRes
     let parsed = UnicodeMathReader::parse(input, config)?;
     Ok(ConvertResult {
         parsed,
-        config: config.clone(),
+        config: *config,
     })
 }
 

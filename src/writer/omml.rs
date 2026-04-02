@@ -464,8 +464,8 @@ fn is_line_symbol(node: &MathNode) -> bool {
 
 fn extract_symbol_text(node: &MathNode) -> String {
     match node {
-        MathNode::Symbol(_, s) => s.clone(),
-        _ => "\u{23DF}".to_string(),
+        MathNode::Symbol(_, s) => s.to_owned(),
+        _ => "\u{23DF}".to_owned(),
     }
 }
 
