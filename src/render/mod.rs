@@ -1,11 +1,11 @@
-pub mod style;
-pub mod params;
-pub mod metrics;
-pub mod spacing;
-pub mod layout;
 pub mod emit;
+pub mod layout;
+pub mod metrics;
+pub mod params;
 #[cfg(feature = "raster")]
 pub mod raster;
+pub mod spacing;
+pub mod style;
 
 use crate::ast::{DisplayStyle, MathExpr};
 use crate::error::Result;

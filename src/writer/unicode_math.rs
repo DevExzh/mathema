@@ -6,7 +6,7 @@ pub struct UnicodeMathWriter;
 
 impl MathWriter for UnicodeMathWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
-        let mut out = String::new();
+        let mut out = String::with_capacity(256);
         for (i, node) in expr.nodes.iter().enumerate() {
             if i > 0 && needs_space_before(node) {
                 out.push(' ');
@@ -48,7 +48,11 @@ fn write_node(out: &mut String, node: &MathNode) {
             }
         },
 
-        MathNode::Fenced { open, close, content } => {
+        MathNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
             out.push_str(open);
             for (i, item) in content.iter().enumerate() {
                 if i > 0 {
@@ -82,7 +86,11 @@ fn write_node(out: &mut String, node: &MathNode) {
             write_script_arg(out, sup);
         },
 
-        MathNode::PreScripts { base, pre_sub, pre_sup } => {
+        MathNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
             // UnicodeMath doesn't have direct prescripts; approximate
             if let Some(sub) = pre_sub {
                 out.push('_');
@@ -98,17 +106,25 @@ fn write_node(out: &mut String, node: &MathNode) {
         MathNode::Overscript { base, over, .. } => {
             write_node(out, base);
             out.push('\u{0305}'); // combining overline as approximation
+            // UnicodeMath limitation: arbitrary overscript content not representable;
+            // only a combining overline is emitted for the base.
             let _ = over;
         },
 
         MathNode::Underscript { base, under, .. } => {
             write_node(out, base);
             out.push('\u{0332}'); // combining underline as approximation
+            // UnicodeMath limitation: arbitrary underscript content not representable;
+            // only a combining underline is emitted for the base.
             let _ = under;
         },
 
-        MathNode::UnderOver { base, under, over, .. } => {
+        MathNode::UnderOver {
+            base, under, over, ..
+        } => {
             write_node(out, base);
+            // UnicodeMath limitation: under/over content not representable;
+            // only the base is emitted.
             let _ = (under, over);
         },
 
@@ -146,7 +162,9 @@ fn write_node(out: &mut String, node: &MathNode) {
             }
         },
 
-        MathNode::Nary { op, sub, sup, body, .. } => {
+        MathNode::Nary {
+            op, sub, sup, body, ..
+        } => {
             out.push(*op);
             if let Some(s) = sub {
                 out.push('_');
@@ -208,8 +226,8 @@ fn write_node(out: &mut String, node: &MathNode) {
                 match child {
                     MathNode::Identifier(s) | MathNode::Number(s) | MathNode::Text(_, s) => {
                         for ch in s.chars() {
-                            let styled = crate::unicode::fonts::styled_char(ch, *style)
-                                .unwrap_or(ch);
+                            let styled =
+                                crate::unicode::fonts::styled_char(ch, *style).unwrap_or(ch);
                             out.push(styled);
                         }
                     },
@@ -288,10 +306,7 @@ fn write_paren_if_complex(out: &mut String, node: &MathNode) {
 }
 
 fn needs_space_before(node: &MathNode) -> bool {
-    matches!(
-        node,
-        MathNode::Operator(_) | MathNode::Text(_, _)
-    )
+    matches!(node, MathNode::Operator(_) | MathNode::Text(_, _))
 }
 
 #[cfg(test)]

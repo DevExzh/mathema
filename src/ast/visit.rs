@@ -29,7 +29,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
         | MathNode::Operator(_)
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
-        | MathNode::Space(_) => {}
+        | MathNode::Space(_) => {},
 
         MathNode::Row(children) => {
             for child in children {
@@ -99,9 +99,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
             v.visit_node(radicand);
         },
 
-        MathNode::Nary {
-            sub, sup, body, ..
-        } => {
+        MathNode::Nary { sub, sup, body, .. } => {
             if let Some(s) = sub {
                 v.visit_node(s);
             }
@@ -170,7 +168,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
         | MathNode::Operator(_)
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
-        | MathNode::Space(_) => {}
+        | MathNode::Space(_) => {},
 
         MathNode::Row(children) => {
             for child in children {
@@ -240,9 +238,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
             v.visit_node_mut(radicand);
         },
 
-        MathNode::Nary {
-            sub, sup, body, ..
-        } => {
+        MathNode::Nary { sub, sup, body, .. } => {
             if let Some(s) = sub {
                 v.visit_node_mut(s);
             }
@@ -332,10 +328,10 @@ mod tests {
         struct DoubleNumbers;
         impl MutVisitor for DoubleNumbers {
             fn visit_node_mut(&mut self, node: &mut MathNode) {
-                if let MathNode::Number(s) = node {
-                    if let Ok(n) = s.parse::<i64>() {
-                        *s = (n * 2).to_string();
-                    }
+                if let MathNode::Number(s) = node
+                    && let Ok(n) = s.parse::<i64>()
+                {
+                    *s = (n * 2).to_string();
                 }
                 walk_node_mut(self, node);
             }

@@ -28,7 +28,7 @@ impl MathReader for OmmlReader {
                     ));
                 }
                 return Err(e);
-            }
+            },
         };
         match parser.parse_root() {
             Ok(nodes) => Ok(ParseResult::new(MathExpr::new(nodes, config.display))),
@@ -45,20 +45,23 @@ impl MathReader for OmmlReader {
                 } else {
                     Err(e)
                 }
-            }
+            },
         }
     }
 }
 
+const MAX_PARSE_DEPTH: u32 = 128;
+
 struct OmmlParser<'a> {
     reader: Reader<&'a [u8]>,
+    depth: u32,
 }
 
 impl<'a> OmmlParser<'a> {
     fn new(input: &'a str) -> Result<Self> {
         let mut reader = Reader::from_str(input);
         reader.config_mut().trim_text(true);
-        Ok(Self { reader })
+        Ok(Self { reader, depth: 0 })
     }
 
     fn parse_root(&mut self) -> Result<Vec<MathNode>> {
@@ -102,6 +105,14 @@ impl<'a> OmmlParser<'a> {
     }
 
     fn parse_children(&mut self, parent_tag: &str) -> Result<Vec<MathNode>> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(Error::OmmlParse {
+                message: format!(
+                    "maximum nesting depth ({MAX_PARSE_DEPTH}) exceeded in <{parent_tag}>"
+                ),
+            });
+        }
         let mut nodes = Vec::new();
         loop {
             match self.reader.read_event() {
@@ -135,6 +146,7 @@ impl<'a> OmmlParser<'a> {
                 _ => continue,
             }
         }
+        self.depth -= 1;
         Ok(nodes)
     }
 
@@ -225,10 +237,9 @@ impl<'a> OmmlParser<'a> {
             },
 
             // Property elements - skip contents, return empty
-            "fPr" | "radPr" | "sSubPr" | "sSupPr" | "sSubSupPr" | "sPrePr" | "naryPr"
-            | "accPr" | "barPr" | "dPr" | "mPr" | "eqArrPr" | "funcPr" | "limLowPr"
-            | "limUppPr" | "groupChrPr" | "boxPr" | "borderBoxPr" | "phantPr" | "rPr"
-            | "ctrlPr" | "mathPr" => {
+            "fPr" | "radPr" | "sSubPr" | "sSupPr" | "sSubSupPr" | "sPrePr" | "naryPr" | "accPr"
+            | "barPr" | "dPr" | "mPr" | "eqArrPr" | "funcPr" | "limLowPr" | "limUppPr"
+            | "groupChrPr" | "boxPr" | "borderBoxPr" | "phantPr" | "rPr" | "ctrlPr" | "mathPr" => {
                 self.skip_element(name)?;
                 Ok(MathNode::Row(vec![]))
             },
@@ -294,9 +305,16 @@ impl<'a> OmmlParser<'a> {
         let tag = "rPr";
         loop {
             match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                Ok(ev @ Event::Start(_)) | Ok(ev @ Event::Empty(_)) => {
+                    let (e, needs_skip) = match ev {
+                        Event::Start(e) => (e, true),
+                        Event::Empty(e) => (e, false),
+                        _ => unreachable!(),
+                    };
                     let name = local_name(&e);
-                    if name == "sty" && let Some(val) = get_val_attr(&e) {
+                    if name == "sty"
+                        && let Some(val) = get_val_attr(&e)
+                    {
                         sty = match val.as_str() {
                             "p" => "p",
                             "i" => "i",
@@ -304,7 +322,9 @@ impl<'a> OmmlParser<'a> {
                             "bi" => "bi",
                             _ => "p",
                         };
-                    } else if name == "scr" && let Some(val) = get_val_attr(&e) {
+                    } else if name == "scr"
+                        && let Some(val) = get_val_attr(&e)
+                    {
                         scr = match val.as_str() {
                             "roman" => "roman",
                             "script" => "script",
@@ -315,8 +335,8 @@ impl<'a> OmmlParser<'a> {
                             _ => "roman",
                         };
                     }
-                    if matches!(self.reader.read_event(), Ok(Event::Start(_))) {
-                        // Skip nested content
+                    if needs_skip {
+                        self.skip_element(&name)?;
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -370,7 +390,9 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "type" && let Some(val) = get_val_attr(&e) {
+                    if name == "type"
+                        && let Some(val) = get_val_attr(&e)
+                    {
                         kind = match val.as_str() {
                             "bar" => FractionKind::Normal,
                             "noBar" => FractionKind::NoBar,
@@ -434,7 +456,9 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "degHide" && let Some(val) = get_val_attr(&e) {
+                    if name == "degHide"
+                        && let Some(val) = get_val_attr(&e)
+                    {
                         deg_hide = val == "1" || val == "on" || val == "true";
                     }
                 },
@@ -493,10 +517,7 @@ impl<'a> OmmlParser<'a> {
         })
     }
 
-    fn parse_script_element(
-        &mut self,
-        tag: &str,
-    ) -> Result<(MathNode, MathNode, MathNode)> {
+    fn parse_script_element(&mut self, tag: &str) -> Result<(MathNode, MathNode, MathNode)> {
         let mut base = MathNode::Row(vec![]);
         let mut sub = MathNode::Row(vec![]);
         let mut sup = MathNode::Row(vec![]);
@@ -731,7 +752,9 @@ impl<'a> OmmlParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     let name = local_name(&e);
-                    if name == "pos" && let Some(val) = get_val_attr(&e) {
+                    if name == "pos"
+                        && let Some(val) = get_val_attr(&e)
+                    {
                         top = val != "bot";
                     }
                 },
@@ -1132,29 +1155,23 @@ impl<'a> OmmlParser<'a> {
 // --- Helpers ---
 
 fn local_name(e: &quick_xml::events::BytesStart<'_>) -> String {
-    let full = String::from_utf8_lossy(e.name().as_ref()).to_string();
-    strip_ns_prefix(&full)
+    let qname = e.name();
+    let local = qname.local_name();
+    std::str::from_utf8(local.as_ref()).unwrap_or("").to_owned()
 }
 
 fn local_name_end(e: &quick_xml::events::BytesEnd<'_>) -> String {
-    let full = String::from_utf8_lossy(e.name().as_ref()).to_string();
-    strip_ns_prefix(&full)
-}
-
-fn strip_ns_prefix(name: &str) -> String {
-    if let Some(pos) = name.find(':') {
-        name[pos + 1..].to_string()
-    } else {
-        name.to_string()
-    }
+    let qname = e.name();
+    let local = qname.local_name();
+    std::str::from_utf8(local.as_ref()).unwrap_or("").to_owned()
 }
 
 fn get_val_attr(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| {
-            let key = String::from_utf8_lossy(a.key.as_ref());
-            key == "m:val" || key == "val" || key == "w:val"
+            let key = a.key.as_ref();
+            key == b"m:val" || key == b"val" || key == b"w:val"
         })
         .map(|a| String::from_utf8_lossy(&a.value).to_string())
 }
@@ -1214,7 +1231,10 @@ fn classify_run_text_styled(text: &str, style: TextStyle) -> MathNode {
         });
     }
     if style != TextStyle::Normal {
-        MathNode::Styled(style, vec![MathNode::Text(TextStyle::Normal, text.to_string())])
+        MathNode::Styled(
+            style,
+            vec![MathNode::Text(TextStyle::Normal, text.to_string())],
+        )
     } else {
         MathNode::Text(TextStyle::Normal, text.to_string())
     }
@@ -1328,7 +1348,13 @@ mod tests {
     fn fraction() {
         let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f></m:oMath>"#;
         let node = parse_one(input);
-        assert!(matches!(node, MathNode::Fraction { kind: FractionKind::Normal, .. }));
+        assert!(matches!(
+            node,
+            MathNode::Fraction {
+                kind: FractionKind::Normal,
+                ..
+            }
+        ));
     }
 
     #[test]

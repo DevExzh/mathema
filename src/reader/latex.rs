@@ -5,19 +5,29 @@ use nom::character::complete::{char, satisfy};
 use nom::combinator::{map, opt, recognize};
 use nom::multi::{many0, separated_list0};
 use nom::sequence::{delimited, preceded, tuple};
+use std::cell::Cell;
 
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Span, Strictness};
+use crate::error::{
+    Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Span, Strictness,
+};
 use crate::reader::Reader;
+use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
     is_nary_command, is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
 };
-use crate::unicode::fonts::latex_font_to_style;
 
 pub struct LatexReader;
 
+const MAX_PARSE_DEPTH: u32 = 128;
+
+thread_local! {
+    static LATEX_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
 impl Reader for LatexReader {
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
+        LATEX_DEPTH.with(|d| d.set(0));
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return Ok(ParseResult::new(MathExpr::new(vec![], config.display)));
@@ -78,7 +88,7 @@ fn parse_lenient_remainder(mut input: &str, diagnostics: &mut Vec<Diagnostic>) -
             Ok(("", parsed)) => {
                 nodes.extend(parsed);
                 break;
-            }
+            },
             Ok((rest, parsed)) => {
                 nodes.extend(parsed);
                 // Skip one character and continue
@@ -92,7 +102,7 @@ fn parse_lenient_remainder(mut input: &str, diagnostics: &mut Vec<Diagnostic>) -
                 } else {
                     break;
                 }
-            }
+            },
             Err(_) => {
                 // Skip one character and try again
                 if let Some(ch) = input.chars().next() {
@@ -106,7 +116,7 @@ fn parse_lenient_remainder(mut input: &str, diagnostics: &mut Vec<Diagnostic>) -
                 } else {
                     break;
                 }
-            }
+            },
         }
     }
     nodes
@@ -126,7 +136,19 @@ fn ws(input: &str) -> IResult<&str, ()> {
 }
 
 fn parse_node_list(input: &str) -> IResult<&str, Vec<MathNode>> {
-    many0(preceded(|i| ws(i), parse_element))(input)
+    LATEX_DEPTH.with(|d| {
+        let current = d.get();
+        if current >= MAX_PARSE_DEPTH {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
+        d.set(current + 1);
+        let result = many0(preceded(|i| ws(i), parse_element))(input);
+        d.set(d.get().saturating_sub(1));
+        result
+    })
 }
 
 /// Parse one element: an atom optionally followed by scripts.
@@ -176,11 +198,7 @@ fn parse_scripts(input: &str, base: MathNode) -> IResult<&str, MathNode> {
 
     let (input, first_arg) = parse_script_arg(input)?;
     let (input, _) = ws(input)?;
-    let (input, second_script) = opt(if first == '^' {
-        char('_')
-    } else {
-        char('^')
-    })(input)?;
+    let (input, second_script) = opt(if first == '^' { char('_') } else { char('^') })(input)?;
 
     match (first, second_script) {
         ('^', None) => Ok((
@@ -233,24 +251,23 @@ fn parse_nary_rest(input: &str, op_node: MathNode) -> IResult<&str, MathNode> {
     let (input, _) = ws(input)?;
 
     // Check for \limits or \nolimits
-    let (input, limit_style) =
-        if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\limits")(input) {
-            if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
-                (rest, LimitStyle::AboveBelow)
-            } else {
-                (input, LimitStyle::Default)
-            }
-        } else if let Ok((rest, _)) =
-            tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(input)
-        {
-            if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
-                (rest, LimitStyle::SubSup)
-            } else {
-                (input, LimitStyle::Default)
-            }
+    let (input, limit_style) = if let Ok((rest, _)) =
+        tag::<&str, &str, nom::error::Error<&str>>("\\limits")(input)
+    {
+        if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
+            (rest, LimitStyle::AboveBelow)
         } else {
             (input, LimitStyle::Default)
-        };
+        }
+    } else if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(input) {
+        if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
+            (rest, LimitStyle::SubSup)
+        } else {
+            (input, LimitStyle::Default)
+        }
+    } else {
+        (input, LimitStyle::Default)
+    };
 
     let (input, _) = ws(input)?;
     let (input, limits) = parse_optional_limits(input)?;
@@ -273,9 +290,7 @@ fn parse_nary_rest(input: &str, op_node: MathNode) -> IResult<&str, MathNode> {
 }
 
 /// Parse optional _{...} and ^{...} in any order, returning (sub, sup).
-fn parse_optional_limits(
-    input: &str,
-) -> IResult<&str, (Option<MathNode>, Option<MathNode>)> {
+fn parse_optional_limits(input: &str) -> IResult<&str, (Option<MathNode>, Option<MathNode>)> {
     let (input, first) = opt(alt((char('_'), char('^'))))(input)?;
     let Some(first_ch) = first else {
         return Ok((input, (None, None)));
@@ -301,7 +316,7 @@ fn parse_optional_limits(
 /// Parse a single script argument: either a single token or a braced group.
 fn parse_script_arg(input: &str) -> IResult<&str, MathNode> {
     let (input, _) = ws(input)?;
-    alt((parse_braced_group, parse_single_token))(input)
+    parse_atom(input)
 }
 
 // ---------------------------------------------------------------------------
@@ -309,16 +324,6 @@ fn parse_script_arg(input: &str) -> IResult<&str, MathNode> {
 // ---------------------------------------------------------------------------
 
 fn parse_atom(input: &str) -> IResult<&str, MathNode> {
-    alt((
-        parse_braced_group,
-        parse_command,
-        parse_number,
-        parse_symbol_char,
-        parse_letter,
-    ))(input)
-}
-
-fn parse_single_token(input: &str) -> IResult<&str, MathNode> {
     alt((
         parse_braced_group,
         parse_command,
@@ -349,7 +354,10 @@ fn flatten_row(nodes: Vec<MathNode>) -> MathNode {
 fn parse_number(input: &str) -> IResult<&str, MathNode> {
     let (input, num) = recognize(tuple((
         take_while1(|c: char| c.is_ascii_digit()),
-        opt(tuple((char('.'), take_while1(|c: char| c.is_ascii_digit())))),
+        opt(tuple((
+            char('.'),
+            take_while1(|c: char| c.is_ascii_digit()),
+        ))),
     )))(input)?;
     Ok((input, MathNode::Number(num.to_string())))
 }
@@ -396,7 +404,9 @@ fn parse_command(input: &str) -> IResult<&str, MathNode> {
 fn parse_special_command(input: &str) -> IResult<&str, MathNode> {
     alt((
         // \{ and \} -> delimiter symbols
-        map(char('{'), |_| MathNode::Symbol(SymbolKind::Open, "{".into())),
+        map(char('{'), |_| {
+            MathNode::Symbol(SymbolKind::Open, "{".into())
+        }),
         map(char('}'), |_| {
             MathNode::Symbol(SymbolKind::Close, "}".into())
         }),
@@ -451,11 +461,9 @@ fn dispatch_command<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode
         "left" => parse_left_right(input),
 
         // --- Text and font ---
-        "text" | "textrm" | "textit" | "textbf" | "texttt" | "textsf" => {
-            parse_text(input, name)
-        },
-        "mathrm" | "mathbf" | "mathit" | "mathtt" | "mathsf" | "mathbb" | "mathcal"
-        | "mathscr" | "mathfrak" | "boldsymbol" | "bm" => parse_math_font(input, name),
+        "text" | "textrm" | "textit" | "textbf" | "texttt" | "textsf" => parse_text(input, name),
+        "mathrm" | "mathbf" | "mathit" | "mathtt" | "mathsf" | "mathbb" | "mathcal" | "mathscr"
+        | "mathfrak" | "boldsymbol" | "bm" => parse_math_font(input, name),
 
         // --- Spacing ---
         "quad" => Ok((input, MathNode::Space(Rational::new(1, 1)))),
@@ -463,44 +471,11 @@ fn dispatch_command<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode
         "enspace" => Ok((input, MathNode::Space(Rational::new(1, 2)))),
 
         // --- Decorators ---
-        "phantom" => {
-            let (input, arg) = parse_required_group(input)?;
-            Ok((input, MathNode::Phantom(Box::new(arg))))
-        },
-        "boxed" | "fbox" => {
-            let (input, arg) = parse_required_group(input)?;
-            Ok((input, MathNode::Boxed(Box::new(arg))))
-        },
-        "cancel" => {
-            let (input, arg) = parse_required_group(input)?;
-            Ok((
-                input,
-                MathNode::Cancel {
-                    stroke: StrokeKind::Forward,
-                    content: Box::new(arg),
-                },
-            ))
-        },
-        "bcancel" => {
-            let (input, arg) = parse_required_group(input)?;
-            Ok((
-                input,
-                MathNode::Cancel {
-                    stroke: StrokeKind::Backward,
-                    content: Box::new(arg),
-                },
-            ))
-        },
-        "xcancel" => {
-            let (input, arg) = parse_required_group(input)?;
-            Ok((
-                input,
-                MathNode::Cancel {
-                    stroke: StrokeKind::Cross,
-                    content: Box::new(arg),
-                },
-            ))
-        },
+        "phantom" => parse_boxed_wrapper(input, |arg| MathNode::Phantom(Box::new(arg))),
+        "boxed" | "fbox" => parse_boxed_wrapper(input, |arg| MathNode::Boxed(Box::new(arg))),
+        "cancel" => parse_cancel(input, StrokeKind::Forward),
+        "bcancel" => parse_cancel(input, StrokeKind::Backward),
+        "xcancel" => parse_cancel(input, StrokeKind::Cross),
 
         // --- Environments ---
         "begin" => parse_environment(input),
@@ -539,10 +514,8 @@ fn dispatch_command<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode
         "substack" => parse_substack(input),
 
         // --- Sized delimiters ---
-        "big" | "Big" | "bigg" | "Bigg" | "bigl" | "bigr" | "Bigl" | "Bigr" | "biggl"
-        | "biggr" | "Biggl" | "Biggr" | "bigm" | "Bigm" | "biggm" | "Biggm" => {
-            parse_big_delim(input, name)
-        },
+        "big" | "Big" | "bigg" | "Bigg" | "bigl" | "bigr" | "Bigl" | "Bigr" | "biggl" | "biggr"
+        | "Biggl" | "Biggr" | "bigm" | "Bigm" | "biggm" | "Biggm" => parse_big_delim(input, name),
 
         // --- Style commands (silently consume) ---
         "displaystyle" | "textstyle" | "scriptstyle" | "scriptscriptstyle" => {
@@ -581,10 +554,7 @@ fn dispatch_command<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode
                 if kind == SymbolKind::Alphabetic {
                     Ok((input, MathNode::Identifier(unicode.to_string())))
                 } else {
-                    Ok((
-                        input,
-                        MathNode::Symbol(kind, unicode.to_string()),
-                    ))
+                    Ok((input, MathNode::Symbol(kind, unicode.to_string())))
                 }
             } else {
                 // Unknown command: emit as identifier
@@ -597,6 +567,22 @@ fn dispatch_command<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode
 // ---------------------------------------------------------------------------
 // Command sub-parsers
 // ---------------------------------------------------------------------------
+
+fn parse_boxed_wrapper(input: &str, wrap: fn(MathNode) -> MathNode) -> IResult<&str, MathNode> {
+    let (input, arg) = parse_required_group(input)?;
+    Ok((input, wrap(arg)))
+}
+
+fn parse_cancel(input: &str, stroke: StrokeKind) -> IResult<&str, MathNode> {
+    let (input, arg) = parse_required_group(input)?;
+    Ok((
+        input,
+        MathNode::Cancel {
+            stroke,
+            content: Box::new(arg),
+        },
+    ))
+}
 
 fn parse_required_group(input: &str) -> IResult<&str, MathNode> {
     let (input, _) = ws(input)?;
@@ -721,10 +707,7 @@ fn parse_left_right(input: &str) -> IResult<&str, MathNode> {
     let (input, content_nodes) = parse_until_right(input)?;
     let (input, close) = parse_delimiter(input)?;
 
-    let content = content_nodes
-        .into_iter()
-        .map(FencedItem::Element)
-        .collect();
+    let content = content_nodes.into_iter().map(FencedItem::Element).collect();
 
     Ok((
         input,
@@ -769,9 +752,7 @@ fn parse_until_right(input: &str) -> IResult<&str, Vec<MathNode>> {
             return Ok((after_right, nodes));
         }
         // Check for \middle
-        if let Ok((after_mid, _)) =
-            tag::<&str, &str, nom::error::Error<&str>>("\\middle")(rest)
-        {
+        if let Ok((after_mid, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\middle")(rest) {
             let (after_mid, _) = ws(after_mid)?;
             let (after_delim, delim) = parse_delimiter(after_mid)?;
             // Insert a Middle item - but we return Vec<MathNode>, so we handle this
@@ -992,7 +973,13 @@ fn parse_substack(input: &str) -> IResult<&str, MathNode> {
     let table_rows: Vec<Vec<Vec<MathNode>>> = rows.into_iter().map(|cell| vec![cell]).collect();
     let columns = vec![ColumnAlign::Center];
 
-    Ok((input, MathNode::Array { columns, rows: table_rows }))
+    Ok((
+        input,
+        MathNode::Array {
+            columns,
+            rows: table_rows,
+        },
+    ))
 }
 
 fn parse_big_delim<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode> {
@@ -1016,11 +1003,15 @@ fn parse_big_delim<'a>(input: &'a str, name: &str) -> IResult<&'a str, MathNode>
 
 fn parse_big_delim_arg(input: &str) -> IResult<&str, MathNode> {
     alt((
-        map(char('('), |_| MathNode::Symbol(SymbolKind::Open, "(".into())),
+        map(char('('), |_| {
+            MathNode::Symbol(SymbolKind::Open, "(".into())
+        }),
         map(char(')'), |_| {
             MathNode::Symbol(SymbolKind::Close, ")".into())
         }),
-        map(char('['), |_| MathNode::Symbol(SymbolKind::Open, "[".into())),
+        map(char('['), |_| {
+            MathNode::Symbol(SymbolKind::Open, "[".into())
+        }),
         map(char(']'), |_| {
             MathNode::Symbol(SymbolKind::Close, "]".into())
         }),
@@ -1038,9 +1029,8 @@ fn parse_color_discard(input: &str) -> IResult<&str, MathNode> {
     // \color{name} — consume the color argument, return empty
     let (input, _) = ws(input)?;
     let (input, _) = char('{')(input)?;
-    let (input, _color) =
-        take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
-            .unwrap_or((input, ""));
+    let (input, _color) = take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
+        .unwrap_or((input, ""));
     let (input, _) = char('}')(input)?;
     Ok((input, MathNode::Row(vec![])))
 }
@@ -1049,9 +1039,8 @@ fn parse_textcolor(input: &str) -> IResult<&str, MathNode> {
     // \textcolor{name}{content} — consume color, return content
     let (input, _) = ws(input)?;
     let (input, _) = char('{')(input)?;
-    let (input, _color) =
-        take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
-            .unwrap_or((input, ""));
+    let (input, _color) = take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(input)
+        .unwrap_or((input, ""));
     let (input, _) = char('}')(input)?;
     let (input, content) = parse_required_group(input)?;
     Ok((input, content))
@@ -1088,7 +1077,11 @@ fn parse_environment(input: &str) -> IResult<&str, MathNode> {
 fn parse_array_env<'a>(input: &'a str, env_name: &str) -> IResult<&'a str, MathNode> {
     // Parse optional column spec
     let (input, _) = ws(input)?;
-    let (input, col_spec) = opt(delimited(char('{'), take_while1(|c: char| c != '}'), char('}')))(input)?;
+    let (input, col_spec) = opt(delimited(
+        char('{'),
+        take_while1(|c: char| c != '}'),
+        char('}'),
+    ))(input)?;
     let columns = col_spec.map(parse_column_spec).unwrap_or_default();
 
     let (input, rows) = parse_table_body(input)?;
@@ -1317,7 +1310,13 @@ mod tests {
     #[test]
     fn fraction() {
         let node = parse_one("\\frac{a}{b}");
-        assert!(matches!(node, MathNode::Fraction { kind: FractionKind::Normal, .. }));
+        assert!(matches!(
+            node,
+            MathNode::Fraction {
+                kind: FractionKind::Normal,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1378,7 +1377,10 @@ mod tests {
     #[test]
     fn text_command() {
         let node = parse_one("\\text{hello world}");
-        assert_eq!(node, MathNode::Text(TextStyle::Normal, "hello world".into()));
+        assert_eq!(
+            node,
+            MathNode::Text(TextStyle::Normal, "hello world".into())
+        );
     }
 
     #[test]
@@ -1586,7 +1588,7 @@ mod tests {
     fn color_ignored() {
         let nodes = parse("\\color{red} x");
         // \color{red} produces an empty Row, then x
-        assert!(nodes.len() >= 1);
+        assert!(!nodes.is_empty());
     }
 
     #[test]
@@ -1599,7 +1601,7 @@ mod tests {
     fn displaystyle_ignored() {
         let nodes = parse("\\displaystyle x");
         // \displaystyle produces an empty Row, then x
-        assert!(nodes.len() >= 1);
+        assert!(!nodes.is_empty());
     }
 
     #[test]

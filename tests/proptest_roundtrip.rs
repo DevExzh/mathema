@@ -1,14 +1,14 @@
-use proptest::prelude::*;
 use mathema::ast::*;
 use mathema::error::Config;
 use mathema::reader::Reader;
-use mathema::writer::Writer;
 use mathema::reader::latex::LatexReader;
-use mathema::writer::latex::LatexWriter;
 use mathema::reader::mathml::MathmlReader;
+use mathema::writer::Writer;
+use mathema::writer::latex::LatexWriter;
 use mathema::writer::mathml::MathmlWriter;
 use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
+use proptest::prelude::*;
 
 // =========================================================================
 // Strategies for generating AST types
@@ -168,7 +168,7 @@ fn arb_math_node() -> impl Strategy<Value = MathNode> {
 }
 
 fn arb_math_expr() -> impl Strategy<Value = MathExpr> {
-    prop::collection::vec(arb_math_node(), 1..=3).prop_map(|nodes| MathExpr::inline(nodes))
+    prop::collection::vec(arb_math_node(), 1..=3).prop_map(MathExpr::inline)
 }
 
 // =========================================================================
@@ -213,29 +213,27 @@ proptest! {
     #[test]
     fn latex_roundtrip_idempotent(expr in arb_math_expr()) {
         let config = Config::default();
-        if let Ok(latex1) = LatexWriter::write(&expr, &config) {
-            if let Ok(parsed) = LatexReader::parse(&latex1, &config) {
-                if let Ok(latex2) = LatexWriter::write(&parsed.expr, &config) {
-                    // Second parse should produce the same output
-                    let reparsed = LatexReader::parse(&latex2, &config).unwrap();
-                    let latex3 = LatexWriter::write(&reparsed.expr, &config).unwrap();
-                    assert_eq!(latex2, latex3, "LaTeX not idempotent:\n  first:  {latex2}\n  second: {latex3}");
-                }
-            }
+        if let Ok(latex1) = LatexWriter::write(&expr, &config)
+            && let Ok(parsed) = LatexReader::parse(&latex1, &config)
+            && let Ok(latex2) = LatexWriter::write(&parsed.expr, &config)
+        {
+            // Second parse should produce the same output
+            let reparsed = LatexReader::parse(&latex2, &config).unwrap();
+            let latex3 = LatexWriter::write(&reparsed.expr, &config).unwrap();
+            assert_eq!(latex2, latex3, "LaTeX not idempotent:\n  first:  {latex2}\n  second: {latex3}");
         }
     }
 
     #[test]
     fn mathml_roundtrip_idempotent(expr in arb_math_expr()) {
         let config = Config::default();
-        if let Ok(mathml1) = MathmlWriter::write(&expr, &config) {
-            if let Ok(parsed) = MathmlReader::parse(&mathml1, &config) {
-                if let Ok(mathml2) = MathmlWriter::write(&parsed.expr, &config) {
-                    let reparsed = MathmlReader::parse(&mathml2, &config).unwrap();
-                    let mathml3 = MathmlWriter::write(&reparsed.expr, &config).unwrap();
-                    assert_eq!(mathml2, mathml3, "MathML not idempotent:\n  first:  {mathml2}\n  second: {mathml3}");
-                }
-            }
+        if let Ok(mathml1) = MathmlWriter::write(&expr, &config)
+            && let Ok(parsed) = MathmlReader::parse(&mathml1, &config)
+            && let Ok(mathml2) = MathmlWriter::write(&parsed.expr, &config)
+        {
+            let reparsed = MathmlReader::parse(&mathml2, &config).unwrap();
+            let mathml3 = MathmlWriter::write(&reparsed.expr, &config).unwrap();
+            assert_eq!(mathml2, mathml3, "MathML not idempotent:\n  first:  {mathml2}\n  second: {mathml3}");
         }
     }
 }
@@ -250,30 +248,30 @@ proptest! {
     #[test]
     fn cross_format_latex_mathml_no_panic(expr in arb_math_expr()) {
         let config = Config::default();
-        if let Ok(latex) = LatexWriter::write(&expr, &config) {
-            if let Ok(parsed) = LatexReader::parse(&latex, &config) {
-                let _ = MathmlWriter::write(&parsed.expr, &config);
-            }
+        if let Ok(latex) = LatexWriter::write(&expr, &config)
+            && let Ok(parsed) = LatexReader::parse(&latex, &config)
+        {
+            let _ = MathmlWriter::write(&parsed.expr, &config);
         }
     }
 
     #[test]
     fn cross_format_latex_omml_no_panic(expr in arb_math_expr()) {
         let config = Config::default();
-        if let Ok(latex) = LatexWriter::write(&expr, &config) {
-            if let Ok(parsed) = LatexReader::parse(&latex, &config) {
-                let _ = OmmlWriter::write(&parsed.expr, &config);
-            }
+        if let Ok(latex) = LatexWriter::write(&expr, &config)
+            && let Ok(parsed) = LatexReader::parse(&latex, &config)
+        {
+            let _ = OmmlWriter::write(&parsed.expr, &config);
         }
     }
 
     #[test]
     fn cross_format_latex_unicode_no_panic(expr in arb_math_expr()) {
         let config = Config::default();
-        if let Ok(latex) = LatexWriter::write(&expr, &config) {
-            if let Ok(parsed) = LatexReader::parse(&latex, &config) {
-                let _ = UnicodeMathWriter::write(&parsed.expr, &config);
-            }
+        if let Ok(latex) = LatexWriter::write(&expr, &config)
+            && let Ok(parsed) = LatexReader::parse(&latex, &config)
+        {
+            let _ = UnicodeMathWriter::write(&parsed.expr, &config);
         }
     }
 }
@@ -298,8 +296,9 @@ fn arb_latex_fragment() -> impl Strategy<Value = String> {
         (arb_number(), arb_number()).prop_map(|(a, b)| format!("\\frac{{{a}}}{{{b}}}")),
         (arb_identifier(),).prop_map(|(id,)| format!("\\sqrt{{{id}}}")),
         // Nested
-        (arb_number(), arb_number(), arb_number(), arb_number())
-            .prop_map(|(a, b, c, d)| format!("\\frac{{\\frac{{{a}}}{{{b}}}}}{{\\frac{{{c}}}{{{d}}}}}")),
+        (arb_number(), arb_number(), arb_number(), arb_number()).prop_map(|(a, b, c, d)| format!(
+            "\\frac{{\\frac{{{a}}}{{{b}}}}}{{\\frac{{{c}}}{{{d}}}}}"
+        )),
     ]
 }
 

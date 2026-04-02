@@ -1,10 +1,10 @@
 #![cfg(feature = "render")]
 
-use mathema::{Format, convert};
-use mathema::render::{RenderOptions, render_to_svg};
+use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
-use mathema::error::Config;
+use mathema::render::{RenderOptions, render_to_svg};
+use mathema::{Format, convert};
 
 /// Helper: LaTeX string → SVG string via the convert API.
 fn latex_to_svg(input: &str) -> String {
@@ -23,7 +23,10 @@ fn render_latex(input: &str) -> String {
 fn assert_valid_svg(svg: &str, label: &str) {
     assert!(svg.starts_with("<svg"), "{label}: missing <svg> open tag");
     assert!(svg.ends_with("</svg>"), "{label}: missing </svg> close tag");
-    assert!(svg.contains("xmlns=\"http://www.w3.org/2000/svg\""), "{label}: missing xmlns");
+    assert!(
+        svg.contains("xmlns=\"http://www.w3.org/2000/svg\""),
+        "{label}: missing xmlns"
+    );
     assert!(svg.contains("viewBox"), "{label}: missing viewBox");
 }
 
@@ -35,7 +38,10 @@ fn assert_valid_svg(svg: &str, label: &str) {
 fn svg_structure_simple_number() {
     let svg = latex_to_svg("42");
     assert_valid_svg(&svg, "42");
-    assert!(svg.contains("<text"), "should contain text elements for digits");
+    assert!(
+        svg.contains("<text"),
+        "should contain text elements for digits"
+    );
     assert!(svg.contains("4"), "should contain digit 4");
     assert!(svg.contains("2"), "should contain digit 2");
 }
@@ -44,14 +50,20 @@ fn svg_structure_simple_number() {
 fn svg_structure_identifier() {
     let svg = latex_to_svg("x");
     assert_valid_svg(&svg, "x");
-    assert!(svg.contains("<text"), "should contain text element for identifier");
+    assert!(
+        svg.contains("<text"),
+        "should contain text element for identifier"
+    );
 }
 
 #[test]
 fn svg_structure_operator() {
     let svg = latex_to_svg(r"\sum");
     assert_valid_svg(&svg, "sum");
-    assert!(svg.contains("<text"), "should contain text element for operator");
+    assert!(
+        svg.contains("<text"),
+        "should contain text element for operator"
+    );
 }
 
 // =========================================================================
@@ -62,7 +74,10 @@ fn svg_structure_operator() {
 fn fraction_has_bar() {
     let svg = latex_to_svg(r"\frac{1}{2}");
     assert_valid_svg(&svg, "frac");
-    assert!(svg.contains("<rect"), "fraction should have a bar (rect element)");
+    assert!(
+        svg.contains("<rect"),
+        "fraction should have a bar (rect element)"
+    );
     assert!(svg.contains("1"), "should contain numerator 1");
     assert!(svg.contains("2"), "should contain denominator 2");
 }
@@ -73,7 +88,10 @@ fn nested_fraction() {
     assert_valid_svg(&svg, "nested frac");
     // Should have at least 2 rects (two fraction bars)
     let rect_count = svg.matches("<rect").count();
-    assert!(rect_count >= 2, "nested fraction should have at least 2 bars, got {rect_count}");
+    assert!(
+        rect_count >= 2,
+        "nested fraction should have at least 2 bars, got {rect_count}"
+    );
 }
 
 // =========================================================================
@@ -111,7 +129,10 @@ fn sqrt_has_path() {
     assert_valid_svg(&svg, "sqrt");
     // Sqrt renders a radical sign as SvgPath + a vinculum as Rule
     let has_path_or_rect = svg.contains("<path") || svg.contains("<rect");
-    assert!(has_path_or_rect, "sqrt should have path or rect for radical sign/vinculum");
+    assert!(
+        has_path_or_rect,
+        "sqrt should have path or rect for radical sign/vinculum"
+    );
 }
 
 #[test]
@@ -129,9 +150,15 @@ fn sqrt_with_index() {
 fn quadratic_formula() {
     let svg = latex_to_svg(r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}");
     assert_valid_svg(&svg, "quadratic formula");
-    assert!(svg.contains("<rect"), "quadratic formula should have fraction bar");
+    assert!(
+        svg.contains("<rect"),
+        "quadratic formula should have fraction bar"
+    );
     let text_count = svg.matches("<text").count();
-    assert!(text_count >= 5, "quadratic formula should have many text elements, got {text_count}");
+    assert!(
+        text_count >= 5,
+        "quadratic formula should have many text elements, got {text_count}"
+    );
 }
 
 #[test]
@@ -221,7 +248,10 @@ fn color_node() {
 fn boxed() {
     let svg = latex_to_svg(r"\boxed{x}");
     assert_valid_svg(&svg, "boxed");
-    assert!(svg.contains("<rect"), "boxed should have a border rectangle");
+    assert!(
+        svg.contains("<rect"),
+        "boxed should have a border rectangle"
+    );
 }
 
 #[test]
@@ -246,7 +276,10 @@ fn custom_font_size() {
     let svg = render_to_svg(&parsed.expr, &options).unwrap();
     assert_valid_svg(&svg, "custom font size");
     // Font size should appear in the SVG
-    assert!(svg.contains("24"), "SVG should reference the 24px font size");
+    assert!(
+        svg.contains("24"),
+        "SVG should reference the 24px font size"
+    );
 }
 
 #[test]
@@ -259,7 +292,10 @@ fn custom_color() {
     };
     let svg = render_to_svg(&parsed.expr, &options).unwrap();
     assert_valid_svg(&svg, "custom color");
-    assert!(svg.contains("#ff0000"), "SVG should use custom foreground color");
+    assert!(
+        svg.contains("#ff0000"),
+        "SVG should use custom foreground color"
+    );
 }
 
 // =========================================================================
@@ -271,7 +307,10 @@ fn convert_api_matches_render_api() {
     let via_convert = latex_to_svg("x^2");
     let via_render = render_latex("x^2");
     // Both paths use default options, should produce identical output
-    assert_eq!(via_convert, via_render, "convert API and render API should produce identical SVG");
+    assert_eq!(
+        via_convert, via_render,
+        "convert API and render API should produce identical SVG"
+    );
 }
 
 // =========================================================================
@@ -303,7 +342,10 @@ fn special_chars_escaped() {
     let svg = latex_to_svg("<");
     assert_valid_svg(&svg, "less-than");
     assert!(svg.contains("&lt;"), "< should be XML-escaped to &lt;");
-    assert!(!svg.contains("><text") || !svg.contains("><<"), "raw < should not appear in text content");
+    assert!(
+        !svg.contains("><text") || !svg.contains("><<"),
+        "raw < should not appear in text content"
+    );
 }
 
 #[test]

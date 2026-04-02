@@ -11,7 +11,7 @@ pub struct MathmlWriter;
 
 impl MathWriter for MathmlWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
-        let mut writer = Writer::new(Cursor::new(Vec::new()));
+        let mut writer = Writer::new(Cursor::new(Vec::with_capacity(512)));
 
         let mut math = BytesStart::new("math");
         math.push_attribute(("xmlns", "http://www.w3.org/1998/Math/MathML"));
@@ -29,7 +29,9 @@ impl MathWriter for MathmlWriter {
             .map_err(to_err)?;
 
         let buf = writer.into_inner().into_inner();
-        Ok(String::from_utf8(buf).unwrap_or_default())
+        String::from_utf8(buf).map_err(|e| {
+            crate::error::Error::Unsupported(format!("MathML output contained invalid UTF-8: {e}"))
+        })
     }
 }
 
@@ -74,7 +76,10 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                         elem.push_attribute(("stretchy", "true"));
                     }
                     if entry.form != OperatorForm::Infix {
-                        elem.push_attribute(("form", crate::unicode::operators::form_str(entry.form)));
+                        elem.push_attribute((
+                            "form",
+                            crate::unicode::operators::form_str(entry.form),
+                        ));
                     }
                 }
             }
@@ -331,10 +336,8 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                     let mut op_elem = BytesStart::new("mo");
                     op_elem.push_attribute(("movablelimits", "true"));
                     w.write_event(Event::Start(op_elem)).map_err(to_err)?;
-                    w.write_event(Event::Text(BytesText::new(
-                        &op.to_string(),
-                    )))
-                    .map_err(to_err)?;
+                    w.write_event(Event::Text(BytesText::new(&op.to_string())))
+                        .map_err(to_err)?;
                     w.write_event(Event::End(BytesEnd::new("mo")))
                         .map_err(to_err)?;
                     if let Some(s) = sub {
@@ -468,10 +471,7 @@ fn write_mi(w: &mut XmlWriter, s: &str) -> Result<()> {
     let mut elem = BytesStart::new("mi");
     // Single-letter identifiers are italic by default in MathML;
     // multi-letter identifiers should be normal
-    if s.chars().count() > 1
-        && s.chars()
-            .all(|c| c.is_ascii_alphabetic())
-    {
+    if s.chars().count() > 1 && s.chars().all(|c| c.is_ascii_alphabetic()) {
         elem.push_attribute(("mathvariant", "normal"));
     }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
@@ -504,10 +504,11 @@ fn write_mo(
 }
 
 fn write_mo_char(w: &mut XmlWriter, ch: char) -> Result<()> {
-    let s = ch.to_string();
+    let mut buf = [0u8; 4];
+    let s = ch.encode_utf8(&mut buf);
     w.write_event(Event::Start(BytesStart::new("mo")))
         .map_err(to_err)?;
-    w.write_event(Event::Text(BytesText::new(&s)))
+    w.write_event(Event::Text(BytesText::new(s)))
         .map_err(to_err)?;
     w.write_event(Event::End(BytesEnd::new("mo")))
         .map_err(to_err)?;
@@ -592,7 +593,9 @@ mod tests {
 
     #[test]
     fn phantom() {
-        let output = write(MathNode::Phantom(Box::new(MathNode::Identifier("x".into()))));
+        let output = write(MathNode::Phantom(Box::new(MathNode::Identifier(
+            "x".into(),
+        ))));
         assert!(output.contains("<mphantom>"));
     }
 

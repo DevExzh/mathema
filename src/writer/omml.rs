@@ -12,7 +12,7 @@ pub struct OmmlWriter;
 
 impl MathWriter for OmmlWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
-        let mut w = Writer::new(Cursor::new(Vec::new()));
+        let mut w = Writer::new(Cursor::new(Vec::with_capacity(512)));
         let mut math = BytesStart::new("m:oMath");
         math.push_attribute(("xmlns:m", NS));
         w.write_event(Event::Start(math)).map_err(io_err)?;
@@ -22,7 +22,9 @@ impl MathWriter for OmmlWriter {
         w.write_event(Event::End(BytesEnd::new("m:oMath")))
             .map_err(io_err)?;
         let buf = w.into_inner().into_inner();
-        Ok(String::from_utf8(buf).unwrap_or_default())
+        String::from_utf8(buf).map_err(|e| {
+            crate::error::Error::Unsupported(format!("OMML output contained invalid UTF-8: {e}"))
+        })
     }
 }
 
@@ -553,7 +555,9 @@ mod tests {
 
     #[test]
     fn phantom() {
-        let output = write(MathNode::Phantom(Box::new(MathNode::Identifier("x".into()))));
+        let output = write(MathNode::Phantom(Box::new(MathNode::Identifier(
+            "x".into(),
+        ))));
         assert!(output.contains("<m:phant>"));
     }
 

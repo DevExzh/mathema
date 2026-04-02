@@ -297,21 +297,31 @@ static OPERATORS: &[OperatorEntry] = &[
 pub fn lookup_operator(ch: char, form: OperatorForm) -> Option<&'static OperatorEntry> {
     let key = (ch, form_ord(form));
     OPERATORS
-        .iter()
-        .find(|e| (e.character, form_ord(e.form)) == key)
+        .binary_search_by(|e| (e.character, form_ord(e.form)).cmp(&key))
+        .ok()
+        .map(|i| &OPERATORS[i])
 }
 
 /// Look up an operator entry by character, trying the given form first,
 /// then falling back to any matching form.
 pub fn lookup_operator_any(ch: char, preferred: OperatorForm) -> Option<&'static OperatorEntry> {
-    lookup_operator(ch, preferred).or_else(|| OPERATORS.iter().find(|e| e.character == ch))
+    lookup_operator(ch, preferred).or_else(|| {
+        let idx = OPERATORS.partition_point(|e| e.character < ch);
+        if idx < OPERATORS.len() && OPERATORS[idx].character == ch {
+            Some(&OPERATORS[idx])
+        } else {
+            None
+        }
+    })
 }
 
 /// Determine if a character is a stretchy operator in some form.
 pub fn is_stretchy(ch: char) -> bool {
-    OPERATORS
+    let start = OPERATORS.partition_point(|e| e.character < ch);
+    OPERATORS[start..]
         .iter()
-        .any(|e| e.character == ch && e.stretchy)
+        .take_while(|e| e.character == ch)
+        .any(|e| e.stretchy)
 }
 
 /// Infer operator form from the AST symbol kind.

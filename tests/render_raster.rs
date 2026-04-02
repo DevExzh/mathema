@@ -3,7 +3,7 @@
 //!
 //! Run with: `cargo test --features raster --test render_raster`
 
-use mathema::{from_latex, Format, ImageFormat, RasterOptions};
+use mathema::{Format, ImageFormat, RasterOptions, from_latex};
 
 #[test]
 fn latex_to_png() {
@@ -72,8 +72,14 @@ fn png_dimensions_reasonable() {
     assert!(png.len() > 24, "PNG should have IHDR chunk");
     let width = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
     let height = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
-    assert!(width > 0 && width < 1000, "width {width} should be reasonable");
-    assert!(height > 0 && height < 1000, "height {height} should be reasonable");
+    assert!(
+        width > 0 && width < 1000,
+        "width {width} should be reasonable"
+    );
+    assert!(
+        height > 0 && height < 1000,
+        "height {height} should be reasonable"
+    );
 }
 
 #[test]
@@ -89,7 +95,10 @@ fn complex_expression_renders() {
     let result = from_latex(r"\frac{x^2 + 1}{y - 1}").unwrap();
     let png = result.to_png().unwrap();
     assert_eq!(&png[..4], b"\x89PNG");
-    assert!(png.len() > 500, "complex expression should produce substantial image");
+    assert!(
+        png.len() > 500,
+        "complex expression should produce substantial image"
+    );
 }
 
 #[test]
@@ -121,5 +130,8 @@ fn jpeg_with_quality() {
     let low = result.to_jpeg_with(&low_q).unwrap();
     let high = result.to_jpeg_with(&high_q).unwrap();
     // Higher quality should generally produce larger file
-    assert!(high.len() >= low.len(), "higher quality JPEG should be >= lower quality");
+    assert!(
+        high.len() >= low.len(),
+        "higher quality JPEG should be >= lower quality"
+    );
 }

@@ -281,14 +281,8 @@ mod tests {
 
     #[test]
     fn double_struck_special() {
-        assert_eq!(
-            styled_char('R', TextStyle::DoubleStruck),
-            Some('\u{211D}')
-        );
-        assert_eq!(
-            styled_char('Z', TextStyle::DoubleStruck),
-            Some('\u{2124}')
-        );
+        assert_eq!(styled_char('R', TextStyle::DoubleStruck), Some('\u{211D}'));
+        assert_eq!(styled_char('Z', TextStyle::DoubleStruck), Some('\u{2124}'));
     }
 
     #[test]

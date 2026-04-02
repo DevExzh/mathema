@@ -23,11 +23,11 @@ fn normalize_nodes(nodes: &mut Vec<MathNode>) {
         match node {
             MathNode::Row(children) if children.is_empty() => {
                 // Phase 4: remove empty Rows
-            }
+            },
             MathNode::Row(children) => {
                 // Flatten
                 flattened.extend(children);
-            }
+            },
             other => flattened.push(other),
         }
     }
@@ -56,7 +56,7 @@ fn normalize_node_recursive(node: &mut MathNode) {
             if children.len() == 1 {
                 *node = children.pop().unwrap();
             }
-        }
+        },
 
         MathNode::Fenced { content, .. } => {
             for item in content.iter_mut() {
@@ -64,21 +64,21 @@ fn normalize_node_recursive(node: &mut MathNode) {
                     normalize_node_recursive(n);
                 }
             }
-        }
+        },
 
         MathNode::Subscript { base, sub } => {
             normalize_node_recursive(base);
             normalize_node_recursive(sub);
-        }
+        },
         MathNode::Superscript { base, sup } => {
             normalize_node_recursive(base);
             normalize_node_recursive(sup);
-        }
+        },
         MathNode::SubSup { base, sub, sup } => {
             normalize_node_recursive(base);
             normalize_node_recursive(sub);
             normalize_node_recursive(sup);
-        }
+        },
         MathNode::PreScripts {
             base,
             pre_sub,
@@ -91,39 +91,37 @@ fn normalize_node_recursive(node: &mut MathNode) {
             if let Some(s) = pre_sup {
                 normalize_node_recursive(s);
             }
-        }
+        },
 
         MathNode::Overscript { base, over, .. } => {
             normalize_node_recursive(base);
             normalize_node_recursive(over);
-        }
+        },
         MathNode::Underscript { base, under, .. } => {
             normalize_node_recursive(base);
             normalize_node_recursive(under);
-        }
+        },
         MathNode::UnderOver {
             base, under, over, ..
         } => {
             normalize_node_recursive(base);
             normalize_node_recursive(under);
             normalize_node_recursive(over);
-        }
+        },
 
         MathNode::Fraction { num, den, .. } => {
             normalize_node_recursive(num);
             normalize_node_recursive(den);
-        }
+        },
         MathNode::Sqrt(inner) => {
             normalize_node_recursive(inner);
-        }
+        },
         MathNode::Root { index, radicand } => {
             normalize_node_recursive(index);
             normalize_node_recursive(radicand);
-        }
+        },
 
-        MathNode::Nary {
-            sub, sup, body, ..
-        } => {
+        MathNode::Nary { sub, sup, body, .. } => {
             if let Some(s) = sub {
                 normalize_node_recursive(s);
             }
@@ -131,11 +129,11 @@ fn normalize_node_recursive(node: &mut MathNode) {
                 normalize_node_recursive(s);
             }
             normalize_node_recursive(body);
-        }
+        },
 
         MathNode::Accent { base, .. } => {
             normalize_node_recursive(base);
-        }
+        },
 
         MathNode::Array { rows, .. } => {
             for row in rows.iter_mut() {
@@ -143,20 +141,20 @@ fn normalize_node_recursive(node: &mut MathNode) {
                     normalize_nodes(cell);
                 }
             }
-        }
+        },
 
         MathNode::Phantom(inner) | MathNode::Boxed(inner) => {
             normalize_node_recursive(inner);
-        }
+        },
         MathNode::Cancel { content, .. } => {
             normalize_node_recursive(content);
-        }
+        },
         MathNode::Scaled { content, .. } => {
             normalize_node_recursive(content);
-        }
+        },
         MathNode::Styled(_, children) => {
             normalize_nodes(children);
-        }
+        },
 
         // Leaf nodes: nothing to normalize
         MathNode::Number(_)
@@ -164,7 +162,7 @@ fn normalize_node_recursive(node: &mut MathNode) {
         | MathNode::Operator(_)
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
-        | MathNode::Space(_) => {}
+        | MathNode::Space(_) => {},
     }
 }
 

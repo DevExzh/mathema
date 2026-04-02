@@ -1,18 +1,18 @@
+use super::RenderOptions;
+use super::metrics::{self, GlyphMetrics};
+use super::params::TexParams;
+use super::spacing::{self, AtomType};
+use super::style::MathStyle;
 /// Layout engine: converts MathExpr → LayoutBox tree.
 /// Applies TeX typesetting rules for positioning.
 use crate::ast::*;
-use super::RenderOptions;
-use super::style::MathStyle;
-use super::params::TexParams;
-use super::metrics::{self, GlyphMetrics};
-use super::spacing::{self, AtomType};
 
 /// A positioned layout box in the rendering tree.
 #[derive(Debug, Clone)]
 pub struct LayoutBox {
     pub width: f64,
-    pub height: f64,  // above baseline
-    pub depth: f64,   // below baseline
+    pub height: f64, // above baseline
+    pub depth: f64,  // below baseline
     pub kind: BoxKind,
 }
 
@@ -34,18 +34,24 @@ pub enum BoxKind {
     /// SVG path data (radical signs, cancel lines).
     SvgPath(String),
     /// Color wrapper.
-    Color { color: String, child: Box<PositionedBox> },
+    Color {
+        color: String,
+        child: Box<PositionedBox>,
+    },
     /// Invisible placeholder (takes space but doesn't render).
     Phantom,
     /// Box with border.
-    Boxed { child: Box<PositionedBox>, padding: f64 },
+    Boxed {
+        child: Box<PositionedBox>,
+        padding: f64,
+    },
 }
 
 /// A box with an offset from its parent's reference point.
 #[derive(Debug, Clone)]
 pub struct PositionedBox {
     pub dx: f64,
-    pub dy: f64,  // positive = up from baseline
+    pub dy: f64, // positive = up from baseline
     pub layout: LayoutBox,
 }
 
@@ -55,7 +61,11 @@ impl PositionedBox {
     }
 
     pub fn at_origin(layout: LayoutBox) -> Self {
-        Self { dx: 0.0, dy: 0.0, layout }
+        Self {
+            dx: 0.0,
+            dy: 0.0,
+            layout,
+        }
     }
 }
 
@@ -99,10 +109,14 @@ impl LayoutBox {
     }
 }
 
+/// Maximum recursion depth for layout to prevent stack overflow on adversarial input.
+const MAX_LAYOUT_DEPTH: u32 = 128;
+
 struct LayoutCtx<'a> {
     style: MathStyle,
     params: TexParams,
     options: &'a RenderOptions,
+    depth: u32,
 }
 
 impl<'a> LayoutCtx<'a> {
@@ -113,8 +127,19 @@ impl<'a> LayoutCtx<'a> {
     fn with_style(&self, style: MathStyle) -> LayoutCtx<'a> {
         LayoutCtx {
             style,
-            params: self.params.clone(),
+            params: self.params,
             options: self.options,
+            depth: self.depth,
+        }
+    }
+
+    /// Return a new context with incremented depth for recursion tracking.
+    fn deeper(&self) -> LayoutCtx<'a> {
+        LayoutCtx {
+            style: self.style,
+            params: self.params,
+            options: self.options,
+            depth: self.depth + 1,
         }
     }
 }
@@ -125,6 +150,7 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
         style,
         params: TexParams::default(),
         options,
+        depth: 0,
     };
     layout_row(&expr.nodes, &ctx)
 }
@@ -155,8 +181,10 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         max_height = max_height.max(layout.height);
         max_depth = max_depth.max(layout.depth);
 
-        children.push(PositionedBox::new(cursor_x, 0.0, layout.clone()));
-        cursor_x += layout.width;
+        // Capture width before moving layout into children vec
+        let layout_width = layout.width;
+        children.push(PositionedBox::new(cursor_x, 0.0, layout));
+        cursor_x += layout_width;
         prev_atom = Some(cur_atom);
     }
 
@@ -169,6 +197,11 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
 }
 
 fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+    // Guard against stack overflow from deeply nested input (e.g. \frac{\frac{...}{...}}{...})
+    if ctx.depth >= MAX_LAYOUT_DEPTH {
+        return LayoutBox::kern(0.0);
+    }
+    let ctx = &ctx.deeper();
     match node {
         MathNode::Number(s) => layout_text_run(s, ctx, false),
         MathNode::Identifier(s) => {
@@ -178,7 +211,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             } else {
                 layout_text_run(s, ctx, false)
             }
-        }
+        },
         MathNode::Operator(op) => layout_operator(op, ctx),
         MathNode::Symbol(_, s) => {
             if let Some(ch) = s.chars().next() {
@@ -186,23 +219,43 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             } else {
                 LayoutBox::kern(0.0)
             }
-        }
+        },
         MathNode::Text(_, s) => layout_text_run(s, ctx, false),
         MathNode::Space(r) => LayoutBox::kern(r.as_f64() * ctx.size()),
         MathNode::Row(children) => layout_row(children, ctx),
-        MathNode::Fenced { open, close, content } => layout_fenced(open, close, content, ctx),
+        MathNode::Fenced {
+            open,
+            close,
+            content,
+        } => layout_fenced(open, close, content, ctx),
         MathNode::Subscript { base, sub } => layout_subscript(base, sub, ctx),
         MathNode::Superscript { base, sup } => layout_superscript(base, sup, ctx),
         MathNode::SubSup { base, sub, sup } => layout_subsup(base, sub, sup, ctx),
-        MathNode::PreScripts { base, pre_sub, pre_sup } => layout_prescripts(base, pre_sub, pre_sup, ctx),
+        MathNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => layout_prescripts(base, pre_sub, pre_sup, ctx),
         MathNode::Overscript { base, over, .. } => layout_overscript(base, over, ctx),
         MathNode::Underscript { base, under, .. } => layout_underscript(base, under, ctx),
-        MathNode::UnderOver { base, under, over, .. } => layout_underover(base, under, over, ctx),
+        MathNode::UnderOver {
+            base, under, over, ..
+        } => layout_underover(base, under, over, ctx),
         MathNode::Fraction { kind, num, den } => layout_fraction(*kind, num, den, ctx),
         MathNode::Sqrt(radicand) => layout_sqrt(radicand, None, ctx),
         MathNode::Root { index, radicand } => layout_sqrt(radicand, Some(index), ctx),
-        MathNode::Nary { op, sub, sup, body, limits } => layout_nary(*op, sub, sup, body, *limits, ctx),
-        MathNode::Accent { base, accent, position } => layout_accent(base, *accent, *position, ctx),
+        MathNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        } => layout_nary(*op, sub, sup, body, *limits, ctx),
+        MathNode::Accent {
+            base,
+            accent,
+            position,
+        } => layout_accent(base, *accent, *position, ctx),
         MathNode::Array { columns, rows } => layout_array(columns, rows, ctx),
         MathNode::Phantom(content) => layout_phantom(content, ctx),
         MathNode::Boxed(content) => layout_boxed(content, ctx),
@@ -267,9 +320,11 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
+    // Capture dimensions before moving base_box into children vec (avoids clone)
+    let base_width = base_box.width;
     let children = vec![
-        PositionedBox::at_origin(base_box.clone()),
-        PositionedBox::new(base_box.width, shift_up, sup_box),
+        PositionedBox::at_origin(base_box),
+        PositionedBox::new(base_width, shift_up, sup_box),
     ];
 
     LayoutBox {
@@ -287,7 +342,8 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
     let sub_box = layout_node(sub, &sub_ctx);
 
     let p = &ctx.params;
-    let shift_down = p.sub1
+    let shift_down = p
+        .sub1
         .max(base_box.depth + p.sub_drop * ctx.size())
         .max(sub_box.height - (4.0 * p.x_height / 5.0));
 
@@ -295,9 +351,10 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
+    let base_width = base_box.width;
     let children = vec![
-        PositionedBox::at_origin(base_box.clone()),
-        PositionedBox::new(base_box.width, -shift_down, sub_box),
+        PositionedBox::at_origin(base_box),
+        PositionedBox::new(base_width, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -331,8 +388,7 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
         .max(p.x_height / 4.0 + sup_box.depth);
 
     // Subscript shift
-    let mut shift_down = p.sub2
-        .max(base_box.depth + p.sub_drop * ctx.size());
+    let mut shift_down = p.sub2.max(base_box.depth + p.sub_drop * ctx.size());
 
     // Ensure gap between sub top and sup bottom (Rule 18d)
     let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
@@ -354,10 +410,11 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
+    let base_width = base_box.width;
     let children = vec![
-        PositionedBox::at_origin(base_box.clone()),
-        PositionedBox::new(base_box.width, shift_up, sup_box),
-        PositionedBox::new(base_box.width, -shift_down, sub_box),
+        PositionedBox::at_origin(base_box),
+        PositionedBox::new(base_width, shift_up, sup_box),
+        PositionedBox::new(base_width, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -369,7 +426,12 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
 }
 
 /// TeXBook Rule 15: fraction layout.
-fn layout_fraction(kind: FractionKind, num: &MathNode, den: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_fraction(
+    kind: FractionKind,
+    num: &MathNode,
+    den: &MathNode,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
 
@@ -494,24 +556,28 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
 
     let shift_up = inner.height + extra_clearance + rule_thickness;
 
+    // Capture dimensions before moving inner into children vec
+    let inner_width = inner.width;
+    let inner_depth = inner.depth;
     let mut children = vec![
         PositionedBox::new(0.0, 0.0, radical),
         PositionedBox::new(radical_width, shift_up, vinculum),
-        PositionedBox::new(radical_width, 0.0, inner.clone()),
+        PositionedBox::new(radical_width, 0.0, inner),
     ];
 
-    let mut total_width = radical_width + inner.width;
+    let mut total_width = radical_width + inner_width;
     let total_height = shift_up + rule_thickness;
-    let total_depth = inner.depth;
+    let total_depth = inner_depth;
 
     // Optional root index
     if let Some(idx) = index {
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box = layout_node(idx, &idx_ctx);
         let idx_shift = total_height * 0.6; // raise index
-        children.push(PositionedBox::new(0.0, idx_shift, idx_box.clone()));
+        let idx_width = idx_box.width;
+        children.push(PositionedBox::new(0.0, idx_shift, idx_box));
         // Adjust if index overflows to the left
-        let idx_overflow = idx_box.width.max(radical_width * 0.5);
+        let idx_overflow = idx_width.max(radical_width * 0.5);
         if idx_overflow > radical_width * 0.5 {
             let extra = idx_overflow - radical_width * 0.5;
             // Shift everything right by extra
@@ -562,33 +628,48 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
     let mut cursor_x = 0.0;
 
     // Open delimiter
-    if !open.is_empty() && open != "." && let Some(ch) = open.chars().next() {
+    if !open.is_empty()
+        && open != "."
+        && let Some(ch) = open.chars().next()
+    {
         let delim = LayoutBox {
             width: 0.389 * ctx.size(),
             height: max_h,
             depth: max_d,
-            kind: BoxKind::Delimiter { ch, target_height: target_h },
+            kind: BoxKind::Delimiter {
+                ch,
+                target_height: target_h,
+            },
         };
-        children.push(PositionedBox::new(cursor_x, 0.0, delim.clone()));
-        cursor_x += delim.width;
+        let delim_w = delim.width;
+        children.push(PositionedBox::new(cursor_x, 0.0, delim));
+        cursor_x += delim_w;
     }
 
-    // Content
+    // Content — capture width before moving each child
     for child in inner_children {
-        children.push(PositionedBox::new(cursor_x, 0.0, child.clone()));
-        cursor_x += child.width;
+        let w = child.width;
+        children.push(PositionedBox::new(cursor_x, 0.0, child));
+        cursor_x += w;
     }
 
     // Close delimiter
-    if !close.is_empty() && close != "." && let Some(ch) = close.chars().next() {
+    if !close.is_empty()
+        && close != "."
+        && let Some(ch) = close.chars().next()
+    {
         let delim = LayoutBox {
             width: 0.389 * ctx.size(),
             height: max_h,
             depth: max_d,
-            kind: BoxKind::Delimiter { ch, target_height: target_h },
+            kind: BoxKind::Delimiter {
+                ch,
+                target_height: target_h,
+            },
         };
-        children.push(PositionedBox::new(cursor_x, 0.0, delim.clone()));
-        cursor_x += delim.width;
+        let delim_w = delim.width;
+        children.push(PositionedBox::new(cursor_x, 0.0, delim));
+        cursor_x += delim_w;
     }
 
     LayoutBox {
@@ -599,17 +680,31 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
     }
 }
 
-fn layout_nary(op: char, sub: &Option<Box<MathNode>>, sup: &Option<Box<MathNode>>,
-               body: &MathNode, limits: LimitStyle, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_nary(
+    op: char,
+    sub: &Option<Box<MathNode>>,
+    sup: &Option<Box<MathNode>>,
+    body: &MathNode,
+    limits: LimitStyle,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
 
     // Large op in display mode
-    let op_size = if ctx.style.is_display() { size * 1.2 } else { size };
+    let op_size = if ctx.style.is_display() {
+        size * 1.2
+    } else {
+        size
+    };
     let m = metrics::glyph_metrics(op);
     let op_box = LayoutBox::glyph_with_metrics(op, m, op_size);
 
     let body_box = layout_node(body, ctx);
+    // Capture body dimensions before any move
+    let body_w = body_box.width;
+    let body_h = body_box.height;
+    let body_d = body_box.depth;
 
     let use_limits = match limits {
         LimitStyle::AboveBelow => true,
@@ -661,67 +756,60 @@ fn layout_nary(op: char, sub: &Option<Box<MathNode>>, sup: &Option<Box<MathNode>
         // Body follows
         let nary_width = max_w;
         let thin_space = 3.0 / 18.0 * size;
-        children.push(PositionedBox::new(nary_width + thin_space, 0.0, body_box.clone()));
+        children.push(PositionedBox::new(nary_width + thin_space, 0.0, body_box));
         LayoutBox {
-            width: nary_width + thin_space + body_box.width,
+            width: nary_width + thin_space + body_w,
             height: total_h,
             depth: total_d,
             kind: BoxKind::HBox { children },
         }
     } else {
-        // As sub/superscripts
+        // As sub/superscripts — helper to build "result + thin_space + body" hbox
         let node = MathNode::Symbol(SymbolKind::LargeOp, op.to_string());
+        let thin_space = 3.0 / 18.0 * size;
+
+        let build_hbox = |result: LayoutBox, body_box: LayoutBox| -> LayoutBox {
+            let rw = result.width;
+            let rh = result.height;
+            let rd = result.depth;
+            let bw = body_box.width;
+            let bh = body_box.height;
+            let bd = body_box.depth;
+            let children = vec![
+                PositionedBox::at_origin(result),
+                PositionedBox::new(rw + thin_space, 0.0, body_box),
+            ];
+            LayoutBox {
+                width: rw + thin_space + bw,
+                height: rh.max(bh),
+                depth: rd.max(bd),
+                kind: BoxKind::HBox { children },
+            }
+        };
+
         if let (Some(sub_n), Some(sup_n)) = (sub, sup) {
             let result = layout_subsup(&node, sub_n, sup_n, ctx);
-            let thin_space = 3.0 / 18.0 * size;
-            let children = vec![
-                PositionedBox::at_origin(result.clone()),
-                PositionedBox::new(result.width + thin_space, 0.0, body_box.clone()),
-            ];
-            return LayoutBox {
-                width: result.width + thin_space + body_box.width,
-                height: result.height.max(body_box.height),
-                depth: result.depth.max(body_box.depth),
-                kind: BoxKind::HBox { children },
-            };
+            return build_hbox(result, body_box);
         } else if let Some(sub_n) = sub {
             let result = layout_subscript(&node, sub_n, ctx);
-            let thin_space = 3.0 / 18.0 * size;
-            let children = vec![
-                PositionedBox::at_origin(result.clone()),
-                PositionedBox::new(result.width + thin_space, 0.0, body_box.clone()),
-            ];
-            return LayoutBox {
-                width: result.width + thin_space + body_box.width,
-                height: result.height.max(body_box.height),
-                depth: result.depth.max(body_box.depth),
-                kind: BoxKind::HBox { children },
-            };
+            return build_hbox(result, body_box);
         } else if let Some(sup_n) = sup {
             let result = layout_superscript(&node, sup_n, ctx);
-            let thin_space = 3.0 / 18.0 * size;
-            let children = vec![
-                PositionedBox::at_origin(result.clone()),
-                PositionedBox::new(result.width + thin_space, 0.0, body_box.clone()),
-            ];
-            return LayoutBox {
-                width: result.width + thin_space + body_box.width,
-                height: result.height.max(body_box.height),
-                depth: result.depth.max(body_box.depth),
-                kind: BoxKind::HBox { children },
-            };
+            return build_hbox(result, body_box);
         }
 
         // Just op + body
-        let thin_space = 3.0 / 18.0 * size;
+        let op_w = op_box.width;
+        let op_h = op_box.height;
+        let op_d = op_box.depth;
         let children = vec![
-            PositionedBox::at_origin(op_box.clone()),
-            PositionedBox::new(op_box.width + thin_space, 0.0, body_box.clone()),
+            PositionedBox::at_origin(op_box),
+            PositionedBox::new(op_w + thin_space, 0.0, body_box),
         ];
         LayoutBox {
-            width: op_box.width + thin_space + body_box.width,
-            height: op_box.height.max(body_box.height),
-            depth: op_box.depth.max(body_box.depth),
+            width: op_w + thin_space + body_w,
+            height: op_h.max(body_h),
+            depth: op_d.max(body_d),
             kind: BoxKind::HBox { children },
         }
     }
@@ -740,15 +828,18 @@ fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> Layou
     let over_dx = (max_w - over_box.width) / 2.0;
     let over_dy = base_box.height + gap + over_box.depth;
 
+    // Capture dimensions before moving into children
+    let over_h = over_box.height;
+    let base_d = base_box.depth;
     let children = vec![
-        PositionedBox::new(base_dx, 0.0, base_box.clone()),
-        PositionedBox::new(over_dx, over_dy, over_box.clone()),
+        PositionedBox::new(base_dx, 0.0, base_box),
+        PositionedBox::new(over_dx, over_dy, over_box),
     ];
 
     LayoutBox {
         width: max_w,
-        height: over_dy + over_box.height,
-        depth: base_box.depth,
+        height: over_dy + over_h,
+        depth: base_d,
         kind: BoxKind::VBox { children },
     }
 }
@@ -766,20 +857,28 @@ fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> Lay
     let under_dx = (max_w - under_box.width) / 2.0;
     let under_dy = base_box.depth + gap + under_box.height;
 
+    // Capture dimensions before moving into children
+    let base_h = base_box.height;
+    let under_d = under_box.depth;
     let children = vec![
-        PositionedBox::new(base_dx, 0.0, base_box.clone()),
-        PositionedBox::new(under_dx, -under_dy, under_box.clone()),
+        PositionedBox::new(base_dx, 0.0, base_box),
+        PositionedBox::new(under_dx, -under_dy, under_box),
     ];
 
     LayoutBox {
         width: max_w,
-        height: base_box.height,
-        depth: under_dy + under_box.depth,
+        height: base_h,
+        depth: under_dy + under_d,
         kind: BoxKind::VBox { children },
     }
 }
 
-fn layout_underover(base: &MathNode, under: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_underover(
+    base: &MathNode,
+    under: &MathNode,
+    over: &MathNode,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node(base, ctx);
@@ -799,21 +898,29 @@ fn layout_underover(base: &MathNode, under: &MathNode, over: &MathNode, ctx: &La
     let over_dy = base_box.height + gap_above + over_box.depth;
     let under_dy = base_box.depth + gap_below + under_box.height;
 
+    // Capture dimensions before moving into children
+    let over_h = over_box.height;
+    let under_d = under_box.depth;
     let children = vec![
-        PositionedBox::new(over_dx, over_dy, over_box.clone()),
-        PositionedBox::new(base_dx, 0.0, base_box.clone()),
-        PositionedBox::new(under_dx, -under_dy, under_box.clone()),
+        PositionedBox::new(over_dx, over_dy, over_box),
+        PositionedBox::new(base_dx, 0.0, base_box),
+        PositionedBox::new(under_dx, -under_dy, under_box),
     ];
 
     LayoutBox {
         width: max_w,
-        height: over_dy + over_box.height,
-        depth: under_dy + under_box.depth,
+        height: over_dy + over_h,
+        depth: under_dy + under_d,
         kind: BoxKind::VBox { children },
     }
 }
 
-fn layout_accent(base: &MathNode, accent: char, position: AccentPosition, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_accent(
+    base: &MathNode,
+    accent: char,
+    position: AccentPosition,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     let base_box = layout_node(base, ctx);
     let accent_box = LayoutBox::glyph(accent, ctx.style);
 
@@ -822,27 +929,38 @@ fn layout_accent(base: &MathNode, accent: char, position: AccentPosition, ctx: &
         AccentPosition::Above => {
             let dy = base_box.height + 0.02 * ctx.size(); // small gap
             (dy, dy + accent_box.height, base_box.depth)
-        }
+        },
         AccentPosition::Below => {
             let dy = -(base_box.depth + accent_box.height + 0.02 * ctx.size());
-            (dy, base_box.height, base_box.depth + accent_box.height + 0.02 * ctx.size())
-        }
+            (
+                dy,
+                base_box.height,
+                base_box.depth + accent_box.height + 0.02 * ctx.size(),
+            )
+        },
     };
 
+    // Capture width before moving base_box into children vec
+    let base_width = base_box.width;
+
     let children = vec![
-        PositionedBox::at_origin(base_box.clone()),
+        PositionedBox::at_origin(base_box),
         PositionedBox::new(accent_dx, accent_dy, accent_box),
     ];
 
     LayoutBox {
-        width: base_box.width,
+        width: base_width,
         height: total_h,
         depth: total_d,
         kind: BoxKind::HBox { children },
     }
 }
 
-fn layout_array(columns: &[ColumnAlign], rows: &[Vec<Vec<MathNode>>], ctx: &LayoutCtx) -> LayoutBox {
+fn layout_array(
+    columns: &[ColumnAlign],
+    rows: &[Vec<Vec<MathNode>>],
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     let size = ctx.size();
     let row_gap = 0.6 * size; // jot
     let col_gap = 1.0 * size; // column separation
@@ -857,7 +975,9 @@ fn layout_array(columns: &[ColumnAlign], rows: &[Vec<Vec<MathNode>>], ctx: &Layo
         cell_layouts.push(row_layouts);
     }
 
-    let n_cols = columns.len().max(cell_layouts.iter().map(|r| r.len()).max().unwrap_or(0));
+    let n_cols = columns
+        .len()
+        .max(cell_layouts.iter().map(|r| r.len()).max().unwrap_or(0));
     let n_rows = cell_layouts.len();
 
     // Compute column widths and row heights/depths
@@ -873,24 +993,25 @@ fn layout_array(columns: &[ColumnAlign], rows: &[Vec<Vec<MathNode>>], ctx: &Layo
         }
     }
 
-    // Position cells
+    // Position cells — consume cell_layouts by ownership to avoid cloning
     let mut children = Vec::new();
     let mut cursor_y = 0.0;
 
     // Start from top
-    for i in 0..n_rows {
+    for (i, row) in cell_layouts.into_iter().enumerate() {
         cursor_y += row_heights[i];
         let mut cursor_x = 0.0;
+        let mut row_iter = row.into_iter();
 
         for (j, &col_w) in col_widths.iter().enumerate() {
-            if let Some(cell) = cell_layouts.get(i).and_then(|r| r.get(j)) {
+            if let Some(cell) = row_iter.next() {
                 let align = columns.get(j).copied().unwrap_or(ColumnAlign::Center);
                 let dx = match align {
                     ColumnAlign::Left => 0.0,
                     ColumnAlign::Center => (col_w - cell.width) / 2.0,
                     ColumnAlign::Right => col_w - cell.width,
                 };
-                children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell.clone()));
+                children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
             }
             cursor_x += col_w;
             if j < n_cols - 1 {
@@ -904,7 +1025,8 @@ fn layout_array(columns: &[ColumnAlign], rows: &[Vec<Vec<MathNode>>], ctx: &Layo
         }
     }
 
-    let total_width: f64 = col_widths.iter().sum::<f64>() + col_gap * (n_cols.saturating_sub(1) as f64);
+    let total_width: f64 =
+        col_widths.iter().sum::<f64>() + col_gap * (n_cols.saturating_sub(1) as f64);
     let total_extent = cursor_y;
     // Center vertically around the axis
     let axis = ctx.params.axis_height * size;
@@ -918,8 +1040,12 @@ fn layout_array(columns: &[ColumnAlign], rows: &[Vec<Vec<MathNode>>], ctx: &Layo
     }
 }
 
-fn layout_prescripts(base: &MathNode, pre_sub: &Option<Box<MathNode>>,
-                     pre_sup: &Option<Box<MathNode>>, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_prescripts(
+    base: &MathNode,
+    pre_sub: &Option<Box<MathNode>>,
+    pre_sup: &Option<Box<MathNode>>,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     let base_box = layout_node(base, ctx);
     let p = &ctx.params;
 
@@ -945,10 +1071,12 @@ fn layout_prescripts(base: &MathNode, pre_sub: &Option<Box<MathNode>>,
         children.push(PositionedBox::new(0.0, -shift_down, sub_box));
     }
 
-    children.push(PositionedBox::new(pre_width, 0.0, base_box.clone()));
+    // Capture width before moving base_box into children vec
+    let base_width = base_box.width;
+    children.push(PositionedBox::new(pre_width, 0.0, base_box));
 
     LayoutBox {
-        width: pre_width + base_box.width,
+        width: pre_width + base_width,
         height: total_h,
         depth: total_d,
         kind: BoxKind::HBox { children },
@@ -993,25 +1121,32 @@ fn layout_cancel(stroke: StrokeKind, content: &MathNode, ctx: &LayoutCtx) -> Lay
         StrokeKind::Horizontal => {
             let mid = h / 2.0;
             format!("M0,{mid} L{w},{mid}")
-        }
+        },
         StrokeKind::Vertical => {
             let mid = w / 2.0;
             format!("M{mid},0 L{mid},{h}")
-        }
+        },
     };
 
-    let mut children = vec![PositionedBox::at_origin(inner.clone())];
-    children.push(PositionedBox::at_origin(LayoutBox {
-        width: w,
-        height: inner.height,
-        depth: inner.depth,
-        kind: BoxKind::SvgPath(path),
-    }));
+    // Capture dimensions before moving inner into children vec
+    let inner_width = inner.width;
+    let inner_height = inner.height;
+    let inner_depth = inner.depth;
+
+    let children = vec![
+        PositionedBox::at_origin(inner),
+        PositionedBox::at_origin(LayoutBox {
+            width: w,
+            height: inner_height,
+            depth: inner_depth,
+            kind: BoxKind::SvgPath(path),
+        }),
+    ];
 
     LayoutBox {
-        width: inner.width,
-        height: inner.height,
-        depth: inner.depth,
+        width: inner_width,
+        height: inner_height,
+        depth: inner_depth,
         kind: BoxKind::HBox { children },
     }
 }
@@ -1117,15 +1252,17 @@ mod tests {
         let display = layout_expr(&expr_d, MathStyle::Display, &opts);
         let text = layout_expr(&expr_t, MathStyle::Text, &opts);
         // Display fractions have larger numerator/denominator spacing
-        assert!(display.height + display.depth >= text.height + text.depth,
-                "display fraction should be at least as tall as text fraction");
+        assert!(
+            display.height + display.depth >= text.height + text.depth,
+            "display fraction should be at least as tall as text fraction"
+        );
     }
 
     #[test]
     fn layout_sqrt_has_positive_dimensions() {
-        let expr = MathExpr::inline(vec![MathNode::Sqrt(
-            Box::new(MathNode::Identifier("x".into())),
-        )]);
+        let expr = MathExpr::inline(vec![MathNode::Sqrt(Box::new(MathNode::Identifier(
+            "x".into(),
+        )))]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         assert!(root.width > 0.0);
         assert!(root.height > 0.0);
@@ -1156,16 +1293,24 @@ mod tests {
         let fenced_expr = MathExpr::inline(fenced_nodes);
         let fenced = layout_expr(&fenced_expr, MathStyle::Text, &default_options());
 
-        assert!(fenced.width > content_only.width,
-                "fenced expression should be wider than content alone (delimiters add width)");
+        assert!(
+            fenced.width > content_only.width,
+            "fenced expression should be wider than content alone (delimiters add width)"
+        );
     }
 
     #[test]
     fn layout_array_grid() {
         let expr = MathExpr::inline(vec![MathNode::Array {
             rows: vec![
-                vec![vec![MathNode::Identifier("a".into())], vec![MathNode::Identifier("b".into())]],
-                vec![vec![MathNode::Identifier("c".into())], vec![MathNode::Identifier("d".into())]],
+                vec![
+                    vec![MathNode::Identifier("a".into())],
+                    vec![MathNode::Identifier("b".into())],
+                ],
+                vec![
+                    vec![MathNode::Identifier("c".into())],
+                    vec![MathNode::Identifier("d".into())],
+                ],
             ],
             columns: vec![ColumnAlign::Center, ColumnAlign::Center],
         }]);
@@ -1240,15 +1385,21 @@ mod tests {
     #[test]
     fn layout_phantom_has_dimensions_but_invisible() {
         let content = MathNode::Identifier("x".into());
-        let visible = layout_node(&content, &LayoutCtx {
-            style: MathStyle::Text,
-            params: TexParams::default(),
-            options: &default_options(),
-        });
+        let visible = layout_node(
+            &content,
+            &LayoutCtx {
+                style: MathStyle::Text,
+                params: TexParams::default(),
+                options: &default_options(),
+                depth: 0,
+            },
+        );
         let expr = MathExpr::inline(vec![MathNode::Phantom(Box::new(content.clone()))]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
-        assert!((root.width - visible.width).abs() < 0.01,
-                "phantom should have same width as visible content");
+        assert!(
+            (root.width - visible.width).abs() < 0.01,
+            "phantom should have same width as visible content"
+        );
         if let BoxKind::HBox { children } = &root.kind {
             let phantom_kind = &children[0].layout.kind;
             assert!(matches!(phantom_kind, BoxKind::Phantom));
@@ -1258,15 +1409,22 @@ mod tests {
     #[test]
     fn layout_boxed_adds_padding() {
         let content = MathNode::Identifier("x".into());
-        let inner = layout_node(&content, &LayoutCtx {
-            style: MathStyle::Text,
-            params: TexParams::default(),
-            options: &default_options(),
-        });
+        let inner = layout_node(
+            &content,
+            &LayoutCtx {
+                style: MathStyle::Text,
+                params: TexParams::default(),
+                options: &default_options(),
+                depth: 0,
+            },
+        );
         let expr = MathExpr::inline(vec![MathNode::Boxed(Box::new(content.clone()))]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         // Boxed should be wider than inner due to padding
-        assert!(root.width > inner.width, "boxed should add padding to width");
+        assert!(
+            root.width > inner.width,
+            "boxed should add padding to width"
+        );
     }
 
     #[test]
@@ -1283,11 +1441,15 @@ mod tests {
     #[test]
     fn layout_scaled_doubles_dimensions() {
         let content = MathNode::Identifier("x".into());
-        let normal = layout_node(&content, &LayoutCtx {
-            style: MathStyle::Text,
-            params: TexParams::default(),
-            options: &default_options(),
-        });
+        let normal = layout_node(
+            &content,
+            &LayoutCtx {
+                style: MathStyle::Text,
+                params: TexParams::default(),
+                options: &default_options(),
+                depth: 0,
+            },
+        );
         let expr = MathExpr::inline(vec![MathNode::Scaled {
             factor: Rational::new(2, 1),
             content: Box::new(content.clone()),
@@ -1296,8 +1458,10 @@ mod tests {
         // Width should be approximately double (within the HBox wrapper)
         if let BoxKind::HBox { children } = &root.kind {
             let scaled = &children[0].layout;
-            assert!((scaled.width - normal.width * 2.0).abs() < 0.01,
-                    "scaled by 2 should double the width");
+            assert!(
+                (scaled.width - normal.width * 2.0).abs() < 0.01,
+                "scaled by 2 should double the width"
+            );
         }
     }
 
@@ -1332,8 +1496,10 @@ mod tests {
         let opts = default_options();
         let display = layout_expr(&expr, MathStyle::Display, &opts);
         let text = layout_expr(&expr, MathStyle::Text, &opts);
-        assert!(display.height >= text.height,
-                "large op in display should be at least as tall as in text");
+        assert!(
+            display.height >= text.height,
+            "large op in display should be at least as tall as in text"
+        );
     }
 
     #[test]
@@ -1349,8 +1515,10 @@ mod tests {
         let y_expr = MathExpr::inline(vec![MathNode::Identifier("y".into())]);
         let x_w = layout_expr(&x_expr, MathStyle::Text, &default_options()).width;
         let y_w = layout_expr(&y_expr, MathStyle::Text, &default_options()).width;
-        assert!(root.width > x_w + y_w,
-                "row with operator should include spacing");
+        assert!(
+            root.width > x_w + y_w,
+            "row with operator should include spacing"
+        );
     }
 
     #[test]
@@ -1376,8 +1544,14 @@ mod tests {
 
     #[test]
     fn layout_symbol_various_kinds() {
-        for kind in [SymbolKind::Ordinary, SymbolKind::BinaryOp, SymbolKind::Relation,
-                     SymbolKind::Open, SymbolKind::Close, SymbolKind::Punctuation] {
+        for kind in [
+            SymbolKind::Ordinary,
+            SymbolKind::BinaryOp,
+            SymbolKind::Relation,
+            SymbolKind::Open,
+            SymbolKind::Close,
+            SymbolKind::Punctuation,
+        ] {
             let expr = MathExpr::inline(vec![MathNode::Symbol(kind, "+".into())]);
             let root = layout_expr(&expr, MathStyle::Text, &default_options());
             assert!(root.width > 0.0, "symbol kind {:?} should have width", kind);
@@ -1420,7 +1594,9 @@ mod tests {
         let opts = default_options();
         let text_box = layout_expr(&base_expr, MathStyle::Text, &opts);
         let script_box = layout_expr(&base_expr, MathStyle::Script, &opts);
-        assert!(script_box.width < text_box.width,
-                "script style should produce smaller glyphs");
+        assert!(
+            script_box.width < text_box.width,
+            "script style should produce smaller glyphs"
+        );
     }
 }

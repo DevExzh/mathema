@@ -165,44 +165,44 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('\u{00D7}', GlyphMetrics::new(0.491, 0.0, 0.778, 0.0)),   // × times
     ('\u{00F7}', GlyphMetrics::new(0.583, 0.083, 0.778, 0.0)), // ÷ divide
     // Greek uppercase (U+0393–U+03A9)
-    ('\u{0393}', GlyphMetrics::new(0.683, 0.0, 0.625, 0.0)),  // Γ Gamma
-    ('\u{0394}', GlyphMetrics::new(0.683, 0.0, 0.833, 0.0)),  // Δ Delta
-    ('\u{0398}', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)),  // Θ Theta
-    ('\u{039B}', GlyphMetrics::new(0.683, 0.0, 0.694, 0.0)),  // Λ Lambda
-    ('\u{039E}', GlyphMetrics::new(0.683, 0.0, 0.667, 0.0)),  // Ξ Xi
-    ('\u{03A0}', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),  // Π Pi
-    ('\u{03A3}', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)),  // Σ Sigma
-    ('\u{03A5}', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)),  // Υ Upsilon
-    ('\u{03A6}', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)),  // Φ Phi
-    ('\u{03A8}', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)),  // Ψ Psi
-    ('\u{03A9}', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)),  // Ω Omega
+    ('\u{0393}', GlyphMetrics::new(0.683, 0.0, 0.625, 0.0)), // Γ Gamma
+    ('\u{0394}', GlyphMetrics::new(0.683, 0.0, 0.833, 0.0)), // Δ Delta
+    ('\u{0398}', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)), // Θ Theta
+    ('\u{039B}', GlyphMetrics::new(0.683, 0.0, 0.694, 0.0)), // Λ Lambda
+    ('\u{039E}', GlyphMetrics::new(0.683, 0.0, 0.667, 0.0)), // Ξ Xi
+    ('\u{03A0}', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)), // Π Pi
+    ('\u{03A3}', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)), // Σ Sigma
+    ('\u{03A5}', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)), // Υ Upsilon
+    ('\u{03A6}', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)), // Φ Phi
+    ('\u{03A8}', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)), // Ψ Psi
+    ('\u{03A9}', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)), // Ω Omega
     // Greek lowercase (U+03B1–U+03C9)
-    ('\u{03B1}', GlyphMetrics::new(0.431, 0.0, 0.564, 0.0)),  // α alpha
+    ('\u{03B1}', GlyphMetrics::new(0.431, 0.0, 0.564, 0.0)), // α alpha
     ('\u{03B2}', GlyphMetrics::new(0.694, 0.194, 0.517, 0.0)), // β beta
     ('\u{03B3}', GlyphMetrics::new(0.431, 0.194, 0.500, 0.0)), // γ gamma
-    ('\u{03B4}', GlyphMetrics::new(0.694, 0.0, 0.451, 0.0)),  // δ delta
-    ('\u{03B5}', GlyphMetrics::new(0.431, 0.0, 0.438, 0.0)),  // ε epsilon
+    ('\u{03B4}', GlyphMetrics::new(0.694, 0.0, 0.451, 0.0)), // δ delta
+    ('\u{03B5}', GlyphMetrics::new(0.431, 0.0, 0.438, 0.0)), // ε epsilon
     ('\u{03B6}', GlyphMetrics::new(0.694, 0.194, 0.438, 0.0)), // ζ zeta
     ('\u{03B7}', GlyphMetrics::new(0.431, 0.194, 0.490, 0.0)), // η eta
-    ('\u{03B8}', GlyphMetrics::new(0.694, 0.0, 0.500, 0.0)),  // θ theta
-    ('\u{03B9}', GlyphMetrics::new(0.431, 0.0, 0.354, 0.0)),  // ι iota
-    ('\u{03BA}', GlyphMetrics::new(0.431, 0.0, 0.521, 0.0)),  // κ kappa
-    ('\u{03BB}', GlyphMetrics::new(0.694, 0.0, 0.557, 0.0)),  // λ lambda
+    ('\u{03B8}', GlyphMetrics::new(0.694, 0.0, 0.500, 0.0)), // θ theta
+    ('\u{03B9}', GlyphMetrics::new(0.431, 0.0, 0.354, 0.0)), // ι iota
+    ('\u{03BA}', GlyphMetrics::new(0.431, 0.0, 0.521, 0.0)), // κ kappa
+    ('\u{03BB}', GlyphMetrics::new(0.694, 0.0, 0.557, 0.0)), // λ lambda
     ('\u{03BC}', GlyphMetrics::new(0.431, 0.194, 0.576, 0.0)), // μ mu
-    ('\u{03BD}', GlyphMetrics::new(0.431, 0.0, 0.450, 0.0)),  // ν nu
+    ('\u{03BD}', GlyphMetrics::new(0.431, 0.0, 0.450, 0.0)), // ν nu
     ('\u{03BE}', GlyphMetrics::new(0.694, 0.194, 0.438, 0.0)), // ξ xi
-    ('\u{03C0}', GlyphMetrics::new(0.431, 0.0, 0.550, 0.0)),  // π pi
+    ('\u{03C0}', GlyphMetrics::new(0.431, 0.0, 0.550, 0.0)), // π pi
     ('\u{03C1}', GlyphMetrics::new(0.431, 0.194, 0.500, 0.0)), // ρ rho
     ('\u{03C2}', GlyphMetrics::new(0.431, 0.194, 0.439, 0.0)), // ς final sigma
-    ('\u{03C3}', GlyphMetrics::new(0.431, 0.0, 0.536, 0.0)),  // σ sigma
-    ('\u{03C4}', GlyphMetrics::new(0.431, 0.0, 0.443, 0.0)),  // τ tau
-    ('\u{03C5}', GlyphMetrics::new(0.431, 0.0, 0.500, 0.0)),  // υ upsilon
+    ('\u{03C3}', GlyphMetrics::new(0.431, 0.0, 0.536, 0.0)), // σ sigma
+    ('\u{03C4}', GlyphMetrics::new(0.431, 0.0, 0.443, 0.0)), // τ tau
+    ('\u{03C5}', GlyphMetrics::new(0.431, 0.0, 0.500, 0.0)), // υ upsilon
     ('\u{03C6}', GlyphMetrics::new(0.431, 0.194, 0.557, 0.0)), // φ phi
     ('\u{03C7}', GlyphMetrics::new(0.431, 0.194, 0.517, 0.0)), // χ chi
     ('\u{03C8}', GlyphMetrics::new(0.694, 0.194, 0.590, 0.0)), // ψ psi
-    ('\u{03C9}', GlyphMetrics::new(0.431, 0.0, 0.600, 0.0)),  // ω omega
+    ('\u{03C9}', GlyphMetrics::new(0.431, 0.0, 0.600, 0.0)), // ω omega
     // General punctuation (U+2026)
-    ('\u{2026}', GlyphMetrics::new(0.106, 0.0, 1.000, 0.0)),   // … ldots
+    ('\u{2026}', GlyphMetrics::new(0.106, 0.0, 1.000, 0.0)), // … ldots
     // Arrows (U+2190–U+21D4)
     ('\u{2190}', GlyphMetrics::new(0.511, 0.011, 1.000, 0.0)), // ← leftarrow
     ('\u{2191}', GlyphMetrics::new(0.694, 0.194, 0.500, 0.0)), // ↑ uparrow
@@ -213,22 +213,22 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('\u{21D2}', GlyphMetrics::new(0.511, 0.011, 1.000, 0.0)), // ⇒ Rightarrow
     ('\u{21D4}', GlyphMetrics::new(0.511, 0.011, 1.000, 0.0)), // ⇔ Leftrightarrow
     // Mathematical operators (U+2200–U+222E)
-    ('\u{2200}', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)),   // ∀ forall
-    ('\u{2202}', GlyphMetrics::new(0.694, 0.0, 0.500, 0.0)),   // ∂ partial
-    ('\u{2203}', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)),   // ∃ exists
+    ('\u{2200}', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)), // ∀ forall
+    ('\u{2202}', GlyphMetrics::new(0.694, 0.0, 0.500, 0.0)), // ∂ partial
+    ('\u{2203}', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)), // ∃ exists
     ('\u{2205}', GlyphMetrics::new(0.772, 0.078, 0.500, 0.0)), // ∅ emptyset
-    ('\u{2207}', GlyphMetrics::new(0.683, 0.0, 0.833, 0.0)),   // ∇ nabla
+    ('\u{2207}', GlyphMetrics::new(0.683, 0.0, 0.833, 0.0)), // ∇ nabla
     ('\u{2208}', GlyphMetrics::new(0.540, 0.040, 0.667, 0.0)), // ∈ in
     ('\u{2209}', GlyphMetrics::new(0.750, 0.250, 0.667, 0.0)), // ∉ notin
     ('\u{220B}', GlyphMetrics::new(0.540, 0.040, 0.667, 0.0)), // ∋ ni
     ('\u{220F}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ∏ product
     ('\u{2211}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ∑ sum
     ('\u{221A}', GlyphMetrics::new(0.800, 0.200, 0.833, 0.0)), // √ sqrt
-    ('\u{221E}', GlyphMetrics::new(0.431, 0.0, 0.778, 0.0)),   // ∞ infty
-    ('\u{2227}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)),   // ∧ wedge
-    ('\u{2228}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)),   // ∨ vee
-    ('\u{2229}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)),   // ∩ cap
-    ('\u{222A}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)),   // ∪ cup
+    ('\u{221E}', GlyphMetrics::new(0.431, 0.0, 0.778, 0.0)), // ∞ infty
+    ('\u{2227}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)), // ∧ wedge
+    ('\u{2228}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)), // ∨ vee
+    ('\u{2229}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)), // ∩ cap
+    ('\u{222A}', GlyphMetrics::new(0.598, 0.0, 0.667, 0.0)), // ∪ cup
     ('\u{222B}', GlyphMetrics::new(0.750, 0.250, 0.556, 0.144)), // ∫ integral
     ('\u{222C}', GlyphMetrics::new(0.750, 0.250, 0.944, 0.144)), // ∬ double integral
     ('\u{222D}', GlyphMetrics::new(0.750, 0.250, 1.333, 0.144)), // ∭ triple integral
@@ -317,14 +317,20 @@ mod tests {
     #[test]
     fn uppercase_latin_lookup() {
         let m = glyph_metrics('A');
-        assert!((m.height - 0.683).abs() < 0.001, "A height should be ~0.683");
+        assert!(
+            (m.height - 0.683).abs() < 0.001,
+            "A height should be ~0.683"
+        );
         assert!(m.width > 0.0);
     }
 
     #[test]
     fn lowercase_latin_lookup() {
         let m = glyph_metrics('x');
-        assert!((m.height - 0.431).abs() < 0.001, "x height should be ~0.431 (x-height)");
+        assert!(
+            (m.height - 0.431).abs() < 0.001,
+            "x height should be ~0.431 (x-height)"
+        );
         assert!(m.depth.abs() < 0.001, "x should have no depth");
     }
 
@@ -365,7 +371,10 @@ mod tests {
     #[test]
     fn capital_greek_lookup() {
         let m = glyph_metrics('\u{0393}'); // Γ
-        assert!((m.height - 0.683).abs() < 0.001, "capital Greek should match Latin capitals");
+        assert!(
+            (m.height - 0.683).abs() < 0.001,
+            "capital Greek should match Latin capitals"
+        );
     }
 
     #[test]
@@ -385,7 +394,10 @@ mod tests {
     #[test]
     fn fallback_for_control_char() {
         let m = glyph_metrics('\u{0001}'); // control char
-        assert!(m.width >= 0.0, "control char should have non-negative width");
+        assert!(
+            m.width >= 0.0,
+            "control char should have non-negative width"
+        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ impl Reader for MtefReader {
                     ));
                 }
                 return Err(e);
-            }
+            },
         };
         Self::parse_bytes(&bytes, config)
     }
@@ -55,7 +55,7 @@ impl MtefReader {
                     DisplayStyle::Block
                 };
                 Ok(ParseResult::new(MathExpr { nodes, display }))
-            }
+            },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let display = if parser.inline {
@@ -64,7 +64,10 @@ impl MtefReader {
                         DisplayStyle::Block
                     };
                     Ok(ParseResult::with_diagnostics(
-                        MathExpr { nodes: vec![], display },
+                        MathExpr {
+                            nodes: vec![],
+                            display,
+                        },
                         vec![Diagnostic {
                             kind: DiagnosticKind::Warning,
                             message: format!("MTEF parse error (recovered): {e}"),
@@ -74,7 +77,7 @@ impl MtefReader {
                 } else {
                     Err(e)
                 }
-            }
+            },
         }
     }
 }
@@ -447,7 +450,9 @@ impl<'a> MtefParser<'a> {
             },
             TF_VECTOR => MathNode::Identifier(text),
             _ => {
-                if unicode_char.is_ascii_digit() || (text.len() > 1 && text.chars().all(|c| c.is_ascii_digit())) {
+                if unicode_char.is_ascii_digit()
+                    || (text.len() > 1 && text.chars().all(|c| c.is_ascii_digit()))
+                {
                     MathNode::Number(text)
                 } else if is_operator_char(unicode_char) {
                     let kind = classify_symbol(unicode_char);
@@ -490,7 +495,7 @@ impl<'a> MtefParser<'a> {
         }
         // Consume trailing END if present
         if self.peek_byte() == Some(END) {
-            let _ = self.get_tag_and_options();
+            self.get_tag_and_options()?;
         }
         Ok(embells)
     }
@@ -581,10 +586,7 @@ impl<'a> MtefParser<'a> {
         }
 
         // A pile is a vertical stack of lines — map to Array with single-column rows
-        let array_rows: Vec<Vec<Vec<MathNode>>> = rows
-            .into_iter()
-            .map(|row| vec![row])
-            .collect();
+        let array_rows: Vec<Vec<Vec<MathNode>>> = rows.into_iter().map(|row| vec![row]).collect();
         Ok(MathNode::Array {
             columns: vec![ColumnAlign::Center],
             rows: array_rows,
@@ -728,7 +730,11 @@ fn wrap_nodes(nodes: Vec<MathNode>) -> MathNode {
     }
 }
 
-fn template_to_ast(selector: u8, variation: u16, mut slots: Vec<Vec<MathNode>>) -> Result<MathNode> {
+fn template_to_ast(
+    selector: u8,
+    variation: u16,
+    mut slots: Vec<Vec<MathNode>>,
+) -> Result<MathNode> {
     let get_slot = |slots: &mut Vec<Vec<MathNode>>, i: usize| -> MathNode {
         if i < slots.len() {
             wrap_nodes(std::mem::take(&mut slots[i]))
@@ -810,9 +816,7 @@ fn template_to_ast(selector: u8, variation: u16, mut slots: Vec<Vec<MathNode>>) 
                         sup: Box::new(sup),
                     })
                 },
-                _ => {
-                    Ok(get_slot(&mut slots, 0))
-                },
+                _ => Ok(get_slot(&mut slots, 0)),
             }
         },
         // Underbar (selector 16)
@@ -861,7 +865,7 @@ fn template_to_ast(selector: u8, variation: u16, mut slots: Vec<Vec<MathNode>>) 
             let op = match selector {
                 21 | 24 => '\u{222B}', // single integral
                 22 | 25 => '\u{222C}', // double integral
-                _ => '\u{222D}',        // triple integral
+                _ => '\u{222D}',       // triple integral
             };
             let limits = if selector >= 24 {
                 LimitStyle::AboveBelow
@@ -1085,8 +1089,8 @@ fn fence_delimiters(selector: u8, variation: u16) -> (&'static str, &'static str
         _ => ("(", ")"),
     };
     match variation {
-        1 => (open, ""),   // left only
-        2 => ("", close),  // right only
+        1 => (open, ""),  // left only
+        2 => ("", close), // right only
         _ => (open, close),
     }
 }
@@ -1223,8 +1227,8 @@ fn resolve_mtef_char(typeface: u8, code: u16) -> char {
 
 fn classify_symbol(ch: char) -> SymbolKind {
     match ch {
-        '+' | '-' | '\u{2212}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}'
-        | '\u{22C5}' | '\u{2227}' | '\u{2228}' | '\u{2295}' | '\u{2297}' => SymbolKind::BinaryOp,
+        '+' | '-' | '\u{2212}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}'
+        | '\u{2227}' | '\u{2228}' | '\u{2295}' | '\u{2297}' => SymbolKind::BinaryOp,
 
         '=' | '<' | '>' | '\u{2260}' | '\u{2264}' | '\u{2265}' | '\u{226A}' | '\u{226B}'
         | '\u{2248}' | '\u{2261}' | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}'
@@ -1241,7 +1245,10 @@ fn classify_symbol(ch: char) -> SymbolKind {
 }
 
 fn is_operator_char(ch: char) -> bool {
-    matches!(classify_symbol(ch), SymbolKind::BinaryOp | SymbolKind::Relation | SymbolKind::LargeOp | SymbolKind::Fence)
+    matches!(
+        classify_symbol(ch),
+        SymbolKind::BinaryOp | SymbolKind::Relation | SymbolKind::LargeOp | SymbolKind::Fence
+    )
 }
 
 fn apply_embellishment(base: MathNode, emb: u8) -> MathNode {
@@ -1288,13 +1295,13 @@ mod tests {
 
     fn make_mtef_v5(body: &[u8]) -> Vec<u8> {
         let mut data = vec![
-            5,    // version
-            1,    // platform (Win)
-            1,    // product (MathType)
-            5,    // version major
-            0,    // version minor
-            0,    // null-terminated app key (empty)
-            1,    // inline
+            5, // version
+            1, // platform (Win)
+            1, // product (MathType)
+            5, // version major
+            0, // version minor
+            0, // null-terminated app key (empty)
+            1, // inline
         ];
         data.extend_from_slice(body);
         data
@@ -1315,10 +1322,13 @@ mod tests {
     fn simple_number() {
         // MTEF v5: LINE with a CHAR record for '2' in NUMBER typeface
         let data = make_mtef_v5(&[
-            LINE, 0x00, // LINE tag, no options
-            CHAR, 0x00, // CHAR tag, no options
+            LINE,
+            0x00, // LINE tag, no options
+            CHAR,
+            0x00,            // CHAR tag, no options
             128 + TF_NUMBER, // typeface = NUMBER (slot 8 + 128)
-            0x32, 0x00, // mt_char = 0x0032 = '2'
+            0x32,
+            0x00, // mt_char = 0x0032 = '2'
             END,  // end of LINE
         ]);
         let expr = parse_bytes(&data);
@@ -1332,10 +1342,13 @@ mod tests {
     #[test]
     fn simple_identifier() {
         let data = make_mtef_v5(&[
-            LINE, 0x00,
-            CHAR, 0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_VARIABLE, // typeface = VARIABLE
-            0x78, 0x00, // 'x'
+            0x78,
+            0x00, // 'x'
             END,
         ]);
         let expr = parse_bytes(&data);
@@ -1350,21 +1363,28 @@ mod tests {
     fn fraction_template() {
         // Template selector 14 (fraction), variation 0
         let data = make_mtef_v5(&[
-            TMPL, 0x00, // TMPL tag, no options
-            14,         // selector: fraction
-            0x00,       // variation: full fraction
-            0x00,       // options
+            TMPL,
+            0x00, // TMPL tag, no options
+            14,   // selector: fraction
+            0x00, // variation: full fraction
+            0x00, // options
             // Slot 0 (numerator): LINE with '1'
-            LINE, 0x00,
-            CHAR, 0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_NUMBER,
-            0x31, 0x00, // '1'
+            0x31,
+            0x00, // '1'
             END,
             // Slot 1 (denominator): LINE with '2'
-            LINE, 0x00,
-            CHAR, 0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_NUMBER,
-            0x32, 0x00, // '2'
+            0x32,
+            0x00, // '2'
             END,
             END, // end of template slots
         ]);
@@ -1381,14 +1401,18 @@ mod tests {
     #[test]
     fn sqrt_template() {
         let data = make_mtef_v5(&[
-            TMPL, 0x00,
-            13,         // selector: root
-            0x00,       // variation: square root
+            TMPL,
             0x00,
-            LINE, 0x00,
-            CHAR, 0x00,
+            13,   // selector: root
+            0x00, // variation: square root
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_VARIABLE,
-            0x78, 0x00, // 'x'
+            0x78,
+            0x00, // 'x'
             END,
             END,
         ]);
@@ -1399,21 +1423,28 @@ mod tests {
     #[test]
     fn subscript_template() {
         let data = make_mtef_v5(&[
-            TMPL, 0x00,
-            15,         // selector: scripts
-            0x01,       // variation: subscript
+            TMPL,
+            0x00,
+            15,   // selector: scripts
+            0x01, // variation: subscript
             0x00,
             // base
-            LINE, 0x00,
-            CHAR, 0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_VARIABLE,
-            0x78, 0x00,
+            0x78,
+            0x00,
             END,
             // subscript
-            LINE, 0x00,
-            CHAR, 0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_NUMBER,
-            0x32, 0x00,
+            0x32,
+            0x00,
             END,
             END,
         ]);
@@ -1424,14 +1455,18 @@ mod tests {
     #[test]
     fn parentheses_template() {
         let data = make_mtef_v5(&[
-            TMPL, 0x00,
-            1,          // selector: parentheses
-            0x00,       // variation: both
+            TMPL,
             0x00,
-            LINE, 0x00,
-            CHAR, 0x00,
+            1,    // selector: parentheses
+            0x00, // variation: both
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_VARIABLE,
-            0x78, 0x00,
+            0x78,
+            0x00,
             END,
             END,
         ]);
@@ -1456,10 +1491,13 @@ mod tests {
     #[test]
     fn greek_letter() {
         let data = make_mtef_v5(&[
-            LINE, 0x00,
-            CHAR, 0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
             128 + TF_LCGREEK,
-            0x61, 0x00, // alpha
+            0x61,
+            0x00, // alpha
             END,
         ]);
         let expr = parse_bytes(&data);

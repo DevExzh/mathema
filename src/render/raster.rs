@@ -2,16 +2,15 @@
 ///
 /// Pipeline: MathExpr → LayoutBox tree → tiny_skia::Pixmap → PNG/JPEG bytes.
 /// Glyphs are rasterized with `fontdue` using an embedded Latin Modern Math font.
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use fontdue::{Font, FontSettings};
-use tiny_skia::{
-    Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform,
-};
+use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
 
+use super::RenderOptions;
 use super::layout::{BoxKind, LayoutBox};
 use super::style::MathStyle;
-use super::RenderOptions;
 use crate::ast::MathExpr;
 use crate::error::Result;
 
@@ -83,17 +82,15 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
         .ceil()
         .max(1.0) as u32;
 
-    let mut pixmap = Pixmap::new(width, height).ok_or_else(|| {
-        crate::error::Error::Render {
-            message: format!("failed to create {width}x{height} pixmap"),
-        }
+    let mut pixmap = Pixmap::new(width, height).ok_or_else(|| crate::error::Error::Render {
+        message: format!("failed to create {width}x{height} pixmap"),
     })?;
 
     // Fill background
     let bg = match options.background {
         Some(rgba) => Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]),
         None => match options.format {
-            ImageFormat::Png => Color::from_rgba8(0, 0, 0, 0),   // transparent
+            ImageFormat::Png => Color::from_rgba8(0, 0, 0, 0), // transparent
             ImageFormat::Jpeg => Color::from_rgba8(255, 255, 255, 255), // white
         },
     };
@@ -102,8 +99,15 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
     let fg = parse_color(&options.render.fg_color);
     let font = &*MATH_FONT;
 
+    let mut ctx = RasterCtx {
+        font,
+        em,
+        fg,
+        cache: HashMap::new(),
+    };
+
     let baseline_y = root.height * em + padding;
-    emit_raster_box(&mut pixmap, font, &root, padding, baseline_y, em, fg);
+    emit_raster_box(&mut pixmap, &mut ctx, &root, padding, baseline_y);
 
     encode_image(&pixmap, options)
 }
@@ -112,28 +116,35 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
 // Recursive tree walker
 // ---------------------------------------------------------------------------
 
+struct RasterCtx<'a> {
+    font: &'a Font,
+    em: f64,
+    fg: [u8; 3],
+    cache: HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>,
+}
+
 fn emit_raster_box(
     pixmap: &mut Pixmap,
-    font: &Font,
+    ctx: &mut RasterCtx,
     layout: &LayoutBox,
     x: f64,
     y: f64, // baseline position (y-down)
-    em: f64,
-    fg: [u8; 3],
 ) {
+    let em = ctx.em;
+    let fg = ctx.fg;
     match &layout.kind {
         BoxKind::Glyph { ch, size } => {
             let font_size_px = (em * size).max(1.0) as f32;
-            draw_glyph(pixmap, font, *ch, font_size_px, x, y, fg);
-        }
+            draw_glyph(pixmap, ctx, *ch, font_size_px, x, y);
+        },
 
         BoxKind::HBox { children } | BoxKind::VBox { children } => {
             for child in children {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em; // dy positive = up in TeX, subtract for y-down
-                emit_raster_box(pixmap, font, &child.layout, cx, cy, em, fg);
+                emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
             }
-        }
+        },
 
         BoxKind::Rule { thickness } => {
             let th_px = (thickness * em) as f32;
@@ -145,16 +156,16 @@ fn emit_raster_box(
                 paint.anti_alias = true;
                 pixmap.fill_rect(rect, &paint, Transform::identity(), None);
             }
-        }
+        },
 
         BoxKind::Kern | BoxKind::Phantom => {
             // Invisible — no output
-        }
+        },
 
         BoxKind::Delimiter { ch, target_height } => {
             let font_size_px = (target_height * em).max(1.0) as f32;
-            draw_glyph(pixmap, font, *ch, font_size_px, x, y, fg);
-        }
+            draw_glyph(pixmap, ctx, *ch, font_size_px, x, y);
+        },
 
         BoxKind::SvgPath(path_data) => {
             if let Some(path) = parse_svg_path(path_data) {
@@ -166,19 +177,25 @@ fn emit_raster_box(
                 paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                 paint.anti_alias = true;
 
-                let stroke = Stroke { width: 1.0, ..Stroke::default() };
+                let stroke = Stroke {
+                    width: 1.0,
+                    ..Stroke::default()
+                };
 
                 let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
                 pixmap.stroke_path(&path, &paint, &stroke, transform, None);
             }
-        }
+        },
 
         BoxKind::Color { color, child } => {
             let new_fg = parse_color(color);
+            let old_fg = ctx.fg;
+            ctx.fg = new_fg;
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_raster_box(pixmap, font, &child.layout, cx, cy, em, new_fg);
-        }
+            emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
+            ctx.fg = old_fg;
+        },
 
         BoxKind::Boxed { child, padding: _ } => {
             // Border rectangle
@@ -196,15 +213,18 @@ fn emit_raster_box(
                 let mut paint = Paint::default();
                 paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                 paint.anti_alias = true;
-                let stroke = Stroke { width: 1.0, ..Stroke::default() };
+                let stroke = Stroke {
+                    width: 1.0,
+                    ..Stroke::default()
+                };
                 pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
             }
 
             // Content
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_raster_box(pixmap, font, &child.layout, cx, cy, em, fg);
-        }
+            emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
+        },
     }
 }
 
@@ -214,17 +234,21 @@ fn emit_raster_box(
 
 fn draw_glyph(
     pixmap: &mut Pixmap,
-    font: &Font,
+    ctx: &mut RasterCtx,
     ch: char,
     font_size_px: f32,
     x: f64,
     baseline_y: f64,
-    fg: [u8; 3],
 ) {
     if font_size_px < 0.5 {
         return;
     }
-    let (metrics, bitmap) = font.rasterize(ch, font_size_px);
+    let key = (ch, font_size_px.to_bits());
+    let fg = ctx.fg;
+    let (metrics, bitmap) = &*ctx
+        .cache
+        .entry(key)
+        .or_insert_with(|| ctx.font.rasterize(ch, font_size_px));
     if metrics.width == 0 || metrics.height == 0 || bitmap.is_empty() {
         return;
     }
@@ -283,21 +307,21 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     pb.move_to(x, y);
                     has_content = true;
                 }
-            }
+            },
             Some('L') => {
                 chars.next();
                 if let Some((x, y)) = parse_coord_pair(&mut chars) {
                     pb.line_to(x, y);
                 }
-            }
+            },
             Some('Z') | Some('z') => {
                 chars.next();
                 pb.close();
-            }
+            },
             None => break,
             _ => {
                 chars.next(); // skip unknown
-            }
+            },
         }
     }
 
@@ -326,7 +350,10 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f32>
     }
     // Digits and decimal point
     let mut has_digit = false;
-    while chars.peek().is_some_and(|c| c.is_ascii_digit() || *c == '.') {
+    while chars
+        .peek()
+        .is_some_and(|c| c.is_ascii_digit() || *c == '.')
+    {
         s.push(chars.next().unwrap());
         has_digit = true;
     }
@@ -371,20 +398,24 @@ pub(crate) fn parse_color(s: &str) -> [u8; 3] {
 
 fn parse_hex_color(hex: &str) -> [u8; 3] {
     let hex = hex.trim();
+    // Reject non-ASCII input to prevent byte-boundary panics on multi-byte chars
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return [0, 0, 0];
+    }
     match hex.len() {
         3 => {
-            // #RGB → #RRGGBB
+            // #RGB → #RRGGBB (safe to byte-slice: all chars are ASCII hex digits)
             let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0);
             let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0);
             let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0);
             [r * 17, g * 17, b * 17]
-        }
+        },
         6 => {
             let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
             let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
             let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
             [r, g, b]
-        }
+        },
         _ => [0, 0, 0],
     }
 }
@@ -395,9 +426,11 @@ fn parse_hex_color(hex: &str) -> [u8; 3] {
 
 fn encode_image(pixmap: &Pixmap, options: &RasterOptions) -> Result<Vec<u8>> {
     match options.format {
-        ImageFormat::Png => pixmap.encode_png().map_err(|e| crate::error::Error::Render {
-            message: format!("PNG encoding failed: {e}"),
-        }),
+        ImageFormat::Png => pixmap
+            .encode_png()
+            .map_err(|e| crate::error::Error::Render {
+                message: format!("PNG encoding failed: {e}"),
+            }),
         ImageFormat::Jpeg => encode_jpeg(pixmap, options.quality),
     }
 }
@@ -428,10 +461,16 @@ fn encode_jpeg(pixmap: &Pixmap, quality: u8) -> Result<Vec<u8>> {
         }
     }
 
+    let w_u16 = u16::try_from(w).map_err(|_| crate::error::Error::Render {
+        message: format!("image width {w} exceeds JPEG maximum of 65535"),
+    })?;
+    let h_u16 = u16::try_from(h).map_err(|_| crate::error::Error::Render {
+        message: format!("image height {h} exceeds JPEG maximum of 65535"),
+    })?;
     let mut buf = Vec::new();
     let encoder = jpeg_encoder::Encoder::new(&mut buf, quality);
     encoder
-        .encode(&rgb, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
+        .encode(&rgb, w_u16, h_u16, jpeg_encoder::ColorType::Rgb)
         .map_err(|e| crate::error::Error::Render {
             message: format!("JPEG encoding failed: {e}"),
         })?;
@@ -491,7 +530,10 @@ mod tests {
         let png_1x = render_to_image(&expr, &opts_1x).unwrap();
         let png_2x = render_to_image(&expr, &opts_2x).unwrap();
         // 2x should produce significantly more bytes (larger image)
-        assert!(png_2x.len() > png_1x.len(), "2x scale should produce larger PNG");
+        assert!(
+            png_2x.len() > png_1x.len(),
+            "2x scale should produce larger PNG"
+        );
     }
 
     #[test]
@@ -580,9 +622,9 @@ mod tests {
 
     #[test]
     fn sqrt_renders() {
-        let png = render_png(vec![MathNode::Sqrt(
-            Box::new(MathNode::Identifier("x".into())),
-        )]);
+        let png = render_png(vec![MathNode::Sqrt(Box::new(MathNode::Identifier(
+            "x".into(),
+        )))]);
         assert!(png.len() > 100);
     }
 

@@ -2,13 +2,11 @@
 use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "wasm")]
-use crate::{convert as do_convert, Format, Config};
-#[cfg(feature = "wasm")]
 use crate::reader::Reader;
 #[cfg(feature = "wasm")]
-use crate::writer::Writer;
-#[cfg(feature = "wasm")]
 use crate::reader::latex::LatexReader;
+#[cfg(feature = "wasm")]
+use crate::writer::Writer;
 #[cfg(feature = "wasm")]
 use crate::writer::latex::LatexWriter;
 #[cfg(feature = "wasm")]
@@ -17,6 +15,14 @@ use crate::writer::mathml::MathmlWriter;
 use crate::writer::omml::OmmlWriter;
 #[cfg(feature = "wasm")]
 use crate::writer::unicode_math::UnicodeMathWriter;
+#[cfg(feature = "wasm")]
+use crate::{Config, Format, convert as do_convert};
+
+/// Convert any `Display` error into a `JsValue` string.
+#[cfg(feature = "wasm")]
+fn to_js_err(e: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&e.to_string())
+}
 
 #[cfg(feature = "wasm")]
 fn parse_format(s: &str) -> Result<Format, JsValue> {
@@ -38,7 +44,7 @@ fn parse_format(s: &str) -> Result<Format, JsValue> {
 pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
     let from_fmt = parse_format(from)?;
     let to_fmt = parse_format(to)?;
-    do_convert(input, from_fmt, to_fmt).map_err(|e| JsValue::from_str(&e.to_string()))
+    do_convert(input, from_fmt, to_fmt).map_err(to_js_err)
 }
 
 /// Parse LaTeX and return MathML.
@@ -46,8 +52,8 @@ pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    MathmlWriter::write(&parsed.expr, &config).map_err(|e| JsValue::from_str(&e.to_string()))
+    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    MathmlWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }
 
 /// Parse LaTeX and return OMML.
@@ -55,8 +61,8 @@ pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    OmmlWriter::write(&parsed.expr, &config).map_err(|e| JsValue::from_str(&e.to_string()))
+    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    OmmlWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }
 
 /// Parse LaTeX and return UnicodeMath.
@@ -64,8 +70,8 @@ pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    UnicodeMathWriter::write(&parsed.expr, &config).map_err(|e| JsValue::from_str(&e.to_string()))
+    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    UnicodeMathWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }
 
 /// Parse LaTeX and return the re-serialized (normalized) LaTeX.
@@ -73,6 +79,6 @@ pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn normalize_latex(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let parsed = LatexReader::parse(input, &config).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    LatexWriter::write(&parsed.expr, &config).map_err(|e| JsValue::from_str(&e.to_string()))
+    let parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
+    LatexWriter::write(&parsed.expr, &config).map_err(to_js_err)
 }

@@ -60,7 +60,7 @@ fn write(expr: &MathExpr, format: Format, config: &Config) -> Result<String> {
         Format::Svg => {
             let options = crate::render::RenderOptions::default();
             crate::render::render_to_svg(expr, &options)
-        }
+        },
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
             "raster formats produce binary output; use render_to_image() instead".into(),

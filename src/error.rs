@@ -17,10 +17,7 @@ impl Span {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("LaTeX parse error: {message}")]
-    LatexParse {
-        message: String,
-        span: Option<Span>,
-    },
+    LatexParse { message: String, span: Option<Span> },
 
     #[error("MathML parse error: {message}")]
     MathmlParse { message: String },

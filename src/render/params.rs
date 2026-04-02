@@ -1,7 +1,7 @@
 /// TeX typesetting parameters (FONTDIMEN values from Latin Modern / Computer Modern).
 /// All values in em units relative to the base font size.
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct TexParams {
     /// Height of the math axis above baseline.
     pub axis_height: f64,

@@ -1,6 +1,8 @@
 /// SVG emission: converts a LayoutBox tree into an SVG string.
+use std::fmt::Write;
+
 use super::RenderOptions;
-use super::layout::{LayoutBox, BoxKind};
+use super::layout::{BoxKind, LayoutBox};
 
 /// Emit the final SVG string from a laid-out box tree.
 pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
@@ -12,12 +14,13 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     let mut svg = String::with_capacity(4096);
 
     // SVG header
-    svg.push_str(&format!(
+    let _ = write!(
+        svg,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.3}" height="{height:.3}" viewBox="0 0 {width:.3} {height:.3}" style="vertical-align: -{depth:.3}px">"#,
         width = width_px,
         height = height_px,
         depth = depth_px,
-    ));
+    );
 
     // Render content
     // Origin in SVG: (0, root.height * em) corresponds to the baseline at x=0
@@ -28,21 +31,30 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     svg
 }
 
-fn emit_box(svg: &mut String, layout: &LayoutBox, x: f64, y: f64, em: f64, options: &RenderOptions) {
+fn emit_box(
+    svg: &mut String,
+    layout: &LayoutBox,
+    x: f64,
+    y: f64,
+    em: f64,
+    options: &RenderOptions,
+) {
     match &layout.kind {
         BoxKind::Glyph { ch, size } => {
             let font_size = em * size;
-            // In SVG, y is the baseline position
-            svg.push_str(&format!(
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">{ch}</text>"#,
+            // Write directly to buffer — avoids intermediate String from format!+escape_xml_char
+            let _ = write!(
+                svg,
+                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
                 x = x,
                 y = y,
                 fs = font_size,
                 ff = &options.font_family,
                 color = &options.fg_color,
-                ch = escape_xml_char(*ch),
-            ));
-        }
+            );
+            write_escaped_char(svg, *ch);
+            svg.push_str("</text>");
+        },
 
         BoxKind::HBox { children } => {
             for child in children {
@@ -51,7 +63,7 @@ fn emit_box(svg: &mut String, layout: &LayoutBox, x: f64, y: f64, em: f64, optio
                 let cy = y - child.dy * em;
                 emit_box(svg, &child.layout, cx, cy, em, options);
             }
-        }
+        },
 
         BoxKind::VBox { children } => {
             for child in children {
@@ -59,40 +71,42 @@ fn emit_box(svg: &mut String, layout: &LayoutBox, x: f64, y: f64, em: f64, optio
                 let cy = y - child.dy * em;
                 emit_box(svg, &child.layout, cx, cy, em, options);
             }
-        }
+        },
 
         BoxKind::Rule { thickness } => {
             let th_px = thickness * em;
             let w_px = layout.width * em;
             // Center the rule vertically at the given y
             let ry = y - th_px / 2.0;
-            svg.push_str(&format!(
+            let _ = write!(
+                svg,
                 r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
                 x = x,
                 ry = ry,
                 w = w_px,
                 h = th_px,
                 color = &options.fg_color,
-            ));
-        }
+            );
+        },
 
         BoxKind::Kern => {
             // Invisible — no output
-        }
+        },
 
         BoxKind::Delimiter { ch, target_height } => {
             let font_size = target_height * em;
-            // Scale delimiter to target height
-            svg.push_str(&format!(
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">{ch}</text>"#,
+            let _ = write!(
+                svg,
+                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
                 x = x,
                 y = y,
                 fs = font_size,
                 ff = &options.font_family,
                 color = &options.fg_color,
-                ch = escape_xml_char(*ch),
-            ));
-        }
+            );
+            write_escaped_char(svg, *ch);
+            svg.push_str("</text>");
+        },
 
         BoxKind::SvgPath(path) => {
             // Transform path coordinates from em to px
@@ -100,28 +114,29 @@ fn emit_box(svg: &mut String, layout: &LayoutBox, x: f64, y: f64, em: f64, optio
             // We need to translate to the actual position
             let tx = x;
             let ty = y - layout.height * em;
-            svg.push_str(&format!(
+            let _ = write!(
+                svg,
                 r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="1" fill="none"/></g>"#,
                 tx = tx,
                 ty = ty,
                 s = em,
                 path = path,
                 color = &options.fg_color,
-            ));
-        }
+            );
+        },
 
         BoxKind::Color { color, child } => {
             // Use the color as a group wrapper
-            svg.push_str(&format!(r#"<g fill="{color}" stroke="{color}">"#));
+            let _ = write!(svg, r#"<g fill="{color}" stroke="{color}">"#);
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box(svg, &child.layout, cx, cy, em, options);
             svg.push_str("</g>");
-        }
+        },
 
         BoxKind::Phantom => {
             // Invisible — takes space but doesn't render
-        }
+        },
 
         BoxKind::Boxed { child, padding: _ } => {
             let w_px = layout.width * em;
@@ -129,31 +144,33 @@ fn emit_box(svg: &mut String, layout: &LayoutBox, x: f64, y: f64, em: f64, optio
             let ry = y - layout.height * em;
 
             // Border rectangle
-            svg.push_str(&format!(
+            let _ = write!(
+                svg,
                 r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{color}" fill="none" stroke-width="1"/>"#,
                 x = x,
                 ry = ry,
                 w = w_px,
                 h = h_px,
                 color = &options.fg_color,
-            ));
+            );
 
             // Content
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box(svg, &child.layout, cx, cy, em, options);
-        }
+        },
     }
 }
 
-fn escape_xml_char(ch: char) -> String {
+/// Write an XML-escaped character directly to the buffer (zero allocation).
+fn write_escaped_char(out: &mut String, ch: char) {
     match ch {
-        '<' => "&lt;".into(),
-        '>' => "&gt;".into(),
-        '&' => "&amp;".into(),
-        '"' => "&quot;".into(),
-        '\'' => "&apos;".into(),
-        _ => ch.to_string(),
+        '<' => out.push_str("&lt;"),
+        '>' => out.push_str("&gt;"),
+        '&' => out.push_str("&amp;"),
+        '"' => out.push_str("&quot;"),
+        '\'' => out.push_str("&apos;"),
+        _ => out.push(ch),
     }
 }
 
@@ -161,8 +178,8 @@ fn escape_xml_char(ch: char) -> String {
 mod tests {
     use super::*;
     use crate::ast::*;
+    use crate::render::layout::{PositionedBox, layout_expr};
     use crate::render::style::MathStyle;
-    use crate::render::layout::{layout_expr, PositionedBox};
 
     fn render(latex_nodes: Vec<MathNode>) -> String {
         let expr = MathExpr::inline(latex_nodes);
@@ -205,7 +222,10 @@ mod tests {
     }
 
     fn render_display(latex_nodes: Vec<MathNode>) -> String {
-        let expr = MathExpr { nodes: latex_nodes, display: crate::ast::DisplayStyle::Block };
+        let expr = MathExpr {
+            nodes: latex_nodes,
+            display: crate::ast::DisplayStyle::Block,
+        };
         let options = RenderOptions::default();
         let root = layout_expr(&expr, MathStyle::Display, &options);
         emit_svg(&root, &options)
@@ -221,7 +241,10 @@ mod tests {
         assert!(svg.contains("x"));
         assert!(svg.contains("2"));
         // Superscript should have smaller font size
-        assert!(svg.contains("11.200"), "superscript should use script-size font");
+        assert!(
+            svg.contains("11.200"),
+            "superscript should use script-size font"
+        );
     }
 
     #[test]
@@ -236,29 +259,37 @@ mod tests {
 
     #[test]
     fn sqrt_svg_has_path_and_rule() {
-        let svg = render(vec![MathNode::Sqrt(
-            Box::new(MathNode::Identifier("x".into())),
-        )]);
-        assert!(svg.contains("<path") || svg.contains("<rect"),
-                "sqrt should have path (radical) or rect (vinculum)");
+        let svg = render(vec![MathNode::Sqrt(Box::new(MathNode::Identifier(
+            "x".into(),
+        )))]);
+        assert!(
+            svg.contains("<path") || svg.contains("<rect"),
+            "sqrt should have path (radical) or rect (vinculum)"
+        );
     }
 
     #[test]
     fn boxed_svg_has_border_rect() {
-        let svg = render(vec![MathNode::Boxed(
-            Box::new(MathNode::Identifier("x".into())),
-        )]);
-        assert!(svg.contains("stroke="), "boxed should have a stroked border rect");
+        let svg = render(vec![MathNode::Boxed(Box::new(MathNode::Identifier(
+            "x".into(),
+        )))]);
+        assert!(
+            svg.contains("stroke="),
+            "boxed should have a stroked border rect"
+        );
         assert!(svg.contains("<rect"), "boxed should contain rect element");
     }
 
     #[test]
     fn phantom_svg_no_visible_content() {
-        let svg = render(vec![MathNode::Phantom(
-            Box::new(MathNode::Identifier("x".into())),
-        )]);
+        let svg = render(vec![MathNode::Phantom(Box::new(MathNode::Identifier(
+            "x".into(),
+        )))]);
         // Phantom should NOT contain any text elements for its content
-        assert!(!svg.contains("<text"), "phantom should not render visible text");
+        assert!(
+            !svg.contains("<text"),
+            "phantom should not render visible text"
+        );
     }
 
     #[test]
@@ -267,7 +298,10 @@ mod tests {
             stroke: crate::ast::StrokeKind::Forward,
             content: Box::new(MathNode::Identifier("x".into())),
         }]);
-        assert!(svg.contains("<path"), "cancel should produce an SVG path for the strike line");
+        assert!(
+            svg.contains("<path"),
+            "cancel should produce an SVG path for the strike line"
+        );
     }
 
     #[test]
@@ -276,7 +310,8 @@ mod tests {
         let options = RenderOptions::default();
         let child_layout = layout_expr(
             &MathExpr::inline(vec![MathNode::Identifier("x".into())]),
-            MathStyle::Text, &options,
+            MathStyle::Text,
+            &options,
         );
         // Manually construct a color box
         let color_box = LayoutBox {
@@ -290,7 +325,10 @@ mod tests {
         };
         let svg = emit_svg(&color_box, &options);
         assert!(svg.contains("fill=\"red\""), "color group should set fill");
-        assert!(svg.contains("stroke=\"red\""), "color group should set stroke");
+        assert!(
+            svg.contains("stroke=\"red\""),
+            "color group should set stroke"
+        );
     }
 
     #[test]
@@ -313,10 +351,18 @@ mod tests {
         let svg = render(vec![MathNode::Fenced {
             open: "(".into(),
             close: ")".into(),
-            content: vec![crate::ast::FencedItem::Element(MathNode::Identifier("x".into()))],
+            content: vec![crate::ast::FencedItem::Element(MathNode::Identifier(
+                "x".into(),
+            ))],
         }]);
-        assert!(svg.contains("<text"), "fenced should produce text for delimiters");
-        assert!(svg.contains("(") || svg.contains("&#40;"), "should contain open paren");
+        assert!(
+            svg.contains("<text"),
+            "fenced should produce text for delimiters"
+        );
+        assert!(
+            svg.contains("(") || svg.contains("&#40;"),
+            "should contain open paren"
+        );
     }
 
     #[test]
@@ -352,7 +398,10 @@ mod tests {
         };
         let root = layout_expr(&expr, MathStyle::Text, &options);
         let svg = emit_svg(&root, &options);
-        assert!(svg.contains("monospace"), "custom font family should appear in SVG");
+        assert!(
+            svg.contains("monospace"),
+            "custom font family should appear in SVG"
+        );
     }
 
     #[test]
@@ -367,12 +416,18 @@ mod tests {
             base: Box::new(MathNode::Identifier("x".into())),
             sub: Box::new(MathNode::Number("2".into())),
         }]);
-        assert!(svg.contains("vertical-align"), "SVG should have vertical-align for inline");
+        assert!(
+            svg.contains("vertical-align"),
+            "SVG should have vertical-align for inline"
+        );
     }
 
     #[test]
     fn text_node_svg() {
-        let svg = render(vec![MathNode::Text(crate::ast::TextStyle::Normal, "hello".into())]);
+        let svg = render(vec![MathNode::Text(
+            crate::ast::TextStyle::Normal,
+            "hello".into(),
+        )]);
         assert!(svg.contains("h"));
         assert!(svg.contains("e"));
         assert!(svg.contains("l"));
@@ -391,6 +446,9 @@ mod tests {
         assert!(svg.contains("<text"));
         // Should have multiple text elements (operator, limits, body)
         let text_count = svg.matches("<text").count();
-        assert!(text_count >= 3, "nary should have at least 3 text elements, got {text_count}");
+        assert!(
+            text_count >= 3,
+            "nary should have at least 3 text elements, got {text_count}"
+        );
     }
 }

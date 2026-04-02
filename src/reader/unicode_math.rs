@@ -1,10 +1,11 @@
+use nom::IResult;
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_while1};
 use nom::character::complete::{char as nom_char, satisfy};
 use nom::combinator::opt;
 use nom::multi::many0;
 use nom::sequence::preceded;
-use nom::IResult;
+use std::cell::Cell;
 
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness};
@@ -12,8 +13,15 @@ use crate::reader::Reader;
 
 pub struct UnicodeMathReader;
 
+const MAX_PARSE_DEPTH: u32 = 128;
+
+thread_local! {
+    static UMATH_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
 impl Reader for UnicodeMathReader {
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
+        UMATH_DEPTH.with(|d| d.set(0));
         let input = input.trim();
         if input.is_empty() {
             return Ok(ParseResult::new(MathExpr::inline(vec![])));
@@ -34,7 +42,7 @@ impl Reader for UnicodeMathReader {
                 } else {
                     Err(e)
                 }
-            }
+            },
         }
     }
 }
@@ -56,8 +64,22 @@ fn parse_expr_list(input: &str) -> Result<Vec<MathNode>> {
 }
 
 fn parse_element(input: &str) -> IResult<&str, MathNode> {
-    let (input, base) = parse_atom(input)?;
-    parse_scripts(input, base)
+    UMATH_DEPTH.with(|d| {
+        let current = d.get();
+        if current >= MAX_PARSE_DEPTH {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
+        d.set(current + 1);
+        let result = (|| {
+            let (input, base) = parse_atom(input)?;
+            parse_scripts(input, base)
+        })();
+        d.set(d.get().saturating_sub(1));
+        result
+    })
 }
 
 fn parse_scripts(input: &str, base: MathNode) -> IResult<&str, MathNode> {
@@ -127,11 +149,7 @@ fn parse_atom(input: &str) -> IResult<&str, MathNode> {
 
 fn parse_group(input: &str) -> IResult<&str, MathNode> {
     // Parse (content), [content], {content}
-    alt((
-        parse_paren_group,
-        parse_bracket_group,
-        parse_brace_group,
-    ))(input)
+    alt((parse_paren_group, parse_bracket_group, parse_brace_group))(input)
 }
 
 fn parse_paren_group(input: &str) -> IResult<&str, MathNode> {
@@ -268,7 +286,10 @@ fn parse_matrix_content(input: &str) -> IResult<&str, MathNode> {
             },
             Err(_) => {
                 // Skip one char
-                remaining = &remaining[remaining.char_indices().nth(1).map_or(remaining.len(), |(i, _)| i)..];
+                remaining = &remaining[remaining
+                    .char_indices()
+                    .nth(1)
+                    .map_or(remaining.len(), |(i, _)| i)..];
             },
         }
     }
@@ -281,10 +302,7 @@ fn parse_matrix_content(input: &str) -> IResult<&str, MathNode> {
     let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(1);
     let columns = vec![ColumnAlign::Center; num_cols];
 
-    Ok((
-        remaining,
-        MathNode::Array { columns, rows },
-    ))
+    Ok((remaining, MathNode::Array { columns, rows }))
 }
 
 fn parse_text_quoted(input: &str) -> IResult<&str, MathNode> {
@@ -350,10 +368,7 @@ fn is_nary_char(c: char) -> bool {
 }
 
 fn is_integral(c: char) -> bool {
-    matches!(
-        c,
-        '\u{222B}' | '\u{222C}' | '\u{222D}' | '\u{222E}'
-    )
+    matches!(c, '\u{222B}' | '\u{222C}' | '\u{222D}' | '\u{222E}')
 }
 
 fn parse_number(input: &str) -> IResult<&str, MathNode> {
@@ -371,16 +386,19 @@ fn parse_number(input: &str) -> IResult<&str, MathNode> {
 fn parse_operator_word(input: &str) -> IResult<&str, MathNode> {
     // Common operator names
     let ops = [
-        "sin", "cos", "tan", "sec", "csc", "cot", "sinh", "cosh", "tanh", "coth",
-        "arcsin", "arccos", "arctan", "log", "ln", "lg", "exp", "lim", "liminf",
-        "limsup", "sup", "inf", "max", "min", "det", "dim", "ker", "hom", "arg",
-        "deg", "gcd", "lcm", "sgn", "Pr", "Var", "Cov", "supp", "mod",
+        "sin", "cos", "tan", "sec", "csc", "cot", "sinh", "cosh", "tanh", "coth", "arcsin",
+        "arccos", "arctan", "log", "ln", "lg", "exp", "lim", "liminf", "limsup", "sup", "inf",
+        "max", "min", "det", "dim", "ker", "hom", "arg", "deg", "gcd", "lcm", "sgn", "Pr", "Var",
+        "Cov", "supp", "mod",
     ];
     for op in &ops {
         if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>(*op)(input) {
             // Make sure it's not followed by an alphanumeric char
             if rest.chars().next().is_none_or(|c| !c.is_alphanumeric()) {
-                let has_limits = matches!(*op, "lim" | "liminf" | "limsup" | "sup" | "inf" | "max" | "min");
+                let has_limits = matches!(
+                    *op,
+                    "lim" | "liminf" | "limsup" | "sup" | "inf" | "max" | "min"
+                );
                 return Ok((
                     rest,
                     MathNode::Operator(OperatorAttr {
@@ -414,9 +432,10 @@ fn parse_symbol(input: &str) -> IResult<&str, MathNode> {
 }
 
 fn parse_identifier(input: &str) -> IResult<&str, MathNode> {
-    let (input, ch) = satisfy(|c| {
-        c.is_alphabetic() && !is_math_symbol(c) && !is_nary_char(c) && c != '"'
-    })(input)?;
+    let (input, ch) =
+        satisfy(|c| c.is_alphabetic() && !is_math_symbol(c) && !is_nary_char(c) && c != '"')(
+            input,
+        )?;
     Ok((input, MathNode::Identifier(ch.to_string())))
 }
 
@@ -438,10 +457,8 @@ fn is_math_symbol(c: char) -> bool {
 
 fn classify_unicode_symbol(ch: char) -> SymbolKind {
     match ch {
-        '+' | '-' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}'
-        | '\u{2227}' | '\u{2228}' | '\u{2295}' | '\u{2297}' | '\u{2229}' | '\u{222A}' => {
-            SymbolKind::BinaryOp
-        },
+        '+' | '-' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2227}'
+        | '\u{2228}' | '\u{2295}' | '\u{2297}' | '\u{2229}' | '\u{222A}' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2260}' | '\u{2264}' | '\u{2265}' | '\u{226A}' | '\u{226B}'
         | '\u{2248}' | '\u{2261}' | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}'
         | '\u{2208}' | '\u{2209}' | '\u{21D2}' | '\u{21D4}' | '\u{2192}' | '\u{2190}' => {
@@ -478,7 +495,10 @@ mod tests {
     fn simple_addition() {
         let nodes = parse("a+b");
         assert_eq!(nodes.len(), 3);
-        assert!(matches!(&nodes[1], MathNode::Symbol(SymbolKind::BinaryOp, _)));
+        assert!(matches!(
+            &nodes[1],
+            MathNode::Symbol(SymbolKind::BinaryOp, _)
+        ));
     }
 
     #[test]

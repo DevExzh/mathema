@@ -1,11 +1,15 @@
 use clap::Parser;
-use mathema::{convert, Format};
-use std::io::{self, Read};
+use mathema::{Format, convert};
 #[cfg(feature = "raster")]
 use std::io::Write;
+use std::io::{self, Read};
 
 #[derive(Parser)]
-#[command(name = "mathema", version, about = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and UnicodeMath")]
+#[command(
+    name = "mathema",
+    version,
+    about = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and UnicodeMath"
+)]
 struct Cli {
     /// Input format
     #[arg(short, long, value_parser = parse_format)]
@@ -34,8 +38,16 @@ fn parse_format(s: &str) -> Result<Format, String> {
         "jpeg" | "jpg" => Ok(Format::Jpeg),
         _ => Err(format!(
             "unknown format '{s}'. Expected: latex, mathml, omml, mtef, unicodemath{}{}",
-            if cfg!(feature = "render") { ", svg" } else { "" },
-            if cfg!(feature = "raster") { ", png, jpeg" } else { "" },
+            if cfg!(feature = "render") {
+                ", svg"
+            } else {
+                ""
+            },
+            if cfg!(feature = "raster") {
+                ", png, jpeg"
+            } else {
+                ""
+            },
         )),
     }
 }
@@ -51,7 +63,7 @@ fn main() {
                 .read_to_string(&mut buf)
                 .expect("failed to read stdin");
             buf
-        }
+        },
     };
 
     let input = input.trim();
@@ -61,12 +73,14 @@ fn main() {
     if matches!(cli.to, Format::Png | Format::Jpeg) {
         match render_binary(input, cli.from, cli.to) {
             Ok(bytes) => {
-                io::stdout().write_all(&bytes).expect("failed to write output");
-            }
+                io::stdout()
+                    .write_all(&bytes)
+                    .expect("failed to write output");
+            },
             Err(e) => {
                 eprintln!("error: {e}");
                 std::process::exit(1);
-            }
+            },
         }
         return;
     }
@@ -76,7 +90,7 @@ fn main() {
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(1);
-        }
+        },
     }
 }
 
@@ -92,13 +106,13 @@ fn render_binary(input: &str, from: Format, to: Format) -> mathema::Result<Vec<u
         Format::Svg => {
             return Err(mathema::Error::Unsupported(
                 "SVG cannot be used as input format".into(),
-            ))
-        }
+            ));
+        },
         Format::Png | Format::Jpeg => {
             return Err(mathema::Error::Unsupported(
                 "raster formats cannot be used as input".into(),
-            ))
-        }
+            ));
+        },
     };
     match to {
         Format::Png => conv.to_png(),

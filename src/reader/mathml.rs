@@ -28,13 +28,13 @@ impl MathReader for MathmlReader {
                     ));
                 }
                 return Err(e);
-            }
+            },
         };
         match parser.parse_root() {
             Ok(nodes) => {
                 let display = parser.display.unwrap_or(config.display);
                 Ok(ParseResult::new(MathExpr::new(nodes, display)))
-            }
+            },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let display = parser.display.unwrap_or(config.display);
@@ -49,14 +49,17 @@ impl MathReader for MathmlReader {
                 } else {
                     Err(e)
                 }
-            }
+            },
         }
     }
 }
 
+const MAX_PARSE_DEPTH: u32 = 128;
+
 struct MathmlParser<'a> {
     reader: Reader<&'a [u8]>,
     display: Option<DisplayStyle>,
+    depth: u32,
 }
 
 impl<'a> MathmlParser<'a> {
@@ -66,6 +69,7 @@ impl<'a> MathmlParser<'a> {
         Ok(Self {
             reader,
             display: None,
+            depth: 0,
         })
     }
 
@@ -79,8 +83,7 @@ impl<'a> MathmlParser<'a> {
                         // Check display attribute
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"display" {
-                                let val =
-                                    String::from_utf8_lossy(&attr.value).to_string();
+                                let val = String::from_utf8_lossy(&attr.value).to_string();
                                 self.display = Some(if val == "block" {
                                     DisplayStyle::Block
                                 } else {
@@ -134,6 +137,14 @@ impl<'a> MathmlParser<'a> {
     }
 
     fn parse_children(&mut self, parent_tag: &str) -> Result<Vec<MathNode>> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(Error::MathmlParse {
+                message: format!(
+                    "maximum nesting depth ({MAX_PARSE_DEPTH}) exceeded in <{parent_tag}>"
+                ),
+            });
+        }
         let mut nodes = Vec::new();
         loop {
             match self.reader.read_event() {
@@ -166,6 +177,7 @@ impl<'a> MathmlParser<'a> {
                 _ => continue,
             }
         }
+        self.depth -= 1;
         Ok(nodes)
     }
 
@@ -216,10 +228,7 @@ impl<'a> MathmlParser<'a> {
             "mfrac" => {
                 let children = self.parse_children(name)?;
                 let (num, den) = two_children(children)?;
-                let kind = if get_attr(start, "linethickness")
-                    .as_deref()
-                    == Some("0")
-                {
+                let kind = if get_attr(start, "linethickness").as_deref() == Some("0") {
                     FractionKind::NoBar
                 } else {
                     FractionKind::Normal
@@ -538,8 +547,8 @@ fn classify_text(text: &str) -> MathNode {
 fn classify_mo(text: &str) -> SymbolKind {
     let ch = text.trim().chars().next().unwrap_or(' ');
     match ch {
-        '+' | '-' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}'
-        | '\u{2217}' | '\u{2218}' | '*' => SymbolKind::BinaryOp,
+        '+' | '-' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2217}'
+        | '\u{2218}' | '*' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' | '\u{2248}' | '\u{2261}'
         | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}' | '\u{2208}' | '\u{2192}'
         | '\u{2190}' | '\u{21D2}' | '\u{21D0}' => SymbolKind::Relation,
@@ -691,44 +700,33 @@ mod tests {
 
     #[test]
     fn subsup() {
-        let node =
-            parse_one("<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup></math>");
+        let node = parse_one("<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup></math>");
         assert!(matches!(node, MathNode::SubSup { .. }));
     }
 
     #[test]
     fn mrow() {
-        let node = parse_one(
-            "<math><mrow><mi>a</mi><mo>+</mo><mi>b</mi></mrow></math>",
-        );
+        let node = parse_one("<math><mrow><mi>a</mi><mo>+</mo><mi>b</mi></mrow></math>");
         assert!(matches!(node, MathNode::Row(_)));
     }
 
     #[test]
     fn mtext() {
         let node = parse_one("<math><mtext>hello</mtext></math>");
-        assert_eq!(
-            node,
-            MathNode::Text(TextStyle::Normal, "hello".into())
-        );
+        assert_eq!(node, MathNode::Text(TextStyle::Normal, "hello".into()));
     }
 
     #[test]
     fn mfenced() {
-        let node = parse_one(
-            "<math><mfenced open=\"(\" close=\")\"><mi>x</mi></mfenced></math>",
-        );
+        let node = parse_one("<math><mfenced open=\"(\" close=\")\"><mi>x</mi></mfenced></math>");
         assert!(matches!(node, MathNode::Fenced { .. }));
     }
 
     #[test]
     fn display_block() {
         let config = Config::default();
-        let result = MathmlReader::parse(
-            "<math display=\"block\"><mn>1</mn></math>",
-            &config,
-        )
-        .unwrap();
+        let result =
+            MathmlReader::parse("<math display=\"block\"><mn>1</mn></math>", &config).unwrap();
         assert_eq!(result.expr.display, DisplayStyle::Block);
     }
 
@@ -759,9 +757,8 @@ mod tests {
 
     #[test]
     fn mover_accent() {
-        let node = parse_one(
-            "<math><mover accent=\"true\"><mi>x</mi><mo>\u{0302}</mo></mover></math>",
-        );
+        let node =
+            parse_one("<math><mover accent=\"true\"><mi>x</mi><mo>\u{0302}</mo></mover></math>");
         assert!(matches!(node, MathNode::Accent { .. }));
     }
 }

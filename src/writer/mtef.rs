@@ -7,7 +7,7 @@ pub struct MtefWriter;
 impl MathWriter for MtefWriter {
     /// Write AST to MTEF binary, returned as hex string.
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(64);
         // MTEF v5 header
         buf.push(5); // version
         buf.push(1); // platform (Win)
@@ -15,7 +15,11 @@ impl MathWriter for MtefWriter {
         buf.push(5); // product version major
         buf.push(0); // product version minor
         buf.push(0); // null-terminated app key (empty)
-        buf.push(if expr.display == DisplayStyle::Inline { 1 } else { 0 });
+        buf.push(if expr.display == DisplayStyle::Inline {
+            1
+        } else {
+            0
+        });
 
         // SIZE record (required before content)
         write_tag_options(&mut buf, SIZE, 0);
@@ -24,12 +28,17 @@ impl MathWriter for MtefWriter {
         // Wrap in a LINE
         write_tag_options(&mut buf, LINE, 0);
         for node in &expr.nodes {
-            write_node(&mut buf, node);
+            write_node(&mut buf, node)?;
         }
         buf.push(END);
 
-        // Hex encode
-        Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+        // Hex encode — single allocation
+        let mut hex = String::with_capacity(buf.len() * 2);
+        for b in &buf {
+            use std::fmt::Write;
+            let _ = write!(hex, "{b:02x}");
+        }
+        Ok(hex)
     }
 }
 
@@ -53,43 +62,47 @@ const TF_UCGREEK: u8 = 5;
 const TF_SYMBOL: u8 = 6;
 const TF_NUMBER: u8 = 8;
 
-fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
+fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
     match node {
         MathNode::Number(s) => {
             for ch in s.chars() {
-                write_char(buf, TF_NUMBER, ch);
+                write_char(buf, TF_NUMBER, ch)?;
             }
         },
         MathNode::Identifier(s) => {
             for ch in s.chars() {
                 let (tf, code) = resolve_to_mtef(ch);
-                write_char(buf, tf, code);
+                write_char(buf, tf, code)?;
             }
         },
         MathNode::Operator(attr) => {
             for ch in attr.name.chars() {
-                write_char(buf, TF_FUNCTION, ch);
+                write_char(buf, TF_FUNCTION, ch)?;
             }
         },
         MathNode::Symbol(_, s) => {
             for ch in s.chars() {
-                write_char(buf, TF_SYMBOL, ch);
+                write_char(buf, TF_SYMBOL, ch)?;
             }
         },
         MathNode::Text(_, s) => {
             for ch in s.chars() {
-                write_char(buf, TF_TEXT, ch);
+                write_char(buf, TF_TEXT, ch)?;
             }
         },
         MathNode::Space(_) => {
-            write_char(buf, TF_TEXT, ' ');
+            write_char(buf, TF_TEXT, ' ')?;
         },
         MathNode::Row(children) => {
             for child in children {
-                write_node(buf, child);
+                write_node(buf, child)?;
             }
         },
-        MathNode::Fenced { open, close, content } => {
+        MathNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
             let (selector, variation) = fence_to_template(open, close);
             write_tag_options(buf, TMPL, 0);
             buf.push(selector);
@@ -99,7 +112,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
             write_tag_options(buf, LINE, 0);
             for item in content {
                 match item {
-                    FencedItem::Element(n) => write_node(buf, n),
+                    FencedItem::Element(n) => write_node(buf, n)?,
                     FencedItem::Middle(_) => {},
                 }
             }
@@ -109,29 +122,29 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
         MathNode::Subscript { base, sub } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(15); // scripts
-            buf.push(1);  // subscript variation
+            buf.push(1); // subscript variation
             buf.push(0);
-            write_line_slot(buf, base);
-            write_line_slot(buf, sub);
+            write_line_slot(buf, base)?;
+            write_line_slot(buf, sub)?;
             buf.push(END);
         },
         MathNode::Superscript { base, sup } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(15); // scripts
-            buf.push(0);  // superscript variation
+            buf.push(0); // superscript variation
             buf.push(0);
-            write_line_slot(buf, base);
-            write_line_slot(buf, sup);
+            write_line_slot(buf, base)?;
+            write_line_slot(buf, sup)?;
             buf.push(END);
         },
         MathNode::SubSup { base, sub, sup } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(15); // scripts
-            buf.push(2);  // subsup variation
+            buf.push(2); // subsup variation
             buf.push(0);
-            write_line_slot(buf, base);
-            write_line_slot(buf, sub);
-            write_line_slot(buf, sup);
+            write_line_slot(buf, base)?;
+            write_line_slot(buf, sub)?;
+            write_line_slot(buf, sup)?;
             buf.push(END);
         },
         MathNode::Fraction { num, den, kind } => {
@@ -147,28 +160,34 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
             buf.push(selector);
             buf.push(variation);
             buf.push(0);
-            write_line_slot(buf, num);
-            write_line_slot(buf, den);
+            write_line_slot(buf, num)?;
+            write_line_slot(buf, den)?;
             buf.push(END);
         },
         MathNode::Sqrt(inner) => {
             write_tag_options(buf, TMPL, 0);
             buf.push(13); // root
-            buf.push(0);  // square root
+            buf.push(0); // square root
             buf.push(0);
-            write_line_slot(buf, inner);
+            write_line_slot(buf, inner)?;
             buf.push(END);
         },
         MathNode::Root { index, radicand } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(13); // root
-            buf.push(1);  // nth root
+            buf.push(1); // nth root
             buf.push(0);
-            write_line_slot(buf, index);
-            write_line_slot(buf, radicand);
+            write_line_slot(buf, index)?;
+            write_line_slot(buf, radicand)?;
             buf.push(END);
         },
-        MathNode::Nary { op, sub, sup, body, limits } => {
+        MathNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        } => {
             let (selector_base, _) = nary_op_to_selector(*op);
             let selector = if *limits == LimitStyle::AboveBelow {
                 selector_base
@@ -186,12 +205,12 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
             buf.push(variation);
             buf.push(0);
             if let Some(s) = sub {
-                write_line_slot(buf, s);
+                write_line_slot(buf, s)?;
             }
             if let Some(s) = sup {
-                write_line_slot(buf, s);
+                write_line_slot(buf, s)?;
             }
-            write_line_slot(buf, body);
+            write_line_slot(buf, body)?;
             buf.push(END);
         },
         MathNode::Accent { base, accent, .. } => {
@@ -199,7 +218,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
             let emb = accent_to_embell(*accent);
             write_tag_options(buf, LINE, 0);
             // Write the base
-            write_node(buf, base);
+            write_node(buf, base)?;
             // Write embellishment record
             if emb != 0 {
                 write_tag_options(buf, 6, 0); // EMBELL
@@ -207,52 +226,79 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
             }
             buf.push(END);
         },
-        MathNode::Overscript { base, over, movable_limits } => {
+        MathNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
             if *movable_limits {
                 // Use sum-like template
-                write_node(buf, base);
+                write_node(buf, base)?;
             } else {
                 write_tag_options(buf, TMPL, 0);
                 buf.push(17); // overbar
                 buf.push(0);
                 buf.push(0);
-                write_line_slot(buf, base);
+                write_line_slot(buf, base)?;
                 buf.push(END);
             }
-            let _ = over; // overscript content handled by template structure
+            // MTEF limitation: overscript content not representable in template structure
+            let _ = over;
         },
-        MathNode::Underscript { base, under, movable_limits } => {
+        MathNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
             if *movable_limits {
-                write_node(buf, base);
+                write_node(buf, base)?;
             } else {
                 write_tag_options(buf, TMPL, 0);
                 buf.push(16); // underbar
                 buf.push(0);
                 buf.push(0);
-                write_line_slot(buf, base);
+                write_line_slot(buf, base)?;
                 buf.push(END);
             }
+            // MTEF limitation: underscript content not representable in template structure
             let _ = under;
         },
-        MathNode::UnderOver { base, under, over, .. } => {
+        MathNode::UnderOver {
+            base, under, over, ..
+        } => {
             // Nest as overscript containing underscript
-            write_node(buf, base);
+            write_node(buf, base)?;
+            // MTEF limitation: under/over content not representable in template structure
             let _ = (under, over);
         },
-        MathNode::PreScripts { base, pre_sub, pre_sup } => {
+        MathNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
             // MTEF doesn't have a direct prescripts template.
             // Write as subsup with the prescripts before the base.
             if let Some(sub) = pre_sub {
-                write_node(buf, sub);
+                write_node(buf, sub)?;
             }
             if let Some(sup) = pre_sup {
-                write_node(buf, sup);
+                write_node(buf, sup)?;
             }
-            write_node(buf, base);
+            write_node(buf, base)?;
         },
         MathNode::Array { columns, rows } => {
-            let num_rows = rows.len() as u8;
-            let num_cols = columns.len() as u8;
+            let num_rows = u8::try_from(rows.len()).map_err(|_| {
+                crate::error::Error::Unsupported(format!(
+                    "MTEF matrix rows ({}) exceeds maximum of 255",
+                    rows.len()
+                ))
+            })?;
+            let num_cols = u8::try_from(columns.len()).map_err(|_| {
+                crate::error::Error::Unsupported(format!(
+                    "MTEF matrix columns ({}) exceeds maximum of 255",
+                    columns.len()
+                ))
+            })?;
             write_tag_options(buf, MATRIX, 0);
             buf.push(0); // valign
             buf.push(0); // halign
@@ -265,7 +311,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
                 for cell in row {
                     write_tag_options(buf, LINE, 0);
                     for node in cell {
-                        write_node(buf, node);
+                        write_node(buf, node)?;
                     }
                     buf.push(END);
                 }
@@ -274,37 +320,45 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) {
         },
         MathNode::Phantom(inner) => {
             // No MTEF phantom; just write content
-            write_node(buf, inner);
+            write_node(buf, inner)?;
         },
         MathNode::Boxed(inner) => {
-            write_node(buf, inner);
+            write_node(buf, inner)?;
         },
         MathNode::Cancel { content, .. } => {
-            write_node(buf, content);
+            write_node(buf, content)?;
         },
         MathNode::Scaled { content, .. } => {
-            write_node(buf, content);
+            write_node(buf, content)?;
         },
         MathNode::Styled(_, children) => {
             for child in children {
-                write_node(buf, child);
+                write_node(buf, child)?;
             }
         },
     }
+    Ok(())
 }
 
-fn write_line_slot(buf: &mut Vec<u8>, node: &MathNode) {
+fn write_line_slot(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
     write_tag_options(buf, LINE, 0);
-    write_node(buf, node);
+    write_node(buf, node)?;
     buf.push(END);
+    Ok(())
 }
 
-fn write_char(buf: &mut Vec<u8>, typeface: u8, ch: char) {
+fn write_char(buf: &mut Vec<u8>, typeface: u8, ch: char) -> Result<()> {
+    let code = u16::try_from(u32::from(ch)).map_err(|_| {
+        crate::error::Error::Unsupported(format!(
+            "character U+{:04X} exceeds MTEF 16-bit encoding limit",
+            u32::from(ch)
+        ))
+    })?;
     write_tag_options(buf, CHAR, 0);
     buf.push(128 + typeface);
-    let code = ch as u16;
     buf.push((code & 0xFF) as u8);
     buf.push(((code >> 8) & 0xFF) as u8);
+    Ok(())
 }
 
 fn resolve_to_mtef(ch: char) -> (u8, char) {

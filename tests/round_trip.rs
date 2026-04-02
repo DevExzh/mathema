@@ -1,12 +1,14 @@
-use mathema::{Config, Format, Strictness, convert, from_latex, from_mathml, from_omml, from_unicode_math};
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
+use mathema::reader::mathml::MathmlReader;
 use mathema::writer::Writer;
 use mathema::writer::latex::LatexWriter;
-use mathema::reader::mathml::MathmlReader;
 use mathema::writer::mathml::MathmlWriter;
 use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
+use mathema::{
+    Config, Format, Strictness, convert, from_latex, from_mathml, from_omml, from_unicode_math,
+};
 
 /// Helper: parse LaTeX, write LaTeX, verify structural equivalence.
 fn latex_roundtrip(input: &str) {
@@ -489,7 +491,8 @@ fn latex_to_omml_accent() {
 #[test]
 fn latex_to_omml_matrix() {
     let config = Config::default();
-    let parsed = LatexReader::parse("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", &config).unwrap();
+    let parsed =
+        LatexReader::parse("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", &config).unwrap();
     let omml = OmmlWriter::write(&parsed.expr, &config).unwrap();
     assert!(omml.contains("<m:m>"));
     assert!(omml.contains("<m:mr>"));
@@ -562,7 +565,8 @@ fn latex_to_unicode_math_sum() {
 #[test]
 fn latex_to_unicode_math_matrix() {
     let config = Config::default();
-    let parsed = LatexReader::parse("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", &config).unwrap();
+    let parsed =
+        LatexReader::parse("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", &config).unwrap();
     let um = UnicodeMathWriter::write(&parsed.expr, &config).unwrap();
     assert!(um.contains('\u{25A0}'));
     assert!(um.contains('&'));
@@ -680,7 +684,12 @@ fn quadratic_formula_all_formats() {
 #[test]
 fn convert_latex_to_all() {
     let input = "x^2";
-    for fmt in [Format::MathML, Format::Omml, Format::UnicodeMath, Format::Mtef] {
+    for fmt in [
+        Format::MathML,
+        Format::Omml,
+        Format::UnicodeMath,
+        Format::Mtef,
+    ] {
         let output = convert(input, Format::LaTeX, fmt).unwrap();
         assert!(!output.is_empty(), "LaTeX -> {fmt:?} produced empty output");
     }
@@ -689,9 +698,17 @@ fn convert_latex_to_all() {
 #[test]
 fn convert_mathml_to_all() {
     let input = "<math><msup><mi>x</mi><mn>2</mn></msup></math>";
-    for fmt in [Format::LaTeX, Format::Omml, Format::UnicodeMath, Format::Mtef] {
+    for fmt in [
+        Format::LaTeX,
+        Format::Omml,
+        Format::UnicodeMath,
+        Format::Mtef,
+    ] {
         let output = convert(input, Format::MathML, fmt).unwrap();
-        assert!(!output.is_empty(), "MathML -> {fmt:?} produced empty output");
+        assert!(
+            !output.is_empty(),
+            "MathML -> {fmt:?} produced empty output"
+        );
     }
 }
 
@@ -710,7 +727,10 @@ fn lenient_config() -> Config {
 fn lenient_latex_trailing_input() {
     let config = lenient_config();
     let result = LatexReader::parse("x^2 }", &config);
-    assert!(result.is_ok(), "lenient mode should recover from trailing input");
+    assert!(
+        result.is_ok(),
+        "lenient mode should recover from trailing input"
+    );
     let parsed = result.unwrap();
     assert!(!parsed.expr.nodes.is_empty());
     assert!(parsed.has_warnings());
@@ -727,7 +747,10 @@ fn strict_latex_trailing_input_fails() {
 fn lenient_latex_malformed_command() {
     let config = lenient_config();
     let result = LatexReader::parse("\\frac{a}", &config);
-    assert!(result.is_ok(), "lenient mode should recover from malformed commands");
+    assert!(
+        result.is_ok(),
+        "lenient mode should recover from malformed commands"
+    );
     let parsed = result.unwrap();
     assert!(parsed.has_warnings());
 }
@@ -736,7 +759,10 @@ fn lenient_latex_malformed_command() {
 fn lenient_mathml_invalid_xml() {
     let config = lenient_config();
     let result = MathmlReader::parse("<math><mi>x</mi><broken", &config);
-    assert!(result.is_ok(), "lenient MathML should recover from invalid XML");
+    assert!(
+        result.is_ok(),
+        "lenient MathML should recover from invalid XML"
+    );
     let parsed = result.unwrap();
     assert!(parsed.has_warnings());
 }
@@ -753,7 +779,10 @@ fn lenient_mtef_invalid_hex() {
     use mathema::reader::mtef::MtefReader;
     let config = lenient_config();
     let result = MtefReader::parse("zzzz", &config);
-    assert!(result.is_ok(), "lenient MTEF should recover from invalid hex");
+    assert!(
+        result.is_ok(),
+        "lenient MTEF should recover from invalid hex"
+    );
     let parsed = result.unwrap();
     assert!(parsed.has_warnings());
 }

@@ -1,13 +1,13 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use mathema::error::Config;
 use mathema::reader::Reader;
-use mathema::writer::Writer;
 use mathema::reader::latex::LatexReader;
-use mathema::writer::latex::LatexWriter;
 use mathema::reader::mathml::MathmlReader;
+use mathema::writer::Writer;
+use mathema::writer::latex::LatexWriter;
 use mathema::writer::mathml::MathmlWriter;
-use mathema::writer::omml::OmmlWriter;
 use mathema::writer::mtef::MtefWriter;
+use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
 
 const SIMPLE: &str = "x^2 + 1";
@@ -65,14 +65,13 @@ fn bench_mathml_write(c: &mut Criterion) {
 
 fn bench_mathml_parse(c: &mut Criterion) {
     let config = Config::default();
-    let simple_mathml = MathmlWriter::write(
-        &LatexReader::parse(SIMPLE, &config).unwrap().expr,
-        &config,
-    ).unwrap();
+    let simple_mathml =
+        MathmlWriter::write(&LatexReader::parse(SIMPLE, &config).unwrap().expr, &config).unwrap();
     let quad_mathml = MathmlWriter::write(
         &LatexReader::parse(QUADRATIC, &config).unwrap().expr,
         &config,
-    ).unwrap();
+    )
+    .unwrap();
 
     let mut group = c.benchmark_group("mathml_parse");
     group.bench_function("simple", |b| {
@@ -104,13 +103,31 @@ fn bench_cross_format(c: &mut Criterion) {
 fn bench_end_to_end(c: &mut Criterion) {
     let mut group = c.benchmark_group("end_to_end");
     group.bench_function("latex_to_mathml", |b| {
-        b.iter(|| mathema::convert(black_box(QUADRATIC), mathema::Format::LaTeX, mathema::Format::MathML))
+        b.iter(|| {
+            mathema::convert(
+                black_box(QUADRATIC),
+                mathema::Format::LaTeX,
+                mathema::Format::MathML,
+            )
+        })
     });
     group.bench_function("latex_to_omml", |b| {
-        b.iter(|| mathema::convert(black_box(QUADRATIC), mathema::Format::LaTeX, mathema::Format::Omml))
+        b.iter(|| {
+            mathema::convert(
+                black_box(QUADRATIC),
+                mathema::Format::LaTeX,
+                mathema::Format::Omml,
+            )
+        })
     });
     group.bench_function("latex_to_unicode_math", |b| {
-        b.iter(|| mathema::convert(black_box(QUADRATIC), mathema::Format::LaTeX, mathema::Format::UnicodeMath))
+        b.iter(|| {
+            mathema::convert(
+                black_box(QUADRATIC),
+                mathema::Format::LaTeX,
+                mathema::Format::UnicodeMath,
+            )
+        })
     });
     group.finish();
 }

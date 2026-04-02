@@ -1,18 +1,18 @@
+use super::style::MathStyle;
 /// Inter-atom spacing based on the TeXBook 8×8 spacing table (p. 170).
 use crate::ast::{MathNode, SymbolKind};
-use super::style::MathStyle;
 
 /// TeX atom types for spacing classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtomType {
-    Ord,    // ordinary
-    Op,     // large operator
-    Bin,    // binary operator
-    Rel,    // relation
-    Open,   // opening delimiter
-    Close,  // closing delimiter
-    Punct,  // punctuation
-    Inner,  // inner (fractions, etc.)
+    Ord,   // ordinary
+    Op,    // large operator
+    Bin,   // binary operator
+    Rel,   // relation
+    Open,  // opening delimiter
+    Close, // closing delimiter
+    Punct, // punctuation
+    Inner, // inner (fractions, etc.)
 }
 
 /// Classify a MathNode into its atom type for spacing purposes.
@@ -57,7 +57,7 @@ pub fn classify_node(node: &MathNode) -> AtomType {
             } else {
                 AtomType::Ord
             }
-        }
+        },
     }
 }
 
@@ -67,14 +67,15 @@ pub fn classify_node(node: &MathNode) -> AtomType {
 /// Entry: SPACING_TABLE[left][right]
 const SPACING_TABLE: [[i8; 8]; 8] = [
     //         Ord  Op  Bin  Rel  Open Close Punct Inner
-    /* Ord   */ [0,  1,  2,   3,   0,   0,    0,    1],
-    /* Op    */ [1,  1, -2,   3,   0,   0,    0,    1],
-    /* Bin   */ [2,  2,  0,   0,   2,   0,    0,    2],
-    /* Rel   */ [3,  3,  0,   0,   3,   0,    0,    3],
-    /* Open  */ [0,  0,  0,   0,   0,   0,    0,    0],
-    /* Close */ [0,  1,  2,   3,   0,   0,    0,    1],
-    /* Punct */ [1,  1,  0,   1,   1,   1,    1,    1],
-    /* Inner */ [1,  1,  2,   3,   1,   0,    1,    1],
+    /* Ord   */
+    [0, 1, 2, 3, 0, 0, 0, 1],
+    /* Op    */ [1, 1, -2, 3, 0, 0, 0, 1],
+    /* Bin   */ [2, 2, 0, 0, 2, 0, 0, 2],
+    /* Rel   */ [3, 3, 0, 0, 3, 0, 0, 3],
+    /* Open  */ [0, 0, 0, 0, 0, 0, 0, 0],
+    /* Close */ [0, 1, 2, 3, 0, 0, 0, 1],
+    /* Punct */ [1, 1, 0, 1, 1, 1, 1, 1],
+    /* Inner */ [1, 1, 2, 3, 1, 0, 1, 1],
 ];
 
 /// Get the inter-atom spacing in em units.
@@ -104,9 +105,9 @@ pub fn inter_atom_space(left: AtomType, right: AtomType, style: MathStyle) -> f6
     // 0→0, 1→3mu, 2→4mu, 3→5mu, where 18mu = 1em
     match mu {
         0 => 0.0,
-        1 => 3.0 / 18.0,   // thin space
-        2 => 4.0 / 18.0,   // medium space
-        3 => 5.0 / 18.0,   // thick space
+        1 => 3.0 / 18.0, // thin space
+        2 => 4.0 / 18.0, // medium space
+        3 => 5.0 / 18.0, // thick space
         _ => 0.0,
     }
 }
@@ -130,7 +131,10 @@ mod tests {
     #[test]
     fn open_anything_zero() {
         for right in [AtomType::Ord, AtomType::Op, AtomType::Bin, AtomType::Rel] {
-            assert_eq!(inter_atom_space(AtomType::Open, right, MathStyle::Display), 0.0);
+            assert_eq!(
+                inter_atom_space(AtomType::Open, right, MathStyle::Display),
+                0.0
+            );
         }
     }
 
@@ -168,16 +172,34 @@ mod tests {
 
     #[test]
     fn classify_all_symbol_kinds() {
-        assert_eq!(classify_node(&MathNode::Symbol(SymbolKind::Close, ")".into())), AtomType::Close);
-        assert_eq!(classify_node(&MathNode::Symbol(SymbolKind::Punctuation, ",".into())), AtomType::Punct);
-        assert_eq!(classify_node(&MathNode::Symbol(SymbolKind::LargeOp, "∑".into())), AtomType::Op);
-        assert_eq!(classify_node(&MathNode::Symbol(SymbolKind::Ordinary, "a".into())), AtomType::Ord);
-        assert_eq!(classify_node(&MathNode::Symbol(SymbolKind::Fence, "|".into())), AtomType::Open);
+        assert_eq!(
+            classify_node(&MathNode::Symbol(SymbolKind::Close, ")".into())),
+            AtomType::Close
+        );
+        assert_eq!(
+            classify_node(&MathNode::Symbol(SymbolKind::Punctuation, ",".into())),
+            AtomType::Punct
+        );
+        assert_eq!(
+            classify_node(&MathNode::Symbol(SymbolKind::LargeOp, "∑".into())),
+            AtomType::Op
+        );
+        assert_eq!(
+            classify_node(&MathNode::Symbol(SymbolKind::Ordinary, "a".into())),
+            AtomType::Ord
+        );
+        assert_eq!(
+            classify_node(&MathNode::Symbol(SymbolKind::Fence, "|".into())),
+            AtomType::Open
+        );
     }
 
     #[test]
     fn classify_identifier() {
-        assert_eq!(classify_node(&MathNode::Identifier("x".into())), AtomType::Ord);
+        assert_eq!(
+            classify_node(&MathNode::Identifier("x".into())),
+            AtomType::Ord
+        );
     }
 
     #[test]
@@ -210,7 +232,10 @@ mod tests {
 
     #[test]
     fn classify_sqrt() {
-        assert_eq!(classify_node(&MathNode::Sqrt(Box::new(MathNode::Number("2".into())))), AtomType::Ord);
+        assert_eq!(
+            classify_node(&MathNode::Sqrt(Box::new(MathNode::Number("2".into())))),
+            AtomType::Ord
+        );
     }
 
     #[test]
@@ -226,19 +251,28 @@ mod tests {
     #[test]
     fn rel_ord_thick_space() {
         let s = inter_atom_space(AtomType::Rel, AtomType::Ord, MathStyle::Text);
-        assert!((s - 5.0 / 18.0).abs() < 0.001, "Rel-Ord should be thick space");
+        assert!(
+            (s - 5.0 / 18.0).abs() < 0.001,
+            "Rel-Ord should be thick space"
+        );
     }
 
     #[test]
     fn bin_ord_medium_space() {
         let s = inter_atom_space(AtomType::Bin, AtomType::Ord, MathStyle::Text);
-        assert!((s - 4.0 / 18.0).abs() < 0.001, "Bin-Ord should be medium space");
+        assert!(
+            (s - 4.0 / 18.0).abs() < 0.001,
+            "Bin-Ord should be medium space"
+        );
     }
 
     #[test]
     fn close_bin_medium_space() {
         let s = inter_atom_space(AtomType::Close, AtomType::Bin, MathStyle::Display);
-        assert!((s - 4.0 / 18.0).abs() < 0.001, "Close-Bin should be medium space");
+        assert!(
+            (s - 4.0 / 18.0).abs() < 0.001,
+            "Close-Bin should be medium space"
+        );
     }
 
     #[test]
@@ -250,20 +284,30 @@ mod tests {
     #[test]
     fn punct_ord_thin_space() {
         let s = inter_atom_space(AtomType::Punct, AtomType::Ord, MathStyle::Text);
-        assert!((s - 3.0 / 18.0).abs() < 0.001, "Punct-Ord should be thin space");
+        assert!(
+            (s - 3.0 / 18.0).abs() < 0.001,
+            "Punct-Ord should be thin space"
+        );
     }
 
     #[test]
     fn inner_op_thin_space() {
         let s = inter_atom_space(AtomType::Inner, AtomType::Op, MathStyle::Display);
-        assert!((s - 3.0 / 18.0).abs() < 0.001, "Inner-Op should be thin space");
+        assert!(
+            (s - 3.0 / 18.0).abs() < 0.001,
+            "Inner-Op should be thin space"
+        );
     }
 
     #[test]
     fn script_suppresses_all_negative() {
         // Op-Bin has entry -2; in script styles it should be suppressed to 0
-        for style in [MathStyle::Script, MathStyle::ScriptCramped,
-                      MathStyle::ScriptScript, MathStyle::ScriptScriptCramped] {
+        for style in [
+            MathStyle::Script,
+            MathStyle::ScriptCramped,
+            MathStyle::ScriptScript,
+            MathStyle::ScriptScriptCramped,
+        ] {
             let s = inter_atom_space(AtomType::Op, AtomType::Bin, style);
             assert_eq!(s, 0.0, "script style should suppress negative spacing");
         }
@@ -271,8 +315,12 @@ mod tests {
 
     #[test]
     fn display_and_text_allow_negative() {
-        for style in [MathStyle::Display, MathStyle::Text,
-                      MathStyle::DisplayCramped, MathStyle::TextCramped] {
+        for style in [
+            MathStyle::Display,
+            MathStyle::Text,
+            MathStyle::DisplayCramped,
+            MathStyle::TextCramped,
+        ] {
             let s = inter_atom_space(AtomType::Op, AtomType::Bin, style);
             assert!(s > 0.0, "{:?} should allow negative-origin spacing", style);
         }
