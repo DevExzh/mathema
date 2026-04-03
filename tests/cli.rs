@@ -1,6 +1,5 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile;
 
 fn mathema() -> Command {
     Command::cargo_bin("mathema").unwrap()
@@ -146,8 +145,8 @@ fn convert_file_output() {
 
 #[test]
 fn convert_file_not_found() {
-    // /nonexistent/path/file.tex does not exist on disk, so single-input mode
-    // treats it as inline text; without --from, auto-detection fails.
+    // Single nonexistent path is treated as inline text (not a file);
+    // without --from, auto-detection fails on a filesystem-looking string.
     mathema()
         .args(["convert", "--to", "mathml", "/nonexistent/path/file.tex"])
         .assert()

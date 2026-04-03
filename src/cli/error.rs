@@ -3,6 +3,7 @@ use thiserror::Error;
 
 /// Exit codes following sysexits(3).
 pub mod exit {
+    #[allow(dead_code)]
     pub const OK: i32 = 0;
     pub const USAGE: i32 = 64;    // EX_USAGE
     pub const DATAERR: i32 = 65;  // EX_DATAERR

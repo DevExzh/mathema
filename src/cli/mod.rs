@@ -1,7 +1,9 @@
 pub mod detect;
 pub mod error;
 
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read as _};
+#[cfg(feature = "raster")]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
@@ -191,11 +193,11 @@ fn run_convert_batch(
     config: &mathema::Config,
 ) -> Result<(), CliError> {
     // If output is given, it must be a directory
-    if let Some(ref out_dir) = output {
-        if !out_dir.is_dir() {
-            std::fs::create_dir_all(out_dir)
-                .map_err(|e| CliError::Io(format!("creating {}: {e}", out_dir.display())))?;
-        }
+    if let Some(ref out_dir) = output
+        && !out_dir.is_dir()
+    {
+        std::fs::create_dir_all(out_dir)
+            .map_err(|e| CliError::Io(format!("creating {}: {e}", out_dir.display())))?;
     }
 
     let total = inputs.len() as u64;
@@ -262,10 +264,8 @@ fn run_convert_batch(
                 }
             }
             Err(e) => {
-                failures.push((
-                    source_name.clone(),
-                    CliError::from_mathema(e, &content, &source_name),
-                ));
+                let cli_err = CliError::from_mathema(e, &content, &source_name);
+                failures.push((source_name, cli_err));
             }
         }
         pb.inc(1);
@@ -459,6 +459,7 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
 }
 
 /// Parse input into a `ConvertResult` for multi-output rendering.
+#[cfg(feature = "render")]
 fn parse_input(
     input: &str,
     from: Format,
@@ -501,11 +502,11 @@ fn run_render_batch(
     config: &mathema::Config,
     render_opts: &mathema::RenderOptions,
 ) -> Result<(), CliError> {
-    if let Some(ref out_dir) = output {
-        if !out_dir.is_dir() {
-            std::fs::create_dir_all(out_dir)
-                .map_err(|e| CliError::Io(format!("creating {}: {e}", out_dir.display())))?;
-        }
+    if let Some(ref out_dir) = output
+        && !out_dir.is_dir()
+    {
+        std::fs::create_dir_all(out_dir)
+            .map_err(|e| CliError::Io(format!("creating {}: {e}", out_dir.display())))?;
     }
 
     let total = inputs.len() as u64;

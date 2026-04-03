@@ -45,7 +45,7 @@ pub fn detect_from_content(content: &str) -> Option<Format> {
 
     // MTEF — hex-encoded binary: even length, >= 8 chars, all hex digits
     if trimmed.len() >= 8
-        && trimmed.len() % 2 == 0
+        && trimmed.len().is_multiple_of(2)
         && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
     {
         return Some(Format::Mtef);
@@ -76,10 +76,10 @@ pub fn detect_from_content(content: &str) -> Option<Format> {
 
 /// Detect format: try extension first, fall back to content sniffing.
 pub fn detect_format(path: Option<&Path>, content: &str) -> Option<Format> {
-    if let Some(p) = path {
-        if let Some(fmt) = detect_from_extension(p) {
-            return Some(fmt);
-        }
+    if let Some(p) = path
+        && let Some(fmt) = detect_from_extension(p)
+    {
+        return Some(fmt);
     }
     detect_from_content(content)
 }
