@@ -57,3 +57,23 @@ fn validate_auto_detect() {
         .assert()
         .success();
 }
+
+#[cfg(feature = "render")]
+#[test]
+fn render_latex_to_svg() {
+    mathema()
+        .args(["render", "--from", "latex", "x^2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("<svg"));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_with_font_size() {
+    mathema()
+        .args(["render", "--from", "latex", "--font-size", "24", "x^2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("<svg"));
+}

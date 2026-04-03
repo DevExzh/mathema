@@ -388,8 +388,240 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
 }
 
 #[cfg(feature = "render")]
-fn run_render(_args: RenderArgs) -> Result<(), CliError> {
-    todo!("implemented in Task 7")
+fn run_render(args: RenderArgs) -> Result<(), CliError> {
+    let config = make_config(args.lenient);
+    let inputs = resolve_inputs(args.input)?;
+    let is_batch = inputs.len() > 1;
+
+    let render_opts = mathema::RenderOptions {
+        font_size_px: args.font_size,
+        fg_color: args.color.clone(),
+        ..mathema::RenderOptions::default()
+    };
+
+    if is_batch {
+        return run_render_batch(inputs, args.from, args.format, args.output, &config, &render_opts);
+    }
+
+    // Single input
+    let input = &inputs[0];
+    let (content, source_name, path) = match input {
+        Input::Stdin(s) => (s.clone(), "<stdin>".to_owned(), None),
+        Input::Inline(s) => (s.clone(), "<inline>".to_owned(), None),
+        Input::File(p) => {
+            let c = read_file(p)?;
+            (c, p.display().to_string(), Some(p.as_path()))
+        }
+    };
+
+    let from = resolve_format(args.from, path, &content)?;
+    let conv = parse_input(content.trim(), from, &config, &source_name)?;
+
+    match args.format {
+        Format::Svg => {
+            let svg = conv
+                .to_svg_with(&render_opts)
+                .map_err(|e| CliError::Render(e.to_string()))?;
+            match &args.output {
+                Some(p) => std::fs::write(p, &svg)
+                    .map_err(|e| CliError::Io(format!("{}: {e}", p.display())))?,
+                None => print!("{svg}"),
+            }
+        }
+        #[cfg(feature = "raster")]
+        Format::Png => {
+            let raster_opts = mathema::RasterOptions {
+                render: render_opts,
+                format: mathema::ImageFormat::Png,
+                ..mathema::RasterOptions::default()
+            };
+            let bytes = conv
+                .to_png_with(&raster_opts)
+                .map_err(|e| CliError::Render(e.to_string()))?;
+            write_binary(&bytes, args.output.as_deref())?;
+        }
+        #[cfg(feature = "raster")]
+        Format::Jpeg => {
+            let raster_opts = mathema::RasterOptions {
+                render: render_opts,
+                format: mathema::ImageFormat::Jpeg,
+                ..mathema::RasterOptions::default()
+            };
+            let bytes = conv
+                .to_jpeg_with(&raster_opts)
+                .map_err(|e| CliError::Render(e.to_string()))?;
+            write_binary(&bytes, args.output.as_deref())?;
+        }
+        _ => return Err(CliError::Unsupported(format!("render format: {:?}", args.format))),
+    }
+
+    Ok(())
+}
+
+/// Parse input into a `ConvertResult` for multi-output rendering.
+fn parse_input(
+    input: &str,
+    from: Format,
+    config: &mathema::Config,
+    source_name: &str,
+) -> Result<mathema::ConvertResult, CliError> {
+    let result = match from {
+        Format::LaTeX => mathema::from_latex_with(input, config),
+        Format::MathML => mathema::from_mathml_with(input, config),
+        Format::Omml => mathema::from_omml_with(input, config),
+        Format::Mtef => mathema::from_mtef_with(input, config),
+        Format::UnicodeMath => mathema::from_unicode_math_with(input, config),
+        _ => return Err(CliError::Unsupported(format!("{from:?} is not a parseable format"))),
+    };
+    result.map_err(|e| CliError::from_mathema(e, input, source_name))
+}
+
+#[cfg(feature = "raster")]
+fn write_binary(bytes: &[u8], output: Option<&Path>) -> Result<(), CliError> {
+    match output {
+        Some(p) => {
+            std::fs::write(p, bytes)
+                .map_err(|e| CliError::Io(format!("{}: {e}", p.display())))?;
+        }
+        None => {
+            io::stdout()
+                .write_all(bytes)
+                .map_err(|e| CliError::Io(e.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "render")]
+fn run_render_batch(
+    inputs: Vec<Input>,
+    from: Option<Format>,
+    render_format: Format,
+    output: Option<PathBuf>,
+    config: &mathema::Config,
+    render_opts: &mathema::RenderOptions,
+) -> Result<(), CliError> {
+    if let Some(ref out_dir) = output {
+        if !out_dir.is_dir() {
+            std::fs::create_dir_all(out_dir)
+                .map_err(|e| CliError::Io(format!("creating {}: {e}", out_dir.display())))?;
+        }
+    }
+
+    let total = inputs.len() as u64;
+    let pb = ProgressBar::new(total);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+            .expect("valid template")
+            .progress_chars("#>-"),
+    );
+
+    let ext = format_extension(render_format);
+    let mut failures: Vec<(String, CliError)> = Vec::new();
+    let mut success_count: u64 = 0;
+
+    for input in &inputs {
+        let (path, content, source_name) = match input {
+            Input::File(p) => {
+                pb.set_message(p.display().to_string());
+                match read_file(p) {
+                    Ok(c) => (p.as_path(), c, p.display().to_string()),
+                    Err(e) => {
+                        failures.push((p.display().to_string(), e));
+                        pb.inc(1);
+                        continue;
+                    }
+                }
+            }
+            _ => unreachable!("batch mode only has File inputs"),
+        };
+
+        let fmt = match resolve_format(from, Some(path), &content) {
+            Ok(f) => f,
+            Err(e) => {
+                failures.push((source_name, e));
+                pb.inc(1);
+                continue;
+            }
+        };
+
+        let conv = match parse_input(content.trim(), fmt, config, &source_name) {
+            Ok(c) => c,
+            Err(e) => {
+                failures.push((source_name, e));
+                pb.inc(1);
+                continue;
+            }
+        };
+
+        let out_path = match &output {
+            Some(dir) => {
+                let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+                dir.join(format!("{stem}.{ext}"))
+            }
+            None => path.with_extension(ext),
+        };
+
+        let write_result = match render_format {
+            Format::Svg => conv
+                .to_svg_with(render_opts)
+                .map_err(|e| CliError::Render(e.to_string()))
+                .and_then(|svg| {
+                    std::fs::write(&out_path, &svg)
+                        .map_err(|e| CliError::Io(format!("{}: {e}", out_path.display())))
+                }),
+            #[cfg(feature = "raster")]
+            _ => {
+                let raster_fmt = match render_format {
+                    Format::Jpeg => mathema::ImageFormat::Jpeg,
+                    _ => mathema::ImageFormat::Png,
+                };
+                let raster_opts = mathema::RasterOptions {
+                    render: render_opts.clone(),
+                    format: raster_fmt,
+                    ..mathema::RasterOptions::default()
+                };
+                let bytes_result = match raster_fmt {
+                    mathema::ImageFormat::Png => conv.to_png_with(&raster_opts),
+                    mathema::ImageFormat::Jpeg => conv.to_jpeg_with(&raster_opts),
+                };
+                bytes_result
+                    .map_err(|e| CliError::Render(e.to_string()))
+                    .and_then(|bytes| {
+                        std::fs::write(&out_path, &bytes)
+                            .map_err(|e| CliError::Io(format!("{}: {e}", out_path.display())))
+                    })
+            }
+            #[cfg(not(feature = "raster"))]
+            _ => Err(CliError::Unsupported(format!(
+                "{render_format:?} requires the 'raster' feature"
+            ))),
+        };
+
+        match write_result {
+            Ok(()) => success_count += 1,
+            Err(e) => failures.push((source_name, e)),
+        }
+        pb.inc(1);
+    }
+
+    pb.finish_and_clear();
+
+    let total = inputs.len();
+    if failures.is_empty() {
+        eprintln!("Rendered {total} files successfully.");
+        Ok(())
+    } else {
+        eprintln!(
+            "Processed {total} files: {success_count} succeeded, {} failed.",
+            failures.len()
+        );
+        for (name, err) in &failures {
+            eprintln!("  {name}: {err}");
+        }
+        Err(failures.into_iter().next().unwrap().1)
+    }
 }
 
 // --- Helpers ---
