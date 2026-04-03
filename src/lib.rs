@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod convert;
 pub mod error;
+pub mod latex;
 pub mod reader;
 #[cfg(feature = "render")]
 pub mod render;
@@ -10,9 +11,9 @@ pub mod wasm;
 pub mod writer;
 
 // Re-export the public API
-pub use ast::{MathExpr, MathNode};
 pub use ast::arena::AstArena;
 pub use ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
+pub use ast::{MathExpr, MathNode};
 pub use convert::{
     ConvertResult, convert, convert_with, from_latex, from_latex_with, from_mathml,
     from_mathml_with, from_mtef, from_mtef_with, from_omml, from_omml_with, from_unicode_math,

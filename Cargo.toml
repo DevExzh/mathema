@@ -32,3 +32,7 @@ raster = ["render", "dep:fontdue", "dep:tiny-skia", "dep:jpeg-encoder"]
 [[bench]]
 name = "benchmark"
 harness = false
+
+[[bench]]
+name = "latex_parse"
+harness = false

@@ -2,9 +2,9 @@ use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::io::Cursor;
 
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
+use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
 use crate::writer::Writer as MathWriter;
@@ -899,9 +899,17 @@ fn write_node_c(w: &mut XmlWriter, arena: &AstArena, id: NodeId) -> Result<()> {
             cells,
             num_cols,
         } => {
-            let aligns: Vec<ColumnAlign> = arena.children(col_aligns).iter().map(|&cid| {
-                if let CompactNode::ColAlign(a) = *arena.node(cid) { a } else { ColumnAlign::Center }
-            }).collect();
+            let aligns: Vec<ColumnAlign> = arena
+                .children(col_aligns)
+                .iter()
+                .map(|&cid| {
+                    if let CompactNode::ColAlign(a) = *arena.node(cid) {
+                        a
+                    } else {
+                        ColumnAlign::Center
+                    }
+                })
+                .collect();
 
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
@@ -996,9 +1004,7 @@ fn write_node_c(w: &mut XmlWriter, arena: &AstArena, id: NodeId) -> Result<()> {
         },
 
         // Helper nodes — should not normally appear as standalone roots
-        CompactNode::Middle(sid) => {
-            write_mo(w, arena.str_val(sid), Some("true"), None)
-        },
+        CompactNode::Middle(sid) => write_mo(w, arena.str_val(sid), Some("true"), None),
         CompactNode::ColAlign(_) => Ok(()),
     }
 }

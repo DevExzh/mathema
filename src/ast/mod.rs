@@ -247,7 +247,7 @@ pub struct OperatorAttr {
 }
 
 /// Exact rational number for spacing (avoids floating-point imprecision).
-/// Invariant: `den` must be non-zero.
+/// Stored in lowest terms: `gcd(|num|, den) == 1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rational {
@@ -255,11 +255,35 @@ pub struct Rational {
     pub den: u32,
 }
 
+/// Greatest common divisor (Euclidean algorithm).
+const fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
 impl Rational {
     #[must_use]
     pub fn new(num: i32, den: u32) -> Self {
         assert!(den > 0, "Rational denominator must be non-zero");
-        Self { num, den }
+        if num == 0 {
+            return Self { num: 0, den: 1 };
+        }
+        let g = gcd(num.unsigned_abs(), den);
+        let reduced_abs = num.unsigned_abs() / g;
+        // Negate via i64 to handle the i32::MIN edge case safely.
+        let reduced_num = if num >= 0 {
+            reduced_abs as i32
+        } else {
+            (-(reduced_abs as i64)) as i32
+        };
+        Self {
+            num: reduced_num,
+            den: den / g,
+        }
     }
 
     #[must_use]
@@ -470,7 +494,7 @@ fn check_compact_depth(
                 check_compact_depth(arena, child, d)?;
             }
             Ok(())
-        }
+        },
         CompactNode::Fenced { content, .. } => {
             for &child in arena.children(content) {
                 if !matches!(*arena.node(child), CompactNode::Middle(_)) {
@@ -478,22 +502,26 @@ fn check_compact_depth(
                 }
             }
             Ok(())
-        }
+        },
 
         CompactNode::Subscript { base, sub } => {
             check_compact_depth(arena, base, d)?;
             check_compact_depth(arena, sub, d)
-        }
+        },
         CompactNode::Superscript { base, sup } => {
             check_compact_depth(arena, base, d)?;
             check_compact_depth(arena, sup, d)
-        }
+        },
         CompactNode::SubSup { base, sub, sup } => {
             check_compact_depth(arena, base, d)?;
             check_compact_depth(arena, sub, d)?;
             check_compact_depth(arena, sup, d)
-        }
-        CompactNode::PreScripts { base, pre_sub, pre_sup } => {
+        },
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
             check_compact_depth(arena, base, d)?;
             if pre_sub.is_some() {
                 check_compact_depth(arena, pre_sub, d)?;
@@ -502,31 +530,33 @@ fn check_compact_depth(
                 check_compact_depth(arena, pre_sup, d)?;
             }
             Ok(())
-        }
+        },
 
         CompactNode::Overscript { base, over, .. } => {
             check_compact_depth(arena, base, d)?;
             check_compact_depth(arena, over, d)
-        }
+        },
         CompactNode::Underscript { base, under, .. } => {
             check_compact_depth(arena, base, d)?;
             check_compact_depth(arena, under, d)
-        }
-        CompactNode::UnderOver { base, under, over, .. } => {
+        },
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => {
             check_compact_depth(arena, base, d)?;
             check_compact_depth(arena, under, d)?;
             check_compact_depth(arena, over, d)
-        }
+        },
 
         CompactNode::Fraction { num, den, .. } => {
             check_compact_depth(arena, num, d)?;
             check_compact_depth(arena, den, d)
-        }
+        },
         CompactNode::Sqrt(inner) => check_compact_depth(arena, inner, d),
         CompactNode::Root { index, radicand } => {
             check_compact_depth(arena, index, d)?;
             check_compact_depth(arena, radicand, d)
-        }
+        },
 
         CompactNode::Nary { sub, sup, body, .. } => {
             if sub.is_some() {
@@ -536,7 +566,7 @@ fn check_compact_depth(
                 check_compact_depth(arena, sup, d)?;
             }
             check_compact_depth(arena, body, d)
-        }
+        },
 
         CompactNode::Accent { base, .. } => check_compact_depth(arena, base, d),
 
@@ -545,14 +575,14 @@ fn check_compact_depth(
                 check_compact_depth(arena, cell_id, d)?;
             }
             Ok(())
-        }
+        },
 
         CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
             check_compact_depth(arena, inner, d)
-        }
+        },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
             check_compact_depth(arena, content, d)
-        }
+        },
     }
 }
 

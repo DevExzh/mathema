@@ -147,8 +147,11 @@ fn emit_box(
 
         BoxKind::Color { color, child } => {
             // Use the color as a group wrapper
-            let _ = write!(svg, r#"<g fill="{color}" stroke="{color}">"#,
-                color = XmlAttrEscape(color));
+            let _ = write!(
+                svg,
+                r#"<g fill="{color}" stroke="{color}">"#,
+                color = XmlAttrEscape(color)
+            );
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box(svg, &child.layout, cx, cy, em, options);

@@ -3,9 +3,9 @@ use nom::bytes::complete::{tag, take_while1};
 use nom::character::complete::satisfy;
 use smallvec::SmallVec;
 
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::*;
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
 };
@@ -38,7 +38,7 @@ impl Reader for UnicodeMathReader {
                     roots,
                     DisplayStyle::Inline,
                 )))
-            }
+            },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let mut arena = AstArena::new();
@@ -49,16 +49,14 @@ impl Reader for UnicodeMathReader {
                         CompactExpr::new(arena, roots, DisplayStyle::Inline),
                         vec![Diagnostic {
                             kind: DiagnosticKind::Warning,
-                            message: format!(
-                                "UnicodeMath parse error (recovered as text): {e}"
-                            ),
+                            message: format!("UnicodeMath parse error (recovered as text): {e}"),
                             span: None,
                         }],
                     ))
                 } else {
                     Err(e)
                 }
-            }
+            },
         }
     }
 }
@@ -102,10 +100,10 @@ impl CompactParser {
                 Ok((rest, id)) => {
                     ids.push(id);
                     remaining = rest;
-                }
+                },
                 Err(nom::Err::Failure(_)) => {
                     return Err(Error::Unsupported("UnicodeMath parse error".into()));
-                }
+                },
                 Err(_) => break,
             }
         }
@@ -135,11 +133,7 @@ impl CompactParser {
         result
     }
 
-    fn parse_scripts<'a>(
-        &mut self,
-        input: &'a str,
-        base: NodeId,
-    ) -> IResult<&'a str, NodeId> {
+    fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
         // Try subscript
         let (input, sub) = if let Some(rest) = input.strip_prefix('_') {
             match self.parse_script_arg(rest) {
@@ -174,30 +168,26 @@ impl CompactParser {
                                 den,
                             });
                             Ok((rest, id))
-                        }
+                        },
                         Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
                         Err(_) => Ok((input, base)),
                     }
                 } else {
                     Ok((input, base))
                 }
-            }
+            },
             (Some(sub), None) => {
                 let id = self.arena.push_node(CompactNode::Subscript { base, sub });
                 Ok((input, id))
-            }
+            },
             (None, Some(sup)) => {
-                let id = self
-                    .arena
-                    .push_node(CompactNode::Superscript { base, sup });
+                let id = self.arena.push_node(CompactNode::Superscript { base, sup });
                 Ok((input, id))
-            }
+            },
             (Some(sub), Some(sup)) => {
-                let id = self
-                    .arena
-                    .push_node(CompactNode::SubSup { base, sub, sup });
+                let id = self.arena.push_node(CompactNode::SubSup { base, sub, sup });
                 Ok((input, id))
-            }
+            },
         }
     }
 
@@ -271,7 +261,7 @@ impl CompactParser {
                 Ok((rest, id)) => {
                     children.push(id);
                     remaining = rest;
-                }
+                },
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
                 Err(_) => break,
             }
@@ -306,7 +296,7 @@ impl CompactParser {
                 Ok((rest, id)) => {
                     children.push(id);
                     remaining = rest;
-                }
+                },
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
                 Err(_) => break,
             }
@@ -341,7 +331,7 @@ impl CompactParser {
                 Ok((rest, id)) => {
                     children.push(id);
                     remaining = rest;
-                }
+                },
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
                 Err(_) => break,
             }
@@ -411,14 +401,14 @@ impl CompactParser {
                 Ok((rest, id)) => {
                     current_cell.push(id);
                     remaining = rest;
-                }
+                },
                 Err(_) => {
                     // Skip one char
                     remaining = &remaining[remaining
                         .char_indices()
                         .nth(1)
                         .map_or(remaining.len(), |(i, _)| i)..];
-                }
+                },
             }
         }
         // Finalize
@@ -521,7 +511,7 @@ impl CompactParser {
                 Err(_) => {
                     let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
                     (input, row_id)
-                }
+                },
             }
         };
 

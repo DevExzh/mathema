@@ -2,9 +2,9 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use smallvec::SmallVec;
 
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::*;
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
 };
@@ -386,7 +386,9 @@ impl<'a> OmmlCompactParser<'a> {
         if den == NodeId::NONE {
             den = self.empty_row();
         }
-        Ok(self.arena.push_node(CompactNode::Fraction { kind, num, den }))
+        Ok(self
+            .arena
+            .push_node(CompactNode::Fraction { kind, num, den }))
     }
 
     fn parse_fraction_props(&mut self) -> Result<FractionKind> {
@@ -1303,15 +1305,14 @@ impl<'a> OmmlCompactParser<'a> {
             let span = self.arena.push_children(&[inner]);
             self.arena.push_node(CompactNode::Styled(style, span))
         } else {
-            self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))
+            self.arena
+                .push_node(CompactNode::Text(TextStyle::Normal, sid))
         }
     }
 
     fn extract_operator_name(&self, id: NodeId) -> Option<String> {
         match *self.arena.node(id) {
-            CompactNode::Operator { name, .. } => {
-                Some(self.arena.str_val(name).to_owned())
-            },
+            CompactNode::Operator { name, .. } => Some(self.arena.str_val(name).to_owned()),
             CompactNode::Text(_, sid) => {
                 let s = self.arena.str_val(sid);
                 let trimmed = s.trim();

@@ -1,8 +1,8 @@
 use super::style::MathStyle;
-/// Inter-atom spacing based on the TeXBook 8×8 spacing table (p. 170).
-use crate::ast::{MathNode, SymbolKind};
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId};
+/// Inter-atom spacing based on the TeXBook 8×8 spacing table (p. 170).
+use crate::ast::{MathNode, SymbolKind};
 
 /// TeX atom types for spacing classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

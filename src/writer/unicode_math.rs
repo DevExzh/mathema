@@ -1,6 +1,6 @@
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
+use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::writer::Writer as MathWriter;
 
@@ -357,7 +357,11 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             }
         },
 
-        CompactNode::Fenced { open, close, content } => {
+        CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
             out.push_str(arena.str_val(open));
             for &cid in arena.children(content) {
                 match *arena.node(cid) {
@@ -388,7 +392,11 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             write_script_arg_c(out, arena, sup);
         },
 
-        CompactNode::PreScripts { base, pre_sub, pre_sup } => {
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
             if pre_sub.is_some() {
                 out.push('_');
                 write_script_arg_c(out, arena, pre_sub);
@@ -412,7 +420,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             let _ = under;
         },
 
-        CompactNode::UnderOver { base, under, over, .. } => {
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => {
             write_node_c(out, arena, base);
             let _ = (under, over);
         },
@@ -450,7 +460,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             }
         },
 
-        CompactNode::Nary { op, sub, sup, body, .. } => {
+        CompactNode::Nary {
+            op, sub, sup, body, ..
+        } => {
             out.push(op);
             if sub.is_some() {
                 out.push('_');
@@ -469,7 +481,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             out.push(accent);
         },
 
-        CompactNode::Array { cells, num_cols, .. } => {
+        CompactNode::Array {
+            cells, num_cols, ..
+        } => {
             out.push('\u{25A0}');
             out.push('(');
             let cell_ids = arena.children(cells);
@@ -518,7 +532,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             for &child_id in arena.children(span) {
                 let child = *arena.node(child_id);
                 match child {
-                    CompactNode::Identifier(sid) | CompactNode::Number(sid) | CompactNode::Text(_, sid) => {
+                    CompactNode::Identifier(sid)
+                    | CompactNode::Number(sid)
+                    | CompactNode::Text(_, sid) => {
                         for ch in arena.str_val(sid).chars() {
                             let styled =
                                 crate::unicode::fonts::styled_char(ch, style).unwrap_or(ch);
@@ -602,7 +618,10 @@ fn write_paren_if_complex_c(out: &mut String, arena: &AstArena, id: NodeId) {
 }
 
 fn needs_space_before_c(arena: &AstArena, id: NodeId) -> bool {
-    matches!(*arena.node(id), CompactNode::Operator { .. } | CompactNode::Text(_, _))
+    matches!(
+        *arena.node(id),
+        CompactNode::Operator { .. } | CompactNode::Text(_, _)
+    )
 }
 
 #[cfg(test)]

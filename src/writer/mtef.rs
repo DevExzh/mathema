@@ -1,6 +1,6 @@
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
+use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::writer::Writer as MathWriter;
 
@@ -472,36 +472,36 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             for ch in arena.str_val(sid).chars() {
                 write_char(buf, TF_NUMBER, ch)?;
             }
-        }
+        },
         CompactNode::Identifier(sid) => {
             for ch in arena.str_val(sid).chars() {
                 let (tf, code) = resolve_to_mtef(ch);
                 write_char(buf, tf, code)?;
             }
-        }
+        },
         CompactNode::Operator { name, .. } => {
             for ch in arena.str_val(name).chars() {
                 write_char(buf, TF_FUNCTION, ch)?;
             }
-        }
+        },
         CompactNode::Symbol(_, sid) => {
             for ch in arena.str_val(sid).chars() {
                 write_char(buf, TF_SYMBOL, ch)?;
             }
-        }
+        },
         CompactNode::Text(_, sid) => {
             for ch in arena.str_val(sid).chars() {
                 write_char(buf, TF_TEXT, ch)?;
             }
-        }
+        },
         CompactNode::Space(_) => {
             write_char(buf, TF_TEXT, ' ')?;
-        }
+        },
         CompactNode::Row(span) => {
             for &child_id in arena.children(span) {
                 write_node_c(buf, arena, child_id)?;
             }
-        }
+        },
         CompactNode::Fenced {
             open,
             close,
@@ -524,7 +524,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             }
             buf.push(END);
             buf.push(END); // end template
-        }
+        },
         CompactNode::Subscript { base, sub } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(15); // scripts
@@ -533,7 +533,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_line_slot_c(buf, arena, base)?;
             write_line_slot_c(buf, arena, sub)?;
             buf.push(END);
-        }
+        },
         CompactNode::Superscript { base, sup } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(15); // scripts
@@ -542,7 +542,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_line_slot_c(buf, arena, base)?;
             write_line_slot_c(buf, arena, sup)?;
             buf.push(END);
-        }
+        },
         CompactNode::SubSup { base, sub, sup } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(15); // scripts
@@ -552,7 +552,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_line_slot_c(buf, arena, sub)?;
             write_line_slot_c(buf, arena, sup)?;
             buf.push(END);
-        }
+        },
         CompactNode::Fraction { kind, num, den } => {
             let variation = match kind {
                 FractionKind::Skewed => 0,
@@ -570,7 +570,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_line_slot_c(buf, arena, num)?;
             write_line_slot_c(buf, arena, den)?;
             buf.push(END);
-        }
+        },
         CompactNode::Sqrt(inner) => {
             write_tag_options(buf, TMPL, 0);
             buf.push(13); // root
@@ -578,7 +578,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             buf.push(0);
             write_line_slot_c(buf, arena, inner)?;
             buf.push(END);
-        }
+        },
         CompactNode::Root { index, radicand } => {
             write_tag_options(buf, TMPL, 0);
             buf.push(13); // root
@@ -587,7 +587,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_line_slot_c(buf, arena, index)?;
             write_line_slot_c(buf, arena, radicand)?;
             buf.push(END);
-        }
+        },
         CompactNode::Nary {
             op,
             sub,
@@ -619,10 +619,8 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             }
             write_line_slot_c(buf, arena, body)?;
             buf.push(END);
-        }
-        CompactNode::Accent {
-            base, accent, ..
-        } => {
+        },
+        CompactNode::Accent { base, accent, .. } => {
             let emb = accent_to_embell(accent);
             write_tag_options(buf, LINE, 0);
             write_node_c(buf, arena, base)?;
@@ -631,7 +629,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
                 buf.push(emb);
             }
             buf.push(END);
-        }
+        },
         CompactNode::Overscript {
             base,
             over,
@@ -648,7 +646,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
                 buf.push(END);
             }
             let _ = over;
-        }
+        },
         CompactNode::Underscript {
             base,
             under,
@@ -665,13 +663,13 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
                 buf.push(END);
             }
             let _ = under;
-        }
+        },
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
             write_node_c(buf, arena, base)?;
             let _ = (under, over);
-        }
+        },
         CompactNode::PreScripts {
             base,
             pre_sub,
@@ -684,7 +682,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
                 write_node_c(buf, arena, pre_sup)?;
             }
             write_node_c(buf, arena, base)?;
-        }
+        },
         CompactNode::Array {
             cells, num_cols, ..
         } => {
@@ -719,35 +717,35 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
                             for &child_id in arena.children(span) {
                                 write_node_c(buf, arena, child_id)?;
                             }
-                        }
+                        },
                         _ => {
                             write_node_c(buf, arena, cell_id)?;
-                        }
+                        },
                     }
                     buf.push(END);
                 }
             }
             buf.push(END);
-        }
+        },
         CompactNode::Phantom(inner) => {
             write_node_c(buf, arena, inner)?;
-        }
+        },
         CompactNode::Boxed(inner) => {
             write_node_c(buf, arena, inner)?;
-        }
+        },
         CompactNode::Cancel { content, .. } => {
             write_node_c(buf, arena, content)?;
-        }
+        },
         CompactNode::Scaled { content, .. } => {
             write_node_c(buf, arena, content)?;
-        }
+        },
         CompactNode::Styled(_, span) => {
             for &child_id in arena.children(span) {
                 write_node_c(buf, arena, child_id)?;
             }
-        }
+        },
         // Helper nodes that shouldn't appear as standalone roots
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) => {}
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) => {},
     }
     Ok(())
 }

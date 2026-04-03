@@ -2,9 +2,9 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use smallvec::SmallVec;
 
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::*;
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
 };
@@ -220,20 +220,14 @@ impl<'a> MathmlCompactParser<'a> {
         self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
     }
 
-    fn two_child_ids(
-        &mut self,
-        mut children: SmallVec<[NodeId; 8]>,
-    ) -> (NodeId, NodeId) {
+    fn two_child_ids(&mut self, mut children: SmallVec<[NodeId; 8]>) -> (NodeId, NodeId) {
         while children.len() < 2 {
             children.push(self.empty_row());
         }
         (children[0], children[1])
     }
 
-    fn three_child_ids(
-        &mut self,
-        mut children: SmallVec<[NodeId; 8]>,
-    ) -> (NodeId, NodeId, NodeId) {
+    fn three_child_ids(&mut self, mut children: SmallVec<[NodeId; 8]>) -> (NodeId, NodeId, NodeId) {
         while children.len() < 3 {
             children.push(self.empty_row());
         }
@@ -248,7 +242,8 @@ impl<'a> MathmlCompactParser<'a> {
         } else if trimmed.len() == 1 && trimmed.starts_with(|c: char| c.is_alphabetic()) {
             self.arena.push_node(CompactNode::Identifier(sid))
         } else {
-            self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))
+            self.arena
+                .push_node(CompactNode::Text(TextStyle::Normal, sid))
         }
     }
 
@@ -286,7 +281,9 @@ impl<'a> MathmlCompactParser<'a> {
             "mtext" => {
                 let text = self.read_text_content(name)?;
                 let sid = self.arena.push_str(&text);
-                Ok(self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid)))
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Text(TextStyle::Normal, sid)))
             },
             "mspace" => {
                 let width = get_attr(start, "width").unwrap_or_default();
@@ -306,7 +303,9 @@ impl<'a> MathmlCompactParser<'a> {
                 } else {
                     FractionKind::Normal
                 };
-                Ok(self.arena.push_node(CompactNode::Fraction { kind, num, den }))
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Fraction { kind, num, den }))
             },
             "msqrt" => {
                 let id = self.parse_child_id(name)?;
@@ -396,8 +395,10 @@ impl<'a> MathmlCompactParser<'a> {
 
                 let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
                 for _ in 0..ncols {
-                    align_ids
-                        .push(self.arena.push_node(CompactNode::ColAlign(ColumnAlign::Center)));
+                    align_ids.push(
+                        self.arena
+                            .push_node(CompactNode::ColAlign(ColumnAlign::Center)),
+                    );
                 }
                 let col_aligns = self.arena.push_children(&align_ids);
 
@@ -496,7 +497,9 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "mprescripts" => {
                 // Marker for mmultiscripts — sentinel Space(0/1)
-                Ok(self.arena.push_node(CompactNode::Space(Rational::new(0, 1))))
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Space(Rational::new(0, 1))))
             },
             "none" => Ok(self.empty_row()),
             _ => Ok(self.empty_row()),
@@ -527,10 +530,7 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(text.trim().to_string())
     }
 
-    fn parse_table(
-        &mut self,
-        parent_tag: &str,
-    ) -> Result<Vec<Vec<SmallVec<[NodeId; 8]>>>> {
+    fn parse_table(&mut self, parent_tag: &str) -> Result<Vec<Vec<SmallVec<[NodeId; 8]>>>> {
         let mut rows = Vec::new();
         loop {
             match self.reader.read_event() {
@@ -553,10 +553,7 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(rows)
     }
 
-    fn parse_table_row(
-        &mut self,
-        parent_tag: &str,
-    ) -> Result<Vec<SmallVec<[NodeId; 8]>>> {
+    fn parse_table_row(&mut self, parent_tag: &str) -> Result<Vec<SmallVec<[NodeId; 8]>>> {
         let mut cells = Vec::new();
         loop {
             match self.reader.read_event() {
@@ -580,7 +577,10 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn parse_multiscripts(&mut self, children: &[NodeId]) -> Result<NodeId> {
-        let base = children.first().copied().unwrap_or_else(|| self.empty_row());
+        let base = children
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.empty_row());
 
         // Find prescripts marker (Space(0/1) sentinel)
         let mut found_pre = false;
@@ -597,9 +597,7 @@ impl<'a> MathmlCompactParser<'a> {
         }
 
         if found_pre && remaining.len() >= 2 {
-            let is_empty = |id: NodeId| {
-                matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
-            };
+            let is_empty = |id: NodeId| matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty());
             let pre_sub = if is_empty(remaining[0]) {
                 NodeId::NONE
             } else {

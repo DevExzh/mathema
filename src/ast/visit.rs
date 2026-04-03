@@ -1,6 +1,6 @@
-use crate::ast::*;
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactNode, CompactExpr, NodeId};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
+use crate::ast::*;
 
 /// Immutable visitor for AST traversal.
 ///
@@ -309,34 +309,34 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
         | CompactNode::Middle(_)
-        | CompactNode::ColAlign(_) => {}
+        | CompactNode::ColAlign(_) => {},
 
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
             for &child in arena.children(span) {
                 v.visit_node(arena, child);
             }
-        }
+        },
         CompactNode::Fenced { content, .. } => {
             for &child in arena.children(content) {
                 if !matches!(*arena.node(child), CompactNode::Middle(_)) {
                     v.visit_node(arena, child);
                 }
             }
-        }
+        },
 
         CompactNode::Subscript { base, sub } => {
             v.visit_node(arena, base);
             v.visit_node(arena, sub);
-        }
+        },
         CompactNode::Superscript { base, sup } => {
             v.visit_node(arena, base);
             v.visit_node(arena, sup);
-        }
+        },
         CompactNode::SubSup { base, sub, sup } => {
             v.visit_node(arena, base);
             v.visit_node(arena, sub);
             v.visit_node(arena, sup);
-        }
+        },
         CompactNode::PreScripts {
             base,
             pre_sub,
@@ -349,39 +349,37 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
             if pre_sup.is_some() {
                 v.visit_node(arena, pre_sup);
             }
-        }
+        },
 
         CompactNode::Overscript { base, over, .. } => {
             v.visit_node(arena, base);
             v.visit_node(arena, over);
-        }
+        },
         CompactNode::Underscript { base, under, .. } => {
             v.visit_node(arena, base);
             v.visit_node(arena, under);
-        }
+        },
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
             v.visit_node(arena, base);
             v.visit_node(arena, under);
             v.visit_node(arena, over);
-        }
+        },
 
         CompactNode::Fraction { num, den, .. } => {
             v.visit_node(arena, num);
             v.visit_node(arena, den);
-        }
+        },
         CompactNode::Sqrt(inner) => {
             v.visit_node(arena, inner);
-        }
+        },
         CompactNode::Root { index, radicand } => {
             v.visit_node(arena, index);
             v.visit_node(arena, radicand);
-        }
+        },
 
-        CompactNode::Nary {
-            sub, sup, body, ..
-        } => {
+        CompactNode::Nary { sub, sup, body, .. } => {
             if sub.is_some() {
                 v.visit_node(arena, sub);
             }
@@ -389,24 +387,24 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
                 v.visit_node(arena, sup);
             }
             v.visit_node(arena, body);
-        }
+        },
 
         CompactNode::Accent { base, .. } => {
             v.visit_node(arena, base);
-        }
+        },
 
         CompactNode::Array { cells, .. } => {
             for &cell_id in arena.children(cells) {
                 v.visit_node(arena, cell_id);
             }
-        }
+        },
 
         CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
             v.visit_node(arena, inner);
-        }
+        },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
             v.visit_node(arena, content);
-        }
+        },
     }
 }
 
@@ -434,14 +432,14 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
         | CompactNode::Middle(_)
-        | CompactNode::ColAlign(_) => {}
+        | CompactNode::ColAlign(_) => {},
 
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
             let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(span).into();
             for &child in &ids {
                 v.visit_node_mut(arena, child);
             }
-        }
+        },
         CompactNode::Fenced { content, .. } => {
             let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(content).into();
             for &child in &ids {
@@ -449,21 +447,21 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
                     v.visit_node_mut(arena, child);
                 }
             }
-        }
+        },
 
         CompactNode::Subscript { base, sub } => {
             v.visit_node_mut(arena, base);
             v.visit_node_mut(arena, sub);
-        }
+        },
         CompactNode::Superscript { base, sup } => {
             v.visit_node_mut(arena, base);
             v.visit_node_mut(arena, sup);
-        }
+        },
         CompactNode::SubSup { base, sub, sup } => {
             v.visit_node_mut(arena, base);
             v.visit_node_mut(arena, sub);
             v.visit_node_mut(arena, sup);
-        }
+        },
         CompactNode::PreScripts {
             base,
             pre_sub,
@@ -476,39 +474,37 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
             if pre_sup.is_some() {
                 v.visit_node_mut(arena, pre_sup);
             }
-        }
+        },
 
         CompactNode::Overscript { base, over, .. } => {
             v.visit_node_mut(arena, base);
             v.visit_node_mut(arena, over);
-        }
+        },
         CompactNode::Underscript { base, under, .. } => {
             v.visit_node_mut(arena, base);
             v.visit_node_mut(arena, under);
-        }
+        },
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
             v.visit_node_mut(arena, base);
             v.visit_node_mut(arena, under);
             v.visit_node_mut(arena, over);
-        }
+        },
 
         CompactNode::Fraction { num, den, .. } => {
             v.visit_node_mut(arena, num);
             v.visit_node_mut(arena, den);
-        }
+        },
         CompactNode::Sqrt(inner) => {
             v.visit_node_mut(arena, inner);
-        }
+        },
         CompactNode::Root { index, radicand } => {
             v.visit_node_mut(arena, index);
             v.visit_node_mut(arena, radicand);
-        }
+        },
 
-        CompactNode::Nary {
-            sub, sup, body, ..
-        } => {
+        CompactNode::Nary { sub, sup, body, .. } => {
             if sub.is_some() {
                 v.visit_node_mut(arena, sub);
             }
@@ -516,25 +512,25 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
                 v.visit_node_mut(arena, sup);
             }
             v.visit_node_mut(arena, body);
-        }
+        },
 
         CompactNode::Accent { base, .. } => {
             v.visit_node_mut(arena, base);
-        }
+        },
 
         CompactNode::Array { cells, .. } => {
             let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(cells).into();
             for &cell_id in &ids {
                 v.visit_node_mut(arena, cell_id);
             }
-        }
+        },
 
         CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
             v.visit_node_mut(arena, inner);
-        }
+        },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
             v.visit_node_mut(arena, content);
-        }
+        },
     }
 }
 

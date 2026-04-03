@@ -1,5 +1,5 @@
-use crate::ast::{DisplayStyle, MathExpr};
 use crate::ast::compact::CompactExpr;
+use crate::ast::{DisplayStyle, MathExpr};
 
 /// Position span in source input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

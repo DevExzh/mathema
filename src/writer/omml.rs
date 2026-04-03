@@ -2,9 +2,9 @@ use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::io::Cursor;
 
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, StrId};
+use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::writer::Writer as MathWriter;
 
@@ -495,13 +495,9 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
         CompactNode::Number(sid) => write_run_c(w, arena, sid, None),
         CompactNode::Identifier(sid) => write_run_c(w, arena, sid, Some("i")),
         CompactNode::Operator { name, .. } => write_func_or_operator_c(w, arena, name),
-        CompactNode::Symbol(_kind, sid) => {
-            write_run_c(w, arena, sid, None)
-        },
+        CompactNode::Symbol(_kind, sid) => write_run_c(w, arena, sid, None),
         CompactNode::Text(_, sid) => write_run_c(w, arena, sid, Some("p")),
-        CompactNode::Space(_) => {
-            write_run(w, "\u{00A0}", None)
-        },
+        CompactNode::Space(_) => write_run(w, "\u{00A0}", None),
 
         CompactNode::Row(span) => {
             for &child_id in arena.children(span) {
@@ -763,9 +759,7 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
         },
 
         CompactNode::Array {
-            cells,
-            num_cols,
-            ..
+            cells, num_cols, ..
         } => {
             start(w, "m:m")?;
             let cell_ids = arena.children(cells);

@@ -3,11 +3,11 @@ use super::metrics::{self, GlyphMetrics};
 use super::params::TexParams;
 use super::spacing::{self, AtomType};
 use super::style::MathStyle;
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 /// Layout engine: converts MathExpr → LayoutBox tree.
 /// Applies TeX typesetting rules for positioning.
 use crate::ast::*;
-use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 
 /// A positioned layout box in the rendering tree.
 #[derive(Debug, Clone)]
@@ -1255,34 +1255,46 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Text(_, sid) => layout_text_run(arena.str_val(sid), ctx, false),
         CompactNode::Space(r) => LayoutBox::kern(r.as_f64() * ctx.size()),
         CompactNode::Row(span) => layout_row_c(arena, span, ctx),
-        CompactNode::Fenced { open, close, content } => {
-            layout_fenced_c(arena, open, close, content, ctx)
-        },
+        CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } => layout_fenced_c(arena, open, close, content, ctx),
         CompactNode::Subscript { base, sub } => layout_subscript_c(arena, base, sub, ctx),
         CompactNode::Superscript { base, sup } => layout_superscript_c(arena, base, sup, ctx),
         CompactNode::SubSup { base, sub, sup } => layout_subsup_c(arena, base, sub, sup, ctx),
-        CompactNode::PreScripts { base, pre_sub, pre_sup } => {
-            layout_prescripts_c(arena, base, pre_sub, pre_sup, ctx)
-        },
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => layout_prescripts_c(arena, base, pre_sub, pre_sup, ctx),
         CompactNode::Overscript { base, over, .. } => layout_overscript_c(arena, base, over, ctx),
         CompactNode::Underscript { base, under, .. } => {
             layout_underscript_c(arena, base, under, ctx)
         },
-        CompactNode::UnderOver { base, under, over, .. } => {
-            layout_underover_c(arena, base, under, over, ctx)
-        },
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => layout_underover_c(arena, base, under, over, ctx),
         CompactNode::Fraction { kind, num, den } => layout_fraction_c(arena, kind, num, den, ctx),
         CompactNode::Sqrt(inner) => layout_sqrt_c(arena, inner, None, ctx),
         CompactNode::Root { index, radicand } => layout_sqrt_c(arena, radicand, Some(index), ctx),
-        CompactNode::Nary { op, sub, sup, body, limits } => {
-            layout_nary_c(arena, op, sub, sup, body, limits, ctx)
-        },
-        CompactNode::Accent { base, accent, position } => {
-            layout_accent_c(arena, base, accent, position, ctx)
-        },
-        CompactNode::Array { col_aligns, cells, num_cols } => {
-            layout_array_c(arena, col_aligns, cells, num_cols, ctx)
-        },
+        CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        } => layout_nary_c(arena, op, sub, sup, body, limits, ctx),
+        CompactNode::Accent {
+            base,
+            accent,
+            position,
+        } => layout_accent_c(arena, base, accent, position, ctx),
+        CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols,
+        } => layout_array_c(arena, col_aligns, cells, num_cols, ctx),
         CompactNode::Phantom(inner) => layout_phantom_c(arena, inner, ctx),
         CompactNode::Boxed(inner) => layout_boxed_c(arena, inner, ctx),
         CompactNode::Cancel { stroke, content } => layout_cancel_c(arena, stroke, content, ctx),
@@ -1292,12 +1304,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     }
 }
 
-fn layout_superscript_c(
-    arena: &AstArena,
-    base: NodeId,
-    sup: NodeId,
-    ctx: &LayoutCtx,
-) -> LayoutBox {
+fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     let base_box = layout_node_c(arena, base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_box = layout_node_c(arena, sup, &sup_ctx);
@@ -1332,12 +1339,7 @@ fn layout_superscript_c(
     }
 }
 
-fn layout_subscript_c(
-    arena: &AstArena,
-    base: NodeId,
-    sub: NodeId,
-    ctx: &LayoutCtx,
-) -> LayoutBox {
+fn layout_subscript_c(arena: &AstArena, base: NodeId, sub: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     let base_box = layout_node_c(arena, base, ctx);
     let sub_ctx = ctx.with_style(ctx.style.sub());
     let sub_box = layout_node_c(arena, sub, &sub_ctx);
@@ -1789,7 +1791,10 @@ fn layout_nary_c(
             let result = layout_subsup_from_box(op_glyph_box, arena, sub, sup, ctx);
             return build_hbox(result, body_box);
         } else if sub.is_some() {
-            return build_hbox(layout_subscript_from_box(op_glyph_box, arena, sub, ctx), body_box);
+            return build_hbox(
+                layout_subscript_from_box(op_glyph_box, arena, sub, ctx),
+                body_box,
+            );
         } else if sup.is_some() {
             return build_hbox(
                 layout_superscript_from_box(op_glyph_box, arena, sup, ctx),
@@ -1949,12 +1954,7 @@ fn layout_subsup_from_box(
     }
 }
 
-fn layout_overscript_c(
-    arena: &AstArena,
-    base: NodeId,
-    over: NodeId,
-    ctx: &LayoutCtx,
-) -> LayoutBox {
+fn layout_overscript_c(arena: &AstArena, base: NodeId, over: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node_c(arena, base, ctx);

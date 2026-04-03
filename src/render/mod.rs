@@ -7,8 +7,8 @@ pub mod raster;
 pub mod spacing;
 pub mod style;
 
-use crate::ast::{DisplayStyle, MathExpr};
 use crate::ast::compact::CompactExpr;
+use crate::ast::{DisplayStyle, MathExpr};
 use crate::error::Result;
 
 /// Options controlling SVG rendering output.

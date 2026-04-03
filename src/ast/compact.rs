@@ -18,7 +18,10 @@ impl NodeId {
 
     #[inline]
     pub(crate) fn new(raw: u32) -> Self {
-        debug_assert!(raw < u32::MAX, "NodeId::new called with u32::MAX (reserved for NONE)");
+        debug_assert!(
+            raw < u32::MAX,
+            "NodeId::new called with u32::MAX (reserved for NONE)"
+        );
         Self(raw)
     }
 
@@ -107,7 +110,10 @@ pub enum CompactNode {
     // ── Leaf nodes ─────────────────────────────────────────────────
     Number(StrId),
     Identifier(StrId),
-    Operator { name: StrId, limits: LimitStyle },
+    Operator {
+        name: StrId,
+        limits: LimitStyle,
+    },
     Symbol(SymbolKind, StrId),
     Text(TextStyle, StrId),
     Space(Rational),
@@ -121,8 +127,14 @@ pub enum CompactNode {
     },
 
     // ── Scripts ────────────────────────────────────────────────────
-    Subscript { base: NodeId, sub: NodeId },
-    Superscript { base: NodeId, sup: NodeId },
+    Subscript {
+        base: NodeId,
+        sub: NodeId,
+    },
+    Superscript {
+        base: NodeId,
+        sup: NodeId,
+    },
     SubSup {
         base: NodeId,
         sub: NodeId,
@@ -159,7 +171,10 @@ pub enum CompactNode {
         den: NodeId,
     },
     Sqrt(NodeId),
-    Root { index: NodeId, radicand: NodeId },
+    Root {
+        index: NodeId,
+        radicand: NodeId,
+    },
 
     // ── N-ary ──────────────────────────────────────────────────────
     Nary {
@@ -189,8 +204,14 @@ pub enum CompactNode {
     // ── Decorators ─────────────────────────────────────────────────
     Phantom(NodeId),
     Boxed(NodeId),
-    Cancel { stroke: StrokeKind, content: NodeId },
-    Scaled { factor: Rational, content: NodeId },
+    Cancel {
+        stroke: StrokeKind,
+        content: NodeId,
+    },
+    Scaled {
+        factor: Rational,
+        content: NodeId,
+    },
     Styled(TextStyle, NodeSpan),
 
     // ── Helpers (not in original MathNode) ──────────────────────────
@@ -263,32 +284,32 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
         MathNode::Number(s) => {
             let sid = arena.push_str(s);
             arena.push_node(CompactNode::Number(sid))
-        }
+        },
         MathNode::Identifier(s) => {
             let sid = arena.push_str(s);
             arena.push_node(CompactNode::Identifier(sid))
-        }
+        },
         MathNode::Operator(attr) => {
             let name = arena.push_str(&attr.name);
             arena.push_node(CompactNode::Operator {
                 name,
                 limits: attr.limit_style,
             })
-        }
+        },
         MathNode::Symbol(kind, s) => {
             let sid = arena.push_str(s);
             arena.push_node(CompactNode::Symbol(*kind, sid))
-        }
+        },
         MathNode::Text(style, s) => {
             let sid = arena.push_str(s);
             arena.push_node(CompactNode::Text(*style, sid))
-        }
+        },
         MathNode::Space(r) => arena.push_node(CompactNode::Space(*r)),
 
         MathNode::Row(children) => {
             let span = push_children(arena, children);
             arena.push_node(CompactNode::Row(span))
-        }
+        },
         MathNode::Fenced {
             open,
             close,
@@ -303,7 +324,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                     FencedItem::Middle(s) => {
                         let sid = arena.push_str(s);
                         ids.push(arena.push_node(CompactNode::Middle(sid)));
-                    }
+                    },
                 }
             }
             let content_span = arena.push_children(&ids);
@@ -312,7 +333,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 close: close_id,
                 content: content_span,
             })
-        }
+        },
 
         MathNode::Subscript { base, sub } => {
             let base_id = push_math_node(arena, base);
@@ -321,7 +342,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 base: base_id,
                 sub: sub_id,
             })
-        }
+        },
         MathNode::Superscript { base, sup } => {
             let base_id = push_math_node(arena, base);
             let sup_id = push_math_node(arena, sup);
@@ -329,7 +350,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 base: base_id,
                 sup: sup_id,
             })
-        }
+        },
         MathNode::SubSup { base, sub, sup } => {
             let base_id = push_math_node(arena, base);
             let sub_id = push_math_node(arena, sub);
@@ -339,7 +360,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 sub: sub_id,
                 sup: sup_id,
             })
-        }
+        },
         MathNode::PreScripts {
             base,
             pre_sub,
@@ -353,7 +374,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 pre_sub: pre_sub_id,
                 pre_sup: pre_sup_id,
             })
-        }
+        },
 
         MathNode::Overscript {
             base,
@@ -367,7 +388,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 over: over_id,
                 movable_limits: *movable_limits,
             })
-        }
+        },
         MathNode::Underscript {
             base,
             under,
@@ -380,7 +401,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 under: under_id,
                 movable_limits: *movable_limits,
             })
-        }
+        },
         MathNode::UnderOver {
             base,
             under,
@@ -396,7 +417,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 over: over_id,
                 movable_limits: *movable_limits,
             })
-        }
+        },
 
         MathNode::Fraction { kind, num, den } => {
             let num_id = push_math_node(arena, num);
@@ -406,11 +427,11 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 num: num_id,
                 den: den_id,
             })
-        }
+        },
         MathNode::Sqrt(inner) => {
             let inner_id = push_math_node(arena, inner);
             arena.push_node(CompactNode::Sqrt(inner_id))
-        }
+        },
         MathNode::Root { index, radicand } => {
             let index_id = push_math_node(arena, index);
             let radicand_id = push_math_node(arena, radicand);
@@ -418,7 +439,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 index: index_id,
                 radicand: radicand_id,
             })
-        }
+        },
 
         MathNode::Nary {
             op,
@@ -437,7 +458,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 body: body_id,
                 limits: *limits,
             })
-        }
+        },
 
         MathNode::Accent {
             base,
@@ -450,7 +471,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 accent: *accent,
                 position: *position,
             })
-        }
+        },
 
         MathNode::Array { columns, rows } => {
             // Push column alignments as ColAlign nodes
@@ -481,34 +502,34 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 cells,
                 num_cols,
             })
-        }
+        },
 
         MathNode::Phantom(inner) => {
             let inner_id = push_math_node(arena, inner);
             arena.push_node(CompactNode::Phantom(inner_id))
-        }
+        },
         MathNode::Boxed(inner) => {
             let inner_id = push_math_node(arena, inner);
             arena.push_node(CompactNode::Boxed(inner_id))
-        }
+        },
         MathNode::Cancel { stroke, content } => {
             let content_id = push_math_node(arena, content);
             arena.push_node(CompactNode::Cancel {
                 stroke: *stroke,
                 content: content_id,
             })
-        }
+        },
         MathNode::Scaled { factor, content } => {
             let content_id = push_math_node(arena, content);
             arena.push_node(CompactNode::Scaled {
                 factor: *factor,
                 content: content_id,
             })
-        }
+        },
         MathNode::Styled(style, children) => {
             let span = push_children(arena, children);
             arena.push_node(CompactNode::Styled(*style, span))
-        }
+        },
     }
 }
 
@@ -539,12 +560,8 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             name: arena.str_val(name).to_owned(),
             limit_style: limits,
         }),
-        CompactNode::Symbol(kind, sid) => {
-            MathNode::Symbol(kind, arena.str_val(sid).to_owned())
-        }
-        CompactNode::Text(style, sid) => {
-            MathNode::Text(style, arena.str_val(sid).to_owned())
-        }
+        CompactNode::Symbol(kind, sid) => MathNode::Symbol(kind, arena.str_val(sid).to_owned()),
+        CompactNode::Text(style, sid) => MathNode::Text(style, arena.str_val(sid).to_owned()),
         CompactNode::Space(r) => MathNode::Space(r),
 
         CompactNode::Row(span) => MathNode::Row(reconstruct_children(arena, span)),
@@ -558,10 +575,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 match *arena.node(child_id) {
                     CompactNode::Middle(sid) => {
                         items.push(FencedItem::Middle(arena.str_val(sid).to_owned()));
-                    }
+                    },
                     _ => {
                         items.push(FencedItem::Element(reconstruct_node(arena, child_id)));
-                    }
+                    },
                 }
             }
             MathNode::Fenced {
@@ -569,7 +586,7 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 close: arena.str_val(close).to_owned(),
                 content: items,
             }
-        }
+        },
 
         CompactNode::Subscript { base, sub } => MathNode::Subscript {
             base: Box::new(reconstruct_node(arena, base)),
@@ -685,25 +702,21 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                     match *arena.node(cell_id) {
                         CompactNode::Row(span) => {
                             row.push(reconstruct_children(arena, span));
-                        }
+                        },
                         _ => {
                             // Fallback: wrap single node
                             row.push(vec![reconstruct_node(arena, cell_id)]);
-                        }
+                        },
                     }
                 }
                 rows.push(row);
             }
 
             MathNode::Array { columns, rows }
-        }
+        },
 
-        CompactNode::Phantom(inner) => {
-            MathNode::Phantom(Box::new(reconstruct_node(arena, inner)))
-        }
-        CompactNode::Boxed(inner) => {
-            MathNode::Boxed(Box::new(reconstruct_node(arena, inner)))
-        }
+        CompactNode::Phantom(inner) => MathNode::Phantom(Box::new(reconstruct_node(arena, inner))),
+        CompactNode::Boxed(inner) => MathNode::Boxed(Box::new(reconstruct_node(arena, inner))),
         CompactNode::Cancel { stroke, content } => MathNode::Cancel {
             stroke,
             content: Box::new(reconstruct_node(arena, content)),
@@ -714,12 +727,12 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         },
         CompactNode::Styled(style, span) => {
             MathNode::Styled(style, reconstruct_children(arena, span))
-        }
+        },
 
         // Helper nodes — should not appear as standalone roots, but handle gracefully
         CompactNode::Middle(sid) => {
             MathNode::Symbol(SymbolKind::Fence, arena.str_val(sid).to_owned())
-        }
+        },
         CompactNode::ColAlign(_) => MathNode::Space(Rational::zero()),
     }
 }
@@ -812,29 +825,84 @@ mod tests {
         let variants: Vec<CompactNode> = vec![
             CompactNode::Number(s),
             CompactNode::Identifier(s),
-            CompactNode::Operator { name: s, limits: LimitStyle::Default },
+            CompactNode::Operator {
+                name: s,
+                limits: LimitStyle::Default,
+            },
             CompactNode::Symbol(SymbolKind::BinaryOp, s),
             CompactNode::Text(TextStyle::Normal, s),
             CompactNode::Space(Rational::new(1, 6)),
             CompactNode::Row(span),
-            CompactNode::Fenced { open: s, close: s, content: span },
+            CompactNode::Fenced {
+                open: s,
+                close: s,
+                content: span,
+            },
             CompactNode::Subscript { base: id, sub: id },
             CompactNode::Superscript { base: id, sup: id },
-            CompactNode::SubSup { base: id, sub: id, sup: id },
-            CompactNode::PreScripts { base: id, pre_sub: id, pre_sup: id },
-            CompactNode::Overscript { base: id, over: id, movable_limits: false },
-            CompactNode::Underscript { base: id, under: id, movable_limits: false },
-            CompactNode::UnderOver { base: id, under: id, over: id, movable_limits: true },
-            CompactNode::Fraction { kind: FractionKind::Normal, num: id, den: id },
+            CompactNode::SubSup {
+                base: id,
+                sub: id,
+                sup: id,
+            },
+            CompactNode::PreScripts {
+                base: id,
+                pre_sub: id,
+                pre_sup: id,
+            },
+            CompactNode::Overscript {
+                base: id,
+                over: id,
+                movable_limits: false,
+            },
+            CompactNode::Underscript {
+                base: id,
+                under: id,
+                movable_limits: false,
+            },
+            CompactNode::UnderOver {
+                base: id,
+                under: id,
+                over: id,
+                movable_limits: true,
+            },
+            CompactNode::Fraction {
+                kind: FractionKind::Normal,
+                num: id,
+                den: id,
+            },
             CompactNode::Sqrt(id),
-            CompactNode::Root { index: id, radicand: id },
-            CompactNode::Nary { op: '\u{2211}', sub: id, sup: id, body: id, limits: LimitStyle::AboveBelow },
-            CompactNode::Accent { base: id, accent: '\u{0302}', position: AccentPosition::Above },
-            CompactNode::Array { col_aligns: span, cells: span, num_cols: 1 },
+            CompactNode::Root {
+                index: id,
+                radicand: id,
+            },
+            CompactNode::Nary {
+                op: '\u{2211}',
+                sub: id,
+                sup: id,
+                body: id,
+                limits: LimitStyle::AboveBelow,
+            },
+            CompactNode::Accent {
+                base: id,
+                accent: '\u{0302}',
+                position: AccentPosition::Above,
+            },
+            CompactNode::Array {
+                col_aligns: span,
+                cells: span,
+                num_cols: 1,
+            },
             CompactNode::Phantom(id),
             CompactNode::Boxed(id),
-            CompactNode::Cancel { stroke: StrokeKind::Forward, content: id },
-            CompactNode::Scaled { factor: Rational::new(2, 1), content: id },
+            CompactNode::Cancel {
+                stroke: StrokeKind::Forward,
+                content: id,
+            },
+            CompactNode::Scaled {
+                factor: Rational::new(2, 1),
+                content: id,
+            },
             CompactNode::Styled(TextStyle::Bold, span),
             CompactNode::Middle(s),
             CompactNode::ColAlign(ColumnAlign::Center),
@@ -1085,7 +1153,10 @@ mod tests {
         eprintln!("CompactNode size: {compact_size} bytes");
         eprintln!("Ratio (legacy/compact): {ratio:.1}x");
 
-        assert!(compact_size <= 32, "CompactNode should be <= 32 bytes, got {compact_size}");
+        assert!(
+            compact_size <= 32,
+            "CompactNode should be <= 32 bytes, got {compact_size}"
+        );
 
         let quadratic = r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}";
         let config = Config::default();
@@ -1103,7 +1174,10 @@ mod tests {
         eprintln!("Children: {children_count}");
         eprintln!("Strings:  {string_count}");
         eprintln!("Arena heap bytes: {heap_bytes}");
-        eprintln!("Bytes/node (arena): {:.1}", heap_bytes as f64 / node_count as f64);
+        eprintln!(
+            "Bytes/node (arena): {:.1}",
+            heap_bytes as f64 / node_count as f64
+        );
 
         // Sanity checks
         assert!(node_count > 0, "quadratic formula should have nodes");

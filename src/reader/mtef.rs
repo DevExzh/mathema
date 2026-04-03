@@ -1,8 +1,8 @@
 use smallvec::SmallVec;
 
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::*;
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
 };
@@ -129,7 +129,10 @@ fn hex_val_byte(b: u8) -> Result<u8> {
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),
         b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(Error::Unsupported(format!("invalid hex char: {}", b as char))),
+        _ => Err(Error::Unsupported(format!(
+            "invalid hex char: {}",
+            b as char
+        ))),
     }
 }
 
@@ -822,9 +825,7 @@ impl<'a> MtefCompactParser<'a> {
                 0 => {
                     let base = self.get_slot(&mut slots, 0);
                     let sup = self.get_slot(&mut slots, 1);
-                    Ok(self
-                        .arena
-                        .push_node(CompactNode::Superscript { base, sup }))
+                    Ok(self.arena.push_node(CompactNode::Superscript { base, sup }))
                 },
                 1 => {
                     let base = self.get_slot(&mut slots, 0);
@@ -835,9 +836,7 @@ impl<'a> MtefCompactParser<'a> {
                     let base = self.get_slot(&mut slots, 0);
                     let sub = self.get_slot(&mut slots, 1);
                     let sup = self.get_slot(&mut slots, 2);
-                    Ok(self
-                        .arena
-                        .push_node(CompactNode::SubSup { base, sub, sup }))
+                    Ok(self.arena.push_node(CompactNode::SubSup { base, sub, sup }))
                 },
                 _ => Ok(self.get_slot(&mut slots, 0)),
             },
@@ -1380,16 +1379,7 @@ mod tests {
 
     #[test]
     fn simple_number() {
-        let data = make_mtef_v5(&[
-            LINE,
-            0x00,
-            CHAR,
-            0x00,
-            128 + TF_NUMBER,
-            0x32,
-            0x00,
-            END,
-        ]);
+        let data = make_mtef_v5(&[LINE, 0x00, CHAR, 0x00, 128 + TF_NUMBER, 0x32, 0x00, END]);
         let expr = parse_bytes(&data);
         assert!(!expr.nodes.is_empty());
         match &expr.nodes[0] {
@@ -1400,16 +1390,7 @@ mod tests {
 
     #[test]
     fn simple_identifier() {
-        let data = make_mtef_v5(&[
-            LINE,
-            0x00,
-            CHAR,
-            0x00,
-            128 + TF_VARIABLE,
-            0x78,
-            0x00,
-            END,
-        ]);
+        let data = make_mtef_v5(&[LINE, 0x00, CHAR, 0x00, 128 + TF_VARIABLE, 0x78, 0x00, END]);
         let expr = parse_bytes(&data);
         assert!(!expr.nodes.is_empty());
         match &expr.nodes[0] {
@@ -1544,16 +1525,7 @@ mod tests {
 
     #[test]
     fn greek_letter() {
-        let data = make_mtef_v5(&[
-            LINE,
-            0x00,
-            CHAR,
-            0x00,
-            128 + TF_LCGREEK,
-            0x61,
-            0x00,
-            END,
-        ]);
+        let data = make_mtef_v5(&[LINE, 0x00, CHAR, 0x00, 128 + TF_LCGREEK, 0x61, 0x00, END]);
         let expr = parse_bytes(&data);
         match &expr.nodes[0] {
             MathNode::Identifier(s) => assert_eq!(s, "\u{03B1}"),

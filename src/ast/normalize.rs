@@ -1,8 +1,8 @@
 use smallvec::SmallVec;
 
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::*;
 
 /// Normalize a math expression in place.
 ///
@@ -62,9 +62,10 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         MathNode::Row(children) => {
             normalize_nodes_depth(children, d);
             // Unwrap single-child Row
-            if children.len() == 1 {
-                // Safety: len checked to be exactly 1
-                *node = children.pop().expect("len is 1");
+            if children.len() == 1
+                && let Some(child) = children.pop()
+            {
+                *node = child;
             }
         },
 
@@ -208,13 +209,13 @@ fn normalize_compact_span(arena: &mut AstArena, span: NodeSpan, depth: usize) ->
         match *arena.node(id) {
             CompactNode::Row(inner) if inner.is_empty() => {
                 // Remove empty Row
-            }
+            },
             CompactNode::Row(inner) => {
                 // Flatten: inline inner children
                 for &inner_id in arena.children(inner) {
                     flattened.push(inner_id);
                 }
-            }
+            },
             _ => flattened.push(id),
         }
     }
@@ -260,14 +261,18 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             } else {
                 *arena.node_mut(id) = CompactNode::Row(new_span);
             }
-        }
+        },
 
         CompactNode::Styled(style, span) => {
             let new_span = normalize_compact_span(arena, span, d);
             *arena.node_mut(id) = CompactNode::Styled(style, new_span);
-        }
+        },
 
-        CompactNode::Fenced { open, close, content } => {
+        CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
             // Normalize elements within fenced content (skip Middles)
             let content_ids: SmallVec<[NodeId; 8]> = arena.children(content).into();
             for &cid in &content_ids {
@@ -277,22 +282,26 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             }
             // Re-read open/close since they haven't changed, but content children may have
             let _ = (open, close); // suppress unused warning
-        }
+        },
 
         CompactNode::Subscript { base, sub } => {
             normalize_compact_node(arena, base, d);
             normalize_compact_node(arena, sub, d);
-        }
+        },
         CompactNode::Superscript { base, sup } => {
             normalize_compact_node(arena, base, d);
             normalize_compact_node(arena, sup, d);
-        }
+        },
         CompactNode::SubSup { base, sub, sup } => {
             normalize_compact_node(arena, base, d);
             normalize_compact_node(arena, sub, d);
             normalize_compact_node(arena, sup, d);
-        }
-        CompactNode::PreScripts { base, pre_sub, pre_sup } => {
+        },
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
             normalize_compact_node(arena, base, d);
             if pre_sub.is_some() {
                 normalize_compact_node(arena, pre_sub, d);
@@ -300,33 +309,35 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             if pre_sup.is_some() {
                 normalize_compact_node(arena, pre_sup, d);
             }
-        }
+        },
 
         CompactNode::Overscript { base, over, .. } => {
             normalize_compact_node(arena, base, d);
             normalize_compact_node(arena, over, d);
-        }
+        },
         CompactNode::Underscript { base, under, .. } => {
             normalize_compact_node(arena, base, d);
             normalize_compact_node(arena, under, d);
-        }
-        CompactNode::UnderOver { base, under, over, .. } => {
+        },
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => {
             normalize_compact_node(arena, base, d);
             normalize_compact_node(arena, under, d);
             normalize_compact_node(arena, over, d);
-        }
+        },
 
         CompactNode::Fraction { num, den, .. } => {
             normalize_compact_node(arena, num, d);
             normalize_compact_node(arena, den, d);
-        }
+        },
         CompactNode::Sqrt(inner) => {
             normalize_compact_node(arena, inner, d);
-        }
+        },
         CompactNode::Root { index, radicand } => {
             normalize_compact_node(arena, index, d);
             normalize_compact_node(arena, radicand, d);
-        }
+        },
 
         CompactNode::Nary { sub, sup, body, .. } => {
             if sub.is_some() {
@@ -336,11 +347,11 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
                 normalize_compact_node(arena, sup, d);
             }
             normalize_compact_node(arena, body, d);
-        }
+        },
 
         CompactNode::Accent { base, .. } => {
             normalize_compact_node(arena, base, d);
-        }
+        },
 
         CompactNode::Array { cells, .. } => {
             // Each cell is a Row node — normalize it
@@ -348,14 +359,14 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             for &cell_id in &cell_ids {
                 normalize_compact_node(arena, cell_id, d);
             }
-        }
+        },
 
         CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
             normalize_compact_node(arena, inner, d);
-        }
+        },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
             normalize_compact_node(arena, content, d);
-        }
+        },
 
         // Leaf nodes: nothing to normalize
         CompactNode::Number(_)
@@ -365,7 +376,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
         | CompactNode::Middle(_)
-        | CompactNode::ColAlign(_) => {}
+        | CompactNode::ColAlign(_) => {},
     }
 }
 
@@ -534,9 +545,9 @@ mod tests {
 
     #[test]
     fn compact_deeply_nested_rows() {
-        assert_normalize_equiv(MathExpr::inline(vec![MathNode::Row(vec![
-            MathNode::Row(vec![MathNode::Row(vec![MathNode::Identifier("x".into())])]),
-        ])]));
+        assert_normalize_equiv(MathExpr::inline(vec![MathNode::Row(vec![MathNode::Row(
+            vec![MathNode::Row(vec![MathNode::Identifier("x".into())])],
+        )])]));
     }
 
     #[test]

@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a9654f5e31b77580c86b32054cff1b880a649d1a17d117a77bbd57062f8f5ce1 # shrinks to expr = MathExpr { nodes: [Fraction { kind: Normal, num: Number("0"), den: Row([Superscript { base: Number("0"), sup: Identifier("α") }, Identifier("x")]) }], display: Inline }
+cc 9b335e2c19fae2381d2ca4ce14ecde0b01790a131b43ddde2a82d4e285ac9619 # shrinks to expr = MathExpr { nodes: [Nary { op: '∑', sub: Some(Number("0")), sup: Some(Number("0")), body: Nary { op: '∑', sub: Some(Number("0")), sup: Some(Number("0")), body: Number("0"), limits: AboveBelow }, limits: Default }], display: Inline }
+cc c0344cdff82aa2d51bdcf92715ec99ea4335b098733fc451df5cb48c299f3eec # shrinks to expr = MathExpr { nodes: [Subscript { base: Superscript { base: Number("0"), sup: Number("0") }, sub: Identifier("x") }, Superscript { base: Number("0"), sup: Number("0") }], display: Inline }

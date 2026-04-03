@@ -165,8 +165,8 @@ impl Default for AstArena {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::compact::CompactNode;
     use crate::ast::FractionKind;
+    use crate::ast::compact::CompactNode;
 
     #[test]
     fn push_and_retrieve_nodes() {
@@ -264,17 +264,27 @@ mod tests {
             den,
         });
         match *arena.node(frac) {
-            CompactNode::Fraction { kind, num: n, den: d } => {
+            CompactNode::Fraction {
+                kind,
+                num: n,
+                den: d,
+            } => {
                 assert_eq!(kind, FractionKind::Normal);
-                assert_eq!(arena.str_val(match *arena.node(n) {
-                    CompactNode::Number(s) => s,
-                    _ => panic!("expected Number"),
-                }), "1");
-                assert_eq!(arena.str_val(match *arena.node(d) {
-                    CompactNode::Number(s) => s,
-                    _ => panic!("expected Number"),
-                }), "2");
-            }
+                assert_eq!(
+                    arena.str_val(match *arena.node(n) {
+                        CompactNode::Number(s) => s,
+                        _ => panic!("expected Number"),
+                    }),
+                    "1"
+                );
+                assert_eq!(
+                    arena.str_val(match *arena.node(d) {
+                        CompactNode::Number(s) => s,
+                        _ => panic!("expected Number"),
+                    }),
+                    "2"
+                );
+            },
             _ => panic!("expected Fraction"),
         }
     }

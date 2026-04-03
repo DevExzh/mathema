@@ -1,6 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
 use mathema::ast::compact::CompactExpr;
+use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
@@ -248,36 +248,34 @@ fn count_arena_nodes(expr: &CompactExpr) -> usize {
             CompactNode::Fenced { content, .. } => n += count_span(arena, content),
             CompactNode::Subscript { base, sub } => {
                 n += count_node(arena, base) + count_node(arena, sub);
-            }
+            },
             CompactNode::Superscript { base, sup } => {
                 n += count_node(arena, base) + count_node(arena, sup);
-            }
+            },
             CompactNode::SubSup { base, sub, sup } => {
                 n += count_node(arena, base) + count_node(arena, sub) + count_node(arena, sup);
-            }
+            },
             CompactNode::Fraction { num, den, .. } => {
                 n += count_node(arena, num) + count_node(arena, den);
-            }
+            },
             CompactNode::Sqrt(inner) => n += count_node(arena, inner),
             CompactNode::Root { index, radicand } => {
                 n += count_node(arena, index) + count_node(arena, radicand);
-            }
+            },
             CompactNode::Nary { sub, sup, body, .. } => {
                 n += count_node(arena, sub) + count_node(arena, sup) + count_node(arena, body);
-            }
+            },
             CompactNode::Overscript { base, over, .. } => {
                 n += count_node(arena, base) + count_node(arena, over);
-            }
+            },
             CompactNode::Underscript { base, under, .. } => {
                 n += count_node(arena, base) + count_node(arena, under);
-            }
+            },
             CompactNode::UnderOver {
                 base, under, over, ..
             } => {
-                n += count_node(arena, base)
-                    + count_node(arena, under)
-                    + count_node(arena, over);
-            }
+                n += count_node(arena, base) + count_node(arena, under) + count_node(arena, over);
+            },
             CompactNode::Accent { base, .. } => n += count_node(arena, base),
             CompactNode::PreScripts {
                 base,
@@ -287,17 +285,19 @@ fn count_arena_nodes(expr: &CompactExpr) -> usize {
                 n += count_node(arena, base)
                     + count_node(arena, pre_sub)
                     + count_node(arena, pre_sup);
-            }
-            CompactNode::Array { col_aligns, cells, .. } => {
+            },
+            CompactNode::Array {
+                col_aligns, cells, ..
+            } => {
                 n += count_span(arena, col_aligns) + count_span(arena, cells);
-            }
+            },
             CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
                 n += count_node(arena, inner);
-            }
+            },
             CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
                 n += count_node(arena, content);
-            }
-            _ => {} // leaf nodes
+            },
+            _ => {}, // leaf nodes
         }
         n
     }

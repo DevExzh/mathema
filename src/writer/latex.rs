@@ -1,6 +1,6 @@
-use crate::ast::*;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::unicode::fonts::style_to_latex_font;
 use crate::unicode::symbols::{is_operator_command, nary_op_to_latex, unicode_to_latex};
@@ -31,13 +31,40 @@ fn write_nodes(buf: &mut String, nodes: &[MathNode]) {
     }
 }
 
-fn needs_space(prev: Option<&MathNode>, _curr: &MathNode) -> bool {
-    matches!(
-        prev,
+fn needs_space(prev: Option<&MathNode>, curr: &MathNode) -> bool {
+    match prev {
         Some(MathNode::Operator(_))
-            | Some(MathNode::Symbol(SymbolKind::BinaryOp, _))
-            | Some(MathNode::Symbol(SymbolKind::Relation, _))
-    )
+        | Some(MathNode::Symbol(SymbolKind::BinaryOp, _))
+        | Some(MathNode::Symbol(SymbolKind::Relation, _)) => true,
+        // After an identifier written as \command, we need a space before
+        // a plain ASCII letter to prevent merging (e.g., \nabla p, not \nablap).
+        Some(MathNode::Identifier(s)) => {
+            let prev_ch = s.chars().next().unwrap_or('?');
+            if unicode_to_latex(prev_ch).is_some() {
+                curr_starts_with_ascii_letter(curr)
+            } else {
+                false
+            }
+        },
+        // After a symbol written as \command (non-ASCII mapped to command)
+        Some(MathNode::Symbol(_, s)) => {
+            let prev_ch = s.chars().next().unwrap_or('?');
+            !prev_ch.is_ascii()
+                && unicode_to_latex(prev_ch).is_some()
+                && curr_starts_with_ascii_letter(curr)
+        },
+        _ => false,
+    }
+}
+
+fn curr_starts_with_ascii_letter(node: &MathNode) -> bool {
+    match node {
+        MathNode::Identifier(s) => {
+            let ch = s.chars().next().unwrap_or('?');
+            ch.is_ascii_alphabetic() && unicode_to_latex(ch).is_none()
+        },
+        _ => false,
+    }
 }
 
 fn write_node(buf: &mut String, node: &MathNode) {
@@ -122,19 +149,19 @@ fn write_node(buf: &mut String, node: &MathNode) {
         },
 
         MathNode::Subscript { base, sub } => {
-            write_node(buf, base);
+            write_braced(buf, base);
             buf.push('_');
             write_braced(buf, sub);
         },
 
         MathNode::Superscript { base, sup } => {
-            write_node(buf, base);
+            write_braced(buf, base);
             buf.push('^');
             write_braced(buf, sup);
         },
 
         MathNode::SubSup { base, sub, sup } => {
-            write_node(buf, base);
+            write_braced(buf, base);
             buf.push('_');
             write_braced(buf, sub);
             buf.push('^');
@@ -276,7 +303,7 @@ fn write_node(buf: &mut String, node: &MathNode) {
                 write_braced(buf, s);
             }
             buf.push(' ');
-            write_node(buf, body);
+            write_braced(buf, body);
         },
 
         MathNode::Accent {
@@ -354,9 +381,16 @@ fn write_node(buf: &mut String, node: &MathNode) {
             buf.push('}');
         },
 
-        MathNode::Scaled { content, .. } => {
-            // LaTeX doesn't have a direct scale command in math;
-            // just emit content.
+        MathNode::Scaled { factor, content } => {
+            if *factor == Rational::new(6, 5) {
+                buf.push_str("\\big");
+            } else if *factor == Rational::new(9, 5) {
+                buf.push_str("\\Big");
+            } else if *factor == Rational::new(12, 5) {
+                buf.push_str("\\bigg");
+            } else if *factor == Rational::new(3, 1) {
+                buf.push_str("\\Bigg");
+            }
             write_node(buf, content);
         },
 
@@ -402,20 +436,29 @@ fn write_symbol(buf: &mut String, _kind: SymbolKind, s: &str) {
 }
 
 fn write_space(buf: &mut String, r: Rational) {
-    let approx = r.as_f64();
-    if approx <= -0.1 {
+    // Use exact Rational matching for all known LaTeX spacing commands
+    // to ensure round-trip idempotency.
+    if r == Rational::new(-3, 18) {
         buf.push_str("\\!");
-    } else if approx < 0.2 {
+    } else if r == Rational::new(3, 18) {
         buf.push_str("\\,");
-    } else if approx < 0.3 {
+    } else if r == Rational::new(4, 18) {
         buf.push_str("\\:");
-    } else if approx < 0.4 {
+    } else if r == Rational::new(5, 18) {
         buf.push_str("\\;");
-    } else if (approx - 1.0).abs() < 0.1 {
+    } else if r == Rational::new(1, 4) {
+        buf.push_str("\\ ");
+    } else if r == Rational::new(1, 2) {
+        buf.push_str("\\enspace ");
+    } else if r == Rational::new(1, 1) {
         buf.push_str("\\quad ");
-    } else if (approx - 2.0).abs() < 0.1 {
+    } else if r == Rational::new(2, 1) {
         buf.push_str("\\qquad ");
+    } else if r == Rational::zero() {
+        // \\ (line break mapped as zero-width space)
+        buf.push_str("\\\\ ");
     } else {
+        // Fallback for non-standard values
         buf.push_str("\\;");
     }
 }
@@ -440,6 +483,9 @@ fn write_delim(buf: &mut String, delim: &str) {
 /// skip the braces for cleaner output.
 fn write_braced(buf: &mut String, node: &MathNode) {
     if is_simple_token(node) {
+        write_node(buf, node);
+    } else if matches!(node, MathNode::Row(_)) {
+        // Row already emits its own braces — don't double-wrap
         write_node(buf, node);
     } else {
         buf.push('{');
@@ -483,14 +529,43 @@ fn write_nodes_c(buf: &mut String, arena: &AstArena, span: NodeSpan) {
     }
 }
 
-fn needs_space_c(arena: &AstArena, prev: Option<NodeId>, _curr: NodeId) -> bool {
+fn needs_space_c(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
     let Some(prev_id) = prev else { return false };
-    matches!(
-        *arena.node(prev_id),
+    match *arena.node(prev_id) {
         CompactNode::Operator { .. }
-            | CompactNode::Symbol(SymbolKind::BinaryOp, _)
-            | CompactNode::Symbol(SymbolKind::Relation, _)
-    )
+        | CompactNode::Symbol(SymbolKind::BinaryOp, _)
+        | CompactNode::Symbol(SymbolKind::Relation, _) => true,
+        // After an identifier written as \command, space before plain ASCII letter
+        CompactNode::Identifier(sid) => {
+            let s = arena.str_val(sid);
+            let ch = s.chars().next().unwrap_or('?');
+            if unicode_to_latex(ch).is_some() {
+                curr_starts_with_ascii_letter_c(arena, curr)
+            } else {
+                false
+            }
+        },
+        // After a non-ASCII symbol written as \command
+        CompactNode::Symbol(_, sid) => {
+            let s = arena.str_val(sid);
+            let ch = s.chars().next().unwrap_or('?');
+            !ch.is_ascii()
+                && unicode_to_latex(ch).is_some()
+                && curr_starts_with_ascii_letter_c(arena, curr)
+        },
+        _ => false,
+    }
+}
+
+fn curr_starts_with_ascii_letter_c(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Identifier(sid) => {
+            let s = arena.str_val(sid);
+            let ch = s.chars().next().unwrap_or('?');
+            ch.is_ascii_alphabetic() && unicode_to_latex(ch).is_none()
+        },
+        _ => false,
+    }
 }
 
 fn write_node_c(buf: &mut String, arena: &AstArena, id: NodeId) {
@@ -546,12 +621,14 @@ fn write_node_c(buf: &mut String, arena: &AstArena, id: NodeId) {
             let content_ids = arena.children(content);
 
             // Detect binom pattern
-            if open_str == "("
-                && close_str == ")"
-                && content_ids.len() == 1
-            {
+            if open_str == "(" && close_str == ")" && content_ids.len() == 1 {
                 let child_id = content_ids[0];
-                if let CompactNode::Fraction { kind: FractionKind::NoBar, num, den } = *arena.node(child_id) {
+                if let CompactNode::Fraction {
+                    kind: FractionKind::NoBar,
+                    num,
+                    den,
+                } = *arena.node(child_id)
+                {
                     buf.push_str("\\binom{");
                     write_node_c(buf, arena, num);
                     buf.push_str("}{");
@@ -579,19 +656,19 @@ fn write_node_c(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Subscript { base, sub } => {
-            write_node_c(buf, arena, base);
+            write_braced_c(buf, arena, base);
             buf.push('_');
             write_braced_c(buf, arena, sub);
         },
 
         CompactNode::Superscript { base, sup } => {
-            write_node_c(buf, arena, base);
+            write_braced_c(buf, arena, base);
             buf.push('^');
             write_braced_c(buf, arena, sup);
         },
 
         CompactNode::SubSup { base, sub, sup } => {
-            write_node_c(buf, arena, base);
+            write_braced_c(buf, arena, base);
             buf.push('_');
             write_braced_c(buf, arena, sub);
             buf.push('^');
@@ -732,7 +809,7 @@ fn write_node_c(buf: &mut String, arena: &AstArena, id: NodeId) {
                 write_braced_c(buf, arena, sup);
             }
             buf.push(' ');
-            write_node_c(buf, arena, body);
+            write_braced_c(buf, arena, body);
         },
 
         CompactNode::Accent {
@@ -827,9 +904,16 @@ fn write_node_c(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push('}');
         },
 
-        CompactNode::Scaled { content, .. } => {
-            // LaTeX doesn't have a direct scale command in math;
-            // just emit content.
+        CompactNode::Scaled { factor, content } => {
+            if factor == Rational::new(6, 5) {
+                buf.push_str("\\big");
+            } else if factor == Rational::new(9, 5) {
+                buf.push_str("\\Big");
+            } else if factor == Rational::new(12, 5) {
+                buf.push_str("\\bigg");
+            } else if factor == Rational::new(3, 1) {
+                buf.push_str("\\Bigg");
+            }
             write_node_c(buf, arena, content);
         },
 
@@ -883,19 +967,27 @@ fn write_symbol_c(buf: &mut String, arena: &AstArena, _kind: SymbolKind, sid: co
 }
 
 fn write_space_c(buf: &mut String, r: Rational) {
-    let approx = r.as_f64();
-    if approx <= -0.1 {
+    // Use exact Rational matching for all known LaTeX spacing commands
+    // to ensure round-trip idempotency.
+    if r == Rational::new(-3, 18) {
         buf.push_str("\\!");
-    } else if approx < 0.2 {
+    } else if r == Rational::new(3, 18) {
         buf.push_str("\\,");
-    } else if approx < 0.3 {
+    } else if r == Rational::new(4, 18) {
         buf.push_str("\\:");
-    } else if approx < 0.4 {
+    } else if r == Rational::new(5, 18) {
         buf.push_str("\\;");
-    } else if (approx - 1.0).abs() < 0.1 {
+    } else if r == Rational::new(1, 4) {
+        buf.push_str("\\ ");
+    } else if r == Rational::new(1, 2) {
+        buf.push_str("\\enspace ");
+    } else if r == Rational::new(1, 1) {
         buf.push_str("\\quad ");
-    } else if (approx - 2.0).abs() < 0.1 {
+    } else if r == Rational::new(2, 1) {
         buf.push_str("\\qquad ");
+    } else if r == Rational::zero() {
+        // LaTeX `\\` (line break / row separator) is stored as Space(0/1) in the AST.
+        buf.push_str("\\\\ ");
     } else {
         buf.push_str("\\;");
     }
@@ -921,6 +1013,9 @@ fn write_delim_c(buf: &mut String, delim: &str) {
 /// skip the braces for cleaner output.
 fn write_braced_c(buf: &mut String, arena: &AstArena, id: NodeId) {
     if is_simple_token_c(arena, id) {
+        write_node_c(buf, arena, id);
+    } else if matches!(*arena.node(id), CompactNode::Row(_)) {
+        // Row already emits its own braces — don't double-wrap
         write_node_c(buf, arena, id);
     } else {
         buf.push('{');

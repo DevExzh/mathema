@@ -34,11 +34,7 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
     write_compact(&compact.expr, to, config)
 }
 
-fn parse_compact(
-    input: &str,
-    format: Format,
-    config: &Config,
-) -> Result<CompactParseResult> {
+fn parse_compact(input: &str, format: Format, config: &Config) -> Result<CompactParseResult> {
     match format {
         Format::LaTeX => LatexReader::parse_compact(input, config),
         Format::MathML => MathmlReader::parse_compact(input, config),
@@ -56,7 +52,11 @@ fn parse_compact(
     }
 }
 
-fn write_compact(expr: &crate::ast::compact::CompactExpr, format: Format, config: &Config) -> Result<String> {
+fn write_compact(
+    expr: &crate::ast::compact::CompactExpr,
+    format: Format,
+    config: &Config,
+) -> Result<String> {
     match format {
         Format::LaTeX => LatexWriter::write_compact(expr, config),
         Format::MathML => MathmlWriter::write_compact(expr, config),
