@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.mathema]
 path = ".."
+features = ["render"]
 
 [[bin]]
 name = "fuzz_latex"
@@ -41,6 +42,11 @@ doc = false
 [[bin]]
 name = "fuzz_latex_roundtrip"
 path = "fuzz_targets/fuzz_latex_roundtrip.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_layout"
+path = "fuzz_targets/fuzz_layout.rs"
 doc = false
 
 [workspace]
