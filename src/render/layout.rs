@@ -2340,6 +2340,217 @@ fn layout_styled_c(arena: &AstArena, span: NodeSpan, ctx: &LayoutCtx) -> LayoutB
     layout_row_c(arena, span, ctx)
 }
 
+// ==========================================================================
+// Arena-based layout functions
+// ==========================================================================
+
+use crate::render::arena::{
+    ArenaBoxKind, ArenaLayoutBox, ArenaPositionedBox, LayoutArena, LayoutBoxId,
+};
+
+/// Builder for arena-based layout.
+pub struct LayoutBuilder<'a> {
+    style: MathStyle,
+    options: &'a RenderOptions,
+}
+
+impl<'a> LayoutBuilder<'a> {
+    pub fn new(style: MathStyle, options: &'a RenderOptions) -> Self {
+        Self { style, options }
+    }
+
+    /// Layout a compact expression into the arena. Returns the root box ID.
+    pub fn layout(
+        &self,
+        arena: &mut LayoutArena,
+        expr: &CompactExpr,
+    ) -> LayoutBoxId {
+        let ctx = ArenaLayoutCtx {
+            style: self.style,
+            params: TexParams::default(),
+            options: self.options,
+            depth: 0,
+        };
+        layout_row_arena(&expr.arena, expr.roots, arena, &ctx)
+    }
+}
+
+struct ArenaLayoutCtx<'a> {
+    style: MathStyle,
+    params: TexParams,
+    options: &'a RenderOptions,
+    depth: u32,
+}
+
+impl<'a> ArenaLayoutCtx<'a> {
+    fn size(&self) -> f64 {
+        self.style.size_multiplier()
+    }
+
+    #[allow(dead_code)]
+    fn with_style(&self, style: MathStyle) -> ArenaLayoutCtx<'a> {
+        ArenaLayoutCtx {
+            style,
+            params: self.params,
+            options: self.options,
+            depth: self.depth,
+        }
+    }
+
+    fn deeper(&self) -> ArenaLayoutCtx<'a> {
+        ArenaLayoutCtx {
+            style: self.style,
+            params: self.params,
+            options: self.options,
+            depth: self.depth + 1,
+        }
+    }
+}
+
+// ── Leaf helpers ──────────────────────────────────────────────────────
+
+fn alloc_glyph(arena: &mut LayoutArena, ch: char, style: MathStyle) -> LayoutBoxId {
+    let size = style.size_multiplier();
+    let m = metrics::glyph_metrics(ch);
+    arena.alloc(ArenaLayoutBox {
+        width: m.width * size,
+        height: m.height * size,
+        depth: m.depth * size,
+        kind: ArenaBoxKind::Glyph { ch, size },
+    })
+}
+
+fn alloc_glyph_with_metrics(
+    arena: &mut LayoutArena,
+    ch: char,
+    m: metrics::GlyphMetrics,
+    size: f64,
+) -> LayoutBoxId {
+    arena.alloc(ArenaLayoutBox {
+        width: m.width * size,
+        height: m.height * size,
+        depth: m.depth * size,
+        kind: ArenaBoxKind::Glyph { ch, size },
+    })
+}
+
+fn layout_text_run_arena(
+    text: &str,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    let children_start = arena.begin_children();
+    let mut cursor_x = 0.0;
+    let mut max_height: f64 = 0.0;
+    let mut max_depth: f64 = 0.0;
+
+    for ch in text.chars() {
+        let m = metrics::glyph_metrics(ch);
+        let glyph_id = alloc_glyph_with_metrics(arena, ch, m, size);
+        let b = arena.get(glyph_id);
+        max_height = max_height.max(b.height);
+        max_depth = max_depth.max(b.depth);
+        arena.push_child(ArenaPositionedBox {
+            dx: cursor_x,
+            dy: 0.0,
+            id: glyph_id,
+        });
+        cursor_x += m.width * size;
+    }
+
+    let children = arena.finish_children(children_start);
+    arena.alloc(ArenaLayoutBox {
+        width: cursor_x,
+        height: max_height,
+        depth: max_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_row_arena(
+    ast: &AstArena,
+    span: NodeSpan,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let ids = ast.children(span);
+    if ids.is_empty() {
+        return arena.alloc(ArenaLayoutBox::kern(0.0));
+    }
+
+    let children_start = arena.begin_children();
+    let mut cursor_x = 0.0;
+    let mut prev_atom: Option<AtomType> = None;
+    let mut max_height: f64 = 0.0;
+    let mut max_depth: f64 = 0.0;
+
+    for &id in ids {
+        let cur_atom = spacing::classify_node_c(ast, id);
+        if let Some(prev) = prev_atom {
+            let space = spacing::inter_atom_space(prev, cur_atom, ctx.style);
+            if space > 0.0 {
+                cursor_x += space * ctx.size();
+            }
+        }
+
+        let box_id = layout_node_arena(ast, id, arena, ctx);
+        let b = arena.get(box_id);
+        max_height = max_height.max(b.height);
+        max_depth = max_depth.max(b.depth);
+        let w = b.width;
+
+        arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: box_id });
+        cursor_x += w;
+        prev_atom = Some(cur_atom);
+    }
+
+    let children = arena.finish_children(children_start);
+    arena.alloc(ArenaLayoutBox {
+        width: cursor_x,
+        height: max_height,
+        depth: max_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_node_arena(
+    ast: &AstArena,
+    id: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    if ctx.depth >= MAX_LAYOUT_DEPTH {
+        return arena.alloc(ArenaLayoutBox::kern(0.0));
+    }
+    let ctx = &ctx.deeper();
+    match *ast.node(id) {
+        CompactNode::Number(sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx),
+        CompactNode::Identifier(sid) => {
+            let s = ast.str_val(sid);
+            if s.chars().count() == 1 {
+                alloc_glyph(arena, s.chars().next().expect("non-empty checked"), ctx.style)
+            } else {
+                layout_text_run_arena(s, arena, ctx)
+            }
+        },
+        CompactNode::Operator { name, .. } => layout_text_run_arena(ast.str_val(name), arena, ctx),
+        CompactNode::Symbol(_, sid) => {
+            let s = ast.str_val(sid);
+            if let Some(ch) = s.chars().next() {
+                alloc_glyph(arena, ch, ctx.style)
+            } else {
+                arena.alloc(ArenaLayoutBox::kern(0.0))
+            }
+        },
+        CompactNode::Text(_, sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx),
+        CompactNode::Space(r) => arena.alloc(ArenaLayoutBox::kern(r.as_f64() * ctx.size())),
+        CompactNode::Row(span) => layout_row_arena(ast, span, arena, ctx),
+        // Stub: remaining variants produce kern(0) until implemented
+        _ => arena.alloc(ArenaLayoutBox::kern(0.0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2769,5 +2980,22 @@ mod tests {
             script_box.width < text_box.width,
             "script style should produce smaller glyphs"
         );
+    }
+
+    // === Arena layout tests ===
+
+    #[test]
+    fn arena_layout_simple_number() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("42", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.0);
+        assert!(b.height > 0.0);
     }
 }
