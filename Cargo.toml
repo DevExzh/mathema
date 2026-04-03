@@ -11,6 +11,8 @@ nom = "7"
 quick-xml = "0.37"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+miette = { version = "7", features = ["fancy"] }
+indicatif = "0.17"
 phf = { version = "0.11", features = ["macros"] }
 serde = { version = "1", features = ["derive"], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
@@ -21,6 +23,10 @@ jpeg-encoder = { version = "0.6", optional = true }
 [dev-dependencies]
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+assert_cmd = "2"
+predicates = "3"
+clap_mangen = "0.2"
+tempfile = "3"
 
 [features]
 default = []
