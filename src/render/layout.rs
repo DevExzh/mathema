@@ -4476,4 +4476,87 @@ mod tests {
 
         assert!((w1 - w2).abs() < f64::EPSILON, "reused arena should produce identical layout");
     }
+
+    // === Arena-heap equivalence tests ===
+
+    /// Helper: verify arena layout produces identical SVG to heap layout for a LaTeX string.
+    fn assert_arena_heap_equivalent(latex: &str, style: MathStyle) {
+        use crate::reader::Reader;
+        use crate::render::arena::LayoutArena;
+        use crate::render::emit::{emit_svg, emit_svg_arena};
+
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact(latex, &config)
+            .unwrap_or_else(|e| panic!("parse failed for {latex:?}: {e}"));
+        let options = default_options();
+
+        let heap_root = layout_expr_c(&result.expr, style, &options);
+        let heap_svg = emit_svg(&heap_root, &options);
+
+        let mut arena = LayoutArena::new();
+        let builder = LayoutBuilder::new(style, &options);
+        let arena_root = builder.layout(&mut arena, &result.expr);
+        let arena_svg = emit_svg_arena(&arena, arena_root, &options);
+
+        assert_eq!(heap_svg, arena_svg, "mismatch for {latex:?}");
+    }
+
+    #[test]
+    fn equivalence_simple() {
+        assert_arena_heap_equivalent("x^2 + 1", MathStyle::Text);
+    }
+
+    #[test]
+    fn equivalence_quadratic() {
+        assert_arena_heap_equivalent(
+            "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}",
+            MathStyle::Display,
+        );
+    }
+
+    #[test]
+    fn equivalence_nested_frac() {
+        assert_arena_heap_equivalent("\\frac{\\frac{a}{b}}{\\frac{c}{d}}", MathStyle::Display);
+    }
+
+    #[test]
+    fn equivalence_sum() {
+        assert_arena_heap_equivalent("\\sum_{i=0}^{n} \\frac{1}{i^2}", MathStyle::Display);
+    }
+
+    #[test]
+    fn equivalence_sqrt_with_index() {
+        assert_arena_heap_equivalent("\\sqrt[3]{x}", MathStyle::Text);
+    }
+
+    #[test]
+    fn equivalence_fenced() {
+        assert_arena_heap_equivalent("\\left(\\frac{a}{b}\\right)", MathStyle::Display);
+    }
+
+    #[test]
+    fn equivalence_matrix() {
+        assert_arena_heap_equivalent(
+            "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}",
+            MathStyle::Text,
+        );
+    }
+
+    #[test]
+    fn equivalence_accent() {
+        assert_arena_heap_equivalent("\\hat{x} + \\vec{v}", MathStyle::Text);
+    }
+
+    #[test]
+    fn equivalence_text() {
+        assert_arena_heap_equivalent("\\text{hello}", MathStyle::Text);
+    }
+
+    #[test]
+    fn equivalence_navier_stokes() {
+        assert_arena_heap_equivalent(
+            "\\rho\\left(\\frac{\\partial \\mathbf{u}}{\\partial t} + \\mathbf{u} \\cdot \\nabla \\mathbf{u}\\right) = -\\nabla p + \\mu \\nabla^2 \\mathbf{u} + \\mathbf{f}",
+            MathStyle::Display,
+        );
+    }
 }
