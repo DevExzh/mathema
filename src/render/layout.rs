@@ -2546,9 +2546,272 @@ fn layout_node_arena(
         CompactNode::Text(_, sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx),
         CompactNode::Space(r) => arena.alloc(ArenaLayoutBox::kern(r.as_f64() * ctx.size())),
         CompactNode::Row(span) => layout_row_arena(ast, span, arena, ctx),
+        CompactNode::Subscript { base, sub } => layout_subscript_arena(ast, base, sub, arena, ctx),
+        CompactNode::Superscript { base, sup } => layout_superscript_arena(ast, base, sup, arena, ctx),
+        CompactNode::SubSup { base, sub, sup } => layout_subsup_arena(ast, base, sub, sup, arena, ctx),
+        CompactNode::Fraction { kind, num, den } => layout_fraction_arena(ast, kind, num, den, arena, ctx),
         // Stub: remaining variants produce kern(0) until implemented
         _ => arena.alloc(ArenaLayoutBox::kern(0.0)),
     }
+}
+
+// ── Script and fraction arena layout ─────────────────────────────────
+
+fn layout_superscript_arena(
+    ast: &AstArena,
+    base: NodeId,
+    sup: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let sup_ctx = ctx.with_style(ctx.style.sup());
+    let sup_id = layout_node_arena(ast, sup, arena, &sup_ctx);
+
+    // Read dimensions before any further arena mutation
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let sup_h = arena.get(sup_id).height;
+    let sup_d = arena.get(sup_id).depth;
+    let sup_w = arena.get(sup_id).width;
+
+    let p = &ctx.params;
+    let shift_up = if ctx.style.is_display() {
+        p.sup1
+    } else if ctx.style.is_cramped() {
+        p.sup3
+    } else {
+        p.sup2
+    };
+    let shift_up = shift_up
+        .max(base_h - p.sup_drop * ctx.size())
+        .max(p.x_height / 4.0 + sup_d);
+
+    let total_width = base_w + sup_w;
+    let total_height = (shift_up + sup_h).max(base_h);
+    let total_depth = base_d;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_subscript_arena(
+    ast: &AstArena,
+    base: NodeId,
+    sub: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let sub_ctx = ctx.with_style(ctx.style.sub());
+    let sub_id = layout_node_arena(ast, sub, arena, &sub_ctx);
+
+    // Read dimensions before any further arena mutation
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let sub_h = arena.get(sub_id).height;
+    let sub_d = arena.get(sub_id).depth;
+    let sub_w = arena.get(sub_id).width;
+
+    let p = &ctx.params;
+    let shift_down = p
+        .sub1
+        .max(base_d + p.sub_drop * ctx.size())
+        .max(sub_h - (4.0 * p.x_height / 5.0));
+
+    let total_width = base_w + sub_w;
+    let total_height = base_h;
+    let total_depth = (shift_down + sub_d).max(base_d);
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_subsup_arena(
+    ast: &AstArena,
+    base: NodeId,
+    sub: NodeId,
+    sup: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let sup_ctx = ctx.with_style(ctx.style.sup());
+    let sub_ctx = ctx.with_style(ctx.style.sub());
+    let sup_id = layout_node_arena(ast, sup, arena, &sup_ctx);
+    let sub_id = layout_node_arena(ast, sub, arena, &sub_ctx);
+
+    // Read dimensions before any further arena mutation
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let sup_h = arena.get(sup_id).height;
+    let sup_d = arena.get(sup_id).depth;
+    let sup_w = arena.get(sup_id).width;
+    let sub_h = arena.get(sub_id).height;
+    let sub_d = arena.get(sub_id).depth;
+    let sub_w = arena.get(sub_id).width;
+
+    let p = &ctx.params;
+
+    let mut shift_up = if ctx.style.is_display() {
+        p.sup1
+    } else if ctx.style.is_cramped() {
+        p.sup3
+    } else {
+        p.sup2
+    };
+    shift_up = shift_up
+        .max(base_h - p.sup_drop * ctx.size())
+        .max(p.x_height / 4.0 + sup_d);
+
+    let mut shift_down = p.sub2.max(base_d + p.sub_drop * ctx.size());
+
+    let gap = (shift_up - sup_d) - (sub_h - shift_down);
+    if gap < 4.0 * p.rule_thickness {
+        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
+        shift_up += adjust;
+        shift_down += adjust;
+    }
+
+    let sup_bottom = shift_up - sup_d;
+    if sup_bottom < (4.0 * p.x_height / 5.0) {
+        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
+        shift_up += delta;
+    }
+
+    let script_width = sup_w.max(sub_w);
+    let total_width = base_w + script_width;
+    let total_height = (shift_up + sup_h).max(base_h);
+    let total_depth = (shift_down + sub_d).max(base_d);
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_fraction_arena(
+    ast: &AstArena,
+    kind: FractionKind,
+    num: NodeId,
+    den: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let p = &ctx.params;
+    let size = ctx.size();
+
+    let num_ctx = ctx.with_style(ctx.style.fracnum());
+    let den_ctx = ctx.with_style(ctx.style.fracden());
+    let num_id = layout_node_arena(ast, num, arena, &num_ctx);
+    let den_id = layout_node_arena(ast, den, arena, &den_ctx);
+
+    // Read dimensions before any further arena mutation
+    let num_w = arena.get(num_id).width;
+    let num_h = arena.get(num_id).height;
+    let num_d = arena.get(num_id).depth;
+    let den_w = arena.get(den_id).width;
+    let den_h = arena.get(den_id).height;
+    let den_d = arena.get(den_id).depth;
+
+    let bar_thickness = match kind {
+        FractionKind::NoBar => 0.0,
+        _ => p.rule_thickness * size,
+    };
+
+    let (num_shift, den_shift) = if ctx.style.is_display() {
+        (p.num1 * size, p.denom1 * size)
+    } else {
+        (p.num2 * size, p.denom2 * size)
+    };
+
+    let axis = p.axis_height * size;
+    let mut num_up = num_shift;
+    let mut den_down = den_shift;
+
+    if bar_thickness > 0.0 {
+        let min_clearance = if ctx.style.is_display() {
+            3.0 * bar_thickness
+        } else {
+            bar_thickness
+        };
+
+        let num_clearance = (num_up - num_d) - (axis + bar_thickness / 2.0);
+        if num_clearance < min_clearance {
+            num_up += min_clearance - num_clearance;
+        }
+
+        let den_clearance = (axis - bar_thickness / 2.0) - (den_h - den_down);
+        if den_clearance < min_clearance {
+            den_down += min_clearance - den_clearance;
+        }
+    } else {
+        let min_gap = if ctx.style.is_display() {
+            7.0 * p.rule_thickness * size
+        } else {
+            3.0 * p.rule_thickness * size
+        };
+        let gap = (num_up - num_d) - (den_h - den_down);
+        if gap < min_gap {
+            let adjust = (min_gap - gap) / 2.0;
+            num_up += adjust;
+            den_down += adjust;
+        }
+    }
+
+    let frac_width = num_w.max(den_w);
+    let total_height = num_up + num_h;
+    let total_depth = den_down + den_d;
+
+    let num_dx = (frac_width - num_w) / 2.0;
+    let den_dx = (frac_width - den_w) / 2.0;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: num_dx, dy: num_up, id: num_id });
+    arena.push_child(ArenaPositionedBox { dx: den_dx, dy: -den_down, id: den_id });
+
+    if bar_thickness > 0.0 {
+        let bar_id = arena.alloc(ArenaLayoutBox::rule(frac_width, bar_thickness));
+        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: axis, id: bar_id });
+    }
+
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: frac_width,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::VBox { children },
+    })
 }
 
 #[cfg(test)]
@@ -2997,5 +3260,65 @@ mod tests {
         let b = arena.get(root);
         assert!(b.width > 0.0);
         assert!(b.height > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_superscript() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("x^2", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.5, "superscript should have positive width");
+    }
+
+    #[test]
+    fn arena_layout_subscript() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("x_i", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.5);
+        assert!(b.depth > 0.0, "subscript should add depth");
+    }
+
+    #[test]
+    fn arena_layout_subsup() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("x_i^2", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.5);
+        assert!(b.height > 0.0);
+        assert!(b.depth > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_fraction() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("\\frac{1}{2}", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Display, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.height > 0.0);
+        assert!(b.depth > 0.0);
     }
 }
