@@ -1,4 +1,6 @@
 use crate::ast::*;
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::error::{Config, Result};
 use crate::writer::Writer as MathWriter;
 
@@ -29,6 +31,45 @@ impl MathWriter for MtefWriter {
         write_tag_options(&mut buf, LINE, 0);
         for node in &expr.nodes {
             write_node(&mut buf, node)?;
+        }
+        buf.push(END);
+
+        // Hex encode — single allocation
+        let mut hex = String::with_capacity(buf.len() * 2);
+        for b in &buf {
+            use std::fmt::Write;
+            let _ = write!(hex, "{b:02x}");
+        }
+        Ok(hex)
+    }
+
+    /// Write from compact arena representation, reading directly from the arena
+    /// without reconstructing `MathExpr`.
+    fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
+        let mut buf = Vec::with_capacity(64);
+        let arena = &expr.arena;
+
+        // MTEF v5 header
+        buf.push(5); // version
+        buf.push(1); // platform (Win)
+        buf.push(1); // product (MathType)
+        buf.push(5); // product version major
+        buf.push(0); // product version minor
+        buf.push(0); // null-terminated app key (empty)
+        buf.push(if expr.display == DisplayStyle::Inline {
+            1
+        } else {
+            0
+        });
+
+        // SIZE record (required before content)
+        write_tag_options(&mut buf, SIZE, 0);
+        buf.push(12); // 12pt default
+
+        // Wrap in a LINE
+        write_tag_options(&mut buf, LINE, 0);
+        for &root_id in arena.children(expr.roots) {
+            write_node_c(&mut buf, arena, root_id)?;
         }
         buf.push(END);
 
@@ -421,6 +462,301 @@ fn accent_to_embell(accent: char) -> u8 {
         '\u{0306}' => 20, // breve
         _ => 0,
     }
+}
+
+// ── Compact arena helpers ────────────────────────────────────────────────
+
+fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
+    match *arena.node(id) {
+        CompactNode::Number(sid) => {
+            for ch in arena.str_val(sid).chars() {
+                write_char(buf, TF_NUMBER, ch)?;
+            }
+        }
+        CompactNode::Identifier(sid) => {
+            for ch in arena.str_val(sid).chars() {
+                let (tf, code) = resolve_to_mtef(ch);
+                write_char(buf, tf, code)?;
+            }
+        }
+        CompactNode::Operator { name, .. } => {
+            for ch in arena.str_val(name).chars() {
+                write_char(buf, TF_FUNCTION, ch)?;
+            }
+        }
+        CompactNode::Symbol(_, sid) => {
+            for ch in arena.str_val(sid).chars() {
+                write_char(buf, TF_SYMBOL, ch)?;
+            }
+        }
+        CompactNode::Text(_, sid) => {
+            for ch in arena.str_val(sid).chars() {
+                write_char(buf, TF_TEXT, ch)?;
+            }
+        }
+        CompactNode::Space(_) => {
+            write_char(buf, TF_TEXT, ' ')?;
+        }
+        CompactNode::Row(span) => {
+            for &child_id in arena.children(span) {
+                write_node_c(buf, arena, child_id)?;
+            }
+        }
+        CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
+            let (selector, variation) =
+                fence_to_template(arena.str_val(open), arena.str_val(close));
+            write_tag_options(buf, TMPL, 0);
+            buf.push(selector);
+            buf.push(variation);
+            buf.push(0); // options
+            // Content slot
+            write_tag_options(buf, LINE, 0);
+            for &child_id in arena.children(content) {
+                // Skip Middle nodes (like the original FencedItem::Middle)
+                if matches!(*arena.node(child_id), CompactNode::Middle(_)) {
+                    continue;
+                }
+                write_node_c(buf, arena, child_id)?;
+            }
+            buf.push(END);
+            buf.push(END); // end template
+        }
+        CompactNode::Subscript { base, sub } => {
+            write_tag_options(buf, TMPL, 0);
+            buf.push(15); // scripts
+            buf.push(1); // subscript variation
+            buf.push(0);
+            write_line_slot_c(buf, arena, base)?;
+            write_line_slot_c(buf, arena, sub)?;
+            buf.push(END);
+        }
+        CompactNode::Superscript { base, sup } => {
+            write_tag_options(buf, TMPL, 0);
+            buf.push(15); // scripts
+            buf.push(0); // superscript variation
+            buf.push(0);
+            write_line_slot_c(buf, arena, base)?;
+            write_line_slot_c(buf, arena, sup)?;
+            buf.push(END);
+        }
+        CompactNode::SubSup { base, sub, sup } => {
+            write_tag_options(buf, TMPL, 0);
+            buf.push(15); // scripts
+            buf.push(2); // subsup variation
+            buf.push(0);
+            write_line_slot_c(buf, arena, base)?;
+            write_line_slot_c(buf, arena, sub)?;
+            write_line_slot_c(buf, arena, sup)?;
+            buf.push(END);
+        }
+        CompactNode::Fraction { kind, num, den } => {
+            let variation = match kind {
+                FractionKind::Skewed => 0,
+                _ => 0,
+            };
+            let selector = match kind {
+                FractionKind::Skewed => 40,
+                _ => 14,
+            };
+            let _ = variation; // suppress unused warning; variation is always 0
+            write_tag_options(buf, TMPL, 0);
+            buf.push(selector);
+            buf.push(0); // variation
+            buf.push(0);
+            write_line_slot_c(buf, arena, num)?;
+            write_line_slot_c(buf, arena, den)?;
+            buf.push(END);
+        }
+        CompactNode::Sqrt(inner) => {
+            write_tag_options(buf, TMPL, 0);
+            buf.push(13); // root
+            buf.push(0); // square root
+            buf.push(0);
+            write_line_slot_c(buf, arena, inner)?;
+            buf.push(END);
+        }
+        CompactNode::Root { index, radicand } => {
+            write_tag_options(buf, TMPL, 0);
+            buf.push(13); // root
+            buf.push(1); // nth root
+            buf.push(0);
+            write_line_slot_c(buf, arena, index)?;
+            write_line_slot_c(buf, arena, radicand)?;
+            buf.push(END);
+        }
+        CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        } => {
+            let (selector_base, _) = nary_op_to_selector(op);
+            let selector = if limits == LimitStyle::AboveBelow {
+                selector_base
+            } else {
+                selector_base + 1
+            };
+            let variation = match (sub.is_some(), sup.is_some()) {
+                (true, true) => 1,
+                (true, false) => 0,
+                (false, true) => 0,
+                (false, false) => 2,
+            };
+            write_tag_options(buf, TMPL, 0);
+            buf.push(selector);
+            buf.push(variation);
+            buf.push(0);
+            if sub.is_some() {
+                write_line_slot_c(buf, arena, sub)?;
+            }
+            if sup.is_some() {
+                write_line_slot_c(buf, arena, sup)?;
+            }
+            write_line_slot_c(buf, arena, body)?;
+            buf.push(END);
+        }
+        CompactNode::Accent {
+            base, accent, ..
+        } => {
+            let emb = accent_to_embell(accent);
+            write_tag_options(buf, LINE, 0);
+            write_node_c(buf, arena, base)?;
+            if emb != 0 {
+                write_tag_options(buf, 6, 0); // EMBELL
+                buf.push(emb);
+            }
+            buf.push(END);
+        }
+        CompactNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
+            if movable_limits {
+                write_node_c(buf, arena, base)?;
+            } else {
+                write_tag_options(buf, TMPL, 0);
+                buf.push(17); // overbar
+                buf.push(0);
+                buf.push(0);
+                write_line_slot_c(buf, arena, base)?;
+                buf.push(END);
+            }
+            let _ = over;
+        }
+        CompactNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
+            if movable_limits {
+                write_node_c(buf, arena, base)?;
+            } else {
+                write_tag_options(buf, TMPL, 0);
+                buf.push(16); // underbar
+                buf.push(0);
+                buf.push(0);
+                write_line_slot_c(buf, arena, base)?;
+                buf.push(END);
+            }
+            let _ = under;
+        }
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => {
+            write_node_c(buf, arena, base)?;
+            let _ = (under, over);
+        }
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            if pre_sub.is_some() {
+                write_node_c(buf, arena, pre_sub)?;
+            }
+            if pre_sup.is_some() {
+                write_node_c(buf, arena, pre_sup)?;
+            }
+            write_node_c(buf, arena, base)?;
+        }
+        CompactNode::Array {
+            cells, num_cols, ..
+        } => {
+            let nc = num_cols as usize;
+            let cell_ids = arena.children(cells);
+            let num_rows = if nc > 0 { cell_ids.len() / nc } else { 0 };
+            let num_rows_u8 = u8::try_from(num_rows).map_err(|_| {
+                crate::error::Error::Unsupported(format!(
+                    "MTEF matrix rows ({num_rows}) exceeds maximum of 255"
+                ))
+            })?;
+            let num_cols_u8 = u8::try_from(nc).map_err(|_| {
+                crate::error::Error::Unsupported(format!(
+                    "MTEF matrix columns ({nc}) exceeds maximum of 255"
+                ))
+            })?;
+            write_tag_options(buf, MATRIX, 0);
+            buf.push(0); // valign
+            buf.push(0); // halign
+            buf.push(num_rows_u8);
+            buf.push(num_cols_u8);
+            for _ in 0..nc {
+                buf.push(1); // center alignment
+            }
+            for row in 0..num_rows {
+                for col in 0..nc {
+                    let cell_id = cell_ids[row * nc + col];
+                    write_tag_options(buf, LINE, 0);
+                    // Each cell is a Row node wrapping the cell contents
+                    match *arena.node(cell_id) {
+                        CompactNode::Row(span) => {
+                            for &child_id in arena.children(span) {
+                                write_node_c(buf, arena, child_id)?;
+                            }
+                        }
+                        _ => {
+                            write_node_c(buf, arena, cell_id)?;
+                        }
+                    }
+                    buf.push(END);
+                }
+            }
+            buf.push(END);
+        }
+        CompactNode::Phantom(inner) => {
+            write_node_c(buf, arena, inner)?;
+        }
+        CompactNode::Boxed(inner) => {
+            write_node_c(buf, arena, inner)?;
+        }
+        CompactNode::Cancel { content, .. } => {
+            write_node_c(buf, arena, content)?;
+        }
+        CompactNode::Scaled { content, .. } => {
+            write_node_c(buf, arena, content)?;
+        }
+        CompactNode::Styled(_, span) => {
+            for &child_id in arena.children(span) {
+                write_node_c(buf, arena, child_id)?;
+            }
+        }
+        // Helper nodes that shouldn't appear as standalone roots
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) => {}
+    }
+    Ok(())
+}
+
+fn write_line_slot_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
+    write_tag_options(buf, LINE, 0);
+    write_node_c(buf, arena, id)?;
+    buf.push(END);
+    Ok(())
 }
 
 #[cfg(test)]

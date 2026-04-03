@@ -52,9 +52,9 @@ pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_expr(&mut parsed.expr);
-    MathmlWriter::write(&parsed.expr, &config).map_err(to_js_err)
+    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    MathmlWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }
 
 /// Parse LaTeX, normalize the AST, and return OMML.
@@ -62,9 +62,9 @@ pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_expr(&mut parsed.expr);
-    OmmlWriter::write(&parsed.expr, &config).map_err(to_js_err)
+    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    OmmlWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }
 
 /// Parse LaTeX, normalize the AST, and return UnicodeMath.
@@ -72,9 +72,9 @@ pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_expr(&mut parsed.expr);
-    UnicodeMathWriter::write(&parsed.expr, &config).map_err(to_js_err)
+    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    UnicodeMathWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }
 
 /// Parse LaTeX, normalize, and return the re-serialized (normalized) LaTeX.
@@ -82,7 +82,7 @@ pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn normalize_latex(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
-    let mut parsed = LatexReader::parse(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_expr(&mut parsed.expr);
-    LatexWriter::write(&parsed.expr, &config).map_err(to_js_err)
+    let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    LatexWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }

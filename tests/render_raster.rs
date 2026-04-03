@@ -58,7 +58,7 @@ fn builder_to_png_with_options() {
 fn render_to_image_api() {
     let expr = from_latex("a + b").unwrap();
     let options = RasterOptions::default();
-    let png = mathema::render_to_image(expr.expr(), &options).unwrap();
+    let png = mathema::render_to_image(&expr.expr(), &options).unwrap();
     assert_eq!(&png[..4], b"\x89PNG");
 }
 

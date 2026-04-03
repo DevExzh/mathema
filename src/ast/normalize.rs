@@ -1,4 +1,8 @@
+use smallvec::SmallVec;
+
 use crate::ast::*;
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
 
 /// Normalize a math expression in place.
 ///
@@ -172,9 +176,203 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
     }
 }
 
+// ── Compact arena-based normalization ──────────────────────────────────
+
+/// Normalize a compact expression in place.
+///
+/// Same semantics as `normalize_expr`: flatten nested Rows, unwrap
+/// single-child Rows, merge adjacent Text nodes, remove empty Rows.
+/// Operates directly on the arena — dead nodes become unreachable garbage.
+pub fn normalize_compact_expr(expr: &mut CompactExpr) {
+    expr.roots = normalize_compact_span(&mut expr.arena, expr.roots, 0);
+}
+
+/// Normalize a span of child nodes. Returns a (possibly new) span.
+fn normalize_compact_span(arena: &mut AstArena, span: NodeSpan, depth: usize) -> NodeSpan {
+    if depth > super::MAX_AST_DEPTH {
+        return span;
+    }
+    let d = depth + 1;
+
+    // Phase 1: recursively normalize each child node.
+    // Collect IDs first to avoid borrow conflicts with arena.
+    let child_ids: SmallVec<[NodeId; 8]> = arena.children(span).into();
+    for &id in &child_ids {
+        normalize_compact_node(arena, id, d);
+    }
+
+    // Phase 2: flatten Rows and remove empty Rows.
+    // Re-read nodes because Phase 1 may have replaced them in place.
+    let mut flattened: SmallVec<[NodeId; 8]> = SmallVec::new();
+    for &id in &child_ids {
+        match *arena.node(id) {
+            CompactNode::Row(inner) if inner.is_empty() => {
+                // Remove empty Row
+            }
+            CompactNode::Row(inner) => {
+                // Flatten: inline inner children
+                for &inner_id in arena.children(inner) {
+                    flattened.push(inner_id);
+                }
+            }
+            _ => flattened.push(id),
+        }
+    }
+
+    // Phase 3: merge adjacent Text nodes with the same style.
+    let mut merged: SmallVec<[NodeId; 8]> = SmallVec::new();
+    for &id in &flattened {
+        let node = *arena.node(id);
+        if let CompactNode::Text(style, sid) = node
+            && let Some(&prev_id) = merged.last()
+            && let CompactNode::Text(prev_style, prev_sid) = *arena.node(prev_id)
+            && prev_style == style
+        {
+            let prev_s = arena.str_val(prev_sid).to_owned();
+            let cur_s = arena.str_val(sid);
+            let combined = format!("{prev_s}{cur_s}");
+            let new_sid = arena.push_str(&combined);
+            *arena.node_mut(prev_id) = CompactNode::Text(style, new_sid);
+            continue;
+        }
+        merged.push(id);
+    }
+
+    arena.push_children(&merged)
+}
+
+/// Normalize a single compact node. May replace it in-place via `arena.node_mut`.
+fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
+    if depth > super::MAX_AST_DEPTH {
+        return;
+    }
+    let d = depth + 1;
+
+    let node = *arena.node(id);
+    match node {
+        CompactNode::Row(span) => {
+            let new_span = normalize_compact_span(arena, span, d);
+            let children = arena.children(new_span);
+            if children.len() == 1 {
+                // Unwrap single-child Row: replace this node with its child
+                let child_node = *arena.node(children[0]);
+                *arena.node_mut(id) = child_node;
+            } else {
+                *arena.node_mut(id) = CompactNode::Row(new_span);
+            }
+        }
+
+        CompactNode::Styled(style, span) => {
+            let new_span = normalize_compact_span(arena, span, d);
+            *arena.node_mut(id) = CompactNode::Styled(style, new_span);
+        }
+
+        CompactNode::Fenced { open, close, content } => {
+            // Normalize elements within fenced content (skip Middles)
+            let content_ids: SmallVec<[NodeId; 8]> = arena.children(content).into();
+            for &cid in &content_ids {
+                if !matches!(*arena.node(cid), CompactNode::Middle(_)) {
+                    normalize_compact_node(arena, cid, d);
+                }
+            }
+            // Re-read open/close since they haven't changed, but content children may have
+            let _ = (open, close); // suppress unused warning
+        }
+
+        CompactNode::Subscript { base, sub } => {
+            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, sub, d);
+        }
+        CompactNode::Superscript { base, sup } => {
+            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, sup, d);
+        }
+        CompactNode::SubSup { base, sub, sup } => {
+            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, sub, d);
+            normalize_compact_node(arena, sup, d);
+        }
+        CompactNode::PreScripts { base, pre_sub, pre_sup } => {
+            normalize_compact_node(arena, base, d);
+            if pre_sub.is_some() {
+                normalize_compact_node(arena, pre_sub, d);
+            }
+            if pre_sup.is_some() {
+                normalize_compact_node(arena, pre_sup, d);
+            }
+        }
+
+        CompactNode::Overscript { base, over, .. } => {
+            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, over, d);
+        }
+        CompactNode::Underscript { base, under, .. } => {
+            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, under, d);
+        }
+        CompactNode::UnderOver { base, under, over, .. } => {
+            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, under, d);
+            normalize_compact_node(arena, over, d);
+        }
+
+        CompactNode::Fraction { num, den, .. } => {
+            normalize_compact_node(arena, num, d);
+            normalize_compact_node(arena, den, d);
+        }
+        CompactNode::Sqrt(inner) => {
+            normalize_compact_node(arena, inner, d);
+        }
+        CompactNode::Root { index, radicand } => {
+            normalize_compact_node(arena, index, d);
+            normalize_compact_node(arena, radicand, d);
+        }
+
+        CompactNode::Nary { sub, sup, body, .. } => {
+            if sub.is_some() {
+                normalize_compact_node(arena, sub, d);
+            }
+            if sup.is_some() {
+                normalize_compact_node(arena, sup, d);
+            }
+            normalize_compact_node(arena, body, d);
+        }
+
+        CompactNode::Accent { base, .. } => {
+            normalize_compact_node(arena, base, d);
+        }
+
+        CompactNode::Array { cells, .. } => {
+            // Each cell is a Row node — normalize it
+            let cell_ids: SmallVec<[NodeId; 8]> = arena.children(cells).into();
+            for &cell_id in &cell_ids {
+                normalize_compact_node(arena, cell_id, d);
+            }
+        }
+
+        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+            normalize_compact_node(arena, inner, d);
+        }
+        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+            normalize_compact_node(arena, content, d);
+        }
+
+        // Leaf nodes: nothing to normalize
+        CompactNode::Number(_)
+        | CompactNode::Identifier(_)
+        | CompactNode::Operator { .. }
+        | CompactNode::Symbol(_, _)
+        | CompactNode::Text(_, _)
+        | CompactNode::Space(_)
+        | CompactNode::Middle(_)
+        | CompactNode::ColAlign(_) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::compact::CompactExpr;
 
     #[test]
     fn flatten_nested_rows() {
@@ -272,5 +470,112 @@ mod tests {
         ]);
         normalize_expr(&mut expr);
         assert_eq!(expr.nodes.len(), 3);
+    }
+
+    // ── Compact normalize equivalence tests ────────────────────────────
+
+    /// Assert that normalizing via MathExpr and via CompactExpr produce the same result.
+    fn assert_normalize_equiv(input: MathExpr) {
+        // Path A: normalize MathExpr directly
+        let mut path_a = input.clone();
+        normalize_expr(&mut path_a);
+
+        // Path B: MathExpr → CompactExpr → normalize → MathExpr
+        let mut compact = CompactExpr::from_math_expr(&input);
+        normalize_compact_expr(&mut compact);
+        let path_b = compact.to_math_expr();
+
+        assert_eq!(path_a, path_b, "normalize equivalence failed");
+    }
+
+    #[test]
+    fn compact_flatten_nested_rows() {
+        assert_normalize_equiv(MathExpr::inline(vec![
+            MathNode::Identifier("a".into()),
+            MathNode::Row(vec![
+                MathNode::Identifier("b".into()),
+                MathNode::Identifier("c".into()),
+            ]),
+            MathNode::Identifier("d".into()),
+        ]));
+    }
+
+    #[test]
+    fn compact_unwrap_single_child_row() {
+        assert_normalize_equiv(MathExpr::inline(vec![MathNode::Row(vec![
+            MathNode::Number("42".into()),
+        ])]));
+    }
+
+    #[test]
+    fn compact_remove_empty_rows() {
+        assert_normalize_equiv(MathExpr::inline(vec![
+            MathNode::Identifier("x".into()),
+            MathNode::Row(vec![]),
+            MathNode::Identifier("y".into()),
+        ]));
+    }
+
+    #[test]
+    fn compact_merge_adjacent_text() {
+        assert_normalize_equiv(MathExpr::inline(vec![
+            MathNode::Text(TextStyle::Normal, "hello".into()),
+            MathNode::Text(TextStyle::Normal, " world".into()),
+        ]));
+    }
+
+    #[test]
+    fn compact_no_merge_different_styles() {
+        assert_normalize_equiv(MathExpr::inline(vec![
+            MathNode::Text(TextStyle::Normal, "a".into()),
+            MathNode::Text(TextStyle::Bold, "b".into()),
+        ]));
+    }
+
+    #[test]
+    fn compact_deeply_nested_rows() {
+        assert_normalize_equiv(MathExpr::inline(vec![MathNode::Row(vec![
+            MathNode::Row(vec![MathNode::Row(vec![MathNode::Identifier("x".into())])]),
+        ])]));
+    }
+
+    #[test]
+    fn compact_normalize_inside_fraction() {
+        assert_normalize_equiv(MathExpr::inline(vec![MathNode::Fraction {
+            kind: FractionKind::Normal,
+            num: Box::new(MathNode::Row(vec![MathNode::Number("1".into())])),
+            den: Box::new(MathNode::Row(vec![MathNode::Number("2".into())])),
+        }]));
+    }
+
+    #[test]
+    fn compact_normalize_preserves_structure() {
+        assert_normalize_equiv(MathExpr::inline(vec![
+            MathNode::Identifier("x".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+            MathNode::Identifier("y".into()),
+        ]));
+    }
+
+    #[test]
+    fn compact_normalize_complex_expression() {
+        // Nested expression with multiple normalizable patterns
+        assert_normalize_equiv(MathExpr::block(vec![
+            MathNode::Row(vec![MathNode::Identifier("x".into())]), // unwrap
+            MathNode::Symbol(SymbolKind::Relation, "=".into()),
+            MathNode::Fraction {
+                kind: FractionKind::Normal,
+                num: Box::new(MathNode::Row(vec![
+                    // flatten inner Row + merge Text
+                    MathNode::Text(TextStyle::Normal, "a".into()),
+                    MathNode::Text(TextStyle::Normal, "b".into()),
+                    MathNode::Row(vec![
+                        MathNode::Identifier("c".into()),
+                        MathNode::Row(vec![]), // remove empty
+                    ]),
+                ])),
+                den: Box::new(MathNode::Row(vec![MathNode::Number("2".into())])), // unwrap
+            },
+        ]));
     }
 }

@@ -1,3 +1,5 @@
+pub mod arena;
+pub mod compact;
 pub mod normalize;
 pub mod visit;
 
@@ -322,6 +324,17 @@ pub fn validate_ast_depth(expr: &MathExpr) -> crate::error::Result<()> {
     Ok(())
 }
 
+/// Validate compact AST nesting depth.
+pub fn validate_compact_depth(
+    arena: &arena::AstArena,
+    roots: compact::NodeSpan,
+) -> crate::error::Result<()> {
+    for &id in arena.children(roots) {
+        check_compact_depth(arena, id, 0)?;
+    }
+    Ok(())
+}
+
 fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
     if depth > MAX_AST_DEPTH {
         return Err(crate::error::Error::Unsupported(format!(
@@ -426,6 +439,120 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         MathNode::Cancel { content, .. } | MathNode::Scaled { content, .. } => {
             check_node_depth(content, d)
         },
+    }
+}
+
+fn check_compact_depth(
+    arena: &arena::AstArena,
+    id: compact::NodeId,
+    depth: usize,
+) -> crate::error::Result<()> {
+    use compact::CompactNode;
+
+    if depth > MAX_AST_DEPTH {
+        return Err(crate::error::Error::Unsupported(format!(
+            "AST nesting exceeds maximum depth of {MAX_AST_DEPTH}"
+        )));
+    }
+    let d = depth + 1;
+    match *arena.node(id) {
+        CompactNode::Number(_)
+        | CompactNode::Identifier(_)
+        | CompactNode::Operator { .. }
+        | CompactNode::Symbol(_, _)
+        | CompactNode::Text(_, _)
+        | CompactNode::Space(_)
+        | CompactNode::Middle(_)
+        | CompactNode::ColAlign(_) => Ok(()),
+
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            for &child in arena.children(span) {
+                check_compact_depth(arena, child, d)?;
+            }
+            Ok(())
+        }
+        CompactNode::Fenced { content, .. } => {
+            for &child in arena.children(content) {
+                if !matches!(*arena.node(child), CompactNode::Middle(_)) {
+                    check_compact_depth(arena, child, d)?;
+                }
+            }
+            Ok(())
+        }
+
+        CompactNode::Subscript { base, sub } => {
+            check_compact_depth(arena, base, d)?;
+            check_compact_depth(arena, sub, d)
+        }
+        CompactNode::Superscript { base, sup } => {
+            check_compact_depth(arena, base, d)?;
+            check_compact_depth(arena, sup, d)
+        }
+        CompactNode::SubSup { base, sub, sup } => {
+            check_compact_depth(arena, base, d)?;
+            check_compact_depth(arena, sub, d)?;
+            check_compact_depth(arena, sup, d)
+        }
+        CompactNode::PreScripts { base, pre_sub, pre_sup } => {
+            check_compact_depth(arena, base, d)?;
+            if pre_sub.is_some() {
+                check_compact_depth(arena, pre_sub, d)?;
+            }
+            if pre_sup.is_some() {
+                check_compact_depth(arena, pre_sup, d)?;
+            }
+            Ok(())
+        }
+
+        CompactNode::Overscript { base, over, .. } => {
+            check_compact_depth(arena, base, d)?;
+            check_compact_depth(arena, over, d)
+        }
+        CompactNode::Underscript { base, under, .. } => {
+            check_compact_depth(arena, base, d)?;
+            check_compact_depth(arena, under, d)
+        }
+        CompactNode::UnderOver { base, under, over, .. } => {
+            check_compact_depth(arena, base, d)?;
+            check_compact_depth(arena, under, d)?;
+            check_compact_depth(arena, over, d)
+        }
+
+        CompactNode::Fraction { num, den, .. } => {
+            check_compact_depth(arena, num, d)?;
+            check_compact_depth(arena, den, d)
+        }
+        CompactNode::Sqrt(inner) => check_compact_depth(arena, inner, d),
+        CompactNode::Root { index, radicand } => {
+            check_compact_depth(arena, index, d)?;
+            check_compact_depth(arena, radicand, d)
+        }
+
+        CompactNode::Nary { sub, sup, body, .. } => {
+            if sub.is_some() {
+                check_compact_depth(arena, sub, d)?;
+            }
+            if sup.is_some() {
+                check_compact_depth(arena, sup, d)?;
+            }
+            check_compact_depth(arena, body, d)
+        }
+
+        CompactNode::Accent { base, .. } => check_compact_depth(arena, base, d),
+
+        CompactNode::Array { cells, .. } => {
+            for &cell_id in arena.children(cells) {
+                check_compact_depth(arena, cell_id, d)?;
+            }
+            Ok(())
+        }
+
+        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+            check_compact_depth(arena, inner, d)
+        }
+        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+            check_compact_depth(arena, content, d)
+        }
     }
 }
 

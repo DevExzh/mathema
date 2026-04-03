@@ -1,4 +1,6 @@
 use crate::ast::*;
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactNode, CompactExpr, NodeId};
 
 /// Immutable visitor for AST traversal.
 ///
@@ -279,6 +281,263 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
     }
 }
 
+// ── Compact AST visitors ───────────────────────────────────────────────
+
+/// Immutable visitor for compact arena-based AST traversal.
+pub trait CompactVisitor {
+    fn visit_expr(&mut self, expr: &CompactExpr) {
+        walk_compact_expr(self, expr);
+    }
+
+    fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+        walk_compact_node(self, arena, id);
+    }
+}
+
+pub fn walk_compact_expr<V: CompactVisitor + ?Sized>(v: &mut V, expr: &CompactExpr) {
+    for &id in expr.arena.children(expr.roots) {
+        v.visit_node(&expr.arena, id);
+    }
+}
+
+pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena, id: NodeId) {
+    match *arena.node(id) {
+        CompactNode::Number(_)
+        | CompactNode::Identifier(_)
+        | CompactNode::Operator { .. }
+        | CompactNode::Symbol(_, _)
+        | CompactNode::Text(_, _)
+        | CompactNode::Space(_)
+        | CompactNode::Middle(_)
+        | CompactNode::ColAlign(_) => {}
+
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            for &child in arena.children(span) {
+                v.visit_node(arena, child);
+            }
+        }
+        CompactNode::Fenced { content, .. } => {
+            for &child in arena.children(content) {
+                if !matches!(*arena.node(child), CompactNode::Middle(_)) {
+                    v.visit_node(arena, child);
+                }
+            }
+        }
+
+        CompactNode::Subscript { base, sub } => {
+            v.visit_node(arena, base);
+            v.visit_node(arena, sub);
+        }
+        CompactNode::Superscript { base, sup } => {
+            v.visit_node(arena, base);
+            v.visit_node(arena, sup);
+        }
+        CompactNode::SubSup { base, sub, sup } => {
+            v.visit_node(arena, base);
+            v.visit_node(arena, sub);
+            v.visit_node(arena, sup);
+        }
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            v.visit_node(arena, base);
+            if pre_sub.is_some() {
+                v.visit_node(arena, pre_sub);
+            }
+            if pre_sup.is_some() {
+                v.visit_node(arena, pre_sup);
+            }
+        }
+
+        CompactNode::Overscript { base, over, .. } => {
+            v.visit_node(arena, base);
+            v.visit_node(arena, over);
+        }
+        CompactNode::Underscript { base, under, .. } => {
+            v.visit_node(arena, base);
+            v.visit_node(arena, under);
+        }
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => {
+            v.visit_node(arena, base);
+            v.visit_node(arena, under);
+            v.visit_node(arena, over);
+        }
+
+        CompactNode::Fraction { num, den, .. } => {
+            v.visit_node(arena, num);
+            v.visit_node(arena, den);
+        }
+        CompactNode::Sqrt(inner) => {
+            v.visit_node(arena, inner);
+        }
+        CompactNode::Root { index, radicand } => {
+            v.visit_node(arena, index);
+            v.visit_node(arena, radicand);
+        }
+
+        CompactNode::Nary {
+            sub, sup, body, ..
+        } => {
+            if sub.is_some() {
+                v.visit_node(arena, sub);
+            }
+            if sup.is_some() {
+                v.visit_node(arena, sup);
+            }
+            v.visit_node(arena, body);
+        }
+
+        CompactNode::Accent { base, .. } => {
+            v.visit_node(arena, base);
+        }
+
+        CompactNode::Array { cells, .. } => {
+            for &cell_id in arena.children(cells) {
+                v.visit_node(arena, cell_id);
+            }
+        }
+
+        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+            v.visit_node(arena, inner);
+        }
+        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+            v.visit_node(arena, content);
+        }
+    }
+}
+
+/// Mutable visitor for compact arena-based AST transformation.
+///
+/// Because `CompactNode` is `Copy`, the mutable visitor copies the node,
+/// recurses into children, and can replace nodes via `arena.node_mut(id)`.
+pub trait CompactMutVisitor {
+    fn visit_node_mut(&mut self, arena: &mut AstArena, id: NodeId) {
+        walk_compact_node_mut(self, arena, id);
+    }
+}
+
+pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
+    v: &mut V,
+    arena: &mut AstArena,
+    id: NodeId,
+) {
+    let node = *arena.node(id); // Copy — cheap, avoids borrow conflict
+    match node {
+        CompactNode::Number(_)
+        | CompactNode::Identifier(_)
+        | CompactNode::Operator { .. }
+        | CompactNode::Symbol(_, _)
+        | CompactNode::Text(_, _)
+        | CompactNode::Space(_)
+        | CompactNode::Middle(_)
+        | CompactNode::ColAlign(_) => {}
+
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(span).into();
+            for &child in &ids {
+                v.visit_node_mut(arena, child);
+            }
+        }
+        CompactNode::Fenced { content, .. } => {
+            let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(content).into();
+            for &child in &ids {
+                if !matches!(*arena.node(child), CompactNode::Middle(_)) {
+                    v.visit_node_mut(arena, child);
+                }
+            }
+        }
+
+        CompactNode::Subscript { base, sub } => {
+            v.visit_node_mut(arena, base);
+            v.visit_node_mut(arena, sub);
+        }
+        CompactNode::Superscript { base, sup } => {
+            v.visit_node_mut(arena, base);
+            v.visit_node_mut(arena, sup);
+        }
+        CompactNode::SubSup { base, sub, sup } => {
+            v.visit_node_mut(arena, base);
+            v.visit_node_mut(arena, sub);
+            v.visit_node_mut(arena, sup);
+        }
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            v.visit_node_mut(arena, base);
+            if pre_sub.is_some() {
+                v.visit_node_mut(arena, pre_sub);
+            }
+            if pre_sup.is_some() {
+                v.visit_node_mut(arena, pre_sup);
+            }
+        }
+
+        CompactNode::Overscript { base, over, .. } => {
+            v.visit_node_mut(arena, base);
+            v.visit_node_mut(arena, over);
+        }
+        CompactNode::Underscript { base, under, .. } => {
+            v.visit_node_mut(arena, base);
+            v.visit_node_mut(arena, under);
+        }
+        CompactNode::UnderOver {
+            base, under, over, ..
+        } => {
+            v.visit_node_mut(arena, base);
+            v.visit_node_mut(arena, under);
+            v.visit_node_mut(arena, over);
+        }
+
+        CompactNode::Fraction { num, den, .. } => {
+            v.visit_node_mut(arena, num);
+            v.visit_node_mut(arena, den);
+        }
+        CompactNode::Sqrt(inner) => {
+            v.visit_node_mut(arena, inner);
+        }
+        CompactNode::Root { index, radicand } => {
+            v.visit_node_mut(arena, index);
+            v.visit_node_mut(arena, radicand);
+        }
+
+        CompactNode::Nary {
+            sub, sup, body, ..
+        } => {
+            if sub.is_some() {
+                v.visit_node_mut(arena, sub);
+            }
+            if sup.is_some() {
+                v.visit_node_mut(arena, sup);
+            }
+            v.visit_node_mut(arena, body);
+        }
+
+        CompactNode::Accent { base, .. } => {
+            v.visit_node_mut(arena, base);
+        }
+
+        CompactNode::Array { cells, .. } => {
+            let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(cells).into();
+            for &cell_id in &ids {
+                v.visit_node_mut(arena, cell_id);
+            }
+        }
+
+        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+            v.visit_node_mut(arena, inner);
+        }
+        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+            v.visit_node_mut(arena, content);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +604,82 @@ mod tests {
         DoubleNumbers.visit_expr_mut(&mut expr);
         assert_eq!(expr.nodes[0], MathNode::Number("6".into()));
         assert_eq!(expr.nodes[2], MathNode::Number("10".into()));
+    }
+
+    // ── Compact visitor tests ──────────────────────────────────────────
+
+    struct CompactNodeCounter {
+        count: usize,
+    }
+
+    impl CompactVisitor for CompactNodeCounter {
+        fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+            self.count += 1;
+            walk_compact_node(self, arena, id);
+        }
+    }
+
+    #[test]
+    fn compact_count_nodes_simple() {
+        let expr = MathExpr::inline(vec![
+            MathNode::Number("1".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+            MathNode::Number("2".into()),
+        ]);
+        let compact = CompactExpr::from_math_expr(&expr);
+        let mut counter = CompactNodeCounter { count: 0 };
+        counter.visit_expr(&compact);
+        assert_eq!(counter.count, 3);
+    }
+
+    #[test]
+    fn compact_count_nodes_nested() {
+        let expr = MathExpr::inline(vec![MathNode::Fraction {
+            kind: FractionKind::Normal,
+            num: Box::new(MathNode::Identifier("a".into())),
+            den: Box::new(MathNode::Row(vec![
+                MathNode::Identifier("b".into()),
+                MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+                MathNode::Identifier("c".into()),
+            ])),
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr);
+        let mut counter = CompactNodeCounter { count: 0 };
+        counter.visit_expr(&compact);
+        // fraction(1) + a(1) + row(1) + b(1) + +(1) + c(1) = 6
+        assert_eq!(counter.count, 6);
+    }
+
+    #[test]
+    fn compact_mut_visitor_transforms() {
+        struct DoubleCompactNumbers;
+        impl CompactMutVisitor for DoubleCompactNumbers {
+            fn visit_node_mut(&mut self, arena: &mut AstArena, id: NodeId) {
+                if let CompactNode::Number(sid) = *arena.node(id) {
+                    let s = arena.str_val(sid).to_owned();
+                    if let Ok(n) = s.parse::<i64>() {
+                        let doubled = (n * 2).to_string();
+                        let new_sid = arena.push_str(&doubled);
+                        *arena.node_mut(id) = CompactNode::Number(new_sid);
+                    }
+                }
+                walk_compact_node_mut(self, arena, id);
+            }
+        }
+
+        let expr = MathExpr::inline(vec![
+            MathNode::Number("3".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+            MathNode::Number("5".into()),
+        ]);
+        let mut compact = CompactExpr::from_math_expr(&expr);
+        let root_ids: smallvec::SmallVec<[NodeId; 8]> =
+            compact.arena.children(compact.roots).into();
+        for &id in &root_ids {
+            DoubleCompactNumbers.visit_node_mut(&mut compact.arena, id);
+        }
+        let restored = compact.to_math_expr();
+        assert_eq!(restored.nodes[0], MathNode::Number("6".into()));
+        assert_eq!(restored.nodes[2], MathNode::Number("10".into()));
     }
 }

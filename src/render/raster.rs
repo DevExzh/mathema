@@ -12,6 +12,7 @@ use super::RenderOptions;
 use super::layout::{BoxKind, LayoutBox};
 use super::style::MathStyle;
 use crate::ast::MathExpr;
+use crate::ast::compact::CompactExpr;
 use crate::error::Result;
 
 // ---------------------------------------------------------------------------
@@ -74,7 +75,26 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
         MathStyle::Text
     };
     let root = super::layout::layout_expr(expr, style, &options.render);
+    rasterize_layout(&root, options)
+}
 
+/// Render a compact math expression directly to raster image bytes (PNG or JPEG).
+pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> Result<Vec<u8>> {
+    crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+    let style = if options
+        .render
+        .display_mode
+        .unwrap_or(expr.display == crate::ast::DisplayStyle::Block)
+    {
+        MathStyle::Display
+    } else {
+        MathStyle::Text
+    };
+    let root = super::layout::layout_expr_c(expr, style, &options.render);
+    rasterize_layout(&root, options)
+}
+
+fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>> {
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
 
@@ -119,7 +139,7 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
     };
 
     let baseline_y = root.height * em + padding;
-    emit_raster_box(&mut pixmap, &mut ctx, &root, padding, baseline_y);
+    emit_raster_box(&mut pixmap, &mut ctx, root, padding, baseline_y);
 
     encode_image(&pixmap, options)
 }

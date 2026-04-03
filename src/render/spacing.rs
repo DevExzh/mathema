@@ -1,6 +1,8 @@
 use super::style::MathStyle;
 /// Inter-atom spacing based on the TeXBook 8×8 spacing table (p. 170).
 use crate::ast::{MathNode, SymbolKind};
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactNode, NodeId};
 
 /// TeX atom types for spacing classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +69,61 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
                 AtomType::Ord
             }
         },
+    }
+}
+
+/// Classify a CompactNode into its atom type for spacing purposes.
+pub fn classify_node_c(arena: &AstArena, id: NodeId) -> AtomType {
+    classify_node_c_depth(arena, id, 0)
+}
+
+fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType {
+    if depth > crate::ast::MAX_AST_DEPTH {
+        return AtomType::Ord;
+    }
+    match *arena.node(id) {
+        CompactNode::Number(_) => AtomType::Ord,
+        CompactNode::Identifier(_) => AtomType::Ord,
+        CompactNode::Operator { .. } => AtomType::Op,
+        CompactNode::Symbol(kind, _) => match kind {
+            SymbolKind::Ordinary | SymbolKind::Alphabetic => AtomType::Ord,
+            SymbolKind::LargeOp => AtomType::Op,
+            SymbolKind::BinaryOp => AtomType::Bin,
+            SymbolKind::Relation => AtomType::Rel,
+            SymbolKind::Open => AtomType::Open,
+            SymbolKind::Close => AtomType::Close,
+            SymbolKind::Punctuation => AtomType::Punct,
+            SymbolKind::Fence => AtomType::Open,
+        },
+        CompactNode::Text(..) => AtomType::Ord,
+        CompactNode::Space(_) => AtomType::Ord,
+        CompactNode::Row(_) => AtomType::Inner,
+        CompactNode::Fenced { .. } => AtomType::Inner,
+        CompactNode::Fraction { .. } => AtomType::Inner,
+        CompactNode::Sqrt(_) | CompactNode::Root { .. } => AtomType::Ord,
+        CompactNode::Nary { .. } => AtomType::Op,
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. }
+        | CompactNode::PreScripts { base, .. } => classify_node_c_depth(arena, base, depth + 1),
+        CompactNode::Overscript { base, .. }
+        | CompactNode::Underscript { base, .. }
+        | CompactNode::UnderOver { base, .. } => classify_node_c_depth(arena, base, depth + 1),
+        CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, depth + 1),
+        CompactNode::Array { .. } => AtomType::Inner,
+        CompactNode::Phantom(_) => AtomType::Ord,
+        CompactNode::Boxed(_) => AtomType::Inner,
+        CompactNode::Cancel { content, .. } => classify_node_c_depth(arena, content, depth + 1),
+        CompactNode::Scaled { content, .. } => classify_node_c_depth(arena, content, depth + 1),
+        CompactNode::Styled(_, span) => {
+            let children = arena.children(span);
+            if let Some(&first) = children.first() {
+                classify_node_c_depth(arena, first, depth + 1)
+            } else {
+                AtomType::Ord
+            }
+        },
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) => AtomType::Ord,
     }
 }
 

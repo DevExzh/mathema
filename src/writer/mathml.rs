@@ -3,6 +3,8 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::io::Cursor;
 
 use crate::ast::*;
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::error::{Config, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
 use crate::writer::Writer as MathWriter;
@@ -22,6 +24,31 @@ impl MathWriter for MathmlWriter {
 
         for node in &expr.nodes {
             write_node(&mut writer, node)?;
+        }
+
+        writer
+            .write_event(Event::End(BytesEnd::new("math")))
+            .map_err(to_err)?;
+
+        let buf = writer.into_inner().into_inner();
+        String::from_utf8(buf).map_err(|e| {
+            crate::error::Error::Unsupported(format!("MathML output contained invalid UTF-8: {e}"))
+        })
+    }
+
+    fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
+        let mut writer = Writer::new(Cursor::new(Vec::with_capacity(512)));
+        let arena = &expr.arena;
+
+        let mut math = BytesStart::new("math");
+        math.push_attribute(("xmlns", "http://www.w3.org/1998/Math/MathML"));
+        if expr.display == DisplayStyle::Block {
+            math.push_attribute(("display", "block"));
+        }
+        writer.write_event(Event::Start(math)).map_err(to_err)?;
+
+        for &root_id in arena.children(expr.roots) {
+            write_node_c(&mut writer, arena, root_id)?;
         }
 
         writer
@@ -532,6 +559,483 @@ fn style_to_mathvariant(style: TextStyle) -> &'static str {
         TextStyle::Fraktur => "fraktur",
         TextStyle::BoldFraktur => "bold-fraktur",
     }
+}
+
+// ── Compact arena helpers ─────────────────────────────────────────────────
+
+fn write_node_c(w: &mut XmlWriter, arena: &AstArena, id: NodeId) -> Result<()> {
+    match *arena.node(id) {
+        CompactNode::Number(sid) => write_simple_element_c(w, "mn", arena.str_val(sid)),
+        CompactNode::Identifier(sid) => write_mi_c(w, arena.str_val(sid)),
+        CompactNode::Operator { name, limits } => {
+            let mut elem = BytesStart::new("mo");
+            if limits == LimitStyle::AboveBelow {
+                elem.push_attribute(("movablelimits", "true"));
+            }
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            w.write_event(Event::Text(BytesText::new(arena.str_val(name))))
+                .map_err(to_err)?;
+            w.write_event(Event::End(BytesEnd::new("mo")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+        CompactNode::Symbol(kind, sid) => {
+            let s = arena.str_val(sid);
+            let mut elem = BytesStart::new("mo");
+            match kind {
+                SymbolKind::LargeOp => {
+                    elem.push_attribute(("largeop", "true"));
+                },
+                SymbolKind::Fence => {
+                    elem.push_attribute(("fence", "true"));
+                },
+                _ => {},
+            }
+            if let Some(ch) = s.chars().next() {
+                let form = symbol_kind_to_form(kind);
+                if let Some(entry) = lookup_operator_any(ch, form) {
+                    if entry.stretchy {
+                        elem.push_attribute(("stretchy", "true"));
+                    }
+                    if entry.form != OperatorForm::Infix {
+                        elem.push_attribute((
+                            "form",
+                            crate::unicode::operators::form_str(entry.form),
+                        ));
+                    }
+                }
+            }
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            w.write_event(Event::Text(BytesText::new(s)))
+                .map_err(to_err)?;
+            w.write_event(Event::End(BytesEnd::new("mo")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+        CompactNode::Text(_, sid) => write_simple_element_c(w, "mtext", arena.str_val(sid)),
+        CompactNode::Space(r) => {
+            let mut elem = BytesStart::new("mspace");
+            let width = format!("{}em", r.as_f64());
+            elem.push_attribute(("width", width.as_str()));
+            w.write_event(Event::Empty(elem)).map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Row(span) => {
+            w.write_event(Event::Start(BytesStart::new("mrow")))
+                .map_err(to_err)?;
+            for &child_id in arena.children(span) {
+                write_node_c(w, arena, child_id)?;
+            }
+            w.write_event(Event::End(BytesEnd::new("mrow")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
+            let elem = BytesStart::new("mrow");
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+
+            let open_s = arena.str_val(open);
+            if !open_s.is_empty() {
+                write_mo(w, open_s, Some("true"), None)?;
+            }
+
+            for &child_id in arena.children(content) {
+                match *arena.node(child_id) {
+                    CompactNode::Middle(sid) => {
+                        write_mo(w, arena.str_val(sid), Some("true"), None)?;
+                    },
+                    _ => write_node_c(w, arena, child_id)?,
+                }
+            }
+
+            let close_s = arena.str_val(close);
+            if !close_s.is_empty() {
+                write_mo(w, close_s, Some("true"), None)?;
+            }
+
+            w.write_event(Event::End(BytesEnd::new("mrow")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Subscript { base, sub } => {
+            w.write_event(Event::Start(BytesStart::new("msub")))
+                .map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            write_node_c(w, arena, sub)?;
+            w.write_event(Event::End(BytesEnd::new("msub")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Superscript { base, sup } => {
+            w.write_event(Event::Start(BytesStart::new("msup")))
+                .map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            write_node_c(w, arena, sup)?;
+            w.write_event(Event::End(BytesEnd::new("msup")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::SubSup { base, sub, sup } => {
+            w.write_event(Event::Start(BytesStart::new("msubsup")))
+                .map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            write_node_c(w, arena, sub)?;
+            write_node_c(w, arena, sup)?;
+            w.write_event(Event::End(BytesEnd::new("msubsup")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            w.write_event(Event::Start(BytesStart::new("mmultiscripts")))
+                .map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            w.write_event(Event::Empty(BytesStart::new("mprescripts")))
+                .map_err(to_err)?;
+            if pre_sub.is_some() {
+                write_node_c(w, arena, pre_sub)?;
+            } else {
+                w.write_event(Event::Empty(BytesStart::new("none")))
+                    .map_err(to_err)?;
+            }
+            if pre_sup.is_some() {
+                write_node_c(w, arena, pre_sup)?;
+            } else {
+                w.write_event(Event::Empty(BytesStart::new("none")))
+                    .map_err(to_err)?;
+            }
+            w.write_event(Event::End(BytesEnd::new("mmultiscripts")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
+            let mut elem = BytesStart::new("mover");
+            if !movable_limits {
+                elem.push_attribute(("accent", "true"));
+            }
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            write_node_c(w, arena, over)?;
+            w.write_event(Event::End(BytesEnd::new("mover")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
+            let mut elem = BytesStart::new("munder");
+            if !movable_limits {
+                elem.push_attribute(("accentunder", "true"));
+            }
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            write_node_c(w, arena, under)?;
+            w.write_event(Event::End(BytesEnd::new("munder")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::UnderOver {
+            base,
+            under,
+            over,
+            movable_limits,
+        } => {
+            let mut elem = BytesStart::new("munderover");
+            if !movable_limits {
+                elem.push_attribute(("accent", "true"));
+            }
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            write_node_c(w, arena, under)?;
+            write_node_c(w, arena, over)?;
+            w.write_event(Event::End(BytesEnd::new("munderover")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Fraction { kind, num, den } => {
+            let mut elem = BytesStart::new("mfrac");
+            if kind == FractionKind::NoBar {
+                elem.push_attribute(("linethickness", "0"));
+            }
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_c(w, arena, num)?;
+            write_node_c(w, arena, den)?;
+            w.write_event(Event::End(BytesEnd::new("mfrac")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Sqrt(inner) => {
+            w.write_event(Event::Start(BytesStart::new("msqrt")))
+                .map_err(to_err)?;
+            write_node_c(w, arena, inner)?;
+            w.write_event(Event::End(BytesEnd::new("msqrt")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Root { index, radicand } => {
+            w.write_event(Event::Start(BytesStart::new("mroot")))
+                .map_err(to_err)?;
+            write_node_c(w, arena, radicand)?;
+            write_node_c(w, arena, index)?;
+            w.write_event(Event::End(BytesEnd::new("mroot")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        } => {
+            let has_sub = sub.is_some();
+            let has_sup = sup.is_some();
+
+            match limits {
+                LimitStyle::AboveBelow => {
+                    let tag = match (has_sub, has_sup) {
+                        (true, true) => "munderover",
+                        (true, false) => "munder",
+                        (false, true) => "mover",
+                        (false, false) => {
+                            write_mo_char_c(w, op)?;
+                            write_node_c(w, arena, body)?;
+                            return Ok(());
+                        },
+                    };
+                    w.write_event(Event::Start(BytesStart::new(tag)))
+                        .map_err(to_err)?;
+                    write_mo_char_c(w, op)?;
+                    if has_sub {
+                        write_node_c(w, arena, sub)?;
+                    }
+                    if has_sup {
+                        write_node_c(w, arena, sup)?;
+                    }
+                    w.write_event(Event::End(BytesEnd::new(tag)))
+                        .map_err(to_err)?;
+                },
+                _ => {
+                    let tag = match (has_sub, has_sup) {
+                        (true, true) => "msubsup",
+                        (true, false) => "msub",
+                        (false, true) => "msup",
+                        (false, false) => {
+                            write_mo_char_c(w, op)?;
+                            write_node_c(w, arena, body)?;
+                            return Ok(());
+                        },
+                    };
+                    w.write_event(Event::Start(BytesStart::new(tag)))
+                        .map_err(to_err)?;
+                    let mut op_elem = BytesStart::new("mo");
+                    op_elem.push_attribute(("movablelimits", "true"));
+                    w.write_event(Event::Start(op_elem)).map_err(to_err)?;
+                    w.write_event(Event::Text(BytesText::new(&op.to_string())))
+                        .map_err(to_err)?;
+                    w.write_event(Event::End(BytesEnd::new("mo")))
+                        .map_err(to_err)?;
+                    if has_sub {
+                        write_node_c(w, arena, sub)?;
+                    }
+                    if has_sup {
+                        write_node_c(w, arena, sup)?;
+                    }
+                    w.write_event(Event::End(BytesEnd::new(tag)))
+                        .map_err(to_err)?;
+                },
+            }
+            write_node_c(w, arena, body)?;
+            Ok(())
+        },
+
+        CompactNode::Accent {
+            base,
+            accent,
+            position,
+        } => {
+            let tag = match position {
+                AccentPosition::Above => "mover",
+                AccentPosition::Below => "munder",
+            };
+            let mut elem = BytesStart::new(tag);
+            elem.push_attribute(("accent", "true"));
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_c(w, arena, base)?;
+            write_mo_char_c(w, accent)?;
+            w.write_event(Event::End(BytesEnd::new(tag)))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols,
+        } => {
+            let aligns: Vec<ColumnAlign> = arena.children(col_aligns).iter().map(|&cid| {
+                if let CompactNode::ColAlign(a) = *arena.node(cid) { a } else { ColumnAlign::Center }
+            }).collect();
+
+            let cell_ids = arena.children(cells);
+            let nc = num_cols as usize;
+
+            w.write_event(Event::Start(BytesStart::new("mtable")))
+                .map_err(to_err)?;
+            for row_chunk in cell_ids.chunks(nc.max(1)) {
+                w.write_event(Event::Start(BytesStart::new("mtr")))
+                    .map_err(to_err)?;
+                for (i, &cell_id) in row_chunk.iter().enumerate() {
+                    let mut td = BytesStart::new("mtd");
+                    if let Some(align) = aligns.get(i) {
+                        let val = match align {
+                            ColumnAlign::Left => "left",
+                            ColumnAlign::Center => "center",
+                            ColumnAlign::Right => "right",
+                        };
+                        td.push_attribute(("columnalign", val));
+                    }
+                    w.write_event(Event::Start(td)).map_err(to_err)?;
+                    // Each cell is a Row node wrapping the cell contents
+                    match *arena.node(cell_id) {
+                        CompactNode::Row(span) => {
+                            for &child_id in arena.children(span) {
+                                write_node_c(w, arena, child_id)?;
+                            }
+                        },
+                        _ => {
+                            write_node_c(w, arena, cell_id)?;
+                        },
+                    }
+                    w.write_event(Event::End(BytesEnd::new("mtd")))
+                        .map_err(to_err)?;
+                }
+                w.write_event(Event::End(BytesEnd::new("mtr")))
+                    .map_err(to_err)?;
+            }
+            w.write_event(Event::End(BytesEnd::new("mtable")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Phantom(inner) => {
+            w.write_event(Event::Start(BytesStart::new("mphantom")))
+                .map_err(to_err)?;
+            write_node_c(w, arena, inner)?;
+            w.write_event(Event::End(BytesEnd::new("mphantom")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Boxed(inner) => {
+            let mut elem = BytesStart::new("menclose");
+            elem.push_attribute(("notation", "box"));
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_c(w, arena, inner)?;
+            w.write_event(Event::End(BytesEnd::new("menclose")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Cancel { stroke, content } => {
+            let mut elem = BytesStart::new("menclose");
+            let notation = match stroke {
+                StrokeKind::Forward => "updiagonalstrike",
+                StrokeKind::Backward => "downdiagonalstrike",
+                StrokeKind::Cross => "updiagonalstrike downdiagonalstrike",
+                StrokeKind::Horizontal => "horizontalstrike",
+                StrokeKind::Vertical => "verticalstrike",
+            };
+            elem.push_attribute(("notation", notation));
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_c(w, arena, content)?;
+            w.write_event(Event::End(BytesEnd::new("menclose")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        CompactNode::Scaled { content, .. } => write_node_c(w, arena, content),
+
+        CompactNode::Styled(style, span) => {
+            let variant = style_to_mathvariant(style);
+            let mut elem = BytesStart::new("mstyle");
+            elem.push_attribute(("mathvariant", variant));
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            for &child_id in arena.children(span) {
+                write_node_c(w, arena, child_id)?;
+            }
+            w.write_event(Event::End(BytesEnd::new("mstyle")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
+        // Helper nodes — should not normally appear as standalone roots
+        CompactNode::Middle(sid) => {
+            write_mo(w, arena.str_val(sid), Some("true"), None)
+        },
+        CompactNode::ColAlign(_) => Ok(()),
+    }
+}
+
+fn write_simple_element_c(w: &mut XmlWriter, tag: &str, text: &str) -> Result<()> {
+    w.write_event(Event::Start(BytesStart::new(tag)))
+        .map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new(tag)))
+        .map_err(to_err)?;
+    Ok(())
+}
+
+fn write_mi_c(w: &mut XmlWriter, s: &str) -> Result<()> {
+    let mut elem = BytesStart::new("mi");
+    if s.chars().count() > 1 && s.chars().all(|c| c.is_ascii_alphabetic()) {
+        elem.push_attribute(("mathvariant", "normal"));
+    }
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(s)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mi")))
+        .map_err(to_err)?;
+    Ok(())
+}
+
+fn write_mo_char_c(w: &mut XmlWriter, ch: char) -> Result<()> {
+    let mut buf = [0u8; 4];
+    let s = ch.encode_utf8(&mut buf);
+    w.write_event(Event::Start(BytesStart::new("mo")))
+        .map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(s)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mo")))
+        .map_err(to_err)?;
+    Ok(())
 }
 
 #[cfg(test)]

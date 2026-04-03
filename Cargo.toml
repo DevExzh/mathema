@@ -6,6 +6,7 @@ description = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and Unic
 license = "MIT"
 
 [dependencies]
+smallvec = "1"
 nom = "7"
 quick-xml = "0.37"
 thiserror = "2"

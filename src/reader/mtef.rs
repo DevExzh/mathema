@@ -1,18 +1,27 @@
+use smallvec::SmallVec;
+
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness};
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::error::{
+    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
+};
 use crate::reader::Reader;
 
 pub struct MtefReader;
 
 impl Reader for MtefReader {
-    /// Parse MTEF binary input. Accepts hex-encoded binary string.
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
+        Self::parse_compact(input, config).map(|r| r.to_parse_result())
+    }
+
+    fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         let bytes = match hex_decode(input) {
             Ok(b) => b,
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
-                    return Ok(ParseResult::with_diagnostics(
-                        MathExpr::inline(vec![]),
+                    return Ok(CompactParseResult::with_diagnostics(
+                        CompactExpr::new(AstArena::new(), NodeSpan::EMPTY, DisplayStyle::Inline),
                         vec![Diagnostic {
                             kind: DiagnosticKind::Warning,
                             message: format!("MTEF hex decode failed (recovered): {e}"),
@@ -23,21 +32,29 @@ impl Reader for MtefReader {
                 return Err(e);
             },
         };
-        Self::parse_bytes(&bytes, config)
+        Self::parse_bytes_compact(&bytes, config)
     }
 }
 
 impl MtefReader {
     /// Parse raw MTEF binary bytes.
     pub fn parse_bytes(bytes: &[u8], config: &Config) -> Result<ParseResult> {
+        Self::parse_bytes_compact(bytes, config).map(|r| r.to_parse_result())
+    }
+
+    fn parse_bytes_compact(bytes: &[u8], config: &Config) -> Result<CompactParseResult> {
         if bytes.is_empty() {
-            return Ok(ParseResult::new(MathExpr::inline(vec![])));
+            return Ok(CompactParseResult::new(CompactExpr::new(
+                AstArena::new(),
+                NodeSpan::EMPTY,
+                DisplayStyle::Inline,
+            )));
         }
-        let mut parser = MtefParser::new(bytes);
+        let mut parser = MtefCompactParser::new(bytes);
         if let Err(e) = parser.parse_header() {
             if config.strictness == Strictness::Lenient {
-                return Ok(ParseResult::with_diagnostics(
-                    MathExpr::inline(vec![]),
+                return Ok(CompactParseResult::with_diagnostics(
+                    CompactExpr::new(parser.arena, NodeSpan::EMPTY, DisplayStyle::Inline),
                     vec![Diagnostic {
                         kind: DiagnosticKind::Warning,
                         message: format!("MTEF header parse failed (recovered): {e}"),
@@ -48,13 +65,18 @@ impl MtefReader {
             return Err(e);
         }
         match parser.parse_object_list() {
-            Ok(nodes) => {
+            Ok(ids) => {
                 let display = if parser.inline {
                     DisplayStyle::Inline
                 } else {
                     DisplayStyle::Block
                 };
-                Ok(ParseResult::new(MathExpr { nodes, display }))
+                let roots = parser.arena.push_children(&ids);
+                Ok(CompactParseResult::new(CompactExpr {
+                    arena: parser.arena,
+                    roots,
+                    display,
+                }))
             },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
@@ -63,9 +85,10 @@ impl MtefReader {
                     } else {
                         DisplayStyle::Block
                     };
-                    Ok(ParseResult::with_diagnostics(
-                        MathExpr {
-                            nodes: vec![],
+                    Ok(CompactParseResult::with_diagnostics(
+                        CompactExpr {
+                            arena: parser.arena,
+                            roots: NodeSpan::EMPTY,
                             display,
                         },
                         vec![Diagnostic {
@@ -83,13 +106,11 @@ impl MtefReader {
 }
 
 /// Decode hex string to bytes, skipping whitespace.
-/// Avoids intermediate Vec<char> allocation by working with ASCII bytes directly.
 fn hex_decode(s: &str) -> Result<Vec<u8>> {
     let s = s.trim();
     if s.is_empty() {
         return Ok(vec![]);
     }
-    // All valid hex chars are ASCII, so byte iteration is safe
     let hex_bytes: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     if !hex_bytes.len().is_multiple_of(2) {
         return Err(Error::Unsupported("MTEF hex string has odd length".into()));
@@ -120,7 +141,6 @@ const TMPL: u8 = 3;
 const PILE: u8 = 4;
 const MATRIX: u8 = 5;
 const EMBELL: u8 = 6;
-// const RULER: u8 = 7;
 const FONT: u8 = 8;
 const SIZE: u8 = 9;
 const FULL: u8 = 10;
@@ -142,7 +162,6 @@ const XF_LMOVE: u8 = 0x08;
 
 // CHAR option flags (v5)
 const CHAR_EMBELL: u8 = 0x01;
-// const CHAR_FUNC_START: u8 = 0x02;
 const CHAR_ENC_CHAR_8: u8 = 0x04;
 const CHAR_NUDGE: u8 = 0x08;
 const CHAR_ENC_CHAR_16: u8 = 0x10;
@@ -173,16 +192,17 @@ const TF_VECTOR: u8 = 7;
 const TF_NUMBER: u8 = 8;
 const TF_MTEXTRA: u8 = 11;
 
-struct MtefParser<'a> {
+struct MtefCompactParser<'a> {
     data: &'a [u8],
     pos: usize,
     version: u8,
     platform: u8,
     inline: bool,
     fonts: Vec<String>,
+    arena: AstArena,
 }
 
-impl<'a> MtefParser<'a> {
+impl<'a> MtefCompactParser<'a> {
     fn new(data: &'a [u8]) -> Self {
         Self {
             data,
@@ -191,6 +211,7 @@ impl<'a> MtefParser<'a> {
             platform: 1,
             inline: true,
             fonts: Vec::new(),
+            arena: AstArena::new(),
         }
     }
 
@@ -228,9 +249,24 @@ impl<'a> MtefParser<'a> {
         }
         let s = String::from_utf8_lossy(&self.data[start..self.pos]).to_string();
         if self.pos < self.data.len() {
-            self.pos += 1; // skip null terminator
+            self.pos += 1;
         }
         Ok(s)
+    }
+
+    fn empty_row(&mut self) -> NodeId {
+        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+    }
+
+    fn wrap_ids(&mut self, ids: &[NodeId]) -> NodeId {
+        match ids.len() {
+            0 => self.empty_row(),
+            1 => ids[0],
+            _ => {
+                let span = self.arena.push_children(ids);
+                self.arena.push_node(CompactNode::Row(span))
+            },
+        }
     }
 
     fn parse_header(&mut self) -> Result<()> {
@@ -244,11 +280,11 @@ impl<'a> MtefParser<'a> {
                 self.version = 5;
             },
             1 => {
-                self.platform = 0; // Mac
+                self.platform = 0;
             },
             101 => {
                 self.version = 1;
-                self.platform = 1; // Win
+                self.platform = 1;
             },
             2..=4 => {
                 self.platform = self.read_byte()?;
@@ -277,7 +313,6 @@ impl<'a> MtefParser<'a> {
 
     fn get_tag_and_options(&mut self) -> Result<(u8, u8)> {
         let byte = self.read_byte()?;
-        // END tag (0) has no options byte in any version
         if byte == END {
             return Ok((END, 0));
         }
@@ -299,14 +334,13 @@ impl<'a> MtefParser<'a> {
         let b1 = self.read_byte()?;
         let b2 = self.read_byte()?;
         if b1 == 128 && b2 == 128 {
-            // long nudge: 4 more bytes
             self.skip_bytes(4);
         }
         Ok(())
     }
 
-    fn parse_object_list(&mut self) -> Result<Vec<MathNode>> {
-        let mut nodes = Vec::new();
+    fn parse_object_list(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
+        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             if self.remaining() == 0 {
                 break;
@@ -316,28 +350,27 @@ impl<'a> MtefParser<'a> {
             match tag {
                 END => break,
                 LINE => {
-                    let line_nodes = self.parse_line(options)?;
-                    nodes.extend(line_nodes);
+                    let line_ids = self.parse_line(options)?;
+                    nodes.extend(line_ids);
                 },
                 CHAR => {
-                    if let Some(node) = self.parse_char(options)? {
-                        nodes.push(node);
+                    if let Some(id) = self.parse_char(options)? {
+                        nodes.push(id);
                     }
                 },
                 TMPL => {
-                    let node = self.parse_template(options)?;
-                    nodes.push(node);
+                    let id = self.parse_template(options)?;
+                    nodes.push(id);
                 },
                 PILE => {
-                    let node = self.parse_pile(options)?;
-                    nodes.push(node);
+                    let id = self.parse_pile(options)?;
+                    nodes.push(id);
                 },
                 MATRIX => {
-                    let node = self.parse_matrix(options)?;
-                    nodes.push(node);
+                    let id = self.parse_matrix(options)?;
+                    nodes.push(id);
                 },
                 EMBELL => {
-                    // Standalone embellishment (unusual)
                     self.skip_embell(options)?;
                 },
                 FONT => {
@@ -346,9 +379,7 @@ impl<'a> MtefParser<'a> {
                 SIZE => {
                     self.skip_size_record()?;
                 },
-                FULL | SUB | SUB2 | SYM | SUBSYM => {
-                    // Size changes - skip
-                },
+                FULL | SUB | SUB2 | SYM | SUBSYM => {},
                 COLOR => {
                     self.skip_color()?;
                 },
@@ -365,7 +396,6 @@ impl<'a> MtefParser<'a> {
                     let _name = self.read_null_terminated_string()?;
                 },
                 _ => {
-                    // Unknown record, try to recover
                     if self.pos == saved_pos {
                         self.skip_bytes(1);
                     }
@@ -375,7 +405,7 @@ impl<'a> MtefParser<'a> {
         Ok(nodes)
     }
 
-    fn parse_line(&mut self, options: u8) -> Result<Vec<MathNode>> {
+    fn parse_line(&mut self, options: u8) -> Result<SmallVec<[NodeId; 8]>> {
         if options & XF_LMOVE != 0 {
             self.skip_nudge()?;
         }
@@ -386,12 +416,12 @@ impl<'a> MtefParser<'a> {
             self.skip_ruler()?;
         }
         if options & XF_NULL != 0 {
-            return Ok(vec![]);
+            return Ok(SmallVec::new());
         }
         self.parse_object_list()
     }
 
-    fn parse_char(&mut self, options: u8) -> Result<Option<MathNode>> {
+    fn parse_char(&mut self, options: u8) -> Result<Option<NodeId>> {
         if options & CHAR_NUDGE != 0 {
             self.skip_nudge()?;
         }
@@ -426,55 +456,54 @@ impl<'a> MtefParser<'a> {
             }
         }
 
-        // Parse embellishment list if present
         let embells = if options & CHAR_EMBELL != 0 {
             self.parse_embell_list()?
         } else {
             vec![]
         };
 
-        // Resolve character to Unicode
         let unicode_char = resolve_mtef_char(typeface, character);
         let text = unicode_char.to_string();
+        let sid = self.arena.push_str(&text);
 
-        // Build the base node based on typeface
-        let base_node = match typeface {
-            TF_NUMBER => MathNode::Number(text),
-            TF_TEXT => MathNode::Text(TextStyle::Normal, text),
-            TF_FUNCTION => MathNode::Operator(OperatorAttr {
-                name: text,
-                limit_style: LimitStyle::Default,
+        let base_id = match typeface {
+            TF_NUMBER => self.arena.push_node(CompactNode::Number(sid)),
+            TF_TEXT => self
+                .arena
+                .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+            TF_FUNCTION => self.arena.push_node(CompactNode::Operator {
+                name: sid,
+                limits: LimitStyle::Default,
             }),
-            TF_VARIABLE => MathNode::Identifier(text),
-            TF_LCGREEK | TF_UCGREEK => MathNode::Identifier(text),
+            TF_VARIABLE => self.arena.push_node(CompactNode::Identifier(sid)),
+            TF_LCGREEK | TF_UCGREEK => self.arena.push_node(CompactNode::Identifier(sid)),
             TF_SYMBOL => {
                 let kind = classify_symbol(unicode_char);
-                MathNode::Symbol(kind, text)
+                self.arena.push_node(CompactNode::Symbol(kind, sid))
             },
-            TF_VECTOR => MathNode::Identifier(text),
+            TF_VECTOR => self.arena.push_node(CompactNode::Identifier(sid)),
             _ => {
                 if unicode_char.is_ascii_digit()
                     || (text.len() > 1 && text.chars().all(|c| c.is_ascii_digit()))
                 {
-                    MathNode::Number(text)
+                    self.arena.push_node(CompactNode::Number(sid))
                 } else if is_operator_char(unicode_char) {
                     let kind = classify_symbol(unicode_char);
-                    MathNode::Symbol(kind, text)
+                    self.arena.push_node(CompactNode::Symbol(kind, sid))
                 } else {
-                    MathNode::Identifier(text)
+                    self.arena.push_node(CompactNode::Identifier(sid))
                 }
             },
         };
 
-        // Apply embellishments
         if embells.is_empty() {
-            Ok(Some(base_node))
+            Ok(Some(base_id))
         } else {
-            let mut node = base_node;
+            let mut id = base_id;
             for emb in embells {
-                node = apply_embellishment(node, emb);
+                id = self.apply_embellishment(id, emb);
             }
-            Ok(Some(node))
+            Ok(Some(id))
         }
     }
 
@@ -487,7 +516,7 @@ impl<'a> MtefParser<'a> {
             let saved = self.pos;
             let (tag, options) = self.get_tag_and_options()?;
             if tag != EMBELL {
-                self.pos = saved; // put it back
+                self.pos = saved;
                 break;
             }
             if options & XF_LMOVE != 0 {
@@ -496,7 +525,6 @@ impl<'a> MtefParser<'a> {
             let emb_type = self.read_byte()?;
             embells.push(emb_type);
         }
-        // Consume trailing END if present
         if self.peek_byte() == Some(END) {
             self.get_tag_and_options()?;
         }
@@ -511,7 +539,7 @@ impl<'a> MtefParser<'a> {
         Ok(())
     }
 
-    fn parse_template(&mut self, options: u8) -> Result<MathNode> {
+    fn parse_template(&mut self, options: u8) -> Result<NodeId> {
         if options & XF_LMOVE != 0 {
             self.skip_nudge()?;
         }
@@ -525,13 +553,11 @@ impl<'a> MtefParser<'a> {
         };
         let _tmpl_options = self.read_byte()?;
 
-        // Parse subobjects (slots)
         let slots = self.parse_template_slots()?;
-
-        template_to_ast(selector, variation, slots)
+        self.template_to_compact(selector, variation, slots)
     }
 
-    fn parse_template_slots(&mut self) -> Result<Vec<Vec<MathNode>>> {
+    fn parse_template_slots(&mut self) -> Result<Vec<SmallVec<[NodeId; 8]>>> {
         let mut slots = Vec::new();
         loop {
             if self.remaining() == 0 {
@@ -542,15 +568,14 @@ impl<'a> MtefParser<'a> {
             match tag {
                 END => break,
                 LINE => {
-                    let nodes = self.parse_line(options)?;
-                    slots.push(nodes);
+                    let ids = self.parse_line(options)?;
+                    slots.push(ids);
                 },
                 PILE => {
-                    let pile_node = self.parse_pile(options)?;
-                    slots.push(vec![pile_node]);
+                    let pile_id = self.parse_pile(options)?;
+                    slots.push(smallvec::smallvec![pile_id]);
                 },
                 _ => {
-                    // Not a slot-level record, put it back
                     self.pos = saved;
                     break;
                 },
@@ -559,7 +584,7 @@ impl<'a> MtefParser<'a> {
         Ok(slots)
     }
 
-    fn parse_pile(&mut self, options: u8) -> Result<MathNode> {
+    fn parse_pile(&mut self, options: u8) -> Result<NodeId> {
         if options & XF_LMOVE != 0 {
             self.skip_nudge()?;
         }
@@ -568,7 +593,7 @@ impl<'a> MtefParser<'a> {
             self.skip_ruler()?;
         }
 
-        let mut rows: Vec<Vec<MathNode>> = Vec::new();
+        let mut rows: Vec<SmallVec<[NodeId; 8]>> = Vec::new();
         loop {
             if self.remaining() == 0 {
                 break;
@@ -578,8 +603,8 @@ impl<'a> MtefParser<'a> {
             match tag {
                 END => break,
                 LINE => {
-                    let nodes = self.parse_line(opts)?;
-                    rows.push(nodes);
+                    let ids = self.parse_line(opts)?;
+                    rows.push(ids);
                 },
                 _ => {
                     self.pos = saved;
@@ -588,61 +613,80 @@ impl<'a> MtefParser<'a> {
             }
         }
 
-        // A pile is a vertical stack of lines — map to Array with single-column rows
-        let array_rows: Vec<Vec<Vec<MathNode>>> = rows.into_iter().map(|row| vec![row]).collect();
-        Ok(MathNode::Array {
-            columns: vec![ColumnAlign::Center],
-            rows: array_rows,
-        })
+        // Pile → single-column Array
+        let num_cols: u16 = 1;
+        let align_id = self
+            .arena
+            .push_node(CompactNode::ColAlign(ColumnAlign::Center));
+        let col_aligns = self.arena.push_children(&[align_id]);
+
+        let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for row in &rows {
+            let span = self.arena.push_children(row);
+            cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
+        }
+        let cells = self.arena.push_children(&cell_ids);
+
+        Ok(self.arena.push_node(CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols,
+        }))
     }
 
-    fn parse_matrix(&mut self, options: u8) -> Result<MathNode> {
+    fn parse_matrix(&mut self, options: u8) -> Result<NodeId> {
         if options & XF_LMOVE != 0 {
             self.skip_nudge()?;
         }
         let _valign = self.read_byte()?;
         let _halign = self.read_byte()?;
         let num_rows = self.read_byte()? as usize;
-        let num_cols = self.read_byte()? as usize;
+        let num_cols_raw = self.read_byte()? as usize;
 
-        // Read column alignment for each column
-        let mut columns = Vec::with_capacity(num_cols);
-        for _ in 0..num_cols {
+        let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
+        for _ in 0..num_cols_raw {
             let _col_align = self.read_byte()?;
-            columns.push(ColumnAlign::Center);
+            align_ids.push(
+                self.arena
+                    .push_node(CompactNode::ColAlign(ColumnAlign::Center)),
+            );
         }
+        let col_aligns = self.arena.push_children(&align_ids);
 
         if options & XF_RULER != 0 {
             self.skip_ruler()?;
         }
 
-        // Read cells: num_rows * num_cols LINE records
-        let mut rows = Vec::with_capacity(num_rows);
+        let num_cols = num_cols_raw.max(1) as u16;
+        let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
         for _ in 0..num_rows {
-            let mut row = Vec::with_capacity(num_cols);
-            for _ in 0..num_cols {
+            for _ in 0..num_cols_raw {
                 if self.remaining() == 0 {
-                    row.push(vec![]);
+                    cell_ids.push(self.empty_row());
                     continue;
                 }
                 let saved = self.pos;
                 let (tag, opts) = self.get_tag_and_options()?;
                 if tag == LINE {
-                    let nodes = self.parse_line(opts)?;
-                    row.push(nodes);
+                    let ids = self.parse_line(opts)?;
+                    let span = self.arena.push_children(&ids);
+                    cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
                 } else {
                     self.pos = saved;
-                    row.push(vec![]);
+                    cell_ids.push(self.empty_row());
                 }
             }
-            rows.push(row);
         }
+        let cells = self.arena.push_children(&cell_ids);
 
-        Ok(MathNode::Array { columns, rows })
+        Ok(self.arena.push_node(CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols,
+        }))
     }
 
     fn skip_ruler(&mut self) -> Result<()> {
-        // Ruler: count byte + count * 2 bytes (tab stops)
         if self.remaining() == 0 {
             return Ok(());
         }
@@ -656,17 +700,14 @@ impl<'a> MtefParser<'a> {
     }
 
     fn skip_font_record(&mut self) -> Result<()> {
-        // FONT record: font index (in v5, read font_def_index)
         let _tface = self.read_byte()?;
         let _style = self.read_byte()?;
         Ok(())
     }
 
     fn skip_size_record(&mut self) -> Result<()> {
-        // SIZE: size_code + optional explicit size
         let code = self.read_byte()?;
         if code == 101 {
-            // explicit point size (2 bytes)
             self.skip_bytes(2);
         }
         Ok(())
@@ -676,15 +717,14 @@ impl<'a> MtefParser<'a> {
         if self.version >= 5 {
             let _color_def_index = self.read_u16_le()?;
         } else {
-            self.skip_bytes(2); // RGB-ish
+            self.skip_bytes(2);
         }
         Ok(())
     }
 
     fn skip_color_def(&mut self) -> Result<()> {
         let _options = self.read_byte()?;
-        // RGB values
-        self.skip_bytes(6); // 3 x u16
+        self.skip_bytes(6);
         let _name = self.read_null_terminated_string()?;
         Ok(())
     }
@@ -700,21 +740,18 @@ impl<'a> MtefParser<'a> {
         if self.version >= 5 {
             let option = self.read_byte()?;
             if option & 0x01 != 0 {
-                // sizes: read count + data
                 let count = self.read_byte()? as usize;
                 for _ in 0..count {
-                    self.skip_bytes(2); // 16-bit size
+                    self.skip_bytes(2);
                 }
             }
             if option & 0x02 != 0 {
-                // spacing: read count + data
                 let count = self.read_byte()? as usize;
                 for _ in 0..count {
                     self.skip_bytes(2);
                 }
             }
             if option & 0x04 != 0 {
-                // styles: read count + data
                 let count = self.read_byte()? as usize;
                 for _ in 0..count {
                     self.skip_bytes(2);
@@ -723,367 +760,429 @@ impl<'a> MtefParser<'a> {
         }
         Ok(())
     }
-}
 
-fn wrap_nodes(mut nodes: Vec<MathNode>) -> MathNode {
-    match nodes.len() {
-        0 => MathNode::Row(vec![]),
-        1 => nodes.pop().expect("len is 1"),
-        _ => MathNode::Row(nodes),
-    }
-}
+    // --- Template / embellishment conversion ---
 
-fn template_to_ast(
-    selector: u8,
-    variation: u16,
-    mut slots: Vec<Vec<MathNode>>,
-) -> Result<MathNode> {
-    let get_slot = |slots: &mut Vec<Vec<MathNode>>, i: usize| -> MathNode {
+    fn get_slot(&mut self, slots: &mut [SmallVec<[NodeId; 8]>], i: usize) -> NodeId {
         if i < slots.len() {
-            wrap_nodes(std::mem::take(&mut slots[i]))
+            let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[i]);
+            self.wrap_ids(&ids)
         } else {
-            MathNode::Row(vec![])
+            self.empty_row()
         }
-    };
+    }
 
-    match selector {
-        // Fences (selectors 0-12)
-        0..=12 => {
-            let (open, close) = fence_delimiters(selector, variation);
-            let content_node = if !slots.is_empty() {
-                get_slot(&mut slots, 0)
-            } else {
-                MathNode::Row(vec![])
-            };
-            Ok(MathNode::Fenced {
-                open: open.into(),
-                close: close.into(),
-                content: vec![FencedItem::Element(content_node)],
-            })
-        },
-        // Root (selector 13)
-        13 => {
-            if variation == 0 {
-                // Square root
-                let content = get_slot(&mut slots, 0);
-                Ok(MathNode::Sqrt(Box::new(content)))
-            } else {
-                // Nth root
-                let index = get_slot(&mut slots, 0);
-                let radicand = get_slot(&mut slots, 1);
-                Ok(MathNode::Root {
-                    index: Box::new(index),
-                    radicand: Box::new(radicand),
-                })
-            }
-        },
-        // Fraction (selector 14)
-        14 => {
-            let num = get_slot(&mut slots, 0);
-            let den = get_slot(&mut slots, 1);
-            Ok(MathNode::Fraction {
-                kind: FractionKind::Normal,
-                num: Box::new(num),
-                den: Box::new(den),
-            })
-        },
-        // Scripts (selector 15)
-        15 => {
-            match variation & 0x0F {
+    fn template_to_compact(
+        &mut self,
+        selector: u8,
+        variation: u16,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> Result<NodeId> {
+        match selector {
+            // Fences (selectors 0-12)
+            0..=12 => {
+                let (open, close) = fence_delimiters(selector, variation);
+                let content_id = if !slots.is_empty() {
+                    self.get_slot(&mut slots, 0)
+                } else {
+                    self.empty_row()
+                };
+                let content = self.arena.push_children(&[content_id]);
+                let open_sid = self.arena.push_str(open);
+                let close_sid = self.arena.push_str(close);
+                Ok(self.arena.push_node(CompactNode::Fenced {
+                    open: open_sid,
+                    close: close_sid,
+                    content,
+                }))
+            },
+            // Root (selector 13)
+            13 => {
+                if variation == 0 {
+                    let content = self.get_slot(&mut slots, 0);
+                    Ok(self.arena.push_node(CompactNode::Sqrt(content)))
+                } else {
+                    let index = self.get_slot(&mut slots, 0);
+                    let radicand = self.get_slot(&mut slots, 1);
+                    Ok(self.arena.push_node(CompactNode::Root { index, radicand }))
+                }
+            },
+            // Fraction (selector 14)
+            14 => {
+                let num = self.get_slot(&mut slots, 0);
+                let den = self.get_slot(&mut slots, 1);
+                Ok(self.arena.push_node(CompactNode::Fraction {
+                    kind: FractionKind::Normal,
+                    num,
+                    den,
+                }))
+            },
+            // Scripts (selector 15)
+            15 => match variation & 0x0F {
                 0 => {
-                    // Superscript
-                    let base = get_slot(&mut slots, 0);
-                    let sup = get_slot(&mut slots, 1);
-                    Ok(MathNode::Superscript {
-                        base: Box::new(base),
-                        sup: Box::new(sup),
-                    })
+                    let base = self.get_slot(&mut slots, 0);
+                    let sup = self.get_slot(&mut slots, 1);
+                    Ok(self
+                        .arena
+                        .push_node(CompactNode::Superscript { base, sup }))
                 },
                 1 => {
-                    // Subscript
-                    let base = get_slot(&mut slots, 0);
-                    let sub = get_slot(&mut slots, 1);
-                    Ok(MathNode::Subscript {
-                        base: Box::new(base),
-                        sub: Box::new(sub),
-                    })
+                    let base = self.get_slot(&mut slots, 0);
+                    let sub = self.get_slot(&mut slots, 1);
+                    Ok(self.arena.push_node(CompactNode::Subscript { base, sub }))
                 },
                 2 => {
-                    // SubSup
-                    let base = get_slot(&mut slots, 0);
-                    let sub = get_slot(&mut slots, 1);
-                    let sup = get_slot(&mut slots, 2);
-                    Ok(MathNode::SubSup {
-                        base: Box::new(base),
-                        sub: Box::new(sub),
-                        sup: Box::new(sup),
-                    })
+                    let base = self.get_slot(&mut slots, 0);
+                    let sub = self.get_slot(&mut slots, 1);
+                    let sup = self.get_slot(&mut slots, 2);
+                    Ok(self
+                        .arena
+                        .push_node(CompactNode::SubSup { base, sub, sup }))
                 },
-                _ => Ok(get_slot(&mut slots, 0)),
-            }
-        },
-        // Underbar (selector 16)
-        16 => {
-            let base = get_slot(&mut slots, 0);
-            Ok(MathNode::Underscript {
-                base: Box::new(base),
-                under: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "\u{0332}".into())),
-                movable_limits: false,
-            })
-        },
-        // Overbar (selector 17)
-        17 => {
-            let base = get_slot(&mut slots, 0);
-            Ok(MathNode::Overscript {
-                base: Box::new(base),
-                over: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "\u{203E}".into())),
-                movable_limits: false,
-            })
-        },
-        // Arrows with labels (selectors 18-20)
-        18..=20 => {
-            let arrow_char = match selector {
-                18 => '\u{2190}', // leftarrow
-                19 => '\u{2192}', // rightarrow
-                _ => '\u{2194}',  // leftrightarrow
-            };
-            let label = get_slot(&mut slots, 0);
-            let arrow = MathNode::Symbol(SymbolKind::Relation, arrow_char.to_string());
-            if variation == 0 {
-                Ok(MathNode::Overscript {
-                    base: Box::new(arrow),
-                    over: Box::new(label),
+                _ => Ok(self.get_slot(&mut slots, 0)),
+            },
+            // Underbar (selector 16)
+            16 => {
+                let base = self.get_slot(&mut slots, 0);
+                let sid = self.arena.push_str("\u{0332}");
+                let under = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+                Ok(self.arena.push_node(CompactNode::Underscript {
+                    base,
+                    under,
                     movable_limits: false,
-                })
-            } else {
-                Ok(MathNode::Underscript {
-                    base: Box::new(arrow),
-                    under: Box::new(label),
+                }))
+            },
+            // Overbar (selector 17)
+            17 => {
+                let base = self.get_slot(&mut slots, 0);
+                let sid = self.arena.push_str("\u{203E}");
+                let over = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+                Ok(self.arena.push_node(CompactNode::Overscript {
+                    base,
+                    over,
                     movable_limits: false,
-                })
-            }
-        },
-        // Integrals (selectors 21-26)
-        21..=26 => {
-            let op = match selector {
-                21 | 24 => '\u{222B}', // single integral
-                22 | 25 => '\u{222C}', // double integral
-                _ => '\u{222D}',       // triple integral
-            };
-            let limits = if selector >= 24 {
-                LimitStyle::AboveBelow
-            } else {
-                LimitStyle::SubSup
-            };
-            let (sub, sup, body) = parse_nary_slots(&mut slots, variation);
-            Ok(MathNode::Nary {
-                op,
-                sub,
-                sup,
-                body: Box::new(body),
-                limits,
-            })
-        },
-        // Horizontal braces (selectors 27-28)
-        27 => {
-            let base = get_slot(&mut slots, 0);
-            let label = get_slot(&mut slots, 1);
-            Ok(MathNode::Overscript {
-                base: Box::new(MathNode::Underscript {
-                    base: Box::new(base),
-                    under: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "\u{23DF}".into())),
+                }))
+            },
+            // Arrows with labels (selectors 18-20)
+            18..=20 => {
+                let arrow_char = match selector {
+                    18 => "\u{2190}",
+                    19 => "\u{2192}",
+                    _ => "\u{2194}",
+                };
+                let label = self.get_slot(&mut slots, 0);
+                let sid = self.arena.push_str(arrow_char);
+                let arrow = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Relation, sid));
+                if variation == 0 {
+                    Ok(self.arena.push_node(CompactNode::Overscript {
+                        base: arrow,
+                        over: label,
+                        movable_limits: false,
+                    }))
+                } else {
+                    Ok(self.arena.push_node(CompactNode::Underscript {
+                        base: arrow,
+                        under: label,
+                        movable_limits: false,
+                    }))
+                }
+            },
+            // Integrals (selectors 21-26)
+            21..=26 => {
+                let op = match selector {
+                    21 | 24 => '\u{222B}',
+                    22 | 25 => '\u{222C}',
+                    _ => '\u{222D}',
+                };
+                let limits = if selector >= 24 {
+                    LimitStyle::AboveBelow
+                } else {
+                    LimitStyle::SubSup
+                };
+                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
+                Ok(self.arena.push_node(CompactNode::Nary {
+                    op,
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                }))
+            },
+            // Horizontal braces (selectors 27-28)
+            27 => {
+                let base = self.get_slot(&mut slots, 0);
+                let label = self.get_slot(&mut slots, 1);
+                let sid = self.arena.push_str("\u{23DF}");
+                let brace = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+                let inner = self.arena.push_node(CompactNode::Underscript {
+                    base,
+                    under: brace,
                     movable_limits: false,
-                }),
-                over: Box::new(label),
-                movable_limits: false,
-            })
-        },
-        28 => {
-            let base = get_slot(&mut slots, 0);
-            let label = get_slot(&mut slots, 1);
-            Ok(MathNode::Underscript {
-                base: Box::new(MathNode::Overscript {
-                    base: Box::new(base),
-                    over: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "\u{23DE}".into())),
+                });
+                Ok(self.arena.push_node(CompactNode::Overscript {
+                    base: inner,
+                    over: label,
                     movable_limits: false,
-                }),
-                under: Box::new(label),
-                movable_limits: false,
-            })
-        },
-        // Sums (selectors 29-30)
-        29 | 30 => {
-            let limits = if selector == 29 {
-                LimitStyle::AboveBelow
-            } else {
-                LimitStyle::SubSup
-            };
-            let (sub, sup, body) = parse_nary_slots(&mut slots, variation);
-            Ok(MathNode::Nary {
-                op: '\u{2211}',
-                sub,
-                sup,
-                body: Box::new(body),
-                limits,
-            })
-        },
-        // Products (selectors 31-32)
-        31 | 32 => {
-            let limits = if selector == 31 {
-                LimitStyle::AboveBelow
-            } else {
-                LimitStyle::SubSup
-            };
-            let (sub, sup, body) = parse_nary_slots(&mut slots, variation);
-            Ok(MathNode::Nary {
-                op: '\u{220F}',
-                sub,
-                sup,
-                body: Box::new(body),
-                limits,
-            })
-        },
-        // Coproducts (selectors 33-34)
-        33 | 34 => {
-            let limits = if selector == 33 {
-                LimitStyle::AboveBelow
-            } else {
-                LimitStyle::SubSup
-            };
-            let (sub, sup, body) = parse_nary_slots(&mut slots, variation);
-            Ok(MathNode::Nary {
-                op: '\u{2210}',
-                sub,
-                sup,
-                body: Box::new(body),
-                limits,
-            })
-        },
-        // Unions (selectors 35-36)
-        35 | 36 => {
-            let limits = if selector == 35 {
-                LimitStyle::AboveBelow
-            } else {
-                LimitStyle::SubSup
-            };
-            let (sub, sup, body) = parse_nary_slots(&mut slots, variation);
-            Ok(MathNode::Nary {
-                op: '\u{22C3}',
-                sub,
-                sup,
-                body: Box::new(body),
-                limits,
-            })
-        },
-        // Intersections (selectors 37-38)
-        37 | 38 => {
-            let limits = if selector == 37 {
-                LimitStyle::AboveBelow
-            } else {
-                LimitStyle::SubSup
-            };
-            let (sub, sup, body) = parse_nary_slots(&mut slots, variation);
-            Ok(MathNode::Nary {
-                op: '\u{22C2}',
-                sub,
-                sup,
-                body: Box::new(body),
-                limits,
-            })
-        },
-        // Long division (39), slash fraction (40), big operators (41-47)
-        40 => {
-            let num = get_slot(&mut slots, 0);
-            let den = get_slot(&mut slots, 1);
-            Ok(MathNode::Fraction {
-                kind: FractionKind::Skewed,
-                num: Box::new(num),
-                den: Box::new(den),
-            })
-        },
-        // Fallback: return content as a row
-        _ => {
-            let all: Vec<MathNode> = slots.into_iter().flatten().collect();
-            Ok(wrap_nodes(all))
-        },
+                }))
+            },
+            28 => {
+                let base = self.get_slot(&mut slots, 0);
+                let label = self.get_slot(&mut slots, 1);
+                let sid = self.arena.push_str("\u{23DE}");
+                let brace = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+                let inner = self.arena.push_node(CompactNode::Overscript {
+                    base,
+                    over: brace,
+                    movable_limits: false,
+                });
+                Ok(self.arena.push_node(CompactNode::Underscript {
+                    base: inner,
+                    under: label,
+                    movable_limits: false,
+                }))
+            },
+            // Sums (29-30)
+            29 | 30 => {
+                let limits = if selector == 29 {
+                    LimitStyle::AboveBelow
+                } else {
+                    LimitStyle::SubSup
+                };
+                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
+                Ok(self.arena.push_node(CompactNode::Nary {
+                    op: '\u{2211}',
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                }))
+            },
+            // Products (31-32)
+            31 | 32 => {
+                let limits = if selector == 31 {
+                    LimitStyle::AboveBelow
+                } else {
+                    LimitStyle::SubSup
+                };
+                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
+                Ok(self.arena.push_node(CompactNode::Nary {
+                    op: '\u{220F}',
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                }))
+            },
+            // Coproducts (33-34)
+            33 | 34 => {
+                let limits = if selector == 33 {
+                    LimitStyle::AboveBelow
+                } else {
+                    LimitStyle::SubSup
+                };
+                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
+                Ok(self.arena.push_node(CompactNode::Nary {
+                    op: '\u{2210}',
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                }))
+            },
+            // Unions (35-36)
+            35 | 36 => {
+                let limits = if selector == 35 {
+                    LimitStyle::AboveBelow
+                } else {
+                    LimitStyle::SubSup
+                };
+                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
+                Ok(self.arena.push_node(CompactNode::Nary {
+                    op: '\u{22C3}',
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                }))
+            },
+            // Intersections (37-38)
+            37 | 38 => {
+                let limits = if selector == 37 {
+                    LimitStyle::AboveBelow
+                } else {
+                    LimitStyle::SubSup
+                };
+                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
+                Ok(self.arena.push_node(CompactNode::Nary {
+                    op: '\u{22C2}',
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                }))
+            },
+            // Slash fraction (40)
+            40 => {
+                let num = self.get_slot(&mut slots, 0);
+                let den = self.get_slot(&mut slots, 1);
+                Ok(self.arena.push_node(CompactNode::Fraction {
+                    kind: FractionKind::Skewed,
+                    num,
+                    den,
+                }))
+            },
+            // Fallback
+            _ => {
+                let mut all: SmallVec<[NodeId; 8]> = SmallVec::new();
+                for slot in &mut slots {
+                    all.extend(std::mem::take(slot));
+                }
+                Ok(self.wrap_ids(&all))
+            },
+        }
+    }
+
+    /// Parse n-ary slots based on variation, returns (sub, sup, body).
+    /// sub/sup are NodeId::NONE if absent.
+    fn parse_nary_slots(
+        &mut self,
+        slots: &mut [SmallVec<[NodeId; 8]>],
+        variation: u16,
+    ) -> (NodeId, NodeId, NodeId) {
+        let v = variation & 0x0F;
+        match v {
+            0 => {
+                // lower only
+                let sub = if !slots.is_empty() {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
+                    self.wrap_ids(&ids)
+                } else {
+                    NodeId::NONE
+                };
+                let body = if slots.len() > 1 {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[1]);
+                    self.wrap_ids(&ids)
+                } else {
+                    self.empty_row()
+                };
+                (sub, NodeId::NONE, body)
+            },
+            1 => {
+                // both
+                let sub = if !slots.is_empty() {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
+                    self.wrap_ids(&ids)
+                } else {
+                    NodeId::NONE
+                };
+                let sup = if slots.len() > 1 {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[1]);
+                    self.wrap_ids(&ids)
+                } else {
+                    NodeId::NONE
+                };
+                let body = if slots.len() > 2 {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[2]);
+                    self.wrap_ids(&ids)
+                } else {
+                    self.empty_row()
+                };
+                (sub, sup, body)
+            },
+            2 => {
+                // no limits
+                let body = if !slots.is_empty() {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
+                    self.wrap_ids(&ids)
+                } else {
+                    self.empty_row()
+                };
+                (NodeId::NONE, NodeId::NONE, body)
+            },
+            _ => {
+                // Fallback: lower only
+                let sub = if !slots.is_empty() {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
+                    self.wrap_ids(&ids)
+                } else {
+                    NodeId::NONE
+                };
+                let body = if slots.len() > 1 {
+                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[1]);
+                    self.wrap_ids(&ids)
+                } else {
+                    self.empty_row()
+                };
+                (sub, NodeId::NONE, body)
+            },
+        }
+    }
+
+    fn apply_embellishment(&mut self, base: NodeId, emb: u8) -> NodeId {
+        let accent_char = match emb {
+            EMB_DOT => '\u{0307}',
+            EMB_DDOT => '\u{0308}',
+            EMB_TDOT => '\u{20DB}',
+            EMB_PRIME => '\u{2032}',
+            EMB_DPRIME => '\u{2033}',
+            EMB_TILDE => '\u{0303}',
+            EMB_HAT => '\u{0302}',
+            EMB_NOT => '\u{0338}',
+            EMB_RARROW => '\u{20D7}',
+            EMB_OBAR => '\u{0305}',
+            EMB_MBAR => '\u{0332}',
+            EMB_BREVE => '\u{0306}',
+            _ => return base,
+        };
+
+        // Primes are appended, not accents
+        if emb == EMB_PRIME || emb == EMB_DPRIME {
+            let mut buf = [0u8; 4];
+            let s = accent_char.encode_utf8(&mut buf);
+            let sid = self.arena.push_str(s);
+            let sym = self
+                .arena
+                .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+            let span = self.arena.push_children(&[base, sym]);
+            return self.arena.push_node(CompactNode::Row(span));
+        }
+
+        let position = if emb == EMB_MBAR {
+            AccentPosition::Below
+        } else {
+            AccentPosition::Above
+        };
+
+        self.arena.push_node(CompactNode::Accent {
+            base,
+            accent: accent_char,
+            position,
+        })
     }
 }
 
-fn parse_nary_slots(
-    slots: &mut [Vec<MathNode>],
-    variation: u16,
-) -> (Option<Box<MathNode>>, Option<Box<MathNode>>, MathNode) {
-    let v = variation & 0x0F;
-    match v {
-        0 => {
-            // lower only
-            let sub = if !slots.is_empty() {
-                Some(Box::new(wrap_nodes(std::mem::take(&mut slots[0]))))
-            } else {
-                None
-            };
-            let body = if slots.len() > 1 {
-                wrap_nodes(std::mem::take(&mut slots[1]))
-            } else {
-                MathNode::Row(vec![])
-            };
-            (sub, None, body)
-        },
-        1 => {
-            // both
-            let sub = if !slots.is_empty() {
-                Some(Box::new(wrap_nodes(std::mem::take(&mut slots[0]))))
-            } else {
-                None
-            };
-            let sup = if slots.len() > 1 {
-                Some(Box::new(wrap_nodes(std::mem::take(&mut slots[1]))))
-            } else {
-                None
-            };
-            let body = if slots.len() > 2 {
-                wrap_nodes(std::mem::take(&mut slots[2]))
-            } else {
-                MathNode::Row(vec![])
-            };
-            (sub, sup, body)
-        },
-        2 => {
-            // no limits
-            let body = if !slots.is_empty() {
-                wrap_nodes(std::mem::take(&mut slots[0]))
-            } else {
-                MathNode::Row(vec![])
-            };
-            (None, None, body)
-        },
-        _ => {
-            // Fallback: treat like lower only
-            let sub = if !slots.is_empty() {
-                Some(Box::new(wrap_nodes(std::mem::take(&mut slots[0]))))
-            } else {
-                None
-            };
-            let body = if slots.len() > 1 {
-                wrap_nodes(std::mem::take(&mut slots[1]))
-            } else {
-                MathNode::Row(vec![])
-            };
-            (sub, None, body)
-        },
-    }
-}
+// --- Free helper functions (no arena needed) ---
 
 fn fence_delimiters(selector: u8, variation: u16) -> (&'static str, &'static str) {
     let (open, close) = match selector {
-        0 => ("\u{27E8}", "\u{27E9}"), // angle brackets
+        0 => ("\u{27E8}", "\u{27E9}"),
         1 => ("(", ")"),
         2 => ("{", "}"),
         3 => ("[", "]"),
         4 => ("|", "|"),
-        5 => ("\u{2016}", "\u{2016}"), // double bar
-        6 => ("\u{230A}", "\u{230B}"), // floor
-        7 => ("\u{2308}", "\u{2309}"), // ceiling
+        5 => ("\u{2016}", "\u{2016}"),
+        6 => ("\u{230A}", "\u{230B}"),
+        7 => ("\u{2308}", "\u{2309}"),
         8 => ("[", "["),
         9 => ("]", "]"),
         10 => ("]", "["),
@@ -1092,8 +1191,8 @@ fn fence_delimiters(selector: u8, variation: u16) -> (&'static str, &'static str
         _ => ("(", ")"),
     };
     match variation {
-        1 => (open, ""),  // left only
-        2 => ("", close), // right only
+        1 => (open, ""),
+        2 => ("", close),
         _ => (open, close),
     }
 }
@@ -1101,130 +1200,126 @@ fn fence_delimiters(selector: u8, variation: u16) -> (&'static str, &'static str
 fn resolve_mtef_char(typeface: u8, code: u16) -> char {
     match typeface {
         TF_LCGREEK => match code as u8 {
-            0x61 => '\u{03B1}', // alpha
-            0x62 => '\u{03B2}', // beta
-            0x63 => '\u{03C7}', // chi
-            0x64 => '\u{03B4}', // delta
-            0x65 => '\u{03B5}', // epsilon
-            0x66 => '\u{03C6}', // phi
-            0x67 => '\u{03B3}', // gamma
-            0x68 => '\u{03B7}', // eta
-            0x69 => '\u{03B9}', // iota
-            0x6A => '\u{03D5}', // phi variant
-            0x6B => '\u{03BA}', // kappa
-            0x6C => '\u{03BB}', // lambda
-            0x6D => '\u{03BC}', // mu
-            0x6E => '\u{03BD}', // nu
-            0x6F => '\u{03BF}', // omicron
-            0x70 => '\u{03C0}', // pi
-            0x71 => '\u{03B8}', // theta
-            0x72 => '\u{03C1}', // rho
-            0x73 => '\u{03C3}', // sigma
-            0x74 => '\u{03C4}', // tau
-            0x75 => '\u{03C5}', // upsilon
-            0x76 => '\u{03D6}', // pi variant
-            0x77 => '\u{03C9}', // omega
-            0x78 => '\u{03BE}', // xi
-            0x79 => '\u{03C8}', // psi
-            0x7A => '\u{03B6}', // zeta
+            0x61 => '\u{03B1}',
+            0x62 => '\u{03B2}',
+            0x63 => '\u{03C7}',
+            0x64 => '\u{03B4}',
+            0x65 => '\u{03B5}',
+            0x66 => '\u{03C6}',
+            0x67 => '\u{03B3}',
+            0x68 => '\u{03B7}',
+            0x69 => '\u{03B9}',
+            0x6A => '\u{03D5}',
+            0x6B => '\u{03BA}',
+            0x6C => '\u{03BB}',
+            0x6D => '\u{03BC}',
+            0x6E => '\u{03BD}',
+            0x6F => '\u{03BF}',
+            0x70 => '\u{03C0}',
+            0x71 => '\u{03B8}',
+            0x72 => '\u{03C1}',
+            0x73 => '\u{03C3}',
+            0x74 => '\u{03C4}',
+            0x75 => '\u{03C5}',
+            0x76 => '\u{03D6}',
+            0x77 => '\u{03C9}',
+            0x78 => '\u{03BE}',
+            0x79 => '\u{03C8}',
+            0x7A => '\u{03B6}',
             _ => char::from_u32(code as u32).unwrap_or('?'),
         },
         TF_UCGREEK => match code as u8 {
-            0x41 => '\u{0391}', // Alpha
-            0x42 => '\u{0392}', // Beta
-            0x43 => '\u{03A7}', // Chi
-            0x44 => '\u{0394}', // Delta
-            0x45 => '\u{0395}', // Epsilon
-            0x46 => '\u{03A6}', // Phi
-            0x47 => '\u{0393}', // Gamma
-            0x48 => '\u{0397}', // Eta
-            0x49 => '\u{0399}', // Iota
-            0x4A => '\u{03D1}', // Theta variant
-            0x4B => '\u{039A}', // Kappa
-            0x4C => '\u{039B}', // Lambda
-            0x4D => '\u{039C}', // Mu
-            0x4E => '\u{039D}', // Nu
-            0x4F => '\u{039F}', // Omicron
-            0x50 => '\u{03A0}', // Pi
-            0x51 => '\u{0398}', // Theta
-            0x52 => '\u{03A1}', // Rho
-            0x53 => '\u{03A3}', // Sigma
-            0x54 => '\u{03A4}', // Tau
-            0x55 => '\u{03A5}', // Upsilon
-            0x56 => '\u{03C2}', // sigma final
-            0x57 => '\u{03A9}', // Omega
-            0x58 => '\u{039E}', // Xi
-            0x59 => '\u{03A8}', // Psi
-            0x5A => '\u{0396}', // Zeta
+            0x41 => '\u{0391}',
+            0x42 => '\u{0392}',
+            0x43 => '\u{03A7}',
+            0x44 => '\u{0394}',
+            0x45 => '\u{0395}',
+            0x46 => '\u{03A6}',
+            0x47 => '\u{0393}',
+            0x48 => '\u{0397}',
+            0x49 => '\u{0399}',
+            0x4A => '\u{03D1}',
+            0x4B => '\u{039A}',
+            0x4C => '\u{039B}',
+            0x4D => '\u{039C}',
+            0x4E => '\u{039D}',
+            0x4F => '\u{039F}',
+            0x50 => '\u{03A0}',
+            0x51 => '\u{0398}',
+            0x52 => '\u{03A1}',
+            0x53 => '\u{03A3}',
+            0x54 => '\u{03A4}',
+            0x55 => '\u{03A5}',
+            0x56 => '\u{03C2}',
+            0x57 => '\u{03A9}',
+            0x58 => '\u{039E}',
+            0x59 => '\u{03A8}',
+            0x5A => '\u{0396}',
             _ => char::from_u32(code as u32).unwrap_or('?'),
         },
         TF_SYMBOL => match code as u8 {
             0x2B => '+',
-            0x2D => '\u{2212}', // minus
+            0x2D => '\u{2212}',
             0x3C => '<',
             0x3D => '=',
             0x3E => '>',
-            0x40 => '\u{2245}', // approximately equal
+            0x40 => '\u{2245}',
             0x41 => '\u{0391}',
-            0xB1 => '\u{00B1}', // plus-minus
-            0xB4 => '\u{00D7}', // times
-            0xB8 => '\u{00F7}', // division
-            0xB9 => '\u{2260}', // not equal
-            0xBA => '\u{2261}', // identical
-            0xBB => '\u{2248}', // almost equal
-            0xBC => '\u{2026}', // ellipsis
-            0xC0 => '\u{2135}', // alef
-            0xC5 => '\u{220F}', // product
-            0xC6 => '\u{221A}', // radical
-            0xC7 => '\u{22C5}', // dot operator
-            0xC8 => '\u{00AC}', // not
-            0xC9 => '\u{2227}', // and
-            0xCA => '\u{2228}', // or
-            0xCB => '\u{21D4}', // iff
-            0xCC => '\u{21D0}', // left double arrow
-            0xCD => '\u{21D1}', // up double arrow
-            0xCE => '\u{21D2}', // right double arrow
-            0xCF => '\u{21D3}', // down double arrow
-            0xD1 => '\u{2207}', // nabla
-            0xD4 => '\u{2122}', // trademark
-            0xD5 => '\u{220F}', // product (alt)
-            0xD6 => '\u{221A}', // radical (alt)
-            0xE0 => '\u{2660}', // spade
-            0xE5 => '\u{2200}', // for all
-            0xE6 => '\u{2203}', // exists
-            0xE7 => '\u{2205}', // empty set
-            0xC4 => '\u{2297}', // circled times
-            0xC3 => '\u{2295}', // circled plus
-            0xC2 => '\u{2284}', // not subset
-            0xC1 => '\u{2283}', // superset
-            0xD9 => '\u{2229}', // intersection
-            0xDA => '\u{222A}', // union
-            0xDB => '\u{2283}', // superset
-            0xDC => '\u{2287}', // superset eq
-            0xDD => '\u{2284}', // not subset
-            0xDE => '\u{2282}', // subset
-            0xDF => '\u{2286}', // subset eq
-            0xE2 => '\u{2208}', // element of
-            0xE3 => '\u{2209}', // not element of
-            0xE4 => '\u{2220}', // angle
-            0xF1 => '\u{2329}', // left angle bracket
-            0xF2 => '\u{232A}', // right angle bracket
-            0xE8 => '\u{2205}', // empty set
-            0xA5 => '\u{221E}', // infinity
+            0xB1 => '\u{00B1}',
+            0xB4 => '\u{00D7}',
+            0xB8 => '\u{00F7}',
+            0xB9 => '\u{2260}',
+            0xBA => '\u{2261}',
+            0xBB => '\u{2248}',
+            0xBC => '\u{2026}',
+            0xC0 => '\u{2135}',
+            0xC5 => '\u{220F}',
+            0xC6 => '\u{221A}',
+            0xC7 => '\u{22C5}',
+            0xC8 => '\u{00AC}',
+            0xC9 => '\u{2227}',
+            0xCA => '\u{2228}',
+            0xCB => '\u{21D4}',
+            0xCC => '\u{21D0}',
+            0xCD => '\u{21D1}',
+            0xCE => '\u{21D2}',
+            0xCF => '\u{21D3}',
+            0xD1 => '\u{2207}',
+            0xD4 => '\u{2122}',
+            0xD5 => '\u{220F}',
+            0xD6 => '\u{221A}',
+            0xE0 => '\u{2660}',
+            0xE5 => '\u{2200}',
+            0xE6 => '\u{2203}',
+            0xE7 => '\u{2205}',
+            0xC4 => '\u{2297}',
+            0xC3 => '\u{2295}',
+            0xC2 => '\u{2284}',
+            0xC1 => '\u{2283}',
+            0xD9 => '\u{2229}',
+            0xDA => '\u{222A}',
+            0xDB => '\u{2283}',
+            0xDC => '\u{2287}',
+            0xDD => '\u{2284}',
+            0xDE => '\u{2282}',
+            0xDF => '\u{2286}',
+            0xE2 => '\u{2208}',
+            0xE3 => '\u{2209}',
+            0xE4 => '\u{2220}',
+            0xF1 => '\u{2329}',
+            0xF2 => '\u{232A}',
+            0xE8 => '\u{2205}',
+            0xA5 => '\u{221E}',
             _ => char::from_u32(code as u32).unwrap_or('?'),
         },
         TF_MTEXTRA => match code as u8 {
-            0x20 => '\u{200A}', // hair space
-            0x25 => '\u{2032}', // prime
-            0x30 => '\u{210F}', // hbar
-            0x40 => '\u{2113}', // script l
+            0x20 => '\u{200A}',
+            0x25 => '\u{2032}',
+            0x30 => '\u{210F}',
+            0x40 => '\u{2113}',
             _ => char::from_u32(code as u32).unwrap_or('?'),
         },
-        _ => {
-            // For TEXT, FUNCTION, VARIABLE, NUMBER, VECTOR, etc.
-            // These use standard character codes
-            char::from_u32(code as u32).unwrap_or('?')
-        },
+        _ => char::from_u32(code as u32).unwrap_or('?'),
     }
 }
 
@@ -1252,44 +1347,6 @@ fn is_operator_char(ch: char) -> bool {
         classify_symbol(ch),
         SymbolKind::BinaryOp | SymbolKind::Relation | SymbolKind::LargeOp | SymbolKind::Fence
     )
-}
-
-fn apply_embellishment(base: MathNode, emb: u8) -> MathNode {
-    let accent_char = match emb {
-        EMB_DOT => '\u{0307}',    // combining dot above
-        EMB_DDOT => '\u{0308}',   // combining diaeresis
-        EMB_TDOT => '\u{20DB}',   // combining three dots above
-        EMB_PRIME => '\u{2032}',  // prime (not an accent, but append)
-        EMB_DPRIME => '\u{2033}', // double prime
-        EMB_TILDE => '\u{0303}',  // combining tilde
-        EMB_HAT => '\u{0302}',    // combining circumflex
-        EMB_NOT => '\u{0338}',    // combining long solidus overlay
-        EMB_RARROW => '\u{20D7}', // combining right arrow above
-        EMB_OBAR => '\u{0305}',   // combining overline
-        EMB_MBAR => '\u{0332}',   // combining low line
-        EMB_BREVE => '\u{0306}',  // combining breve
-        _ => return base,         // unknown embellishment, skip
-    };
-
-    // Primes are appended, not accents
-    if emb == EMB_PRIME || emb == EMB_DPRIME {
-        return MathNode::Row(vec![
-            base,
-            MathNode::Symbol(SymbolKind::Ordinary, accent_char.to_string()),
-        ]);
-    }
-
-    let position = if emb == EMB_MBAR {
-        AccentPosition::Below
-    } else {
-        AccentPosition::Above
-    };
-
-    MathNode::Accent {
-        base: Box::new(base),
-        accent: accent_char,
-        position,
-    }
 }
 
 #[cfg(test)]
@@ -1323,16 +1380,15 @@ mod tests {
 
     #[test]
     fn simple_number() {
-        // MTEF v5: LINE with a CHAR record for '2' in NUMBER typeface
         let data = make_mtef_v5(&[
             LINE,
-            0x00, // LINE tag, no options
+            0x00,
             CHAR,
-            0x00,            // CHAR tag, no options
-            128 + TF_NUMBER, // typeface = NUMBER (slot 8 + 128)
+            0x00,
+            128 + TF_NUMBER,
             0x32,
-            0x00, // mt_char = 0x0032 = '2'
-            END,  // end of LINE
+            0x00,
+            END,
         ]);
         let expr = parse_bytes(&data);
         assert!(!expr.nodes.is_empty());
@@ -1349,9 +1405,9 @@ mod tests {
             0x00,
             CHAR,
             0x00,
-            128 + TF_VARIABLE, // typeface = VARIABLE
+            128 + TF_VARIABLE,
             0x78,
-            0x00, // 'x'
+            0x00,
             END,
         ]);
         let expr = parse_bytes(&data);
@@ -1364,32 +1420,29 @@ mod tests {
 
     #[test]
     fn fraction_template() {
-        // Template selector 14 (fraction), variation 0
         let data = make_mtef_v5(&[
             TMPL,
-            0x00, // TMPL tag, no options
-            14,   // selector: fraction
-            0x00, // variation: full fraction
-            0x00, // options
-            // Slot 0 (numerator): LINE with '1'
+            0x00,
+            14,
+            0x00,
+            0x00,
             LINE,
             0x00,
             CHAR,
             0x00,
             128 + TF_NUMBER,
             0x31,
-            0x00, // '1'
+            0x00,
             END,
-            // Slot 1 (denominator): LINE with '2'
             LINE,
             0x00,
             CHAR,
             0x00,
             128 + TF_NUMBER,
             0x32,
-            0x00, // '2'
+            0x00,
             END,
-            END, // end of template slots
+            END,
         ]);
         let expr = parse_bytes(&data);
         match &expr.nodes[0] {
@@ -1406,8 +1459,8 @@ mod tests {
         let data = make_mtef_v5(&[
             TMPL,
             0x00,
-            13,   // selector: root
-            0x00, // variation: square root
+            13,
+            0x00,
             0x00,
             LINE,
             0x00,
@@ -1415,7 +1468,7 @@ mod tests {
             0x00,
             128 + TF_VARIABLE,
             0x78,
-            0x00, // 'x'
+            0x00,
             END,
             END,
         ]);
@@ -1428,10 +1481,9 @@ mod tests {
         let data = make_mtef_v5(&[
             TMPL,
             0x00,
-            15,   // selector: scripts
-            0x01, // variation: subscript
+            15,
+            0x01,
             0x00,
-            // base
             LINE,
             0x00,
             CHAR,
@@ -1440,7 +1492,6 @@ mod tests {
             0x78,
             0x00,
             END,
-            // subscript
             LINE,
             0x00,
             CHAR,
@@ -1460,8 +1511,8 @@ mod tests {
         let data = make_mtef_v5(&[
             TMPL,
             0x00,
-            1,    // selector: parentheses
-            0x00, // variation: both
+            1,
+            0x00,
             0x00,
             LINE,
             0x00,
@@ -1500,7 +1551,7 @@ mod tests {
             0x00,
             128 + TF_LCGREEK,
             0x61,
-            0x00, // alpha
+            0x00,
             END,
         ]);
         let expr = parse_bytes(&data);

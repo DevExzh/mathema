@@ -1,25 +1,38 @@
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use smallvec::SmallVec;
 
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness};
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::error::{
+    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
+};
 use crate::reader::Reader as MathReader;
 
 pub struct MathmlReader;
 
 impl MathReader for MathmlReader {
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
+        Self::parse_compact(input, config).map(|r| r.to_parse_result())
+    }
+
+    fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         let trimmed = input.trim();
         if trimmed.is_empty() {
-            return Ok(ParseResult::new(MathExpr::new(vec![], config.display)));
+            return Ok(CompactParseResult::new(CompactExpr::new(
+                AstArena::new(),
+                NodeSpan::EMPTY,
+                config.display,
+            )));
         }
-        let parser_result = MathmlParser::new(trimmed);
+        let parser_result = MathmlCompactParser::new(trimmed);
         let mut parser = match parser_result {
             Ok(p) => p,
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
-                    return Ok(ParseResult::with_diagnostics(
-                        MathExpr::new(vec![], config.display),
+                    return Ok(CompactParseResult::with_diagnostics(
+                        CompactExpr::new(AstArena::new(), NodeSpan::EMPTY, config.display),
                         vec![Diagnostic {
                             kind: DiagnosticKind::Warning,
                             message: format!("MathML initialization failed (recovered): {e}"),
@@ -31,15 +44,24 @@ impl MathReader for MathmlReader {
             },
         };
         match parser.parse_root() {
-            Ok(nodes) => {
+            Ok(ids) => {
                 let display = parser.display.unwrap_or(config.display);
-                Ok(ParseResult::new(MathExpr::new(nodes, display)))
+                let roots = parser.arena.push_children(&ids);
+                Ok(CompactParseResult::new(CompactExpr {
+                    arena: parser.arena,
+                    roots,
+                    display,
+                }))
             },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let display = parser.display.unwrap_or(config.display);
-                    Ok(ParseResult::with_diagnostics(
-                        MathExpr::new(vec![], display),
+                    Ok(CompactParseResult::with_diagnostics(
+                        CompactExpr {
+                            arena: parser.arena,
+                            roots: NodeSpan::EMPTY,
+                            display,
+                        },
                         vec![Diagnostic {
                             kind: DiagnosticKind::Warning,
                             message: format!("MathML parse error (recovered): {e}"),
@@ -56,31 +78,31 @@ impl MathReader for MathmlReader {
 
 const MAX_PARSE_DEPTH: u32 = 128;
 
-struct MathmlParser<'a> {
+struct MathmlCompactParser<'a> {
     reader: Reader<&'a [u8]>,
+    arena: AstArena,
     display: Option<DisplayStyle>,
     depth: u32,
 }
 
-impl<'a> MathmlParser<'a> {
+impl<'a> MathmlCompactParser<'a> {
     fn new(input: &'a str) -> Result<Self> {
         let mut reader = Reader::from_str(input);
         reader.config_mut().trim_text(true);
         Ok(Self {
             reader,
+            arena: AstArena::new(),
             display: None,
             depth: 0,
         })
     }
 
-    fn parse_root(&mut self) -> Result<Vec<MathNode>> {
-        // Skip to the <math> element (or just parse content if no <math> wrapper)
+    fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
                     if name == "math" {
-                        // Check display attribute
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"display" {
                                 let val = String::from_utf8_lossy(&attr.value).to_string();
@@ -93,14 +115,13 @@ impl<'a> MathmlParser<'a> {
                         }
                         return self.parse_children("math");
                     } else {
-                        // Not wrapped in <math>, parse this element directly
-                        let node = self.parse_element_by_name(&name, &e)?;
-                        let mut nodes = vec![node];
+                        let id = self.parse_element_by_name(&name, &e)?;
+                        let mut nodes: SmallVec<[NodeId; 8]> = smallvec::smallvec![id];
                         nodes.extend(self.collect_remaining()?);
                         return Ok(nodes);
                     }
                 },
-                Ok(Event::Eof) => return Ok(vec![]),
+                Ok(Event::Eof) => return Ok(SmallVec::new()),
                 Ok(_) => continue,
                 Err(e) => {
                     return Err(Error::MathmlParse {
@@ -111,8 +132,8 @@ impl<'a> MathmlParser<'a> {
         }
     }
 
-    fn collect_remaining(&mut self) -> Result<Vec<MathNode>> {
-        let mut nodes = Vec::new();
+    fn collect_remaining(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
+        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
@@ -126,7 +147,7 @@ impl<'a> MathmlParser<'a> {
                 Ok(Event::Text(e)) => {
                     let text = e.unescape().unwrap_or_default().to_string();
                     if !text.trim().is_empty() {
-                        nodes.push(classify_text(&text));
+                        nodes.push(self.classify_text_compact(&text));
                     }
                 },
                 Ok(Event::Eof) | Ok(Event::End(_)) => break,
@@ -136,7 +157,7 @@ impl<'a> MathmlParser<'a> {
         Ok(nodes)
     }
 
-    fn parse_children(&mut self, parent_tag: &str) -> Result<Vec<MathNode>> {
+    fn parse_children(&mut self, parent_tag: &str) -> Result<SmallVec<[NodeId; 8]>> {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
             return Err(Error::MathmlParse {
@@ -145,7 +166,7 @@ impl<'a> MathmlParser<'a> {
                 ),
             });
         }
-        let mut nodes = Vec::new();
+        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
@@ -159,7 +180,7 @@ impl<'a> MathmlParser<'a> {
                 Ok(Event::Text(e)) => {
                     let text = e.unescape().unwrap_or_default().to_string();
                     if !text.trim().is_empty() {
-                        nodes.push(classify_text(&text));
+                        nodes.push(self.classify_text_compact(&text));
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -181,189 +202,250 @@ impl<'a> MathmlParser<'a> {
         Ok(nodes)
     }
 
-    fn parse_child_node(&mut self, parent_tag: &str) -> Result<MathNode> {
+    fn parse_child_id(&mut self, parent_tag: &str) -> Result<NodeId> {
         let children = self.parse_children(parent_tag)?;
-        Ok(flatten(children))
+        Ok(self.flatten_ids(&children))
+    }
+
+    fn flatten_ids(&mut self, ids: &[NodeId]) -> NodeId {
+        if ids.len() == 1 {
+            ids[0]
+        } else {
+            let span = self.arena.push_children(ids);
+            self.arena.push_node(CompactNode::Row(span))
+        }
+    }
+
+    fn empty_row(&mut self) -> NodeId {
+        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+    }
+
+    fn two_child_ids(
+        &mut self,
+        mut children: SmallVec<[NodeId; 8]>,
+    ) -> (NodeId, NodeId) {
+        while children.len() < 2 {
+            children.push(self.empty_row());
+        }
+        (children[0], children[1])
+    }
+
+    fn three_child_ids(
+        &mut self,
+        mut children: SmallVec<[NodeId; 8]>,
+    ) -> (NodeId, NodeId, NodeId) {
+        while children.len() < 3 {
+            children.push(self.empty_row());
+        }
+        (children[0], children[1], children[2])
+    }
+
+    fn classify_text_compact(&mut self, text: &str) -> NodeId {
+        let trimmed = text.trim();
+        let sid = self.arena.push_str(trimmed);
+        if trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') && !trimmed.is_empty() {
+            self.arena.push_node(CompactNode::Number(sid))
+        } else if trimmed.len() == 1 && trimmed.starts_with(|c: char| c.is_alphabetic()) {
+            self.arena.push_node(CompactNode::Identifier(sid))
+        } else {
+            self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))
+        }
     }
 
     fn parse_element_by_name(
         &mut self,
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
-    ) -> Result<MathNode> {
+    ) -> Result<NodeId> {
         match name {
             "mn" => {
                 let text = self.read_text_content(name)?;
-                Ok(MathNode::Number(text))
+                let sid = self.arena.push_str(&text);
+                Ok(self.arena.push_node(CompactNode::Number(sid)))
             },
             "mi" => {
                 let mathvariant = get_attr(start, "mathvariant");
                 let text = self.read_text_content(name)?;
+                let sid = self.arena.push_str(&text);
                 if let Some(variant) = mathvariant
                     && let Some(style) = mathvariant_to_style(&variant)
                     && style != TextStyle::Italic
                 {
-                    return Ok(MathNode::Styled(style, vec![MathNode::Identifier(text)]));
+                    let inner = self.arena.push_node(CompactNode::Identifier(sid));
+                    let span = self.arena.push_children(&[inner]);
+                    return Ok(self.arena.push_node(CompactNode::Styled(style, span)));
                 }
-                Ok(MathNode::Identifier(text))
+                Ok(self.arena.push_node(CompactNode::Identifier(sid)))
             },
             "mo" => {
                 let text = self.read_text_content(name)?;
                 let kind = classify_mo(&text);
-                Ok(MathNode::Symbol(kind, text))
+                let sid = self.arena.push_str(&text);
+                Ok(self.arena.push_node(CompactNode::Symbol(kind, sid)))
             },
             "mtext" => {
                 let text = self.read_text_content(name)?;
-                Ok(MathNode::Text(TextStyle::Normal, text))
+                let sid = self.arena.push_str(&text);
+                Ok(self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid)))
             },
             "mspace" => {
                 let width = get_attr(start, "width").unwrap_or_default();
                 let r = parse_em_width(&width);
-                Ok(MathNode::Space(r))
+                Ok(self.arena.push_node(CompactNode::Space(r)))
             },
             "mrow" => {
                 let children = self.parse_children(name)?;
-                Ok(MathNode::Row(children))
+                let span = self.arena.push_children(&children);
+                Ok(self.arena.push_node(CompactNode::Row(span)))
             },
             "mfrac" => {
                 let children = self.parse_children(name)?;
-                let (num, den) = two_children(children)?;
+                let (num, den) = self.two_child_ids(children);
                 let kind = if get_attr(start, "linethickness").as_deref() == Some("0") {
                     FractionKind::NoBar
                 } else {
                     FractionKind::Normal
                 };
-                Ok(MathNode::Fraction {
-                    kind,
-                    num: Box::new(num),
-                    den: Box::new(den),
-                })
+                Ok(self.arena.push_node(CompactNode::Fraction { kind, num, den }))
             },
             "msqrt" => {
-                let node = self.parse_child_node(name)?;
-                Ok(MathNode::Sqrt(Box::new(node)))
+                let id = self.parse_child_id(name)?;
+                Ok(self.arena.push_node(CompactNode::Sqrt(id)))
             },
             "mroot" => {
                 let children = self.parse_children(name)?;
-                let (radicand, index) = two_children(children)?;
-                Ok(MathNode::Root {
-                    index: Box::new(index),
-                    radicand: Box::new(radicand),
-                })
+                let (radicand, index) = self.two_child_ids(children);
+                Ok(self.arena.push_node(CompactNode::Root { index, radicand }))
             },
             "msub" => {
                 let children = self.parse_children(name)?;
-                let (base, sub) = two_children(children)?;
-                Ok(MathNode::Subscript {
-                    base: Box::new(base),
-                    sub: Box::new(sub),
-                })
+                let (base, sub) = self.two_child_ids(children);
+                Ok(self.arena.push_node(CompactNode::Subscript { base, sub }))
             },
             "msup" => {
                 let children = self.parse_children(name)?;
-                let (base, sup) = two_children(children)?;
-                Ok(MathNode::Superscript {
-                    base: Box::new(base),
-                    sup: Box::new(sup),
-                })
+                let (base, sup) = self.two_child_ids(children);
+                Ok(self.arena.push_node(CompactNode::Superscript { base, sup }))
             },
             "msubsup" => {
                 let children = self.parse_children(name)?;
-                let (base, sub, sup) = three_children(children)?;
-                Ok(MathNode::SubSup {
-                    base: Box::new(base),
-                    sub: Box::new(sub),
-                    sup: Box::new(sup),
-                })
+                let (base, sub, sup) = self.three_child_ids(children);
+                Ok(self.arena.push_node(CompactNode::SubSup { base, sub, sup }))
             },
             "mover" => {
                 let movable = get_attr(start, "accent").as_deref() != Some("true");
                 let children = self.parse_children(name)?;
-                let (base, over) = two_children(children)?;
+                let (base, over) = self.two_child_ids(children);
                 // Check if this is an accent
-                if let MathNode::Symbol(_, ref s) = over
-                    && let Some(ch) = s.chars().next()
-                    && is_combining_accent(ch)
-                {
-                    return Ok(MathNode::Accent {
-                        base: Box::new(base),
-                        accent: ch,
-                        position: AccentPosition::Above,
-                    });
+                if let CompactNode::Symbol(_, sid) = *self.arena.node(over) {
+                    let s = self.arena.str_val(sid).to_owned();
+                    if let Some(ch) = s.chars().next()
+                        && is_combining_accent(ch)
+                    {
+                        return Ok(self.arena.push_node(CompactNode::Accent {
+                            base,
+                            accent: ch,
+                            position: AccentPosition::Above,
+                        }));
+                    }
                 }
-                Ok(MathNode::Overscript {
-                    base: Box::new(base),
-                    over: Box::new(over),
+                Ok(self.arena.push_node(CompactNode::Overscript {
+                    base,
+                    over,
                     movable_limits: movable,
-                })
+                }))
             },
             "munder" => {
                 let movable = get_attr(start, "accentunder").as_deref() != Some("true");
                 let children = self.parse_children(name)?;
-                let (base, under) = two_children(children)?;
-                Ok(MathNode::Underscript {
-                    base: Box::new(base),
-                    under: Box::new(under),
+                let (base, under) = self.two_child_ids(children);
+                Ok(self.arena.push_node(CompactNode::Underscript {
+                    base,
+                    under,
                     movable_limits: movable,
-                })
+                }))
             },
             "munderover" => {
                 let movable = get_attr(start, "accent").as_deref() != Some("true");
                 let children = self.parse_children(name)?;
-                let (base, under, over) = three_children(children)?;
-                Ok(MathNode::UnderOver {
-                    base: Box::new(base),
-                    under: Box::new(under),
-                    over: Box::new(over),
+                let (base, under, over) = self.three_child_ids(children);
+                Ok(self.arena.push_node(CompactNode::UnderOver {
+                    base,
+                    under,
+                    over,
                     movable_limits: movable,
-                })
+                }))
             },
             "mfenced" => {
                 let open = get_attr(start, "open").unwrap_or_else(|| "(".into());
                 let close = get_attr(start, "close").unwrap_or_else(|| ")".into());
                 let children = self.parse_children(name)?;
-                let content = children.into_iter().map(FencedItem::Element).collect();
-                Ok(MathNode::Fenced {
-                    open,
-                    close,
+                let content = self.arena.push_children(&children);
+                let open_sid = self.arena.push_str(&open);
+                let close_sid = self.arena.push_str(&close);
+                Ok(self.arena.push_node(CompactNode::Fenced {
+                    open: open_sid,
+                    close: close_sid,
                     content,
-                })
+                }))
             },
             "mtable" => {
                 let rows = self.parse_table(name)?;
-                let columns = if let Some(first_row) = rows.first() {
-                    vec![ColumnAlign::Center; first_row.len()]
-                } else {
-                    vec![]
-                };
-                Ok(MathNode::Array { columns, rows })
+                let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
+                let num_cols = ncols.max(1) as u16;
+
+                let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
+                for _ in 0..ncols {
+                    align_ids
+                        .push(self.arena.push_node(CompactNode::ColAlign(ColumnAlign::Center)));
+                }
+                let col_aligns = self.arena.push_children(&align_ids);
+
+                let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+                for row in &rows {
+                    for cell_children in row {
+                        let span = self.arena.push_children(cell_children);
+                        cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
+                    }
+                    // Pad short rows
+                    for _ in row.len()..(num_cols as usize) {
+                        cell_ids.push(self.empty_row());
+                    }
+                }
+                let cells = self.arena.push_children(&cell_ids);
+
+                Ok(self.arena.push_node(CompactNode::Array {
+                    col_aligns,
+                    cells,
+                    num_cols,
+                }))
             },
             "mphantom" => {
-                let node = self.parse_child_node(name)?;
-                Ok(MathNode::Phantom(Box::new(node)))
+                let id = self.parse_child_id(name)?;
+                Ok(self.arena.push_node(CompactNode::Phantom(id)))
             },
             "menclose" => {
                 let notation = get_attr(start, "notation").unwrap_or_default();
-                let node = self.parse_child_node(name)?;
+                let id = self.parse_child_id(name)?;
                 if notation.contains("box") || notation.contains("roundedbox") {
-                    Ok(MathNode::Boxed(Box::new(node)))
+                    Ok(self.arena.push_node(CompactNode::Boxed(id)))
                 } else if notation.contains("updiagonalstrike") {
-                    Ok(MathNode::Cancel {
+                    Ok(self.arena.push_node(CompactNode::Cancel {
                         stroke: StrokeKind::Forward,
-                        content: Box::new(node),
-                    })
+                        content: id,
+                    }))
                 } else if notation.contains("downdiagonalstrike") {
-                    Ok(MathNode::Cancel {
+                    Ok(self.arena.push_node(CompactNode::Cancel {
                         stroke: StrokeKind::Backward,
-                        content: Box::new(node),
-                    })
+                        content: id,
+                    }))
                 } else if notation.contains("horizontalstrike") {
-                    Ok(MathNode::Cancel {
+                    Ok(self.arena.push_node(CompactNode::Cancel {
                         stroke: StrokeKind::Horizontal,
-                        content: Box::new(node),
-                    })
+                        content: id,
+                    }))
                 } else {
-                    Ok(MathNode::Boxed(Box::new(node)))
+                    Ok(self.arena.push_node(CompactNode::Boxed(id)))
                 }
             },
             "mstyle" => {
@@ -372,33 +454,31 @@ impl<'a> MathmlParser<'a> {
                 if let Some(variant) = mathvariant
                     && let Some(style) = mathvariant_to_style(&variant)
                 {
-                    return Ok(MathNode::Styled(style, children));
+                    let span = self.arena.push_children(&children);
+                    return Ok(self.arena.push_node(CompactNode::Styled(style, span)));
                 }
-                Ok(flatten(children))
+                Ok(self.flatten_ids(&children))
             },
-            "mpadded" => {
-                let node = self.parse_child_node(name)?;
-                Ok(node)
-            },
+            "mpadded" => self.parse_child_id(name),
             "mmultiscripts" => {
-                // Parse children, looking for <mprescripts/> separator
                 let children = self.parse_children(name)?;
-                parse_multiscripts(children)
+                self.parse_multiscripts(&children)
             },
             "semantics" => {
-                // Just parse first child (presentation)
                 let children = self.parse_children(name)?;
-                Ok(children.into_iter().next().unwrap_or(MathNode::Row(vec![])))
+                if let Some(&first) = children.first() {
+                    Ok(first)
+                } else {
+                    Ok(self.empty_row())
+                }
             },
             "annotation" | "annotation-xml" => {
-                // Skip annotation content
                 let _text = self.read_text_content(name)?;
-                Ok(MathNode::Row(vec![]))
+                Ok(self.empty_row())
             },
             _ => {
-                // Unknown element: parse children and wrap in Row
                 let children = self.parse_children(name)?;
-                Ok(flatten(children))
+                Ok(self.flatten_ids(&children))
             },
         }
     }
@@ -407,19 +487,19 @@ impl<'a> MathmlParser<'a> {
         &mut self,
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
-    ) -> Result<MathNode> {
+    ) -> Result<NodeId> {
         match name {
             "mspace" => {
                 let width = get_attr(start, "width").unwrap_or_default();
                 let r = parse_em_width(&width);
-                Ok(MathNode::Space(r))
+                Ok(self.arena.push_node(CompactNode::Space(r)))
             },
             "mprescripts" => {
-                // Marker for mmultiscripts - return a sentinel
-                Ok(MathNode::Space(Rational::new(0, 1)))
+                // Marker for mmultiscripts — sentinel Space(0/1)
+                Ok(self.arena.push_node(CompactNode::Space(Rational::new(0, 1))))
             },
-            "none" => Ok(MathNode::Row(vec![])),
-            _ => Ok(MathNode::Row(vec![])),
+            "none" => Ok(self.empty_row()),
+            _ => Ok(self.empty_row()),
         }
     }
 
@@ -438,8 +518,7 @@ impl<'a> MathmlParser<'a> {
                 },
                 Ok(Event::Eof) => break,
                 Ok(Event::Start(_)) => {
-                    // Nested element inside text content - skip it
-                    // This handles cases like <mi><mstyle>x</mstyle></mi>
+                    // Nested element inside text content — skip it
                     continue;
                 },
                 _ => continue,
@@ -448,7 +527,10 @@ impl<'a> MathmlParser<'a> {
         Ok(text.trim().to_string())
     }
 
-    fn parse_table(&mut self, parent_tag: &str) -> Result<Vec<Vec<Vec<MathNode>>>> {
+    fn parse_table(
+        &mut self,
+        parent_tag: &str,
+    ) -> Result<Vec<Vec<SmallVec<[NodeId; 8]>>>> {
         let mut rows = Vec::new();
         loop {
             match self.reader.read_event() {
@@ -471,7 +553,10 @@ impl<'a> MathmlParser<'a> {
         Ok(rows)
     }
 
-    fn parse_table_row(&mut self, parent_tag: &str) -> Result<Vec<Vec<MathNode>>> {
+    fn parse_table_row(
+        &mut self,
+        parent_tag: &str,
+    ) -> Result<Vec<SmallVec<[NodeId; 8]>>> {
         let mut cells = Vec::new();
         loop {
             match self.reader.read_event() {
@@ -493,10 +578,51 @@ impl<'a> MathmlParser<'a> {
         }
         Ok(cells)
     }
+
+    fn parse_multiscripts(&mut self, children: &[NodeId]) -> Result<NodeId> {
+        let base = children.first().copied().unwrap_or_else(|| self.empty_row());
+
+        // Find prescripts marker (Space(0/1) sentinel)
+        let mut found_pre = false;
+        let mut remaining: SmallVec<[NodeId; 4]> = SmallVec::new();
+        for &id in children.iter().skip(1) {
+            if let CompactNode::Space(r) = *self.arena.node(id)
+                && r.num == 0
+                && r.den == 1
+            {
+                found_pre = true;
+                continue;
+            }
+            remaining.push(id);
+        }
+
+        if found_pre && remaining.len() >= 2 {
+            let is_empty = |id: NodeId| {
+                matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
+            };
+            let pre_sub = if is_empty(remaining[0]) {
+                NodeId::NONE
+            } else {
+                remaining[0]
+            };
+            let pre_sup = if is_empty(remaining[1]) {
+                NodeId::NONE
+            } else {
+                remaining[1]
+            };
+            Ok(self.arena.push_node(CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            }))
+        } else {
+            Ok(base)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers (no arena access needed)
 // ---------------------------------------------------------------------------
 
 fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> {
@@ -505,49 +631,6 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .flatten()
         .find(|a| a.key.as_ref() == key.as_bytes())
         .map(|a| String::from_utf8_lossy(&a.value).to_string())
-}
-
-fn flatten(mut nodes: Vec<MathNode>) -> MathNode {
-    if nodes.len() == 1 {
-        // pop() is O(1) vs remove(0) which is O(n)
-        nodes.pop().expect("len is 1")
-    } else {
-        MathNode::Row(nodes)
-    }
-}
-
-fn two_children(mut children: Vec<MathNode>) -> Result<(MathNode, MathNode)> {
-    while children.len() < 2 {
-        children.push(MathNode::Row(vec![]));
-    }
-    let mut drain = children.drain(..2);
-    // Safety: padded to >= 2 elements above
-    let first = drain.next().expect("padded to >= 2");
-    let second = drain.next().expect("padded to >= 2");
-    Ok((first, second))
-}
-
-fn three_children(mut children: Vec<MathNode>) -> Result<(MathNode, MathNode, MathNode)> {
-    while children.len() < 3 {
-        children.push(MathNode::Row(vec![]));
-    }
-    let mut drain = children.drain(..3);
-    // Safety: padded to >= 3 elements above
-    let first = drain.next().expect("padded to >= 3");
-    let second = drain.next().expect("padded to >= 3");
-    let third = drain.next().expect("padded to >= 3");
-    Ok((first, second, third))
-}
-
-fn classify_text(text: &str) -> MathNode {
-    let trimmed = text.trim();
-    if trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') && !trimmed.is_empty() {
-        MathNode::Number(trimmed.to_string())
-    } else if trimmed.len() == 1 && trimmed.starts_with(|c: char| c.is_alphabetic()) {
-        MathNode::Identifier(trimmed.to_string())
-    } else {
-        MathNode::Text(TextStyle::Normal, trimmed.to_string())
-    }
 }
 
 fn classify_mo(text: &str) -> SymbolKind {
@@ -568,8 +651,6 @@ fn classify_mo(text: &str) -> SymbolKind {
     }
 }
 
-// All individual chars (0302–0308) are within the 0300–036F range,
-// so the range check alone is sufficient.
 fn is_combining_accent(ch: char) -> bool {
     matches!(
         ch,
@@ -582,7 +663,6 @@ fn parse_em_width(s: &str) -> Rational {
     if s.ends_with("em") {
         let num_str = s.trim_end_matches("em").trim();
         if let Ok(f) = num_str.parse::<f64>() {
-            // Approximate as rational
             let scaled = (f * 18.0).round() as i32;
             return Rational::new(scaled, 18);
         }
@@ -610,41 +690,10 @@ fn mathvariant_to_style(variant: &str) -> Option<TextStyle> {
     }
 }
 
-fn parse_multiscripts(children: Vec<MathNode>) -> Result<MathNode> {
-    // mmultiscripts format: base postscripts... <mprescripts/> prescripts...
-    // where scripts come in pairs (sub, sup), using <none/> for absent scripts
-    let mut iter = children.into_iter();
-    let base = iter.next().unwrap_or(MathNode::Row(vec![]));
-
-    // For simplicity, just handle the pre-scripts case
-    // Skip to prescripts marker (Space(0/1) is our sentinel)
-    let mut found_pre = false;
-    let mut remaining = Vec::new();
-    for node in iter {
-        if matches!(node, MathNode::Space(r) if r.num == 0 && r.den == 1) {
-            found_pre = true;
-            continue;
-        }
-        remaining.push(node);
-    }
-
-    if found_pre && remaining.len() >= 2 {
-        let pre_sub = remaining.first().cloned();
-        let pre_sup = remaining.get(1).cloned();
-        let is_empty = |n: &MathNode| matches!(n, MathNode::Row(v) if v.is_empty());
-        Ok(MathNode::PreScripts {
-            base: Box::new(base),
-            pre_sub: pre_sub.filter(|n| !is_empty(n)).map(Box::new),
-            pre_sup: pre_sup.filter(|n| !is_empty(n)).map(Box::new),
-        })
-    } else {
-        Ok(base)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Config;
 
     fn parse(input: &str) -> Vec<MathNode> {
         let config = Config::default();

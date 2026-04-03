@@ -1,5 +1,7 @@
 use crate::ast::MathExpr;
-use crate::error::{Config, Format, ParseResult, Result};
+use crate::ast::compact::CompactExpr;
+use crate::ast::normalize::normalize_compact_expr;
+use crate::error::{CompactParseResult, Config, Format, Result};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
 use crate::reader::mathml::MathmlReader;
@@ -26,19 +28,23 @@ pub fn convert(input: &str, from: Format, to: Format) -> Result<String> {
 
 /// Conversion with custom configuration.
 pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> Result<String> {
-    let mut parsed = parse(input, from, config)?;
-    crate::ast::validate_ast_depth(&parsed.expr)?;
-    crate::ast::normalize::normalize_expr(&mut parsed.expr);
-    write(&parsed.expr, to, config)
+    let mut compact = parse_compact(input, from, config)?;
+    crate::ast::validate_compact_depth(&compact.expr.arena, compact.expr.roots)?;
+    normalize_compact_expr(&mut compact.expr);
+    write_compact(&compact.expr, to, config)
 }
 
-fn parse(input: &str, format: Format, config: &Config) -> Result<ParseResult> {
+fn parse_compact(
+    input: &str,
+    format: Format,
+    config: &Config,
+) -> Result<CompactParseResult> {
     match format {
-        Format::LaTeX => LatexReader::parse(input, config),
-        Format::MathML => MathmlReader::parse(input, config),
-        Format::Omml => OmmlReader::parse(input, config),
-        Format::Mtef => MtefReader::parse(input, config),
-        Format::UnicodeMath => UnicodeMathReader::parse(input, config),
+        Format::LaTeX => LatexReader::parse_compact(input, config),
+        Format::MathML => MathmlReader::parse_compact(input, config),
+        Format::Omml => OmmlReader::parse_compact(input, config),
+        Format::Mtef => MtefReader::parse_compact(input, config),
+        Format::UnicodeMath => UnicodeMathReader::parse_compact(input, config),
         #[cfg(feature = "render")]
         Format::Svg => Err(crate::error::Error::Unsupported(
             "SVG is an output-only format and cannot be parsed".into(),
@@ -50,17 +56,17 @@ fn parse(input: &str, format: Format, config: &Config) -> Result<ParseResult> {
     }
 }
 
-fn write(expr: &MathExpr, format: Format, config: &Config) -> Result<String> {
+fn write_compact(expr: &crate::ast::compact::CompactExpr, format: Format, config: &Config) -> Result<String> {
     match format {
-        Format::LaTeX => LatexWriter::write(expr, config),
-        Format::MathML => MathmlWriter::write(expr, config),
-        Format::Omml => OmmlWriter::write(expr, config),
-        Format::Mtef => MtefWriter::write(expr, config),
-        Format::UnicodeMath => UnicodeMathWriter::write(expr, config),
+        Format::LaTeX => LatexWriter::write_compact(expr, config),
+        Format::MathML => MathmlWriter::write_compact(expr, config),
+        Format::Omml => OmmlWriter::write_compact(expr, config),
+        Format::Mtef => MtefWriter::write_compact(expr, config),
+        Format::UnicodeMath => UnicodeMathWriter::write_compact(expr, config),
         #[cfg(feature = "render")]
         Format::Svg => {
             let options = crate::render::RenderOptions::default();
-            crate::render::render_to_svg(expr, &options)
+            crate::render::render_to_svg_compact(expr, &options)
         },
         #[cfg(feature = "raster")]
         Format::Png | Format::Jpeg => Err(crate::error::Error::Unsupported(
@@ -71,71 +77,71 @@ fn write(expr: &MathExpr, format: Format, config: &Config) -> Result<String> {
 
 /// Builder-style conversion result. Parse once, write to multiple formats.
 pub struct ConvertResult {
-    pub parsed: ParseResult,
+    compact: CompactParseResult,
     config: Config,
 }
 
 impl ConvertResult {
     pub fn to_latex(&self) -> Result<String> {
-        LatexWriter::write(&self.parsed.expr, &self.config)
+        LatexWriter::write_compact(&self.compact.expr, &self.config)
     }
 
     pub fn to_mathml(&self) -> Result<String> {
-        MathmlWriter::write(&self.parsed.expr, &self.config)
+        MathmlWriter::write_compact(&self.compact.expr, &self.config)
     }
 
     pub fn to_latex_with(&self, config: &Config) -> Result<String> {
-        LatexWriter::write(&self.parsed.expr, config)
+        LatexWriter::write_compact(&self.compact.expr, config)
     }
 
     pub fn to_mathml_with(&self, config: &Config) -> Result<String> {
-        MathmlWriter::write(&self.parsed.expr, config)
+        MathmlWriter::write_compact(&self.compact.expr, config)
     }
 
     pub fn to_omml(&self) -> Result<String> {
-        OmmlWriter::write(&self.parsed.expr, &self.config)
+        OmmlWriter::write_compact(&self.compact.expr, &self.config)
     }
 
     pub fn to_omml_with(&self, config: &Config) -> Result<String> {
-        OmmlWriter::write(&self.parsed.expr, config)
+        OmmlWriter::write_compact(&self.compact.expr, config)
     }
 
     pub fn to_mtef(&self) -> Result<String> {
-        MtefWriter::write(&self.parsed.expr, &self.config)
+        MtefWriter::write_compact(&self.compact.expr, &self.config)
     }
 
     pub fn to_mtef_with(&self, config: &Config) -> Result<String> {
-        MtefWriter::write(&self.parsed.expr, config)
+        MtefWriter::write_compact(&self.compact.expr, config)
     }
 
     pub fn to_unicode_math(&self) -> Result<String> {
-        UnicodeMathWriter::write(&self.parsed.expr, &self.config)
+        UnicodeMathWriter::write_compact(&self.compact.expr, &self.config)
     }
 
     pub fn to_unicode_math_with(&self, config: &Config) -> Result<String> {
-        UnicodeMathWriter::write(&self.parsed.expr, config)
+        UnicodeMathWriter::write_compact(&self.compact.expr, config)
     }
 
     #[cfg(feature = "render")]
     pub fn to_svg(&self) -> Result<String> {
         let options = crate::render::RenderOptions::default();
-        crate::render::render_to_svg(&self.parsed.expr, &options)
+        crate::render::render_to_svg_compact(&self.compact.expr, &options)
     }
 
     #[cfg(feature = "render")]
     pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
-        crate::render::render_to_svg(&self.parsed.expr, options)
+        crate::render::render_to_svg_compact(&self.compact.expr, options)
     }
 
     #[cfg(feature = "raster")]
     pub fn to_png(&self) -> Result<Vec<u8>> {
         let options = crate::render::raster::RasterOptions::default();
-        crate::render::raster::render_to_image(&self.parsed.expr, &options)
+        crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
     }
 
     #[cfg(feature = "raster")]
     pub fn to_png_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
-        crate::render::raster::render_to_image(&self.parsed.expr, options)
+        crate::render::raster::render_to_image_compact(&self.compact.expr, options)
     }
 
     #[cfg(feature = "raster")]
@@ -144,24 +150,30 @@ impl ConvertResult {
             format: crate::render::raster::ImageFormat::Jpeg,
             ..crate::render::raster::RasterOptions::default()
         };
-        crate::render::raster::render_to_image(&self.parsed.expr, &options)
+        crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
     }
 
     #[cfg(feature = "raster")]
     pub fn to_jpeg_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
-        crate::render::raster::render_to_image(&self.parsed.expr, options)
+        crate::render::raster::render_to_image_compact(&self.compact.expr, options)
     }
 
-    /// Access the parsed AST for inspection or transformation.
+    /// Access the parsed AST (materialized from compact arena representation).
     #[must_use]
-    pub fn expr(&self) -> &MathExpr {
-        &self.parsed.expr
+    pub fn expr(&self) -> MathExpr {
+        self.compact.expr.to_math_expr()
     }
 
     /// Take ownership of the parsed AST.
     #[must_use]
     pub fn into_expr(self) -> MathExpr {
-        self.parsed.expr
+        self.compact.expr.to_math_expr()
+    }
+
+    /// Access the compact arena-based expression directly (zero-copy).
+    #[must_use]
+    pub fn compact_expr(&self) -> &CompactExpr {
+        &self.compact.expr
     }
 }
 
@@ -172,9 +184,9 @@ pub fn from_latex(input: &str) -> Result<ConvertResult> {
 
 /// Parse LaTeX with custom configuration.
 pub fn from_latex_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let parsed = LatexReader::parse(input, config)?;
+    let compact = LatexReader::parse_compact(input, config)?;
     Ok(ConvertResult {
-        parsed,
+        compact,
         config: *config,
     })
 }
@@ -186,9 +198,9 @@ pub fn from_mathml(input: &str) -> Result<ConvertResult> {
 
 /// Parse MathML with custom configuration.
 pub fn from_mathml_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let parsed = MathmlReader::parse(input, config)?;
+    let compact = MathmlReader::parse_compact(input, config)?;
     Ok(ConvertResult {
-        parsed,
+        compact,
         config: *config,
     })
 }
@@ -200,9 +212,9 @@ pub fn from_omml(input: &str) -> Result<ConvertResult> {
 
 /// Parse OMML with custom configuration.
 pub fn from_omml_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let parsed = OmmlReader::parse(input, config)?;
+    let compact = OmmlReader::parse_compact(input, config)?;
     Ok(ConvertResult {
-        parsed,
+        compact,
         config: *config,
     })
 }
@@ -214,9 +226,9 @@ pub fn from_mtef(input: &str) -> Result<ConvertResult> {
 
 /// Parse MTEF with custom configuration.
 pub fn from_mtef_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let parsed = MtefReader::parse(input, config)?;
+    let compact = MtefReader::parse_compact(input, config)?;
     Ok(ConvertResult {
-        parsed,
+        compact,
         config: *config,
     })
 }
@@ -228,9 +240,9 @@ pub fn from_unicode_math(input: &str) -> Result<ConvertResult> {
 
 /// Parse UnicodeMath with custom configuration.
 pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let parsed = UnicodeMathReader::parse(input, config)?;
+    let compact = UnicodeMathReader::parse_compact(input, config)?;
     Ok(ConvertResult {
-        parsed,
+        compact,
         config: *config,
     })
 }

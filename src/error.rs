@@ -1,4 +1,5 @@
 use crate::ast::{DisplayStyle, MathExpr};
+use crate::ast::compact::CompactExpr;
 
 /// Position span in source input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,6 +71,49 @@ impl ParseResult {
 
     pub fn with_diagnostics(expr: MathExpr, diagnostics: Vec<Diagnostic>) -> Self {
         Self { expr, diagnostics }
+    }
+
+    #[must_use]
+    pub fn has_warnings(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::Warning)
+    }
+}
+
+/// Result of parsing into the compact arena representation.
+#[derive(Debug, Clone)]
+pub struct CompactParseResult {
+    pub expr: CompactExpr,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl CompactParseResult {
+    pub fn new(expr: CompactExpr) -> Self {
+        Self {
+            expr,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    pub fn with_diagnostics(expr: CompactExpr, diagnostics: Vec<Diagnostic>) -> Self {
+        Self { expr, diagnostics }
+    }
+
+    /// Bridge: build from a `ParseResult` by interning into a fresh arena.
+    pub fn from_parse_result(result: &ParseResult) -> Self {
+        Self {
+            expr: CompactExpr::from_math_expr(&result.expr),
+            diagnostics: result.diagnostics.clone(),
+        }
+    }
+
+    /// Bridge: reconstruct a `ParseResult` from the arena.
+    pub fn to_parse_result(&self) -> ParseResult {
+        ParseResult {
+            expr: self.expr.to_math_expr(),
+            diagnostics: self.diagnostics.clone(),
+        }
     }
 
     #[must_use]

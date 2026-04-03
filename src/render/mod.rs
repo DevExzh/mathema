@@ -8,6 +8,7 @@ pub mod spacing;
 pub mod style;
 
 use crate::ast::{DisplayStyle, MathExpr};
+use crate::ast::compact::CompactExpr;
 use crate::error::Result;
 
 /// Options controlling SVG rendering output.
@@ -52,5 +53,20 @@ pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String>
         style::MathStyle::Text
     };
     let root = layout::layout_expr(expr, style, options);
+    Ok(emit::emit_svg(&root, options))
+}
+
+/// Render a compact math expression to an SVG string (arena-based, no MathExpr bridge).
+pub fn render_to_svg_compact(expr: &CompactExpr, options: &RenderOptions) -> Result<String> {
+    crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+    let style = if options
+        .display_mode
+        .unwrap_or(expr.display == DisplayStyle::Block)
+    {
+        style::MathStyle::Display
+    } else {
+        style::MathStyle::Text
+    };
+    let root = layout::layout_expr_c(expr, style, options);
     Ok(emit::emit_svg(&root, options))
 }
