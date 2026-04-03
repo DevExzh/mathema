@@ -186,6 +186,170 @@ fn emit_box(
     }
 }
 
+// ── Arena-based SVG emission ─────────────────────────────────────────
+
+use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
+
+/// Emit the final SVG string from an arena-based layout.
+/// Produces byte-identical output to `emit_svg` for the same expression.
+pub fn emit_svg_arena(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RenderOptions,
+) -> String {
+    let root_box = arena.get(root);
+    let em = options.font_size_px;
+    let width_px = root_box.width * em;
+    let height_px = (root_box.height + root_box.depth) * em;
+    let depth_px = root_box.depth * em;
+
+    let mut svg = String::with_capacity(4096);
+
+    // SVG header — identical format to emit_svg
+    let _ = write!(
+        svg,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.3}" height="{height:.3}" viewBox="0 0 {width:.3} {height:.3}" style="vertical-align: -{depth:.3}px">"#,
+        width = width_px,
+        height = height_px,
+        depth = depth_px,
+    );
+
+    // Render content
+    let baseline_y = root_box.height * em;
+    emit_box_arena(&mut svg, arena, root, 0.0, baseline_y, em, options);
+
+    svg.push_str("</svg>");
+    svg
+}
+
+fn emit_box_arena(
+    svg: &mut String,
+    arena: &LayoutArena,
+    id: LayoutBoxId,
+    x: f64,
+    y: f64,
+    em: f64,
+    options: &RenderOptions,
+) {
+    let layout = arena.get(id);
+    match &layout.kind {
+        ArenaBoxKind::Glyph { ch, size } => {
+            let font_size = em * size;
+            let _ = write!(
+                svg,
+                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
+                x = x,
+                y = y,
+                fs = font_size,
+                ff = XmlAttrEscape(&options.font_family),
+                color = XmlAttrEscape(&options.fg_color),
+            );
+            write_escaped_char(svg, *ch);
+            svg.push_str("</text>");
+        },
+
+        ArenaBoxKind::HBox { children } => {
+            for child in arena.children(*children) {
+                let cx = x + child.dx * em;
+                let cy = y - child.dy * em;
+                emit_box_arena(svg, arena, child.id, cx, cy, em, options);
+            }
+        },
+
+        ArenaBoxKind::VBox { children } => {
+            for child in arena.children(*children) {
+                let cx = x + child.dx * em;
+                let cy = y - child.dy * em;
+                emit_box_arena(svg, arena, child.id, cx, cy, em, options);
+            }
+        },
+
+        ArenaBoxKind::Rule { thickness } => {
+            let th_px = thickness * em;
+            let w_px = layout.width * em;
+            let ry = y - th_px / 2.0;
+            let _ = write!(
+                svg,
+                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
+                x = x,
+                ry = ry,
+                w = w_px,
+                h = th_px,
+                color = XmlAttrEscape(&options.fg_color),
+            );
+        },
+
+        ArenaBoxKind::Kern => {
+            // Invisible — no output
+        },
+
+        ArenaBoxKind::Delimiter { ch, target_height } => {
+            let font_size = target_height * em;
+            let _ = write!(
+                svg,
+                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
+                x = x,
+                y = y,
+                fs = font_size,
+                ff = XmlAttrEscape(&options.font_family),
+                color = XmlAttrEscape(&options.fg_color),
+            );
+            write_escaped_char(svg, *ch);
+            svg.push_str("</text>");
+        },
+
+        ArenaBoxKind::SvgPath(path) => {
+            let tx = x;
+            let ty = y - layout.height * em;
+            let _ = write!(
+                svg,
+                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="1" fill="none"/></g>"#,
+                tx = tx,
+                ty = ty,
+                s = em,
+                path = XmlAttrEscape(path),
+                color = XmlAttrEscape(&options.fg_color),
+            );
+        },
+
+        ArenaBoxKind::Color { color, child } => {
+            let _ = write!(
+                svg,
+                r#"<g fill="{color}" stroke="{color}">"#,
+                color = XmlAttrEscape(color)
+            );
+            // Color child is rendered at same position (no dx/dy offset)
+            emit_box_arena(svg, arena, *child, x, y, em, options);
+            svg.push_str("</g>");
+        },
+
+        ArenaBoxKind::Phantom => {
+            // Invisible — takes space but doesn't render
+        },
+
+        ArenaBoxKind::Boxed { child, padding } => {
+            let w_px = layout.width * em;
+            let h_px = (layout.height + layout.depth) * em;
+            let ry = y - layout.height * em;
+
+            // Border rectangle
+            let _ = write!(
+                svg,
+                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{color}" fill="none" stroke-width="1"/>"#,
+                x = x,
+                ry = ry,
+                w = w_px,
+                h = h_px,
+                color = XmlAttrEscape(&options.fg_color),
+            );
+
+            // Content — arena version stores child without position offset,
+            // so we must apply padding here (heap version stored dx=padding in PositionedBox)
+            emit_box_arena(svg, arena, *child, x + padding * em, y, em, options);
+        },
+    }
+}
+
 /// Write an XML-escaped character directly to the buffer (zero allocation).
 fn write_escaped_char(out: &mut String, ch: char) {
     match ch {
@@ -202,7 +366,7 @@ fn write_escaped_char(out: &mut String, ch: char) {
 mod tests {
     use super::*;
     use crate::ast::*;
-    use crate::render::layout::{PositionedBox, layout_expr};
+    use crate::render::layout::{PositionedBox, layout_expr, layout_expr_c};
     use crate::render::style::MathStyle;
 
     fn render(latex_nodes: Vec<MathNode>) -> String {
@@ -474,5 +638,52 @@ mod tests {
             text_count >= 3,
             "nary should have at least 3 text elements, got {text_count}"
         );
+    }
+
+    #[test]
+    fn arena_emit_matches_heap_simple() {
+        use crate::reader::Reader;
+        use crate::render::arena::LayoutArena;
+        use crate::render::layout::LayoutBuilder;
+
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("x^2 + 1", &config).unwrap();
+        let options = RenderOptions::default();
+
+        // Heap path
+        let heap_root = layout_expr_c(&result.expr, MathStyle::Text, &options);
+        let heap_svg = emit_svg(&heap_root, &options);
+
+        // Arena path
+        let mut arena = LayoutArena::new();
+        let builder = LayoutBuilder::new(MathStyle::Text, &options);
+        let arena_root = builder.layout(&mut arena, &result.expr);
+        let arena_svg = emit_svg_arena(&arena, arena_root, &options);
+
+        assert_eq!(heap_svg, arena_svg, "arena emit must match heap emit");
+    }
+
+    #[test]
+    fn arena_emit_matches_heap_quadratic() {
+        use crate::reader::Reader;
+        use crate::render::arena::LayoutArena;
+        use crate::render::layout::LayoutBuilder;
+
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact(
+            "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}",
+            &config,
+        ).unwrap();
+        let options = RenderOptions::default();
+
+        let heap_root = layout_expr_c(&result.expr, MathStyle::Display, &options);
+        let heap_svg = emit_svg(&heap_root, &options);
+
+        let mut arena = LayoutArena::new();
+        let builder = LayoutBuilder::new(MathStyle::Display, &options);
+        let arena_root = builder.layout(&mut arena, &result.expr);
+        let arena_svg = emit_svg_arena(&arena, arena_root, &options);
+
+        assert_eq!(heap_svg, arena_svg);
     }
 }

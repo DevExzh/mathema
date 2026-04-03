@@ -2478,7 +2478,10 @@ fn layout_row_arena(
         return arena.alloc(ArenaLayoutBox::kern(0.0));
     }
 
-    let children_start = arena.begin_children();
+    // Phase 1: layout all children and collect (box_id, dx) pairs.
+    // We must NOT call begin_children/push_child while nested layout calls
+    // are still in progress, because they also push into the same flat array.
+    let mut laid_out: Vec<(LayoutBoxId, f64)> = Vec::with_capacity(ids.len());
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;
@@ -2499,12 +2502,18 @@ fn layout_row_arena(
         max_depth = max_depth.max(b.depth);
         let w = b.width;
 
-        arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: box_id });
+        laid_out.push((box_id, cursor_x));
         cursor_x += w;
         prev_atom = Some(cur_atom);
     }
 
+    // Phase 2: now push all children into the arena's children array.
+    let children_start = arena.begin_children();
+    for &(box_id, dx) in &laid_out {
+        arena.push_child(ArenaPositionedBox { dx, dy: 0.0, id: box_id });
+    }
     let children = arena.finish_children(children_start);
+
     arena.alloc(ArenaLayoutBox {
         width: cursor_x,
         height: max_height,
