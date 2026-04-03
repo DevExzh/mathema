@@ -2387,7 +2387,6 @@ impl<'a> ArenaLayoutCtx<'a> {
         self.style.size_multiplier()
     }
 
-    #[allow(dead_code)]
     fn with_style(&self, style: MathStyle) -> ArenaLayoutCtx<'a> {
         ArenaLayoutCtx {
             style,
@@ -2546,12 +2545,26 @@ fn layout_node_arena(
         CompactNode::Text(_, sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx),
         CompactNode::Space(r) => arena.alloc(ArenaLayoutBox::kern(r.as_f64() * ctx.size())),
         CompactNode::Row(span) => layout_row_arena(ast, span, arena, ctx),
+        CompactNode::Fenced { open, close, content } => layout_fenced_arena(ast, open, close, content, arena, ctx),
         CompactNode::Subscript { base, sub } => layout_subscript_arena(ast, base, sub, arena, ctx),
         CompactNode::Superscript { base, sup } => layout_superscript_arena(ast, base, sup, arena, ctx),
         CompactNode::SubSup { base, sub, sup } => layout_subsup_arena(ast, base, sub, sup, arena, ctx),
+        CompactNode::PreScripts { base, pre_sub, pre_sup } => layout_prescripts_arena(ast, base, pre_sub, pre_sup, arena, ctx),
+        CompactNode::Overscript { base, over, .. } => layout_overscript_arena(ast, base, over, arena, ctx),
+        CompactNode::Underscript { base, under, .. } => layout_underscript_arena(ast, base, under, arena, ctx),
+        CompactNode::UnderOver { base, under, over, .. } => layout_underover_arena(ast, base, under, over, arena, ctx),
         CompactNode::Fraction { kind, num, den } => layout_fraction_arena(ast, kind, num, den, arena, ctx),
-        // Stub: remaining variants produce kern(0) until implemented
-        _ => arena.alloc(ArenaLayoutBox::kern(0.0)),
+        CompactNode::Sqrt(inner) => layout_sqrt_arena(ast, inner, None, arena, ctx),
+        CompactNode::Root { index, radicand } => layout_sqrt_arena(ast, radicand, Some(index), arena, ctx),
+        CompactNode::Nary { op, sub, sup, body, limits } => layout_nary_arena(ast, op, sub, sup, body, limits, arena, ctx),
+        CompactNode::Accent { base, accent, position } => layout_accent_arena(ast, base, accent, position, arena, ctx),
+        CompactNode::Array { col_aligns, cells, num_cols } => layout_array_arena(ast, col_aligns, cells, num_cols, arena, ctx),
+        CompactNode::Phantom(inner) => layout_phantom_arena(ast, inner, arena, ctx),
+        CompactNode::Boxed(inner) => layout_boxed_arena(ast, inner, arena, ctx),
+        CompactNode::Cancel { stroke, content } => layout_cancel_arena(ast, stroke, content, arena, ctx),
+        CompactNode::Scaled { factor, content } => layout_scaled_arena(ast, factor, content, arena, ctx),
+        CompactNode::Styled(_, span) => layout_styled_arena(ast, span, arena, ctx),
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
     }
 }
 
@@ -2812,6 +2825,1007 @@ fn layout_fraction_arena(
         depth: total_depth,
         kind: ArenaBoxKind::VBox { children },
     })
+}
+
+// ── Remaining arena layout functions ─────────────────────────────────
+
+fn layout_sqrt_arena(
+    ast: &AstArena,
+    radicand: NodeId,
+    index: Option<NodeId>,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let p = &ctx.params;
+    let size = ctx.size();
+    let inner_id = layout_node_arena(ast, radicand, arena, ctx);
+
+    let inner_w = arena.get(inner_id).width;
+    let inner_h = arena.get(inner_id).height;
+    let inner_d = arena.get(inner_id).depth;
+
+    let rule_thickness = p.rule_thickness * size;
+    let extra_clearance = if ctx.style.is_display() {
+        rule_thickness
+    } else {
+        rule_thickness / 2.0
+    };
+
+    let inner_total = inner_h + inner_d + extra_clearance + rule_thickness;
+
+    let radical_width = 0.833 * size;
+    let radical_id = arena.alloc(ArenaLayoutBox {
+        width: radical_width,
+        height: inner_total,
+        depth: 0.0,
+        kind: ArenaBoxKind::SvgPath(format!(
+            "M{x0},{y0} L{x1},{y1} L{x2},{y2} L{x3},{y3}",
+            x0 = 0.0,
+            y0 = inner_total * 0.6,
+            x1 = radical_width * 0.35,
+            y1 = inner_total,
+            x2 = radical_width * 0.65,
+            y2 = 0.0,
+            x3 = radical_width,
+            y3 = 0.0,
+        )),
+    });
+
+    let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, rule_thickness));
+
+    let shift_up = inner_h + extra_clearance + rule_thickness;
+
+    // Build children: radical, vinculum, inner
+    // We may need to adjust dx values if there's an index, so we track the span start
+    // and positions separately.
+    let mut radical_dx = 0.0_f64;
+    let mut vinculum_dx = radical_width;
+    let mut inner_dx = radical_width;
+    let mut total_width = radical_width + inner_w;
+    let total_height = shift_up + rule_thickness;
+    let total_depth = inner_d;
+
+    // Optional root index
+    if let Some(idx_id_node) = index {
+        let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
+        let idx_box_id = layout_node_arena(ast, idx_id_node, arena, &idx_ctx);
+        let idx_w = arena.get(idx_box_id).width;
+        let idx_shift = total_height * 0.6;
+        let idx_overflow = idx_w.max(radical_width * 0.5);
+        if idx_overflow > radical_width * 0.5 {
+            let extra = idx_overflow - radical_width * 0.5;
+            radical_dx += extra;
+            vinculum_dx += extra;
+            inner_dx += extra;
+            total_width += extra;
+        }
+
+        let children_start = arena.begin_children();
+        arena.push_child(ArenaPositionedBox { dx: radical_dx, dy: 0.0, id: radical_id });
+        arena.push_child(ArenaPositionedBox { dx: vinculum_dx, dy: shift_up, id: vinculum_id });
+        arena.push_child(ArenaPositionedBox { dx: inner_dx, dy: 0.0, id: inner_id });
+        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: idx_shift, id: idx_box_id });
+        let children = arena.finish_children(children_start);
+
+        arena.alloc(ArenaLayoutBox {
+            width: total_width,
+            height: total_height,
+            depth: total_depth,
+            kind: ArenaBoxKind::HBox { children },
+        })
+    } else {
+        let children_start = arena.begin_children();
+        arena.push_child(ArenaPositionedBox { dx: radical_dx, dy: 0.0, id: radical_id });
+        arena.push_child(ArenaPositionedBox { dx: vinculum_dx, dy: shift_up, id: vinculum_id });
+        arena.push_child(ArenaPositionedBox { dx: inner_dx, dy: 0.0, id: inner_id });
+        let children = arena.finish_children(children_start);
+
+        arena.alloc(ArenaLayoutBox {
+            width: total_width,
+            height: total_height,
+            depth: total_depth,
+            kind: ArenaBoxKind::HBox { children },
+        })
+    }
+}
+
+fn layout_fenced_arena(
+    ast: &AstArena,
+    open: StrId,
+    close: StrId,
+    content: NodeSpan,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    // Layout content, skipping Middle separator nodes
+    // We need to collect IDs first, then measure
+    let mut inner_ids: Vec<LayoutBoxId> = Vec::new();
+    for &child_id in ast.children(content) {
+        match *ast.node(child_id) {
+            CompactNode::Middle(_) => {},
+            _ => {
+                let laid = layout_node_arena(ast, child_id, arena, ctx);
+                inner_ids.push(laid);
+            },
+        }
+    }
+
+    // Compute max height/depth of content
+    let mut max_h: f64 = 0.0;
+    let mut max_d: f64 = 0.0;
+    for &id in &inner_ids {
+        let b = arena.get(id);
+        max_h = max_h.max(b.height);
+        max_d = max_d.max(b.depth);
+    }
+
+    let target_h = max_h + max_d;
+
+    let children_start = arena.begin_children();
+    let mut cursor_x = 0.0;
+
+    // Open delimiter
+    let open_str = ast.str_val(open);
+    if !open_str.is_empty() && open_str != "."
+        && let Some(ch) = open_str.chars().next()
+    {
+        let delim_id = arena.alloc(ArenaLayoutBox {
+            width: 0.389 * ctx.size(),
+            height: max_h,
+            depth: max_d,
+            kind: ArenaBoxKind::Delimiter {
+                ch,
+                target_height: target_h,
+            },
+        });
+        let delim_w = arena.get(delim_id).width;
+        arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: delim_id });
+        cursor_x += delim_w;
+    }
+
+    // Content
+    for &id in &inner_ids {
+        let w = arena.get(id).width;
+        arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id });
+        cursor_x += w;
+    }
+
+    // Close delimiter
+    let close_str = ast.str_val(close);
+    if !close_str.is_empty() && close_str != "."
+        && let Some(ch) = close_str.chars().next()
+    {
+        let delim_id = arena.alloc(ArenaLayoutBox {
+            width: 0.389 * ctx.size(),
+            height: max_h,
+            depth: max_d,
+            kind: ArenaBoxKind::Delimiter {
+                ch,
+                target_height: target_h,
+            },
+        });
+        let delim_w = arena.get(delim_id).width;
+        arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: delim_id });
+        cursor_x += delim_w;
+    }
+
+    let children = arena.finish_children(children_start);
+    arena.alloc(ArenaLayoutBox {
+        width: cursor_x,
+        height: max_h,
+        depth: max_d,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn layout_nary_arena(
+    ast: &AstArena,
+    op: char,
+    sub: NodeId,
+    sup: NodeId,
+    body: NodeId,
+    limits: LimitStyle,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let p = &ctx.params;
+    let size = ctx.size();
+
+    // Large op in display mode
+    let op_size = if ctx.style.is_display() {
+        size * 1.2
+    } else {
+        size
+    };
+    let m = metrics::glyph_metrics(op);
+    let op_id = alloc_glyph_with_metrics(arena, op, m, op_size);
+
+    let body_id = layout_node_arena(ast, body, arena, ctx);
+    let body_w = arena.get(body_id).width;
+    let body_h = arena.get(body_id).height;
+    let body_d = arena.get(body_id).depth;
+
+    let use_limits = match limits {
+        LimitStyle::AboveBelow => true,
+        LimitStyle::SubSup => false,
+        LimitStyle::Default => ctx.style.is_display(),
+    };
+
+    if use_limits {
+        // Limits above/below
+        let op_w = arena.get(op_id).width;
+        let op_h = arena.get(op_id).height;
+        let op_d = arena.get(op_id).depth;
+
+        let mut total_h = op_h;
+        let mut total_d = op_d;
+        let mut max_w = op_w;
+
+        let sup_id_opt = if sup.is_some() {
+            let sup_ctx = ctx.with_style(ctx.style.sup());
+            let sid = layout_node_arena(ast, sup, arena, &sup_ctx);
+            Some(sid)
+        } else {
+            None
+        };
+        let sub_id_opt = if sub.is_some() {
+            let sub_ctx = ctx.with_style(ctx.style.sub());
+            let sid = layout_node_arena(ast, sub, arena, &sub_ctx);
+            Some(sid)
+        } else {
+            None
+        };
+
+        // Read dimensions for sup/sub
+        let (sup_w_opt, sup_h_opt, sup_d_opt) = if let Some(sid) = sup_id_opt {
+            let b = arena.get(sid);
+            (b.width, b.height, b.depth)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        let (sub_w_opt, sub_h_opt, sub_d_opt) = if let Some(sid) = sub_id_opt {
+            let b = arena.get(sid);
+            (b.width, b.height, b.depth)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
+        if sup_id_opt.is_some() {
+            max_w = max_w.max(sup_w_opt);
+            total_h += sup_h_opt + sup_d_opt + p.big_op_spacing[0] * size;
+        }
+        if sub_id_opt.is_some() {
+            max_w = max_w.max(sub_w_opt);
+            total_d += sub_h_opt + sub_d_opt + p.big_op_spacing[3] * size;
+        }
+
+        let op_dx = (max_w - op_w) / 2.0;
+
+        let children_start = arena.begin_children();
+
+        if let Some(sid) = sup_id_opt {
+            let sup_dx = (max_w - sup_w_opt) / 2.0;
+            let sup_dy = op_h + p.big_op_spacing[0] * size + sup_d_opt;
+            arena.push_child(ArenaPositionedBox { dx: sup_dx, dy: sup_dy, id: sid });
+        }
+        arena.push_child(ArenaPositionedBox { dx: op_dx, dy: 0.0, id: op_id });
+        if let Some(sid) = sub_id_opt {
+            let sub_dx = (max_w - sub_w_opt) / 2.0;
+            let sub_dy = -(op_d + p.big_op_spacing[3] * size + sub_h_opt);
+            arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: sub_dy, id: sid });
+        }
+
+        // Body follows
+        let nary_width = max_w;
+        let thin_space = 3.0 / 18.0 * size;
+        arena.push_child(ArenaPositionedBox { dx: nary_width + thin_space, dy: 0.0, id: body_id });
+        let children = arena.finish_children(children_start);
+
+        arena.alloc(ArenaLayoutBox {
+            width: nary_width + thin_space + body_w,
+            height: total_h,
+            depth: total_d,
+            kind: ArenaBoxKind::HBox { children },
+        })
+    } else {
+        // As sub/superscripts
+        let thin_space = 3.0 / 18.0 * size;
+
+        // Build a text run for the operator glyph
+        let op_glyph_id = {
+            let op_str = op.to_string();
+            layout_text_run_arena(&op_str, arena, ctx)
+        };
+
+        if sub.is_some() && sup.is_some() {
+            let result_id = layout_subsup_from_box_arena(op_glyph_id, ast, sub, sup, arena, ctx);
+            return build_hbox_arena(result_id, body_id, thin_space, arena);
+        } else if sub.is_some() {
+            let result_id = layout_subscript_from_box_arena(op_glyph_id, ast, sub, arena, ctx);
+            return build_hbox_arena(result_id, body_id, thin_space, arena);
+        } else if sup.is_some() {
+            let result_id = layout_superscript_from_box_arena(op_glyph_id, ast, sup, arena, ctx);
+            return build_hbox_arena(result_id, body_id, thin_space, arena);
+        }
+
+        // Just op + body
+        let op_w = arena.get(op_id).width;
+        let op_h = arena.get(op_id).height;
+        let op_d = arena.get(op_id).depth;
+
+        let children_start = arena.begin_children();
+        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: op_id });
+        arena.push_child(ArenaPositionedBox { dx: op_w + thin_space, dy: 0.0, id: body_id });
+        let children = arena.finish_children(children_start);
+
+        arena.alloc(ArenaLayoutBox {
+            width: op_w + thin_space + body_w,
+            height: op_h.max(body_h),
+            depth: op_d.max(body_d),
+            kind: ArenaBoxKind::HBox { children },
+        })
+    }
+}
+
+/// Helper: build an HBox of [result, thin_space, body] for nary non-limits mode.
+fn build_hbox_arena(
+    result_id: LayoutBoxId,
+    body_id: LayoutBoxId,
+    thin_space: f64,
+    arena: &mut LayoutArena,
+) -> LayoutBoxId {
+    let rw = arena.get(result_id).width;
+    let rh = arena.get(result_id).height;
+    let rd = arena.get(result_id).depth;
+    let bw = arena.get(body_id).width;
+    let bh = arena.get(body_id).height;
+    let bd = arena.get(body_id).depth;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: result_id });
+    arena.push_child(ArenaPositionedBox { dx: rw + thin_space, dy: 0.0, id: body_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: rw + thin_space + bw,
+        height: rh.max(bh),
+        depth: rd.max(bd),
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+/// Helper: superscript layout where the base is an already-laid-out arena box.
+fn layout_superscript_from_box_arena(
+    base_id: LayoutBoxId,
+    ast: &AstArena,
+    sup: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let sup_ctx = ctx.with_style(ctx.style.sup());
+    let sup_id = layout_node_arena(ast, sup, arena, &sup_ctx);
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let sup_h = arena.get(sup_id).height;
+    let sup_d = arena.get(sup_id).depth;
+    let sup_w = arena.get(sup_id).width;
+
+    let p = &ctx.params;
+    let shift_up = if ctx.style.is_display() {
+        p.sup1
+    } else if ctx.style.is_cramped() {
+        p.sup3
+    } else {
+        p.sup2
+    };
+    let shift_up = shift_up
+        .max(base_h - p.sup_drop * ctx.size())
+        .max(p.x_height / 4.0 + sup_d);
+
+    let total_width = base_w + sup_w;
+    let total_height = (shift_up + sup_h).max(base_h);
+    let total_depth = base_d;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+/// Helper: subscript layout where the base is an already-laid-out arena box.
+fn layout_subscript_from_box_arena(
+    base_id: LayoutBoxId,
+    ast: &AstArena,
+    sub: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let sub_ctx = ctx.with_style(ctx.style.sub());
+    let sub_id = layout_node_arena(ast, sub, arena, &sub_ctx);
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let sub_h = arena.get(sub_id).height;
+    let sub_d = arena.get(sub_id).depth;
+    let sub_w = arena.get(sub_id).width;
+
+    let p = &ctx.params;
+    let shift_down = p
+        .sub1
+        .max(base_d + p.sub_drop * ctx.size())
+        .max(sub_h - (4.0 * p.x_height / 5.0));
+
+    let total_width = base_w + sub_w;
+    let total_height = base_h;
+    let total_depth = (shift_down + sub_d).max(base_d);
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+/// Helper: subsup layout where the base is an already-laid-out arena box.
+fn layout_subsup_from_box_arena(
+    base_id: LayoutBoxId,
+    ast: &AstArena,
+    sub: NodeId,
+    sup: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let sup_ctx = ctx.with_style(ctx.style.sup());
+    let sub_ctx = ctx.with_style(ctx.style.sub());
+    let sup_id = layout_node_arena(ast, sup, arena, &sup_ctx);
+    let sub_id = layout_node_arena(ast, sub, arena, &sub_ctx);
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let sup_h = arena.get(sup_id).height;
+    let sup_d = arena.get(sup_id).depth;
+    let sup_w = arena.get(sup_id).width;
+    let sub_h = arena.get(sub_id).height;
+    let sub_d = arena.get(sub_id).depth;
+    let sub_w = arena.get(sub_id).width;
+
+    let p = &ctx.params;
+
+    let mut shift_up = if ctx.style.is_display() {
+        p.sup1
+    } else if ctx.style.is_cramped() {
+        p.sup3
+    } else {
+        p.sup2
+    };
+    shift_up = shift_up
+        .max(base_h - p.sup_drop * ctx.size())
+        .max(p.x_height / 4.0 + sup_d);
+
+    let mut shift_down = p.sub2.max(base_d + p.sub_drop * ctx.size());
+
+    let gap = (shift_up - sup_d) - (sub_h - shift_down);
+    if gap < 4.0 * p.rule_thickness {
+        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
+        shift_up += adjust;
+        shift_down += adjust;
+    }
+
+    let sup_bottom = shift_up - sup_d;
+    if sup_bottom < (4.0 * p.x_height / 5.0) {
+        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
+        shift_up += delta;
+    }
+
+    let script_width = sup_w.max(sub_w);
+    let total_width = base_w + script_width;
+    let total_height = (shift_up + sup_h).max(base_h);
+    let total_depth = (shift_down + sub_d).max(base_d);
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_overscript_arena(
+    ast: &AstArena,
+    base: NodeId,
+    over: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let p = &ctx.params;
+    let size = ctx.size();
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let over_ctx = ctx.with_style(ctx.style.sup());
+    let over_id = layout_node_arena(ast, over, arena, &over_ctx);
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let over_w = arena.get(over_id).width;
+    let over_h = arena.get(over_id).height;
+    let over_d = arena.get(over_id).depth;
+
+    let gap = p.big_op_spacing[2] * size;
+    let max_w = base_w.max(over_w);
+    let base_dx = (max_w - base_w) / 2.0;
+    let over_dx = (max_w - over_w) / 2.0;
+    let over_dy = base_h + gap + over_d;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: base_dx, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: over_dx, dy: over_dy, id: over_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: max_w,
+        height: over_dy + over_h,
+        depth: base_d,
+        kind: ArenaBoxKind::VBox { children },
+    })
+}
+
+fn layout_underscript_arena(
+    ast: &AstArena,
+    base: NodeId,
+    under: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let p = &ctx.params;
+    let size = ctx.size();
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let under_ctx = ctx.with_style(ctx.style.sub());
+    let under_id = layout_node_arena(ast, under, arena, &under_ctx);
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let under_w = arena.get(under_id).width;
+    let under_h = arena.get(under_id).height;
+    let under_d = arena.get(under_id).depth;
+
+    let gap = p.big_op_spacing[4] * size;
+    let max_w = base_w.max(under_w);
+    let base_dx = (max_w - base_w) / 2.0;
+    let under_dx = (max_w - under_w) / 2.0;
+    let under_dy = base_d + gap + under_h;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: base_dx, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: under_dx, dy: -under_dy, id: under_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: max_w,
+        height: base_h,
+        depth: under_dy + under_d,
+        kind: ArenaBoxKind::VBox { children },
+    })
+}
+
+fn layout_underover_arena(
+    ast: &AstArena,
+    base: NodeId,
+    under: NodeId,
+    over: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let p = &ctx.params;
+    let size = ctx.size();
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let over_ctx = ctx.with_style(ctx.style.sup());
+    let under_ctx = ctx.with_style(ctx.style.sub());
+    let over_id = layout_node_arena(ast, over, arena, &over_ctx);
+    let under_id = layout_node_arena(ast, under, arena, &under_ctx);
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let over_w = arena.get(over_id).width;
+    let over_h = arena.get(over_id).height;
+    let over_d = arena.get(over_id).depth;
+    let under_w = arena.get(under_id).width;
+    let under_h = arena.get(under_id).height;
+    let under_d = arena.get(under_id).depth;
+
+    let gap_above = p.big_op_spacing[2] * size;
+    let gap_below = p.big_op_spacing[4] * size;
+    let max_w = base_w.max(over_w).max(under_w);
+
+    let base_dx = (max_w - base_w) / 2.0;
+    let over_dx = (max_w - over_w) / 2.0;
+    let under_dx = (max_w - under_w) / 2.0;
+
+    let over_dy = base_h + gap_above + over_d;
+    let under_dy = base_d + gap_below + under_h;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: over_dx, dy: over_dy, id: over_id });
+    arena.push_child(ArenaPositionedBox { dx: base_dx, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: under_dx, dy: -under_dy, id: under_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: max_w,
+        height: over_dy + over_h,
+        depth: under_dy + under_d,
+        kind: ArenaBoxKind::VBox { children },
+    })
+}
+
+fn layout_accent_arena(
+    ast: &AstArena,
+    base: NodeId,
+    accent: char,
+    position: AccentPosition,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let accent_id = alloc_glyph(arena, accent, ctx.style);
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+    let accent_w = arena.get(accent_id).width;
+    let accent_h = arena.get(accent_id).height;
+
+    let accent_dx = (base_w - accent_w) / 2.0;
+    let (accent_dy, total_h, total_d) = match position {
+        AccentPosition::Above => {
+            let dy = base_h + 0.02 * ctx.size();
+            (dy, dy + accent_h, base_d)
+        },
+        AccentPosition::Below => {
+            let dy = -(base_d + accent_h + 0.02 * ctx.size());
+            (
+                dy,
+                base_h,
+                base_d + accent_h + 0.02 * ctx.size(),
+            )
+        },
+    };
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
+    arena.push_child(ArenaPositionedBox { dx: accent_dx, dy: accent_dy, id: accent_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: base_w,
+        height: total_h,
+        depth: total_d,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+#[allow(clippy::needless_range_loop)]
+fn layout_array_arena(
+    ast: &AstArena,
+    col_aligns: NodeSpan,
+    cells: NodeSpan,
+    num_cols: u16,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    let row_gap = 0.6 * size;
+    let col_gap = 1.0 * size;
+
+    // Extract column alignments
+    let columns: Vec<ColumnAlign> = ast
+        .children(col_aligns)
+        .iter()
+        .map(|&id| match *ast.node(id) {
+            CompactNode::ColAlign(a) => a,
+            _ => ColumnAlign::Center,
+        })
+        .collect();
+
+    // Layout all cells (flat storage, row-major, stride = num_cols)
+    let cell_ids_ast = ast.children(cells);
+    let nc = num_cols as usize;
+    let n_rows = if nc > 0 { cell_ids_ast.len() / nc } else { 0 };
+
+    // Layout each cell and store the layout box IDs
+    let mut cell_layout_ids: Vec<LayoutBoxId> = Vec::with_capacity(cell_ids_ast.len());
+    for &cell_id in cell_ids_ast {
+        match *ast.node(cell_id) {
+            CompactNode::Row(span) => {
+                cell_layout_ids.push(layout_row_arena(ast, span, arena, ctx));
+            },
+            _ => {
+                cell_layout_ids.push(layout_node_arena(ast, cell_id, arena, ctx));
+            },
+        }
+    }
+
+    let n_cols = columns.len().max(nc);
+
+    // Compute column widths and row heights/depths
+    let mut col_widths = vec![0.0_f64; n_cols];
+    let mut row_heights = vec![0.0_f64; n_rows];
+    let mut row_depths = vec![0.0_f64; n_rows];
+
+    for i in 0..n_rows {
+        for j in 0..nc.min(n_cols) {
+            let idx = i * nc + j;
+            if idx < cell_layout_ids.len() {
+                let b = arena.get(cell_layout_ids[idx]);
+                col_widths[j] = col_widths[j].max(b.width);
+                row_heights[i] = row_heights[i].max(b.height);
+                row_depths[i] = row_depths[i].max(b.depth);
+            }
+        }
+    }
+
+    // Position cells
+    let children_start = arena.begin_children();
+    let mut cursor_y = 0.0;
+
+    for i in 0..n_rows {
+        cursor_y += row_heights[i];
+        let mut cursor_x = 0.0;
+
+        for j in 0..nc.min(n_cols) {
+            let idx = i * nc + j;
+            if idx < cell_layout_ids.len() {
+                let col_w = col_widths[j];
+                let cell_w = arena.get(cell_layout_ids[idx]).width;
+                let align = columns.get(j).copied().unwrap_or(ColumnAlign::Center);
+                let dx = match align {
+                    ColumnAlign::Left => 0.0,
+                    ColumnAlign::Center => (col_w - cell_w) / 2.0,
+                    ColumnAlign::Right => col_w - cell_w,
+                };
+                arena.push_child(ArenaPositionedBox {
+                    dx: cursor_x + dx,
+                    dy: cursor_y,
+                    id: cell_layout_ids[idx],
+                });
+                cursor_x += col_w;
+            } else {
+                cursor_x += col_widths.get(j).copied().unwrap_or(0.0);
+            }
+            if j < n_cols - 1 {
+                cursor_x += col_gap;
+            }
+        }
+
+        cursor_y += row_depths[i];
+        if i < n_rows - 1 {
+            cursor_y += row_gap;
+        }
+    }
+
+    let children = arena.finish_children(children_start);
+    let total_width: f64 =
+        col_widths.iter().sum::<f64>() + col_gap * (n_cols.saturating_sub(1) as f64);
+    let total_extent = cursor_y;
+    let axis = ctx.params.axis_height * size;
+    let half = total_extent / 2.0;
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: half + axis,
+        depth: half - axis,
+        kind: ArenaBoxKind::VBox { children },
+    })
+}
+
+fn layout_prescripts_arena(
+    ast: &AstArena,
+    base: NodeId,
+    pre_sub: NodeId,
+    pre_sup: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let base_id = layout_node_arena(ast, base, arena, ctx);
+    let p = &ctx.params;
+
+    let base_w = arena.get(base_id).width;
+    let base_h = arena.get(base_id).height;
+    let base_d = arena.get(base_id).depth;
+
+    let mut pre_width: f64 = 0.0;
+    let mut total_h = base_h;
+    let mut total_d = base_d;
+
+    // Layout pre-superscript and pre-subscript
+    let pre_sup_id = if pre_sup.is_some() {
+        let sup_ctx = ctx.with_style(ctx.style.sup());
+        let sid = layout_node_arena(ast, pre_sup, arena, &sup_ctx);
+        let b = arena.get(sid);
+        let shift_up = p.sup2.max(base_h - p.sup_drop * ctx.size());
+        pre_width = pre_width.max(b.width);
+        total_h = total_h.max(shift_up + b.height);
+        Some((sid, shift_up))
+    } else {
+        None
+    };
+
+    let pre_sub_id = if pre_sub.is_some() {
+        let sub_ctx = ctx.with_style(ctx.style.sub());
+        let sid = layout_node_arena(ast, pre_sub, arena, &sub_ctx);
+        let b = arena.get(sid);
+        let shift_down = p.sub1.max(base_d + p.sub_drop * ctx.size());
+        pre_width = pre_width.max(b.width);
+        total_d = total_d.max(shift_down + b.depth);
+        Some((sid, shift_down))
+    } else {
+        None
+    };
+
+    let children_start = arena.begin_children();
+    if let Some((sid, shift_up)) = pre_sup_id {
+        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: shift_up, id: sid });
+    }
+    if let Some((sid, shift_down)) = pre_sub_id {
+        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: -shift_down, id: sid });
+    }
+    arena.push_child(ArenaPositionedBox { dx: pre_width, dy: 0.0, id: base_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: pre_width + base_w,
+        height: total_h,
+        depth: total_d,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_phantom_arena(
+    ast: &AstArena,
+    content: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let inner_id = layout_node_arena(ast, content, arena, ctx);
+    let inner_w = arena.get(inner_id).width;
+    let inner_h = arena.get(inner_id).height;
+    let inner_d = arena.get(inner_id).depth;
+
+    arena.alloc(ArenaLayoutBox {
+        width: inner_w,
+        height: inner_h,
+        depth: inner_d,
+        kind: ArenaBoxKind::Phantom,
+    })
+}
+
+fn layout_boxed_arena(
+    ast: &AstArena,
+    content: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    let padding = 0.1 * size;
+    let inner_id = layout_node_arena(ast, content, arena, ctx);
+    let inner_w = arena.get(inner_id).width;
+    let inner_h = arena.get(inner_id).height;
+    let inner_d = arena.get(inner_id).depth;
+
+    arena.alloc(ArenaLayoutBox {
+        width: inner_w + 2.0 * padding,
+        height: inner_h + padding,
+        depth: inner_d + padding,
+        kind: ArenaBoxKind::Boxed {
+            child: inner_id,
+            padding,
+        },
+    })
+}
+
+fn layout_cancel_arena(
+    ast: &AstArena,
+    stroke: StrokeKind,
+    content: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let inner_id = layout_node_arena(ast, content, arena, ctx);
+    let inner_w = arena.get(inner_id).width;
+    let inner_h = arena.get(inner_id).height;
+    let inner_d = arena.get(inner_id).depth;
+
+    let w = inner_w;
+    let h = inner_h + inner_d;
+
+    let path = match stroke {
+        StrokeKind::Forward => format!("M0,{h} L{w},0"),
+        StrokeKind::Backward => format!("M0,0 L{w},{h}"),
+        StrokeKind::Cross => format!("M0,{h} L{w},0 M0,0 L{w},{h}"),
+        StrokeKind::Horizontal => {
+            let mid = h / 2.0;
+            format!("M0,{mid} L{w},{mid}")
+        },
+        StrokeKind::Vertical => {
+            let mid = w / 2.0;
+            format!("M{mid},0 L{mid},{h}")
+        },
+    };
+
+    let path_id = arena.alloc(ArenaLayoutBox {
+        width: w,
+        height: inner_h,
+        depth: inner_d,
+        kind: ArenaBoxKind::SvgPath(path),
+    });
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: inner_id });
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: path_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: inner_w,
+        height: inner_h,
+        depth: inner_d,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+fn layout_scaled_arena(
+    ast: &AstArena,
+    factor: Rational,
+    content: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let inner_id = layout_node_arena(ast, content, arena, ctx);
+    let inner_w = arena.get(inner_id).width;
+    let inner_h = arena.get(inner_id).height;
+    let inner_d = arena.get(inner_id).depth;
+    let inner_kind = arena.get(inner_id).kind.clone();
+    let f = factor.as_f64();
+
+    arena.alloc(ArenaLayoutBox {
+        width: inner_w * f,
+        height: inner_h * f,
+        depth: inner_d * f,
+        kind: inner_kind,
+    })
+}
+
+fn layout_styled_arena(
+    ast: &AstArena,
+    span: NodeSpan,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    layout_row_arena(ast, span, arena, ctx)
 }
 
 #[cfg(test)]
@@ -3320,5 +4334,137 @@ mod tests {
         let b = arena.get(root);
         assert!(b.height > 0.0);
         assert!(b.depth > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_sqrt() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("\\sqrt{x}", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.0);
+        assert!(b.height > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_fenced() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("\\left(x\\right)", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_nary_display() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("\\sum_{i=0}^{n} x", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Display, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.0);
+        assert!(b.height > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_overunder() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("\\overset{a}{b}", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_array() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact(
+            "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}",
+            &config,
+        ).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_accent() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("\\hat{x}", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+        let root = builder.layout(&mut arena, &result.expr);
+        let b = arena.get(root);
+        assert!(b.width > 0.0);
+        assert!(b.height > 0.0);
+    }
+
+    #[test]
+    fn arena_layout_depth_limit() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let mut latex = String::new();
+        for _ in 0..150 {
+            latex.push_str("\\frac{");
+        }
+        latex.push('x');
+        for _ in 0..150 {
+            latex.push_str("}{1}");
+        }
+        let config = crate::error::Config::default();
+        if let Ok(result) = crate::reader::latex::LatexReader::parse_compact(&latex, &config) {
+            let mut arena = LayoutArena::new();
+            let opts = default_options();
+            let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+            // Must not panic or overflow stack
+            let _root = builder.layout(&mut arena, &result.expr);
+        }
+    }
+
+    #[test]
+    fn arena_clear_and_reuse() {
+        use crate::render::arena::LayoutArena;
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("x^2", &config).unwrap();
+        let mut arena = LayoutArena::new();
+        let opts = default_options();
+        let builder = LayoutBuilder::new(MathStyle::Text, &opts);
+
+        let root1 = builder.layout(&mut arena, &result.expr);
+        let w1 = arena.get(root1).width;
+
+        arena.clear();
+        let root2 = builder.layout(&mut arena, &result.expr);
+        let w2 = arena.get(root2).width;
+
+        assert!((w1 - w2).abs() < f64::EPSILON, "reused arena should produce identical layout");
     }
 }
