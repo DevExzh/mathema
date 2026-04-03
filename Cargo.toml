@@ -36,3 +36,8 @@ harness = false
 [[bench]]
 name = "latex_parse"
 harness = false
+
+[[bench]]
+name = "layout"
+harness = false
+required-features = ["render"]
