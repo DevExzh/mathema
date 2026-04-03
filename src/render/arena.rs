@@ -12,6 +12,7 @@ impl LayoutBoxId {
     /// Create from a 0-based index. Panics if index >= u32::MAX - 1.
     #[inline]
     fn from_index(index: usize) -> Self {
+        assert!(index < u32::MAX as usize, "layout arena overflow");
         Self(NonZeroU32::new((index as u32) + 1).expect("layout arena overflow"))
     }
 
@@ -40,7 +41,7 @@ impl LayoutSpan {
 
 // ── Arena box types ───────────────────────────────────────────────────
 
-/// Arena-allocated layout box. No heap pointers except `SvgPath`.
+/// Arena-allocated layout box. No heap pointers except `SvgPath` and `Color`.
 #[derive(Clone, Debug)]
 pub struct ArenaLayoutBox {
     pub width: f64,
@@ -131,7 +132,9 @@ impl LayoutArena {
     /// Begin a child span. Returns the start index for `finish_children`.
     #[inline]
     pub fn begin_children(&self) -> u32 {
-        self.children.len() as u32
+        let len = self.children.len();
+        assert!(len <= u32::MAX as usize, "layout arena children overflow");
+        len as u32
     }
 
     /// Push a positioned child into the children array.
