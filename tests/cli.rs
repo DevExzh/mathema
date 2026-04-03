@@ -32,3 +32,28 @@ fn convert_missing_to_flag() {
         .failure()
         .stderr(predicate::str::contains("--to"));
 }
+
+#[test]
+fn validate_valid_latex() {
+    mathema()
+        .args(["validate", "--from", "latex", "x^2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"));
+}
+
+#[test]
+fn validate_invalid_mathml() {
+    mathema()
+        .args(["validate", "--from", "mathml", "not xml <<<"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn validate_auto_detect() {
+    mathema()
+        .args(["validate", "\\frac{1}{2}"])
+        .assert()
+        .success();
+}

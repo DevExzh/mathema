@@ -290,8 +290,101 @@ fn run_convert_batch(
     }
 }
 
-fn run_validate(_args: ValidateArgs) -> Result<(), CliError> {
-    todo!("implemented in Task 6")
+fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
+    let config = make_config(args.lenient);
+    let inputs = resolve_inputs(args.input)?;
+    let is_batch = inputs.len() > 1;
+
+    let pb = if is_batch {
+        let bar = ProgressBar::new(inputs.len() as u64);
+        bar.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+                .expect("valid template")
+                .progress_chars("#>-"),
+        );
+        Some(bar)
+    } else {
+        None
+    };
+
+    let mut failures: Vec<(String, CliError)> = Vec::new();
+    let mut success_count: u64 = 0;
+
+    for input in &inputs {
+        let (content, source_name, path) = match input {
+            Input::Stdin(s) => (s.clone(), "<stdin>".to_owned(), None),
+            Input::Inline(s) => (s.clone(), "<inline>".to_owned(), None),
+            Input::File(p) => {
+                if let Some(ref bar) = pb {
+                    bar.set_message(p.display().to_string());
+                }
+                match read_file(p) {
+                    Ok(c) => (c, p.display().to_string(), Some(p.as_path())),
+                    Err(e) => {
+                        failures.push((p.display().to_string(), e));
+                        if let Some(ref bar) = pb {
+                            bar.inc(1);
+                        }
+                        continue;
+                    }
+                }
+            }
+        };
+
+        let from = match resolve_format(args.from, path, &content) {
+            Ok(f) => f,
+            Err(e) => {
+                failures.push((source_name, e));
+                if let Some(ref bar) = pb {
+                    bar.inc(1);
+                }
+                continue;
+            }
+        };
+
+        // Parse to validate — convert to same format to exercise the parser
+        match mathema::convert_with(content.trim(), from, from, &config) {
+            Ok(_) => {
+                if !is_batch {
+                    println!("{source_name}: valid ({from:?})");
+                }
+                success_count += 1;
+            }
+            Err(e) => {
+                let cli_err = CliError::from_mathema(e, &content, &source_name);
+                if !is_batch {
+                    return Err(cli_err);
+                }
+                failures.push((source_name, cli_err));
+            }
+        }
+        if let Some(ref bar) = pb {
+            bar.inc(1);
+        }
+    }
+
+    if let Some(bar) = pb {
+        bar.finish_and_clear();
+    }
+
+    if is_batch {
+        let total = inputs.len();
+        if failures.is_empty() {
+            eprintln!("Validated {total} files: all valid.");
+        } else {
+            eprintln!(
+                "Validated {total} files: {success_count} valid, {} invalid.",
+                failures.len()
+            );
+            for (name, err) in &failures {
+                eprintln!("  {name}: {err}");
+            }
+            return Err(failures.into_iter().next().unwrap().1);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "render")]
