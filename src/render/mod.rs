@@ -71,3 +71,49 @@ pub fn render_to_svg_compact(expr: &CompactExpr, options: &RenderOptions) -> Res
     let root = layout::layout_expr_c(expr, style, options);
     Ok(emit::emit_svg(&root, options))
 }
+
+/// Render a compact expression to SVG using arena-based layout (zero heap alloc in layout pass).
+pub fn render_to_svg_compact_arena(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    layout_arena: &mut arena::LayoutArena,
+) -> Result<String> {
+    crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+    let style = if options
+        .display_mode
+        .unwrap_or(expr.display == DisplayStyle::Block)
+    {
+        style::MathStyle::Display
+    } else {
+        style::MathStyle::Text
+    };
+    let builder = layout::LayoutBuilder::new(style, options);
+    layout_arena.clear();
+    let root = builder.layout(layout_arena, expr);
+    Ok(emit::emit_svg_arena(layout_arena, root, options))
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    #[test]
+    fn render_to_svg_compact_arena_matches_heap() {
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact(
+            "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}",
+            &config,
+        )
+        .unwrap();
+        let options = RenderOptions::default();
+
+        let heap_svg = render_to_svg_compact(&result.expr, &options).unwrap();
+
+        let mut layout_arena = arena::LayoutArena::new();
+        let arena_svg =
+            render_to_svg_compact_arena(&result.expr, &options, &mut layout_arena).unwrap();
+
+        assert_eq!(heap_svg, arena_svg);
+    }
+}
