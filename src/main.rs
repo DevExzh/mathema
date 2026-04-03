@@ -1,3 +1,5 @@
+mod cli;
+
 use clap::Parser;
 use mathema::{Format, convert};
 #[cfg(feature = "raster")]
