@@ -7,39 +7,9 @@ use std::fmt::Write;
 
 use super::RenderOptions;
 use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
+use super::emit::{XmlAttrEscape, write_escaped_char};
 use super::layout::{BoxKind, LayoutBox};
 use super::subset::GlyphSet;
-
-/// Wrapper that escapes a string for safe use in XML/SVG attributes.
-struct XmlAttrEscape<'a>(&'a str);
-
-impl std::fmt::Display for XmlAttrEscape<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for ch in self.0.chars() {
-            match ch {
-                '<' => f.write_str("&lt;")?,
-                '>' => f.write_str("&gt;")?,
-                '&' => f.write_str("&amp;")?,
-                '"' => f.write_str("&quot;")?,
-                '\'' => f.write_str("&apos;")?,
-                _ => f.write_char(ch)?,
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Write an XML-escaped character directly to the buffer.
-fn write_escaped_char(out: &mut String, ch: char) {
-    match ch {
-        '<' => out.push_str("&lt;"),
-        '>' => out.push_str("&gt;"),
-        '&' => out.push_str("&amp;"),
-        '"' => out.push_str("&quot;"),
-        '\'' => out.push_str("&apos;"),
-        _ => out.push(ch),
-    }
-}
 
 // ── Heap-based emission ──────────────────────────────────────────────
 
@@ -89,7 +59,7 @@ fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
             svg,
             r#"<path id="g{}" d="{}"/>"#,
             *ch as u32,
-            outline.path_data,
+            XmlAttrEscape(&outline.path_data),
         );
     }
 

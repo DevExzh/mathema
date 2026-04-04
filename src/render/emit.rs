@@ -6,7 +6,7 @@ use super::layout::{BoxKind, LayoutBox};
 
 /// Wrapper that escapes a string for safe use in XML/SVG attributes.
 /// Prevents attribute injection via `"`, `<`, `>`, `&`, `'` in user-controlled values.
-struct XmlAttrEscape<'a>(&'a str);
+pub(crate) struct XmlAttrEscape<'a>(pub(crate) &'a str);
 
 impl std::fmt::Display for XmlAttrEscape<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -351,7 +351,7 @@ fn emit_box_arena(
 }
 
 /// Write an XML-escaped character directly to the buffer (zero allocation).
-fn write_escaped_char(out: &mut String, ch: char) {
+pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
     match ch {
         '<' => out.push_str("&lt;"),
         '>' => out.push_str("&gt;"),
