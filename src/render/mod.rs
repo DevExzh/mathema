@@ -144,6 +144,36 @@ pub fn render_to_svg_standalone_compact(
     Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs))
 }
 
+/// Render a compact expression to standalone SVG using arena-based layout.
+#[cfg(feature = "font-embed")]
+pub fn render_to_svg_standalone_compact_arena(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    layout_arena: &mut arena::LayoutArena,
+) -> Result<String> {
+    crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+    let style = if options
+        .display_mode
+        .unwrap_or(expr.display == DisplayStyle::Block)
+    {
+        style::MathStyle::Display
+    } else {
+        style::MathStyle::Text
+    };
+    let builder = layout::LayoutBuilder::new(style, options);
+    layout_arena.clear();
+    let root = builder.layout(layout_arena, expr);
+    let chars = subset::collect_chars_arena(layout_arena, root);
+    let glyphs = subset::build_glyph_set(FONT_DATA, &chars)
+        .expect("embedded font data must be valid");
+    Ok(svg_writer::emit_svg_with_fonts_arena(
+        layout_arena,
+        root,
+        options,
+        &glyphs,
+    ))
+}
+
 #[cfg(test)]
 mod integration_tests {
     use super::*;
