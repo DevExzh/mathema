@@ -20,17 +20,21 @@ wasm-pack build --target bundler --no-default-features --features wasm
 
 Output goes to `pkg/`.
 
+Note: `wasm-opt` is disabled in `Cargo.toml` to avoid requiring the binary at
+build time. To produce an optimized (smaller) `.wasm` file, remove the
+`[package.metadata.wasm-pack.profile.release]` section and ensure `wasm-opt`
+is installed.
+
 ## Usage
 
 ```javascript
-import init, { init as wasmInit, MathemaConverter } from './pkg/mathema.js';
+import wasmInit, { init, convert, MathemaConverter } from './pkg/mathema.js';
 
 // Initialize WASM module
-await init();
-wasmInit(); // Set up panic hook for better error messages
+await wasmInit();
+init(); // Set up panic hook for better error messages
 
 // Simple conversion
-import { convert } from './pkg/mathema.js';
 const mathml = convert('x^2', 'latex', 'mathml');
 
 // Builder pattern (parse once, write many)
