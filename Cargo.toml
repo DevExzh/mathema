@@ -19,6 +19,7 @@ wasm-bindgen = { version = "0.2", optional = true }
 fontdue = { version = "0.9", optional = true }
 tiny-skia = { version = "0.11", optional = true }
 jpeg-encoder = { version = "0.6", optional = true }
+ttf-parser = { version = "0.25", optional = true }
 
 [dev-dependencies]
 proptest = "1"
@@ -34,6 +35,7 @@ serde = ["dep:serde"]
 wasm = ["wasm-bindgen"]
 render = []
 raster = ["render", "dep:fontdue", "dep:tiny-skia", "dep:jpeg-encoder"]
+font-embed = ["render", "dep:ttf-parser"]
 
 [[bench]]
 name = "benchmark"
