@@ -5,7 +5,7 @@ use mathema::unicode::{
     fonts::{styled_char, unstyled_char},
     operators::{lookup_operator, lookup_operator_any, is_stretchy, OperatorForm},
 };
-use mathema::ast::{SymbolKind, TextStyle};
+use mathema::ast::TextStyle;
 
 fn bench_symbols(c: &mut Criterion) {
     let mut group = c.benchmark_group("symbols");
