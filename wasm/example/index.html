@@ -98,10 +98,10 @@
 
       const t0 = performance.now();
       let result;
+      let converter;
       try {
-        const converter = new MathemaConverter(format);
+        converter = new MathemaConverter(format);
         result = converter.parse(input);
-        converter.free();
       } catch (e) {
         const msg = String(e);
         ['out-latex', 'out-mathml', 'out-omml', 'out-unicode'].forEach(
@@ -109,6 +109,8 @@
         );
         document.getElementById('ast-tree').textContent = '';
         return;
+      } finally {
+        if (converter) converter.free();
       }
       const parseTime = ((performance.now() - t0) * 1000).toFixed(1);
 
