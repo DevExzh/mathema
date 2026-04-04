@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>mathema - Math Format Converter</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; background: #0f0f23; color: #ccc; }
+    h1 { color: #00d2ff; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; }
+    label { display: block; color: #00d2ff; font-weight: bold; margin-bottom: 4px; }
+    select, textarea { width: 100%; background: #1a1a2e; color: #e0e0e0; border: 1px solid #333; padding: 8px; font-family: 'SF Mono', monospace; font-size: 14px; border-radius: 4px; }
+    textarea { height: 120px; resize: vertical; }
+    .output-box { background: #1a1a2e; border: 1px solid #333; padding: 12px; border-radius: 4px; min-height: 80px; white-space: pre-wrap; word-break: break-all; font-family: 'SF Mono', monospace; font-size: 13px; }
+    .error { color: #ff4444; }
+    .timing { color: #00ff88; font-size: 12px; margin-top: 4px; }
+    .section { margin: 1.5em 0; }
+    #ast-tree { max-height: 400px; overflow: auto; background: #1a1a2e; border: 1px solid #333; padding: 12px; border-radius: 4px; font-family: 'SF Mono', monospace; font-size: 12px; }
+    button { background: #00d2ff; color: #0f0f23; border: none; padding: 8px 20px; cursor: pointer; border-radius: 4px; font-weight: bold; }
+    button:hover { background: #00a8cc; }
+  </style>
+</head>
+<body>
+  <h1>mathema</h1>
+  <p>Convert math formulas between LaTeX, MathML, OMML, MTEF, and UnicodeMath -- entirely in the browser via WASM.</p>
+
+  <div class="section">
+    <label for="input-format">Input Format</label>
+    <select id="input-format">
+      <option value="latex" selected>LaTeX</option>
+      <option value="mathml">MathML</option>
+      <option value="omml">OMML</option>
+      <option value="unicodemath">UnicodeMath</option>
+    </select>
+  </div>
+
+  <div class="section">
+    <label for="input">Input</label>
+    <textarea id="input">x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}</textarea>
+  </div>
+
+  <div class="section">
+    <button id="convert-btn">Convert</button>
+    <span id="parse-timing" class="timing"></span>
+  </div>
+
+  <div class="grid section">
+    <div>
+      <label>LaTeX</label>
+      <div class="output-box" id="out-latex"></div>
+    </div>
+    <div>
+      <label>MathML</label>
+      <div class="output-box" id="out-mathml"></div>
+    </div>
+    <div>
+      <label>OMML</label>
+      <div class="output-box" id="out-omml"></div>
+    </div>
+    <div>
+      <label>UnicodeMath</label>
+      <div class="output-box" id="out-unicode"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <label>AST (parsed)</label>
+    <div id="ast-tree"></div>
+  </div>
+
+  <script type="module">
+    import wasmInit, {
+      init,
+      MathemaConverter,
+    } from '../pkg/mathema.js';
+
+    let ready = false;
+
+    async function setup() {
+      await wasmInit();
+      init();
+      ready = true;
+      document.getElementById('convert-btn').textContent = 'Convert';
+      doConvert();
+    }
+
+    function setOutput(id, text, isError) {
+      const el = document.getElementById(id);
+      el.textContent = text;
+      el.classList.toggle('error', !!isError);
+    }
+
+    function doConvert() {
+      if (!ready) return;
+
+      const format = document.getElementById('input-format').value;
+      const input = document.getElementById('input').value;
+
+      const t0 = performance.now();
+      let result;
+      try {
+        const converter = new MathemaConverter(format);
+        result = converter.parse(input);
+        converter.free();
+      } catch (e) {
+        const msg = String(e);
+        ['out-latex', 'out-mathml', 'out-omml', 'out-unicode'].forEach(
+          id => setOutput(id, msg, true)
+        );
+        document.getElementById('ast-tree').textContent = '';
+        return;
+      }
+      const parseTime = ((performance.now() - t0) * 1000).toFixed(1);
+
+      const outputs = [
+        ['out-latex', () => result.toLatex()],
+        ['out-mathml', () => result.toMathml()],
+        ['out-omml', () => result.toOmml()],
+        ['out-unicode', () => result.toUnicodeMath()],
+      ];
+
+      for (const [id, fn] of outputs) {
+        try {
+          setOutput(id, fn(), false);
+        } catch (e) {
+          setOutput(id, String(e), true);
+        }
+      }
+
+      try {
+        const ast = result.toAst();
+        document.getElementById('ast-tree').textContent = JSON.stringify(ast, null, 2);
+      } catch (e) {
+        document.getElementById('ast-tree').textContent = 'Error: ' + String(e);
+      }
+
+      document.getElementById('parse-timing').textContent =
+        'Parsed in ' + parseTime + ' us (' + result.nodeCount() + ' nodes)';
+
+      result.free();
+    }
+
+    document.getElementById('convert-btn').addEventListener('click', doConvert);
+    document.getElementById('input').addEventListener('input', doConvert);
+    document.getElementById('input-format').addEventListener('change', doConvert);
+
+    document.getElementById('convert-btn').textContent = 'Loading WASM...';
+    setup().catch(e => {
+      document.getElementById('convert-btn').textContent = 'WASM load failed';
+      console.error(e);
+    });
+  </script>
+</body>
+</html>
