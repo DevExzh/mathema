@@ -7,6 +7,8 @@ pub mod params;
 pub mod raster;
 pub mod spacing;
 pub mod style;
+#[cfg(feature = "font-embed")]
+pub mod font_embed;
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
