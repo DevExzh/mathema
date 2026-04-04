@@ -9,6 +9,8 @@ pub mod spacing;
 pub mod style;
 #[cfg(feature = "font-embed")]
 pub mod font_embed;
+#[cfg(feature = "font-embed")]
+pub mod subset;
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
