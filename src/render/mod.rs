@@ -11,6 +11,8 @@ pub mod style;
 pub mod font_embed;
 #[cfg(feature = "font-embed")]
 pub mod subset;
+#[cfg(feature = "font-embed")]
+pub(crate) mod svg_writer;
 
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
