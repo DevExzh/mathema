@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>mathema WASM Benchmarks</title>
+  <style>
+    body { font-family: 'SF Mono', 'Fira Code', monospace; max-width: 900px; margin: 2em auto; background: #1a1a2e; color: #e0e0e0; }
+    h1 { color: #00d2ff; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { border: 1px solid #333; padding: 8px 12px; text-align: right; }
+    th { background: #16213e; color: #00d2ff; text-align: left; }
+    td:first-child { text-align: left; }
+    .fast { color: #00ff88; }
+    .ok { color: #ffdd00; }
+    .slow { color: #ff4444; }
+    #status { padding: 1em; background: #16213e; border-radius: 4px; margin: 1em 0; }
+    button { background: #00d2ff; color: #1a1a2e; border: none; padding: 10px 24px; font-size: 16px; cursor: pointer; border-radius: 4px; margin: 0.5em 0; }
+    button:hover { background: #00a8cc; }
+    button:disabled { background: #444; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+  <h1>mathema WASM Benchmarks</h1>
+  <p>Measures parse + write latency from JavaScript. All times in microseconds.</p>
+  <div id="status">Loading WASM module...</div>
+  <button id="run" disabled>Run Benchmarks</button>
+  <table id="results">
+    <thead>
+      <tr>
+        <th>Benchmark</th>
+        <th>Iterations</th>
+        <th>Mean (us)</th>
+        <th>Median (us)</th>
+        <th>Min (us)</th>
+        <th>Max (us)</th>
+        <th>Std Dev</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script type="module" src="bench.js"></script>
+</body>
+</html>
