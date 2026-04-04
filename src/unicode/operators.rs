@@ -314,12 +314,15 @@ pub fn lookup_operator(ch: char, form: OperatorForm) -> Option<&'static Operator
 }
 
 /// Look up an operator entry by character, trying the given form first,
-/// then falling back to any matching form.
+/// then falling back in priority order: Infix > Prefix > Postfix.
+/// Each form is checked at most once.
 pub fn lookup_operator_any(ch: char, preferred: OperatorForm) -> Option<&'static OperatorEntry> {
-    lookup_operator(ch, preferred)
-        .or_else(|| INFIX_OPS.get(&ch))
-        .or_else(|| PREFIX_OPS.get(&ch))
-        .or_else(|| POSTFIX_OPS.get(&ch))
+    lookup_operator(ch, preferred).or_else(|| {
+        [OperatorForm::Infix, OperatorForm::Prefix, OperatorForm::Postfix]
+            .iter()
+            .filter(|&&f| f != preferred)
+            .find_map(|&f| lookup_operator(ch, f))
+    })
 }
 
 /// Determine if a character is a stretchy operator in some form.
@@ -371,6 +374,13 @@ mod tests {
         let entry = lookup_operator_any('=', OperatorForm::Prefix);
         assert!(entry.is_some());
         assert_eq!(entry.unwrap().form, OperatorForm::Infix);
+    }
+
+    #[test]
+    fn lookup_fallback_multimap_prefers_infix() {
+        // '+' has both Prefix and Infix entries; fallback should prefer Infix.
+        let entry = lookup_operator_any('+', OperatorForm::Postfix).unwrap();
+        assert_eq!(entry.form, OperatorForm::Infix);
     }
 
     #[test]
