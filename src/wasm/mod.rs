@@ -26,7 +26,24 @@ pub fn init() {
 
 /// Convert any `Display` error into a `JsValue` string.
 pub(crate) fn to_js_err(e: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&e.to_string())
+    js_string(&e.to_string())
+}
+
+/// Create a `JsValue` string that works on both wasm32 and native targets.
+///
+/// On native targets `JsValue::from_str` panics because the wasm-bindgen
+/// runtime is unavailable.  For test builds we fall back to `JsValue::NULL`
+/// so error-path tests can exercise `Result::is_err()` without panicking.
+#[cfg(target_family = "wasm")]
+pub(crate) fn js_string(s: &str) -> JsValue {
+    JsValue::from_str(s)
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn js_string(_s: &str) -> JsValue {
+    // Return a sentinel value; the string content is lost, but callers only
+    // need a non-Ok JsValue when running on native (test) targets.
+    JsValue::NULL
 }
 
 pub(crate) fn parse_format(s: &str) -> Result<Format, JsValue> {
@@ -36,7 +53,7 @@ pub(crate) fn parse_format(s: &str) -> Result<Format, JsValue> {
         "omml" => Ok(Format::Omml),
         "mtef" => Ok(Format::Mtef),
         "unicodemath" | "unicode-math" | "um" => Ok(Format::UnicodeMath),
-        _ => Err(JsValue::from_str(&format!("unknown format: {s}"))),
+        _ => Err(js_string(&format!("unknown format: {s}"))),
     }
 }
 
