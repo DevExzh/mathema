@@ -5,6 +5,7 @@
 
 pub mod converter;
 pub mod serde;
+mod types;
 
 use wasm_bindgen::prelude::*;
 
