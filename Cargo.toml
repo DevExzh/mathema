@@ -6,16 +6,29 @@ description = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and Unic
 license = "MIT"
 
 [dependencies]
+# Core (always compiled)
 smallvec = "1"
 nom = "7"
 quick-xml = "0.37"
 thiserror = "2"
-clap = { version = "4", features = ["derive"] }
-miette = { version = "7", features = ["fancy"] }
-indicatif = "0.17"
 phf = { version = "0.11", features = ["macros"] }
+
+# CLI (native binary only)
+clap = { version = "4", features = ["derive"], optional = true }
+miette = { version = "7", features = ["fancy"], optional = true }
+indicatif = { version = "0.17", optional = true }
+
+# Serialization
 serde = { version = "1", features = ["derive"], optional = true }
+
+# WASM
 wasm-bindgen = { version = "0.2", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+
+# Rendering
 fontdue = { version = "0.9", optional = true }
 tiny-skia = { version = "0.11", optional = true }
 jpeg-encoder = { version = "0.6", optional = true }
@@ -30,12 +43,25 @@ clap_mangen = "0.2"
 tempfile = "3"
 
 [features]
-default = []
+default = ["cli"]
+cli = ["dep:clap", "dep:miette", "dep:indicatif"]
 serde = ["dep:serde"]
-wasm = ["wasm-bindgen"]
+wasm = ["dep:wasm-bindgen", "dep:serde-wasm-bindgen", "dep:console_error_panic_hook", "dep:wasm-bindgen-futures", "dep:js-sys", "serde"]
 render = []
 raster = ["render", "dep:fontdue", "dep:tiny-skia", "dep:jpeg-encoder"]
 font-embed = ["render", "dep:ttf-parser"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "mathema"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[[example]]
+name = "mangen"
+required-features = ["cli"]
 
 [[bench]]
 name = "benchmark"
