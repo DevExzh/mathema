@@ -3,6 +3,12 @@
 // Build: wasm-pack build --target web --no-default-features --features wasm
 // Serve: python3 -m http.server 8080 (from wasm/ directory)
 // Open:  http://localhost:8080/bench/
+//
+// NOTE: For high-resolution timing (<100us), the server must send
+// Cross-Origin-Opener-Policy: same-origin and
+// Cross-Origin-Embedder-Policy: require-corp headers.
+// Without these, browsers degrade performance.now() to ~100us (Chrome)
+// or ~1ms (Firefox) resolution as a Spectre mitigation.
 
 import init, {
   init as wasmInit,
@@ -18,8 +24,6 @@ const SIMPLE = 'x^2 + 1';
 const QUADRATIC = 'x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}';
 const NAVIER_STOKES =
   '\\rho \\left( \\frac{\\partial \\mathbf{v}}{\\partial t} + \\mathbf{v} \\cdot \\nabla \\mathbf{v} \\right) = -\\nabla p + \\mu \\nabla^2 \\mathbf{v} + \\mathbf{f}';
-const NESTED_FRAC = '\\frac{\\frac{a}{b}}{\\frac{c}{d}}';
-const SUM = '\\sum_{i=0}^{n} \\frac{1}{i^2}';
 
 function benchmark(name, fn, iterations = ITERATIONS) {
   // Warmup
@@ -97,11 +101,13 @@ async function runBenchmarks() {
       const c = new MathemaConverter('latex');
       const r = c.parse(SIMPLE);
       r.free();
+      c.free();
     }],
     ['Builder parse Navier-Stokes', () => {
       const c = new MathemaConverter('latex');
       const r = c.parse(NAVIER_STOKES);
       r.free();
+      c.free();
     }],
     ['Builder parse+write multi-format', () => {
       const c = new MathemaConverter('latex');
@@ -110,6 +116,7 @@ async function runBenchmarks() {
       r.toOmml();
       r.toUnicodeMath();
       r.free();
+      c.free();
     }],
 
     // AST inspection
@@ -118,12 +125,14 @@ async function runBenchmarks() {
       const r = c.parse(SIMPLE);
       r.toAst();
       r.free();
+      c.free();
     }],
     ['Builder toAst() Navier-Stokes', () => {
       const c = new MathemaConverter('latex');
       const r = c.parse(NAVIER_STOKES);
       r.toAst();
       r.free();
+      c.free();
     }],
 
     // Reuse pattern (parse once, write many)
@@ -136,6 +145,7 @@ async function runBenchmarks() {
       r.toUnicodeMath();
       r.toMtef();
       r.free();
+      c.free();
     }],
   ];
 
