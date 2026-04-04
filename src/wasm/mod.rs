@@ -1,31 +1,35 @@
-#[cfg(feature = "wasm")]
+//! WASM bindings for mathema.
+//!
+//! Provides both free functions for simple conversions and a
+//! `MathemaConverter` builder for parse-once/write-many workflows.
+
+pub mod converter;
+pub mod serde;
+
 use wasm_bindgen::prelude::*;
 
-#[cfg(feature = "wasm")]
 use crate::reader::Reader;
-#[cfg(feature = "wasm")]
 use crate::reader::latex::LatexReader;
-#[cfg(feature = "wasm")]
 use crate::writer::Writer;
-#[cfg(feature = "wasm")]
 use crate::writer::latex::LatexWriter;
-#[cfg(feature = "wasm")]
 use crate::writer::mathml::MathmlWriter;
-#[cfg(feature = "wasm")]
 use crate::writer::omml::OmmlWriter;
-#[cfg(feature = "wasm")]
 use crate::writer::unicode_math::UnicodeMathWriter;
-#[cfg(feature = "wasm")]
 use crate::{Config, Format, convert as do_convert};
 
+/// Initialize the WASM module. Call once before any other function.
+/// Sets up the panic hook so Rust panics produce readable JS console errors.
+#[wasm_bindgen(js_name = "init")]
+pub fn init() {
+    console_error_panic_hook::set_once();
+}
+
 /// Convert any `Display` error into a `JsValue` string.
-#[cfg(feature = "wasm")]
-fn to_js_err(e: impl std::fmt::Display) -> JsValue {
+pub(crate) fn to_js_err(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 
-#[cfg(feature = "wasm")]
-fn parse_format(s: &str) -> Result<Format, JsValue> {
+pub(crate) fn parse_format(s: &str) -> Result<Format, JsValue> {
     match s.to_lowercase().as_str() {
         "latex" | "tex" => Ok(Format::LaTeX),
         "mathml" | "mml" => Ok(Format::MathML),
@@ -39,7 +43,6 @@ fn parse_format(s: &str) -> Result<Format, JsValue> {
 /// Convert a math expression between formats.
 ///
 /// Formats: "latex", "mathml", "omml", "mtef", "unicodemath"
-#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
     let from_fmt = parse_format(from)?;
@@ -48,7 +51,6 @@ pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
 }
 
 /// Parse LaTeX, normalize the AST, and return MathML.
-#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
@@ -58,7 +60,6 @@ pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
 }
 
 /// Parse LaTeX, normalize the AST, and return OMML.
-#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
@@ -68,7 +69,6 @@ pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
 }
 
 /// Parse LaTeX, normalize the AST, and return UnicodeMath.
-#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
@@ -78,11 +78,18 @@ pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
 }
 
 /// Parse LaTeX, normalize, and return the re-serialized (normalized) LaTeX.
-#[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn normalize_latex(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
     let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
     crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
     LatexWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn module_compiles() {
+        // If this test runs, the module structure is correct.
+    }
 }
