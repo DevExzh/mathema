@@ -80,3 +80,6 @@ required-features = ["render"]
 [[bench]]
 name = "unicode_lookup"
 harness = false
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
