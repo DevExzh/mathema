@@ -49,3 +49,7 @@ harness = false
 name = "layout"
 harness = false
 required-features = ["render"]
+
+[[bench]]
+name = "unicode_lookup"
+harness = false
