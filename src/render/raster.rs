@@ -20,8 +20,7 @@ use crate::error::Result;
 // ---------------------------------------------------------------------------
 
 static MATH_FONT: LazyLock<Font> = LazyLock::new(|| {
-    let bytes = include_bytes!("fonts/LatinModernMath-Regular.otf") as &[u8];
-    Font::from_bytes(bytes, FontSettings::default()).expect("embedded font must be valid")
+    Font::from_bytes(super::FONT_DATA, FontSettings::default()).expect("embedded font must be valid")
 });
 
 // ---------------------------------------------------------------------------
