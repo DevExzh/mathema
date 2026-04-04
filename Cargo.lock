@@ -712,6 +712,7 @@ dependencies = [
  "quick-xml",
  "serde",
  "serde-wasm-bindgen",
+ "serde_json",
  "smallvec",
  "tempfile",
  "thiserror",
