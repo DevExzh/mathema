@@ -822,6 +822,9 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
             Ok(())
         },
 
+        // Color: OMML has no direct color support, just write the content
+        CompactNode::Color { content, .. } => write_node_c(w, arena, content),
+
         // Helper nodes that should not normally appear at the top level
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => Ok(()),
     }
@@ -1286,6 +1289,8 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
                 }
             }
         },
+
+        CompactNode::Color { content, .. } => write_node_cf(buf, arena, content),
 
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => {},
     }

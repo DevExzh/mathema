@@ -474,6 +474,14 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push('}');
         },
 
+        CompactNode::Color { color, content } => {
+            buf.push_str("\\textcolor{");
+            buf.push_str(arena.str_val(color));
+            buf.push_str("}{");
+            write_node(buf, arena, content);
+            buf.push('}');
+        },
+
         // Helper nodes — should not appear as standalone roots, but handle gracefully
         CompactNode::Middle(sid) => {
             buf.push_str(arena.str_val(sid));

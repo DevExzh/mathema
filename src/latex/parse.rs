@@ -165,10 +165,15 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
     match parser.parse_node_list(trimmed) {
         Ok(("", ids)) => {
             let roots = parser.arena.push_children(&ids);
+            let display = if parser.display_override {
+                DisplayStyle::Block
+            } else {
+                config.display
+            };
             Ok(CompactParseResult::new(CompactExpr::new(
                 parser.arena,
                 roots,
-                config.display,
+                display,
             )))
         },
         Ok((rest, ids)) => {
@@ -187,8 +192,13 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 let recovered = parser.parse_lenient_remainder(rest, &mut diagnostics);
                 result_ids.extend(recovered);
                 let roots = parser.arena.push_children(&result_ids);
+                let display = if parser.display_override {
+                    DisplayStyle::Block
+                } else {
+                    config.display
+                };
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(parser.arena, roots, config.display),
+                    CompactExpr::new(parser.arena, roots, display),
                     diagnostics,
                 ))
             }
@@ -203,8 +213,13 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                     span: None,
                 });
                 let roots = parser.arena.push_children(&ids);
+                let display = if parser.display_override {
+                    DisplayStyle::Block
+                } else {
+                    config.display
+                };
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(parser.arena, roots, config.display),
+                    CompactExpr::new(parser.arena, roots, display),
                     diagnostics,
                 ))
             } else {
@@ -228,6 +243,8 @@ pub fn parse(input: &str, config: &Config) -> Result<ParseResult> {
 pub(crate) struct LatexCompactParser {
     pub(crate) arena: AstArena,
     depth: u32,
+    /// Set to `true` when `\displaystyle` is encountered at the top level.
+    pub(crate) display_override: bool,
 }
 
 impl LatexCompactParser {
@@ -242,6 +259,7 @@ impl LatexCompactParser {
         Self {
             arena: AstArena::with_capacity(est_nodes, est_children, est_strings),
             depth: 0,
+            display_override: false,
         }
     }
 
@@ -890,8 +908,13 @@ impl LatexCompactParser {
                 self.arena
                     .push_node(CompactNode::Space(Rational::new(1, 2))),
             ),
-            // Style commands (silently consumed — no visual output)
-            "displaystyle" | "textstyle" | "scriptstyle" | "scriptscriptstyle" => {
+            // Style commands — \displaystyle sets the display mode flag;
+            // others are silently consumed for now.
+            "displaystyle" => {
+                self.display_override = true;
+                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
+            },
+            "textstyle" | "scriptstyle" | "scriptscriptstyle" => {
                 Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
             },
             // Mod operator
@@ -1411,21 +1434,32 @@ impl LatexCompactParser {
     fn parse_color_discard<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        let (input, _color) = take_while(|c: char| c != '}')(input)?;
+        let (input, color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
+        // \color{X} affects all subsequent content in the current scope.
+        // Parse remaining tokens in this group as the colored content.
+        let (input, ids) = self.parse_node_list(input)?;
+        let color_sid = self.arena.push_str(color);
+        let content_id = self.flatten_single(&ids);
         Ok((
             input,
-            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            self.arena
+                .push_node(CompactNode::Color { color: color_sid, content: content_id }),
         ))
     }
 
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        let (input, _color) = take_while(|c: char| c != '}')(input)?;
+        let (input, color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
+        let color_sid = self.arena.push_str(color);
         let (input, content_id) = self.parse_required_group(input)?;
-        Ok((input, content_id))
+        Ok((
+            input,
+            self.arena
+                .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+        ))
     }
 
     // -----------------------------------------------------------------------

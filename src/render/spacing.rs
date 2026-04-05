@@ -115,6 +115,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
         CompactNode::Boxed(_) => AtomType::Inner,
         CompactNode::Cancel { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Scaled { content, .. } => classify_node_c_depth(arena, content, depth + 1),
+        CompactNode::Color { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Styled(_, span) => {
             let children = arena.children(span);
             if let Some(&first) = children.first() {

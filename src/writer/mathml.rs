@@ -938,6 +938,14 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("</mstyle>");
         },
 
+        CompactNode::Color { color, content } => {
+            buf.push_str("<mstyle mathcolor=\"");
+            buf.push_str(arena.str_val(color));
+            buf.push_str("\">");
+            write_node_fast(buf, arena, content);
+            buf.push_str("</mstyle>");
+        },
+
         // Helper nodes
         CompactNode::Middle(sid) => write_mo_fence_fast(buf, arena.str_val(sid)),
         CompactNode::ColAlign(_) => {},

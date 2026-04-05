@@ -367,6 +367,9 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
             normalize_compact_node(arena, content, d);
         },
+        CompactNode::Color { content, .. } => {
+            normalize_compact_node(arena, content, d);
+        },
 
         // Leaf nodes: nothing to normalize
         CompactNode::Number(_)

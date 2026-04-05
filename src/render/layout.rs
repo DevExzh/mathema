@@ -1327,6 +1327,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Cancel { stroke, content } => layout_cancel_c(arena, stroke, content, ctx),
         CompactNode::Scaled { factor, content } => layout_scaled_c(arena, factor, content, ctx),
         CompactNode::Styled(style, span) => layout_styled_c(arena, style, span, ctx),
+        CompactNode::Color { color, content } => layout_color_c(arena, color, content, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => LayoutBox::kern(0.0),
     }
 }
@@ -2308,6 +2309,21 @@ fn layout_boxed_c(arena: &AstArena, content: NodeId, ctx: &LayoutCtx) -> LayoutB
     }
 }
 
+fn layout_color_c(arena: &AstArena, color: StrId, content: NodeId, ctx: &LayoutCtx) -> LayoutBox {
+    let color_str = arena.str_val(color).to_owned();
+    let inner = layout_node_c(arena, content, ctx);
+    let child_box = PositionedBox::new(0.0, 0.0, inner);
+    LayoutBox {
+        width: child_box.layout.width,
+        height: child_box.layout.height,
+        depth: child_box.layout.depth,
+        kind: BoxKind::Color {
+            color: color_str,
+            child: Box::new(child_box),
+        },
+    }
+}
+
 fn layout_cancel_c(
     arena: &AstArena,
     stroke: StrokeKind,
@@ -2650,6 +2666,7 @@ fn layout_node_arena(
         CompactNode::Cancel { stroke, content } => layout_cancel_arena(ast, stroke, content, arena, ctx),
         CompactNode::Scaled { factor, content } => layout_scaled_arena(ast, factor, content, arena, ctx),
         CompactNode::Styled(style, span) => layout_styled_arena(ast, style, span, arena, ctx),
+        CompactNode::Color { color, content } => layout_color_arena(ast, color, content, arena, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
     }
 }
@@ -3836,6 +3853,30 @@ fn layout_boxed_arena(
         kind: ArenaBoxKind::Boxed {
             child: inner_id,
             padding,
+        },
+    })
+}
+
+fn layout_color_arena(
+    ast: &AstArena,
+    color: StrId,
+    content: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let color_str = ast.str_val(color).to_owned();
+    let child_id = layout_node_arena(ast, content, arena, ctx);
+    let w = arena.get(child_id).width;
+    let h = arena.get(child_id).height;
+    let d = arena.get(child_id).depth;
+
+    arena.alloc(ArenaLayoutBox {
+        width: w,
+        height: h,
+        depth: d,
+        kind: ArenaBoxKind::Color {
+            color: color_str,
+            child: child_id,
         },
     })
 }

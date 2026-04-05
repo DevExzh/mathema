@@ -545,6 +545,10 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             }
         },
 
+        CompactNode::Color { content, .. } => {
+            write_node_c(out, arena, content);
+        },
+
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => {},
     }
 }

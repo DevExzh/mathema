@@ -405,6 +405,9 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
             v.visit_node(arena, content);
         },
+        CompactNode::Color { content, .. } => {
+            v.visit_node(arena, content);
+        },
     }
 }
 
@@ -529,6 +532,9 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
             v.visit_node_mut(arena, inner);
         },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+            v.visit_node_mut(arena, content);
+        },
+        CompactNode::Color { content, .. } => {
             v.visit_node_mut(arena, content);
         },
     }

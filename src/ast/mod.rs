@@ -583,6 +583,7 @@ fn check_compact_depth(
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
             check_compact_depth(arena, content, d)
         },
+        CompactNode::Color { content, .. } => check_compact_depth(arena, content, d),
     }
 }
 

@@ -100,7 +100,7 @@ impl StrId {
 
 // ── CompactNode ────────────────────────────────────────────────────────
 
-/// Arena-backed AST node. 28 variants. All data lives in the owning `AstArena`.
+/// Arena-backed AST node. 29 variants. All data lives in the owning `AstArena`.
 ///
 /// This type is `Copy` — no heap allocations, no destructors. Nodes reference
 /// each other via `NodeId` and store strings via `StrId`, both indexing into
@@ -213,6 +213,10 @@ pub enum CompactNode {
         content: NodeId,
     },
     Styled(TextStyle, NodeSpan),
+
+    // ── Color ───────────────────────────────────────────────────────
+    /// Color wrapper: applies a named color to its content.
+    Color { color: StrId, content: NodeId },
 
     // ── Helpers (not in original MathNode) ──────────────────────────
     /// `FencedItem::Middle` replacement. Fenced content spans mix regular nodes and middles.
@@ -729,6 +733,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             MathNode::Styled(style, reconstruct_children(arena, span))
         },
 
+        // Color wrapper — no MathNode::Color exists, so reconstruct content only.
+        // Color is handled directly in the compact/arena layout paths.
+        CompactNode::Color { content, .. } => reconstruct_node(arena, content),
+
         // Helper nodes — should not appear as standalone roots, but handle gracefully
         CompactNode::Middle(sid) => {
             MathNode::Symbol(SymbolKind::Fence, arena.str_val(sid).to_owned())
@@ -904,10 +912,11 @@ mod tests {
                 content: id,
             },
             CompactNode::Styled(TextStyle::Bold, span),
+            CompactNode::Color { color: s, content: id },
             CompactNode::Middle(s),
             CompactNode::ColAlign(ColumnAlign::Center),
         ];
-        assert_eq!(variants.len(), 28);
+        assert_eq!(variants.len(), 29);
     }
 
     /// Helper: round-trip a MathExpr through CompactExpr and assert equality.

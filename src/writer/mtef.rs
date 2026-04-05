@@ -750,6 +750,9 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
                 write_node_c(buf, arena, child_id)?;
             }
         },
+        CompactNode::Color { content, .. } => {
+            write_node_c(buf, arena, content)?;
+        },
         // Helper nodes that shouldn't appear as standalone roots
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => {},
     }

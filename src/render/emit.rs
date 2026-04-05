@@ -255,7 +255,7 @@ fn emit_box(
             push_xml_escaped(svg, path);
             svg.push_str(r#"" stroke=""#);
             svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"" stroke-width="1" fill="none"/></g>"#);
+            svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
         },
 
         BoxKind::Color { color, child } => {
@@ -437,7 +437,7 @@ fn emit_box_arena(
             push_xml_escaped(svg, path);
             svg.push_str(r#"" stroke=""#);
             svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"" stroke-width="1" fill="none"/></g>"#);
+            svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
         },
 
         ArenaBoxKind::Color { color, child } => {
