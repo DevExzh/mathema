@@ -24,8 +24,15 @@ pub fn collect_chars(root: &LayoutBox) -> HashSet<char> {
 
 fn collect_chars_inner(node: &LayoutBox, chars: &mut HashSet<char>) {
     match &node.kind {
-        BoxKind::Glyph { ch, .. } | BoxKind::Delimiter { ch, .. } => {
+        BoxKind::Glyph { ch, .. } => {
             chars.insert(*ch);
+        }
+        BoxKind::Delimiter { ch, target_height } => {
+            // Only collect the char if it won't be rendered as an SVG path
+            // (i.e. we need the font glyph as a fallback)
+            if super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0).is_none() {
+                chars.insert(*ch);
+            }
         }
         BoxKind::HBox { children } | BoxKind::VBox { children } => {
             for child in children {
@@ -36,6 +43,11 @@ fn collect_chars_inner(node: &LayoutBox, chars: &mut HashSet<char>) {
             collect_chars_inner(&child.layout, chars);
         }
         BoxKind::Rule { .. } | BoxKind::Kern | BoxKind::SvgPath(_) | BoxKind::Phantom => {}
+        BoxKind::TextRun { text, .. } => {
+            for ch in text.chars() {
+                chars.insert(ch);
+            }
+        }
     }
 }
 
@@ -49,8 +61,14 @@ pub fn collect_chars_arena(arena: &LayoutArena, root: LayoutBoxId) -> HashSet<ch
 fn collect_chars_arena_inner(arena: &LayoutArena, id: LayoutBoxId, chars: &mut HashSet<char>) {
     let node = arena.get(id);
     match &node.kind {
-        ArenaBoxKind::Glyph { ch, .. } | ArenaBoxKind::Delimiter { ch, .. } => {
+        ArenaBoxKind::Glyph { ch, .. } => {
             chars.insert(*ch);
+        }
+        ArenaBoxKind::Delimiter { ch, target_height } => {
+            // Only collect the char if it won't be rendered as an SVG path
+            if super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0).is_none() {
+                chars.insert(*ch);
+            }
         }
         ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
             for child in arena.children(*children) {
@@ -67,6 +85,11 @@ fn collect_chars_arena_inner(arena: &LayoutArena, id: LayoutBoxId, chars: &mut H
         | ArenaBoxKind::Kern
         | ArenaBoxKind::SvgPath(_)
         | ArenaBoxKind::Phantom => {}
+        ArenaBoxKind::TextRun { text, .. } => {
+            for ch in text.chars() {
+                chars.insert(ch);
+            }
+        }
     }
 }
 

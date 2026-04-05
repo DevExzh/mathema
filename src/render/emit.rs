@@ -165,7 +165,7 @@ fn emit_box(
     attrs: &EscapedAttrs,
 ) {
     match &layout.kind {
-        BoxKind::Glyph { ch, size } => {
+        BoxKind::Glyph { ch, size, italic } => {
             let font_size = em * size;
             // Build <text> element with fast formatting and pre-escaped attributes
             svg.push_str(r#"<text x=""#);
@@ -176,10 +176,33 @@ fn emit_box(
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
             svg.push_str(&attrs.font_family);
+            if *italic {
+                svg.push_str(r#"" font-style="italic"#);
+            }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
             svg.push_str(r#"">"#);
             write_escaped_char(svg, *ch);
+            svg.push_str("</text>");
+        },
+
+        BoxKind::TextRun { text, size, italic } => {
+            let font_size = em * size;
+            svg.push_str(r#"<text x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, y);
+            svg.push_str(r#"" font-size=""#);
+            push_f3(svg, font_size);
+            svg.push_str(r#"" font-family=""#);
+            svg.push_str(&attrs.font_family);
+            if *italic {
+                svg.push_str(r#"" font-style="italic"#);
+            }
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"">"#);
+            push_xml_escaped(svg, text);
             svg.push_str("</text>");
         },
 
@@ -223,20 +246,40 @@ fn emit_box(
         },
 
         BoxKind::Delimiter { ch, target_height } => {
-            let font_size = target_height * em;
-            svg.push_str(r#"<text x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, y);
-            svg.push_str(r#"" font-size=""#);
-            push_f3(svg, font_size);
-            svg.push_str(r#"" font-family=""#);
-            svg.push_str(&attrs.font_family);
-            svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"">"#);
-            write_escaped_char(svg, *ch);
-            svg.push_str("</text>");
+            // Use SVG path for tall delimiters, text fallback for normal-sized ones
+            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+                let tx = x;
+                let ty = y - layout.height * em;
+                svg.push_str(r#"<g transform="translate("#);
+                push_f3(svg, tx);
+                svg.push(',');
+                push_f3(svg, ty);
+                svg.push_str(r#") scale("#);
+                push_f3(svg, em);
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, &dp.path_data);
+                svg.push_str(r#"" stroke=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"" stroke-width=""#);
+                push_f3(svg, dp.stroke_width);
+                svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+            } else {
+                // Fallback: text element with font-size scaling
+                let font_size = target_height * em;
+                svg.push_str(r#"<text x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, y);
+                svg.push_str(r#"" font-size=""#);
+                push_f3(svg, font_size);
+                svg.push_str(r#"" font-family=""#);
+                svg.push_str(&attrs.font_family);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"">"#);
+                write_escaped_char(svg, *ch);
+                svg.push_str("</text>");
+            }
         },
 
         BoxKind::SvgPath(path) => {
@@ -353,7 +396,7 @@ fn emit_box_arena(
 ) {
     let layout = arena.get(id);
     match &layout.kind {
-        ArenaBoxKind::Glyph { ch, size } => {
+        ArenaBoxKind::Glyph { ch, size, italic } => {
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -363,10 +406,33 @@ fn emit_box_arena(
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
             svg.push_str(&attrs.font_family);
+            if *italic {
+                svg.push_str(r#"" font-style="italic"#);
+            }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
             svg.push_str(r#"">"#);
             write_escaped_char(svg, *ch);
+            svg.push_str("</text>");
+        },
+
+        ArenaBoxKind::TextRun { text, size, italic } => {
+            let font_size = em * size;
+            svg.push_str(r#"<text x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, y);
+            svg.push_str(r#"" font-size=""#);
+            push_f3(svg, font_size);
+            svg.push_str(r#"" font-family=""#);
+            svg.push_str(&attrs.font_family);
+            if *italic {
+                svg.push_str(r#"" font-style="italic"#);
+            }
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"">"#);
+            push_xml_escaped(svg, text);
             svg.push_str("</text>");
         },
 
@@ -408,20 +474,40 @@ fn emit_box_arena(
         },
 
         ArenaBoxKind::Delimiter { ch, target_height } => {
-            let font_size = target_height * em;
-            svg.push_str(r#"<text x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, y);
-            svg.push_str(r#"" font-size=""#);
-            push_f3(svg, font_size);
-            svg.push_str(r#"" font-family=""#);
-            svg.push_str(&attrs.font_family);
-            svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"">"#);
-            write_escaped_char(svg, *ch);
-            svg.push_str("</text>");
+            // Use SVG path for tall delimiters, text fallback for normal-sized ones
+            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+                let tx = x;
+                let ty = y - layout.height * em;
+                svg.push_str(r#"<g transform="translate("#);
+                push_f3(svg, tx);
+                svg.push(',');
+                push_f3(svg, ty);
+                svg.push_str(r#") scale("#);
+                push_f3(svg, em);
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, &dp.path_data);
+                svg.push_str(r#"" stroke=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"" stroke-width=""#);
+                push_f3(svg, dp.stroke_width);
+                svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+            } else {
+                // Fallback: text element with font-size scaling
+                let font_size = target_height * em;
+                svg.push_str(r#"<text x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, y);
+                svg.push_str(r#"" font-size=""#);
+                push_f3(svg, font_size);
+                svg.push_str(r#"" font-family=""#);
+                svg.push_str(&attrs.font_family);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"">"#);
+                write_escaped_char(svg, *ch);
+                svg.push_str("</text>");
+            }
         },
 
         ArenaBoxKind::SvgPath(path) => {
@@ -680,6 +766,33 @@ mod tests {
         assert!(
             svg.contains("(") || svg.contains("&#40;"),
             "should contain open paren"
+        );
+    }
+
+    #[test]
+    fn tall_delimiter_uses_path() {
+        // A nested fraction creates tall content, forcing delimiters to use SVG paths
+        let svg = render(vec![MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![crate::ast::FencedItem::Element(MathNode::Fraction {
+                kind: FractionKind::Normal,
+                num: Box::new(MathNode::Fraction {
+                    kind: FractionKind::Normal,
+                    num: Box::new(MathNode::Number("1".into())),
+                    den: Box::new(MathNode::Number("2".into())),
+                }),
+                den: Box::new(MathNode::Number("3".into())),
+            })],
+        }]);
+        // Tall delimiters should use <path> instead of <text> for the parens
+        assert!(
+            svg.contains("<path"),
+            "tall delimiters should use SVG path rendering: {svg}"
+        );
+        assert!(
+            svg.contains("stroke-linecap=\"round\""),
+            "delimiter paths should have round linecap"
         );
     }
 

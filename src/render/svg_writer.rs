@@ -76,8 +76,17 @@ fn emit_box_embedded(
     glyphs: &GlyphSet,
 ) {
     match &layout.kind {
-        BoxKind::Glyph { ch, size } => {
-            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs);
+        BoxKind::Glyph { ch, size, italic } => {
+            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
+        }
+
+        BoxKind::TextRun { text, size, italic } => {
+            // For font-embed, we still need per-character glyph paths
+            let mut cx = x;
+            for ch in text.chars() {
+                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic);
+                cx += super::metrics::glyph_metrics(ch).width * size * em;
+            }
         }
 
         BoxKind::HBox { children } => {
@@ -114,7 +123,24 @@ fn emit_box_embedded(
         BoxKind::Kern => {}
 
         BoxKind::Delimiter { ch, target_height } => {
-            emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs);
+            // Use SVG path for tall delimiters
+            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+                let tx = x;
+                let ty = y - layout.height * em;
+                let _ = write!(
+                    svg,
+                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
+                    tx = tx,
+                    ty = ty,
+                    s = em,
+                    path = XmlAttrEscape(&dp.path_data),
+                    color = XmlAttrEscape(&options.fg_color),
+                    sw = dp.stroke_width,
+                );
+            } else {
+                // Fallback to glyph rendering
+                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
+            }
         }
 
         BoxKind::SvgPath(path) => {
@@ -176,30 +202,56 @@ fn emit_glyph(
     em: f64,
     options: &RenderOptions,
     glyphs: &GlyphSet,
+    italic: bool,
 ) {
     if glyphs.glyphs.contains_key(&ch) {
         let scale = size * em / glyphs.font_info.units_per_em;
-        let _ = write!(
-            svg,
-            r##"<use href="#g{cp}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
-            cp = ch as u32,
-            x = x,
-            y = y,
-            s = scale,
-            color = XmlAttrEscape(&options.fg_color),
-        );
+        if italic {
+            // Apply synthetic italic via skewX(-12) to the glyph outline
+            let _ = write!(
+                svg,
+                r##"<use href="#g{cp}" transform="translate({x:.3},{y:.3}) scale({s:.6}) skewX(-12)" fill="{color}"/>"##,
+                cp = ch as u32,
+                x = x,
+                y = y,
+                s = scale,
+                color = XmlAttrEscape(&options.fg_color),
+            );
+        } else {
+            let _ = write!(
+                svg,
+                r##"<use href="#g{cp}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
+                cp = ch as u32,
+                x = x,
+                y = y,
+                s = scale,
+                color = XmlAttrEscape(&options.fg_color),
+            );
+        }
     } else {
         // Fallback: <text> element (same as emit.rs)
         let font_size = em * size;
-        let _ = write!(
-            svg,
-            r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
-            x = x,
-            y = y,
-            fs = font_size,
-            ff = XmlAttrEscape(&options.font_family),
-            color = XmlAttrEscape(&options.fg_color),
-        );
+        if italic {
+            let _ = write!(
+                svg,
+                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" font-style="italic" fill="{color}">"#,
+                x = x,
+                y = y,
+                fs = font_size,
+                ff = XmlAttrEscape(&options.font_family),
+                color = XmlAttrEscape(&options.fg_color),
+            );
+        } else {
+            let _ = write!(
+                svg,
+                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
+                x = x,
+                y = y,
+                fs = font_size,
+                ff = XmlAttrEscape(&options.font_family),
+                color = XmlAttrEscape(&options.fg_color),
+            );
+        }
         write_escaped_char(svg, ch);
         svg.push_str("</text>");
     }
@@ -252,8 +304,17 @@ fn emit_box_arena_embedded(
 ) {
     let layout = arena.get(id);
     match &layout.kind {
-        ArenaBoxKind::Glyph { ch, size } => {
-            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs);
+        ArenaBoxKind::Glyph { ch, size, italic } => {
+            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
+        }
+
+        ArenaBoxKind::TextRun { text, size, italic } => {
+            // For font-embed, we still need per-character glyph paths
+            let mut cx = x;
+            for ch in text.chars() {
+                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic);
+                cx += super::metrics::glyph_metrics(ch).width * size * em;
+            }
         }
 
         ArenaBoxKind::HBox { children } => {
@@ -290,7 +351,24 @@ fn emit_box_arena_embedded(
         ArenaBoxKind::Kern => {}
 
         ArenaBoxKind::Delimiter { ch, target_height } => {
-            emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs);
+            // Use SVG path for tall delimiters
+            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+                let tx = x;
+                let ty = y - layout.height * em;
+                let _ = write!(
+                    svg,
+                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
+                    tx = tx,
+                    ty = ty,
+                    s = em,
+                    path = XmlAttrEscape(&dp.path_data),
+                    color = XmlAttrEscape(&options.fg_color),
+                    sw = dp.stroke_width,
+                );
+            } else {
+                // Fallback to glyph rendering
+                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
+            }
         }
 
         ArenaBoxKind::SvgPath(path) => {

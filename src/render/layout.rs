@@ -23,7 +23,7 @@ pub struct LayoutBox {
 #[derive(Debug, Clone)]
 pub enum BoxKind {
     /// A single glyph character.
-    Glyph { ch: char, size: f64 },
+    Glyph { ch: char, size: f64, italic: bool },
     /// Horizontal box: children laid out left to right.
     HBox { children: Vec<PositionedBox> },
     /// Vertical box: children stacked top to bottom.
@@ -48,6 +48,8 @@ pub enum BoxKind {
         child: Box<PositionedBox>,
         padding: f64,
     },
+    /// A run of text characters rendered as a single `<text>` element.
+    TextRun { text: String, size: f64, italic: bool },
 }
 
 /// A box with an offset from its parent's reference point.
@@ -96,24 +98,24 @@ impl LayoutBox {
     }
 
     #[inline]
-    fn glyph(ch: char, style: MathStyle) -> Self {
+    fn glyph(ch: char, style: MathStyle, italic: bool) -> Self {
         let size = style.size_multiplier();
         let m = metrics::glyph_metrics(ch);
         Self {
             width: m.width * size,
             height: m.height * size,
             depth: m.depth * size,
-            kind: BoxKind::Glyph { ch, size },
+            kind: BoxKind::Glyph { ch, size, italic },
         }
     }
 
     #[inline]
-    fn glyph_with_metrics(ch: char, m: GlyphMetrics, size: f64) -> Self {
+    fn glyph_with_metrics(ch: char, m: GlyphMetrics, size: f64, italic: bool) -> Self {
         Self {
             width: m.width * size,
             height: m.height * size,
             depth: m.depth * size,
-            kind: BoxKind::Glyph { ch, size },
+            kind: BoxKind::Glyph { ch, size, italic },
         }
     }
 }
@@ -123,6 +125,24 @@ impl LayoutBox {
 #[inline]
 fn is_axis_centered_char(ch: char) -> bool {
     matches!(ch, '\u{22EF}' | '\u{22F1}')  // ⋯ (cdots), ⋱ (ddots)
+}
+
+/// Determine whether a single character should be rendered italic in math mode.
+/// Per TeX convention:
+/// - Latin letters (a-z, A-Z) used as identifiers → italic
+/// - Greek lowercase (α-ω and variants like ϵ, ϑ, ϰ, ϕ, ϱ, ϖ) → italic
+/// - Greek uppercase (Γ, Δ, ..., Ω) → upright
+/// - Digits, operators, symbols → upright
+#[inline]
+fn is_math_italic_char(ch: char) -> bool {
+    match ch {
+        'a'..='z' | 'A'..='Z' => true,
+        // Greek lowercase: U+03B1 (α) to U+03C9 (ω)
+        '\u{03B1}'..='\u{03C9}' => true,
+        // Greek lowercase variants: ϵ ϑ ϰ ϕ ϱ ϖ
+        '\u{03F5}' | '\u{03D1}' | '\u{03F0}' | '\u{03D5}' | '\u{03F1}' | '\u{03D6}' => true,
+        _ => false,
+    }
 }
 
 /// Wrap a glyph LayoutBox so it is centered on the math axis.
@@ -176,6 +196,17 @@ fn large_op_char_c(arena: &AstArena, id: NodeId) -> Option<char> {
         _ => None,
     }
 }
+
+/// Extract the italic correction (in absolute units) for a base LayoutBox.
+/// Returns a non-zero value only when the base is a single glyph.
+#[inline]
+fn italic_correction(base: &LayoutBox) -> f64 {
+    match &base.kind {
+        BoxKind::Glyph { ch, size, .. } => metrics::glyph_metrics(*ch).italic * size,
+        _ => 0.0,
+    }
+}
+
 
 struct LayoutCtx<'a> {
     style: MathStyle,
@@ -400,9 +431,11 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     let mut max_depth: f64 = 0.0;
 
     for node in nodes {
-        // Inter-atom spacing
-        let cur_atom = spacing::classify_node(node);
-        if let Some(prev) = prev_atom {
+        // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
+        let raw_atom = spacing::classify_node(node);
+        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
+        if let Some(prev) = adj_prev {
             let space = spacing::inter_atom_space(prev, cur_atom, ctx.style);
             if space > 0.0 {
                 let kern_width = space * ctx.size();
@@ -441,7 +474,8 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             if s.chars().count() == 1 {
                 // Single-char identifiers are italic; chars().next() is safe
                 // because chars().count() == 1 guarantees at least one char
-                LayoutBox::glyph(s.chars().next().expect("non-empty checked"), ctx.style)
+                let ch = s.chars().next().expect("non-empty checked");
+                LayoutBox::glyph(ch, ctx.style, is_math_italic_char(ch))
             } else {
                 layout_text_run(s, ctx, false)
             }
@@ -452,9 +486,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 if *kind == SymbolKind::LargeOp && ctx.style.is_display() {
                     let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
                     let m = metrics::glyph_metrics(ch);
-                    LayoutBox::glyph_with_metrics(ch, m, size)
+                    LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
-                    let glyph = LayoutBox::glyph(ch, ctx.style);
+                    let glyph = LayoutBox::glyph(ch, ctx.style, false);
                     if is_axis_centered_char(ch) {
                         center_glyph_on_axis(glyph, ctx)
                     } else {
@@ -512,27 +546,26 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
 
 // === Leaf node layouts ===
 
-fn layout_text_run(text: &str, ctx: &LayoutCtx, _italic: bool) -> LayoutBox {
+fn layout_text_run(text: &str, ctx: &LayoutCtx, italic: bool) -> LayoutBox {
     let size = ctx.size();
-    let mut children = Vec::new();
-    let mut cursor_x = 0.0;
+    let mut total_width = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
 
     for ch in text.chars() {
         let m = metrics::glyph_metrics(ch);
-        let glyph = LayoutBox::glyph_with_metrics(ch, m, size);
-        max_height = max_height.max(glyph.height);
-        max_depth = max_depth.max(glyph.depth);
-        children.push(PositionedBox::new(cursor_x, 0.0, glyph));
-        cursor_x += m.width * size;
+        let h = m.height * size;
+        let d = m.depth * size;
+        max_height = max_height.max(h);
+        max_depth = max_depth.max(d);
+        total_width += m.width * size;
     }
 
     LayoutBox {
-        width: cursor_x,
+        width: total_width,
         height: max_height,
         depth: max_depth,
-        kind: BoxKind::HBox { children },
+        kind: BoxKind::TextRun { text: text.to_string(), size, italic },
     }
 }
 
@@ -566,7 +599,10 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
         .max(base_box.height - p.sup_drop * ctx.size())
         .max(p.x_height / 4.0 + sup_box.depth);
 
-    let total_width = base_box.width + sup_box.width;
+    // Italic correction: shift superscript right by the base glyph's italic correction
+    let ic = italic_correction(&base_box);
+
+    let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -574,7 +610,7 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
     let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
+        PositionedBox::new(base_width + ic, shift_up, sup_box),
     ];
 
     LayoutBox {
@@ -602,14 +638,17 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
         .max(base_box.depth + p.sub_drop * ctx.size())
         .max(sub_box.height - (4.0 * p.x_height / 5.0));
 
-    let total_width = base_box.width + sub_box.width;
+    // Italic correction: shift subscript left by the base glyph's italic correction
+    let ic = italic_correction(&base_box);
+    let sub_dx = (base_box.width - ic).max(0.0);
+
+    let total_width = sub_dx + sub_box.width;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -665,16 +704,22 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
         shift_up += delta;
     }
 
-    let script_width = sup_box.width.max(sub_box.width);
+    // Italic correction: superscript shifts right, subscript shifts left by half
+    let ic = italic_correction(&base_box);
+    let sup_dx = base_box.width + ic;
+    let sub_dx = (base_box.width - ic / 2.0).max(0.0);
+
+    let script_width = (sup_dx - base_box.width + sup_box.width)
+        .max(sub_dx - base_box.width + sub_box.width)
+        .max(0.0);
     let total_width = base_box.width + script_width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sup_dx, shift_up, sup_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -700,7 +745,7 @@ fn layout_big_op_limits_heap(
     let op_ch = large_op_char(base).unwrap_or('\u{2211}');
     let op_size = size * BIG_OP_DISPLAY_SCALE;
     let m = metrics::glyph_metrics(op_ch);
-    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size);
+    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size, false);
 
     let mut children = Vec::new();
     let mut total_h = op_box.height;
@@ -845,6 +890,55 @@ fn layout_fraction(
     }
 }
 
+/// Generate an SVG path string for a radical sign (square root symbol).
+///
+/// The path is in local em coordinates where (0,0) is the top-left of the
+/// bounding box.  `w` is the width of the radical symbol and `h` is the
+/// total height it must cover.
+///
+/// The shape mimics the KaTeX/TeX radical: a short horizontal tail, a
+/// downward stroke to the bottom vertex (with a smooth quadratic bezier
+/// curve), a steep upward stroke to the top, and finally a connection
+/// point for the vinculum (horizontal overline).
+fn radical_path(w: f64, h: f64) -> String {
+    // Key control points expressed as fractions of width / height:
+    //   tail_start  :  left-most point of the small tail
+    //   tail_end    :  end of the tail / start of the downward stroke
+    //   bottom      :  lowest point of the "V"
+    //   top_right   :  where the upstroke meets the vinculum
+    //   vinculum_end:  right edge of the radical box (vinculum connection)
+    //
+    // A quadratic bezier is used at the bottom vertex so the turn is
+    // smooth instead of a sharp corner.
+
+    let tail_y = 0.55 * h;    // vertical position of the tail
+    let tail_x0 = 0.0;        // tail start x
+    let tail_x1 = 0.08 * w;   // tail end x (slight rightward slope)
+    let tail_y1 = 0.60 * h;   // tail end y (slightly lower)
+
+    // Bottom vertex area  (quadratic bezier control + end)
+    let q_ctrl_x = 0.20 * w;  // bezier control point x
+    let q_ctrl_y = h + 0.02 * h; // control point slightly below the box
+    let q_end_x = 0.26 * w;   // bezier end-point x (the visual bottom)
+    let q_end_y = h;           // bezier end-point y
+
+    // Upstroke to the top
+    let top_x = 0.42 * w;     // where the upstroke reaches the top
+    let top_y = 0.0;
+
+    // Vinculum connection
+    let vinc_x = w;
+    let vinc_y = 0.0;
+
+    format!(
+        "M{tail_x0:.4},{tail_y:.4} \
+         L{tail_x1:.4},{tail_y1:.4} \
+         Q{q_ctrl_x:.4},{q_ctrl_y:.4} {q_end_x:.4},{q_end_y:.4} \
+         L{top_x:.4},{top_y:.4} \
+         L{vinc_x:.4},{vinc_y:.4}",
+    )
+}
+
 /// TeXBook Rule 11: square root.
 fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
@@ -867,17 +961,7 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
         width: radical_width,
         height: inner_total,
         depth: 0.0,
-        kind: BoxKind::SvgPath(format!(
-            "M{x0},{y0} L{x1},{y1} L{x2},{y2} L{x3},{y3}",
-            x0 = 0.0,
-            y0 = inner_total * 0.6,
-            x1 = radical_width * 0.35,
-            y1 = inner_total,
-            x2 = radical_width * 0.65,
-            y2 = 0.0,
-            x3 = radical_width,
-            y3 = 0.0,
-        )),
+        kind: BoxKind::SvgPath(radical_path(radical_width, inner_total)),
     };
 
     // Vinculum (horizontal rule on top)
@@ -952,16 +1036,10 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
 
     let target_h = max_h + max_d;
 
-    // Scale delimiter width: wider when content is taller than normal text.
-    // Standard text height is ~0.68+0.21 = 0.89em. For taller content the
-    // delimiter glyph is enlarged, so the width needs to scale proportionally.
-    let base_delim_width = 0.389 * ctx.size();
-    let standard_height = 0.9 * ctx.size();
-    let delim_width = if target_h > standard_height {
-        base_delim_width * (target_h / standard_height)
-    } else {
-        base_delim_width
-    };
+    // Compute delimiter width.
+    // For path-based delimiters (tall content), use the path width which stays
+    // thin. For text-based delimiters (normal size), use proportional scaling.
+    use super::delimiter_paths;
 
     // Build positioned children
     let mut children = Vec::new();
@@ -972,6 +1050,17 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         && open != "."
         && let Some(ch) = open.chars().next()
     {
+        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        };
         let delim = LayoutBox {
             width: delim_width,
             height: max_h,
@@ -998,6 +1087,17 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         && close != "."
         && let Some(ch) = close.chars().next()
     {
+        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        };
         let delim = LayoutBox {
             width: delim_width,
             height: max_h,
@@ -1038,7 +1138,7 @@ fn layout_nary(
         size
     };
     let m = metrics::glyph_metrics(op);
-    let op_box = LayoutBox::glyph_with_metrics(op, m, op_size);
+    let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, false);
 
     let body_box = layout_node(body, ctx);
     // Capture body dimensions before any move
@@ -1175,14 +1275,16 @@ fn layout_superscript_from_box_heap(
         .max(base_box.height - p.sup_drop * ctx.size())
         .max(p.x_height / 4.0 + sup_box.depth);
 
-    let total_width = base_box.width + sup_box.width;
+    let ic = italic_correction(&base_box);
+
+    let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
     let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
+        PositionedBox::new(base_width + ic, shift_up, sup_box),
     ];
 
     LayoutBox {
@@ -1208,14 +1310,16 @@ fn layout_subscript_from_box_heap(
         .max(base_box.depth + p.sub_drop * ctx.size())
         .max(sub_box.height - (4.0 * p.x_height / 5.0));
 
-    let total_width = base_box.width + sub_box.width;
+    let ic = italic_correction(&base_box);
+    let sub_dx = (base_box.width - ic).max(0.0);
+
+    let total_width = sub_dx + sub_box.width;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -1266,16 +1370,21 @@ fn layout_subsup_from_box_heap(
         shift_up += delta;
     }
 
-    let script_width = sup_box.width.max(sub_box.width);
+    let ic = italic_correction(&base_box);
+    let sup_dx = base_box.width + ic;
+    let sub_dx = (base_box.width - ic / 2.0).max(0.0);
+
+    let script_width = (sup_dx - base_box.width + sup_box.width)
+        .max(sub_dx - base_box.width + sub_box.width)
+        .max(0.0);
     let total_width = base_box.width + script_width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sup_dx, shift_up, sup_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -1451,7 +1560,7 @@ fn layout_accent(
             kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
         }
     } else {
-        LayoutBox::glyph(accent, ctx.style)
+        LayoutBox::glyph(accent, ctx.style, false)
     };
 
     let accent_dx = (base_width - accent_box.width) / 2.0;
@@ -1744,9 +1853,11 @@ fn layout_row_c(arena: &AstArena, span: NodeSpan, ctx: &LayoutCtx) -> LayoutBox 
     let mut max_depth: f64 = 0.0;
 
     for &id in ids {
-        // Inter-atom spacing
-        let cur_atom = spacing::classify_node_c(arena, id);
-        if let Some(prev) = prev_atom {
+        // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
+        let raw_atom = spacing::classify_node_c(arena, id);
+        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
+        if let Some(prev) = adj_prev {
             let space = spacing::inter_atom_space(prev, cur_atom, ctx.style);
             if space > 0.0 {
                 let kern_width = space * ctx.size();
@@ -1782,7 +1893,8 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Identifier(sid) => {
             let s = arena.str_val(sid);
             if s.chars().count() == 1 {
-                LayoutBox::glyph(s.chars().next().expect("non-empty checked"), ctx.style)
+                let ch = s.chars().next().expect("non-empty checked");
+                LayoutBox::glyph(ch, ctx.style, is_math_italic_char(ch))
             } else {
                 layout_text_run(s, ctx, false)
             }
@@ -1794,9 +1906,9 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
                 if kind == SymbolKind::LargeOp && ctx.style.is_display() {
                     let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
                     let m = metrics::glyph_metrics(ch);
-                    LayoutBox::glyph_with_metrics(ch, m, size)
+                    LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
-                    let glyph = LayoutBox::glyph(ch, ctx.style);
+                    let glyph = LayoutBox::glyph(ch, ctx.style, false);
                     if is_axis_centered_char(ch) {
                         center_glyph_on_axis(glyph, ctx)
                     } else {
@@ -1881,14 +1993,16 @@ fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &Layou
         .max(base_box.height - p.sup_drop * ctx.size())
         .max(p.x_height / 4.0 + sup_box.depth);
 
-    let total_width = base_box.width + sup_box.width;
+    let ic = italic_correction(&base_box);
+
+    let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
     let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
+        PositionedBox::new(base_width + ic, shift_up, sup_box),
     ];
 
     LayoutBox {
@@ -1914,14 +2028,16 @@ fn layout_subscript_c(arena: &AstArena, base: NodeId, sub: NodeId, ctx: &LayoutC
         .max(base_box.depth + p.sub_drop * ctx.size())
         .max(sub_box.height - (4.0 * p.x_height / 5.0));
 
-    let total_width = base_box.width + sub_box.width;
+    let ic = italic_correction(&base_box);
+    let sub_dx = (base_box.width - ic).max(0.0);
+
+    let total_width = sub_dx + sub_box.width;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -1977,16 +2093,21 @@ fn layout_subsup_c(
         shift_up += delta;
     }
 
-    let script_width = sup_box.width.max(sub_box.width);
+    let ic = italic_correction(&base_box);
+    let sup_dx = base_box.width + ic;
+    let sub_dx = (base_box.width - ic / 2.0).max(0.0);
+
+    let script_width = (sup_dx - base_box.width + sup_box.width)
+        .max(sub_dx - base_box.width + sub_box.width)
+        .max(0.0);
     let total_width = base_box.width + script_width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sup_dx, shift_up, sup_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -2012,7 +2133,7 @@ fn layout_big_op_limits_c(
     let op_ch = large_op_char_c(arena, base).unwrap_or('\u{2211}');
     let op_size = size * BIG_OP_DISPLAY_SCALE;
     let m = metrics::glyph_metrics(op_ch);
-    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size);
+    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size, false);
 
     let mut children = Vec::new();
     let mut total_h = op_box.height;
@@ -2173,17 +2294,7 @@ fn layout_sqrt_c(
         width: radical_width,
         height: inner_total,
         depth: 0.0,
-        kind: BoxKind::SvgPath(format!(
-            "M{x0},{y0} L{x1},{y1} L{x2},{y2} L{x3},{y3}",
-            x0 = 0.0,
-            y0 = inner_total * 0.6,
-            x1 = radical_width * 0.35,
-            y1 = inner_total,
-            x2 = radical_width * 0.65,
-            y2 = 0.0,
-            x3 = radical_width,
-            y3 = 0.0,
-        )),
+        kind: BoxKind::SvgPath(radical_path(radical_width, inner_total)),
     };
 
     let vinculum = LayoutBox::rule(inner.width, rule_thickness);
@@ -2253,14 +2364,8 @@ fn layout_fenced_c(
 
     let target_h = max_h + max_d;
 
-    // Scale delimiter width proportionally for tall content
-    let base_delim_width = 0.389 * ctx.size();
-    let standard_height = 0.9 * ctx.size();
-    let delim_width = if target_h > standard_height {
-        base_delim_width * (target_h / standard_height)
-    } else {
-        base_delim_width
-    };
+    // Compute delimiter width using path-based sizing for tall content
+    use super::delimiter_paths;
 
     let mut children = Vec::new();
     let mut cursor_x = 0.0;
@@ -2271,6 +2376,17 @@ fn layout_fenced_c(
         && open_str != "."
         && let Some(ch) = open_str.chars().next()
     {
+        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        };
         let delim = LayoutBox {
             width: delim_width,
             height: max_h,
@@ -2297,6 +2413,17 @@ fn layout_fenced_c(
         && close_str != "."
         && let Some(ch) = close_str.chars().next()
     {
+        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        };
         let delim = LayoutBox {
             width: delim_width,
             height: max_h,
@@ -2337,7 +2464,7 @@ fn layout_nary_c(
         size
     };
     let m = metrics::glyph_metrics(op);
-    let op_box = LayoutBox::glyph_with_metrics(op, m, op_size);
+    let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, false);
 
     let body_box = layout_node_c(arena, body, ctx);
     let body_w = body_box.width;
@@ -2482,14 +2609,16 @@ fn layout_superscript_from_box(
         .max(base_box.height - p.sup_drop * ctx.size())
         .max(p.x_height / 4.0 + sup_box.depth);
 
-    let total_width = base_box.width + sup_box.width;
+    let ic = italic_correction(&base_box);
+
+    let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
     let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
+        PositionedBox::new(base_width + ic, shift_up, sup_box),
     ];
 
     LayoutBox {
@@ -2516,14 +2645,16 @@ fn layout_subscript_from_box(
         .max(base_box.depth + p.sub_drop * ctx.size())
         .max(sub_box.height - (4.0 * p.x_height / 5.0));
 
-    let total_width = base_box.width + sub_box.width;
+    let ic = italic_correction(&base_box);
+    let sub_dx = (base_box.width - ic).max(0.0);
+
+    let total_width = sub_dx + sub_box.width;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -2575,16 +2706,21 @@ fn layout_subsup_from_box(
         shift_up += delta;
     }
 
-    let script_width = sup_box.width.max(sub_box.width);
+    let ic = italic_correction(&base_box);
+    let sup_dx = base_box.width + ic;
+    let sub_dx = (base_box.width - ic / 2.0).max(0.0);
+
+    let script_width = (sup_dx - base_box.width + sup_box.width)
+        .max(sub_dx - base_box.width + sub_box.width)
+        .max(0.0);
     let total_width = base_box.width + script_width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width, shift_up, sup_box),
-        PositionedBox::new(base_width, -shift_down, sub_box),
+        PositionedBox::new(sup_dx, shift_up, sup_box),
+        PositionedBox::new(sub_dx, -shift_down, sub_box),
     ];
 
     LayoutBox {
@@ -2753,7 +2889,7 @@ fn layout_accent_c(
             kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
         }
     } else {
-        LayoutBox::glyph(accent, ctx.style)
+        LayoutBox::glyph(accent, ctx.style, false)
     };
 
     let accent_dx = (base_width - accent_box.width) / 2.0;
@@ -3064,10 +3200,12 @@ fn layout_styled_c(arena: &AstArena, style: TextStyle, span: NodeSpan, ctx: &Lay
             CompactNode::Identifier(sid) => {
                 let s = arena.str_val(sid);
                 let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                let styled_italic = matches!(style, TextStyle::Italic | TextStyle::BoldItalic | TextStyle::SansSerifItalic | TextStyle::SansSerifBoldItalic);
                 if mapped.chars().count() == 1 {
-                    LayoutBox::glyph(mapped.chars().next().expect("non-empty checked"), ctx.style)
+                    let ch = mapped.chars().next().expect("non-empty checked");
+                    LayoutBox::glyph(ch, ctx.style, styled_italic)
                 } else {
-                    layout_text_run(&mapped, ctx, false)
+                    layout_text_run(&mapped, ctx, styled_italic)
                 }
             },
             CompactNode::Number(sid) => {
@@ -3099,6 +3237,15 @@ fn layout_styled_c(arena: &AstArena, style: TextStyle, span: NodeSpan, ctx: &Lay
 use crate::render::arena::{
     ArenaBoxKind, ArenaLayoutBox, ArenaPositionedBox, LayoutArena, LayoutBoxId,
 };
+
+/// Extract the italic correction for a base box in the arena layout path.
+#[inline]
+fn italic_correction_arena(base_id: LayoutBoxId, arena: &LayoutArena) -> f64 {
+    match &arena.get(base_id).kind {
+        ArenaBoxKind::Glyph { ch, size, .. } => metrics::glyph_metrics(*ch).italic * size,
+        _ => 0.0,
+    }
+}
 
 /// Builder for arena-based layout.
 pub struct LayoutBuilder<'a> {
@@ -3160,14 +3307,14 @@ impl<'a> ArenaLayoutCtx<'a> {
 
 // ── Leaf helpers ──────────────────────────────────────────────────────
 
-fn alloc_glyph(arena: &mut LayoutArena, ch: char, style: MathStyle) -> LayoutBoxId {
+fn alloc_glyph(arena: &mut LayoutArena, ch: char, style: MathStyle, italic: bool) -> LayoutBoxId {
     let size = style.size_multiplier();
     let m = metrics::glyph_metrics(ch);
     arena.alloc(ArenaLayoutBox {
         width: m.width * size,
         height: m.height * size,
         depth: m.depth * size,
-        kind: ArenaBoxKind::Glyph { ch, size },
+        kind: ArenaBoxKind::Glyph { ch, size, italic },
     })
 }
 
@@ -3176,12 +3323,13 @@ fn alloc_glyph_with_metrics(
     ch: char,
     m: metrics::GlyphMetrics,
     size: f64,
+    italic: bool,
 ) -> LayoutBoxId {
     arena.alloc(ArenaLayoutBox {
         width: m.width * size,
         height: m.height * size,
         depth: m.depth * size,
-        kind: ArenaBoxKind::Glyph { ch, size },
+        kind: ArenaBoxKind::Glyph { ch, size, italic },
     })
 }
 
@@ -3218,33 +3366,27 @@ fn layout_text_run_arena(
     text: &str,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
+    italic: bool,
 ) -> LayoutBoxId {
     let size = ctx.size();
-    let children_start = arena.begin_children();
-    let mut cursor_x = 0.0;
+    let mut total_width = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
 
     for ch in text.chars() {
         let m = metrics::glyph_metrics(ch);
-        let glyph_id = alloc_glyph_with_metrics(arena, ch, m, size);
-        let b = arena.get(glyph_id);
-        max_height = max_height.max(b.height);
-        max_depth = max_depth.max(b.depth);
-        arena.push_child(ArenaPositionedBox {
-            dx: cursor_x,
-            dy: 0.0,
-            id: glyph_id,
-        });
-        cursor_x += m.width * size;
+        let h = m.height * size;
+        let d = m.depth * size;
+        max_height = max_height.max(h);
+        max_depth = max_depth.max(d);
+        total_width += m.width * size;
     }
 
-    let children = arena.finish_children(children_start);
     arena.alloc(ArenaLayoutBox {
-        width: cursor_x,
+        width: total_width,
         height: max_height,
         depth: max_depth,
-        kind: ArenaBoxKind::HBox { children },
+        kind: ArenaBoxKind::TextRun { text: text.to_string(), size, italic },
     })
 }
 
@@ -3270,8 +3412,11 @@ fn layout_row_arena(
     let mut max_depth: f64 = 0.0;
 
     for &id in ids {
-        let cur_atom = spacing::classify_node_c(ast, id);
-        if let Some(prev) = prev_atom {
+        // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
+        let raw_atom = spacing::classify_node_c(ast, id);
+        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
+        if let Some(prev) = adj_prev {
             let space = spacing::inter_atom_space(prev, cur_atom, ctx.style);
             if space > 0.0 {
                 cursor_x += space * ctx.size();
@@ -3315,25 +3460,26 @@ fn layout_node_arena(
     }
     let ctx = &ctx.deeper();
     match *ast.node(id) {
-        CompactNode::Number(sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx),
+        CompactNode::Number(sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx, false),
         CompactNode::Identifier(sid) => {
             let s = ast.str_val(sid);
             if s.chars().count() == 1 {
-                alloc_glyph(arena, s.chars().next().expect("non-empty checked"), ctx.style)
+                let ch = s.chars().next().expect("non-empty checked");
+                alloc_glyph(arena, ch, ctx.style, is_math_italic_char(ch))
             } else {
-                layout_text_run_arena(s, arena, ctx)
+                layout_text_run_arena(s, arena, ctx, false)
             }
         },
-        CompactNode::Operator { name, .. } => layout_text_run_arena(ast.str_val(name), arena, ctx),
+        CompactNode::Operator { name, .. } => layout_text_run_arena(ast.str_val(name), arena, ctx, false),
         CompactNode::Symbol(kind, sid) => {
             let s = ast.str_val(sid);
             if let Some(ch) = s.chars().next() {
                 if kind == SymbolKind::LargeOp && ctx.style.is_display() {
                     let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
                     let m = metrics::glyph_metrics(ch);
-                    alloc_glyph_with_metrics(arena, ch, m, size)
+                    alloc_glyph_with_metrics(arena, ch, m, size, false)
                 } else {
-                    let glyph_id = alloc_glyph(arena, ch, ctx.style);
+                    let glyph_id = alloc_glyph(arena, ch, ctx.style, false);
                     if is_axis_centered_char(ch) {
                         center_glyph_on_axis_arena(glyph_id, arena, ctx)
                     } else {
@@ -3344,7 +3490,7 @@ fn layout_node_arena(
                 arena.alloc(ArenaLayoutBox::kern(0.0))
             }
         },
-        CompactNode::Text(_, sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx),
+        CompactNode::Text(_, sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx, false),
         CompactNode::Space(r) => arena.alloc(ArenaLayoutBox::kern(r.as_f64() * ctx.size())),
         CompactNode::Row(span) => layout_row_arena(ast, span, arena, ctx),
         CompactNode::Fenced { open, close, content } => layout_fenced_arena(ast, open, close, content, arena, ctx),
@@ -3396,6 +3542,8 @@ fn layout_superscript_arena(
     let sup_d = arena.get(sup_id).depth;
     let sup_w = arena.get(sup_id).width;
 
+    let ic = italic_correction_arena(base_id, arena);
+
     let p = &ctx.params;
     let shift_up = if ctx.style.is_display() {
         p.sup1
@@ -3408,13 +3556,13 @@ fn layout_superscript_arena(
         .max(base_h - p.sup_drop * ctx.size())
         .max(p.x_height / 4.0 + sup_d);
 
-    let total_width = base_w + sup_w;
+    let total_width = base_w + ic + sup_w;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
     let children_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w + ic, dy: shift_up, id: sup_id });
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
@@ -3448,19 +3596,22 @@ fn layout_subscript_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
+    let ic = italic_correction_arena(base_id, arena);
+    let sub_dx = (base_w - ic).max(0.0);
+
     let p = &ctx.params;
     let shift_down = p
         .sub1
         .max(base_d + p.sub_drop * ctx.size())
         .max(sub_h - (4.0 * p.x_height / 5.0));
 
-    let total_width = base_w + sub_w;
+    let total_width = sub_dx + sub_w;
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
     let children_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: -shift_down, id: sub_id });
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
@@ -3500,6 +3651,8 @@ fn layout_subsup_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
+    let ic = italic_correction_arena(base_id, arena);
+
     let p = &ctx.params;
 
     let mut shift_up = if ctx.style.is_display() {
@@ -3528,15 +3681,20 @@ fn layout_subsup_arena(
         shift_up += delta;
     }
 
-    let script_width = sup_w.max(sub_w);
+    let sup_dx = base_w + ic;
+    let sub_dx = (base_w - ic / 2.0).max(0.0);
+
+    let script_width = (sup_dx - base_w + sup_w)
+        .max(sub_dx - base_w + sub_w)
+        .max(0.0);
     let total_width = base_w + script_width;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = (shift_down + sub_d).max(base_d);
 
     let children_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    arena.push_child(ArenaPositionedBox { dx: sup_dx, dy: shift_up, id: sup_id });
+    arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: -shift_down, id: sub_id });
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
@@ -3563,7 +3721,7 @@ fn layout_big_op_limits_arena(
     let op_ch = large_op_char_c(ast, base).unwrap_or('\u{2211}');
     let op_size = size * BIG_OP_DISPLAY_SCALE;
     let m = metrics::glyph_metrics(op_ch);
-    let op_id = alloc_glyph_with_metrics(arena, op_ch, m, op_size);
+    let op_id = alloc_glyph_with_metrics(arena, op_ch, m, op_size, false);
 
     let op_w = arena.get(op_id).width;
     let op_h = arena.get(op_id).height;
@@ -3760,17 +3918,7 @@ fn layout_sqrt_arena(
         width: radical_width,
         height: inner_total,
         depth: 0.0,
-        kind: ArenaBoxKind::SvgPath(format!(
-            "M{x0},{y0} L{x1},{y1} L{x2},{y2} L{x3},{y3}",
-            x0 = 0.0,
-            y0 = inner_total * 0.6,
-            x1 = radical_width * 0.35,
-            y1 = inner_total,
-            x2 = radical_width * 0.65,
-            y2 = 0.0,
-            x3 = radical_width,
-            y3 = 0.0,
-        )),
+        kind: ArenaBoxKind::SvgPath(radical_path(radical_width, inner_total)),
     });
 
     let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, rule_thickness));
@@ -3863,14 +4011,8 @@ fn layout_fenced_arena(
 
     let target_h = max_h + max_d;
 
-    // Scale delimiter width proportionally for tall content
-    let base_delim_width = 0.389 * ctx.size();
-    let standard_height = 0.9 * ctx.size();
-    let delim_width = if target_h > standard_height {
-        base_delim_width * (target_h / standard_height)
-    } else {
-        base_delim_width
-    };
+    // Compute delimiter width using path-based sizing for tall content
+    use super::delimiter_paths;
 
     let children_start = arena.begin_children();
     let mut cursor_x = 0.0;
@@ -3880,6 +4022,17 @@ fn layout_fenced_arena(
     if !open_str.is_empty() && open_str != "."
         && let Some(ch) = open_str.chars().next()
     {
+        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        };
         let delim_id = arena.alloc(ArenaLayoutBox {
             width: delim_width,
             height: max_h,
@@ -3906,6 +4059,17 @@ fn layout_fenced_arena(
     if !close_str.is_empty() && close_str != "."
         && let Some(ch) = close_str.chars().next()
     {
+        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        };
         let delim_id = arena.alloc(ArenaLayoutBox {
             width: delim_width,
             height: max_h,
@@ -3950,7 +4114,7 @@ fn layout_nary_arena(
         size
     };
     let m = metrics::glyph_metrics(op);
-    let op_id = alloc_glyph_with_metrics(arena, op, m, op_size);
+    let op_id = alloc_glyph_with_metrics(arena, op, m, op_size, false);
 
     let body_id = layout_node_arena(ast, body, arena, ctx);
     let body_w = arena.get(body_id).width;
@@ -4121,6 +4285,8 @@ fn layout_superscript_from_box_arena(
     let sup_d = arena.get(sup_id).depth;
     let sup_w = arena.get(sup_id).width;
 
+    let ic = italic_correction_arena(base_id, arena);
+
     let p = &ctx.params;
     let shift_up = if ctx.style.is_display() {
         p.sup1
@@ -4133,13 +4299,13 @@ fn layout_superscript_from_box_arena(
         .max(base_h - p.sup_drop * ctx.size())
         .max(p.x_height / 4.0 + sup_d);
 
-    let total_width = base_w + sup_w;
+    let total_width = base_w + ic + sup_w;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
     let children_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
+    arena.push_child(ArenaPositionedBox { dx: base_w + ic, dy: shift_up, id: sup_id });
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
@@ -4168,19 +4334,22 @@ fn layout_subscript_from_box_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
+    let ic = italic_correction_arena(base_id, arena);
+    let sub_dx = (base_w - ic).max(0.0);
+
     let p = &ctx.params;
     let shift_down = p
         .sub1
         .max(base_d + p.sub_drop * ctx.size())
         .max(sub_h - (4.0 * p.x_height / 5.0));
 
-    let total_width = base_w + sub_w;
+    let total_width = sub_dx + sub_w;
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
     let children_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: -shift_down, id: sub_id });
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
@@ -4215,6 +4384,8 @@ fn layout_subsup_from_box_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
+    let ic = italic_correction_arena(base_id, arena);
+
     let p = &ctx.params;
 
     let mut shift_up = if ctx.style.is_display() {
@@ -4243,15 +4414,20 @@ fn layout_subsup_from_box_arena(
         shift_up += delta;
     }
 
-    let script_width = sup_w.max(sub_w);
+    let sup_dx = base_w + ic;
+    let sub_dx = (base_w - ic / 2.0).max(0.0);
+
+    let script_width = (sup_dx - base_w + sup_w)
+        .max(sub_dx - base_w + sub_w)
+        .max(0.0);
     let total_width = base_w + script_width;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = (shift_down + sub_d).max(base_d);
 
     let children_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: base_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: shift_up, id: sup_id });
-    arena.push_child(ArenaPositionedBox { dx: base_w, dy: -shift_down, id: sub_id });
+    arena.push_child(ArenaPositionedBox { dx: sup_dx, dy: shift_up, id: sup_id });
+    arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: -shift_down, id: sub_id });
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
@@ -4467,7 +4643,7 @@ fn layout_accent_arena(
             kind: ArenaBoxKind::SvgPath(stretchy_accent_path(accent, base_w, accent_h)),
         })
     } else {
-        alloc_glyph(arena, accent, ctx.style)
+        alloc_glyph(arena, accent, ctx.style, false)
     };
 
     let accent_w = arena.get(accent_id).width;
@@ -4846,16 +5022,18 @@ fn layout_styled_arena(
             CompactNode::Identifier(sid) => {
                 let s = ast.str_val(sid);
                 let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                let styled_italic = matches!(style, TextStyle::Italic | TextStyle::BoldItalic | TextStyle::SansSerifItalic | TextStyle::SansSerifBoldItalic);
                 if mapped.chars().count() == 1 {
-                    alloc_glyph(arena, mapped.chars().next().expect("non-empty checked"), ctx.style)
+                    let ch = mapped.chars().next().expect("non-empty checked");
+                    alloc_glyph(arena, ch, ctx.style, styled_italic)
                 } else {
-                    layout_text_run_arena(&mapped, arena, ctx)
+                    layout_text_run_arena(&mapped, arena, ctx, styled_italic)
                 }
             },
             CompactNode::Number(sid) => {
                 let s = ast.str_val(sid);
                 let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
-                layout_text_run_arena(&mapped, arena, ctx)
+                layout_text_run_arena(&mapped, arena, ctx, false)
             },
             _ => layout_node_arena(ast, id, arena, ctx),
         };

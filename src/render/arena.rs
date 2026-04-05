@@ -76,7 +76,7 @@ impl ArenaLayoutBox {
 #[derive(Clone, Debug)]
 pub enum ArenaBoxKind {
     /// A single glyph character.
-    Glyph { ch: char, size: f64 },
+    Glyph { ch: char, size: f64, italic: bool },
     /// Horizontal box: children laid out left to right.
     HBox { children: LayoutSpan },
     /// Vertical box: children stacked top to bottom.
@@ -95,6 +95,8 @@ pub enum ArenaBoxKind {
     Phantom,
     /// Box with border.
     Boxed { child: LayoutBoxId, padding: f64 },
+    /// A run of text characters rendered as a single `<text>` element.
+    TextRun { text: String, size: f64, italic: bool },
 }
 
 /// Positioned child reference stored in `LayoutArena::children`.
@@ -288,7 +290,7 @@ mod tests {
             width: 0.5,
             height: 0.683,
             depth: 0.0,
-            kind: ArenaBoxKind::Glyph { ch: 'x', size: 1.0 },
+            kind: ArenaBoxKind::Glyph { ch: 'x', size: 1.0, italic: false },
         });
         let b = arena.get(id);
         assert!(matches!(b.kind, ArenaBoxKind::Glyph { ch: 'x', .. }));

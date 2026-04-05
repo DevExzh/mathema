@@ -164,9 +164,19 @@ fn emit_raster_box(
     let em = ctx.em;
     let fg = ctx.fg;
     match &layout.kind {
-        BoxKind::Glyph { ch, size } => {
+        BoxKind::Glyph { ch, size, italic } => {
             let font_size_px = (em * size).max(1.0) as f32;
-            draw_glyph(pixmap, ctx, *ch, font_size_px, x, y);
+            draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic);
+        },
+
+        BoxKind::TextRun { text, size, italic } => {
+            let font_size_px = (em * size).max(1.0) as f32;
+            let mut cx = x;
+            for ch in text.chars() {
+                let m = super::metrics::glyph_metrics(ch);
+                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic);
+                cx += m.width * size * em;
+            }
         },
 
         BoxKind::HBox { children } | BoxKind::VBox { children } => {
@@ -194,8 +204,32 @@ fn emit_raster_box(
         },
 
         BoxKind::Delimiter { ch, target_height } => {
-            let font_size_px = (target_height * em).max(1.0) as f32;
-            draw_glyph(pixmap, ctx, *ch, font_size_px, x, y);
+            // Use SVG path for tall delimiters
+            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+                if let Some(path) = parse_svg_path(&dp.path_data) {
+                    let tx = x as f32;
+                    let ty = (y - layout.height * em) as f32;
+                    let scale = em as f32;
+
+                    let mut paint = Paint::default();
+                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                    paint.anti_alias = true;
+
+                    let stroke = Stroke {
+                        width: dp.stroke_width as f32,
+                        line_cap: tiny_skia::LineCap::Round,
+                        line_join: tiny_skia::LineJoin::Round,
+                        ..Stroke::default()
+                    };
+
+                    let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                    pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                }
+            } else {
+                // Fallback: render as text glyph
+                let font_size_px = (target_height * em).max(1.0) as f32;
+                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false);
+            }
         },
 
         BoxKind::SvgPath(path_data) => {
@@ -270,6 +304,7 @@ fn draw_glyph(
     font_size_px: f32,
     x: f64,
     baseline_y: f64,
+    italic: bool,
 ) {
     if font_size_px < 0.5 {
         return;
@@ -306,12 +341,19 @@ fn draw_glyph(
                 data[idx + 3] = coverage;
             }
         }
+        // Apply synthetic italic shear (≈12° slant) when italic is true.
+        // The shear matrix shifts x by y * tan(12°) ≈ y * 0.21.
+        let transform = if italic {
+            Transform::from_row(1.0, 0.0, -0.21, 1.0, gx as f32, gy as f32)
+        } else {
+            Transform::from_translate(gx as f32, gy as f32)
+        };
         pixmap.draw_pixmap(
-            gx,
-            gy,
+            0,
+            0,
             glyph_pm.as_ref(),
             &PixmapPaint::default(),
-            Transform::identity(),
+            transform,
             None,
         );
     }
