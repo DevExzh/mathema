@@ -121,6 +121,35 @@ impl LayoutBox {
 /// Maximum recursion depth for layout to prevent stack overflow on adversarial input.
 const MAX_LAYOUT_DEPTH: u32 = 128;
 
+/// Scale factor for big operators in display mode (TeX uses ~1.2x for display-size operators).
+const BIG_OP_DISPLAY_SCALE: f64 = 1.2;
+
+/// Check whether a MathNode is a large (n-ary) operator symbol.
+fn is_large_op(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(SymbolKind::LargeOp, _))
+}
+
+/// Check whether a CompactNode is a large (n-ary) operator symbol.
+fn is_large_op_c(arena: &AstArena, id: NodeId) -> bool {
+    matches!(arena.node(id), CompactNode::Symbol(SymbolKind::LargeOp, _))
+}
+
+/// Extract the first character from a large-op symbol node.
+fn large_op_char(node: &MathNode) -> Option<char> {
+    match node {
+        MathNode::Symbol(SymbolKind::LargeOp, s) => s.chars().next(),
+        _ => None,
+    }
+}
+
+/// Extract the first character from a large-op compact symbol node.
+fn large_op_char_c(arena: &AstArena, id: NodeId) -> Option<char> {
+    match arena.node(id) {
+        CompactNode::Symbol(SymbolKind::LargeOp, sid) => arena.str_val(*sid).chars().next(),
+        _ => None,
+    }
+}
+
 struct LayoutCtx<'a> {
     style: MathStyle,
     params: TexParams,
@@ -223,9 +252,15 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             }
         },
         MathNode::Operator(op) => layout_operator(op, ctx),
-        MathNode::Symbol(_, s) => {
+        MathNode::Symbol(kind, s) => {
             if let Some(ch) = s.chars().next() {
-                LayoutBox::glyph(ch, ctx.style)
+                if *kind == SymbolKind::LargeOp && ctx.style.is_display() {
+                    let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
+                    let m = metrics::glyph_metrics(ch);
+                    LayoutBox::glyph_with_metrics(ch, m, size)
+                } else {
+                    LayoutBox::glyph(ch, ctx.style)
+                }
             } else {
                 LayoutBox::kern(0.0)
             }
@@ -308,7 +343,12 @@ fn layout_operator(op: &OperatorAttr, ctx: &LayoutCtx) -> LayoutBox {
 // === Structure node layouts ===
 
 /// TeXBook Rule 18a: superscript positioning.
+/// When the base is a large operator in display mode, place the superscript above as a limit.
 fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+    // Large operator in display mode: place superscript above (limits)
+    if is_large_op(base) && ctx.style.is_display() {
+        return layout_big_op_limits_heap(base, None, Some(sup), ctx);
+    }
     let base_box = layout_node(base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_box = layout_node(sup, &sup_ctx);
@@ -346,7 +386,12 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
 }
 
 /// TeXBook Rule 18a: subscript positioning.
+/// When the base is a large operator in display mode, place the subscript below as a limit.
 fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+    // Large operator in display mode: place subscript below (limits)
+    if is_large_op(base) && ctx.style.is_display() {
+        return layout_big_op_limits_heap(base, Some(sub), None, ctx);
+    }
     let base_box = layout_node(base, ctx);
     let sub_ctx = ctx.with_style(ctx.style.sub());
     let sub_box = layout_node(sub, &sub_ctx);
@@ -376,7 +421,12 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
 }
 
 /// TeXBook Rule 18c: combined sub+superscript.
+/// When the base is a large operator in display mode, place limits above/below.
 fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+    // Large operator in display mode: place limits above/below
+    if is_large_op(base) && ctx.style.is_display() {
+        return layout_big_op_limits_heap(base, Some(sub), Some(sup), ctx);
+    }
     let base_box = layout_node(base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sub_ctx = ctx.with_style(ctx.style.sub());
@@ -431,6 +481,70 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
         width: total_width,
         height: total_height,
         depth: total_depth,
+        kind: BoxKind::HBox { children },
+    }
+}
+
+/// Layout a big operator (LargeOp symbol) with limits above/below (heap path).
+/// Used when SubSup/Subscript/Superscript has a large-op base in display mode.
+fn layout_big_op_limits_heap(
+    base: &MathNode,
+    sub: Option<&MathNode>,
+    sup: Option<&MathNode>,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let p = &ctx.params;
+    let size = ctx.size();
+
+    // Build the operator glyph at display size
+    let op_ch = large_op_char(base).unwrap_or('\u{2211}');
+    let op_size = size * BIG_OP_DISPLAY_SCALE;
+    let m = metrics::glyph_metrics(op_ch);
+    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size);
+
+    let mut children = Vec::new();
+    let mut total_h = op_box.height;
+    let mut total_d = op_box.depth;
+    let mut max_w = op_box.width;
+
+    let sup_box = sup.map(|s| {
+        let sup_ctx = ctx.with_style(ctx.style.sup());
+        layout_node(s, &sup_ctx)
+    });
+    let sub_box = sub.map(|s| {
+        let sub_ctx = ctx.with_style(ctx.style.sub());
+        layout_node(s, &sub_ctx)
+    });
+
+    if let Some(ref sb) = sup_box {
+        max_w = max_w.max(sb.width);
+        total_h += sb.height + sb.depth + p.big_op_spacing[0] * size;
+    }
+    if let Some(ref sb) = sub_box {
+        max_w = max_w.max(sb.width);
+        total_d += sb.height + sb.depth + p.big_op_spacing[3] * size;
+    }
+
+    // Center op horizontally
+    let op_dx = (max_w - op_box.width) / 2.0;
+
+    if let Some(sb) = sup_box {
+        let sup_dx = (max_w - sb.width) / 2.0;
+        let sup_dy = op_box.height + p.big_op_spacing[0] * size + sb.depth;
+        children.push(PositionedBox::new(sup_dx, sup_dy, sb));
+    }
+    let op_depth = op_box.depth;
+    children.push(PositionedBox::new(op_dx, 0.0, op_box));
+    if let Some(sb) = sub_box {
+        let sub_dx = (max_w - sb.width) / 2.0;
+        let sub_dy = -(op_depth + p.big_op_spacing[3] * size + sb.height);
+        children.push(PositionedBox::new(sub_dx, sub_dy, sb));
+    }
+
+    LayoutBox {
+        width: max_w,
+        height: total_h,
+        depth: total_d,
         kind: BoxKind::HBox { children },
     }
 }
@@ -774,8 +888,7 @@ fn layout_nary(
             kind: BoxKind::HBox { children },
         }
     } else {
-        // As sub/superscripts — helper to build "result + thin_space + body" hbox
-        let node = MathNode::Symbol(SymbolKind::LargeOp, op.to_string());
+        // As sub/superscripts — use the already-scaled op_box
         let thin_space = 3.0 / 18.0 * size;
 
         let build_hbox = |result: LayoutBox, body_box: LayoutBox| -> LayoutBox {
@@ -798,13 +911,13 @@ fn layout_nary(
         };
 
         if let (Some(sub_n), Some(sup_n)) = (sub, sup) {
-            let result = layout_subsup(&node, sub_n, sup_n, ctx);
+            let result = layout_subsup_from_box_heap(op_box, sub_n, sup_n, ctx);
             return build_hbox(result, body_box);
         } else if let Some(sub_n) = sub {
-            let result = layout_subscript(&node, sub_n, ctx);
+            let result = layout_subscript_from_box_heap(op_box, sub_n, ctx);
             return build_hbox(result, body_box);
         } else if let Some(sup_n) = sup {
-            let result = layout_superscript(&node, sup_n, ctx);
+            let result = layout_superscript_from_box_heap(op_box, sup_n, ctx);
             return build_hbox(result, body_box);
         }
 
@@ -822,6 +935,138 @@ fn layout_nary(
             depth: op_d.max(body_d),
             kind: BoxKind::HBox { children },
         }
+    }
+}
+
+/// Helper: superscript layout where the base is an already-laid-out LayoutBox (heap path).
+fn layout_superscript_from_box_heap(
+    base_box: LayoutBox,
+    sup: &MathNode,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let sup_ctx = ctx.with_style(ctx.style.sup());
+    let sup_box = layout_node(sup, &sup_ctx);
+
+    let p = &ctx.params;
+    let shift_up = if ctx.style.is_display() {
+        p.sup1
+    } else if ctx.style.is_cramped() {
+        p.sup3
+    } else {
+        p.sup2
+    };
+    let shift_up = shift_up
+        .max(base_box.height - p.sup_drop * ctx.size())
+        .max(p.x_height / 4.0 + sup_box.depth);
+
+    let total_width = base_box.width + sup_box.width;
+    let total_height = (shift_up + sup_box.height).max(base_box.height);
+    let total_depth = base_box.depth;
+
+    let base_width = base_box.width;
+    let children = vec![
+        PositionedBox::at_origin(base_box),
+        PositionedBox::new(base_width, shift_up, sup_box),
+    ];
+
+    LayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: BoxKind::HBox { children },
+    }
+}
+
+/// Helper: subscript layout where the base is an already-laid-out LayoutBox (heap path).
+fn layout_subscript_from_box_heap(
+    base_box: LayoutBox,
+    sub: &MathNode,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let sub_ctx = ctx.with_style(ctx.style.sub());
+    let sub_box = layout_node(sub, &sub_ctx);
+
+    let p = &ctx.params;
+    let shift_down = p
+        .sub1
+        .max(base_box.depth + p.sub_drop * ctx.size())
+        .max(sub_box.height - (4.0 * p.x_height / 5.0));
+
+    let total_width = base_box.width + sub_box.width;
+    let total_height = base_box.height;
+    let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
+
+    let base_width = base_box.width;
+    let children = vec![
+        PositionedBox::at_origin(base_box),
+        PositionedBox::new(base_width, -shift_down, sub_box),
+    ];
+
+    LayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: BoxKind::HBox { children },
+    }
+}
+
+/// Helper: combined sub+superscript layout where the base is an already-laid-out LayoutBox (heap path).
+fn layout_subsup_from_box_heap(
+    base_box: LayoutBox,
+    sub: &MathNode,
+    sup: &MathNode,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let sup_ctx = ctx.with_style(ctx.style.sup());
+    let sub_ctx = ctx.with_style(ctx.style.sub());
+    let sup_box = layout_node(sup, &sup_ctx);
+    let sub_box = layout_node(sub, &sub_ctx);
+
+    let p = &ctx.params;
+
+    let mut shift_up = if ctx.style.is_display() {
+        p.sup1
+    } else if ctx.style.is_cramped() {
+        p.sup3
+    } else {
+        p.sup2
+    };
+    shift_up = shift_up
+        .max(base_box.height - p.sup_drop * ctx.size())
+        .max(p.x_height / 4.0 + sup_box.depth);
+
+    let mut shift_down = p.sub2.max(base_box.depth + p.sub_drop * ctx.size());
+
+    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
+    if gap < 4.0 * p.rule_thickness {
+        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
+        shift_up += adjust;
+        shift_down += adjust;
+    }
+
+    let sup_bottom = shift_up - sup_box.depth;
+    if sup_bottom < (4.0 * p.x_height / 5.0) {
+        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
+        shift_up += delta;
+    }
+
+    let script_width = sup_box.width.max(sub_box.width);
+    let total_width = base_box.width + script_width;
+    let total_height = (shift_up + sup_box.height).max(base_box.height);
+    let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
+
+    let base_width = base_box.width;
+    let children = vec![
+        PositionedBox::at_origin(base_box),
+        PositionedBox::new(base_width, shift_up, sup_box),
+        PositionedBox::new(base_width, -shift_down, sub_box),
+    ];
+
+    LayoutBox {
+        width: total_width,
+        height: total_height,
+        depth: total_depth,
+        kind: BoxKind::HBox { children },
     }
 }
 
@@ -1271,10 +1516,16 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             }
         },
         CompactNode::Operator { name, .. } => layout_text_run(arena.str_val(name), ctx, false),
-        CompactNode::Symbol(_, sid) => {
+        CompactNode::Symbol(kind, sid) => {
             let s = arena.str_val(sid);
             if let Some(ch) = s.chars().next() {
-                LayoutBox::glyph(ch, ctx.style)
+                if kind == SymbolKind::LargeOp && ctx.style.is_display() {
+                    let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
+                    let m = metrics::glyph_metrics(ch);
+                    LayoutBox::glyph_with_metrics(ch, m, size)
+                } else {
+                    LayoutBox::glyph(ch, ctx.style)
+                }
             } else {
                 LayoutBox::kern(0.0)
             }
@@ -1333,6 +1584,10 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
 }
 
 fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &LayoutCtx) -> LayoutBox {
+    // Large operator in display mode: place superscript above (limits)
+    if is_large_op_c(arena, base) && ctx.style.is_display() {
+        return layout_big_op_limits_c(arena, base, None, Some(sup), ctx);
+    }
     let base_box = layout_node_c(arena, base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_box = layout_node_c(arena, sup, &sup_ctx);
@@ -1368,6 +1623,10 @@ fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &Layou
 }
 
 fn layout_subscript_c(arena: &AstArena, base: NodeId, sub: NodeId, ctx: &LayoutCtx) -> LayoutBox {
+    // Large operator in display mode: place subscript below (limits)
+    if is_large_op_c(arena, base) && ctx.style.is_display() {
+        return layout_big_op_limits_c(arena, base, Some(sub), None, ctx);
+    }
     let base_box = layout_node_c(arena, base, ctx);
     let sub_ctx = ctx.with_style(ctx.style.sub());
     let sub_box = layout_node_c(arena, sub, &sub_ctx);
@@ -1403,6 +1662,10 @@ fn layout_subsup_c(
     sup: NodeId,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
+    // Large operator in display mode: place limits above/below
+    if is_large_op_c(arena, base) && ctx.style.is_display() {
+        return layout_big_op_limits_c(arena, base, Some(sub), Some(sup), ctx);
+    }
     let base_box = layout_node_c(arena, base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sub_ctx = ctx.with_style(ctx.style.sub());
@@ -1453,6 +1716,69 @@ fn layout_subsup_c(
         width: total_width,
         height: total_height,
         depth: total_depth,
+        kind: BoxKind::HBox { children },
+    }
+}
+
+/// Layout a big operator (LargeOp symbol) with limits above/below (compact path).
+fn layout_big_op_limits_c(
+    arena: &AstArena,
+    base: NodeId,
+    sub: Option<NodeId>,
+    sup: Option<NodeId>,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let p = &ctx.params;
+    let size = ctx.size();
+
+    // Build the operator glyph at display size
+    let op_ch = large_op_char_c(arena, base).unwrap_or('\u{2211}');
+    let op_size = size * BIG_OP_DISPLAY_SCALE;
+    let m = metrics::glyph_metrics(op_ch);
+    let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size);
+
+    let mut children = Vec::new();
+    let mut total_h = op_box.height;
+    let mut total_d = op_box.depth;
+    let mut max_w = op_box.width;
+
+    let sup_box = sup.map(|s| {
+        let sup_ctx = ctx.with_style(ctx.style.sup());
+        layout_node_c(arena, s, &sup_ctx)
+    });
+    let sub_box = sub.map(|s| {
+        let sub_ctx = ctx.with_style(ctx.style.sub());
+        layout_node_c(arena, s, &sub_ctx)
+    });
+
+    if let Some(ref sb) = sup_box {
+        max_w = max_w.max(sb.width);
+        total_h += sb.height + sb.depth + p.big_op_spacing[0] * size;
+    }
+    if let Some(ref sb) = sub_box {
+        max_w = max_w.max(sb.width);
+        total_d += sb.height + sb.depth + p.big_op_spacing[3] * size;
+    }
+
+    let op_dx = (max_w - op_box.width) / 2.0;
+
+    if let Some(sb) = sup_box {
+        let sup_dx = (max_w - sb.width) / 2.0;
+        let sup_dy = op_box.height + p.big_op_spacing[0] * size + sb.depth;
+        children.push(PositionedBox::new(sup_dx, sup_dy, sb));
+    }
+    let op_depth = op_box.depth;
+    children.push(PositionedBox::new(op_dx, 0.0, op_box));
+    if let Some(sb) = sub_box {
+        let sub_dx = (max_w - sb.width) / 2.0;
+        let sub_dy = -(op_depth + p.big_op_spacing[3] * size + sb.height);
+        children.push(PositionedBox::new(sub_dx, sub_dy, sb));
+    }
+
+    LayoutBox {
+        width: max_w,
+        height: total_h,
+        depth: total_d,
         kind: BoxKind::HBox { children },
     }
 }
@@ -1809,11 +2135,8 @@ fn layout_nary_c(
             }
         };
 
-        // Use layout_text_run for the operator glyph instead of creating a temporary MathNode
-        let op_glyph_box = {
-            let op_str = op.to_string();
-            layout_text_run(&op_str, ctx, false)
-        };
+        // Use the already-scaled op_box for the operator glyph
+        let op_glyph_box = op_box;
 
         if sub.is_some() && sup.is_some() {
             let result = layout_subsup_from_box(op_glyph_box, arena, sub, sup, ctx);
@@ -1831,11 +2154,11 @@ fn layout_nary_c(
         }
 
         // Just op + body
-        let op_w = op_box.width;
-        let op_h = op_box.height;
-        let op_d = op_box.depth;
+        let op_w = op_glyph_box.width;
+        let op_h = op_glyph_box.height;
+        let op_d = op_glyph_box.depth;
         let children = vec![
-            PositionedBox::at_origin(op_box),
+            PositionedBox::at_origin(op_glyph_box),
             PositionedBox::new(op_w + thin_space, 0.0, body_box),
         ];
         LayoutBox {
@@ -2636,10 +2959,16 @@ fn layout_node_arena(
             }
         },
         CompactNode::Operator { name, .. } => layout_text_run_arena(ast.str_val(name), arena, ctx),
-        CompactNode::Symbol(_, sid) => {
+        CompactNode::Symbol(kind, sid) => {
             let s = ast.str_val(sid);
             if let Some(ch) = s.chars().next() {
-                alloc_glyph(arena, ch, ctx.style)
+                if kind == SymbolKind::LargeOp && ctx.style.is_display() {
+                    let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
+                    let m = metrics::glyph_metrics(ch);
+                    alloc_glyph_with_metrics(arena, ch, m, size)
+                } else {
+                    alloc_glyph(arena, ch, ctx.style)
+                }
             } else {
                 arena.alloc(ArenaLayoutBox::kern(0.0))
             }
@@ -2680,6 +3009,10 @@ fn layout_superscript_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
+    // Large operator in display mode: place superscript above (limits)
+    if is_large_op_c(ast, base) && ctx.style.is_display() {
+        return layout_big_op_limits_arena(ast, base, None, Some(sup), arena, ctx);
+    }
     let base_id = layout_node_arena(ast, base, arena, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_id = layout_node_arena(ast, sup, arena, &sup_ctx);
@@ -2728,6 +3061,10 @@ fn layout_subscript_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
+    // Large operator in display mode: place subscript below (limits)
+    if is_large_op_c(ast, base) && ctx.style.is_display() {
+        return layout_big_op_limits_arena(ast, base, Some(sub), None, arena, ctx);
+    }
     let base_id = layout_node_arena(ast, base, arena, ctx);
     let sub_ctx = ctx.with_style(ctx.style.sub());
     let sub_id = layout_node_arena(ast, sub, arena, &sub_ctx);
@@ -2771,6 +3108,10 @@ fn layout_subsup_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
+    // Large operator in display mode: place limits above/below
+    if is_large_op_c(ast, base) && ctx.style.is_display() {
+        return layout_big_op_limits_arena(ast, base, Some(sub), Some(sup), arena, ctx);
+    }
     let base_id = layout_node_arena(ast, base, arena, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sub_ctx = ctx.with_style(ctx.style.sub());
@@ -2831,6 +3172,89 @@ fn layout_subsup_arena(
         width: total_width,
         height: total_height,
         depth: total_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+/// Layout a big operator (LargeOp symbol) with limits above/below (arena path).
+fn layout_big_op_limits_arena(
+    ast: &AstArena,
+    base: NodeId,
+    sub: Option<NodeId>,
+    sup: Option<NodeId>,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let p = &ctx.params;
+    let size = ctx.size();
+
+    // Build the operator glyph at display size
+    let op_ch = large_op_char_c(ast, base).unwrap_or('\u{2211}');
+    let op_size = size * BIG_OP_DISPLAY_SCALE;
+    let m = metrics::glyph_metrics(op_ch);
+    let op_id = alloc_glyph_with_metrics(arena, op_ch, m, op_size);
+
+    let op_w = arena.get(op_id).width;
+    let op_h = arena.get(op_id).height;
+    let op_d = arena.get(op_id).depth;
+
+    let mut total_h = op_h;
+    let mut total_d = op_d;
+    let mut max_w = op_w;
+
+    let sup_id_opt = sup.map(|s| {
+        let sup_ctx = ctx.with_style(ctx.style.sup());
+        layout_node_arena(ast, s, arena, &sup_ctx)
+    });
+    let sub_id_opt = sub.map(|s| {
+        let sub_ctx = ctx.with_style(ctx.style.sub());
+        layout_node_arena(ast, s, arena, &sub_ctx)
+    });
+
+    let (sup_w_opt, sup_h_opt, sup_d_opt) = if let Some(sid) = sup_id_opt {
+        let b = arena.get(sid);
+        (b.width, b.height, b.depth)
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+    let (sub_w_opt, sub_h_opt, sub_d_opt) = if let Some(sid) = sub_id_opt {
+        let b = arena.get(sid);
+        (b.width, b.height, b.depth)
+    } else {
+        (0.0, 0.0, 0.0)
+    };
+
+    if sup_id_opt.is_some() {
+        max_w = max_w.max(sup_w_opt);
+        total_h += sup_h_opt + sup_d_opt + p.big_op_spacing[0] * size;
+    }
+    if sub_id_opt.is_some() {
+        max_w = max_w.max(sub_w_opt);
+        total_d += sub_h_opt + sub_d_opt + p.big_op_spacing[3] * size;
+    }
+
+    let op_dx = (max_w - op_w) / 2.0;
+
+    let children_start = arena.begin_children();
+
+    if let Some(sid) = sup_id_opt {
+        let sup_dx = (max_w - sup_w_opt) / 2.0;
+        let sup_dy = op_h + p.big_op_spacing[0] * size + sup_d_opt;
+        arena.push_child(ArenaPositionedBox { dx: sup_dx, dy: sup_dy, id: sid });
+    }
+    arena.push_child(ArenaPositionedBox { dx: op_dx, dy: 0.0, id: op_id });
+    if let Some(sid) = sub_id_opt {
+        let sub_dx = (max_w - sub_w_opt) / 2.0;
+        let sub_dy = -(op_d + p.big_op_spacing[3] * size + sub_h_opt);
+        arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: sub_dy, id: sid });
+    }
+
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: max_w,
+        height: total_h,
+        depth: total_d,
         kind: ArenaBoxKind::HBox { children },
     })
 }
@@ -3235,11 +3659,8 @@ fn layout_nary_arena(
         // As sub/superscripts
         let thin_space = 3.0 / 18.0 * size;
 
-        // Build a text run for the operator glyph
-        let op_glyph_id = {
-            let op_str = op.to_string();
-            layout_text_run_arena(&op_str, arena, ctx)
-        };
+        // Use the already-scaled op_id for the operator glyph
+        let op_glyph_id = op_id;
 
         if sub.is_some() && sup.is_some() {
             let result_id = layout_subsup_from_box_arena(op_glyph_id, ast, sub, sup, arena, ctx);
@@ -3253,12 +3674,12 @@ fn layout_nary_arena(
         }
 
         // Just op + body
-        let op_w = arena.get(op_id).width;
-        let op_h = arena.get(op_id).height;
-        let op_d = arena.get(op_id).depth;
+        let op_w = arena.get(op_glyph_id).width;
+        let op_h = arena.get(op_glyph_id).height;
+        let op_d = arena.get(op_glyph_id).depth;
 
         let children_start = arena.begin_children();
-        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: op_id });
+        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: op_glyph_id });
         arena.push_child(ArenaPositionedBox { dx: op_w + thin_space, dy: 0.0, id: body_id });
         let children = arena.finish_children(children_start);
 
@@ -4438,6 +4859,163 @@ mod tests {
         assert!(
             script_box.width < text_box.width,
             "script style should produce smaller glyphs"
+        );
+    }
+
+    #[test]
+    fn large_op_symbol_scales_in_display() {
+        // Symbol(LargeOp, "∑") should be larger in display mode than text mode
+        let expr = MathExpr::inline(vec![MathNode::Symbol(
+            SymbolKind::LargeOp,
+            "\u{2211}".into(),
+        )]);
+        let opts = default_options();
+        let display = layout_expr(&expr, MathStyle::Display, &opts);
+        let text = layout_expr(&expr, MathStyle::Text, &opts);
+        assert!(
+            display.height > text.height,
+            "LargeOp symbol in display should be taller: display={}, text={}",
+            display.height,
+            text.height,
+        );
+        assert!(
+            display.width > text.width,
+            "LargeOp symbol in display should be wider: display={}, text={}",
+            display.width,
+            text.width,
+        );
+    }
+
+    #[test]
+    fn subsup_with_large_op_uses_limits_in_display() {
+        // SubSup with LargeOp base in display mode should place scripts above/below
+        let expr_display = MathExpr::inline(vec![MathNode::SubSup {
+            base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "\u{2211}".into())),
+            sub: Box::new(MathNode::Identifier("i".into())),
+            sup: Box::new(MathNode::Identifier("n".into())),
+        }]);
+        let opts = default_options();
+        let display = layout_expr(&expr_display, MathStyle::Display, &opts);
+        // In limits mode, the total height should be larger because sup is above
+        // and sub is below the operator, adding to overall vertical extent
+        let just_op = layout_expr(
+            &MathExpr::inline(vec![MathNode::Symbol(
+                SymbolKind::LargeOp,
+                "\u{2211}".into(),
+            )]),
+            MathStyle::Display,
+            &opts,
+        );
+        assert!(
+            display.height > just_op.height,
+            "SubSup with limits should be taller than just the op: display={}, op={}",
+            display.height,
+            just_op.height,
+        );
+        assert!(
+            display.depth > just_op.depth,
+            "SubSup with limits should have more depth than just the op: display={}, op={}",
+            display.depth,
+            just_op.depth,
+        );
+    }
+
+    #[test]
+    fn subscript_with_large_op_uses_limits_in_display() {
+        // Subscript with LargeOp base in display mode should place sub below
+        let expr = MathExpr::inline(vec![MathNode::Subscript {
+            base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "\u{2211}".into())),
+            sub: Box::new(MathNode::Identifier("i".into())),
+        }]);
+        let opts = default_options();
+        let display = layout_expr(&expr, MathStyle::Display, &opts);
+        let just_op = layout_expr(
+            &MathExpr::inline(vec![MathNode::Symbol(
+                SymbolKind::LargeOp,
+                "\u{2211}".into(),
+            )]),
+            MathStyle::Display,
+            &opts,
+        );
+        assert!(
+            display.depth > just_op.depth,
+            "Subscript limit should add depth below op"
+        );
+    }
+
+    #[test]
+    fn superscript_with_large_op_uses_limits_in_display() {
+        // Superscript with LargeOp base in display mode should place sup above
+        let expr = MathExpr::inline(vec![MathNode::Superscript {
+            base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "\u{2211}".into())),
+            sup: Box::new(MathNode::Identifier("n".into())),
+        }]);
+        let opts = default_options();
+        let display = layout_expr(&expr, MathStyle::Display, &opts);
+        let just_op = layout_expr(
+            &MathExpr::inline(vec![MathNode::Symbol(
+                SymbolKind::LargeOp,
+                "\u{2211}".into(),
+            )]),
+            MathStyle::Display,
+            &opts,
+        );
+        assert!(
+            display.height > just_op.height,
+            "Superscript limit should add height above op"
+        );
+    }
+
+    #[test]
+    fn subsup_with_large_op_no_limits_in_text() {
+        // SubSup with LargeOp base in text mode should NOT use limits
+        let expr = MathExpr::inline(vec![MathNode::SubSup {
+            base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "\u{2211}".into())),
+            sub: Box::new(MathNode::Identifier("i".into())),
+            sup: Box::new(MathNode::Identifier("n".into())),
+        }]);
+        let opts = default_options();
+        let text = layout_expr(&expr, MathStyle::Text, &opts);
+        let just_op = layout_expr(
+            &MathExpr::inline(vec![MathNode::Symbol(
+                SymbolKind::LargeOp,
+                "\u{2211}".into(),
+            )]),
+            MathStyle::Text,
+            &opts,
+        );
+        // In non-limits mode, the width should be wider (scripts to the side)
+        assert!(
+            text.width > just_op.width,
+            "SubSup in text mode should be wider than just the op (scripts beside, not above/below)"
+        );
+    }
+
+    #[test]
+    fn nary_nolimits_still_scales_in_display() {
+        // Nary with SubSup limit style in display mode should still scale the op glyph
+        let expr = MathExpr::inline(vec![MathNode::Nary {
+            op: '\u{2211}',
+            sub: Some(Box::new(MathNode::Identifier("i".into()))),
+            sup: Some(Box::new(MathNode::Identifier("n".into()))),
+            body: Box::new(MathNode::Identifier("x".into())),
+            limits: LimitStyle::SubSup,
+        }]);
+        let opts = default_options();
+        let display = layout_expr(&expr, MathStyle::Display, &opts);
+        let text_expr = MathExpr::inline(vec![MathNode::Nary {
+            op: '\u{2211}',
+            sub: Some(Box::new(MathNode::Identifier("i".into()))),
+            sup: Some(Box::new(MathNode::Identifier("n".into()))),
+            body: Box::new(MathNode::Identifier("x".into())),
+            limits: LimitStyle::SubSup,
+        }]);
+        let text = layout_expr(&text_expr, MathStyle::Text, &opts);
+        assert!(
+            display.height > text.height,
+            "Nary with SubSup style in display should still be taller (scaled op): display={}, text={}",
+            display.height,
+            text.height,
         );
     }
 
