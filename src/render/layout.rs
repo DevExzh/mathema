@@ -1041,10 +1041,17 @@ fn layout_array(
     // Center vertically around the axis
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
+    let box_height = half + axis;
+
+    // Convert top-down cursor_y positions to VBox dy coordinates
+    // (positive dy = up from baseline).
+    for child in &mut children {
+        child.dy = box_height - child.dy;
+    }
 
     LayoutBox {
         width: total_width,
-        height: half + axis,
+        height: box_height,
         depth: half - axis,
         kind: BoxKind::VBox { children },
     }
@@ -1172,11 +1179,24 @@ fn layout_scaled(factor: Rational, content: &MathNode, ctx: &LayoutCtx) -> Layou
     }
 }
 
-fn layout_styled(_style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
-    // For now, just layout children normally.
-    // Text style affects glyph selection (bold/italic) — full implementation
-    // would map styled chars through unicode::fonts::styled_char.
-    layout_row(children, ctx)
+fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
+    use crate::unicode::fonts::styled_char;
+
+    let styled_children: Vec<MathNode> = children
+        .iter()
+        .map(|node| match node {
+            MathNode::Identifier(s) => {
+                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                MathNode::Identifier(mapped)
+            },
+            MathNode::Number(s) => {
+                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                MathNode::Number(mapped)
+            },
+            other => other.clone(),
+        })
+        .collect();
+    layout_row(&styled_children, ctx)
 }
 
 // ==========================================================================
@@ -1306,7 +1326,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Boxed(inner) => layout_boxed_c(arena, inner, ctx),
         CompactNode::Cancel { stroke, content } => layout_cancel_c(arena, stroke, content, ctx),
         CompactNode::Scaled { factor, content } => layout_scaled_c(arena, factor, content, ctx),
-        CompactNode::Styled(_, span) => layout_styled_c(arena, span, ctx),
+        CompactNode::Styled(style, span) => layout_styled_c(arena, style, span, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => LayoutBox::kern(0.0),
     }
 }
@@ -2203,10 +2223,17 @@ fn layout_array_c(
     let total_extent = cursor_y;
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
+    let box_height = half + axis;
+
+    // Convert top-down cursor_y positions to VBox dy coordinates
+    // (positive dy = up from baseline).
+    for child in &mut children {
+        child.dy = box_height - child.dy;
+    }
 
     LayoutBox {
         width: total_width,
-        height: half + axis,
+        height: box_height,
         depth: half - axis,
         kind: BoxKind::VBox { children },
     }
@@ -2343,8 +2370,50 @@ fn layout_scaled_c(
     }
 }
 
-fn layout_styled_c(arena: &AstArena, span: NodeSpan, ctx: &LayoutCtx) -> LayoutBox {
-    layout_row_c(arena, span, ctx)
+fn layout_styled_c(arena: &AstArena, style: TextStyle, span: NodeSpan, ctx: &LayoutCtx) -> LayoutBox {
+    use crate::unicode::fonts::styled_char;
+
+    let ids = arena.children(span);
+    if ids.is_empty() {
+        return LayoutBox::kern(0.0);
+    }
+
+    let mut children = Vec::new();
+    let mut cursor_x = 0.0;
+    let mut max_height: f64 = 0.0;
+    let mut max_depth: f64 = 0.0;
+
+    for &id in ids {
+        let layout = match *arena.node(id) {
+            CompactNode::Identifier(sid) => {
+                let s = arena.str_val(sid);
+                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                if mapped.chars().count() == 1 {
+                    LayoutBox::glyph(mapped.chars().next().expect("non-empty checked"), ctx.style)
+                } else {
+                    layout_text_run(&mapped, ctx, false)
+                }
+            },
+            CompactNode::Number(sid) => {
+                let s = arena.str_val(sid);
+                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                layout_text_run(&mapped, ctx, false)
+            },
+            _ => layout_node_c(arena, id, ctx),
+        };
+        max_height = max_height.max(layout.height);
+        max_depth = max_depth.max(layout.depth);
+        let layout_width = layout.width;
+        children.push(PositionedBox::new(cursor_x, 0.0, layout));
+        cursor_x += layout_width;
+    }
+
+    LayoutBox {
+        width: cursor_x,
+        height: max_height,
+        depth: max_depth,
+        kind: BoxKind::HBox { children },
+    }
 }
 
 // ==========================================================================
@@ -2580,7 +2649,7 @@ fn layout_node_arena(
         CompactNode::Boxed(inner) => layout_boxed_arena(ast, inner, arena, ctx),
         CompactNode::Cancel { stroke, content } => layout_cancel_arena(ast, stroke, content, arena, ctx),
         CompactNode::Scaled { factor, content } => layout_scaled_arena(ast, factor, content, arena, ctx),
-        CompactNode::Styled(_, span) => layout_styled_arena(ast, span, arena, ctx),
+        CompactNode::Styled(style, span) => layout_styled_arena(ast, style, span, arena, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
     }
 }
@@ -3606,6 +3675,15 @@ fn layout_array_arena(
         }
     }
 
+    // Pre-compute total extent and box_height so we can convert top-down
+    // cursor_y to VBox dy (positive = up from baseline) when pushing children.
+    let total_extent: f64 = row_heights.iter().sum::<f64>()
+        + row_depths.iter().sum::<f64>()
+        + row_gap * (n_rows.saturating_sub(1) as f64);
+    let axis = ctx.params.axis_height * size;
+    let half = total_extent / 2.0;
+    let box_height = half + axis;
+
     // Position cells
     let children_start = arena.begin_children();
     let mut cursor_y = 0.0;
@@ -3627,7 +3705,7 @@ fn layout_array_arena(
                 };
                 arena.push_child(ArenaPositionedBox {
                     dx: cursor_x + dx,
-                    dy: cursor_y,
+                    dy: box_height - cursor_y,
                     id: cell_layout_ids[idx],
                 });
                 cursor_x += col_w;
@@ -3648,13 +3726,10 @@ fn layout_array_arena(
     let children = arena.finish_children(children_start);
     let total_width: f64 =
         col_widths.iter().sum::<f64>() + col_gap * (n_cols.saturating_sub(1) as f64);
-    let total_extent = cursor_y;
-    let axis = ctx.params.axis_height * size;
-    let half = total_extent / 2.0;
 
     arena.alloc(ArenaLayoutBox {
         width: total_width,
-        height: half + axis,
+        height: box_height,
         depth: half - axis,
         kind: ArenaBoxKind::VBox { children },
     })
@@ -3838,11 +3913,60 @@ fn layout_scaled_arena(
 
 fn layout_styled_arena(
     ast: &AstArena,
+    style: TextStyle,
     span: NodeSpan,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    layout_row_arena(ast, span, arena, ctx)
+    use crate::unicode::fonts::styled_char;
+
+    let ids = ast.children(span);
+    if ids.is_empty() {
+        return arena.alloc(ArenaLayoutBox::kern(0.0));
+    }
+
+    let children_start = arena.begin_children();
+    let mut cursor_x = 0.0;
+    let mut max_height: f64 = 0.0;
+    let mut max_depth: f64 = 0.0;
+
+    for &id in ids {
+        let layout_id = match *ast.node(id) {
+            CompactNode::Identifier(sid) => {
+                let s = ast.str_val(sid);
+                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                if mapped.chars().count() == 1 {
+                    alloc_glyph(arena, mapped.chars().next().expect("non-empty checked"), ctx.style)
+                } else {
+                    layout_text_run_arena(&mapped, arena, ctx)
+                }
+            },
+            CompactNode::Number(sid) => {
+                let s = ast.str_val(sid);
+                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                layout_text_run_arena(&mapped, arena, ctx)
+            },
+            _ => layout_node_arena(ast, id, arena, ctx),
+        };
+        let b = arena.get(layout_id);
+        max_height = max_height.max(b.height);
+        max_depth = max_depth.max(b.depth);
+        let w = b.width;
+        arena.push_child(ArenaPositionedBox {
+            dx: cursor_x,
+            dy: 0.0,
+            id: layout_id,
+        });
+        cursor_x += w;
+    }
+
+    let children = arena.finish_children(children_start);
+    arena.alloc(ArenaLayoutBox {
+        width: cursor_x,
+        height: max_height,
+        depth: max_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
 }
 
 #[cfg(test)]
