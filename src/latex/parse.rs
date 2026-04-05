@@ -295,12 +295,18 @@ impl LatexCompactParser {
         columns: &[ColumnAlign],
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
+        // Compute the actual number of columns as the maximum of the declared
+        // column spec and the widest row.  This ensures the flat cell array
+        // stride is correct even when rows contain more `&` separators than
+        // the column spec declares (e.g. multi-pair `aligned` environments).
+        let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let num_cols = columns.len().max(max_row_len).max(1) as u16;
+
         let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
         for &col in columns {
             align_ids.push(self.arena.push_node(CompactNode::ColAlign(col)));
         }
         let col_aligns = self.arena.push_children(&align_ids);
-        let num_cols = columns.len().max(1) as u16;
 
         let mut cell_ids: SmallVec<[NodeId; 16]> = SmallVec::new();
         for row in &rows {
@@ -1480,6 +1486,7 @@ impl LatexCompactParser {
             },
             "cases" => self.parse_cases_env(input),
             "aligned" | "align" | "align*" => self.parse_align_env(input, env_name),
+            "alignedat" => self.parse_alignedat_env(input, env_name),
             "gather" | "gather*" => self.parse_gather_env(input, env_name),
             "equation" | "equation*" => self.parse_equation_env(input, env_name),
             "multline" | "multline*" => self.parse_multline_env(input, env_name),
@@ -1587,10 +1594,43 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        Ok((
-            input,
-            self.build_array(&[ColumnAlign::Right, ColumnAlign::Left], rows),
-        ))
+        // Aligned environments use repeating rl alignment pairs.
+        // Compute the actual column count and repeat the pattern.
+        let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let base_pattern = [ColumnAlign::Right, ColumnAlign::Left];
+        let columns: SmallVec<[ColumnAlign; 8]> = base_pattern
+            .iter()
+            .copied()
+            .cycle()
+            .take(max_row_len.max(base_pattern.len()))
+            .collect();
+
+        Ok((input, self.build_array(&columns, rows)))
+    }
+
+    fn parse_alignedat_env<'a>(
+        &mut self,
+        input: &'a str,
+        env_name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        // \begin{alignedat}{n} — n is the number of rl pairs.
+        // We consume the mandatory argument but derive the actual column
+        // count from the rows, same as parse_align_env.
+        let (input, _) = ws(input)?;
+        let input = if let Ok((r, _)) =
+            char::<_, nom::error::Error<&str>>('{')(input)
+        {
+            let (r, _) =
+                take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(r)
+                    .unwrap_or((r, ""));
+            let (r, _) = char::<_, nom::error::Error<&str>>('}')(r)
+                .map_err(|_| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char)))?;
+            r
+        } else {
+            input
+        };
+
+        self.parse_align_env(input, env_name)
     }
 
     fn parse_gather_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {

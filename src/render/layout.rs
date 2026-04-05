@@ -5310,4 +5310,103 @@ mod tests {
             MathStyle::Display,
         );
     }
+
+    // =====================================================================
+    // Aligned / multi-column alignment tests
+    // =====================================================================
+
+    /// Simple 2-column aligned environment: columns should be laid out
+    /// side by side rather than stacked vertically.
+    #[test]
+    fn aligned_two_column_has_grid_layout() {
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let latex = r"\begin{aligned} x &= 1 \\ y &= 2 \end{aligned}";
+        let result = crate::reader::latex::LatexReader::parse_compact(latex, &config).unwrap();
+        let opts = default_options();
+        let root = layout_expr_c(&result.expr, MathStyle::Text, &opts);
+        // With 2 columns, the layout width must be > single-column width.
+        // A single character is ~0.5 units, so 2 columns + gap should be > 1.5.
+        assert!(
+            root.width > 1.5,
+            "aligned block should be wider than a single column, got {}",
+            root.width
+        );
+    }
+
+    /// Multi-pair aligned environment: 4 columns (rl rl).
+    #[test]
+    fn aligned_four_column_has_grid_layout() {
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let latex = r"\begin{aligned} a &= b & c &= d \\ e &= f & g &= h \end{aligned}";
+        let result = crate::reader::latex::LatexReader::parse_compact(latex, &config).unwrap();
+
+        // Verify the compact AST has num_cols = 4
+        fn find_num_cols(arena: &AstArena, id: crate::ast::compact::NodeId) -> Option<u16> {
+            match arena.node(id) {
+                crate::ast::compact::CompactNode::Array { num_cols, .. } => Some(*num_cols),
+                crate::ast::compact::CompactNode::Row(span) => {
+                    for &child_id in arena.children(*span) {
+                        if let Some(nc) = find_num_cols(arena, child_id) {
+                            return Some(nc);
+                        }
+                    }
+                    None
+                },
+                _ => None,
+            }
+        }
+        let nc = {
+            let arena = &result.expr.arena;
+            let mut found = None;
+            for &root_id in arena.children(result.expr.roots) {
+                found = find_num_cols(arena, root_id);
+                if found.is_some() {
+                    break;
+                }
+            }
+            found.expect("should find Array node")
+        };
+        assert_eq!(nc, 4, "aligned with 3 &'s per row should produce 4 columns");
+
+        let opts = default_options();
+        let root = layout_expr_c(&result.expr, MathStyle::Text, &opts);
+        // 4 columns with gaps should be significantly wider than 2 columns
+        assert!(
+            root.width > 3.0,
+            "4-column aligned block should be wide, got {}",
+            root.width
+        );
+    }
+
+    /// aligned environment: heap/compact/arena paths should all agree.
+    #[test]
+    fn equivalence_aligned() {
+        assert_arena_heap_equivalent(
+            r"\begin{aligned} x &= 1 \\ y &= 2 \end{aligned}",
+            MathStyle::Text,
+        );
+    }
+
+    /// Multi-pair aligned: heap/compact/arena paths should all agree.
+    #[test]
+    fn equivalence_aligned_multi_pair() {
+        assert_arena_heap_equivalent(
+            r"\begin{aligned} a &= b & c &= d \\ e &= f & g &= h \end{aligned}",
+            MathStyle::Text,
+        );
+    }
+
+    /// alignedat environment parses and lays out correctly.
+    #[test]
+    fn alignedat_parses_and_renders() {
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let latex = r"\begin{alignedat}{2} x &= 1 & \quad y &= 2 \end{alignedat}";
+        let result = crate::reader::latex::LatexReader::parse_compact(latex, &config).unwrap();
+        let opts = default_options();
+        let root = layout_expr_c(&result.expr, MathStyle::Text, &opts);
+        assert!(root.width > 1.0, "alignedat should render with meaningful width");
+    }
 }
