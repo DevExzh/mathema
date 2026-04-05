@@ -209,7 +209,7 @@ fn emit_raster_box(
                 paint.anti_alias = true;
 
                 let stroke = Stroke {
-                    width: 1.0,
+                    width: 0.04,
                     ..Stroke::default()
                 };
 
@@ -343,6 +343,25 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                 chars.next();
                 if let Some((x, y)) = parse_coord_pair(&mut chars) {
                     pb.line_to(x, y);
+                }
+            },
+            Some('C') => {
+                chars.next();
+                // Cubic bezier: C x1,y1 x2,y2 x3,y3
+                if let Some((x1, y1)) = parse_coord_pair(&mut chars)
+                    && let Some((x2, y2)) = parse_coord_pair(&mut chars)
+                    && let Some((x3, y3)) = parse_coord_pair(&mut chars)
+                {
+                    pb.cubic_to(x1, y1, x2, y2, x3, y3);
+                }
+            },
+            Some('Q') => {
+                chars.next();
+                // Quadratic bezier: Q x1,y1 x2,y2
+                if let Some((x1, y1)) = parse_coord_pair(&mut chars)
+                    && let Some((x2, y2)) = parse_coord_pair(&mut chars)
+                {
+                    pb.quad_to(x1, y1, x2, y2);
                 }
             },
             Some('Z') | Some('z') => {

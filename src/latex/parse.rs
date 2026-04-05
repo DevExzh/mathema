@@ -37,7 +37,7 @@ fn skip_ws_bytes(input: &[u8]) -> usize {
 }
 
 /// Byte table of ASCII characters that are recognized as symbol tokens.
-const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@";
+const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@()[]";
 
 // ---------------------------------------------------------------------------
 // Standalone helpers (stateless — no arena access needed)
@@ -57,6 +57,8 @@ fn classify_char(c: char) -> SymbolKind {
         ',' | ';' => SymbolKind::Punctuation,
         '.' | ':' | '?' | '\'' | '@' => SymbolKind::Ordinary,
         '|' => SymbolKind::Fence,
+        '(' | '[' => SymbolKind::Open,
+        ')' | ']' => SymbolKind::Close,
         // All callers guard with SYMBOL_BYTES, so this arm is unreachable.
         _ => unreachable!("classify_char called with non-symbol byte: {c:?}"),
     }
@@ -84,21 +86,101 @@ fn negate_char(ch: char) -> Option<char> {
 }
 
 fn parse_column_spec(spec: &str) -> SmallVec<[ColumnAlign; 4]> {
-    spec.chars()
-        .filter_map(|c| match c {
-            'l' => Some(ColumnAlign::Left),
-            'c' => Some(ColumnAlign::Center),
-            'r' => Some(ColumnAlign::Right),
-            _ => None,
-        })
-        .collect()
+    let mut result = SmallVec::new();
+    let mut chars = spec.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            'l' => result.push(ColumnAlign::Left),
+            'c' => result.push(ColumnAlign::Center),
+            'r' => result.push(ColumnAlign::Right),
+            '*' => {
+                // *{n}{pattern} — repeat pattern n times
+                if chars.peek() == Some(&'{') {
+                    chars.next(); // consume '{'
+                    let mut n_str = String::new();
+                    for ch in chars.by_ref() {
+                        if ch == '}' { break; }
+                        n_str.push(ch);
+                    }
+                    let n: usize = n_str.trim().parse().unwrap_or(1);
+                    if chars.peek() == Some(&'{') {
+                        chars.next(); // consume '{'
+                        let mut pattern = String::new();
+                        let mut depth = 1u32;
+                        for ch in chars.by_ref() {
+                            if ch == '{' { depth += 1; }
+                            if ch == '}' {
+                                depth -= 1;
+                                if depth == 0 { break; }
+                            }
+                            pattern.push(ch);
+                        }
+                        let sub = parse_column_spec(&pattern);
+                        for _ in 0..n {
+                            result.extend_from_slice(&sub);
+                        }
+                    }
+                }
+            },
+            _ => {}, // skip |, :, and other decorations
+        }
+    }
+    result
 }
 
 fn parse_row_separator(input: &str) -> IResult<&str, ()> {
     let (input, _) = ws(input)?;
-    let (input, _) = tag("\\\\")(input)?;
+    // Accept \\ or \cr as row separator
+    let input = if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\cr")(input) {
+        // \cr must not be followed by alphabetic (to avoid matching \cross etc.)
+        if rest.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Tag,
+            )));
+        }
+        rest
+    } else {
+        let (rest, _) = tag("\\\\")(input)?;
+        rest
+    };
     let (input, _) = ws(input)?;
+    // Optionally consume [dimension] like [1ex], [3pt]
+    let input = if input.starts_with('[') {
+        if let Some(end) = input.find(']') {
+            &input[end + 1..]
+        } else {
+            input
+        }
+    } else {
+        input
+    };
+    let (input, _) = ws(input)?;
+    // Consume any \hline or \hdashline directives that follow
+    let input = skip_table_directives(input);
     Ok((input, ()))
+}
+
+/// Skip `\hline` and `\hdashline` table directives (silently consumed).
+fn skip_table_directives(mut input: &str) -> &str {
+    loop {
+        let trimmed = input.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("\\hline") {
+            // Ensure it's not a prefix of a longer command
+            if rest.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+                break;
+            }
+            input = rest;
+        } else if let Some(rest) = trimmed.strip_prefix("\\hdashline") {
+            if rest.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+                break;
+            }
+            input = rest;
+        } else {
+            break;
+        }
+    }
+    input
 }
 
 fn parse_cell_separator(input: &str) -> IResult<&str, ()> {
@@ -343,6 +425,9 @@ impl LatexCompactParser {
             '[' => Ok((rest, self.arena.push_str("["))),
             ']' => Ok((rest, self.arena.push_str("]"))),
             '|' => Ok((rest, self.arena.push_str("|"))),
+            '/' => Ok((rest, self.arena.push_str("/"))),
+            '<' => Ok((rest, self.arena.push_str("\u{27E8}"))), // ⟨
+            '>' => Ok((rest, self.arena.push_str("\u{27E9}"))), // ⟩
             '.' => Ok((rest, self.arena.push_str(""))),
             '\\' => {
                 let c2 = rest.chars().next().ok_or_else(|| {
@@ -422,6 +507,11 @@ impl LatexCompactParser {
     /// Parse one element: an atom optionally followed by scripts.
     #[inline]
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Handle leading ^/_ with implicit empty base (e.g., {^3+1})
+        if input.starts_with('^') || input.starts_with('_') {
+            let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            return self.parse_scripts(input, base);
+        }
         let (input, base) = self.parse_atom(input)?;
 
         // N-ary operators consume scripts + body specially
@@ -553,9 +643,10 @@ impl LatexCompactParser {
         let (input, (sub_id, sup_id)) = self.parse_optional_limits(input)?;
         let (input, _) = ws(input)?;
 
-        // The body is the next atom (or empty row if nothing follows)
+        // The body is the next atom (or empty row if nothing follows).
+        // Allow scripts on the body: \int_0^1 x^2 → body is x^2, not just x.
         let (input, body_id) = match self.parse_atom(input) {
-            Ok((rest, id)) => (rest, id),
+            Ok((rest, id)) => self.parse_scripts(rest, id)?,
             Err(_) => {
                 let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
                 (input, row_id)
@@ -625,6 +716,33 @@ impl LatexCompactParser {
             Some(b'0'..=b'9') => self.parse_number(input),
             Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
             Some(&b) if b.is_ascii_alphabetic() => self.parse_letter(input),
+            // ~ is a non-breaking space in LaTeX
+            Some(b'~') => Ok((
+                &input[1..],
+                self.arena
+                    .push_node(CompactNode::Space(Rational::new(1, 4))),
+            )),
+            // $ in math mode is a no-op (used inside \hbox{$...$} etc.)
+            Some(b'$') => Ok((
+                &input[1..],
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            )),
+            // Backtick ` → ordinary symbol (used in ``quotes'')
+            Some(b'`') => {
+                let sid = self.arena.push_str("`");
+                Ok((&input[1..], self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid))))
+            },
+            // Non-ASCII: Unicode letters → identifiers, other → symbols
+            Some(&b) if b > 127 => {
+                let ch = input.chars().next().unwrap();
+                let len = ch.len_utf8();
+                let sid = self.arena.push_str(&input[..len]);
+                if ch.is_alphabetic() {
+                    Ok((&input[len..], self.arena.push_node(CompactNode::Identifier(sid))))
+                } else {
+                    Ok((&input[len..], self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid))))
+                }
+            },
             _ => Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Alt,
@@ -640,6 +758,46 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         let (input, _) = char('}')(input)?;
         Ok((input, self.flatten_single(&ids)))
+    }
+
+    /// Parse a bracket group `[ ... ]` for optional arguments.
+    ///
+    /// Scans forward to the matching `]` (with brace-depth tracking) before
+    /// parsing content, so that `]` atoms inside `SYMBOL_BYTES` don't get
+    /// consumed as content by `parse_node_list`.
+    fn parse_bracket_group<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        if !input.starts_with('[') {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        }
+        let inner = &input[1..]; // skip '['
+        let mut depth = 0u32;
+        let mut end = None;
+        for (i, c) in inner.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' if depth > 0 => depth -= 1,
+                ']' if depth == 0 => {
+                    end = Some(i);
+                    break;
+                },
+                _ => {},
+            }
+        }
+        let end = end.ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let content = &inner[..end];
+        let rest = &inner[end + 1..];
+        let (leftover, ids) = self.parse_node_list(content)?;
+        // leftover should be empty; if not, ignore trailing content
+        let _ = leftover;
+        Ok((rest, ids))
     }
 
     /// Parse a number: sequence of digits with optional decimal point.
@@ -746,8 +904,36 @@ impl LatexCompactParser {
             ';' => CompactNode::Space(Rational::new(5, 18)),
             ':' => CompactNode::Space(Rational::new(4, 18)),
             '!' => CompactNode::Space(Rational::new(-3, 18)),
-            '\\' => CompactNode::Space(Rational::zero()),
+            '\\' => {
+                // Consume optional [dimension] after \\ (e.g. \\[1ex])
+                let rest = if rest.starts_with('[') {
+                    if let Some(end) = rest.find(']') {
+                        &rest[end + 1..]
+                    } else {
+                        rest
+                    }
+                } else {
+                    rest
+                };
+                return Ok((rest, self.arena.push_node(CompactNode::Space(Rational::zero()))));
+            },
             ' ' => CompactNode::Space(Rational::new(1, 4)),
+            '$' => {
+                let sid = self.arena.push_str("$");
+                CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            },
+            '#' => {
+                let sid = self.arena.push_str("#");
+                CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            },
+            '%' => {
+                let sid = self.arena.push_str("%");
+                CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            },
+            '&' => {
+                let sid = self.arena.push_str("&");
+                CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            },
             _ => {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
@@ -813,9 +999,47 @@ impl LatexCompactParser {
             | "mathscr" | "mathfrak" | "boldsymbol" | "bm" => self.parse_math_font(input, name),
 
             // --- Decorators ---
-            "phantom" => {
+            "phantom" | "vphantom" | "hphantom" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
                 Ok((input, self.arena.push_node(CompactNode::Phantom(arg_id))))
+            },
+            "smash" => {
+                // \smash[b]{...} or \smash{...} — optional [b]/[t] arg
+                let (input, _) = ws(input)?;
+                let input = if input.starts_with('[') {
+                    if let Some(end) = input.find(']') {
+                        &input[end + 1..]
+                    } else {
+                        input
+                    }
+                } else {
+                    input
+                };
+                self.parse_required_group(input)
+            },
+            "tag" => {
+                // \tag{...} — scan-consume argument (may contain $...$)
+                let (input, _) = ws(input)?;
+                let input = input.strip_prefix('*').unwrap_or(input);
+                let (input, _) = ws(input)?;
+                let input = if let Some(inner) = input.strip_prefix('{') {
+                    let mut depth = 1u32;
+                    let mut end = 0;
+                    for (i, c) in inner.char_indices() {
+                        match c {
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 { end = i + 1; break; }
+                            },
+                            _ => {},
+                        }
+                    }
+                    &inner[end..]
+                } else {
+                    input
+                };
+                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
             },
             "boxed" | "fbox" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
@@ -848,6 +1072,18 @@ impl LatexCompactParser {
             // --- Extensible arrows ---
             "xleftarrow" => self.parse_extensible_arrow(input, '\u{2190}'),
             "xrightarrow" => self.parse_extensible_arrow(input, '\u{2192}'),
+            "xLeftarrow" => self.parse_extensible_arrow(input, '\u{21D0}'),
+            "xRightarrow" => self.parse_extensible_arrow(input, '\u{21D2}'),
+            "xleftrightarrow" => self.parse_extensible_arrow(input, '\u{2194}'),
+            "xLeftrightarrow" => self.parse_extensible_arrow(input, '\u{21D4}'),
+            "xhookleftarrow" => self.parse_extensible_arrow(input, '\u{21A9}'),
+            "xhookrightarrow" => self.parse_extensible_arrow(input, '\u{21AA}'),
+            "xmapsto" => self.parse_extensible_arrow(input, '\u{21A6}'),
+            "xrightleftharpoons" => self.parse_extensible_arrow(input, '\u{21CC}'),
+            "xleftrightharpoons" => self.parse_extensible_arrow(input, '\u{21CB}'),
+            "xtwoheadrightarrow" => self.parse_extensible_arrow(input, '\u{21A0}'),
+            "xtwoheadleftarrow" => self.parse_extensible_arrow(input, '\u{219E}'),
+            "xtofrom" => self.parse_extensible_arrow(input, '\u{21C4}'),
 
             // --- Substack ---
             "substack" => self.parse_substack(input),
@@ -861,6 +1097,9 @@ impl LatexCompactParser {
             // --- Color (consume color arg, return content) ---
             "color" => self.parse_color_discard(input),
             "textcolor" => self.parse_textcolor(input),
+
+            // --- Generalized fraction ---
+            "genfrac" => self.parse_genfrac(input),
 
             // --- Catch-all: symbols, n-ary, operators, Greek letters ---
             //
@@ -934,6 +1173,10 @@ impl LatexCompactParser {
             "textstyle" | "scriptstyle" | "scriptscriptstyle" => {
                 Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
             },
+            // Line break / no-op commands consumed silently
+            "newline" | "nonumber" | "notag" | "nobreak" => {
+                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
+            },
             // Mod operator
             "bmod" => {
                 let sid = self.arena.push_str("mod");
@@ -952,7 +1195,33 @@ impl LatexCompactParser {
 
     fn parse_required_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        self.parse_braced_group(input)
+        if input.starts_with('{') {
+            self.parse_braced_group(input)
+        } else {
+            // LaTeX allows single unbraced tokens as arguments:
+            // \frac12 → \frac{1}{2}, \vec x → \vec{x}
+            self.parse_single_token(input)
+        }
+    }
+
+    /// Parse a single unbraced TeX token: one letter, one digit, one symbol, or a command.
+    fn parse_single_token<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        match input.as_bytes().first() {
+            Some(b'\\') => self.parse_command(input),
+            Some(&b) if b.is_ascii_alphabetic() => {
+                let sid = self.arena.push_str(&input[..1]);
+                Ok((&input[1..], self.arena.push_node(CompactNode::Identifier(sid))))
+            },
+            Some(&b) if b.is_ascii_digit() => {
+                let sid = self.arena.push_str(&input[..1]);
+                Ok((&input[1..], self.arena.push_node(CompactNode::Number(sid))))
+            },
+            Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
+            _ => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alt,
+            ))),
+        }
     }
 
     fn parse_cancel<'a>(&mut self, input: &'a str, stroke: StrokeKind) -> IResult<&'a str, NodeId> {
@@ -977,6 +1246,52 @@ impl LatexCompactParser {
                 den: den_id,
             }),
         ))
+    }
+
+    /// `\genfrac{left}{right}{thickness}{style}{num}{den}`
+    fn parse_genfrac<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Parse all 6 arguments (each can be braced or single token)
+        let (input, left_id) = self.parse_required_group(input)?;
+        let (input, right_id) = self.parse_required_group(input)?;
+        let (input, _thickness) = self.parse_required_group(input)?; // discard
+        let (input, _style) = self.parse_required_group(input)?; // discard
+        let (input, num_id) = self.parse_required_group(input)?;
+        let (input, den_id) = self.parse_required_group(input)?;
+
+        let frac_id = self.arena.push_node(CompactNode::Fraction {
+            kind: FractionKind::Normal,
+            num: num_id,
+            den: den_id,
+        });
+
+        // Extract delimiter strings from the parsed nodes
+        let left_s = self.extract_delimiter_str(left_id);
+        let right_s = self.extract_delimiter_str(right_id);
+
+        if left_s.is_empty() && right_s.is_empty() {
+            Ok((input, frac_id))
+        } else {
+            let open = self.arena.push_str(&left_s);
+            let close = self.arena.push_str(&right_s);
+            let content = self.arena.push_children(&[frac_id]);
+            Ok((
+                input,
+                self.arena.push_node(CompactNode::Fenced {
+                    open,
+                    close,
+                    content,
+                }),
+            ))
+        }
+    }
+
+    /// Extract a delimiter string from a parsed node (for \genfrac).
+    fn extract_delimiter_str(&self, id: NodeId) -> String {
+        match self.arena.node(id) {
+            CompactNode::Symbol(_, sid) => self.arena.str_val(*sid).to_string(),
+            CompactNode::Row(span) if span.is_empty() => String::new(),
+            _ => String::new(),
+        }
     }
 
     fn parse_binom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -1004,9 +1319,7 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         // Optional index: \sqrt[n]{...}
         let (input, index) = if input.starts_with('[') {
-            let (rest, _) = char('[')(input)?;
-            let (rest, idx_ids) = self.parse_node_list(rest)?;
-            let (rest, _) = char(']')(rest)?;
+            let (rest, idx_ids) = self.parse_bracket_group(input)?;
             (rest, Some(idx_ids))
         } else {
             (input, None)
@@ -1212,10 +1525,32 @@ impl LatexCompactParser {
         };
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        let (input, text) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        // Scan for matching '}' with brace counting (handles nested {})
+        let mut depth = 1u32;
+        let mut end = 0;
+        for (i, c) in input.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                },
+                _ => {},
+            }
+        }
+        if depth != 0 {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        }
+        let text = &input[..end];
+        let rest = &input[end + 1..]; // skip the closing '}'
         let sid = self.arena.push_str(text);
-        Ok((input, self.arena.push_node(CompactNode::Text(style, sid))))
+        Ok((rest, self.arena.push_node(CompactNode::Text(style, sid))))
     }
 
     fn parse_math_font<'a>(&mut self, input: &'a str, cmd_name: &str) -> IResult<&'a str, NodeId> {
@@ -1260,15 +1595,33 @@ impl LatexCompactParser {
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, name) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        // Handle \operatorname* (limits placement)
+        let (input, limits) = if let Some(rest) = input.strip_prefix('*') {
+            (rest, LimitStyle::AboveBelow)
+        } else {
+            (input, LimitStyle::Default)
+        };
+        let (input, _) = ws(input)?;
+        // Accept both braced {name} and unbraced single letter
+        let (input, name) = if input.starts_with('{') {
+            let (input, _) = char('{')(input)?;
+            let (input, name) = take_while(|c: char| c != '}')(input)?;
+            let (input, _) = char('}')(input)?;
+            (input, name)
+        } else if input.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+            (&input[1..], &input[..1])
+        } else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alpha,
+            )));
+        };
         let sid = self.arena.push_str(name);
         Ok((
             input,
             self.arena.push_node(CompactNode::Operator {
                 name: sid,
-                limits: LimitStyle::Default,
+                limits,
             }),
         ))
     }
@@ -1372,9 +1725,7 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         // Optional below: \xrightarrow[below]{above}
         let (input, below) = if input.starts_with('[') {
-            let (rest, _) = char('[')(input)?;
-            let (rest, ids) = self.parse_node_list(rest)?;
-            let (rest, _) = char(']')(rest)?;
+            let (rest, ids) = self.parse_bracket_group(input)?;
             (rest, Some(ids))
         } else {
             (input, None)
@@ -1485,16 +1836,50 @@ impl LatexCompactParser {
         let (input, _) = char('{')(input)?;
         let (input, color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
-        // \color{X} affects all subsequent content in the current scope.
-        // Parse remaining tokens in this group as the colored content.
-        let (input, ids) = self.parse_node_list(input)?;
         let color_sid = self.arena.push_str(color);
-        let content_id = self.flatten_single(&ids);
-        Ok((
-            input,
-            self.arena
-                .push_node(CompactNode::Color { color: color_sid, content: content_id }),
-        ))
+        // \color{X}{content} — if followed by braced group, parse just that group.
+        // Otherwise, parse remaining elements but stop at cell/row/env boundaries
+        // to avoid consuming past table structure (e.g., \\, &, \end).
+        let (input, _) = ws(input)?;
+        if input.starts_with('{') {
+            let (input, content_id) = self.parse_braced_group(input)?;
+            Ok((
+                input,
+                self.arena
+                    .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+            ))
+        } else {
+            let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+            let mut rest = input;
+            loop {
+                let (r, _) = ws(rest)?;
+                rest = r;
+                if rest.is_empty()
+                    || rest.starts_with('&')
+                    || rest.starts_with("\\\\")
+                    || rest.starts_with("\\end")
+                    || rest.starts_with("\\right")
+                    || rest.starts_with("\\middle")
+                    || rest.starts_with('}')
+                {
+                    break;
+                }
+                match self.parse_element(rest) {
+                    Ok((r, id)) => {
+                        ids.push(id);
+                        rest = r;
+                    },
+                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                    Err(_) => break,
+                }
+            }
+            let content_id = self.flatten_single(&ids);
+            Ok((
+                rest,
+                self.arena
+                    .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+            ))
+        }
     }
 
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -1524,7 +1909,8 @@ impl LatexCompactParser {
 
         match env_name {
             "array" => self.parse_array_env(input, env_name),
-            "matrix" | "pmatrix" | "bmatrix" | "vmatrix" | "Bmatrix" | "Vmatrix" => {
+            "matrix" | "pmatrix" | "bmatrix" | "vmatrix" | "Bmatrix" | "Vmatrix"
+            | "matrix*" | "pmatrix*" | "bmatrix*" | "vmatrix*" | "Bmatrix*" | "Vmatrix*" => {
                 self.parse_matrix_env(input, env_name)
             },
             "cases" => self.parse_cases_env(input),
@@ -1541,12 +1927,26 @@ impl LatexCompactParser {
     fn parse_array_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         let (input, columns) = 'col: {
-            if let Ok((r1, _)) = char::<_, nom::error::Error<&str>>('{')(input)
-                && let Ok((r2, spec)) =
-                    take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(r1)
-                && let Ok((r3, _)) = char::<_, nom::error::Error<&str>>('}')(r2)
-            {
-                break 'col (r3, parse_column_spec(spec));
+            if let Some(inner) = input.strip_prefix('{') {
+                // Scan with brace-depth to handle nested {} in column specs
+                // e.g., {l*{2}{rc}} has nested braces
+                let mut depth = 0u32;
+                let mut end = None;
+                for (i, c) in inner.char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' if depth > 0 => depth -= 1,
+                        '}' => { end = Some(i); break; },
+                        _ => {},
+                    }
+                }
+                if let Some(end) = end {
+                    let spec = &inner[..end];
+                    let rest = &inner[end + 1..];
+                    if !spec.is_empty() {
+                        break 'col (rest, parse_column_spec(spec));
+                    }
+                }
             }
             (input, SmallVec::new())
         };
@@ -1563,6 +1963,24 @@ impl LatexCompactParser {
     }
 
     fn parse_matrix_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
+        // Starred variants (matrix*, pmatrix*, etc.) accept optional [l], [r], [c]
+        let (input, col_align) = if env_name.ends_with('*') {
+            let (input, _) = ws(input)?;
+            if input.starts_with('[') {
+                let a = match input.as_bytes().get(1) {
+                    Some(b'l') => ColumnAlign::Left,
+                    Some(b'r') => ColumnAlign::Right,
+                    _ => ColumnAlign::Center,
+                };
+                let end = input.find(']').unwrap_or(2);
+                (&input[end + 1..], Some(a))
+            } else {
+                (input, None)
+            }
+        } else {
+            (input, None)
+        };
+
         let (input, rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
@@ -1571,7 +1989,8 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        let (open_s, close_s) = match env_name {
+        let base = env_name.strip_suffix('*').unwrap_or(env_name);
+        let (open_s, close_s) = match base {
             "pmatrix" => ("(", ")"),
             "bmatrix" => ("[", "]"),
             "vmatrix" => ("|", "|"),
@@ -1580,8 +1999,9 @@ impl LatexCompactParser {
             _ => ("", ""),
         };
 
+        let align = col_align.unwrap_or(ColumnAlign::Center);
         let columns: SmallVec<[ColumnAlign; 4]> = if let Some(first_row) = rows.first() {
-            smallvec::smallvec![ColumnAlign::Center; first_row.len()]
+            smallvec::smallvec![align; first_row.len()]
         } else {
             SmallVec::new()
         };
@@ -1748,7 +2168,8 @@ impl LatexCompactParser {
         input: &'a str,
     ) -> IResult<&'a str, Vec<Vec<SmallVec<[NodeId; 8]>>>> {
         let mut rows = Vec::with_capacity(4);
-        let mut rest = input;
+        // Skip leading \hline / \hdashline before first row
+        let mut rest = skip_table_directives(input);
         let (r, first) = self.parse_table_row(rest)?;
         rows.push(first);
         rest = r;
@@ -1826,6 +2247,11 @@ impl LatexCompactParser {
                 input,
                 nom::error::ErrorKind::Eof,
             )));
+        }
+        // Handle leading ^/_ with implicit empty base in table cells
+        if input.starts_with('^') || input.starts_with('_') {
+            let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            return self.parse_scripts(input, base);
         }
         self.parse_element(input)
     }

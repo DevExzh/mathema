@@ -122,7 +122,7 @@ fn emit_box_embedded(
             let ty = y - layout.height * em;
             let _ = write!(
                 svg,
-                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="1" fill="none"/></g>"#,
+                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
                 tx = tx,
                 ty = ty,
                 s = em,
@@ -298,7 +298,7 @@ fn emit_box_arena_embedded(
             let ty = y - layout.height * em;
             let _ = write!(
                 svg,
-                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="1" fill="none"/></g>"#,
+                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
                 tx = tx,
                 ty = ty,
                 s = em,
