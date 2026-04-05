@@ -16,6 +16,7 @@ use crate::unicode::symbols::{
 };
 
 use super::error::LatexParseError;
+use super::preprocess::preprocess;
 
 pub(crate) const MAX_PARSE_DEPTH: u32 = 128;
 
@@ -243,8 +244,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let mut parser = LatexCompactParser::with_capacity(trimmed.len());
-    match parser.parse_node_list(trimmed) {
+    let processed = preprocess(trimmed);
+    let mut parser = LatexCompactParser::with_capacity(processed.len());
+    match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
             let roots = parser.arena.push_children(&ids);
             let display = if parser.display_override {
@@ -288,7 +290,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
         Err(ref e) => {
             if config.strictness == Strictness::Lenient {
                 let mut diagnostics = Vec::new();
-                let ids = parser.parse_lenient_remainder(trimmed, &mut diagnostics);
+                let ids = parser.parse_lenient_remainder(&processed, &mut diagnostics);
                 diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::Warning,
                     message: format!("parse error (recovered): {e}"),
