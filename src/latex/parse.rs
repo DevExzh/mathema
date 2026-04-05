@@ -783,13 +783,24 @@ impl LatexCompactParser {
             "ddot" => self.parse_accent(input, '\u{0308}', AccentPosition::Above),
             "tilde" | "widetilde" => self.parse_accent(input, '\u{0303}', AccentPosition::Above),
             "breve" => self.parse_accent(input, '\u{0306}', AccentPosition::Above),
-            "check" => self.parse_accent(input, '\u{030C}', AccentPosition::Above),
+            "check" | "widecheck" => self.parse_accent(input, '\u{030C}', AccentPosition::Above),
             "acute" => self.parse_accent(input, '\u{0301}', AccentPosition::Above),
             "grave" => self.parse_accent(input, '\u{0300}', AccentPosition::Above),
 
-            // --- Overbrace / underbrace ---
+            // --- Stretchy accents (arrows above) ---
+            "overrightarrow" => self.parse_accent(input, '\u{2192}', AccentPosition::Above),
+            "overleftarrow" => self.parse_accent(input, '\u{2190}', AccentPosition::Above),
+            "overleftrightarrow" => self.parse_accent(input, '\u{2194}', AccentPosition::Above),
+            "overrightharpoon" | "overset{\\rightharpoonup}" => {
+                self.parse_accent(input, '\u{21C0}', AccentPosition::Above)
+            },
+            "overleftharpoon" => self.parse_accent(input, '\u{21BC}', AccentPosition::Above),
+
+            // --- Overbrace / underbrace / overbracket / underbracket ---
             "overbrace" => self.parse_overbrace(input),
             "underbrace" => self.parse_underbrace(input),
+            "overbracket" => self.parse_overbracket(input),
+            "underbracket" => self.parse_underbracket(input),
 
             // --- Delimiters ---
             "left" => self.parse_left_right(input),
@@ -1079,6 +1090,38 @@ impl LatexCompactParser {
     fn parse_underbrace<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, base_id) = self.parse_required_group(input)?;
         let sid = self.arena.push_str("\u{23DF}");
+        let under_id = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Underscript {
+                base: base_id,
+                under: under_id,
+                movable_limits: false,
+            }),
+        ))
+    }
+
+    fn parse_overbracket<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, base_id) = self.parse_required_group(input)?;
+        let sid = self.arena.push_str("\u{23B4}");
+        let over_id = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Overscript {
+                base: base_id,
+                over: over_id,
+                movable_limits: false,
+            }),
+        ))
+    }
+
+    fn parse_underbracket<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, base_id) = self.parse_required_group(input)?;
+        let sid = self.arena.push_str("\u{23B5}");
         let under_id = self
             .arena
             .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));

@@ -182,6 +182,174 @@ impl<'a> LayoutCtx<'a> {
     }
 }
 
+// ── Stretchy decoration SVG path helpers ──────────────────────────────
+
+/// Returns `true` if the accent char should be drawn as a stretchy SVG path
+/// that scales to the base width, rather than as a fixed glyph.
+fn is_stretchy_accent(accent: char) -> bool {
+    matches!(
+        accent,
+        '\u{0302}'  // hat / widehat (combining circumflex)
+        | '\u{030C}' // check / widecheck (combining caron)
+        | '\u{0303}' // tilde / widetilde (combining tilde)
+        | '\u{20D7}' // vec / overrightarrow (combining right arrow above)
+        | '\u{2192}' // overrightarrow (rightwards arrow)
+        | '\u{2190}' // overleftarrow (leftwards arrow)
+        | '\u{2194}' // overleftrightarrow (left right arrow)
+        | '\u{21C0}' // overrightharpoon (rightwards harpoon)
+        | '\u{21BC}' // overleftharpoon (leftwards harpoon)
+    )
+}
+
+/// Returns `true` if the over/under symbol char is a stretchy decoration
+/// (brace, bracket, overline) that should scale to the base width.
+fn is_stretchy_overunder(sym: &str) -> bool {
+    matches!(
+        sym,
+        "\u{23DE}"  // overbrace ⏞
+        | "\u{23DF}" // underbrace ⏟
+        | "\u{23B4}" // overbracket ⎴
+        | "\u{23B5}" // underbracket ⎵
+        | "\u{203E}" // overline ‾
+    )
+}
+
+/// Generate an SVG path string for a stretchy accent at the given width and height.
+/// Coordinates are in em units with (0,0) at top-left.
+fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
+    let stroke = 0.04; // matches emit.rs stroke-width
+    match accent {
+        // Hat: ∧ shape centered above content
+        '\u{0302}' => {
+            let mid = w / 2.0;
+            format!("M0,{h} L{mid},0 L{w},{h}")
+        },
+        // Check/caron: ∨ shape
+        '\u{030C}' => {
+            let mid = w / 2.0;
+            format!("M0,0 L{mid},{h} L{w},0")
+        },
+        // Tilde: wavy S-curve
+        '\u{0303}' => {
+            let q1x = w * 0.25;
+            let q2x = w * 0.75;
+            let mid = h / 2.0;
+            format!(
+                "M0,{mid} C{q1x},0 {q2x},{h} {w},{mid}"
+            )
+        },
+        // Right arrow (overrightarrow, vec)
+        '\u{20D7}' | '\u{2192}' => {
+            let mid = h / 2.0;
+            let head = h.min(w * 0.15).max(stroke * 3.0);
+            let tip = w;
+            let shaft_end = w - head;
+            format!(
+                "M0,{mid} L{shaft_end},{mid} M{tip},{mid} L{se},{t} M{tip},{mid} L{se},{b}",
+                se = shaft_end,
+                t = mid - head,
+                b = mid + head,
+            )
+        },
+        // Left arrow (overleftarrow)
+        '\u{2190}' => {
+            let mid = h / 2.0;
+            let head = h.min(w * 0.15).max(stroke * 3.0);
+            let shaft_start = head;
+            format!(
+                "M{shaft_start},{mid} L{w},{mid} M0,{mid} L{shaft_start},{t} M0,{mid} L{shaft_start},{b}",
+                t = mid - head,
+                b = mid + head,
+            )
+        },
+        // Left-right arrow
+        '\u{2194}' => {
+            let mid = h / 2.0;
+            let head = h.min(w * 0.12).max(stroke * 3.0);
+            let shaft_start = head;
+            let shaft_end = w - head;
+            format!(
+                "M{shaft_start},{mid} L{shaft_end},{mid} \
+                 M0,{mid} L{shaft_start},{t} M0,{mid} L{shaft_start},{b} \
+                 M{w},{mid} L{shaft_end},{t} M{w},{mid} L{shaft_end},{b}",
+                t = mid - head,
+                b = mid + head,
+            )
+        },
+        // Right harpoon (upper barb)
+        '\u{21C0}' => {
+            let mid = h / 2.0;
+            let head = h.min(w * 0.15).max(stroke * 3.0);
+            let shaft_end = w - head;
+            format!(
+                "M0,{mid} L{shaft_end},{mid} M{w},{mid} L{shaft_end},{t}",
+                t = mid - head,
+            )
+        },
+        // Left harpoon (upper barb)
+        '\u{21BC}' => {
+            let mid = h / 2.0;
+            let head = h.min(w * 0.15).max(stroke * 3.0);
+            let shaft_start = head;
+            format!(
+                "M{shaft_start},{mid} L{w},{mid} M0,{mid} L{shaft_start},{t}",
+                t = mid - head,
+            )
+        },
+        // Fallback: horizontal line
+        _ => {
+            let mid = h / 2.0;
+            format!("M0,{mid} L{w},{mid}")
+        },
+    }
+}
+
+/// Generate an SVG path string for a stretchy over/under decoration.
+/// Coordinates are in em units with (0,0) at top-left.
+fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
+    match sym {
+        // Overbrace ⏞ — curly brace above, tip points up
+        "\u{23DE}" => {
+            let mid = w / 2.0;
+            let q = w * 0.25;
+            let tq = w * 0.75;
+            format!(
+                "M0,{h} Q{q},{h} {mid},0 Q{tq},{h} {w},{h}"
+            )
+        },
+        // Underbrace ⏟ — curly brace below, tip points down
+        "\u{23DF}" => {
+            let mid = w / 2.0;
+            let q = w * 0.25;
+            let tq = w * 0.75;
+            format!(
+                "M0,0 Q{q},0 {mid},{h} Q{tq},0 {w},0"
+            )
+        },
+        // Overbracket ⎴ — square bracket above
+        "\u{23B4}" => {
+            format!(
+                "M0,{h} L0,0 L{w},0 L{w},{h}"
+            )
+        },
+        // Underbracket ⎵ — square bracket below
+        "\u{23B5}" => {
+            format!(
+                "M0,0 L0,{h} L{w},{h} L{w},0"
+            )
+        },
+        // Overline ‾ — horizontal rule
+        "\u{203E}" => {
+            let mid = h / 2.0;
+            format!("M0,{mid} L{w},{mid}")
+        },
+        _ => {
+            let mid = h / 2.0;
+            format!("M0,{mid} L{w},{mid}")
+        },
+    }
+}
+
 /// Entry point: layout an entire math expression.
 pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -> LayoutBox {
     let ctx = LayoutCtx {
@@ -1070,12 +1238,40 @@ fn layout_subsup_from_box_heap(
     }
 }
 
+/// Extract the symbol string from a MathNode if it is a stretchy overunder decoration.
+fn get_stretchy_overunder_sym(node: &MathNode) -> Option<&str> {
+    if let MathNode::Symbol(_, s) = node
+        && is_stretchy_overunder(s)
+    {
+        return Some(s);
+    }
+    None
+}
+
+/// Create a stretchy overunder decoration LayoutBox at the given width.
+fn make_stretchy_overunder_box(sym: &str, width: f64, size: f64) -> LayoutBox {
+    let deco_h = 0.12 * size;
+    LayoutBox {
+        width,
+        height: deco_h,
+        depth: 0.0,
+        kind: BoxKind::SvgPath(stretchy_overunder_path(sym, width, deco_h)),
+    }
+}
+
 fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node(base, ctx);
-    let over_ctx = ctx.with_style(ctx.style.sup());
-    let over_box = layout_node(over, &over_ctx);
+    let base_w = base_box.width;
+
+    // Check if the over decoration is a stretchy symbol that should scale to base width
+    let over_box = if let Some(sym) = get_stretchy_overunder_sym(over) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        layout_node(over, &over_ctx)
+    };
 
     let gap = p.big_op_spacing[2] * size;
     let max_w = base_box.width.max(over_box.width);
@@ -1103,8 +1299,15 @@ fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> Lay
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node(base, ctx);
-    let under_ctx = ctx.with_style(ctx.style.sub());
-    let under_box = layout_node(under, &under_ctx);
+    let base_w = base_box.width;
+
+    // Check if the under decoration is a stretchy symbol that should scale to base width
+    let under_box = if let Some(sym) = get_stretchy_overunder_sym(under) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        layout_node(under, &under_ctx)
+    };
 
     let gap = p.big_op_spacing[4] * size;
     let max_w = base_box.width.max(under_box.width);
@@ -1137,10 +1340,21 @@ fn layout_underover(
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node(base, ctx);
-    let over_ctx = ctx.with_style(ctx.style.sup());
-    let under_ctx = ctx.with_style(ctx.style.sub());
-    let over_box = layout_node(over, &over_ctx);
-    let under_box = layout_node(under, &under_ctx);
+    let base_w = base_box.width;
+
+    let over_box = if let Some(sym) = get_stretchy_overunder_sym(over) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        layout_node(over, &over_ctx)
+    };
+
+    let under_box = if let Some(sym) = get_stretchy_overunder_sym(under) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        layout_node(under, &under_ctx)
+    };
 
     let gap_above = p.big_op_spacing[2] * size;
     let gap_below = p.big_op_spacing[4] * size;
@@ -1177,9 +1391,22 @@ fn layout_accent(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let base_box = layout_node(base, ctx);
-    let accent_box = LayoutBox::glyph(accent, ctx.style);
+    let base_width = base_box.width;
 
-    let accent_dx = (base_box.width - accent_box.width) / 2.0;
+    // For stretchy accents, generate an SVG path scaled to the base width
+    let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
+        let accent_h = 0.12 * ctx.size(); // accent decoration height in em
+        LayoutBox {
+            width: base_width,
+            height: accent_h,
+            depth: 0.0,
+            kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+        }
+    } else {
+        LayoutBox::glyph(accent, ctx.style)
+    };
+
+    let accent_dx = (base_width - accent_box.width) / 2.0;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
             let dy = base_box.height + 0.02 * ctx.size(); // small gap
@@ -1194,9 +1421,6 @@ fn layout_accent(
             )
         },
     };
-
-    // Capture width before moving base_box into children vec
-    let base_width = base_box.width;
 
     let children = vec![
         PositionedBox::at_origin(base_box),
@@ -2305,12 +2529,30 @@ fn layout_subsup_from_box(
     }
 }
 
+/// Check if a CompactNode (referenced by NodeId) is a stretchy overunder decoration symbol.
+/// Returns the symbol string if so.
+fn get_stretchy_overunder_sym_c(arena: &AstArena, id: NodeId) -> Option<&str> {
+    if let CompactNode::Symbol(_, sid) = *arena.node(id) {
+        let s = arena.str_val(sid);
+        if is_stretchy_overunder(s) {
+            return Some(s);
+        }
+    }
+    None
+}
+
 fn layout_overscript_c(arena: &AstArena, base: NodeId, over: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node_c(arena, base, ctx);
-    let over_ctx = ctx.with_style(ctx.style.sup());
-    let over_box = layout_node_c(arena, over, &over_ctx);
+    let base_w = base_box.width;
+
+    let over_box = if let Some(sym) = get_stretchy_overunder_sym_c(arena, over) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        layout_node_c(arena, over, &over_ctx)
+    };
 
     let gap = p.big_op_spacing[2] * size;
     let max_w = base_box.width.max(over_box.width);
@@ -2342,8 +2584,14 @@ fn layout_underscript_c(
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node_c(arena, base, ctx);
-    let under_ctx = ctx.with_style(ctx.style.sub());
-    let under_box = layout_node_c(arena, under, &under_ctx);
+    let base_w = base_box.width;
+
+    let under_box = if let Some(sym) = get_stretchy_overunder_sym_c(arena, under) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        layout_node_c(arena, under, &under_ctx)
+    };
 
     let gap = p.big_op_spacing[4] * size;
     let max_w = base_box.width.max(under_box.width);
@@ -2376,10 +2624,21 @@ fn layout_underover_c(
     let p = &ctx.params;
     let size = ctx.size();
     let base_box = layout_node_c(arena, base, ctx);
-    let over_ctx = ctx.with_style(ctx.style.sup());
-    let under_ctx = ctx.with_style(ctx.style.sub());
-    let over_box = layout_node_c(arena, over, &over_ctx);
-    let under_box = layout_node_c(arena, under, &under_ctx);
+    let base_w = base_box.width;
+
+    let over_box = if let Some(sym) = get_stretchy_overunder_sym_c(arena, over) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        layout_node_c(arena, over, &over_ctx)
+    };
+
+    let under_box = if let Some(sym) = get_stretchy_overunder_sym_c(arena, under) {
+        make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
+    } else {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        layout_node_c(arena, under, &under_ctx)
+    };
 
     let gap_above = p.big_op_spacing[2] * size;
     let gap_below = p.big_op_spacing[4] * size;
@@ -2416,9 +2675,22 @@ fn layout_accent_c(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let base_box = layout_node_c(arena, base, ctx);
-    let accent_box = LayoutBox::glyph(accent, ctx.style);
+    let base_width = base_box.width;
 
-    let accent_dx = (base_box.width - accent_box.width) / 2.0;
+    // For stretchy accents, generate an SVG path scaled to the base width
+    let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
+        let accent_h = 0.12 * ctx.size();
+        LayoutBox {
+            width: base_width,
+            height: accent_h,
+            depth: 0.0,
+            kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+        }
+    } else {
+        LayoutBox::glyph(accent, ctx.style)
+    };
+
+    let accent_dx = (base_width - accent_box.width) / 2.0;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
             let dy = base_box.height + 0.02 * ctx.size();
@@ -2434,7 +2706,6 @@ fn layout_accent_c(
         },
     };
 
-    let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
         PositionedBox::new(accent_dx, accent_dy, accent_box),
@@ -3888,12 +4159,26 @@ fn layout_overscript_arena(
     let p = &ctx.params;
     let size = ctx.size();
     let base_id = layout_node_arena(ast, base, arena, ctx);
-    let over_ctx = ctx.with_style(ctx.style.sup());
-    let over_id = layout_node_arena(ast, over, arena, &over_ctx);
 
     let base_w = arena.get(base_id).width;
     let base_h = arena.get(base_id).height;
     let base_d = arena.get(base_id).depth;
+
+    // Check if the over node is a stretchy decoration symbol
+    let over_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
+        let deco_w = base_w.max(0.5 * size);
+        let deco_h = 0.12 * size;
+        arena.alloc(ArenaLayoutBox {
+            width: deco_w,
+            height: deco_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+        })
+    } else {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        layout_node_arena(ast, over, arena, &over_ctx)
+    };
+
     let over_w = arena.get(over_id).width;
     let over_h = arena.get(over_id).height;
     let over_d = arena.get(over_id).depth;
@@ -3927,12 +4212,25 @@ fn layout_underscript_arena(
     let p = &ctx.params;
     let size = ctx.size();
     let base_id = layout_node_arena(ast, base, arena, ctx);
-    let under_ctx = ctx.with_style(ctx.style.sub());
-    let under_id = layout_node_arena(ast, under, arena, &under_ctx);
 
     let base_w = arena.get(base_id).width;
     let base_h = arena.get(base_id).height;
     let base_d = arena.get(base_id).depth;
+
+    let under_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
+        let deco_w = base_w.max(0.5 * size);
+        let deco_h = 0.12 * size;
+        arena.alloc(ArenaLayoutBox {
+            width: deco_w,
+            height: deco_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+        })
+    } else {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        layout_node_arena(ast, under, arena, &under_ctx)
+    };
+
     let under_w = arena.get(under_id).width;
     let under_h = arena.get(under_id).height;
     let under_d = arena.get(under_id).depth;
@@ -3967,14 +4265,39 @@ fn layout_underover_arena(
     let p = &ctx.params;
     let size = ctx.size();
     let base_id = layout_node_arena(ast, base, arena, ctx);
-    let over_ctx = ctx.with_style(ctx.style.sup());
-    let under_ctx = ctx.with_style(ctx.style.sub());
-    let over_id = layout_node_arena(ast, over, arena, &over_ctx);
-    let under_id = layout_node_arena(ast, under, arena, &under_ctx);
 
     let base_w = arena.get(base_id).width;
     let base_h = arena.get(base_id).height;
     let base_d = arena.get(base_id).depth;
+
+    let over_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
+        let deco_w = base_w.max(0.5 * size);
+        let deco_h = 0.12 * size;
+        arena.alloc(ArenaLayoutBox {
+            width: deco_w,
+            height: deco_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+        })
+    } else {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        layout_node_arena(ast, over, arena, &over_ctx)
+    };
+
+    let under_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
+        let deco_w = base_w.max(0.5 * size);
+        let deco_h = 0.12 * size;
+        arena.alloc(ArenaLayoutBox {
+            width: deco_w,
+            height: deco_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+        })
+    } else {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        layout_node_arena(ast, under, arena, &under_ctx)
+    };
+
     let over_w = arena.get(over_id).width;
     let over_h = arena.get(over_id).height;
     let over_d = arena.get(over_id).depth;
@@ -4016,11 +4339,24 @@ fn layout_accent_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let base_id = layout_node_arena(ast, base, arena, ctx);
-    let accent_id = alloc_glyph(arena, accent, ctx.style);
 
     let base_w = arena.get(base_id).width;
     let base_h = arena.get(base_id).height;
     let base_d = arena.get(base_id).depth;
+
+    // For stretchy accents, generate an SVG path scaled to the base width
+    let accent_id = if is_stretchy_accent(accent) && base_w > 0.0 {
+        let accent_h = 0.12 * ctx.size();
+        arena.alloc(ArenaLayoutBox {
+            width: base_w,
+            height: accent_h,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_accent_path(accent, base_w, accent_h)),
+        })
+    } else {
+        alloc_glyph(arena, accent, ctx.style)
+    };
+
     let accent_w = arena.get(accent_id).width;
     let accent_h = arena.get(accent_id).height;
 

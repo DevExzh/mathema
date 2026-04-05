@@ -183,3 +183,121 @@ fn unicode_commands_round_trip() {
         assert_eq!(out1, out2, "unicode command round-trip failed for: {input}");
     }
 }
+
+#[test]
+fn stretchy_accents_parse() {
+    use crate::ast::compact::CompactNode;
+
+    let config = Config::default();
+
+    // These commands should parse without error and produce Accent nodes
+    let accent_cases = [
+        "\\overrightarrow{AB}",
+        "\\overleftarrow{AB}",
+        "\\overleftrightarrow{AB}",
+        "\\overrightharpoon{x}",
+        "\\overleftharpoon{x}",
+        "\\widehat{abc}",
+        "\\widetilde{abc}",
+        "\\widecheck{abc}",
+    ];
+    for input in &accent_cases {
+        let result = LatexReader::parse_compact(input, &config);
+        assert!(
+            result.is_ok(),
+            "failed to parse stretchy accent: {input}: {:?}",
+            result.err()
+        );
+        let expr = result.unwrap().expr;
+        let roots = expr.arena.children(expr.roots);
+        assert!(
+            !roots.is_empty(),
+            "stretchy accent produced empty AST: {input}"
+        );
+        // The root node should be an Accent
+        let root_node = expr.arena.node(roots[0]);
+        assert!(
+            matches!(root_node, CompactNode::Accent { .. }),
+            "stretchy accent did not produce Accent node for {input}, got: {:?}",
+            root_node
+        );
+    }
+}
+
+#[test]
+fn horizontal_braces_parse() {
+    use crate::ast::compact::CompactNode;
+
+    let config = Config::default();
+
+    // Overbrace/underbrace/bracket commands should parse into Overscript/Underscript nodes
+    let brace_cases = [
+        ("\\overbrace{x+y}", true),        // Overscript
+        ("\\underbrace{x+y}", false),       // Underscript
+        ("\\overbracket{x+y}", true),       // Overscript
+        ("\\underbracket{x+y}", false),     // Underscript
+    ];
+    for (input, is_over) in &brace_cases {
+        let result = LatexReader::parse_compact(input, &config);
+        assert!(
+            result.is_ok(),
+            "failed to parse brace command: {input}: {:?}",
+            result.err()
+        );
+        let expr = result.unwrap().expr;
+        let roots = expr.arena.children(expr.roots);
+        assert!(
+            !roots.is_empty(),
+            "brace command produced empty AST: {input}"
+        );
+        let root_node = expr.arena.node(roots[0]);
+        if *is_over {
+            assert!(
+                matches!(root_node, CompactNode::Overscript { .. }),
+                "overbrace/bracket did not produce Overscript for {input}, got: {:?}",
+                root_node
+            );
+        } else {
+            assert!(
+                matches!(root_node, CompactNode::Underscript { .. }),
+                "underbrace/bracket did not produce Underscript for {input}, got: {:?}",
+                root_node
+            );
+        }
+    }
+}
+
+#[test]
+fn stretchy_accents_render_svg() {
+    use crate::convert::from_latex;
+
+    // These should produce SVG output (not error, not empty) containing path elements
+    let cases = [
+        "\\overrightarrow{AB}",
+        "\\overleftarrow{AB}",
+        "\\widehat{abc}",
+        "\\widetilde{abc}",
+        "\\widecheck{abc}",
+        "\\overbrace{x+y}",
+        "\\underbrace{a+b}",
+        "\\overbracket{x+y}",
+        "\\underbracket{a+b}",
+        "\\overbrace{x+y}^{n}",
+        "\\underbrace{a+b}_{sum}",
+    ];
+    for input in &cases {
+        let result = from_latex(input).unwrap().to_svg();
+        assert!(
+            result.is_ok(),
+            "SVG rendering failed for {input}: {:?}",
+            result.err()
+        );
+        let svg = result.unwrap();
+        assert!(!svg.is_empty(), "SVG output empty for {input}");
+        // Stretchy decorations should produce <path> elements (not literal text)
+        assert!(
+            svg.contains("<path") || svg.contains("<text"),
+            "SVG for {input} should contain rendered elements, got:\n{svg}"
+        );
+    }
+}
