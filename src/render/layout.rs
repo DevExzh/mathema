@@ -118,6 +118,33 @@ impl LayoutBox {
     }
 }
 
+/// Returns true for characters that should be vertically centered on the math axis
+/// (e.g. \cdots, \ddots) rather than placed at the baseline.
+#[inline]
+fn is_axis_centered_char(ch: char) -> bool {
+    matches!(ch, '\u{22EF}' | '\u{22F1}')  // ⋯ (cdots), ⋱ (ddots)
+}
+
+/// Wrap a glyph LayoutBox so it is centered on the math axis.
+/// The shift moves the glyph's vertical center to `axis_height * size`.
+fn center_glyph_on_axis(glyph: LayoutBox, ctx: &LayoutCtx) -> LayoutBox {
+    let size = ctx.size();
+    let axis = ctx.params.axis_height * size;
+    let glyph_center = (glyph.height - glyph.depth) / 2.0;
+    let shift = axis - glyph_center;
+    let glyph_w = glyph.width;
+    let new_height = (glyph.height + shift).max(glyph.height);
+    let new_depth = (glyph.depth - shift).max(0.0);
+    LayoutBox {
+        width: glyph_w,
+        height: new_height,
+        depth: new_depth,
+        kind: BoxKind::HBox {
+            children: vec![PositionedBox::new(0.0, shift, glyph)],
+        },
+    }
+}
+
 /// Maximum recursion depth for layout to prevent stack overflow on adversarial input.
 const MAX_LAYOUT_DEPTH: u32 = 128;
 
@@ -427,7 +454,12 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                     let m = metrics::glyph_metrics(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size)
                 } else {
-                    LayoutBox::glyph(ch, ctx.style)
+                    let glyph = LayoutBox::glyph(ch, ctx.style);
+                    if is_axis_centered_char(ch) {
+                        center_glyph_on_axis(glyph, ctx)
+                    } else {
+                        glyph
+                    }
                 }
             } else {
                 LayoutBox::kern(0.0)
@@ -734,7 +766,8 @@ fn layout_fraction(
 
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
-        _ => p.rule_thickness * size,
+        // Ensure a minimum visible thickness even at ScriptScript sizes
+        _ => (p.rule_thickness * size).max(0.040),
     };
 
     // Shifts from axis
@@ -782,12 +815,16 @@ fn layout_fraction(
     }
 
     let frac_width = num_box.width.max(den_box.width);
+    // Add null-delimiter-space side padding to prevent content from touching adjacent glyphs.
+    // Standard TeX adds ~0.12em on each side of a fraction.
+    let side_padding = 0.12 * size;
+    let padded_frac_width = frac_width + 2.0 * side_padding;
     let total_height = num_up + num_box.height;
     let total_depth = den_down + den_box.depth;
 
-    // Center numerator and denominator
-    let num_dx = (frac_width - num_box.width) / 2.0;
-    let den_dx = (frac_width - den_box.width) / 2.0;
+    // Center numerator and denominator within the padded width
+    let num_dx = side_padding + (frac_width - num_box.width) / 2.0;
+    let den_dx = side_padding + (frac_width - den_box.width) / 2.0;
 
     let mut children = vec![
         PositionedBox::new(num_dx, num_up, num_box),
@@ -796,12 +833,12 @@ fn layout_fraction(
 
     // Add the fraction bar
     if bar_thickness > 0.0 {
-        let bar = LayoutBox::rule(frac_width, bar_thickness);
+        let bar = LayoutBox::rule(padded_frac_width, bar_thickness);
         children.push(PositionedBox::new(0.0, axis, bar));
     }
 
     LayoutBox {
-        width: frac_width,
+        width: padded_frac_width,
         height: total_height,
         depth: total_depth,
         kind: BoxKind::VBox { children },
@@ -915,6 +952,17 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
 
     let target_h = max_h + max_d;
 
+    // Scale delimiter width: wider when content is taller than normal text.
+    // Standard text height is ~0.68+0.21 = 0.89em. For taller content the
+    // delimiter glyph is enlarged, so the width needs to scale proportionally.
+    let base_delim_width = 0.389 * ctx.size();
+    let standard_height = 0.9 * ctx.size();
+    let delim_width = if target_h > standard_height {
+        base_delim_width * (target_h / standard_height)
+    } else {
+        base_delim_width
+    };
+
     // Build positioned children
     let mut children = Vec::new();
     let mut cursor_x = 0.0;
@@ -925,7 +973,7 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         && let Some(ch) = open.chars().next()
     {
         let delim = LayoutBox {
-            width: 0.389 * ctx.size(),
+            width: delim_width,
             height: max_h,
             depth: max_d,
             kind: BoxKind::Delimiter {
@@ -938,7 +986,7 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         cursor_x += delim_w;
     }
 
-    // Content — capture width before moving each child
+    // Content -- capture width before moving each child
     for child in inner_children {
         let w = child.width;
         children.push(PositionedBox::new(cursor_x, 0.0, child));
@@ -951,7 +999,7 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         && let Some(ch) = close.chars().next()
     {
         let delim = LayoutBox {
-            width: 0.389 * ctx.size(),
+            width: delim_width,
             height: max_h,
             depth: max_d,
             kind: BoxKind::Delimiter {
@@ -1748,7 +1796,12 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
                     let m = metrics::glyph_metrics(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size)
                 } else {
-                    LayoutBox::glyph(ch, ctx.style)
+                    let glyph = LayoutBox::glyph(ch, ctx.style);
+                    if is_axis_centered_char(ch) {
+                        center_glyph_on_axis(glyph, ctx)
+                    } else {
+                        glyph
+                    }
                 }
             } else {
                 LayoutBox::kern(0.0)
@@ -2024,7 +2077,8 @@ fn layout_fraction_c(
 
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
-        _ => p.rule_thickness * size,
+        // Ensure a minimum visible thickness even at ScriptScript sizes
+        _ => (p.rule_thickness * size).max(0.040),
     };
 
     let (num_shift, den_shift) = if ctx.style.is_display() {
@@ -2068,11 +2122,14 @@ fn layout_fraction_c(
     }
 
     let frac_width = num_box.width.max(den_box.width);
+    // Add null-delimiter-space side padding to prevent content from touching adjacent glyphs
+    let side_padding = 0.12 * size;
+    let padded_frac_width = frac_width + 2.0 * side_padding;
     let total_height = num_up + num_box.height;
     let total_depth = den_down + den_box.depth;
 
-    let num_dx = (frac_width - num_box.width) / 2.0;
-    let den_dx = (frac_width - den_box.width) / 2.0;
+    let num_dx = side_padding + (frac_width - num_box.width) / 2.0;
+    let den_dx = side_padding + (frac_width - den_box.width) / 2.0;
 
     let mut children = vec![
         PositionedBox::new(num_dx, num_up, num_box),
@@ -2080,12 +2137,12 @@ fn layout_fraction_c(
     ];
 
     if bar_thickness > 0.0 {
-        let bar = LayoutBox::rule(frac_width, bar_thickness);
+        let bar = LayoutBox::rule(padded_frac_width, bar_thickness);
         children.push(PositionedBox::new(0.0, axis, bar));
     }
 
     LayoutBox {
-        width: frac_width,
+        width: padded_frac_width,
         height: total_height,
         depth: total_depth,
         kind: BoxKind::VBox { children },
@@ -2196,6 +2253,15 @@ fn layout_fenced_c(
 
     let target_h = max_h + max_d;
 
+    // Scale delimiter width proportionally for tall content
+    let base_delim_width = 0.389 * ctx.size();
+    let standard_height = 0.9 * ctx.size();
+    let delim_width = if target_h > standard_height {
+        base_delim_width * (target_h / standard_height)
+    } else {
+        base_delim_width
+    };
+
     let mut children = Vec::new();
     let mut cursor_x = 0.0;
 
@@ -2206,7 +2272,7 @@ fn layout_fenced_c(
         && let Some(ch) = open_str.chars().next()
     {
         let delim = LayoutBox {
-            width: 0.389 * ctx.size(),
+            width: delim_width,
             height: max_h,
             depth: max_d,
             kind: BoxKind::Delimiter {
@@ -2232,7 +2298,7 @@ fn layout_fenced_c(
         && let Some(ch) = close_str.chars().next()
     {
         let delim = LayoutBox {
-            width: 0.389 * ctx.size(),
+            width: delim_width,
             height: max_h,
             depth: max_d,
             kind: BoxKind::Delimiter {
@@ -3119,6 +3185,35 @@ fn alloc_glyph_with_metrics(
     })
 }
 
+/// Wrap a glyph so it is centered on the math axis (arena variant).
+fn center_glyph_on_axis_arena(
+    glyph_id: LayoutBoxId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    let axis = ctx.params.axis_height * size;
+    let b = arena.get(glyph_id);
+    let glyph_h = b.height;
+    let glyph_d = b.depth;
+    let glyph_w = b.width;
+    let glyph_center = (glyph_h - glyph_d) / 2.0;
+    let shift = axis - glyph_center;
+    let new_height = (glyph_h + shift).max(glyph_h);
+    let new_depth = (glyph_d - shift).max(0.0);
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: 0.0, dy: shift, id: glyph_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: glyph_w,
+        height: new_height,
+        depth: new_depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
 fn layout_text_run_arena(
     text: &str,
     arena: &mut LayoutArena,
@@ -3238,7 +3333,12 @@ fn layout_node_arena(
                     let m = metrics::glyph_metrics(ch);
                     alloc_glyph_with_metrics(arena, ch, m, size)
                 } else {
-                    alloc_glyph(arena, ch, ctx.style)
+                    let glyph_id = alloc_glyph(arena, ch, ctx.style);
+                    if is_axis_centered_char(ch) {
+                        center_glyph_on_axis_arena(glyph_id, arena, ctx)
+                    } else {
+                        glyph_id
+                    }
                 }
             } else {
                 arena.alloc(ArenaLayoutBox::kern(0.0))
@@ -3556,7 +3656,8 @@ fn layout_fraction_arena(
 
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
-        _ => p.rule_thickness * size,
+        // Ensure a minimum visible thickness even at ScriptScript sizes
+        _ => (p.rule_thickness * size).max(0.040),
     };
 
     let (num_shift, den_shift) = if ctx.style.is_display() {
@@ -3600,25 +3701,28 @@ fn layout_fraction_arena(
     }
 
     let frac_width = num_w.max(den_w);
+    // Add null-delimiter-space side padding to prevent content from touching adjacent glyphs
+    let side_padding = 0.12 * size;
+    let padded_frac_width = frac_width + 2.0 * side_padding;
     let total_height = num_up + num_h;
     let total_depth = den_down + den_d;
 
-    let num_dx = (frac_width - num_w) / 2.0;
-    let den_dx = (frac_width - den_w) / 2.0;
+    let num_dx = side_padding + (frac_width - num_w) / 2.0;
+    let den_dx = side_padding + (frac_width - den_w) / 2.0;
 
     let children_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox { dx: num_dx, dy: num_up, id: num_id });
     arena.push_child(ArenaPositionedBox { dx: den_dx, dy: -den_down, id: den_id });
 
     if bar_thickness > 0.0 {
-        let bar_id = arena.alloc(ArenaLayoutBox::rule(frac_width, bar_thickness));
+        let bar_id = arena.alloc(ArenaLayoutBox::rule(padded_frac_width, bar_thickness));
         arena.push_child(ArenaPositionedBox { dx: 0.0, dy: axis, id: bar_id });
     }
 
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
-        width: frac_width,
+        width: padded_frac_width,
         height: total_height,
         depth: total_depth,
         kind: ArenaBoxKind::VBox { children },
@@ -3759,6 +3863,15 @@ fn layout_fenced_arena(
 
     let target_h = max_h + max_d;
 
+    // Scale delimiter width proportionally for tall content
+    let base_delim_width = 0.389 * ctx.size();
+    let standard_height = 0.9 * ctx.size();
+    let delim_width = if target_h > standard_height {
+        base_delim_width * (target_h / standard_height)
+    } else {
+        base_delim_width
+    };
+
     let children_start = arena.begin_children();
     let mut cursor_x = 0.0;
 
@@ -3768,7 +3881,7 @@ fn layout_fenced_arena(
         && let Some(ch) = open_str.chars().next()
     {
         let delim_id = arena.alloc(ArenaLayoutBox {
-            width: 0.389 * ctx.size(),
+            width: delim_width,
             height: max_h,
             depth: max_d,
             kind: ArenaBoxKind::Delimiter {
@@ -3794,7 +3907,7 @@ fn layout_fenced_arena(
         && let Some(ch) = close_str.chars().next()
     {
         let delim_id = arena.alloc(ArenaLayoutBox {
-            width: 0.389 * ctx.size(),
+            width: delim_width,
             height: max_h,
             depth: max_d,
             kind: ArenaBoxKind::Delimiter {
@@ -5661,8 +5774,6 @@ mod tests {
         let result = crate::reader::latex::LatexReader::parse_compact(latex, &config).unwrap();
         let opts = default_options();
         let root = layout_expr_c(&result.expr, MathStyle::Text, &opts);
-        // With 2 columns, the layout width must be > single-column width.
-        // A single character is ~0.5 units, so 2 columns + gap should be > 1.5.
         assert!(
             root.width > 1.5,
             "aligned block should be wider than a single column, got {}",
@@ -5678,7 +5789,6 @@ mod tests {
         let latex = r"\begin{aligned} a &= b & c &= d \\ e &= f & g &= h \end{aligned}";
         let result = crate::reader::latex::LatexReader::parse_compact(latex, &config).unwrap();
 
-        // Verify the compact AST has num_cols = 4
         fn find_num_cols(arena: &AstArena, id: crate::ast::compact::NodeId) -> Option<u16> {
             match arena.node(id) {
                 crate::ast::compact::CompactNode::Array { num_cols, .. } => Some(*num_cols),
@@ -5708,7 +5818,6 @@ mod tests {
 
         let opts = default_options();
         let root = layout_expr_c(&result.expr, MathStyle::Text, &opts);
-        // 4 columns with gaps should be significantly wider than 2 columns
         assert!(
             root.width > 3.0,
             "4-column aligned block should be wide, got {}",
@@ -5716,7 +5825,6 @@ mod tests {
         );
     }
 
-    /// aligned environment: heap/compact/arena paths should all agree.
     #[test]
     fn equivalence_aligned() {
         assert_arena_heap_equivalent(
@@ -5725,7 +5833,6 @@ mod tests {
         );
     }
 
-    /// Multi-pair aligned: heap/compact/arena paths should all agree.
     #[test]
     fn equivalence_aligned_multi_pair() {
         assert_arena_heap_equivalent(
@@ -5734,7 +5841,6 @@ mod tests {
         );
     }
 
-    /// alignedat environment parses and lays out correctly.
     #[test]
     fn alignedat_parses_and_renders() {
         use crate::reader::Reader;
@@ -5744,5 +5850,129 @@ mod tests {
         let opts = default_options();
         let root = layout_expr_c(&result.expr, MathStyle::Text, &opts);
         assert!(root.width > 1.0, "alignedat should render with meaningful width");
+    }
+
+    // ── Tests for P2 bug fixes ──────────────────────────────────────────
+
+    #[test]
+    fn delimiter_scales_with_content_height() {
+        let small_fenced = MathExpr::inline(vec![MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
+        }]);
+        let small = layout_expr(&small_fenced, MathStyle::Text, &default_options());
+
+        let tall_fenced = MathExpr::inline(vec![MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![FencedItem::Element(MathNode::Fraction {
+                kind: FractionKind::Normal,
+                num: Box::new(MathNode::Superscript {
+                    base: Box::new(MathNode::Identifier("x".into())),
+                    sup: Box::new(MathNode::Number("2".into())),
+                }),
+                den: Box::new(MathNode::Identifier("y".into())),
+            })],
+        }]);
+        let tall = layout_expr(&tall_fenced, MathStyle::Display, &default_options());
+
+        assert!(
+            tall.width > small.width,
+            "fenced with fraction should be wider than fenced with single char: {} vs {}",
+            tall.width, small.width
+        );
+    }
+
+    #[test]
+    fn fraction_bar_visible_at_scriptscript() {
+        let frac = MathExpr::inline(vec![MathNode::Fraction {
+            kind: FractionKind::Normal,
+            num: Box::new(MathNode::Number("1".into())),
+            den: Box::new(MathNode::Number("2".into())),
+        }]);
+        let opts = default_options();
+        let root = layout_expr(&frac, MathStyle::ScriptScript, &opts);
+
+        fn find_rule_thickness(layout: &LayoutBox) -> Option<f64> {
+            match &layout.kind {
+                BoxKind::Rule { thickness } => Some(*thickness),
+                BoxKind::HBox { children } | BoxKind::VBox { children } => {
+                    for child in children {
+                        if let Some(t) = find_rule_thickness(&child.layout) {
+                            return Some(t);
+                        }
+                    }
+                    None
+                },
+                _ => None,
+            }
+        }
+
+        let thickness = find_rule_thickness(&root)
+            .expect("fraction should contain a rule bar");
+        assert!(
+            thickness >= 0.040,
+            "bar thickness at ScriptScript should be at least 0.040, got {}",
+            thickness
+        );
+    }
+
+    #[test]
+    fn cdots_raised_to_axis() {
+        let cdots_expr = MathExpr::inline(vec![MathNode::Symbol(
+            SymbolKind::Ordinary,
+            "\u{22EF}".into(),
+        )]);
+        let opts = default_options();
+        let root = layout_expr(&cdots_expr, MathStyle::Text, &opts);
+
+        let ldots_expr = MathExpr::inline(vec![MathNode::Symbol(
+            SymbolKind::Ordinary,
+            ".".into(),
+        )]);
+        let ldots = layout_expr(&ldots_expr, MathStyle::Text, &opts);
+
+        assert!(
+            root.height > ldots.height,
+            "cdots should be taller than baseline dots: {} vs {}",
+            root.height, ldots.height
+        );
+    }
+
+    #[test]
+    fn fraction_has_side_padding() {
+        let num_expr = MathExpr::inline(vec![MathNode::Identifier("a".into())]);
+        let den_expr = MathExpr::inline(vec![MathNode::Identifier("b".into())]);
+        let opts = default_options();
+        let num_w = layout_expr(&num_expr, MathStyle::Text, &opts).width;
+        let den_w = layout_expr(&den_expr, MathStyle::Text, &opts).width;
+        let max_content_w = num_w.max(den_w);
+
+        let frac_expr = MathExpr::inline(vec![MathNode::Fraction {
+            kind: FractionKind::Normal,
+            num: Box::new(MathNode::Identifier("a".into())),
+            den: Box::new(MathNode::Identifier("b".into())),
+        }]);
+        let frac = layout_expr(&frac_expr, MathStyle::Text, &opts);
+
+        assert!(
+            frac.width > max_content_w,
+            "fraction should include side padding: {} vs {}",
+            frac.width, max_content_w
+        );
+    }
+
+    #[test]
+    fn equivalence_cdots() {
+        assert_arena_heap_equivalent("a \\cdots b", MathStyle::Text);
+    }
+
+    #[test]
+    fn equivalence_fenced_fraction() {
+        assert_arena_heap_equivalent(
+            "\\left(\\frac{x^2}{y}\\right)",
+            MathStyle::Display,
+        );
     }
 }

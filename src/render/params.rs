@@ -46,7 +46,7 @@ impl Default for TexParams {
         // Values from Computer Modern / Latin Modern (cmr10, cmsy10, cmex10)
         Self {
             axis_height: 0.250,
-            rule_thickness: 0.040,
+            rule_thickness: 0.060,
             x_height: 0.431,
             quad: 1.000,
             sup1: 0.413,
