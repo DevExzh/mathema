@@ -250,14 +250,20 @@ fn monospace_offset(ch: char) -> Option<u32> {
 #[inline]
 pub fn latex_font_to_style(command: &str) -> Option<TextStyle> {
     match command {
-        "mathrm" | "textrm" | "text" => Some(TextStyle::Normal),
-        "mathbf" | "textbf" | "boldsymbol" | "bm" => Some(TextStyle::Bold),
-        "mathit" | "textit" => Some(TextStyle::Italic),
+        "mathrm" | "textrm" | "text" | "mathup" | "mathsfup" => Some(TextStyle::Normal),
+        "mathbf" | "textbf" | "boldsymbol" | "bm" | "pmb" | "mathbfup" | "mathbfsfup" => {
+            Some(TextStyle::Bold)
+        },
+        "mathit" | "textit" | "mathnormal" => Some(TextStyle::Italic),
+        "mathbfit" | "mathbfsfit" => Some(TextStyle::BoldItalic),
         "mathtt" | "texttt" => Some(TextStyle::Monospace),
         "mathsf" | "textsf" => Some(TextStyle::SansSerif),
+        "mathsfit" => Some(TextStyle::SansSerifItalic),
         "mathbb" => Some(TextStyle::DoubleStruck),
         "mathcal" | "mathscr" => Some(TextStyle::Script),
+        "mathbfcal" | "mathbfscr" => Some(TextStyle::BoldScript),
         "mathfrak" => Some(TextStyle::Fraktur),
+        "mathbffrak" => Some(TextStyle::BoldFraktur),
         _ => None,
     }
 }

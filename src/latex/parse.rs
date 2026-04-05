@@ -365,6 +365,107 @@ impl LatexCompactParser {
         }
     }
 
+    /// Check whether a parsed node list contains an infix fraction marker
+    /// (`\over`, `\atop`, `\choose`, `\brace`, `\brack`). If found, split
+    /// into numerator/denominator and produce the appropriate node.
+    fn check_infix_fraction(&mut self, ids: &[NodeId]) -> Option<NodeId> {
+        // Scan for the first infix marker
+        let mut marker_pos = None;
+        let mut marker_kind = "";
+        for (i, &id) in ids.iter().enumerate() {
+            if let CompactNode::Identifier(sid) = *self.arena.node(id) {
+                let s = self.arena.str_val(sid);
+                if s.starts_with("__infix_") && s.ends_with("__") {
+                    marker_kind = match s {
+                        "__infix_over__" => "over",
+                        "__infix_atop__" => "atop",
+                        "__infix_choose__" => "choose",
+                        "__infix_brace__" => "brace",
+                        "__infix_brack__" => "brack",
+                        _ => continue,
+                    };
+                    marker_pos = Some(i);
+                    break;
+                }
+            }
+        }
+        let pos = marker_pos?;
+
+        let num_ids: SmallVec<[NodeId; 8]> = ids[..pos].to_vec().into();
+        let den_ids: SmallVec<[NodeId; 8]> = ids[pos + 1..].to_vec().into();
+
+        let num_id = self.flatten_single(&num_ids);
+        let den_id = self.flatten_single(&den_ids);
+
+        match marker_kind {
+            "over" => {
+                // \over → normal fraction with bar
+                Some(self.arena.push_node(CompactNode::Fraction {
+                    kind: FractionKind::Normal,
+                    num: num_id,
+                    den: den_id,
+                }))
+            },
+            "atop" => {
+                // \atop → fraction with no bar
+                Some(self.arena.push_node(CompactNode::Fraction {
+                    kind: FractionKind::NoBar,
+                    num: num_id,
+                    den: den_id,
+                }))
+            },
+            "choose" => {
+                // \choose → binom (no bar, parenthesized)
+                let frac_id = self.arena.push_node(CompactNode::Fraction {
+                    kind: FractionKind::NoBar,
+                    num: num_id,
+                    den: den_id,
+                });
+                let open = self.arena.push_str("(");
+                let close = self.arena.push_str(")");
+                let content = self.arena.push_children(&[frac_id]);
+                Some(self.arena.push_node(CompactNode::Fenced {
+                    open,
+                    close,
+                    content,
+                }))
+            },
+            "brace" => {
+                // \brace → curly braces
+                let frac_id = self.arena.push_node(CompactNode::Fraction {
+                    kind: FractionKind::NoBar,
+                    num: num_id,
+                    den: den_id,
+                });
+                let open = self.arena.push_str("{");
+                let close = self.arena.push_str("}");
+                let content = self.arena.push_children(&[frac_id]);
+                Some(self.arena.push_node(CompactNode::Fenced {
+                    open,
+                    close,
+                    content,
+                }))
+            },
+            "brack" => {
+                // \brack → square brackets
+                let frac_id = self.arena.push_node(CompactNode::Fraction {
+                    kind: FractionKind::NoBar,
+                    num: num_id,
+                    den: den_id,
+                });
+                let open = self.arena.push_str("[");
+                let close = self.arena.push_str("]");
+                let content = self.arena.push_children(&[frac_id]);
+                Some(self.arena.push_node(CompactNode::Fenced {
+                    open,
+                    close,
+                    content,
+                }))
+            },
+            _ => None,
+        }
+    }
+
     /// Check whether a node is a large-operator symbol (n-ary).
     fn is_nary_id(&self, id: NodeId) -> bool {
         matches!(
@@ -753,12 +854,20 @@ impl LatexCompactParser {
     }
 
     /// Parse a braced group `{ ... }` into a Row (or single node).
+    /// Also handles TeX infix fraction operators: `{a \over b}`, `{a \atop b}`,
+    /// `{n \choose k}`, `{a \brace b}`, `{a \brack b}`.
     #[inline]
     fn parse_braced_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = char('{')(input)?;
         let (input, ids) = self.parse_node_list(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('}')(input)?;
+
+        // Check for infix fraction markers within the parsed nodes
+        if let Some(result) = self.check_infix_fraction(&ids) {
+            return Ok((input, result));
+        }
+
         Ok((input, self.flatten_single(&ids)))
     }
 
@@ -954,7 +1063,7 @@ impl LatexCompactParser {
         match name {
             // --- Fractions ---
             "frac" => self.parse_frac(input, FractionKind::Normal),
-            "dfrac" => self.parse_frac(input, FractionKind::Display),
+            "dfrac" | "cfrac" => self.parse_frac(input, FractionKind::Display),
             "tfrac" => self.parse_frac(input, FractionKind::Inline),
             "binom" => self.parse_binom(input),
 
@@ -965,15 +1074,18 @@ impl LatexCompactParser {
             "hat" | "widehat" => self.parse_accent(input, '\u{0302}', AccentPosition::Above),
             "bar" => self.parse_accent(input, '\u{0304}', AccentPosition::Above),
             "overline" => self.parse_overunder(input, true),
-            "underline" => self.parse_overunder(input, false),
+            "underline" | "underbar" => self.parse_overunder(input, false),
             "vec" => self.parse_accent(input, '\u{20D7}', AccentPosition::Above),
             "dot" => self.parse_accent(input, '\u{0307}', AccentPosition::Above),
             "ddot" => self.parse_accent(input, '\u{0308}', AccentPosition::Above),
+            "dddot" => self.parse_accent(input, '\u{20DB}', AccentPosition::Above),
+            "ddddot" => self.parse_accent(input, '\u{20DC}', AccentPosition::Above),
             "tilde" | "widetilde" => self.parse_accent(input, '\u{0303}', AccentPosition::Above),
             "breve" => self.parse_accent(input, '\u{0306}', AccentPosition::Above),
             "check" | "widecheck" => self.parse_accent(input, '\u{030C}', AccentPosition::Above),
             "acute" => self.parse_accent(input, '\u{0301}', AccentPosition::Above),
             "grave" => self.parse_accent(input, '\u{0300}', AccentPosition::Above),
+            "mathring" => self.parse_accent(input, '\u{030A}', AccentPosition::Above),
 
             // --- Stretchy accents (arrows above) ---
             "overrightarrow" => self.parse_accent(input, '\u{2192}', AccentPosition::Above),
@@ -983,6 +1095,19 @@ impl LatexCompactParser {
                 self.parse_accent(input, '\u{21C0}', AccentPosition::Above)
             },
             "overleftharpoon" => self.parse_accent(input, '\u{21BC}', AccentPosition::Above),
+            "Overrightarrow" => self.parse_accent(input, '\u{21D2}', AccentPosition::Above),
+
+            // --- Under accents (arrows below) ---
+            "underrightarrow" => self.parse_accent(input, '\u{2192}', AccentPosition::Below),
+            "underleftarrow" => self.parse_accent(input, '\u{2190}', AccentPosition::Below),
+            "underleftrightarrow" => self.parse_accent(input, '\u{2194}', AccentPosition::Below),
+            "utilde" => self.parse_accent(input, '\u{0330}', AccentPosition::Below),
+
+            // --- Over/under group arcs and line segments ---
+            "overgroup" => self.parse_accent(input, '\u{23DC}', AccentPosition::Above),
+            "undergroup" => self.parse_accent(input, '\u{23DD}', AccentPosition::Below),
+            "overlinesegment" => self.parse_accent(input, '\u{23B4}', AccentPosition::Above),
+            "underlinesegment" => self.parse_accent(input, '\u{23B5}', AccentPosition::Below),
 
             // --- Overbrace / underbrace / overbracket / underbracket ---
             "overbrace" => self.parse_overbrace(input),
@@ -994,17 +1119,30 @@ impl LatexCompactParser {
             "left" => self.parse_left_right(input),
 
             // --- Text and font ---
-            "text" | "textrm" | "textit" | "textbf" | "texttt" | "textsf" => {
+            "text" | "textrm" | "textit" | "textbf" | "texttt" | "textsf"
+            | "textnormal" | "textup" | "mbox" | "hbox" => {
                 self.parse_text(input, name)
             },
             "mathrm" | "mathbf" | "mathit" | "mathtt" | "mathsf" | "mathbb" | "mathcal"
-            | "mathscr" | "mathfrak" | "boldsymbol" | "bm" => self.parse_math_font(input, name),
+            | "mathscr" | "mathfrak" | "boldsymbol" | "bm" | "mathnormal" | "mathup"
+            | "mathsfup" | "mathsfit" | "mathbfup" | "mathbfit" | "mathbfcal"
+            | "mathbffrak" | "mathbfscr" | "mathbfsfit" | "mathbfsfup" => {
+                self.parse_math_font(input, name)
+            },
 
             // --- Decorators ---
             "phantom" | "vphantom" | "hphantom" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
                 Ok((input, self.arena.push_node(CompactNode::Phantom(arg_id))))
             },
+            "mathstrut" => {
+                // \mathstrut — zero-width strut; emit as phantom of "("
+                let sid = self.arena.push_str("(");
+                let inner = self.arena.push_node(CompactNode::Symbol(SymbolKind::Open, sid));
+                Ok((input, self.arena.push_node(CompactNode::Phantom(inner))))
+            },
+            // \ensuremath{content} — transparent wrapper; content already in math mode
+            "ensuremath" => self.parse_required_group(input),
             "smash" => {
                 // \smash[b]{...} or \smash{...} — optional [b]/[t] arg
                 let (input, _) = ws(input)?;
@@ -1065,11 +1203,37 @@ impl LatexCompactParser {
             "dbinom" => self.parse_styled_binom(input, FractionKind::Display),
             "tbinom" => self.parse_styled_binom(input, FractionKind::Inline),
 
+            // --- Math atom type wrappers ---
+            "mathop" | "mathrel" | "mathbin" | "mathord" | "mathpunct" | "mathopen"
+            | "mathclose" | "mathinner" => self.parse_required_group(input),
+
             // --- Negation ---
             "not" => self.parse_not(input),
 
+            // --- Infix fraction operators (produce markers; resolved by parse_braced_group) ---
+            "over" | "atop" | "choose" | "brace" | "brack" => {
+                let sid = self.arena.push_str(match name {
+                    "over" => "__infix_over__",
+                    "atop" => "__infix_atop__",
+                    "choose" => "__infix_choose__",
+                    "brace" => "__infix_brace__",
+                    "brack" => "__infix_brack__",
+                    _ => unreachable!(),
+                });
+                Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+            },
+
             // --- Mod operators ---
             "pmod" | "pod" => self.parse_pmod(input),
+
+            // --- Kern/space dimension commands ---
+            "kern" => self.parse_kern(input, false),
+            "mkern" => self.parse_kern(input, true),
+            "hspace" => self.parse_hspace(input),
+            "mspace" => self.parse_hspace(input),
+
+            // --- Rule (consume arguments, emit empty) ---
+            "rule" => self.parse_rule(input),
 
             // --- Extensible arrows ---
             "xleftarrow" => self.parse_extensible_arrow(input, '\u{2190}'),
@@ -1086,6 +1250,11 @@ impl LatexCompactParser {
             "xtwoheadrightarrow" => self.parse_extensible_arrow(input, '\u{21A0}'),
             "xtwoheadleftarrow" => self.parse_extensible_arrow(input, '\u{219E}'),
             "xtofrom" => self.parse_extensible_arrow(input, '\u{21C4}'),
+            "xleftharpoondown" => self.parse_extensible_arrow(input, '\u{21BD}'),
+            "xleftharpoonup" => self.parse_extensible_arrow(input, '\u{21BC}'),
+            "xrightharpoondown" => self.parse_extensible_arrow(input, '\u{21C1}'),
+            "xrightharpoonup" => self.parse_extensible_arrow(input, '\u{21C0}'),
+            "xlongequal" => self.parse_extensible_arrow(input, '='),
 
             // --- Substack ---
             "substack" => self.parse_substack(input),
@@ -1096,12 +1265,269 @@ impl LatexCompactParser {
                 self.parse_big_delim(input, name)
             },
 
+            // --- \middle delimiter (outside \left..\right context) ---
+            "middle" => {
+                let (input, _) = ws(input)?;
+                let (input, sid) = self.parse_delimiter_into(input)?;
+                Ok((input, self.arena.push_node(CompactNode::Symbol(SymbolKind::Fence, sid))))
+            },
+
             // --- Color (consume color arg, return content) ---
             "color" => self.parse_color_discard(input),
             "textcolor" => self.parse_textcolor(input),
 
+            // --- Colored boxes (consume color, return content) ---
+            "colorbox" => self.parse_colorbox(input),
+            "fcolorbox" => self.parse_fcolorbox(input),
+
+            // --- Color shorthand commands ---
+            "blue" | "red" | "green" | "orange" | "purple" | "cyan" | "magenta" | "yellow"
+            | "black" | "white" | "gray" | "brown" | "lime" | "olive" | "pink" | "teal"
+            | "violet" => self.parse_color_shorthand(input, name),
+
             // --- Generalized fraction ---
             "genfrac" => self.parse_genfrac(input),
+
+            // --- Strikethrough / sout ---
+            "sout" => self.parse_cancel(input, StrokeKind::Cross),
+
+            // --- Poor man's bold (render as bold font) ---
+            "pmb" => self.parse_math_font(input, "mathbf"),
+
+            // --- Raisebox (consume dimension, return content) ---
+            "raisebox" => self.parse_raisebox(input),
+
+            // --- Centernot (negation overlay) ---
+            "centernot" => {
+                let (input, arg_id) = self.parse_required_group(input)?;
+                // Overlay a combining solidus on the argument
+                let slash_sid = self.arena.push_str("\u{0338}");
+                let slash_id = self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, slash_sid));
+                let children = self.arena.push_children(&[arg_id, slash_id]);
+                Ok((input, self.arena.push_node(CompactNode::Row(children))))
+            },
+
+            // --- Hyperlinks and URLs (render visible text only) ---
+            "href" => {
+                // \href{url}{text} — consume url, return text
+                let (input, _url_id) = self.parse_required_group(input)?;
+                self.parse_required_group(input)
+            },
+            "url" => {
+                // \url{text} — render as text
+                let (input, _) = ws(input)?;
+                let (input, _) = char('{')(input)?;
+                let mut depth = 1u32;
+                let mut end = 0;
+                for (i, c) in input.char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 { end = i; break; }
+                        },
+                        _ => {},
+                    }
+                }
+                let text = &input[..end];
+                let rest = &input[end + 1..];
+                let sid = self.arena.push_str(text);
+                Ok((rest, self.arena.push_node(CompactNode::Text(TextStyle::Monospace, sid))))
+            },
+
+            // --- HTML attributes (transparent wrappers) ---
+            "htmlId" | "htmlClass" | "htmlData" | "htmlStyle" => {
+                // \htmlId{id}{content} — consume attribute arg, return content
+                let (input, _attr_id) = self.parse_required_group(input)?;
+                self.parse_required_group(input)
+            },
+
+            // --- DeclareMathOperator (consume and discard) ---
+            "DeclareMathOperator" | "newcommand" | "renewcommand" | "providecommand"
+            | "newenvironment" | "renewenvironment" => {
+                self.parse_declaration(input)
+            },
+
+            // --- Includegraphics (consume and skip) ---
+            "includegraphics" => {
+                let (input, _) = ws(input)?;
+                // Optional [options]
+                let input = if input.starts_with('[') {
+                    if let Some(end) = input.find(']') {
+                        &input[end + 1..]
+                    } else {
+                        input
+                    }
+                } else {
+                    input
+                };
+                let (input, _) = self.parse_required_group(input)?;
+                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+            },
+
+            // --- Logo text commands ---
+            "TeX" => {
+                let sid = self.arena.push_str("TeX");
+                Ok((input, self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))))
+            },
+            "LaTeX" => {
+                let sid = self.arena.push_str("LaTeX");
+                Ok((input, self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))))
+            },
+            "KaTeX" => {
+                let sid = self.arena.push_str("KaTeX");
+                Ok((input, self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))))
+            },
+
+            // --- Idotsint (integral with dots) ---
+            "idotsint" => {
+                let int_sid = self.push_char_str('\u{222B}');
+                let dots_sid = self.push_char_str('\u{22EF}');
+                let int1 = self.arena.push_node(CompactNode::Symbol(SymbolKind::LargeOp, int_sid));
+                let dots = self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, dots_sid));
+                let int_sid2 = self.push_char_str('\u{222B}');
+                let int2 = self.arena.push_node(CompactNode::Symbol(SymbolKind::LargeOp, int_sid2));
+                let children = self.arena.push_children(&[int1, dots, int2]);
+                Ok((input, self.arena.push_node(CompactNode::Row(children))))
+            },
+
+            // --- Verb (verbatim text) ---
+            "verb" | "verb*" => self.parse_verb(input),
+
+            // --- Overlap commands (emit content, ignore overlap positioning) ---
+            "mathllap" | "mathrlap" | "mathclap" | "llap" | "rlap" | "clap" => {
+                self.parse_required_group(input)
+            },
+
+            // --- Vcenter (vertical centering — just emit content) ---
+            "vcenter" => self.parse_required_group(input),
+
+            // --- Old-style font switches (TeX two-letter commands) ---
+            "rm" | "it" | "bf" | "sf" | "tt" => {
+                self.parse_old_font_switch(input, name)
+            },
+
+            // --- Above (infix with dimension) ---
+            "above" => {
+                // \above <dimen> — like \over but with specified bar thickness
+                // Consume optional dimension, produce infix marker (treated like \over)
+                let (input, _) = ws(input)?;
+                // Try to consume a dimension
+                let input = match self.parse_dimension(input) {
+                    Ok((rest, _)) => rest,
+                    Err(_) => input,
+                };
+                let sid = self.arena.push_str("__infix_over__");
+                Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+            },
+
+            // --- Table directives (when encountered outside table context) ---
+            "hline" | "hdashline" => {
+                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+            },
+
+            // --- Label (consume and discard) ---
+            "label" => {
+                let (input, _) = self.parse_required_group(input)?;
+                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+            },
+
+            // --- Mathchoice: pick first (display) argument ---
+            "mathchoice" => {
+                // \mathchoice{D}{T}{S}{SS} — pick display argument, consume rest
+                let (input, display_id) = self.parse_required_group(input)?;
+                let (input, _text_id) = self.parse_required_group(input)?;
+                let (input, _script_id) = self.parse_required_group(input)?;
+                let (input, _sscript_id) = self.parse_required_group(input)?;
+                Ok((input, display_id))
+            },
+
+            // --- Intop (integral with limits style) ---
+            "intop" => {
+                let sid = self.push_char_str('\u{222B}');
+                Ok((
+                    input,
+                    self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::LargeOp, sid)),
+                ))
+            },
+
+            // --- Reaction arrows (extensible) ---
+            "xrightleftarrows" => self.parse_extensible_arrow(input, '\u{21C4}'),
+            "xrightequilibrium" => self.parse_extensible_arrow(input, '\u{21CC}'),
+            "xleftequilibrium" => self.parse_extensible_arrow(input, '\u{21CB}'),
+
+            // --- Actuarial angle notation ---
+            "angl" | "angln" => {
+                // \angl{n} → n with angle bracket — render as content with right angle bar
+                let (input, _) = ws(input)?;
+                if input.starts_with('{') {
+                    let (input, content_id) = self.parse_braced_group(input)?;
+                    // Emit content with an overline to approximate the actuarial angle
+                    let line_sid = self.arena.push_str("\u{203E}");
+                    let line_id = self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, line_sid));
+                    Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Overscript {
+                            base: content_id,
+                            over: line_id,
+                            movable_limits: false,
+                        }),
+                    ))
+                } else {
+                    // No argument — just emit empty
+                    Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+                }
+            },
+
+            // --- Phase angle ---
+            "phase" => {
+                // \phase{angle} — render as underline with angle content
+                let (input, content_id) = self.parse_required_group(input)?;
+                let angle_sid = self.arena.push_str("\u{2220}");
+                let angle_id = self.arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, angle_sid));
+                let children = self.arena.push_children(&[angle_id, content_id]);
+                Ok((input, self.arena.push_node(CompactNode::Row(children))))
+            },
+
+            // --- Braket/Set (physics notation) ---
+            "Braket" | "braket" => {
+                // \Braket{...} → ⟨...⟩
+                let (input, content_id) = self.parse_required_group(input)?;
+                let open = self.arena.push_str("\u{27E8}");
+                let close = self.arena.push_str("\u{27E9}");
+                let content = self.arena.push_children(&[content_id]);
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Fenced {
+                        open,
+                        close,
+                        content,
+                    }),
+                ))
+            },
+            "Set" | "set" => {
+                // \Set{...} → {...}
+                let (input, content_id) = self.parse_required_group(input)?;
+                let open = self.arena.push_str("{");
+                let close = self.arena.push_str("}");
+                let content = self.arena.push_children(&[content_id]);
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Fenced {
+                        open,
+                        close,
+                        content,
+                    }),
+                ))
+            },
+
+            // --- \cr (row separator used outside table context) ---
+            "cr" => {
+                Ok((input, self.arena.push_node(CompactNode::Space(Rational::zero()))))
+            },
 
             // --- Catch-all: symbols, n-ary, operators, Greek letters ---
             //
@@ -1176,7 +1602,13 @@ impl LatexCompactParser {
                 Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
             },
             // Line break / no-op commands consumed silently
-            "newline" | "nonumber" | "notag" | "nobreak" => {
+            "newline" | "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak"
+            | "limits" | "nolimits" => {
+                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
+            },
+            // Font sizing commands — meaningless in math mode; consume silently
+            "Huge" | "huge" | "LARGE" | "Large" | "large" | "normalsize" | "small"
+            | "footnotesize" | "scriptsize" | "tiny" => {
                 Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
             },
             // Mod operator
@@ -1719,6 +2151,155 @@ impl LatexCompactParser {
         ))
     }
 
+    /// Parse a TeX dimension: an optional sign, a number (integer or decimal),
+    /// followed by a unit. Returns a value in em.
+    fn parse_dimension<'a>(&mut self, input: &'a str) -> IResult<&'a str, Rational> {
+        let (input, _) = ws(input)?;
+        let bytes = input.as_bytes();
+        let mut i = 0;
+        // Optional sign
+        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+            i += 1;
+        }
+        // Digits (integer part)
+        let digit_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        // Optional decimal point + fractional digits
+        if i < bytes.len() && bytes[i] == b'.' {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        if i == digit_start && !(digit_start > 0 && (bytes[digit_start - 1] == b'+' || bytes[digit_start - 1] == b'-')) {
+            // No number found at all
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Digit,
+            )));
+        }
+        let num_str = &input[..i];
+        let rest = &input[i..];
+        let value: f64 = num_str.parse().unwrap_or(0.0);
+
+        // Skip optional whitespace before unit
+        let skip = skip_ws_bytes(rest.as_bytes());
+        let rest = &rest[skip..];
+
+        // Parse unit
+        let (rest, em_value) = if let Some(r) = rest.strip_prefix("em") {
+            (r, value)
+        } else if let Some(r) = rest.strip_prefix("ex") {
+            (r, value * 0.43) // 1ex ~ 0.43em
+        } else if let Some(r) = rest.strip_prefix("pt") {
+            (r, value * 0.1) // 1pt ~ 0.1em at 10pt base
+        } else if let Some(r) = rest.strip_prefix("mu") {
+            (r, value / 18.0) // 1mu = 1/18 em
+        } else if let Some(r) = rest.strip_prefix("mm") {
+            (r, value * 0.284) // approximate
+        } else if let Some(r) = rest.strip_prefix("cm") {
+            (r, value * 2.84) // approximate
+        } else if let Some(r) = rest.strip_prefix("in") {
+            (r, value * 7.23) // approximate
+        } else if let Some(r) = rest.strip_prefix("pc") {
+            (r, value * 1.2) // 1pc = 12pt
+        } else if let Some(r) = rest.strip_prefix("bp") {
+            (r, value * 0.1) // 1bp ~ 1pt
+        } else if let Some(r) = rest.strip_prefix("sp") {
+            (r, value * 0.0000015) // 1sp = 1/65536 pt, negligible
+        } else {
+            // No unit — assume pt (common in TeX)
+            (rest, value * 0.1)
+        };
+
+        // Ensure the unit isn't followed by an alphabetic char (e.g. "emph" isn't "em"+"ph")
+        // But since we already stripped, this is just a safety check handled by the strip_prefix.
+
+        // Convert f64 to rational: multiply by 100, round, use den=100
+        let num_i = (em_value * 100.0).round() as i32;
+        Ok((rest, Rational::new(num_i, 100)))
+    }
+
+    /// `\kern<dimension>` or `\mkern<dimension>` — explicit spacing.
+    /// `is_mu` indicates math units (1mu = 1/18 em).
+    fn parse_kern<'a>(&mut self, input: &'a str, is_mu: bool) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        // If the dimension is braced, handle {dim}
+        if input.starts_with('{') {
+            let (rest, _) = char('{')(input)?;
+            let end = rest.find('}').ok_or_else(|| {
+                nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+            })?;
+            let dim_str = &rest[..end];
+            let after = &rest[end + 1..];
+            // Parse the dimension within the braces
+            let mut sub_parser = LatexCompactParser::with_capacity(dim_str.len());
+            if let Ok((_, r)) = sub_parser.parse_dimension(dim_str) {
+                return Ok((after, self.arena.push_node(CompactNode::Space(r))));
+            }
+            // Failed to parse dimension; emit thin space
+            return Ok((after, self.arena.push_node(CompactNode::Space(Rational::zero()))));
+        }
+        match self.parse_dimension(input) {
+            Ok((rest, r)) => {
+                let r = if is_mu {
+                    // parse_dimension with "mu" already handled; for bare numbers assume mu
+                    r
+                } else {
+                    r
+                };
+                Ok((rest, self.arena.push_node(CompactNode::Space(r))))
+            },
+            Err(_) => {
+                // Couldn't parse dimension; just emit zero space
+                Ok((input, self.arena.push_node(CompactNode::Space(Rational::zero()))))
+            },
+        }
+    }
+
+    /// `\hspace{dimension}` or `\hspace*{dimension}` — horizontal space.
+    fn parse_hspace<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        // Optional * after command name
+        let input = input.strip_prefix('*').unwrap_or(input);
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let end = input.find('}').ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let dim_str = &input[..end];
+        let rest = &input[end + 1..];
+        // Parse dimension
+        let mut sub_parser = LatexCompactParser::with_capacity(dim_str.len());
+        if let Ok((_, r)) = sub_parser.parse_dimension(dim_str) {
+            return Ok((rest, self.arena.push_node(CompactNode::Space(r))));
+        }
+        Ok((rest, self.arena.push_node(CompactNode::Space(Rational::zero()))))
+    }
+
+    /// `\rule[lift]{width}{height}` — consume arguments, emit a small space placeholder.
+    fn parse_rule<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        // Optional [lift]
+        let input = if input.starts_with('[') {
+            if let Some(end) = input.find(']') {
+                &input[end + 1..]
+            } else {
+                input
+            }
+        } else {
+            input
+        };
+        // Required {width}
+        let (input, _) = self.parse_required_group(input)?;
+        // Required {height}
+        let (input, _) = self.parse_required_group(input)?;
+        // Emit empty space (rule is visual only)
+        Ok((input, self.arena.push_node(CompactNode::Space(Rational::zero()))))
+    }
+
     fn parse_extensible_arrow<'a>(
         &mut self,
         input: &'a str,
@@ -1896,6 +2477,186 @@ impl LatexCompactParser {
             self.arena
                 .push_node(CompactNode::Color { color: color_sid, content: content_id }),
         ))
+    }
+
+    /// Color shorthand: `\blue{...}` or `\blue x` wraps following content in a Color node.
+    fn parse_color_shorthand<'a>(
+        &mut self,
+        input: &'a str,
+        color_name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let color_sid = self.arena.push_str(color_name);
+        let (input, _) = ws(input)?;
+        if input.starts_with('{') {
+            let (input, content_id) = self.parse_braced_group(input)?;
+            Ok((
+                input,
+                self.arena
+                    .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+            ))
+        } else {
+            // Consume the next single token
+            match self.parse_single_token(input) {
+                Ok((rest, content_id)) => Ok((
+                    rest,
+                    self.arena
+                        .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+                )),
+                Err(_) => {
+                    // No content follows; just emit an empty node
+                    let empty = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                    Ok((
+                        input,
+                        self.arena
+                            .push_node(CompactNode::Color { color: color_sid, content: empty }),
+                    ))
+                },
+            }
+        }
+    }
+
+    /// `\colorbox{color}{content}` — consume color arg, emit content in a box.
+    fn parse_colorbox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, _color) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        let (input, content_id) = self.parse_required_group(input)?;
+        Ok((input, self.arena.push_node(CompactNode::Boxed(content_id))))
+    }
+
+    /// `\fcolorbox{framecolor}{bgcolor}{content}` — consume two color args, emit content in a box.
+    fn parse_fcolorbox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, _frame_color) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, _bg_color) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        let (input, content_id) = self.parse_required_group(input)?;
+        Ok((input, self.arena.push_node(CompactNode::Boxed(content_id))))
+    }
+
+    /// `\raisebox{dimension}{content}` — consume dimension, emit content.
+    fn parse_raisebox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        // Consume {dimension}
+        let (input, _) = char('{')(input)?;
+        let end = input.find('}').ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let rest = &input[end + 1..];
+        // Optional [height][depth] arguments
+        let rest = if rest.starts_with('[') {
+            if let Some(e) = rest.find(']') {
+                let r = &rest[e + 1..];
+                if r.starts_with('[') {
+                    if let Some(e2) = r.find(']') {
+                        &r[e2 + 1..]
+                    } else { r }
+                } else { r }
+            } else { rest }
+        } else { rest };
+        self.parse_required_group(rest)
+    }
+
+    /// `\verb|...|` or `\verb*|...|` — verbatim text between delimiters.
+    fn parse_verb<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // The delimiter is the first non-space character after \verb or \verb*
+        let input = input.strip_prefix('*').unwrap_or(input);
+        let mut chars = input.chars();
+        let delim = chars.next().ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let after_delim = &input[delim.len_utf8()..];
+        // Find matching closing delimiter
+        if let Some(end) = after_delim.find(delim) {
+            let text = &after_delim[..end];
+            let rest = &after_delim[end + delim.len_utf8()..];
+            let sid = self.arena.push_str(text);
+            Ok((rest, self.arena.push_node(CompactNode::Text(TextStyle::Monospace, sid))))
+        } else {
+            // No closing delimiter found; consume to end
+            let sid = self.arena.push_str(after_delim);
+            Ok(("", self.arena.push_node(CompactNode::Text(TextStyle::Monospace, sid))))
+        }
+    }
+
+    /// Old-style font switches: `\rm`, `\it`, `\bf`, `\sf`, `\tt`.
+    /// These apply to the rest of the current group.
+    fn parse_old_font_switch<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
+        // In math mode, these are typically no-ops or apply a style to following content.
+        // We'll parse the next token and apply the style.
+        let style = match name {
+            "rm" => TextStyle::Normal,
+            "it" => TextStyle::Italic,
+            "bf" => TextStyle::Bold,
+            "sf" => TextStyle::SansSerif,
+            "tt" => TextStyle::Monospace,
+            _ => TextStyle::Normal,
+        };
+        let (input, _) = ws(input)?;
+        // If there's content to style, consume the next token
+        if input.is_empty() || input.starts_with('}') || input.starts_with('&')
+            || input.starts_with("\\\\") || input.starts_with("\\end")
+        {
+            return Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+        }
+        // Parse remaining content in current group
+        let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut rest = input;
+        loop {
+            let (r, _) = ws(rest)?;
+            rest = r;
+            if rest.is_empty() || rest.starts_with('}') || rest.starts_with('&')
+                || rest.starts_with("\\\\") || rest.starts_with("\\end")
+            {
+                break;
+            }
+            match self.parse_element(rest) {
+                Ok((r, id)) => {
+                    ids.push(id);
+                    rest = r;
+                },
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                Err(_) => break,
+            }
+        }
+        if ids.is_empty() {
+            return Ok((rest, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+        }
+        let content_span = self.arena.push_children(&ids);
+        Ok((rest, self.arena.push_node(CompactNode::Styled(style, content_span))))
+    }
+
+    /// Parse \DeclareMathOperator and similar declaration commands — consume all arguments.
+    fn parse_declaration<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        // Optional *
+        let input = input.strip_prefix('*').unwrap_or(input);
+        // Consume braced arguments until we stop finding them
+        let mut rest = input;
+        for _ in 0..4 {
+            let (r, _) = ws(rest)?;
+            if r.starts_with('{') {
+                if let Ok((after, _)) = self.parse_braced_group(r) {
+                    rest = after;
+                } else {
+                    break;
+                }
+            } else if r.starts_with('[') {
+                if let Some(end) = r.find(']') {
+                    rest = &r[end + 1..];
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok((rest, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
     }
 
     // -----------------------------------------------------------------------
