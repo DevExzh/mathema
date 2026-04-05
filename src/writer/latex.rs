@@ -482,6 +482,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
     }
 }
 
+#[inline]
 fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
     let s = arena.str_val(sid);
     let ch = s.chars().next().unwrap_or('?');
@@ -493,6 +494,7 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
     }
 }
 
+#[inline]
 fn write_symbol(buf: &mut String, arena: &AstArena, _kind: SymbolKind, sid: compact::StrId) {
     let s = arena.str_val(sid);
     let ch = s.chars().next().unwrap_or('?');
@@ -559,6 +561,7 @@ fn write_delim(buf: &mut String, delim: &str) {
 
 /// Write a node wrapped in braces. If the node is a single simple token,
 /// skip the braces for cleaner output.
+#[inline]
 fn write_braced(buf: &mut String, arena: &AstArena, id: NodeId) {
     if is_simple_token(arena, id) {
         write_node(buf, arena, id);

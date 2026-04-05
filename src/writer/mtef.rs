@@ -34,12 +34,8 @@ impl MathWriter for MtefWriter {
         }
         buf.push(END);
 
-        // Hex encode — single allocation
-        let mut hex = String::with_capacity(buf.len() * 2);
-        for b in &buf {
-            use std::fmt::Write;
-            let _ = write!(hex, "{b:02x}");
-        }
+        // Hex encode — lookup table, no formatting overhead
+        let hex = hex_encode(&buf);
         Ok(hex)
     }
 
@@ -73,14 +69,24 @@ impl MathWriter for MtefWriter {
         }
         buf.push(END);
 
-        // Hex encode — single allocation
-        let mut hex = String::with_capacity(buf.len() * 2);
-        for b in &buf {
-            use std::fmt::Write;
-            let _ = write!(hex, "{b:02x}");
-        }
+        // Hex encode — lookup table, no formatting overhead
+        let hex = hex_encode(&buf);
         Ok(hex)
     }
+}
+
+/// Hex lookup table for fast byte-to-hex conversion.
+const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
+/// Encode bytes as lowercase hex string using a lookup table.
+#[inline]
+fn hex_encode(data: &[u8]) -> String {
+    let mut hex = String::with_capacity(data.len() * 2);
+    for &b in data {
+        hex.push(HEX_CHARS[(b >> 4) as usize] as char);
+        hex.push(HEX_CHARS[(b & 0x0f) as usize] as char);
+    }
+    hex
 }
 
 fn write_tag_options(buf: &mut Vec<u8>, tag: u8, options: u8) {

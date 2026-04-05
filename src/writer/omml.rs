@@ -30,20 +30,16 @@ impl MathWriter for OmmlWriter {
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
-        let mut w = Writer::new(Cursor::new(Vec::with_capacity(512)));
-        let mut math = BytesStart::new("m:oMath");
-        math.push_attribute(("xmlns:m", NS));
-        w.write_event(Event::Start(math)).map_err(io_err)?;
         let arena = &expr.arena;
+        let mut buf = String::with_capacity(512);
+        buf.push_str("<m:oMath xmlns:m=\"");
+        buf.push_str(NS);
+        buf.push_str("\">");
         for &root_id in arena.children(expr.roots) {
-            write_node_c(&mut w, arena, root_id)?;
+            write_node_cf(&mut buf, arena, root_id);
         }
-        w.write_event(Event::End(BytesEnd::new("m:oMath")))
-            .map_err(io_err)?;
-        let buf = w.into_inner().into_inner();
-        String::from_utf8(buf).map_err(|e| {
-            crate::error::Error::Unsupported(format!("OMML output contained invalid UTF-8: {e}"))
-        })
+        buf.push_str("</m:oMath>");
+        Ok(buf)
     }
 }
 
@@ -488,8 +484,9 @@ fn extract_symbol_text(node: &MathNode) -> String {
     }
 }
 
-// --- Compact arena helpers ---
+// --- Compact arena helpers (legacy quick_xml path, kept for reference) ---
 
+#[allow(dead_code)]
 fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
     match *arena.node(id) {
         CompactNode::Number(sid) => write_run_c(w, arena, sid, None),
@@ -830,10 +827,12 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
     }
 }
 
+#[allow(dead_code)]
 fn write_run_c(w: &mut XmlW, arena: &AstArena, sid: StrId, style: Option<&str>) -> Result<()> {
     write_run(w, arena.str_val(sid), style)
 }
 
+#[allow(dead_code)]
 fn write_styled_run_c(
     w: &mut XmlW,
     arena: &AstArena,
@@ -844,12 +843,14 @@ fn write_styled_run_c(
     write_styled_run(w, arena.str_val(sid), sty, scr)
 }
 
+#[allow(dead_code)]
 fn write_e_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
     start(w, "m:e")?;
     write_node_c(w, arena, id)?;
     end(w, "m:e")
 }
 
+#[allow(dead_code)]
 fn write_func_or_operator_c(w: &mut XmlW, arena: &AstArena, name: StrId) -> Result<()> {
     start(w, "m:func")?;
     start(w, "m:fName")?;
@@ -868,6 +869,425 @@ fn extract_symbol_text_c(arena: &AstArena, id: NodeId) -> String {
     match *arena.node(id) {
         CompactNode::Symbol(_, sid) => arena.str_val(sid).to_owned(),
         _ => "\u{23DF}".to_owned(),
+    }
+}
+
+// ── Fast direct-string compact OMML writer (bypasses quick_xml) ─────
+
+/// Escape XML special characters in text content.
+#[inline]
+fn xml_esc(buf: &mut String, s: &str) {
+    if !s.bytes().any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'')) {
+        buf.push_str(s);
+        return;
+    }
+    for ch in s.chars() {
+        match ch {
+            '<' => buf.push_str("&lt;"),
+            '>' => buf.push_str("&gt;"),
+            '&' => buf.push_str("&amp;"),
+            '"' => buf.push_str("&quot;"),
+            '\'' => buf.push_str("&apos;"),
+            _ => buf.push(ch),
+        }
+    }
+}
+
+#[inline]
+fn f_start(buf: &mut String, tag: &str) {
+    buf.push('<');
+    buf.push_str(tag);
+    buf.push('>');
+}
+
+#[inline]
+fn f_end(buf: &mut String, tag: &str) {
+    buf.push_str("</");
+    buf.push_str(tag);
+    buf.push('>');
+}
+
+#[inline]
+fn f_val_elem(buf: &mut String, tag: &str, val: &str) {
+    buf.push('<');
+    buf.push_str(tag);
+    buf.push_str(" m:val=\"");
+    xml_esc(buf, val);
+    buf.push_str("\"/>");
+}
+
+#[inline]
+fn f_run(buf: &mut String, text: &str, style: Option<&str>) {
+    f_start(buf, "m:r");
+    if let Some(sty) = style {
+        f_start(buf, "m:rPr");
+        f_val_elem(buf, "m:sty", sty);
+        f_end(buf, "m:rPr");
+    }
+    f_start(buf, "m:t");
+    xml_esc(buf, text);
+    f_end(buf, "m:t");
+    f_end(buf, "m:r");
+}
+
+#[inline]
+fn f_styled_run(buf: &mut String, text: &str, sty: &str, scr: Option<&str>) {
+    f_start(buf, "m:r");
+    f_start(buf, "m:rPr");
+    f_val_elem(buf, "m:sty", sty);
+    if let Some(s) = scr {
+        f_val_elem(buf, "m:scr", s);
+    }
+    f_end(buf, "m:rPr");
+    f_start(buf, "m:t");
+    xml_esc(buf, text);
+    f_end(buf, "m:t");
+    f_end(buf, "m:r");
+}
+
+#[inline]
+fn f_e(buf: &mut String, arena: &AstArena, id: NodeId) {
+    f_start(buf, "m:e");
+    write_node_cf(buf, arena, id);
+    f_end(buf, "m:e");
+}
+
+fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
+    match *arena.node(id) {
+        CompactNode::Number(sid) => f_run(buf, arena.str_val(sid), None),
+        CompactNode::Identifier(sid) => f_run(buf, arena.str_val(sid), Some("i")),
+        CompactNode::Operator { name, .. } => {
+            f_start(buf, "m:func");
+            f_start(buf, "m:fName");
+            f_run(buf, arena.str_val(name), Some("p"));
+            f_end(buf, "m:fName");
+            f_start(buf, "m:e");
+            f_end(buf, "m:e");
+            f_end(buf, "m:func");
+        },
+        CompactNode::Symbol(_kind, sid) => f_run(buf, arena.str_val(sid), None),
+        CompactNode::Text(_, sid) => f_run(buf, arena.str_val(sid), Some("p")),
+        CompactNode::Space(_) => f_run(buf, "\u{00A0}", None),
+
+        CompactNode::Row(span) => {
+            for &child_id in arena.children(span) {
+                write_node_cf(buf, arena, child_id);
+            }
+        },
+
+        CompactNode::Fenced {
+            open,
+            close,
+            content,
+        } => {
+            f_start(buf, "m:d");
+            f_start(buf, "m:dPr");
+            f_val_elem(buf, "m:begChr", arena.str_val(open));
+            f_val_elem(buf, "m:endChr", arena.str_val(close));
+            f_end(buf, "m:dPr");
+            for &child_id in arena.children(content) {
+                if matches!(*arena.node(child_id), CompactNode::Middle(_)) {
+                    continue;
+                }
+                f_start(buf, "m:e");
+                write_node_cf(buf, arena, child_id);
+                f_end(buf, "m:e");
+            }
+            f_end(buf, "m:d");
+        },
+
+        CompactNode::Subscript { base, sub } => {
+            f_start(buf, "m:sSub");
+            f_e(buf, arena, base);
+            f_start(buf, "m:sub");
+            write_node_cf(buf, arena, sub);
+            f_end(buf, "m:sub");
+            f_end(buf, "m:sSub");
+        },
+
+        CompactNode::Superscript { base, sup } => {
+            f_start(buf, "m:sSup");
+            f_e(buf, arena, base);
+            f_start(buf, "m:sup");
+            write_node_cf(buf, arena, sup);
+            f_end(buf, "m:sup");
+            f_end(buf, "m:sSup");
+        },
+
+        CompactNode::SubSup { base, sub, sup } => {
+            f_start(buf, "m:sSubSup");
+            f_e(buf, arena, base);
+            f_start(buf, "m:sub");
+            write_node_cf(buf, arena, sub);
+            f_end(buf, "m:sub");
+            f_start(buf, "m:sup");
+            write_node_cf(buf, arena, sup);
+            f_end(buf, "m:sup");
+            f_end(buf, "m:sSubSup");
+        },
+
+        CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            f_start(buf, "m:sPre");
+            f_start(buf, "m:sub");
+            if pre_sub.is_some() {
+                write_node_cf(buf, arena, pre_sub);
+            }
+            f_end(buf, "m:sub");
+            f_start(buf, "m:sup");
+            if pre_sup.is_some() {
+                write_node_cf(buf, arena, pre_sup);
+            }
+            f_end(buf, "m:sup");
+            f_e(buf, arena, base);
+            f_end(buf, "m:sPre");
+        },
+
+        CompactNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
+            if movable_limits {
+                f_start(buf, "m:limUpp");
+                f_e(buf, arena, base);
+                f_start(buf, "m:lim");
+                write_node_cf(buf, arena, over);
+                f_end(buf, "m:lim");
+                f_end(buf, "m:limUpp");
+            } else if is_line_symbol_c(arena, over) {
+                f_start(buf, "m:bar");
+                f_start(buf, "m:barPr");
+                f_val_elem(buf, "m:pos", "top");
+                f_end(buf, "m:barPr");
+                f_e(buf, arena, base);
+                f_end(buf, "m:bar");
+            } else {
+                f_start(buf, "m:groupChr");
+                f_start(buf, "m:groupChrPr");
+                let chr_str = extract_symbol_text_c(arena, over);
+                f_val_elem(buf, "m:chr", &chr_str);
+                f_val_elem(buf, "m:pos", "top");
+                f_end(buf, "m:groupChrPr");
+                f_e(buf, arena, base);
+                f_end(buf, "m:groupChr");
+            }
+        },
+
+        CompactNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
+            if movable_limits {
+                f_start(buf, "m:limLow");
+                f_e(buf, arena, base);
+                f_start(buf, "m:lim");
+                write_node_cf(buf, arena, under);
+                f_end(buf, "m:lim");
+                f_end(buf, "m:limLow");
+            } else if is_line_symbol_c(arena, under) {
+                f_start(buf, "m:bar");
+                f_start(buf, "m:barPr");
+                f_val_elem(buf, "m:pos", "bot");
+                f_end(buf, "m:barPr");
+                f_e(buf, arena, base);
+                f_end(buf, "m:bar");
+            } else {
+                f_start(buf, "m:groupChr");
+                f_start(buf, "m:groupChrPr");
+                let chr_str = extract_symbol_text_c(arena, under);
+                f_val_elem(buf, "m:chr", &chr_str);
+                f_val_elem(buf, "m:pos", "bot");
+                f_end(buf, "m:groupChrPr");
+                f_e(buf, arena, base);
+                f_end(buf, "m:groupChr");
+            }
+        },
+
+        CompactNode::UnderOver {
+            base,
+            under,
+            over,
+            movable_limits: _,
+        } => {
+            f_start(buf, "m:limUpp");
+            f_start(buf, "m:e");
+            f_start(buf, "m:limLow");
+            f_e(buf, arena, base);
+            f_start(buf, "m:lim");
+            write_node_cf(buf, arena, under);
+            f_end(buf, "m:lim");
+            f_end(buf, "m:limLow");
+            f_end(buf, "m:e");
+            f_start(buf, "m:lim");
+            write_node_cf(buf, arena, over);
+            f_end(buf, "m:lim");
+            f_end(buf, "m:limUpp");
+        },
+
+        CompactNode::Fraction { kind, num, den } => {
+            let type_val = match kind {
+                FractionKind::Normal | FractionKind::Display => "bar",
+                FractionKind::NoBar => "noBar",
+                FractionKind::Skewed => "skw",
+                FractionKind::Inline => "lin",
+            };
+            f_start(buf, "m:f");
+            f_start(buf, "m:fPr");
+            f_val_elem(buf, "m:type", type_val);
+            f_end(buf, "m:fPr");
+            f_start(buf, "m:num");
+            write_node_cf(buf, arena, num);
+            f_end(buf, "m:num");
+            f_start(buf, "m:den");
+            write_node_cf(buf, arena, den);
+            f_end(buf, "m:den");
+            f_end(buf, "m:f");
+        },
+
+        CompactNode::Sqrt(inner) => {
+            f_start(buf, "m:rad");
+            f_start(buf, "m:radPr");
+            f_val_elem(buf, "m:degHide", "1");
+            f_end(buf, "m:radPr");
+            f_start(buf, "m:deg");
+            f_end(buf, "m:deg");
+            f_e(buf, arena, inner);
+            f_end(buf, "m:rad");
+        },
+
+        CompactNode::Root { index, radicand } => {
+            f_start(buf, "m:rad");
+            f_start(buf, "m:deg");
+            write_node_cf(buf, arena, index);
+            f_end(buf, "m:deg");
+            f_e(buf, arena, radicand);
+            f_end(buf, "m:rad");
+        },
+
+        CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        } => {
+            let lim_loc = match limits {
+                LimitStyle::AboveBelow => "undOvr",
+                LimitStyle::SubSup => "subSup",
+                LimitStyle::Default => "undOvr",
+            };
+            f_start(buf, "m:nary");
+            f_start(buf, "m:naryPr");
+            // Write op char
+            let mut char_buf = [0u8; 4];
+            let op_str = op.encode_utf8(&mut char_buf);
+            f_val_elem(buf, "m:chr", op_str);
+            f_val_elem(buf, "m:limLoc", lim_loc);
+            if sub.is_none() {
+                f_val_elem(buf, "m:subHide", "1");
+            }
+            if sup.is_none() {
+                f_val_elem(buf, "m:supHide", "1");
+            }
+            f_end(buf, "m:naryPr");
+            f_start(buf, "m:sub");
+            if sub.is_some() {
+                write_node_cf(buf, arena, sub);
+            }
+            f_end(buf, "m:sub");
+            f_start(buf, "m:sup");
+            if sup.is_some() {
+                write_node_cf(buf, arena, sup);
+            }
+            f_end(buf, "m:sup");
+            f_e(buf, arena, body);
+            f_end(buf, "m:nary");
+        },
+
+        CompactNode::Accent {
+            base,
+            accent,
+            position: _,
+        } => {
+            f_start(buf, "m:acc");
+            f_start(buf, "m:accPr");
+            let mut char_buf = [0u8; 4];
+            let acc_str = accent.encode_utf8(&mut char_buf);
+            f_val_elem(buf, "m:chr", acc_str);
+            f_end(buf, "m:accPr");
+            f_e(buf, arena, base);
+            f_end(buf, "m:acc");
+        },
+
+        CompactNode::Array {
+            cells, num_cols, ..
+        } => {
+            let cell_ids = arena.children(cells);
+            let nc = num_cols as usize;
+            f_start(buf, "m:m");
+            for chunk in cell_ids.chunks(nc.max(1)) {
+                f_start(buf, "m:mr");
+                for &cell_id in chunk {
+                    f_start(buf, "m:e");
+                    match *arena.node(cell_id) {
+                        CompactNode::Row(span) => {
+                            for &child_id in arena.children(span) {
+                                write_node_cf(buf, arena, child_id);
+                            }
+                        },
+                        _ => write_node_cf(buf, arena, cell_id),
+                    }
+                    f_end(buf, "m:e");
+                }
+                f_end(buf, "m:mr");
+            }
+            f_end(buf, "m:m");
+        },
+
+        CompactNode::Phantom(inner) => {
+            f_start(buf, "m:phant");
+            f_e(buf, arena, inner);
+            f_end(buf, "m:phant");
+        },
+
+        CompactNode::Boxed(inner) => {
+            f_start(buf, "m:borderBox");
+            f_e(buf, arena, inner);
+            f_end(buf, "m:borderBox");
+        },
+
+        CompactNode::Cancel { content, .. } => {
+            f_start(buf, "m:borderBox");
+            f_start(buf, "m:borderBoxPr");
+            f_val_elem(buf, "m:strikeBLTR", "1");
+            f_end(buf, "m:borderBoxPr");
+            f_e(buf, arena, content);
+            f_end(buf, "m:borderBox");
+        },
+
+        CompactNode::Scaled { content, .. } => write_node_cf(buf, arena, content),
+
+        CompactNode::Styled(style, span) => {
+            let (sty, scr) = decompose_style(style);
+            for &child_id in arena.children(span) {
+                match *arena.node(child_id) {
+                    CompactNode::Identifier(sid) | CompactNode::Number(sid) => {
+                        f_styled_run(buf, arena.str_val(sid), sty, scr);
+                    },
+                    CompactNode::Text(_, sid) => {
+                        f_styled_run(buf, arena.str_val(sid), sty, scr);
+                    },
+                    _ => write_node_cf(buf, arena, child_id),
+                }
+            }
+        },
+
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) => {},
     }
 }
 

@@ -4,6 +4,7 @@ use crate::ast::TextStyle;
 ///
 /// This covers the Mathematical Alphanumeric Symbols block (U+1D400–U+1D7FF)
 /// and related ranges.
+#[inline]
 pub fn styled_char(ch: char, style: TextStyle) -> Option<char> {
     let offset = match style {
         TextStyle::Normal => return Some(ch),
@@ -26,6 +27,7 @@ pub fn styled_char(ch: char, style: TextStyle) -> Option<char> {
 
 /// Attempt to detect the style of a Unicode mathematical alphanumeric character
 /// and return (base_char, style).
+#[inline]
 pub fn unstyled_char(ch: char) -> Option<(char, TextStyle)> {
     let cp = ch as u32;
 
@@ -96,6 +98,7 @@ pub fn unstyled_char(ch: char) -> Option<(char, TextStyle)> {
 // --- Offset helpers ---
 // Each returns a u32 codepoint for the styled character, or None if not mappable.
 
+#[inline]
 fn bold_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D400 + (ch as u32 - b'A' as u32)),
@@ -105,6 +108,7 @@ fn bold_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn italic_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D434 + (ch as u32 - b'A' as u32)),
@@ -114,6 +118,7 @@ fn italic_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn bold_italic_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D468 + (ch as u32 - b'A' as u32)),
@@ -122,6 +127,7 @@ fn bold_italic_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn script_offset(ch: char) -> Option<u32> {
     match ch {
         // Several script uppercase letters have dedicated codepoints
@@ -143,6 +149,7 @@ fn script_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn bold_script_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D4D0 + (ch as u32 - b'A' as u32)),
@@ -151,6 +158,7 @@ fn bold_script_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn fraktur_offset(ch: char) -> Option<u32> {
     match ch {
         'C' => Some(0x212D),
@@ -164,6 +172,7 @@ fn fraktur_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn bold_fraktur_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D56C + (ch as u32 - b'A' as u32)),
@@ -172,6 +181,7 @@ fn bold_fraktur_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn double_struck_offset(ch: char) -> Option<u32> {
     match ch {
         'C' => Some(0x2102),
@@ -188,6 +198,7 @@ fn double_struck_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn sans_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D5A0 + (ch as u32 - b'A' as u32)),
@@ -197,6 +208,7 @@ fn sans_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn sans_bold_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D5D4 + (ch as u32 - b'A' as u32)),
@@ -206,6 +218,7 @@ fn sans_bold_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn sans_italic_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D608 + (ch as u32 - b'A' as u32)),
@@ -214,6 +227,7 @@ fn sans_italic_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn sans_bold_italic_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D63C + (ch as u32 - b'A' as u32)),
@@ -222,6 +236,7 @@ fn sans_bold_italic_offset(ch: char) -> Option<u32> {
     }
 }
 
+#[inline]
 fn monospace_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D670 + (ch as u32 - b'A' as u32)),
@@ -232,6 +247,7 @@ fn monospace_offset(ch: char) -> Option<u32> {
 }
 
 /// Map a LaTeX font command to a TextStyle.
+#[inline]
 pub fn latex_font_to_style(command: &str) -> Option<TextStyle> {
     match command {
         "mathrm" | "textrm" | "text" => Some(TextStyle::Normal),
@@ -247,6 +263,7 @@ pub fn latex_font_to_style(command: &str) -> Option<TextStyle> {
 }
 
 /// Map a TextStyle to its preferred LaTeX font command.
+#[inline]
 pub fn style_to_latex_font(style: TextStyle) -> &'static str {
     match style {
         TextStyle::Normal => "mathrm",

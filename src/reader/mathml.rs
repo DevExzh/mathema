@@ -89,24 +89,34 @@ impl<'a> MathmlCompactParser<'a> {
     fn new(input: &'a str) -> Result<Self> {
         let mut reader = Reader::from_str(input);
         reader.config_mut().trim_text(true);
+        // Heuristic: MathML is verbose, roughly 1 node per 15 input bytes
+        let est_nodes = input.len() / 15 + 4;
         Ok(Self {
             reader,
-            arena: AstArena::new(),
+            arena: AstArena::with_capacity(est_nodes, est_nodes, input.len() / 4),
             display: None,
             depth: 0,
         })
+    }
+
+    /// Convert a quick-xml QName to `&str` without heap allocation.
+    /// MathML tag names are always ASCII, so this is safe.
+    #[inline]
+    fn name_str(raw: &[u8]) -> &str {
+        // MathML tags are ASCII; fast path avoids UTF-8 validation.
+        std::str::from_utf8(raw).unwrap_or("")
     }
 
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let qname = e.name();
+                    let name = Self::name_str(qname.as_ref());
                     if name == "math" {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"display" {
-                                let val = String::from_utf8_lossy(&attr.value).to_string();
-                                self.display = Some(if val == "block" {
+                                self.display = Some(if attr.value.as_ref() == b"block" {
                                     DisplayStyle::Block
                                 } else {
                                     DisplayStyle::Inline
@@ -115,7 +125,8 @@ impl<'a> MathmlCompactParser<'a> {
                         }
                         return self.parse_children("math");
                     } else {
-                        let id = self.parse_element_by_name(&name, &e)?;
+                        let name_owned = name.to_owned();
+                        let id = self.parse_element_by_name(&name_owned, &e)?;
                         let mut nodes: SmallVec<[NodeId; 8]> = smallvec::smallvec![id];
                         nodes.extend(self.collect_remaining()?);
                         return Ok(nodes);
@@ -137,15 +148,17 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let qname = e.name();
+                    let name = Self::name_str(qname.as_ref()).to_owned();
                     nodes.push(self.parse_element_by_name(&name, &e)?);
                 },
                 Ok(Event::Empty(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let qname = e.name();
+                    let name = Self::name_str(qname.as_ref()).to_owned();
                     nodes.push(self.parse_empty_element(&name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default().to_string();
+                    let text = e.unescape().unwrap_or_default();
                     if !text.trim().is_empty() {
                         nodes.push(self.classify_text_compact(&text));
                     }
@@ -170,22 +183,24 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let qname = e.name();
+                    let name = Self::name_str(qname.as_ref()).to_owned();
                     nodes.push(self.parse_element_by_name(&name, &e)?);
                 },
                 Ok(Event::Empty(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let qname = e.name();
+                    let name = Self::name_str(qname.as_ref()).to_owned();
                     nodes.push(self.parse_empty_element(&name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default().to_string();
+                    let text = e.unescape().unwrap_or_default();
                     if !text.trim().is_empty() {
                         nodes.push(self.classify_text_compact(&text));
                     }
                 },
                 Ok(Event::End(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if name == parent_tag {
+                    let qname = e.name();
+                    if Self::name_str(qname.as_ref()) == parent_tag {
                         break;
                     }
                 },
@@ -514,8 +529,8 @@ impl<'a> MathmlCompactParser<'a> {
                     text.push_str(&e.unescape().unwrap_or_default());
                 },
                 Ok(Event::End(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if name == tag_name {
+                    let qname = e.name();
+                    if Self::name_str(qname.as_ref()) == tag_name {
                         break;
                     }
                 },
@@ -535,14 +550,16 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let qname = e.name();
+                    let name = Self::name_str(qname.as_ref());
                     if name == "mtr" || name == "mlabeledtr" {
-                        rows.push(self.parse_table_row(&name)?);
+                        let name_owned = name.to_owned();
+                        rows.push(self.parse_table_row(&name_owned)?);
                     }
                 },
                 Ok(Event::End(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if name == parent_tag {
+                    let qname = e.name();
+                    if Self::name_str(qname.as_ref()) == parent_tag {
                         break;
                     }
                 },
@@ -558,14 +575,15 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    let qname = e.name();
+                    let name = Self::name_str(qname.as_ref());
                     if name == "mtd" {
                         cells.push(self.parse_children("mtd")?);
                     }
                 },
                 Ok(Event::End(e)) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    if name == parent_tag {
+                    let qname = e.name();
+                    if Self::name_str(qname.as_ref()) == parent_tag {
                         break;
                     }
                 },
@@ -628,7 +646,10 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key.as_bytes())
-        .map(|a| String::from_utf8_lossy(&a.value).to_string())
+        .map(|a| {
+            // Avoid from_utf8_lossy + to_string; attribute values are valid UTF-8
+            String::from_utf8(a.value.to_vec()).unwrap_or_default()
+        })
 }
 
 fn classify_mo(text: &str) -> SymbolKind {

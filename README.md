@@ -1,6 +1,6 @@
 # mathema
 
-Convert math formulas between **LaTeX**, **MathML**, **OMML**, **MTEF**, and **UnicodeMath** via a shared AST. Optionally render to **SVG**.
+Convert math formulas between **LaTeX**, **MathML**, **OMML**, **MTEF**, and **UnicodeMath** via a shared AST. Optionally render to **SVG**, **PNG**, or **JPEG**.
 
 ## Quick start
 
@@ -26,49 +26,71 @@ let umath  = result.to_unicode_math().unwrap();
 | Office MathML (OMML) | Yes | Yes |
 | UnicodeMath | Yes | Yes |
 | MathType (MTEF) | Yes | Yes |
-| SVG | -- | Yes (feature `render`) |
+| SVG | -- | Yes (`render`) |
+| PNG | -- | Yes (`raster`) |
+| JPEG | -- | Yes (`raster`) |
 
 ## CLI
 
 ```sh
-cargo build --release --features render
+cargo build --release --features raster   # or just --features render for SVG only
 
-# Positional input
-mathema -f latex -t mathml "x^2"
+# Convert between text formats
+mathema convert -f latex -t mathml "x^2"
+echo "x^2" | mathema convert -f latex -t omml
 
-# Pipe from stdin
-echo "x^2" | mathema -f latex -t svg
+# Render to SVG, PNG, or JPEG
+mathema render "x^2"                              # SVG to stdout
+mathema render --format png -o out.png "x^2"      # PNG (requires raster)
+mathema render --format jpeg -o out.jpeg "x^2"    # JPEG (requires raster)
+mathema render --font-size 24 --color black "x^2" # custom options
+
+# Validate input
+mathema validate -f latex "x^2"
+
+# Batch processing (pass multiple files)
+mathema convert -t mathml -o out/ *.tex
+mathema render --format png -o out/ *.tex
 ```
 
-Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (`um`), `svg` (output only, requires `render` feature).
+The `--from` / `-f` flag is optional; the format is auto-detected from file extension or content when omitted.
+
+Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (`um`), `svg`, `png`, `jpeg` (`jpg`).
 
 ## Features
 
 | Feature | Description |
 |---|---|
 | `render` | SVG output via a built-in TeX-style layout engine |
+| `raster` | PNG/JPEG output (implies `render`) |
+| `font-embed` | Standalone SVG with embedded glyph outlines (implies `render`) |
 | `serde` | Serialize / deserialize the AST |
-| `wasm` | WebAssembly bindings |
+| `wasm` | WebAssembly bindings (implies `serde`) |
 
 ```sh
-# Enable SVG rendering
-cargo build --features render
-
-# Enable all optional features
-cargo build --features "render,serde,wasm"
+cargo build --features render          # SVG rendering
+cargo build --features raster          # PNG/JPEG rendering
+cargo build --features font-embed      # standalone SVG with embedded fonts
+cargo build --features "render,serde,wasm"  # all optional features
 ```
+
+## WASM
+
+Pre-built bindings and an example page live in `wasm/`. See [`wasm/README.md`](wasm/README.md) for build instructions and usage.
 
 ## Architecture
 
 ```
 Input string ──Reader──▸ MathExpr (AST) ──Writer──▸ Output string
                               │
-                         LayoutBox tree ──emit──▸ SVG  (feature: render)
+                         LayoutBox tree ──emit──▸ SVG       (render)
+                              │
+                         rasterize ──▸ PNG/JPEG             (raster)
 ```
 
 The shared AST (`MathExpr` / `MathNode`) has 26 node variants covering the union of all supported formats. Readers parse format-specific input into this AST; writers serialize it back out.
 
-The optional render pipeline applies TeX typesetting rules (TeXBook Rules 11, 12, 13, 15, 18) to produce positioned layout boxes, then emits them as SVG.
+The optional render pipeline applies TeX typesetting rules (TeXBook Rules 11–18) to produce positioned layout boxes, then emits them as SVG. The `raster` feature adds PNG/JPEG rasterization via `fontdue` + `tiny-skia`. The `font-embed` feature embeds glyph `<path>` outlines into the SVG for standalone rendering without external fonts.
 
 ## License
 

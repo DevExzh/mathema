@@ -32,12 +32,22 @@ impl GlyphMetrics {
 
 /// Look up glyph metrics for a character.
 /// Falls back to heuristic defaults based on character category.
+#[inline]
 pub fn glyph_metrics(ch: char) -> GlyphMetrics {
-    // Check the static table first
+    // Fast path: direct ASCII table lookup (O(1) vs O(log n) binary search)
+    let code = ch as u32;
+    if code < 128 {
+        let m = &ASCII_METRICS[code as usize];
+        // Sentinel: width == -1.0 means "not in table"
+        if m.width >= 0.0 {
+            return *m;
+        }
+        return heuristic_metrics(ch);
+    }
+    // Non-ASCII: binary search on sorted table
     if let Some(m) = lookup_metrics(ch) {
         return m;
     }
-    // Heuristic fallback
     heuristic_metrics(ch)
 }
 
@@ -265,6 +275,27 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('\u{2A01}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ⨁ bigoplus
     ('\u{2A02}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ⨂ bigotimes
 ];
+
+/// Sentinel value: width == -1.0 means "no entry in table; fall through to heuristic".
+const NO_ENTRY: GlyphMetrics = GlyphMetrics::new(0.0, 0.0, -1.0, 0.0);
+
+/// Direct lookup table for ASCII characters (0..128). Built at compile time from GLYPH_TABLE.
+/// Entries not in GLYPH_TABLE use the NO_ENTRY sentinel.
+static ASCII_METRICS: [GlyphMetrics; 128] = build_ascii_table();
+
+const fn build_ascii_table() -> [GlyphMetrics; 128] {
+    let mut table = [NO_ENTRY; 128];
+    let mut i = 0;
+    while i < GLYPH_TABLE.len() {
+        let (ch, m) = GLYPH_TABLE[i];
+        let code = ch as u32;
+        if code < 128 {
+            table[code as usize] = m;
+        }
+        i += 1;
+    }
+    table
+}
 
 #[cfg(test)]
 mod tests {

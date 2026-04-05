@@ -61,6 +61,7 @@ fn spacing_str(val: u8) -> Option<&'static str> {
 }
 
 /// Convert form enum to MathML attribute value.
+#[inline]
 pub fn form_str(form: OperatorForm) -> &'static str {
     match form {
         OperatorForm::Prefix => "prefix",
@@ -305,6 +306,7 @@ static POSTFIX_OPS: phf::Map<char, OperatorEntry> = phf_map! {
 // ---------------------------------------------------------------------------
 
 /// Look up an operator entry by character and form. O(1) via PHF.
+#[inline]
 pub fn lookup_operator(ch: char, form: OperatorForm) -> Option<&'static OperatorEntry> {
     match form {
         OperatorForm::Prefix => PREFIX_OPS.get(&ch),
@@ -316,6 +318,7 @@ pub fn lookup_operator(ch: char, form: OperatorForm) -> Option<&'static Operator
 /// Look up an operator entry by character, trying the given form first,
 /// then falling back in priority order: Infix > Prefix > Postfix.
 /// Each form is checked at most once.
+#[inline]
 pub fn lookup_operator_any(ch: char, preferred: OperatorForm) -> Option<&'static OperatorEntry> {
     lookup_operator(ch, preferred).or_else(|| {
         [OperatorForm::Infix, OperatorForm::Prefix, OperatorForm::Postfix]
@@ -326,6 +329,7 @@ pub fn lookup_operator_any(ch: char, preferred: OperatorForm) -> Option<&'static
 }
 
 /// Determine if a character is a stretchy operator in some form.
+#[inline]
 pub fn is_stretchy(ch: char) -> bool {
     PREFIX_OPS.get(&ch).is_some_and(|e| e.stretchy)
         || INFIX_OPS.get(&ch).is_some_and(|e| e.stretchy)
@@ -333,6 +337,7 @@ pub fn is_stretchy(ch: char) -> bool {
 }
 
 /// Infer operator form from the AST symbol kind.
+#[inline]
 pub fn symbol_kind_to_form(kind: crate::ast::SymbolKind) -> OperatorForm {
     match kind {
         crate::ast::SymbolKind::Open | crate::ast::SymbolKind::Fence => OperatorForm::Prefix,

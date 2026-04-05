@@ -519,16 +519,19 @@ static LIMIT_OPERATORS: phf::Set<&'static str> = phf_set! {
 // ---------------------------------------------------------------------------
 
 /// Look up a Unicode character by LaTeX command name (without backslash).
+#[inline]
 pub fn latex_to_unicode(command: &str) -> Option<char> {
     LATEX_TO_UNICODE.get(command).map(|&(ch, _)| ch)
 }
 
 /// Look up a LaTeX command name for a Unicode character.
+#[inline]
 pub fn unicode_to_latex(ch: char) -> Option<&'static str> {
     UNICODE_TO_LATEX.get(&ch).map(|&(cmd, _)| cmd)
 }
 
 /// Look up the math symbol kind for a Unicode character.
+#[inline]
 pub fn symbol_kind(ch: char) -> SymbolKind {
     UNICODE_TO_LATEX
         .get(&ch)
@@ -538,26 +541,31 @@ pub fn symbol_kind(ch: char) -> SymbolKind {
 
 /// Look up a symbol by LaTeX command name.
 /// Returns `(unicode_char, symbol_kind)`.
+#[inline]
 pub fn lookup_command(command: &str) -> Option<(char, SymbolKind)> {
     LATEX_TO_UNICODE.get(command).copied()
 }
 
 /// Look up the LaTeX command for an n-ary operator Unicode character.
+#[inline]
 pub fn nary_op_to_latex(ch: char) -> Option<&'static str> {
     NARY_OP_LATEX.get(&ch).copied()
 }
 
 /// Check whether a LaTeX command is an n-ary (large) operator.
+#[inline]
 pub fn is_nary_command(command: &str) -> bool {
     NARY_COMMANDS.contains(command)
 }
 
 /// Check whether a LaTeX command is a named operator (like sin, cos, lim).
+#[inline]
 pub fn is_operator_command(command: &str) -> bool {
     OPERATOR_COMMANDS.contains(command)
 }
 
 /// Whether a named operator uses limit-style placement by default.
+#[inline]
 pub fn operator_has_limits(name: &str) -> bool {
     LIMIT_OPERATORS.contains(name)
 }

@@ -326,8 +326,7 @@ fn needs_space_before(node: &MathNode) -> bool {
 // ── Compact arena-based write helpers ────────────────────────────────
 
 fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
-    let node = *arena.node(id);
-    match node {
+    match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Identifier(sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Operator { name, .. } => out.push_str(arena.str_val(name)),

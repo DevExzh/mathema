@@ -178,6 +178,18 @@ fn bench_write_compact_vs_legacy(c: &mut Criterion) {
     group.bench_function("unicode_compact", |b| {
         b.iter(|| UnicodeMathWriter::write_compact(black_box(&quad_compact), &config))
     });
+    group.bench_function("omml_legacy", |b| {
+        b.iter(|| OmmlWriter::write(black_box(&quad_ast), &config))
+    });
+    group.bench_function("omml_compact", |b| {
+        b.iter(|| OmmlWriter::write_compact(black_box(&quad_compact), &config))
+    });
+    group.bench_function("mtef_legacy", |b| {
+        b.iter(|| MtefWriter::write(black_box(&quad_ast), &config))
+    });
+    group.bench_function("mtef_compact", |b| {
+        b.iter(|| MtefWriter::write_compact(black_box(&quad_compact), &config))
+    });
     group.finish();
 }
 

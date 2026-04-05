@@ -1,8 +1,6 @@
 use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
-use nom::character::complete::{char, satisfy};
-use nom::combinator::{opt, recognize};
-use nom::sequence::tuple;
+use nom::character::complete::char;
 use smallvec::SmallVec;
 
 use crate::ast::arena::AstArena;
@@ -14,7 +12,7 @@ use crate::error::{
 };
 use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
-    is_nary_command, is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
+    is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
 };
 
 use super::error::LatexParseError;
@@ -45,6 +43,7 @@ const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@";
 // Standalone helpers (stateless — no arena access needed)
 // ---------------------------------------------------------------------------
 
+#[inline]
 fn ws(input: &str) -> IResult<&str, ()> {
     let skip = skip_ws_bytes(input.as_bytes());
     Ok((&input[skip..], ()))
@@ -162,7 +161,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let mut parser = LatexCompactParser::new();
+    let mut parser = LatexCompactParser::with_capacity(trimmed.len());
     match parser.parse_node_list(trimmed) {
         Ok(("", ids)) => {
             let roots = parser.arena.push_children(&ids);
@@ -232,9 +231,16 @@ pub(crate) struct LatexCompactParser {
 }
 
 impl LatexCompactParser {
-    fn new() -> Self {
+    /// Create a parser with pre-allocated arena capacity based on input length.
+    ///
+    /// Heuristic: a typical LaTeX formula produces roughly 1 node per 3 input bytes,
+    /// with similar proportions for children and strings.
+    fn with_capacity(input_len: usize) -> Self {
+        let est_nodes = input_len / 3 + 4;
+        let est_children = est_nodes;
+        let est_strings = input_len;
         Self {
-            arena: AstArena::new(),
+            arena: AstArena::with_capacity(est_nodes, est_children, est_strings),
             depth: 0,
         }
     }
@@ -390,6 +396,7 @@ impl LatexCompactParser {
     }
 
     /// Parse one element: an atom optionally followed by scripts.
+    #[inline]
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, base) = self.parse_atom(input)?;
 
@@ -425,56 +432,67 @@ impl LatexCompactParser {
     }
 
     /// Attach optional sub/super scripts to a base node.
+    #[inline]
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
-        let (input, _) = ws(input)?;
-        let (input, first_script) = opt(satisfy(|c| c == '^' || c == '_'))(input)?;
-
-        let Some(first) = first_script else {
-            return Ok((input, base));
+        // Skip whitespace, then check for ^ or _ via byte inspection
+        let skip = skip_ws_bytes(input.as_bytes());
+        let input = &input[skip..];
+        let first = match input.as_bytes().first() {
+            Some(b'^') => '^',
+            Some(b'_') => '_',
+            _ => return Ok((input, base)),
         };
+        let input = &input[1..];
 
         let (input, first_arg) = self.parse_script_arg(input)?;
-        let (input, _) = ws(input)?;
-        let (input, second_script) = opt(if first == '^' { char('_') } else { char('^') })(input)?;
 
-        match (first, second_script) {
-            ('^', None) => Ok((
-                input,
-                self.arena.push_node(CompactNode::Superscript {
-                    base,
-                    sup: first_arg,
-                }),
-            )),
-            ('_', None) => Ok((
-                input,
-                self.arena.push_node(CompactNode::Subscript {
-                    base,
-                    sub: first_arg,
-                }),
-            )),
-            ('^', Some('_')) => {
-                let (input, second_arg) = self.parse_script_arg(input)?;
+        // Check for the complementary script
+        let skip2 = skip_ws_bytes(input.as_bytes());
+        let input2 = &input[skip2..];
+        let second_ch = if first == '^' { b'_' } else { b'^' };
+        let has_second = input2.as_bytes().first() == Some(&second_ch);
+
+        if !has_second {
+            return if first == '^' {
                 Ok((
                     input,
-                    self.arena.push_node(CompactNode::SubSup {
+                    self.arena.push_node(CompactNode::Superscript {
                         base,
-                        sub: second_arg,
                         sup: first_arg,
                     }),
                 ))
-            },
-            ('_', Some('^')) => {
-                let (input, second_arg) = self.parse_script_arg(input)?;
+            } else {
                 Ok((
                     input,
-                    self.arena.push_node(CompactNode::SubSup {
+                    self.arena.push_node(CompactNode::Subscript {
                         base,
                         sub: first_arg,
-                        sup: second_arg,
                     }),
                 ))
-            },
-            _ => Ok((input, base)),
+            };
+        }
+
+        let input = &input2[1..]; // consume second script char
+        let (input, second_arg) = self.parse_script_arg(input)?;
+
+        if first == '^' {
+            Ok((
+                input,
+                self.arena.push_node(CompactNode::SubSup {
+                    base,
+                    sub: second_arg,
+                    sup: first_arg,
+                }),
+            ))
+        } else {
+            Ok((
+                input,
+                self.arena.push_node(CompactNode::SubSup {
+                    base,
+                    sub: first_arg,
+                    sup: second_arg,
+                }),
+            ))
         }
     }
 
@@ -535,15 +553,18 @@ impl LatexCompactParser {
     /// Parse optional _{...} and ^{...} in any order, returning (sub, sup).
     /// Uses `NodeId::NONE` for absent limits.
     fn parse_optional_limits<'a>(&mut self, input: &'a str) -> IResult<&'a str, (NodeId, NodeId)> {
-        let (input, first) = opt(satisfy(|c| c == '_' || c == '^'))(input)?;
-        let Some(first_ch) = first else {
-            return Ok((input, (NodeId::NONE, NodeId::NONE)));
+        let first_ch = match input.as_bytes().first() {
+            Some(b'_') => '_',
+            Some(b'^') => '^',
+            _ => return Ok((input, (NodeId::NONE, NodeId::NONE))),
         };
+        let input = &input[1..];
         let (input, first_arg) = self.parse_script_arg(input)?;
-        let (input, _) = ws(input)?;
-        let second_ch = if first_ch == '_' { '^' } else { '_' };
-        let (input, second) = opt(char(second_ch))(input)?;
-        if second.is_some() {
+        let skip = skip_ws_bytes(input.as_bytes());
+        let input_ws = &input[skip..];
+        let second_byte = if first_ch == '_' { b'^' } else { b'_' };
+        if input_ws.as_bytes().first() == Some(&second_byte) {
+            let input = &input_ws[1..];
             let (input, second_arg) = self.parse_script_arg(input)?;
             if first_ch == '_' {
                 Ok((input, (first_arg, second_arg)))
@@ -572,6 +593,7 @@ impl LatexCompactParser {
     /// Instead of trying each sub-parser sequentially (try_alt!), we
     /// inspect the first byte to dispatch directly to the correct parser.
     /// This avoids the overhead of failed nom combinator attempts.
+    #[inline]
     fn parse_atom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         match input.as_bytes().first() {
             Some(b'{') => self.parse_braced_group(input),
@@ -587,6 +609,7 @@ impl LatexCompactParser {
     }
 
     /// Parse a braced group `{ ... }` into a Row (or single node).
+    #[inline]
     fn parse_braced_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = char('{')(input)?;
         let (input, ids) = self.parse_node_list(input)?;
@@ -596,31 +619,57 @@ impl LatexCompactParser {
     }
 
     /// Parse a number: sequence of digits with optional decimal point.
+    ///
+    /// Hand-rolled byte scan replaces nom `recognize(tuple(...))` to avoid
+    /// combinator overhead on the hot path.
+    #[inline]
     fn parse_number<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, num) = recognize(tuple((
-            take_while1(|c: char| c.is_ascii_digit()),
-            opt(tuple((
-                char('.'),
-                take_while1(|c: char| c.is_ascii_digit()),
-            ))),
-        )))(input)?;
+        let bytes = input.as_bytes();
+        let mut i = 0;
+        // Leading digits (we know bytes[0] is a digit from byte dispatch)
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        // Optional decimal point + trailing digits
+        if i < bytes.len() && bytes[i] == b'.' {
+            let dot = i;
+            i += 1;
+            if i < bytes.len() && bytes[i].is_ascii_digit() {
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            } else {
+                i = dot; // no digits after dot, rewind
+            }
+        }
+        let num = &input[..i];
         let sid = self.arena.push_str(num);
-        Ok((input, self.arena.push_node(CompactNode::Number(sid))))
+        Ok((&input[i..], self.arena.push_node(CompactNode::Number(sid))))
     }
 
     /// Parse a single letter as an identifier.
+    ///
+    /// Called only when byte dispatch confirmed the first byte is ASCII alphabetic,
+    /// so we consume it directly.
+    #[inline]
     fn parse_letter<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, c) = satisfy(|c| c.is_ascii_alphabetic())(input)?;
+        let c = input.as_bytes()[0] as char;
+        let rest = &input[1..]; // ASCII alphabetic chars are single-byte
         let sid = self.push_char_str(c);
-        Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+        Ok((rest, self.arena.push_node(CompactNode::Identifier(sid))))
     }
 
     /// Parse a symbol character: +, -, =, <, >, !, comma, semicolon, etc.
+    ///
+    /// Called only when byte dispatch already confirmed the first byte is in
+    /// `SYMBOL_BYTES`, so we consume the char directly instead of re-checking.
+    #[inline]
     fn parse_symbol_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, c) = satisfy(|c| "+-*/=<>!,;:.?'|@".contains(c))(input)?;
+        let c = input.as_bytes()[0] as char;
+        let rest = &input[1..]; // all symbol chars are single-byte ASCII
         let kind = classify_char(c);
         let sid = self.push_char_str(c);
-        Ok((input, self.arena.push_node(CompactNode::Symbol(kind, sid))))
+        Ok((rest, self.arena.push_node(CompactNode::Symbol(kind, sid))))
     }
 
     // -----------------------------------------------------------------------
@@ -628,13 +677,27 @@ impl LatexCompactParser {
     // -----------------------------------------------------------------------
 
     fn parse_command<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, _) = char('\\')(input)?;
+        // Skip the backslash (caller guarantees input starts with '\')
+        let after_backslash = &input[1..];
         // Special single-character commands
-        if let Ok((input, id)) = self.parse_special_command(input) {
-            return Ok((input, id));
+        if let Ok((rest, id)) = self.parse_special_command(after_backslash) {
+            return Ok((rest, id));
         }
-        let (input, name) = recognize(take_while1(|c: char| c.is_ascii_alphabetic()))(input)?;
-        self.dispatch_command(input, name)
+        // Extract alphabetic command name via byte scan (avoids nom overhead)
+        let bytes = after_backslash.as_bytes();
+        let name_len = bytes
+            .iter()
+            .position(|&b| !b.is_ascii_alphabetic())
+            .unwrap_or(bytes.len());
+        if name_len == 0 {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Alpha,
+            )));
+        }
+        let name = &after_backslash[..name_len];
+        let rest = &after_backslash[name_len..];
+        self.dispatch_command(rest, name)
     }
 
     fn parse_special_command<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -764,43 +827,44 @@ impl LatexCompactParser {
             "color" => self.parse_color_discard(input),
             "textcolor" => self.parse_textcolor(input),
 
-            // --- N-ary operators ---
-            name if is_nary_command(name) => {
-                let ch = latex_to_unicode(name).unwrap_or('\u{2211}');
-                let sid = self.push_char_str(ch);
-                Ok((
-                    input,
-                    self.arena
-                        .push_node(CompactNode::Symbol(SymbolKind::LargeOp, sid)),
-                ))
-            },
-
-            // --- Named operators (sin, cos, lim, ...) ---
-            name_str if is_operator_command(name_str) => {
-                let limit_style = if operator_has_limits(name_str) {
-                    LimitStyle::Default
-                } else {
-                    LimitStyle::SubSup
-                };
-                let sid = self.arena.push_str(name_str);
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Operator {
-                        name: sid,
-                        limits: limit_style,
-                    }),
-                ))
-            },
-
-            // --- Greek letters and other symbols ---
+            // --- Catch-all: symbols, n-ary, operators, Greek letters ---
+            //
+            // Single PHF lookup via `lookup_command` covers n-ary operators
+            // (which appear as LargeOp kind) and all other symbols/Greek letters.
+            // Named operators (sin, cos, etc.) are not in that map, so we fall
+            // through to `is_operator_command` only when the first lookup misses.
             _ => {
                 if let Some((unicode, kind)) = lookup_command(name) {
-                    let sid = self.push_char_str(unicode);
-                    if kind == SymbolKind::Alphabetic {
+                    if kind == SymbolKind::LargeOp {
+                        // N-ary operator (sum, prod, int, etc.)
+                        let sid = self.push_char_str(unicode);
+                        Ok((
+                            input,
+                            self.arena
+                                .push_node(CompactNode::Symbol(SymbolKind::LargeOp, sid)),
+                        ))
+                    } else if kind == SymbolKind::Alphabetic {
+                        let sid = self.push_char_str(unicode);
                         Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
                     } else {
+                        let sid = self.push_char_str(unicode);
                         Ok((input, self.arena.push_node(CompactNode::Symbol(kind, sid))))
                     }
+                } else if is_operator_command(name) {
+                    // Named operators (sin, cos, lim, ...)
+                    let limit_style = if operator_has_limits(name) {
+                        LimitStyle::Default
+                    } else {
+                        LimitStyle::SubSup
+                    };
+                    let sid = self.arena.push_str(name);
+                    Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Operator {
+                            name: sid,
+                            limits: limit_style,
+                        }),
+                    ))
                 } else {
                     // Unknown command: emit as identifier
                     let sid = self.arena.push_str(name);

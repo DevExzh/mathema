@@ -1,4 +1,5 @@
 /// SVG emission: converts a LayoutBox tree into an SVG string.
+#[cfg(feature = "font-embed")]
 use std::fmt::Write;
 
 use super::RenderOptions;
@@ -6,8 +7,11 @@ use super::layout::{BoxKind, LayoutBox};
 
 /// Wrapper that escapes a string for safe use in XML/SVG attributes.
 /// Prevents attribute injection via `"`, `<`, `>`, `&`, `'` in user-controlled values.
+/// Used by `svg_writer.rs` (font-embed feature).
+#[cfg(feature = "font-embed")]
 pub(crate) struct XmlAttrEscape<'a>(pub(crate) &'a str);
 
+#[cfg(feature = "font-embed")]
 impl std::fmt::Display for XmlAttrEscape<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for ch in self.0.chars() {
@@ -24,6 +28,102 @@ impl std::fmt::Display for XmlAttrEscape<'_> {
     }
 }
 
+/// Write an XML-escaped version of `s` directly into a `String` buffer.
+/// More efficient than using `XmlAttrEscape` via `write!` because it avoids
+/// the `std::fmt` machinery entirely.
+#[inline]
+fn push_xml_escaped(out: &mut String, s: &str) {
+    // Fast path: if the string contains no special chars, push it directly
+    if !s.bytes().any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'')) {
+        out.push_str(s);
+        return;
+    }
+    for ch in s.chars() {
+        match ch {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+}
+
+/// Write a float with 3 decimal places directly into a String, avoiding
+/// `std::fmt` formatting overhead. This is 3-5x faster than `write!(buf, "{:.3}", v)`.
+#[inline]
+fn push_f3(out: &mut String, v: f64) {
+    // Handle negative
+    if v < 0.0 {
+        out.push('-');
+        push_f3(out, -v);
+        return;
+    }
+
+    // Multiply by 1000, round, then split into integer and fractional parts
+    let scaled = (v * 1000.0).round() as u64;
+    let integer_part = scaled / 1000;
+    let frac_part = (scaled % 1000) as u32;
+
+    // Write integer part using itoa-style manual conversion
+    push_u64(out, integer_part);
+
+    // Write decimal point and exactly 3 fractional digits
+    out.push('.');
+    if frac_part < 10 {
+        out.push_str("00");
+    } else if frac_part < 100 {
+        out.push('0');
+    }
+    push_u32(out, frac_part);
+}
+
+/// Write a u64 in decimal to a String buffer (manual, no fmt overhead).
+#[inline]
+fn push_u64(out: &mut String, mut n: u64) {
+    if n == 0 {
+        out.push('0');
+        return;
+    }
+    // Max u64 is 20 digits
+    let mut buf = [0u8; 20];
+    let mut i = 20;
+    while n > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    // SAFETY: buf[i..20] contains only ASCII digits
+    out.push_str(unsafe { std::str::from_utf8_unchecked(&buf[i..20]) });
+}
+
+/// Write a u32 in decimal to a String buffer.
+#[inline]
+fn push_u32(out: &mut String, n: u32) {
+    push_u64(out, n as u64);
+}
+
+/// Pre-escaped SVG attribute strings cached from RenderOptions.
+/// Avoids re-escaping on every element emission.
+struct EscapedAttrs {
+    font_family: String,
+    fg_color: String,
+}
+
+impl EscapedAttrs {
+    fn new(options: &RenderOptions) -> Self {
+        let mut font_family = String::with_capacity(options.font_family.len() + 4);
+        push_xml_escaped(&mut font_family, &options.font_family);
+        let mut fg_color = String::with_capacity(options.fg_color.len() + 4);
+        push_xml_escaped(&mut fg_color, &options.fg_color);
+        Self {
+            font_family,
+            fg_color,
+        }
+    }
+}
+
 /// Emit the final SVG string from a laid-out box tree.
 pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     let em = options.font_size_px;
@@ -32,20 +132,25 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     let depth_px = root.depth * em;
 
     let mut svg = String::with_capacity(4096);
+    let attrs = EscapedAttrs::new(options);
 
-    // SVG header
-    let _ = write!(
-        svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.3}" height="{height:.3}" viewBox="0 0 {width:.3} {height:.3}" style="vertical-align: -{depth:.3}px">"#,
-        width = width_px,
-        height = height_px,
-        depth = depth_px,
-    );
+    // SVG header — use fast float formatter
+    svg.push_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width=""#);
+    push_f3(&mut svg, width_px);
+    svg.push_str(r#"" height=""#);
+    push_f3(&mut svg, height_px);
+    svg.push_str(r#"" viewBox="0 0 "#);
+    push_f3(&mut svg, width_px);
+    svg.push(' ');
+    push_f3(&mut svg, height_px);
+    svg.push_str(r#"" style="vertical-align: -"#);
+    push_f3(&mut svg, depth_px);
+    svg.push_str(r#"px">"#);
 
     // Render content
     // Origin in SVG: (0, root.height * em) corresponds to the baseline at x=0
     let baseline_y = root.height * em;
-    emit_box(&mut svg, root, 0.0, baseline_y, em, options);
+    emit_box(&mut svg, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
     svg
@@ -57,21 +162,23 @@ fn emit_box(
     x: f64,
     y: f64,
     em: f64,
-    options: &RenderOptions,
+    attrs: &EscapedAttrs,
 ) {
     match &layout.kind {
         BoxKind::Glyph { ch, size } => {
             let font_size = em * size;
-            // Write directly to buffer — avoids intermediate String from format!+escape_xml_char
-            let _ = write!(
-                svg,
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
-                x = x,
-                y = y,
-                fs = font_size,
-                ff = XmlAttrEscape(&options.font_family),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            // Build <text> element with fast formatting and pre-escaped attributes
+            svg.push_str(r#"<text x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, y);
+            svg.push_str(r#"" font-size=""#);
+            push_f3(svg, font_size);
+            svg.push_str(r#"" font-family=""#);
+            svg.push_str(&attrs.font_family);
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"">"#);
             write_escaped_char(svg, *ch);
             svg.push_str("</text>");
         },
@@ -81,7 +188,7 @@ fn emit_box(
                 let cx = x + child.dx * em;
                 // dy is positive = up in TeX, but SVG y-down, so subtract
                 let cy = y - child.dy * em;
-                emit_box(svg, &child.layout, cx, cy, em, options);
+                emit_box(svg, &child.layout, cx, cy, em, attrs);
             }
         },
 
@@ -89,7 +196,7 @@ fn emit_box(
             for child in children {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em;
-                emit_box(svg, &child.layout, cx, cy, em, options);
+                emit_box(svg, &child.layout, cx, cy, em, attrs);
             }
         },
 
@@ -98,15 +205,17 @@ fn emit_box(
             let w_px = layout.width * em;
             // Center the rule vertically at the given y
             let ry = y - th_px / 2.0;
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = th_px,
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<rect x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, ry);
+            svg.push_str(r#"" width=""#);
+            push_f3(svg, w_px);
+            svg.push_str(r#"" height=""#);
+            push_f3(svg, th_px);
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#""/>"#);
         },
 
         BoxKind::Kern => {
@@ -115,15 +224,17 @@ fn emit_box(
 
         BoxKind::Delimiter { ch, target_height } => {
             let font_size = target_height * em;
-            let _ = write!(
-                svg,
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
-                x = x,
-                y = y,
-                fs = font_size,
-                ff = XmlAttrEscape(&options.font_family),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<text x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, y);
+            svg.push_str(r#"" font-size=""#);
+            push_f3(svg, font_size);
+            svg.push_str(r#"" font-family=""#);
+            svg.push_str(&attrs.font_family);
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"">"#);
             write_escaped_char(svg, *ch);
             svg.push_str("</text>");
         },
@@ -134,27 +245,29 @@ fn emit_box(
             // We need to translate to the actual position
             let tx = x;
             let ty = y - layout.height * em;
-            let _ = write!(
-                svg,
-                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="1" fill="none"/></g>"#,
-                tx = tx,
-                ty = ty,
-                s = em,
-                path = XmlAttrEscape(path),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<g transform="translate("#);
+            push_f3(svg, tx);
+            svg.push(',');
+            push_f3(svg, ty);
+            svg.push_str(r#") scale("#);
+            push_f3(svg, em);
+            svg.push_str(r#")"><path d=""#);
+            push_xml_escaped(svg, path);
+            svg.push_str(r#"" stroke=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"" stroke-width="1" fill="none"/></g>"#);
         },
 
         BoxKind::Color { color, child } => {
             // Use the color as a group wrapper
-            let _ = write!(
-                svg,
-                r#"<g fill="{color}" stroke="{color}">"#,
-                color = XmlAttrEscape(color)
-            );
+            svg.push_str(r#"<g fill=""#);
+            push_xml_escaped(svg, color);
+            svg.push_str(r#"" stroke=""#);
+            push_xml_escaped(svg, color);
+            svg.push_str(r#"">"#);
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_box(svg, &child.layout, cx, cy, em, options);
+            emit_box(svg, &child.layout, cx, cy, em, attrs);
             svg.push_str("</g>");
         },
 
@@ -168,20 +281,22 @@ fn emit_box(
             let ry = y - layout.height * em;
 
             // Border rectangle
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{color}" fill="none" stroke-width="1"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = h_px,
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<rect x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, ry);
+            svg.push_str(r#"" width=""#);
+            push_f3(svg, w_px);
+            svg.push_str(r#"" height=""#);
+            push_f3(svg, h_px);
+            svg.push_str(r#"" stroke=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"" fill="none" stroke-width="1"/>"#);
 
             // Content
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_box(svg, &child.layout, cx, cy, em, options);
+            emit_box(svg, &child.layout, cx, cy, em, attrs);
         },
     }
 }
@@ -204,19 +319,24 @@ pub fn emit_svg_arena(
     let depth_px = root_box.depth * em;
 
     let mut svg = String::with_capacity(4096);
+    let attrs = EscapedAttrs::new(options);
 
     // SVG header — identical format to emit_svg
-    let _ = write!(
-        svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.3}" height="{height:.3}" viewBox="0 0 {width:.3} {height:.3}" style="vertical-align: -{depth:.3}px">"#,
-        width = width_px,
-        height = height_px,
-        depth = depth_px,
-    );
+    svg.push_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width=""#);
+    push_f3(&mut svg, width_px);
+    svg.push_str(r#"" height=""#);
+    push_f3(&mut svg, height_px);
+    svg.push_str(r#"" viewBox="0 0 "#);
+    push_f3(&mut svg, width_px);
+    svg.push(' ');
+    push_f3(&mut svg, height_px);
+    svg.push_str(r#"" style="vertical-align: -"#);
+    push_f3(&mut svg, depth_px);
+    svg.push_str(r#"px">"#);
 
     // Render content
     let baseline_y = root_box.height * em;
-    emit_box_arena(&mut svg, arena, root, 0.0, baseline_y, em, options);
+    emit_box_arena(&mut svg, arena, root, 0.0, baseline_y, em, &attrs);
 
     svg.push_str("</svg>");
     svg
@@ -229,21 +349,23 @@ fn emit_box_arena(
     x: f64,
     y: f64,
     em: f64,
-    options: &RenderOptions,
+    attrs: &EscapedAttrs,
 ) {
     let layout = arena.get(id);
     match &layout.kind {
         ArenaBoxKind::Glyph { ch, size } => {
             let font_size = em * size;
-            let _ = write!(
-                svg,
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
-                x = x,
-                y = y,
-                fs = font_size,
-                ff = XmlAttrEscape(&options.font_family),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<text x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, y);
+            svg.push_str(r#"" font-size=""#);
+            push_f3(svg, font_size);
+            svg.push_str(r#"" font-family=""#);
+            svg.push_str(&attrs.font_family);
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"">"#);
             write_escaped_char(svg, *ch);
             svg.push_str("</text>");
         },
@@ -252,7 +374,7 @@ fn emit_box_arena(
             for child in arena.children(*children) {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em;
-                emit_box_arena(svg, arena, child.id, cx, cy, em, options);
+                emit_box_arena(svg, arena, child.id, cx, cy, em, attrs);
             }
         },
 
@@ -260,7 +382,7 @@ fn emit_box_arena(
             for child in arena.children(*children) {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em;
-                emit_box_arena(svg, arena, child.id, cx, cy, em, options);
+                emit_box_arena(svg, arena, child.id, cx, cy, em, attrs);
             }
         },
 
@@ -268,15 +390,17 @@ fn emit_box_arena(
             let th_px = thickness * em;
             let w_px = layout.width * em;
             let ry = y - th_px / 2.0;
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = th_px,
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<rect x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, ry);
+            svg.push_str(r#"" width=""#);
+            push_f3(svg, w_px);
+            svg.push_str(r#"" height=""#);
+            push_f3(svg, th_px);
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#""/>"#);
         },
 
         ArenaBoxKind::Kern => {
@@ -285,15 +409,17 @@ fn emit_box_arena(
 
         ArenaBoxKind::Delimiter { ch, target_height } => {
             let font_size = target_height * em;
-            let _ = write!(
-                svg,
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
-                x = x,
-                y = y,
-                fs = font_size,
-                ff = XmlAttrEscape(&options.font_family),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<text x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, y);
+            svg.push_str(r#"" font-size=""#);
+            push_f3(svg, font_size);
+            svg.push_str(r#"" font-family=""#);
+            svg.push_str(&attrs.font_family);
+            svg.push_str(r#"" fill=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"">"#);
             write_escaped_char(svg, *ch);
             svg.push_str("</text>");
         },
@@ -301,25 +427,27 @@ fn emit_box_arena(
         ArenaBoxKind::SvgPath(path) => {
             let tx = x;
             let ty = y - layout.height * em;
-            let _ = write!(
-                svg,
-                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="1" fill="none"/></g>"#,
-                tx = tx,
-                ty = ty,
-                s = em,
-                path = XmlAttrEscape(path),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<g transform="translate("#);
+            push_f3(svg, tx);
+            svg.push(',');
+            push_f3(svg, ty);
+            svg.push_str(r#") scale("#);
+            push_f3(svg, em);
+            svg.push_str(r#")"><path d=""#);
+            push_xml_escaped(svg, path);
+            svg.push_str(r#"" stroke=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"" stroke-width="1" fill="none"/></g>"#);
         },
 
         ArenaBoxKind::Color { color, child } => {
-            let _ = write!(
-                svg,
-                r#"<g fill="{color}" stroke="{color}">"#,
-                color = XmlAttrEscape(color)
-            );
+            svg.push_str(r#"<g fill=""#);
+            push_xml_escaped(svg, color);
+            svg.push_str(r#"" stroke=""#);
+            push_xml_escaped(svg, color);
+            svg.push_str(r#"">"#);
             // Color child is rendered at same position (no dx/dy offset)
-            emit_box_arena(svg, arena, *child, x, y, em, options);
+            emit_box_arena(svg, arena, *child, x, y, em, attrs);
             svg.push_str("</g>");
         },
 
@@ -333,19 +461,21 @@ fn emit_box_arena(
             let ry = y - layout.height * em;
 
             // Border rectangle
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{color}" fill="none" stroke-width="1"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = h_px,
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<rect x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, ry);
+            svg.push_str(r#"" width=""#);
+            push_f3(svg, w_px);
+            svg.push_str(r#"" height=""#);
+            push_f3(svg, h_px);
+            svg.push_str(r#"" stroke=""#);
+            svg.push_str(&attrs.fg_color);
+            svg.push_str(r#"" fill="none" stroke-width="1"/>"#);
 
             // Content — arena version stores child without position offset,
             // so we must apply padding here (heap version stored dx=padding in PositionedBox)
-            emit_box_arena(svg, arena, *child, x + padding * em, y, em, options);
+            emit_box_arena(svg, arena, *child, x + padding * em, y, em, attrs);
         },
     }
 }

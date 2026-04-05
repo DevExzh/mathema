@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use super::RenderOptions;
 use super::metrics::{self, GlyphMetrics};
 use super::params::TexParams;
@@ -58,10 +59,12 @@ pub struct PositionedBox {
 }
 
 impl PositionedBox {
+    #[inline]
     pub fn new(dx: f64, dy: f64, layout: LayoutBox) -> Self {
         Self { dx, dy, layout }
     }
 
+    #[inline]
     pub fn at_origin(layout: LayoutBox) -> Self {
         Self {
             dx: 0.0,
@@ -72,6 +75,7 @@ impl PositionedBox {
 }
 
 impl LayoutBox {
+    #[inline]
     pub fn kern(width: f64) -> Self {
         Self {
             width,
@@ -81,6 +85,7 @@ impl LayoutBox {
         }
     }
 
+    #[inline]
     pub fn rule(width: f64, thickness: f64) -> Self {
         Self {
             width,
@@ -90,6 +95,7 @@ impl LayoutBox {
         }
     }
 
+    #[inline]
     fn glyph(ch: char, style: MathStyle) -> Self {
         let size = style.size_multiplier();
         let m = metrics::glyph_metrics(ch);
@@ -101,6 +107,7 @@ impl LayoutBox {
         }
     }
 
+    #[inline]
     fn glyph_with_metrics(ch: char, m: GlyphMetrics, size: f64) -> Self {
         Self {
             width: m.width * size,
@@ -2481,7 +2488,8 @@ fn layout_row_arena(
     // Phase 1: layout all children and collect (box_id, dx) pairs.
     // We must NOT call begin_children/push_child while nested layout calls
     // are still in progress, because they also push into the same flat array.
-    let mut laid_out: Vec<(LayoutBoxId, f64)> = Vec::with_capacity(ids.len());
+    // SmallVec avoids heap allocation for rows with ≤16 children (the common case).
+    let mut laid_out: SmallVec<[(LayoutBoxId, f64); 16]> = SmallVec::new();
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;

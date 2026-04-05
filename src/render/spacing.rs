@@ -144,7 +144,12 @@ const SPACING_TABLE: [[i8; 8]; 8] = [
     /* Inner */ [1, 1, 2, 3, 1, 0, 1, 1],
 ];
 
+/// Pre-computed mu-to-em spacing values.
+/// 0→0.0, 1→3/18, 2→4/18, 3→5/18
+const MU_TO_EM: [f64; 4] = [0.0, 3.0 / 18.0, 4.0 / 18.0, 5.0 / 18.0];
+
 /// Get the inter-atom spacing in em units.
+#[inline]
 pub fn inter_atom_space(left: AtomType, right: AtomType, style: MathStyle) -> f64 {
     let l = left as usize;
     let r = right as usize;
@@ -159,23 +164,15 @@ pub fn inter_atom_space(left: AtomType, right: AtomType, style: MathStyle) -> f6
                 | MathStyle::ScriptScript
                 | MathStyle::ScriptScriptCramped
         ) {
-            0
-        } else {
-            -entry
+            return 0.0;
         }
+        (-entry) as usize
     } else {
-        entry
+        entry as usize
     };
 
-    // Convert mu values to actual spacing in em
-    // 0→0, 1→3mu, 2→4mu, 3→5mu, where 18mu = 1em
-    match mu {
-        0 => 0.0,
-        1 => 3.0 / 18.0, // thin space
-        2 => 4.0 / 18.0, // medium space
-        3 => 5.0 / 18.0, // thick space
-        _ => 0.0,
-    }
+    // Direct array lookup instead of match chain
+    if mu < 4 { MU_TO_EM[mu] } else { 0.0 }
 }
 
 #[cfg(test)]

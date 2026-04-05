@@ -45,27 +45,30 @@ impl AstArena {
     // ── Safe builder API ───────────────────────────────────────────────
 
     /// Push a node into the arena and return its `NodeId`.
+    #[inline]
     pub fn push_node(&mut self, node: CompactNode) -> NodeId {
         let id = self.nodes.len();
-        assert!(id < u32::MAX as usize, "arena node overflow");
+        debug_assert!(id < u32::MAX as usize, "arena node overflow");
         self.nodes.push(node);
         NodeId::new(id as u32)
     }
 
     /// Intern a string and return its `StrId`.
+    #[inline]
     pub fn push_str(&mut self, s: &str) -> StrId {
         let id = self.str_starts.len() - 1;
-        assert!(id < u32::MAX as usize, "arena string overflow");
+        debug_assert!(id < u32::MAX as usize, "arena string overflow");
         self.strings.extend_from_slice(s.as_bytes());
         self.str_starts.push(self.strings.len() as u32);
         StrId::new(id as u32)
     }
 
     /// Push a contiguous span of child `NodeId`s and return the `NodeSpan`.
+    #[inline]
     pub fn push_children(&mut self, ids: &[NodeId]) -> NodeSpan {
         let start = self.children.len();
-        assert!(start < u32::MAX as usize, "arena children overflow");
-        assert!(ids.len() <= u16::MAX as usize, "too many children");
+        debug_assert!(start < u32::MAX as usize, "arena children overflow");
+        debug_assert!(ids.len() <= u16::MAX as usize, "too many children");
         self.children.extend_from_slice(ids);
         NodeSpan::new(start as u32, ids.len() as u16)
     }
