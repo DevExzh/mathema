@@ -2325,8 +2325,14 @@ fn layout_array(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
-    let row_gap = 0.6 * size; // jot
     let col_gap = 1.0 * size; // column separation
+
+    // KaTeX strut-based row spacing (no explicit inter-row gap)
+    let arraystretch = 1.0_f64;
+    let baselineskip = 1.2 * size;
+    let arrayskip = arraystretch * baselineskip;
+    let arstrut_height = 0.7 * arrayskip;
+    let arstrut_depth = 0.3 * arrayskip;
 
     // Layout all cells
     let mut cell_layouts: Vec<Vec<LayoutBox>> = Vec::new();
@@ -2343,10 +2349,10 @@ fn layout_array(
         .max(cell_layouts.iter().map(|r| r.len()).max().unwrap_or(0));
     let n_rows = cell_layouts.len();
 
-    // Compute column widths and row heights/depths
+    // Compute column widths and row heights/depths with strut minimums
     let mut col_widths = vec![0.0_f64; n_cols];
-    let mut row_heights = vec![0.0_f64; n_rows];
-    let mut row_depths = vec![0.0_f64; n_rows];
+    let mut row_heights = vec![arstrut_height; n_rows];
+    let mut row_depths = vec![arstrut_depth; n_rows];
 
     for (i, row) in cell_layouts.iter().enumerate() {
         for (j, cell) in row.iter().enumerate() {
@@ -2383,9 +2389,6 @@ fn layout_array(
         }
 
         cursor_y += row_depths[i];
-        if i < n_rows - 1 {
-            cursor_y += row_gap;
-        }
     }
 
     let total_width: f64 =
@@ -3984,8 +3987,14 @@ fn layout_array_c(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
-    let row_gap = 0.6 * size;
     let col_gap = 1.0 * size;
+
+    // KaTeX strut-based row spacing (no explicit inter-row gap)
+    let arraystretch = 1.0_f64;
+    let baselineskip = 1.2 * size;
+    let arrayskip = arraystretch * baselineskip;
+    let arstrut_height = 0.7 * arrayskip;
+    let arstrut_depth = 0.3 * arrayskip;
 
     // Extract column alignments
     let columns: Vec<ColumnAlign> = arena
@@ -4017,10 +4026,10 @@ fn layout_array_c(
 
     let n_cols = columns.len().max(nc);
 
-    // Compute column widths and row heights/depths
+    // Compute column widths and row heights/depths with strut minimums
     let mut col_widths = vec![0.0_f64; n_cols];
-    let mut row_heights = vec![0.0_f64; n_rows];
-    let mut row_depths = vec![0.0_f64; n_rows];
+    let mut row_heights = vec![arstrut_height; n_rows];
+    let mut row_depths = vec![arstrut_depth; n_rows];
 
     for i in 0..n_rows {
         for j in 0..nc.min(n_cols) {
@@ -4064,9 +4073,6 @@ fn layout_array_c(
         }
 
         cursor_y += row_depths[i];
-        if i < n_rows - 1 {
-            cursor_y += row_gap;
-        }
     }
 
     let total_width: f64 =
@@ -6099,8 +6105,14 @@ fn layout_array_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let size = ctx.size();
-    let row_gap = 0.6 * size;
     let col_gap = 1.0 * size;
+
+    // KaTeX strut-based row spacing (no explicit inter-row gap)
+    let arraystretch = 1.0_f64;
+    let baselineskip = 1.2 * size;
+    let arrayskip = arraystretch * baselineskip;
+    let arstrut_height = 0.7 * arrayskip;
+    let arstrut_depth = 0.3 * arrayskip;
 
     // Extract column alignments
     let columns: Vec<ColumnAlign> = ast
@@ -6132,10 +6144,10 @@ fn layout_array_arena(
 
     let n_cols = columns.len().max(nc);
 
-    // Compute column widths and row heights/depths
+    // Compute column widths and row heights/depths with strut minimums
     let mut col_widths = vec![0.0_f64; n_cols];
-    let mut row_heights = vec![0.0_f64; n_rows];
-    let mut row_depths = vec![0.0_f64; n_rows];
+    let mut row_heights = vec![arstrut_height; n_rows];
+    let mut row_depths = vec![arstrut_depth; n_rows];
 
     for i in 0..n_rows {
         for j in 0..nc.min(n_cols) {
@@ -6152,8 +6164,7 @@ fn layout_array_arena(
     // Pre-compute total extent and box_height so we can convert top-down
     // cursor_y to VBox dy (positive = up from baseline) when pushing children.
     let total_extent: f64 = row_heights.iter().sum::<f64>()
-        + row_depths.iter().sum::<f64>()
-        + row_gap * (n_rows.saturating_sub(1) as f64);
+        + row_depths.iter().sum::<f64>();
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
     let box_height = half + axis;
@@ -6192,9 +6203,6 @@ fn layout_array_arena(
         }
 
         cursor_y += row_depths[i];
-        if i < n_rows - 1 {
-            cursor_y += row_gap;
-        }
     }
 
     let children = arena.finish_children(children_start);
