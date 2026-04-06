@@ -100,7 +100,11 @@ impl LayoutBox {
     #[inline]
     fn glyph(ch: char, style: MathStyle, italic: bool) -> Self {
         let size = style.size_multiplier();
-        let m = metrics::glyph_metrics(ch);
+        let m = if italic {
+            metrics::glyph_metrics(ch)
+        } else {
+            metrics::glyph_metrics_upright(ch)
+        };
         Self {
             width: m.width * size,
             height: m.height * size,
@@ -168,8 +172,15 @@ fn center_glyph_on_axis(glyph: LayoutBox, ctx: &LayoutCtx) -> LayoutBox {
 /// Maximum recursion depth for layout to prevent stack overflow on adversarial input.
 const MAX_LAYOUT_DEPTH: u32 = 128;
 
-/// Scale factor for big operators in display mode (TeX uses ~1.2x for display-size operators).
-const BIG_OP_DISPLAY_SCALE: f64 = 1.2;
+// BIG_OP_DISPLAY_SCALE removed: display-mode operators now use per-operator
+// scale factors from metrics::display_op_scale() matching KaTeX Size2/Size1 ratios.
+
+/// Integral-like operators that default to `\nolimits` (side placement) in TeX.
+/// These use superscript/subscript even in display mode, unlike \sum and \prod.
+#[inline]
+fn is_nolimits_op(ch: char) -> bool {
+    matches!(ch, '∫' | '∬' | '∭' | '∮' | '∯' | '∰')
+}
 
 /// Check whether a MathNode is a large (n-ary) operator symbol.
 fn is_large_op(node: &MathNode) -> bool {
@@ -223,7 +234,7 @@ impl<'a> LayoutCtx<'a> {
     fn with_style(&self, style: MathStyle) -> LayoutCtx<'a> {
         LayoutCtx {
             style,
-            params: self.params,
+            params: TexParams::for_size_class(style.size_class()),
             options: self.options,
             depth: self.depth,
         }
@@ -250,6 +261,9 @@ fn is_stretchy_accent(accent: char) -> bool {
         '\u{0302}'  // hat / widehat (combining circumflex)
         | '\u{030C}' // check / widecheck (combining caron)
         | '\u{0303}' // tilde / widetilde (combining tilde)
+        | '\u{0304}' // bar / overline (combining macron)
+        | '\u{0307}' // dot above (combining dot above)
+        | '\u{0308}' // ddot / diaeresis (combining diaeresis)
         | '\u{20D7}' // vec / overrightarrow (combining right arrow above)
         | '\u{2192}' // overrightarrow (rightwards arrow)
         | '\u{2190}' // overleftarrow (leftwards arrow)
@@ -272,30 +286,259 @@ fn is_stretchy_overunder(sym: &str) -> bool {
     )
 }
 
+// ---------------------------------------------------------------------------
+// KaTeX-derived SVG path data for widehat, widetilde, and widecheck accents.
+// Each accent has 4 tiers (progressively wider), selected by base width.
+// Paths are from KaTeX's svgGeometry.ts (MIT license).
+// ---------------------------------------------------------------------------
+
+/// A pre-drawn accent path with its native viewBox dimensions (in KaTeX units).
+struct KatexAccentPath {
+    path: &'static str,
+    viewbox_w: f64,
+    viewbox_h: f64,
+}
+
+const WIDEHAT_PATHS: [KatexAccentPath; 4] = [
+    // widehat1: viewBox 0 0 1062 239
+    KatexAccentPath {
+        path: "M529 0h5l519 115c5 1 9 5 9 10 0 1-1 2-1 3l-4 22\
+               c-1 5-5 9-11 9h-2L532 67 19 159h-2c-5 0-9-4-11-9l-5-22c-1-6 2-12 8-13z",
+        viewbox_w: 1062.0,
+        viewbox_h: 239.0,
+    },
+    // widehat2: viewBox 0 0 2364 300
+    KatexAccentPath {
+        path: "M1181 0h2l1171 176c6 0 10 5 10 11l-2 23c-1 6-5 10\
+               -11 10h-1L1182 67 15 220h-1c-6 0-10-4-11-10l-2-23c-1-6 4-11 10-11z",
+        viewbox_w: 2364.0,
+        viewbox_h: 300.0,
+    },
+    // widehat3: viewBox 0 0 2364 360
+    KatexAccentPath {
+        path: "M1181 0h2l1171 236c6 0 10 5 10 11l-2 23c-1 6-5 10\
+               -11 10h-1L1182 67 15 280h-1c-6 0-10-4-11-10l-2-23c-1-6 4-11 10-11z",
+        viewbox_w: 2364.0,
+        viewbox_h: 360.0,
+    },
+    // widehat4: viewBox 0 0 2364 420
+    KatexAccentPath {
+        path: "M1181 0h2l1171 296c6 0 10 5 10 11l-2 23c-1 6-5 10\
+               -11 10h-1L1182 67 15 340h-1c-6 0-10-4-11-10l-2-23c-1-6 4-11 10-11z",
+        viewbox_w: 2364.0,
+        viewbox_h: 420.0,
+    },
+];
+
+const WIDETILDE_PATHS: [KatexAccentPath; 4] = [
+    // tilde1: viewBox 0 0 600 260
+    KatexAccentPath {
+        path: "M200 55.538c-77 0-168 73.953-177 73.953-3 0-7\
+               -2.175-9-5.437L2 97c-1-2-2-4-2-6 0-4 2-7 5-9l20-12C116 12 171 0 207 0c86 0\
+                114 68 191 68 78 0 168-68 177-68 4 0 7 2 9 5l12 19c1 2.175 2 4.35 2 6.525 0\
+                4.35-2 7.613-5 9.788l-19 13.05c-92 63.077-116.937 75.308-183 76.128\
+               -68.267.847-113-73.952-191-73.952z",
+        viewbox_w: 600.0,
+        viewbox_h: 260.0,
+    },
+    // tilde2: viewBox 0 0 1033 286
+    KatexAccentPath {
+        path: "M344 55.266c-142 0-300.638 81.316-311.5 86.418\
+               -8.01 3.762-22.5 10.91-23.5 5.562L1 120c-1-2-1-3-1-4 0-5 3-9 8-10l18.4-9C160.9\
+                31.9 283 0 358 0c148 0 188 122 331 122s314-97 326-97c4 0 8 2 10 7l7 21.114\
+               c1 2.14 1 3.21 1 4.28 0 5.347-3 9.626-7 10.696l-22.3 12.622C852.6 158.372 751\
+                181.476 676 181.476c-149 0-189-126.21-332-126.21z",
+        viewbox_w: 1033.0,
+        viewbox_h: 286.0,
+    },
+    // tilde3: viewBox 0 0 2339 306
+    KatexAccentPath {
+        path: "M786 59C457 59 32 175.242 13 175.242c-6 0-10-3.457\
+               -11-10.37L.15 138c-1-7 3-12 10-13l19.2-6.4C378.4 40.7 634.3 0 804.3 0c337 0\
+                411.8 157 746.8 157 328 0 754-112 773-112 5 0 10 3 11 9l1 14.075c1 8.066-.697\
+                16.595-6.697 17.492l-21.052 7.31c-367.9 98.146-609.15 122.696-778.15 122.696\
+               -338 0-409-156.573-744-156.573z",
+        viewbox_w: 2339.0,
+        viewbox_h: 306.0,
+    },
+    // tilde4: viewBox 0 0 2340 312
+    KatexAccentPath {
+        path: "M786 58C457 58 32 177.487 13 177.487c-6 0-10-3.345\
+               -11-10.035L.15 143c-1-7 3-12 10-13l22-6.7C381.2 35 637.15 0 807.15 0c337 0 409\
+                177 744 177 328 0 754-127 773-127 5 0 10 3 11 9l1 14.794c1 7.805-3 13.38-9\
+                14.495l-20.7 5.574c-366.85 99.79-607.3 139.372-776.3 139.372-338 0-409\
+               -175.236-744-175.236z",
+        viewbox_w: 2340.0,
+        viewbox_h: 312.0,
+    },
+];
+
+const WIDECHECK_PATHS: [KatexAccentPath; 4] = [
+    // widecheck1: viewBox 0 0 1062 239
+    KatexAccentPath {
+        path: "M529,159h5l519,-115c5,-1,9,-5,9,-10c0,-1,-1,-2,-1,-3l-4,-22c-1,\
+               -5,-5,-9,-11,-9h-2l-512,92l-513,-92h-2c-5,0,-9,4,-11,9l-5,22c-1,6,2,12,8,13z",
+        viewbox_w: 1062.0,
+        viewbox_h: 239.0,
+    },
+    // widecheck2: viewBox 0 0 2364 300
+    KatexAccentPath {
+        path: "M1181,220h2l1171,-176c6,0,10,-5,10,-11l-2,-23c-1,-6,-5,-10,\
+               -11,-10h-1l-1168,153l-1167,-153h-1c-6,0,-10,4,-11,10l-2,23c-1,6,4,11,10,11z",
+        viewbox_w: 2364.0,
+        viewbox_h: 300.0,
+    },
+    // widecheck3: viewBox 0 0 2364 360
+    KatexAccentPath {
+        path: "M1181,280h2l1171,-236c6,0,10,-5,10,-11l-2,-23c-1,-6,-5,-10,\
+               -11,-10h-1l-1168,213l-1167,-213h-1c-6,0,-10,4,-11,10l-2,23c-1,6,4,11,10,11z",
+        viewbox_w: 2364.0,
+        viewbox_h: 360.0,
+    },
+    // widecheck4: viewBox 0 0 2364 420
+    KatexAccentPath {
+        path: "M1181,340h2l1171,-296c6,0,10,-5,10,-11l-2,-23c-1,-6,-5,-10,\
+               -11,-10h-1l-1168,273l-1167,-273h-1c-6,0,-10,4,-11,10l-2,23c-1,6,4,11,10,11z",
+        viewbox_w: 2364.0,
+        viewbox_h: 420.0,
+    },
+];
+
+/// Select a KaTeX accent tier (0-3) based on base width in em.
+fn katex_accent_tier(w: f64) -> usize {
+    if w < 1.0 {
+        0
+    } else if w < 2.0 {
+        1
+    } else if w < 3.0 {
+        2
+    } else {
+        3
+    }
+}
+
+/// Scale an SVG path string by independent x and y factors.
+///
+/// Parses SVG path commands and multiplies each coordinate by the
+/// appropriate scale factor (`sx` for x-coordinates, `sy` for y-coordinates).
+/// Supports commands: M, L, H, V, C, S, Q, T, A, Z (both cases).
+fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
+    let mut result = String::with_capacity(path.len() + 64);
+    let bytes = path.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Current command determines how to interpret parameters.
+    // 'x' means scale by sx, 'y' means scale by sy, 'n' means no scale.
+    // For most commands, coords alternate x, y.
+    let mut cmd = b'M';
+    let mut param_index: usize = 0;
+
+    while i < len {
+        let b = bytes[i];
+        if b.is_ascii_alphabetic() {
+            cmd = b;
+            param_index = 0;
+            result.push(b as char);
+            i += 1;
+            continue;
+        }
+        // Skip whitespace and commas between tokens
+        if b == b' ' || b == b',' || b == b'\n' || b == b'\r' || b == b'\t' {
+            result.push(b as char);
+            i += 1;
+            continue;
+        }
+        // Try to parse a number
+        if b == b'-' || b == b'+' || b == b'.' || b.is_ascii_digit() {
+            let start = i;
+            // Optional sign
+            if bytes[i] == b'-' || bytes[i] == b'+' {
+                i += 1;
+            }
+            // Integer part
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            // Decimal part
+            if i < len && bytes[i] == b'.' {
+                i += 1;
+                while i < len && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            let num_str = &path[start..i];
+            if let Ok(val) = num_str.parse::<f64>() {
+                let cmd_upper = cmd.to_ascii_uppercase();
+                let scaled = match cmd_upper {
+                    b'H' => val * sx,
+                    b'V' => val * sy,
+                    b'Z' => val, // shouldn't happen
+                    b'A' => {
+                        // Arc: rx ry rotation large-arc sweep x y
+                        // Params 0,1 = rx,ry (scale); 2 = rotation (no scale);
+                        // 3,4 = flags (no scale); 5,6 = x,y (scale)
+                        let pi = param_index % 7;
+                        match pi {
+                            0 => val * sx,
+                            1 => val * sy,
+                            2..=4 => val,
+                            5 => val * sx,
+                            6 => val * sy,
+                            _ => val,
+                        }
+                    }
+                    // M, L, C, S, Q, T: alternating x, y
+                    _ => {
+                        if param_index.is_multiple_of(2) {
+                            val * sx
+                        } else {
+                            val * sy
+                        }
+                    }
+                };
+                // Format with up to 4 decimal places, trimming trailing zeros
+                let formatted = format!("{:.4}", scaled);
+                let formatted = formatted.trim_end_matches('0');
+                let formatted = formatted.trim_end_matches('.');
+                result.push_str(formatted);
+            } else {
+                // Fallback: push the raw string
+                result.push_str(num_str);
+            }
+            param_index += 1;
+            continue;
+        }
+        // Anything else, just copy
+        result.push(b as char);
+        i += 1;
+    }
+    result
+}
+
+/// Build a filled, scaled KaTeX accent path for the given base dimensions.
+fn katex_accent_scaled(paths: &[KatexAccentPath; 4], w: f64, h: f64) -> String {
+    let tier = katex_accent_tier(w);
+    let data = &paths[tier];
+    let sx = w / data.viewbox_w;
+    let sy = h / data.viewbox_h;
+    let scaled = scale_svg_path(data.path, sx, sy);
+    format!("F:{scaled}")
+}
+
 /// Generate an SVG path string for a stretchy accent at the given width and height.
 /// Coordinates are in em units with (0,0) at top-left.
+/// Paths prefixed with "F:" are filled shapes (rendered without stroke);
+/// others use stroke-based rendering.
 fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
     let stroke = 0.04; // matches emit.rs stroke-width
     match accent {
-        // Hat: ∧ shape centered above content
-        '\u{0302}' => {
-            let mid = w / 2.0;
-            format!("M0,{h} L{mid},0 L{w},{h}")
-        },
-        // Check/caron: ∨ shape
-        '\u{030C}' => {
-            let mid = w / 2.0;
-            format!("M0,0 L{mid},{h} L{w},0")
-        },
-        // Tilde: wavy S-curve
-        '\u{0303}' => {
-            let q1x = w * 0.25;
-            let q2x = w * 0.75;
-            let mid = h / 2.0;
-            format!(
-                "M0,{mid} C{q1x},0 {q2x},{h} {w},{mid}"
-            )
-        },
+        // Hat (U+0302): use KaTeX widehat paths
+        '\u{0302}' => katex_accent_scaled(&WIDEHAT_PATHS, w, h),
+        // Check/caron (U+030C): use KaTeX widecheck paths
+        '\u{030C}' => katex_accent_scaled(&WIDECHECK_PATHS, w, h),
+        // Tilde (U+0303): use KaTeX widetilde paths
+        '\u{0303}' => katex_accent_scaled(&WIDETILDE_PATHS, w, h),
         // Right arrow (overrightarrow, vec)
         '\u{20D7}' | '\u{2192}' => {
             let mid = h / 2.0;
@@ -303,7 +546,7 @@ fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
             let tip = w;
             let shaft_end = w - head;
             format!(
-                "M0,{mid} L{shaft_end},{mid} M{tip},{mid} L{se},{t} M{tip},{mid} L{se},{b}",
+                "M0,{mid:.4} L{shaft_end:.4},{mid:.4} M{tip:.4},{mid:.4} L{se:.4},{t:.4} M{tip:.4},{mid:.4} L{se:.4},{b:.4}",
                 se = shaft_end,
                 t = mid - head,
                 b = mid + head,
@@ -315,7 +558,7 @@ fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
             let head = h.min(w * 0.15).max(stroke * 3.0);
             let shaft_start = head;
             format!(
-                "M{shaft_start},{mid} L{w},{mid} M0,{mid} L{shaft_start},{t} M0,{mid} L{shaft_start},{b}",
+                "M{shaft_start:.4},{mid:.4} L{w:.4},{mid:.4} M0,{mid:.4} L{shaft_start:.4},{t:.4} M0,{mid:.4} L{shaft_start:.4},{b:.4}",
                 t = mid - head,
                 b = mid + head,
             )
@@ -327,9 +570,9 @@ fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
             let shaft_start = head;
             let shaft_end = w - head;
             format!(
-                "M{shaft_start},{mid} L{shaft_end},{mid} \
-                 M0,{mid} L{shaft_start},{t} M0,{mid} L{shaft_start},{b} \
-                 M{w},{mid} L{shaft_end},{t} M{w},{mid} L{shaft_end},{b}",
+                "M{shaft_start:.4},{mid:.4} L{shaft_end:.4},{mid:.4} \
+                 M0,{mid:.4} L{shaft_start:.4},{t:.4} M0,{mid:.4} L{shaft_start:.4},{b:.4} \
+                 M{w:.4},{mid:.4} L{shaft_end:.4},{t:.4} M{w:.4},{mid:.4} L{shaft_end:.4},{b:.4}",
                 t = mid - head,
                 b = mid + head,
             )
@@ -340,7 +583,7 @@ fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
             let head = h.min(w * 0.15).max(stroke * 3.0);
             let shaft_end = w - head;
             format!(
-                "M0,{mid} L{shaft_end},{mid} M{w},{mid} L{shaft_end},{t}",
+                "M0,{mid:.4} L{shaft_end:.4},{mid:.4} M{w:.4},{mid:.4} L{shaft_end:.4},{t:.4}",
                 t = mid - head,
             )
         },
@@ -350,14 +593,14 @@ fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
             let head = h.min(w * 0.15).max(stroke * 3.0);
             let shaft_start = head;
             format!(
-                "M{shaft_start},{mid} L{w},{mid} M0,{mid} L{shaft_start},{t}",
+                "M{shaft_start:.4},{mid:.4} L{w:.4},{mid:.4} M0,{mid:.4} L{shaft_start:.4},{t:.4}",
                 t = mid - head,
             )
         },
         // Fallback: horizontal line
         _ => {
             let mid = h / 2.0;
-            format!("M0,{mid} L{w},{mid}")
+            format!("M0,{mid:.4} L{w:.4},{mid:.4}")
         },
     }
 }
@@ -372,7 +615,7 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
             let q = w * 0.25;
             let tq = w * 0.75;
             format!(
-                "M0,{h} Q{q},{h} {mid},0 Q{tq},{h} {w},{h}"
+                "M0,{h:.4} Q{q:.4},{h:.4} {mid:.4},0 Q{tq:.4},{h:.4} {w:.4},{h:.4}"
             )
         },
         // Underbrace ⏟ — curly brace below, tip points down
@@ -381,19 +624,19 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
             let q = w * 0.25;
             let tq = w * 0.75;
             format!(
-                "M0,0 Q{q},0 {mid},{h} Q{tq},0 {w},0"
+                "M0,0 Q{q:.4},0 {mid:.4},{h:.4} Q{tq:.4},0 {w:.4},0"
             )
         },
         // Overbracket ⎴ — square bracket above
         "\u{23B4}" => {
             format!(
-                "M0,{h} L0,0 L{w},0 L{w},{h}"
+                "M0,{h:.4} L0,0 L{w:.4},0 L{w:.4},{h:.4}"
             )
         },
         // Underbracket ⎵ — square bracket below
         "\u{23B5}" => {
             format!(
-                "M0,0 L0,{h} L{w},{h} L{w},0"
+                "M0,0 L0,{h:.4} L{w:.4},{h:.4} L{w:.4},0"
             )
         },
         // Overline ‾ — horizontal rule
@@ -412,7 +655,7 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
 pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -> LayoutBox {
     let ctx = LayoutCtx {
         style,
-        params: TexParams::default(),
+        params: TexParams::for_size_class(style.size_class()),
         options,
         depth: 0,
     };
@@ -484,8 +727,8 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         MathNode::Symbol(kind, s) => {
             if let Some(ch) = s.chars().next() {
                 if *kind == SymbolKind::LargeOp && ctx.style.is_display() {
-                    let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
-                    let m = metrics::glyph_metrics(ch);
+                    let size = ctx.size() * metrics::display_op_scale(ch);
+                    let m = metrics::glyph_metrics_display(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
                     let glyph = LayoutBox::glyph(ch, ctx.style, false);
@@ -553,7 +796,14 @@ fn layout_text_run(text: &str, ctx: &LayoutCtx, italic: bool) -> LayoutBox {
     let mut max_depth: f64 = 0.0;
 
     for ch in text.chars() {
-        let m = metrics::glyph_metrics(ch);
+        // Use upright metrics for non-italic text (operator names, numbers, \text{}).
+        // Italic and upright fonts have significantly different character widths
+        // (e.g. 'i' is 0.278em upright vs 0.345em italic — 24% wider in italic).
+        let m = if italic {
+            metrics::glyph_metrics(ch)
+        } else {
+            metrics::glyph_metrics_upright(ch)
+        };
         let h = m.height * size;
         let d = m.depth * size;
         max_height = max_height.max(h);
@@ -743,8 +993,8 @@ fn layout_big_op_limits_heap(
 
     // Build the operator glyph at display size
     let op_ch = large_op_char(base).unwrap_or('\u{2211}');
-    let op_size = size * BIG_OP_DISPLAY_SCALE;
-    let m = metrics::glyph_metrics(op_ch);
+    let op_size = size * metrics::display_op_scale(op_ch);
+    let m = metrics::glyph_metrics_display(op_ch);
     let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size, false);
 
     let mut children = Vec::new();
@@ -761,13 +1011,19 @@ fn layout_big_op_limits_heap(
         layout_node(s, &sub_ctx)
     });
 
+    // KaTeX big_op_spacing: [0]=sup gap, [1]=min sup clearance,
+    // [2]=min sub clearance, [3]=sub gap, [4]=top/bottom padding
+    let sup_gap = (p.big_op_spacing[0] * size).max(p.big_op_spacing[1] * size);
+    let sub_gap = (p.big_op_spacing[3] * size).max(p.big_op_spacing[2] * size);
+    let padding = p.big_op_spacing[4] * size;
+
     if let Some(ref sb) = sup_box {
         max_w = max_w.max(sb.width);
-        total_h += sb.height + sb.depth + p.big_op_spacing[0] * size;
+        total_h += sb.height + sb.depth + sup_gap + padding;
     }
     if let Some(ref sb) = sub_box {
         max_w = max_w.max(sb.width);
-        total_d += sb.height + sb.depth + p.big_op_spacing[3] * size;
+        total_d += sb.height + sb.depth + sub_gap + padding;
     }
 
     // Center op horizontally
@@ -775,14 +1031,14 @@ fn layout_big_op_limits_heap(
 
     if let Some(sb) = sup_box {
         let sup_dx = (max_w - sb.width) / 2.0;
-        let sup_dy = op_box.height + p.big_op_spacing[0] * size + sb.depth;
+        let sup_dy = op_box.height + sup_gap + sb.depth;
         children.push(PositionedBox::new(sup_dx, sup_dy, sb));
     }
     let op_depth = op_box.depth;
     children.push(PositionedBox::new(op_dx, 0.0, op_box));
     if let Some(sb) = sub_box {
         let sub_dx = (max_w - sb.width) / 2.0;
-        let sub_dy = -(op_depth + p.big_op_spacing[3] * size + sb.height);
+        let sub_dy = -(op_depth + sub_gap + sb.height);
         children.push(PositionedBox::new(sub_dx, sub_dy, sb));
     }
 
@@ -811,8 +1067,7 @@ fn layout_fraction(
 
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
-        // Ensure a minimum visible thickness even at ScriptScript sizes
-        _ => (p.rule_thickness * size).max(0.040),
+        _ => p.rule_thickness * size,
     };
 
     // Shifts from axis
@@ -890,52 +1145,74 @@ fn layout_fraction(
     }
 }
 
-/// Generate an SVG path string for a radical sign (square root symbol).
+/// Generate a **filled** SVG path string for a radical sign (square root
+/// symbol), matching the visual weight of KaTeX's font-traced radical.
 ///
 /// The path is in local em coordinates where (0,0) is the top-left of the
 /// bounding box.  `w` is the width of the radical symbol and `h` is the
 /// total height it must cover.
 ///
-/// The shape mimics the KaTeX/TeX radical: a short horizontal tail, a
-/// downward stroke to the bottom vertex (with a smooth quadratic bezier
-/// curve), a steep upward stroke to the top, and finally a connection
-/// point for the vinculum (horizontal overline).
+/// Instead of a thin stroked line, this draws the full outline of a solid
+/// radical sign:
+///   - A small horizontal tail on the far left
+///   - A diagonal downstroke to the bottom vertex
+///   - A steep upstroke to the vinculum connection at the top
+///   - A vinculum (horizontal bar) extending to the right edge
+///   - An inner return path giving the shape proper thickness
+///
+/// The returned string is prefixed with "F:" so the emitter renders it as
+/// a filled shape (`fill="currentColor"`) rather than a stroked path.
 fn radical_path(w: f64, h: f64) -> String {
-    // Key control points expressed as fractions of width / height:
-    //   tail_start  :  left-most point of the small tail
-    //   tail_end    :  end of the tail / start of the downward stroke
-    //   bottom      :  lowest point of the "V"
-    //   top_right   :  where the upstroke meets the vinculum
-    //   vinculum_end:  right edge of the radical box (vinculum connection)
-    //
-    // A quadratic bezier is used at the bottom vertex so the turn is
-    // smooth instead of a sharp corner.
+    // Thickness of the vinculum and the baked-in stroke width (in em).
+    let t = 0.04;
 
-    let tail_y = 0.55 * h;    // vertical position of the tail
-    let tail_x0 = 0.0;        // tail start x
-    let tail_x1 = 0.08 * w;   // tail end x (slight rightward slope)
-    let tail_y1 = 0.60 * h;   // tail end y (slightly lower)
+    // --- Key x landmarks (as fractions of w) ---
+    let tail_x = 0.08 * w; // right end of the small horizontal tail
+    let bottom_x = 0.26 * w; // x of the bottom vertex of the V
+    let top_x = 0.42 * w; // x where the upstroke meets the vinculum
 
-    // Bottom vertex area  (quadratic bezier control + end)
-    let q_ctrl_x = 0.20 * w;  // bezier control point x
-    let q_ctrl_y = h + 0.02 * h; // control point slightly below the box
-    let q_end_x = 0.26 * w;   // bezier end-point x (the visual bottom)
-    let q_end_y = h;           // bezier end-point y
+    // --- Vertical position of the tail ---
+    let tail_y = 0.55 * h;
 
-    // Upstroke to the top
-    let top_x = 0.42 * w;     // where the upstroke reaches the top
-    let top_y = 0.0;
+    // === Outer edge (clockwise) ===
+    // P0: tail start (left edge, top of tail stroke)
+    let ox0 = 0.0;
+    let oy0 = tail_y - t * 0.5;
+    // P1: tail end, slight downward slope
+    let ox1 = tail_x;
+    let oy1 = tail_y + t;
+    // P2: bottom-left of V (outer)
+    let ox2 = bottom_x - t * 0.3;
+    let oy2 = h;
+    // P3: top of upstroke (outer left edge), meets vinculum
+    let ox3 = top_x - t * 0.5;
+    let oy3 = 0.0;
+    // P4: vinculum right end, top edge
+    let vx0 = w;
+    let vy0 = 0.0;
 
-    // Vinculum connection
-    let vinc_x = w;
-    let vinc_y = 0.0;
+    // === Inner edge (counter-clockwise, forming the return path) ===
+    // P5: vinculum right end, bottom edge
+    let vx1 = w;
+    let vy1 = t;
+    // P6: top of upstroke (inner right edge)
+    let ix0 = top_x + t * 0.5;
+    let iy0 = t;
+    // P7: bottom-right of V (inner, slightly above and to the right)
+    let ix1 = bottom_x + t * 0.5;
+    let iy1 = h - t * 0.5;
+    // P8: inner tail end
+    let ix2 = tail_x + t * 0.3;
+    let iy2 = tail_y + t * 0.5;
+    // P9: inner tail start (left edge, bottom of tail stroke)
+    let ix3 = 0.0;
+    let iy3 = tail_y + t * 0.5;
 
     format!(
-        "M{tail_x0:.4},{tail_y:.4} \
-         L{tail_x1:.4},{tail_y1:.4} \
-         Q{q_ctrl_x:.4},{q_ctrl_y:.4} {q_end_x:.4},{q_end_y:.4} \
-         L{top_x:.4},{top_y:.4} \
-         L{vinc_x:.4},{vinc_y:.4}",
+        "F:M{ox0:.4},{oy0:.4} L{ox1:.4},{oy1:.4} L{ox2:.4},{oy2:.4} \
+         L{ox3:.4},{oy3:.4} L{vx0:.4},{vy0:.4} L{vx1:.4},{vy1:.4} \
+         L{ix0:.4},{iy0:.4} L{ix1:.4},{iy1:.4} L{ix2:.4},{iy2:.4} \
+         L{ix3:.4},{iy3:.4} Z",
     )
 }
 
@@ -943,7 +1220,8 @@ fn radical_path(w: f64, h: f64) -> String {
 fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
-    let inner = layout_node(radicand, ctx);
+    let cramped_ctx = ctx.with_style(ctx.style.cramped());
+    let inner = layout_node(radicand, &cramped_ctx);
 
     let rule_thickness = p.rule_thickness * size;
     let extra_clearance = if ctx.style.is_display() {
@@ -1131,13 +1409,12 @@ fn layout_nary(
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Large op in display mode
-    let op_size = if ctx.style.is_display() {
-        size * 1.2
+    // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
+    let (op_size, m) = if ctx.style.is_display() {
+        (size * metrics::display_op_scale(op), metrics::glyph_metrics_display(op))
     } else {
-        size
+        (size, metrics::glyph_metrics(op))
     };
-    let m = metrics::glyph_metrics(op);
     let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, false);
 
     let body_box = layout_node(body, ctx);
@@ -1149,7 +1426,8 @@ fn layout_nary(
     let use_limits = match limits {
         LimitStyle::AboveBelow => true,
         LimitStyle::SubSup => false,
-        LimitStyle::Default => ctx.style.is_display(),
+        // Integrals default to side-limits (nolimits); sums/products to above/below in display.
+        LimitStyle::Default => ctx.style.is_display() && !is_nolimits_op(op),
     };
 
     if use_limits {
@@ -1168,13 +1446,17 @@ fn layout_nary(
             layout_node(s, &sub_ctx)
         });
 
+        let sup_gap = (p.big_op_spacing[0] * size).max(p.big_op_spacing[1] * size);
+        let sub_gap = (p.big_op_spacing[3] * size).max(p.big_op_spacing[2] * size);
+        let padding = p.big_op_spacing[4] * size;
+
         if let Some(ref sb) = sup_box {
             max_w = max_w.max(sb.width);
-            total_h += sb.height + sb.depth + p.big_op_spacing[0] * size;
+            total_h += sb.height + sb.depth + sup_gap + padding;
         }
         if let Some(ref sb) = sub_box {
             max_w = max_w.max(sb.width);
-            total_d += sb.height + sb.depth + p.big_op_spacing[3] * size;
+            total_d += sb.height + sb.depth + sub_gap + padding;
         }
 
         // Center op
@@ -1182,14 +1464,14 @@ fn layout_nary(
 
         if let Some(sb) = sup_box {
             let sup_dx = (max_w - sb.width) / 2.0;
-            let sup_dy = op_box.height + p.big_op_spacing[0] * size + sb.depth;
+            let sup_dy = op_box.height + sup_gap + sb.depth;
             children.push(PositionedBox::new(sup_dx, sup_dy, sb));
         }
         let op_depth = op_box.depth;
         children.push(PositionedBox::new(op_dx, 0.0, op_box));
         if let Some(sb) = sub_box {
             let sub_dx = (max_w - sb.width) / 2.0;
-            let sub_dy = -(op_depth + p.big_op_spacing[3] * size + sb.height);
+            let sub_dy = -(op_depth + sub_gap + sb.height);
             children.push(PositionedBox::new(sub_dx, sub_dy, sb));
         }
 
@@ -1552,12 +1834,60 @@ fn layout_accent(
 
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
-        let accent_h = 0.12 * ctx.size(); // accent decoration height in em
-        LayoutBox {
-            width: base_width,
-            height: accent_h,
-            depth: 0.0,
-            kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+        let size = ctx.size();
+        match accent {
+            // Bar: horizontal rule across base width
+            '\u{0304}' => {
+                let thickness = ctx.params.rule_thickness * size;
+                LayoutBox::rule(base_width, thickness)
+            },
+            // Dot: small filled square centered above base
+            '\u{0307}' => {
+                let dot_r = 0.04 * size; // dot radius in em
+                let dot_size = dot_r * 2.0;
+                let dot = LayoutBox::rule(dot_size, dot_size);
+                let dx = (base_width - dot_size) / 2.0;
+                LayoutBox {
+                    width: base_width,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::HBox {
+                        children: vec![PositionedBox::new(dx, 0.0, dot)],
+                    },
+                }
+            },
+            // Double dot: two small filled squares
+            '\u{0308}' => {
+                let dot_r = 0.04 * size;
+                let dot_size = dot_r * 2.0;
+                let gap = 0.12 * size; // gap between dots
+                let total_dots_w = dot_size * 2.0 + gap;
+                let dx_left = (base_width - total_dots_w) / 2.0;
+                let dx_right = dx_left + dot_size + gap;
+                let dot1 = LayoutBox::rule(dot_size, dot_size);
+                let dot2 = LayoutBox::rule(dot_size, dot_size);
+                LayoutBox {
+                    width: base_width,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::HBox {
+                        children: vec![
+                            PositionedBox::new(dx_left, 0.0, dot1),
+                            PositionedBox::new(dx_right, 0.0, dot2),
+                        ],
+                    },
+                }
+            },
+            // Other stretchy accents: SVG path
+            _ => {
+                let accent_h = 0.12 * size;
+                LayoutBox {
+                    width: base_width,
+                    height: accent_h,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+                }
+            },
         }
     } else {
         LayoutBox::glyph(accent, ctx.style, false)
@@ -1833,7 +2163,7 @@ fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> La
 pub fn layout_expr_c(expr: &CompactExpr, style: MathStyle, options: &RenderOptions) -> LayoutBox {
     let ctx = LayoutCtx {
         style,
-        params: TexParams::default(),
+        params: TexParams::for_size_class(style.size_class()),
         options,
         depth: 0,
     };
@@ -1904,8 +2234,8 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             let s = arena.str_val(sid);
             if let Some(ch) = s.chars().next() {
                 if kind == SymbolKind::LargeOp && ctx.style.is_display() {
-                    let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
-                    let m = metrics::glyph_metrics(ch);
+                    let size = ctx.size() * metrics::display_op_scale(ch);
+                    let m = metrics::glyph_metrics_display(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
                     let glyph = LayoutBox::glyph(ch, ctx.style, false);
@@ -2131,8 +2461,8 @@ fn layout_big_op_limits_c(
 
     // Build the operator glyph at display size
     let op_ch = large_op_char_c(arena, base).unwrap_or('\u{2211}');
-    let op_size = size * BIG_OP_DISPLAY_SCALE;
-    let m = metrics::glyph_metrics(op_ch);
+    let op_size = size * metrics::display_op_scale(op_ch);
+    let m = metrics::glyph_metrics_display(op_ch);
     let op_box = LayoutBox::glyph_with_metrics(op_ch, m, op_size, false);
 
     let mut children = Vec::new();
@@ -2149,27 +2479,31 @@ fn layout_big_op_limits_c(
         layout_node_c(arena, s, &sub_ctx)
     });
 
+    let sup_gap = (p.big_op_spacing[0] * size).max(p.big_op_spacing[1] * size);
+    let sub_gap = (p.big_op_spacing[3] * size).max(p.big_op_spacing[2] * size);
+    let padding = p.big_op_spacing[4] * size;
+
     if let Some(ref sb) = sup_box {
         max_w = max_w.max(sb.width);
-        total_h += sb.height + sb.depth + p.big_op_spacing[0] * size;
+        total_h += sb.height + sb.depth + sup_gap + padding;
     }
     if let Some(ref sb) = sub_box {
         max_w = max_w.max(sb.width);
-        total_d += sb.height + sb.depth + p.big_op_spacing[3] * size;
+        total_d += sb.height + sb.depth + sub_gap + padding;
     }
 
     let op_dx = (max_w - op_box.width) / 2.0;
 
     if let Some(sb) = sup_box {
         let sup_dx = (max_w - sb.width) / 2.0;
-        let sup_dy = op_box.height + p.big_op_spacing[0] * size + sb.depth;
+        let sup_dy = op_box.height + sup_gap + sb.depth;
         children.push(PositionedBox::new(sup_dx, sup_dy, sb));
     }
     let op_depth = op_box.depth;
     children.push(PositionedBox::new(op_dx, 0.0, op_box));
     if let Some(sb) = sub_box {
         let sub_dx = (max_w - sb.width) / 2.0;
-        let sub_dy = -(op_depth + p.big_op_spacing[3] * size + sb.height);
+        let sub_dy = -(op_depth + sub_gap + sb.height);
         children.push(PositionedBox::new(sub_dx, sub_dy, sb));
     }
 
@@ -2198,8 +2532,7 @@ fn layout_fraction_c(
 
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
-        // Ensure a minimum visible thickness even at ScriptScript sizes
-        _ => (p.rule_thickness * size).max(0.040),
+        _ => p.rule_thickness * size,
     };
 
     let (num_shift, den_shift) = if ctx.style.is_display() {
@@ -2278,7 +2611,8 @@ fn layout_sqrt_c(
 ) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
-    let inner = layout_node_c(arena, radicand, ctx);
+    let cramped_ctx = ctx.with_style(ctx.style.cramped());
+    let inner = layout_node_c(arena, radicand, &cramped_ctx);
 
     let rule_thickness = p.rule_thickness * size;
     let extra_clearance = if ctx.style.is_display() {
@@ -2458,12 +2792,11 @@ fn layout_nary_c(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let op_size = if ctx.style.is_display() {
-        size * 1.2
+    let (op_size, m) = if ctx.style.is_display() {
+        (size * metrics::display_op_scale(op), metrics::glyph_metrics_display(op))
     } else {
-        size
+        (size, metrics::glyph_metrics(op))
     };
-    let m = metrics::glyph_metrics(op);
     let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, false);
 
     let body_box = layout_node_c(arena, body, ctx);
@@ -2474,7 +2807,8 @@ fn layout_nary_c(
     let use_limits = match limits {
         LimitStyle::AboveBelow => true,
         LimitStyle::SubSup => false,
-        LimitStyle::Default => ctx.style.is_display(),
+        // Integrals default to side-limits (nolimits); sums/products to above/below in display.
+        LimitStyle::Default => ctx.style.is_display() && !is_nolimits_op(op),
     };
 
     if use_limits {
@@ -2496,27 +2830,31 @@ fn layout_nary_c(
             None
         };
 
+        let sup_gap = (p.big_op_spacing[0] * size).max(p.big_op_spacing[1] * size);
+        let sub_gap = (p.big_op_spacing[3] * size).max(p.big_op_spacing[2] * size);
+        let padding = p.big_op_spacing[4] * size;
+
         if let Some(ref sb) = sup_box {
             max_w = max_w.max(sb.width);
-            total_h += sb.height + sb.depth + p.big_op_spacing[0] * size;
+            total_h += sb.height + sb.depth + sup_gap + padding;
         }
         if let Some(ref sb) = sub_box {
             max_w = max_w.max(sb.width);
-            total_d += sb.height + sb.depth + p.big_op_spacing[3] * size;
+            total_d += sb.height + sb.depth + sub_gap + padding;
         }
 
         let op_dx = (max_w - op_box.width) / 2.0;
 
         if let Some(sb) = sup_box {
             let sup_dx = (max_w - sb.width) / 2.0;
-            let sup_dy = op_box.height + p.big_op_spacing[0] * size + sb.depth;
+            let sup_dy = op_box.height + sup_gap + sb.depth;
             children.push(PositionedBox::new(sup_dx, sup_dy, sb));
         }
         let op_depth = op_box.depth;
         children.push(PositionedBox::new(op_dx, 0.0, op_box));
         if let Some(sb) = sub_box {
             let sub_dx = (max_w - sb.width) / 2.0;
-            let sub_dy = -(op_depth + p.big_op_spacing[3] * size + sb.height);
+            let sub_dy = -(op_depth + sub_gap + sb.height);
             children.push(PositionedBox::new(sub_dx, sub_dy, sb));
         }
 
@@ -2881,12 +3219,56 @@ fn layout_accent_c(
 
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
-        let accent_h = 0.12 * ctx.size();
-        LayoutBox {
-            width: base_width,
-            height: accent_h,
-            depth: 0.0,
-            kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+        let size = ctx.size();
+        match accent {
+            '\u{0304}' => {
+                let thickness = ctx.params.rule_thickness * size;
+                LayoutBox::rule(base_width, thickness)
+            },
+            '\u{0307}' => {
+                let dot_r = 0.04 * size;
+                let dot_size = dot_r * 2.0;
+                let dot = LayoutBox::rule(dot_size, dot_size);
+                let dx = (base_width - dot_size) / 2.0;
+                LayoutBox {
+                    width: base_width,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::HBox {
+                        children: vec![PositionedBox::new(dx, 0.0, dot)],
+                    },
+                }
+            },
+            '\u{0308}' => {
+                let dot_r = 0.04 * size;
+                let dot_size = dot_r * 2.0;
+                let gap = 0.12 * size;
+                let total_dots_w = dot_size * 2.0 + gap;
+                let dx_left = (base_width - total_dots_w) / 2.0;
+                let dx_right = dx_left + dot_size + gap;
+                let dot1 = LayoutBox::rule(dot_size, dot_size);
+                let dot2 = LayoutBox::rule(dot_size, dot_size);
+                LayoutBox {
+                    width: base_width,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::HBox {
+                        children: vec![
+                            PositionedBox::new(dx_left, 0.0, dot1),
+                            PositionedBox::new(dx_right, 0.0, dot2),
+                        ],
+                    },
+                }
+            },
+            _ => {
+                let accent_h = 0.12 * size;
+                LayoutBox {
+                    width: base_width,
+                    height: accent_h,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+                }
+            },
         }
     } else {
         LayoutBox::glyph(accent, ctx.style, false)
@@ -3266,7 +3648,7 @@ impl<'a> LayoutBuilder<'a> {
     ) -> LayoutBoxId {
         let ctx = ArenaLayoutCtx {
             style: self.style,
-            params: TexParams::default(),
+            params: TexParams::for_size_class(self.style.size_class()),
             options: self.options,
             depth: 0,
         };
@@ -3289,7 +3671,7 @@ impl<'a> ArenaLayoutCtx<'a> {
     fn with_style(&self, style: MathStyle) -> ArenaLayoutCtx<'a> {
         ArenaLayoutCtx {
             style,
-            params: self.params,
+            params: TexParams::for_size_class(style.size_class()),
             options: self.options,
             depth: self.depth,
         }
@@ -3309,7 +3691,11 @@ impl<'a> ArenaLayoutCtx<'a> {
 
 fn alloc_glyph(arena: &mut LayoutArena, ch: char, style: MathStyle, italic: bool) -> LayoutBoxId {
     let size = style.size_multiplier();
-    let m = metrics::glyph_metrics(ch);
+    let m = if italic {
+        metrics::glyph_metrics(ch)
+    } else {
+        metrics::glyph_metrics_upright(ch)
+    };
     arena.alloc(ArenaLayoutBox {
         width: m.width * size,
         height: m.height * size,
@@ -3374,7 +3760,11 @@ fn layout_text_run_arena(
     let mut max_depth: f64 = 0.0;
 
     for ch in text.chars() {
-        let m = metrics::glyph_metrics(ch);
+        let m = if italic {
+            metrics::glyph_metrics(ch)
+        } else {
+            metrics::glyph_metrics_upright(ch)
+        };
         let h = m.height * size;
         let d = m.depth * size;
         max_height = max_height.max(h);
@@ -3475,8 +3865,8 @@ fn layout_node_arena(
             let s = ast.str_val(sid);
             if let Some(ch) = s.chars().next() {
                 if kind == SymbolKind::LargeOp && ctx.style.is_display() {
-                    let size = ctx.size() * BIG_OP_DISPLAY_SCALE;
-                    let m = metrics::glyph_metrics(ch);
+                    let size = ctx.size() * metrics::display_op_scale(ch);
+                    let m = metrics::glyph_metrics_display(ch);
                     alloc_glyph_with_metrics(arena, ch, m, size, false)
                 } else {
                     let glyph_id = alloc_glyph(arena, ch, ctx.style, false);
@@ -3719,8 +4109,8 @@ fn layout_big_op_limits_arena(
 
     // Build the operator glyph at display size
     let op_ch = large_op_char_c(ast, base).unwrap_or('\u{2211}');
-    let op_size = size * BIG_OP_DISPLAY_SCALE;
-    let m = metrics::glyph_metrics(op_ch);
+    let op_size = size * metrics::display_op_scale(op_ch);
+    let m = metrics::glyph_metrics_display(op_ch);
     let op_id = alloc_glyph_with_metrics(arena, op_ch, m, op_size, false);
 
     let op_w = arena.get(op_id).width;
@@ -3753,13 +4143,17 @@ fn layout_big_op_limits_arena(
         (0.0, 0.0, 0.0)
     };
 
+    let sup_gap = (p.big_op_spacing[0] * size).max(p.big_op_spacing[1] * size);
+    let sub_gap = (p.big_op_spacing[3] * size).max(p.big_op_spacing[2] * size);
+    let padding = p.big_op_spacing[4] * size;
+
     if sup_id_opt.is_some() {
         max_w = max_w.max(sup_w_opt);
-        total_h += sup_h_opt + sup_d_opt + p.big_op_spacing[0] * size;
+        total_h += sup_h_opt + sup_d_opt + sup_gap + padding;
     }
     if sub_id_opt.is_some() {
         max_w = max_w.max(sub_w_opt);
-        total_d += sub_h_opt + sub_d_opt + p.big_op_spacing[3] * size;
+        total_d += sub_h_opt + sub_d_opt + sub_gap + padding;
     }
 
     let op_dx = (max_w - op_w) / 2.0;
@@ -3768,13 +4162,13 @@ fn layout_big_op_limits_arena(
 
     if let Some(sid) = sup_id_opt {
         let sup_dx = (max_w - sup_w_opt) / 2.0;
-        let sup_dy = op_h + p.big_op_spacing[0] * size + sup_d_opt;
+        let sup_dy = op_h + sup_gap + sup_d_opt;
         arena.push_child(ArenaPositionedBox { dx: sup_dx, dy: sup_dy, id: sid });
     }
     arena.push_child(ArenaPositionedBox { dx: op_dx, dy: 0.0, id: op_id });
     if let Some(sid) = sub_id_opt {
         let sub_dx = (max_w - sub_w_opt) / 2.0;
-        let sub_dy = -(op_d + p.big_op_spacing[3] * size + sub_h_opt);
+        let sub_dy = -(op_d + sub_gap + sub_h_opt);
         arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: sub_dy, id: sid });
     }
 
@@ -3814,8 +4208,7 @@ fn layout_fraction_arena(
 
     let bar_thickness = match kind {
         FractionKind::NoBar => 0.0,
-        // Ensure a minimum visible thickness even at ScriptScript sizes
-        _ => (p.rule_thickness * size).max(0.040),
+        _ => p.rule_thickness * size,
     };
 
     let (num_shift, den_shift) = if ctx.style.is_display() {
@@ -3898,7 +4291,8 @@ fn layout_sqrt_arena(
 ) -> LayoutBoxId {
     let p = &ctx.params;
     let size = ctx.size();
-    let inner_id = layout_node_arena(ast, radicand, arena, ctx);
+    let cramped_ctx = ctx.with_style(ctx.style.cramped());
+    let inner_id = layout_node_arena(ast, radicand, arena, &cramped_ctx);
 
     let inner_w = arena.get(inner_id).width;
     let inner_h = arena.get(inner_id).height;
@@ -4107,13 +4501,12 @@ fn layout_nary_arena(
     let p = &ctx.params;
     let size = ctx.size();
 
-    // Large op in display mode
-    let op_size = if ctx.style.is_display() {
-        size * 1.2
+    // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
+    let (op_size, m) = if ctx.style.is_display() {
+        (size * metrics::display_op_scale(op), metrics::glyph_metrics_display(op))
     } else {
-        size
+        (size, metrics::glyph_metrics(op))
     };
-    let m = metrics::glyph_metrics(op);
     let op_id = alloc_glyph_with_metrics(arena, op, m, op_size, false);
 
     let body_id = layout_node_arena(ast, body, arena, ctx);
@@ -4124,7 +4517,8 @@ fn layout_nary_arena(
     let use_limits = match limits {
         LimitStyle::AboveBelow => true,
         LimitStyle::SubSup => false,
-        LimitStyle::Default => ctx.style.is_display(),
+        // Integrals default to side-limits (nolimits); sums/products to above/below in display.
+        LimitStyle::Default => ctx.style.is_display() && !is_nolimits_op(op),
     };
 
     if use_limits {
@@ -4166,13 +4560,17 @@ fn layout_nary_arena(
             (0.0, 0.0, 0.0)
         };
 
+        let sup_gap = (p.big_op_spacing[0] * size).max(p.big_op_spacing[1] * size);
+        let sub_gap = (p.big_op_spacing[3] * size).max(p.big_op_spacing[2] * size);
+        let padding = p.big_op_spacing[4] * size;
+
         if sup_id_opt.is_some() {
             max_w = max_w.max(sup_w_opt);
-            total_h += sup_h_opt + sup_d_opt + p.big_op_spacing[0] * size;
+            total_h += sup_h_opt + sup_d_opt + sup_gap + padding;
         }
         if sub_id_opt.is_some() {
             max_w = max_w.max(sub_w_opt);
-            total_d += sub_h_opt + sub_d_opt + p.big_op_spacing[3] * size;
+            total_d += sub_h_opt + sub_d_opt + sub_gap + padding;
         }
 
         let op_dx = (max_w - op_w) / 2.0;
@@ -4181,13 +4579,13 @@ fn layout_nary_arena(
 
         if let Some(sid) = sup_id_opt {
             let sup_dx = (max_w - sup_w_opt) / 2.0;
-            let sup_dy = op_h + p.big_op_spacing[0] * size + sup_d_opt;
+            let sup_dy = op_h + sup_gap + sup_d_opt;
             arena.push_child(ArenaPositionedBox { dx: sup_dx, dy: sup_dy, id: sid });
         }
         arena.push_child(ArenaPositionedBox { dx: op_dx, dy: 0.0, id: op_id });
         if let Some(sid) = sub_id_opt {
             let sub_dx = (max_w - sub_w_opt) / 2.0;
-            let sub_dy = -(op_d + p.big_op_spacing[3] * size + sub_h_opt);
+            let sub_dy = -(op_d + sub_gap + sub_h_opt);
             arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: sub_dy, id: sid });
         }
 
@@ -4635,13 +5033,77 @@ fn layout_accent_arena(
 
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_id = if is_stretchy_accent(accent) && base_w > 0.0 {
-        let accent_h = 0.12 * ctx.size();
-        arena.alloc(ArenaLayoutBox {
-            width: base_w,
-            height: accent_h,
-            depth: 0.0,
-            kind: ArenaBoxKind::SvgPath(stretchy_accent_path(accent, base_w, accent_h)),
-        })
+        let size = ctx.size();
+        match accent {
+            '\u{0304}' => {
+                let thickness = ctx.params.rule_thickness * size;
+                arena.alloc(ArenaLayoutBox {
+                    width: base_w,
+                    height: thickness / 2.0,
+                    depth: thickness / 2.0,
+                    kind: ArenaBoxKind::Rule { thickness },
+                })
+            },
+            '\u{0307}' => {
+                let dot_r = 0.04 * size;
+                let dot_size = dot_r * 2.0;
+                let dx = (base_w - dot_size) / 2.0;
+                let dot_id = arena.alloc(ArenaLayoutBox {
+                    width: dot_size,
+                    height: dot_size / 2.0,
+                    depth: dot_size / 2.0,
+                    kind: ArenaBoxKind::Rule { thickness: dot_size },
+                });
+                let children_start = arena.begin_children();
+                arena.push_child(ArenaPositionedBox { dx, dy: 0.0, id: dot_id });
+                let children = arena.finish_children(children_start);
+                arena.alloc(ArenaLayoutBox {
+                    width: base_w,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::HBox { children },
+                })
+            },
+            '\u{0308}' => {
+                let dot_r = 0.04 * size;
+                let dot_size = dot_r * 2.0;
+                let gap = 0.12 * size;
+                let total_dots_w = dot_size * 2.0 + gap;
+                let dx_left = (base_w - total_dots_w) / 2.0;
+                let dx_right = dx_left + dot_size + gap;
+                let dot1 = arena.alloc(ArenaLayoutBox {
+                    width: dot_size,
+                    height: dot_size / 2.0,
+                    depth: dot_size / 2.0,
+                    kind: ArenaBoxKind::Rule { thickness: dot_size },
+                });
+                let dot2 = arena.alloc(ArenaLayoutBox {
+                    width: dot_size,
+                    height: dot_size / 2.0,
+                    depth: dot_size / 2.0,
+                    kind: ArenaBoxKind::Rule { thickness: dot_size },
+                });
+                let children_start = arena.begin_children();
+                arena.push_child(ArenaPositionedBox { dx: dx_left, dy: 0.0, id: dot1 });
+                arena.push_child(ArenaPositionedBox { dx: dx_right, dy: 0.0, id: dot2 });
+                let children = arena.finish_children(children_start);
+                arena.alloc(ArenaLayoutBox {
+                    width: base_w,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::HBox { children },
+                })
+            },
+            _ => {
+                let accent_h = 0.12 * size;
+                arena.alloc(ArenaLayoutBox {
+                    width: base_w,
+                    height: accent_h,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::SvgPath(stretchy_accent_path(accent, base_w, accent_h)),
+                })
+            },
+        }
     } else {
         alloc_glyph(arena, accent, ctx.style, false)
     };
@@ -6089,10 +6551,13 @@ mod tests {
 
         let thickness = find_rule_thickness(&root)
             .expect("fraction should contain a rule bar");
+        // At ScriptScript (size=0.5), rule_thickness = 0.049 (cmex7), so
+        // bar = 0.049 * 0.5 = 0.0245em.  Bars scale naturally with style.
+        let expected = 0.049 * 0.5; // xi_rule[scriptscript] * size
         assert!(
-            thickness >= 0.040,
-            "bar thickness at ScriptScript should be at least 0.040, got {}",
-            thickness
+            (thickness - expected).abs() < 0.001,
+            "bar thickness at ScriptScript should be ~{}, got {}",
+            expected, thickness
         );
     }
 
