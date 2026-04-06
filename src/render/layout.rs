@@ -1399,22 +1399,39 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
     let inner = layout_node(radicand, &cramped_ctx);
 
     let rule_thickness = p.rule_thickness * size;
-    let extra_clearance = if ctx.style.is_display() {
-        rule_thickness
+
+    // KaTeX-compatible clearance: theta + phi/4
+    // where phi = xHeight in display mode, theta otherwise
+    let phi = if ctx.style.is_display() {
+        p.x_height * size // ~0.431em — the x-height
     } else {
-        rule_thickness / 2.0
+        rule_thickness // 0.04em — same as theta
     };
+    let extra_clearance = rule_thickness + phi / 4.0;
 
     // Total height the radical must cover
     let inner_total = inner.height + inner.depth + extra_clearance + rule_thickness;
+
+    // Minimum surd height of 1.0em (KaTeX's "small" surd minimum)
+    let min_surd_height = 1.0 * size;
+    let surd_height = inner_total.max(min_surd_height);
+
+    // If surd is taller than needed, redistribute extra space evenly
+    let extra_clearance = if surd_height > inner_total {
+        extra_clearance + (surd_height - inner_total) / 2.0
+    } else {
+        extra_clearance
+    };
+    // Recompute with potentially larger clearance
+    let _inner_total = surd_height;
 
     // Radical sign
     let radical_width = 0.833 * size; // approximate radical sign width
     let radical = LayoutBox {
         width: radical_width,
-        height: inner_total,
+        height: surd_height,
         depth: 0.0,
-        kind: BoxKind::SvgPath(radical_path(radical_width, inner_total)),
+        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height)),
     };
 
     // Vinculum (horizontal rule on top)
@@ -2961,20 +2978,37 @@ fn layout_sqrt_c(
     let inner = layout_node_c(arena, radicand, &cramped_ctx);
 
     let rule_thickness = p.rule_thickness * size;
-    let extra_clearance = if ctx.style.is_display() {
-        rule_thickness
+
+    // KaTeX-compatible clearance: theta + phi/4
+    // where phi = xHeight in display mode, theta otherwise
+    let phi = if ctx.style.is_display() {
+        p.x_height * size // ~0.431em — the x-height
     } else {
-        rule_thickness / 2.0
+        rule_thickness // 0.04em — same as theta
     };
+    let extra_clearance = rule_thickness + phi / 4.0;
 
     let inner_total = inner.height + inner.depth + extra_clearance + rule_thickness;
+
+    // Minimum surd height of 1.0em (KaTeX's "small" surd minimum)
+    let min_surd_height = 1.0 * size;
+    let surd_height = inner_total.max(min_surd_height);
+
+    // If surd is taller than needed, redistribute extra space evenly
+    let extra_clearance = if surd_height > inner_total {
+        extra_clearance + (surd_height - inner_total) / 2.0
+    } else {
+        extra_clearance
+    };
+    // Recompute with potentially larger clearance
+    let _inner_total = surd_height;
 
     let radical_width = 0.833 * size;
     let radical = LayoutBox {
         width: radical_width,
-        height: inner_total,
+        height: surd_height,
         depth: 0.0,
-        kind: BoxKind::SvgPath(radical_path(radical_width, inner_total)),
+        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height)),
     };
 
     let vinculum = LayoutBox::rule(inner.width, rule_thickness);
@@ -4819,20 +4853,37 @@ fn layout_sqrt_arena(
     let inner_d = arena.get(inner_id).depth;
 
     let rule_thickness = p.rule_thickness * size;
-    let extra_clearance = if ctx.style.is_display() {
-        rule_thickness
+
+    // KaTeX-compatible clearance: theta + phi/4
+    // where phi = xHeight in display mode, theta otherwise
+    let phi = if ctx.style.is_display() {
+        p.x_height * size // ~0.431em — the x-height
     } else {
-        rule_thickness / 2.0
+        rule_thickness // 0.04em — same as theta
     };
+    let extra_clearance = rule_thickness + phi / 4.0;
 
     let inner_total = inner_h + inner_d + extra_clearance + rule_thickness;
+
+    // Minimum surd height of 1.0em (KaTeX's "small" surd minimum)
+    let min_surd_height = 1.0 * size;
+    let surd_height = inner_total.max(min_surd_height);
+
+    // If surd is taller than needed, redistribute extra space evenly
+    let extra_clearance = if surd_height > inner_total {
+        extra_clearance + (surd_height - inner_total) / 2.0
+    } else {
+        extra_clearance
+    };
+    // Recompute with potentially larger clearance
+    let _inner_total = surd_height;
 
     let radical_width = 0.833 * size;
     let radical_id = arena.alloc(ArenaLayoutBox {
         width: radical_width,
-        height: inner_total,
+        height: surd_height,
         depth: 0.0,
-        kind: ArenaBoxKind::SvgPath(radical_path(radical_width, inner_total)),
+        kind: ArenaBoxKind::SvgPath(radical_path(radical_width, surd_height)),
     });
 
     let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, rule_thickness));
