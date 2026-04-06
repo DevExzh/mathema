@@ -1509,6 +1509,9 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
     let axis = ctx.params.axis_height * ctx.size();
     let max_dist_from_axis = (max_h - axis).max(max_d + axis);
     let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
+    // Axis-centered delimiter box dimensions
+    let delim_h = (axis + max_dist_from_axis).max(max_h);
+    let delim_d = (max_dist_from_axis - axis).max(max_d);
 
     // Compute delimiter width.
     // For path-based delimiters (tall content), use the path width which stays
@@ -1537,8 +1540,8 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         };
         let delim = LayoutBox {
             width: delim_width,
-            height: max_h,
-            depth: max_d,
+            height: delim_h,
+            depth: delim_d,
             kind: BoxKind::Delimiter {
                 ch,
                 target_height: target_h,
@@ -1574,8 +1577,8 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         };
         let delim = LayoutBox {
             width: delim_width,
-            height: max_h,
-            depth: max_d,
+            height: delim_h,
+            depth: delim_d,
             kind: BoxKind::Delimiter {
                 ch,
                 target_height: target_h,
@@ -3085,6 +3088,8 @@ fn layout_fenced_c(
     let axis = ctx.params.axis_height * ctx.size();
     let max_dist_from_axis = (max_h - axis).max(max_d + axis);
     let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
+    let delim_h = (axis + max_dist_from_axis).max(max_h);
+    let delim_d = (max_dist_from_axis - axis).max(max_d);
 
     // Compute delimiter width using path-based sizing for tall content
     use super::delimiter_paths;
@@ -3111,8 +3116,8 @@ fn layout_fenced_c(
         };
         let delim = LayoutBox {
             width: delim_width,
-            height: max_h,
-            depth: max_d,
+            height: delim_h,
+            depth: delim_d,
             kind: BoxKind::Delimiter {
                 ch,
                 target_height: target_h,
@@ -3148,8 +3153,8 @@ fn layout_fenced_c(
         };
         let delim = LayoutBox {
             width: delim_width,
-            height: max_h,
-            depth: max_d,
+            height: delim_h,
+            depth: delim_d,
             kind: BoxKind::Delimiter {
                 ch,
                 target_height: target_h,
@@ -4987,6 +4992,8 @@ fn layout_fenced_arena(
     let axis = ctx.params.axis_height * ctx.size();
     let max_dist_from_axis = (max_h - axis).max(max_d + axis);
     let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
+    let delim_h = (axis + max_dist_from_axis).max(max_h);
+    let delim_d = (max_dist_from_axis - axis).max(max_d);
 
     // Compute delimiter width using path-based sizing for tall content
     use super::delimiter_paths;
@@ -5012,8 +5019,8 @@ fn layout_fenced_arena(
         };
         let delim_id = arena.alloc(ArenaLayoutBox {
             width: delim_width,
-            height: max_h,
-            depth: max_d,
+            height: delim_h,
+            depth: delim_d,
             kind: ArenaBoxKind::Delimiter {
                 ch,
                 target_height: target_h,
@@ -5049,8 +5056,8 @@ fn layout_fenced_arena(
         };
         let delim_id = arena.alloc(ArenaLayoutBox {
             width: delim_width,
-            height: max_h,
-            depth: max_d,
+            height: delim_h,
+            depth: delim_d,
             kind: ArenaBoxKind::Delimiter {
                 ch,
                 target_height: target_h,
