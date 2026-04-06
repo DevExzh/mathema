@@ -1216,6 +1216,14 @@ fn layout_fraction(
     den: &MathNode,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
+    // Override context style for \dfrac (Display) and \tfrac (Inline)
+    let override_ctx = match kind {
+        FractionKind::Display => Some(ctx.with_style(MathStyle::Display)),
+        FractionKind::Inline => Some(ctx.with_style(MathStyle::Text)),
+        _ => None,
+    };
+    let ctx = override_ctx.as_ref().unwrap_or(ctx);
+
     let p = &ctx.params;
     let size = ctx.size();
 
@@ -2835,6 +2843,14 @@ fn layout_fraction_c(
     den: NodeId,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
+    // Override context style for \dfrac (Display) and \tfrac (Inline)
+    let override_ctx = match kind {
+        FractionKind::Display => Some(ctx.with_style(MathStyle::Display)),
+        FractionKind::Inline => Some(ctx.with_style(MathStyle::Text)),
+        _ => None,
+    };
+    let ctx = override_ctx.as_ref().unwrap_or(ctx);
+
     let p = &ctx.params;
     let size = ctx.size();
 
@@ -4658,6 +4674,14 @@ fn layout_fraction_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
+    // Override context style for \dfrac (Display) and \tfrac (Inline)
+    let override_ctx = match kind {
+        FractionKind::Display => Some(ctx.with_style(MathStyle::Display)),
+        FractionKind::Inline => Some(ctx.with_style(MathStyle::Text)),
+        _ => None,
+    };
+    let ctx = override_ctx.as_ref().unwrap_or(ctx);
+
     let p = &ctx.params;
     let size = ctx.size();
 
