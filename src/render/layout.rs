@@ -1004,17 +1004,26 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
     let sup_box = layout_node(sup, &sup_ctx);
 
     let p = &ctx.params;
+    // Bug 1 fix: use child (script) style params for sup_drop, scaled by child/parent size ratio
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+
     // Superscript shift: max of sup1/sup2/sup3, base.height - sup_drop, x_height/4 + sup.depth
-    let shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
         p.sup3
     } else {
         p.sup2
     };
-    let shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+
+    // Bug 2 fix: only apply height-based sup_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    let shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
     // Italic correction: shift superscript right by the base glyph's italic correction
     let ic = italic_correction(&base_box);
@@ -1050,10 +1059,18 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
     let sub_box = layout_node(sub, &sub_ctx);
 
     let p = &ctx.params;
-    let shift_down = p
-        .sub1
-        .max(base_box.depth + p.sub_drop * ctx.size())
-        .max(sub_box.height - (4.0 * p.x_height / 5.0));
+    // Bug 1 fix: use child (script) style params for sub_drop, scaled by child/parent size ratio
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply depth-based sub_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let mut shift_down = p.sub1;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
+    }
+    let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height / 5.0));
 
     // Italic correction: shift subscript left by the base glyph's italic correction
     let ic = italic_correction(&base_box);
@@ -1091,6 +1108,17 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
 
     let p = &ctx.params;
 
+    // Bug 1 fix: use child style params for sup_drop/sub_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply height/depth-based drop terms when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+
     // Superscript shift
     let mut shift_up = if ctx.style.is_display() {
         p.sup1
@@ -1099,26 +1127,31 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
     } else {
         p.sup2
     };
-    shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
     // Subscript shift
-    let mut shift_down = p.sub2.max(base_box.depth + p.sub_drop * ctx.size());
-
-    // Ensure gap between sub top and sup bottom (Rule 18d)
-    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
-    if gap < 4.0 * p.rule_thickness {
-        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
-        shift_up += adjust;
-        shift_down += adjust;
+    let mut shift_down = p.sub2;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
     }
 
-    // Ensure sup doesn't go above (4/5)x_height
-    let sup_bottom = shift_up - sup_box.depth;
-    if sup_bottom < (4.0 * p.x_height / 5.0) {
-        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
-        shift_up += delta;
+    // Bug 3 fix: ensure gap between sub top and sup bottom (Rule 18d)
+    // KaTeX puts the entire gap adjustment into the subscript, then checks sup bottom vs xHeight
+    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
+    let min_gap = 4.0 * p.rule_thickness * ctx.size();
+    if gap < min_gap {
+        // Push subscript down to meet minimum gap (entire adjustment into sub)
+        shift_down = min_gap - (shift_up - sup_box.depth) + sub_box.height;
+    }
+
+    // Then check if sup bottom is above 0.8 * xHeight
+    let psi = 0.8 * p.x_height * ctx.size() - (shift_up - sup_box.depth);
+    if psi > 0.0 {
+        shift_up += psi;
+        shift_down -= psi;
     }
 
     // Italic correction: superscript shifts right, subscript shifts left by half
@@ -1747,16 +1780,25 @@ fn layout_superscript_from_box_heap(
     let sup_box = layout_node(sup, &sup_ctx);
 
     let p = &ctx.params;
-    let shift_up = if ctx.style.is_display() {
+    // Bug 1 fix: use child (script) style params for sup_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+
+    let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
         p.sup3
     } else {
         p.sup2
     };
-    let shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+
+    // Bug 2 fix: only apply height-based sup_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    let shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
     let ic = italic_correction(&base_box);
 
@@ -1788,10 +1830,18 @@ fn layout_subscript_from_box_heap(
     let sub_box = layout_node(sub, &sub_ctx);
 
     let p = &ctx.params;
-    let shift_down = p
-        .sub1
-        .max(base_box.depth + p.sub_drop * ctx.size())
-        .max(sub_box.height - (4.0 * p.x_height / 5.0));
+    // Bug 1 fix: use child (script) style params for sub_drop
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply depth-based sub_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let mut shift_down = p.sub1;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
+    }
+    let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height / 5.0));
 
     let ic = italic_correction(&base_box);
     let sub_dx = (base_box.width - ic).max(0.0);
@@ -1827,6 +1877,17 @@ fn layout_subsup_from_box_heap(
 
     let p = &ctx.params;
 
+    // Bug 1 fix: use child style params for sup_drop/sub_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply height/depth-based drop terms when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+
     let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
@@ -1834,23 +1895,27 @@ fn layout_subsup_from_box_heap(
     } else {
         p.sup2
     };
-    shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
-    let mut shift_down = p.sub2.max(base_box.depth + p.sub_drop * ctx.size());
-
-    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
-    if gap < 4.0 * p.rule_thickness {
-        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
-        shift_up += adjust;
-        shift_down += adjust;
+    let mut shift_down = p.sub2;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
     }
 
-    let sup_bottom = shift_up - sup_box.depth;
-    if sup_bottom < (4.0 * p.x_height / 5.0) {
-        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
-        shift_up += delta;
+    // Bug 3 fix: ensure gap between sub top and sup bottom (Rule 18d)
+    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
+    let min_gap = 4.0 * p.rule_thickness * ctx.size();
+    if gap < min_gap {
+        shift_down = min_gap - (shift_up - sup_box.depth) + sub_box.height;
+    }
+
+    let psi = 0.8 * p.x_height * ctx.size() - (shift_up - sup_box.depth);
+    if psi > 0.0 {
+        shift_up += psi;
+        shift_down -= psi;
     }
 
     let ic = italic_correction(&base_box);
@@ -2359,18 +2424,33 @@ fn layout_prescripts(
     let mut total_h = base_box.height;
     let mut total_d = base_box.depth;
 
+    // Bug 1 fix: use child style params for prescripts too
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+
     if let Some(sup) = pre_sup {
-        let sup_ctx = ctx.with_style(ctx.style.sup());
+        let sup_style = ctx.style.sup();
+        let sup_params = TexParams::for_size_class(sup_style.size_class());
+        let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+        let sup_ctx = ctx.with_style(sup_style);
         let sup_box = layout_node(sup, &sup_ctx);
-        let shift_up = p.sup2.max(base_box.height - p.sup_drop * ctx.size());
+        let mut shift_up = p.sup2;
+        if !is_char_box {
+            shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+        }
         pre_width = pre_width.max(sup_box.width);
         total_h = total_h.max(shift_up + sup_box.height);
         children.push(PositionedBox::new(0.0, shift_up, sup_box));
     }
     if let Some(sub) = pre_sub {
-        let sub_ctx = ctx.with_style(ctx.style.sub());
+        let sub_style = ctx.style.sub();
+        let sub_params = TexParams::for_size_class(sub_style.size_class());
+        let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+        let sub_ctx = ctx.with_style(sub_style);
         let sub_box = layout_node(sub, &sub_ctx);
-        let shift_down = p.sub1.max(base_box.depth + p.sub_drop * ctx.size());
+        let mut shift_down = p.sub1;
+        if !is_char_box {
+            shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
+        }
         pre_width = pre_width.max(sub_box.width);
         total_d = total_d.max(shift_down + sub_box.depth);
         children.push(PositionedBox::new(0.0, -shift_down, sub_box));
@@ -2676,16 +2756,25 @@ fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &Layou
     let sup_box = layout_node_c(arena, sup, &sup_ctx);
 
     let p = &ctx.params;
-    let shift_up = if ctx.style.is_display() {
+    // Bug 1 fix: use child (script) style params for sup_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+
+    let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
         p.sup3
     } else {
         p.sup2
     };
-    let shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+
+    // Bug 2 fix: only apply height-based sup_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    let shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
     let ic = italic_correction(&base_box);
 
@@ -2717,10 +2806,18 @@ fn layout_subscript_c(arena: &AstArena, base: NodeId, sub: NodeId, ctx: &LayoutC
     let sub_box = layout_node_c(arena, sub, &sub_ctx);
 
     let p = &ctx.params;
-    let shift_down = p
-        .sub1
-        .max(base_box.depth + p.sub_drop * ctx.size())
-        .max(sub_box.height - (4.0 * p.x_height / 5.0));
+    // Bug 1 fix: use child (script) style params for sub_drop
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply depth-based sub_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let mut shift_down = p.sub1;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
+    }
+    let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height / 5.0));
 
     let ic = italic_correction(&base_box);
     let sub_dx = (base_box.width - ic).max(0.0);
@@ -2761,6 +2858,17 @@ fn layout_subsup_c(
 
     let p = &ctx.params;
 
+    // Bug 1 fix: use child style params for sup_drop/sub_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply height/depth-based drop terms when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+
     let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
@@ -2768,23 +2876,27 @@ fn layout_subsup_c(
     } else {
         p.sup2
     };
-    shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
-    let mut shift_down = p.sub2.max(base_box.depth + p.sub_drop * ctx.size());
-
-    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
-    if gap < 4.0 * p.rule_thickness {
-        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
-        shift_up += adjust;
-        shift_down += adjust;
+    let mut shift_down = p.sub2;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
     }
 
-    let sup_bottom = shift_up - sup_box.depth;
-    if sup_bottom < (4.0 * p.x_height / 5.0) {
-        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
-        shift_up += delta;
+    // Bug 3 fix: ensure gap between sub top and sup bottom (Rule 18d)
+    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
+    let min_gap = 4.0 * p.rule_thickness * ctx.size();
+    if gap < min_gap {
+        shift_down = min_gap - (shift_up - sup_box.depth) + sub_box.height;
+    }
+
+    let psi = 0.8 * p.x_height * ctx.size() - (shift_up - sup_box.depth);
+    if psi > 0.0 {
+        shift_up += psi;
+        shift_down -= psi;
     }
 
     let ic = italic_correction(&base_box);
@@ -3333,16 +3445,25 @@ fn layout_superscript_from_box(
     let sup_box = layout_node_c(arena, sup, &sup_ctx);
 
     let p = &ctx.params;
-    let shift_up = if ctx.style.is_display() {
+    // Bug 1 fix: use child (script) style params for sup_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+
+    let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
         p.sup3
     } else {
         p.sup2
     };
-    let shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+
+    // Bug 2 fix: only apply height-based sup_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    let shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
     let ic = italic_correction(&base_box);
 
@@ -3375,10 +3496,18 @@ fn layout_subscript_from_box(
     let sub_box = layout_node_c(arena, sub, &sub_ctx);
 
     let p = &ctx.params;
-    let shift_down = p
-        .sub1
-        .max(base_box.depth + p.sub_drop * ctx.size())
-        .max(sub_box.height - (4.0 * p.x_height / 5.0));
+    // Bug 1 fix: use child (script) style params for sub_drop
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply depth-based sub_drop term when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let mut shift_down = p.sub1;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
+    }
+    let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height / 5.0));
 
     let ic = italic_correction(&base_box);
     let sub_dx = (base_box.width - ic).max(0.0);
@@ -3415,6 +3544,17 @@ fn layout_subsup_from_box(
 
     let p = &ctx.params;
 
+    // Bug 1 fix: use child style params for sup_drop/sub_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    // Bug 2 fix: only apply height/depth-based drop terms when base is not a single character
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+
     let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
@@ -3422,23 +3562,27 @@ fn layout_subsup_from_box(
     } else {
         p.sup2
     };
-    shift_up = shift_up
-        .max(base_box.height - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_box.depth);
+    if !is_char_box {
+        shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+    }
+    shift_up = shift_up.max(p.x_height / 4.0 + sup_box.depth);
 
-    let mut shift_down = p.sub2.max(base_box.depth + p.sub_drop * ctx.size());
-
-    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
-    if gap < 4.0 * p.rule_thickness {
-        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
-        shift_up += adjust;
-        shift_down += adjust;
+    let mut shift_down = p.sub2;
+    if !is_char_box {
+        shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
     }
 
-    let sup_bottom = shift_up - sup_box.depth;
-    if sup_bottom < (4.0 * p.x_height / 5.0) {
-        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
-        shift_up += delta;
+    // Bug 3 fix: ensure gap between sub top and sup bottom (Rule 18d)
+    let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
+    let min_gap = 4.0 * p.rule_thickness * ctx.size();
+    if gap < min_gap {
+        shift_down = min_gap - (shift_up - sup_box.depth) + sub_box.height;
+    }
+
+    let psi = 0.8 * p.x_height * ctx.size() - (shift_up - sup_box.depth);
+    if psi > 0.0 {
+        shift_up += psi;
+        shift_down -= psi;
     }
 
     let ic = italic_correction(&base_box);
@@ -3961,18 +4105,33 @@ fn layout_prescripts_c(
     let mut total_h = base_box.height;
     let mut total_d = base_box.depth;
 
+    // Bug 1 fix: use child style params for prescripts too
+    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+
     if pre_sup.is_some() {
-        let sup_ctx = ctx.with_style(ctx.style.sup());
+        let sup_style = ctx.style.sup();
+        let sup_params = TexParams::for_size_class(sup_style.size_class());
+        let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+        let sup_ctx = ctx.with_style(sup_style);
         let sup_box = layout_node_c(arena, pre_sup, &sup_ctx);
-        let shift_up = p.sup2.max(base_box.height - p.sup_drop * ctx.size());
+        let mut shift_up = p.sup2;
+        if !is_char_box {
+            shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio);
+        }
         pre_width = pre_width.max(sup_box.width);
         total_h = total_h.max(shift_up + sup_box.height);
         children.push(PositionedBox::new(0.0, shift_up, sup_box));
     }
     if pre_sub.is_some() {
-        let sub_ctx = ctx.with_style(ctx.style.sub());
+        let sub_style = ctx.style.sub();
+        let sub_params = TexParams::for_size_class(sub_style.size_class());
+        let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+        let sub_ctx = ctx.with_style(sub_style);
         let sub_box = layout_node_c(arena, pre_sub, &sub_ctx);
-        let shift_down = p.sub1.max(base_box.depth + p.sub_drop * ctx.size());
+        let mut shift_down = p.sub1;
+        if !is_char_box {
+            shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio);
+        }
         pre_width = pre_width.max(sub_box.width);
         total_d = total_d.max(shift_down + sub_box.depth);
         children.push(PositionedBox::new(0.0, -shift_down, sub_box));
@@ -4497,17 +4656,26 @@ fn layout_superscript_arena(
 
     let ic = italic_correction_arena(base_id, arena);
 
+    // Bug 2 fix: check if base is a single character
+    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+
     let p = &ctx.params;
-    let shift_up = if ctx.style.is_display() {
+    // Bug 1 fix: use child (script) style params for sup_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+
+    let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
         p.sup3
     } else {
         p.sup2
     };
-    let shift_up = shift_up
-        .max(base_h - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_d);
+    if !is_char_box {
+        shift_up = shift_up.max(base_h - sup_params.sup_drop * sup_size_ratio);
+    }
+    let shift_up = shift_up.max(p.x_height / 4.0 + sup_d);
 
     let total_width = base_w + ic + sup_w;
     let total_height = (shift_up + sup_h).max(base_h);
@@ -4552,11 +4720,20 @@ fn layout_subscript_arena(
     let ic = italic_correction_arena(base_id, arena);
     let sub_dx = (base_w - ic).max(0.0);
 
+    // Bug 2 fix: check if base is a single character
+    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+
     let p = &ctx.params;
-    let shift_down = p
-        .sub1
-        .max(base_d + p.sub_drop * ctx.size())
-        .max(sub_h - (4.0 * p.x_height / 5.0));
+    // Bug 1 fix: use child (script) style params for sub_drop
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    let mut shift_down = p.sub1;
+    if !is_char_box {
+        shift_down = shift_down.max(base_d + sub_params.sub_drop * sub_size_ratio);
+    }
+    let shift_down = shift_down.max(sub_h - (4.0 * p.x_height / 5.0));
 
     let total_width = sub_dx + sub_w;
     let total_height = base_h;
@@ -4606,7 +4783,18 @@ fn layout_subsup_arena(
 
     let ic = italic_correction_arena(base_id, arena);
 
+    // Bug 2 fix: check if base is a single character
+    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+
     let p = &ctx.params;
+
+    // Bug 1 fix: use child style params for sup_drop/sub_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
     let mut shift_up = if ctx.style.is_display() {
         p.sup1
@@ -4615,23 +4803,27 @@ fn layout_subsup_arena(
     } else {
         p.sup2
     };
-    shift_up = shift_up
-        .max(base_h - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_d);
+    if !is_char_box {
+        shift_up = shift_up.max(base_h - sup_params.sup_drop * sup_size_ratio);
+    }
+    shift_up = shift_up.max(p.x_height / 4.0 + sup_d);
 
-    let mut shift_down = p.sub2.max(base_d + p.sub_drop * ctx.size());
-
-    let gap = (shift_up - sup_d) - (sub_h - shift_down);
-    if gap < 4.0 * p.rule_thickness {
-        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
-        shift_up += adjust;
-        shift_down += adjust;
+    let mut shift_down = p.sub2;
+    if !is_char_box {
+        shift_down = shift_down.max(base_d + sub_params.sub_drop * sub_size_ratio);
     }
 
-    let sup_bottom = shift_up - sup_d;
-    if sup_bottom < (4.0 * p.x_height / 5.0) {
-        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
-        shift_up += delta;
+    // Bug 3 fix: ensure gap between sub top and sup bottom (Rule 18d)
+    let gap = (shift_up - sup_d) - (sub_h - shift_down);
+    let min_gap = 4.0 * p.rule_thickness * ctx.size();
+    if gap < min_gap {
+        shift_down = min_gap - (shift_up - sup_d) + sub_h;
+    }
+
+    let psi = 0.8 * p.x_height * ctx.size() - (shift_up - sup_d);
+    if psi > 0.0 {
+        shift_up += psi;
+        shift_down -= psi;
     }
 
     let sup_dx = base_w + ic;
@@ -5281,17 +5473,26 @@ fn layout_superscript_from_box_arena(
 
     let ic = italic_correction_arena(base_id, arena);
 
+    // Bug 2 fix: check if base is a single character
+    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+
     let p = &ctx.params;
-    let shift_up = if ctx.style.is_display() {
+    // Bug 1 fix: use child (script) style params for sup_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+
+    let mut shift_up = if ctx.style.is_display() {
         p.sup1
     } else if ctx.style.is_cramped() {
         p.sup3
     } else {
         p.sup2
     };
-    let shift_up = shift_up
-        .max(base_h - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_d);
+    if !is_char_box {
+        shift_up = shift_up.max(base_h - sup_params.sup_drop * sup_size_ratio);
+    }
+    let shift_up = shift_up.max(p.x_height / 4.0 + sup_d);
 
     let total_width = base_w + ic + sup_w;
     let total_height = (shift_up + sup_h).max(base_h);
@@ -5331,11 +5532,20 @@ fn layout_subscript_from_box_arena(
     let ic = italic_correction_arena(base_id, arena);
     let sub_dx = (base_w - ic).max(0.0);
 
+    // Bug 2 fix: check if base is a single character
+    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+
     let p = &ctx.params;
-    let shift_down = p
-        .sub1
-        .max(base_d + p.sub_drop * ctx.size())
-        .max(sub_h - (4.0 * p.x_height / 5.0));
+    // Bug 1 fix: use child (script) style params for sub_drop
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+
+    let mut shift_down = p.sub1;
+    if !is_char_box {
+        shift_down = shift_down.max(base_d + sub_params.sub_drop * sub_size_ratio);
+    }
+    let shift_down = shift_down.max(sub_h - (4.0 * p.x_height / 5.0));
 
     let total_width = sub_dx + sub_w;
     let total_height = base_h;
@@ -5380,7 +5590,18 @@ fn layout_subsup_from_box_arena(
 
     let ic = italic_correction_arena(base_id, arena);
 
+    // Bug 2 fix: check if base is a single character
+    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+
     let p = &ctx.params;
+
+    // Bug 1 fix: use child style params for sup_drop/sub_drop
+    let sup_style = ctx.style.sup();
+    let sup_params = TexParams::for_size_class(sup_style.size_class());
+    let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+    let sub_style = ctx.style.sub();
+    let sub_params = TexParams::for_size_class(sub_style.size_class());
+    let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
     let mut shift_up = if ctx.style.is_display() {
         p.sup1
@@ -5389,23 +5610,27 @@ fn layout_subsup_from_box_arena(
     } else {
         p.sup2
     };
-    shift_up = shift_up
-        .max(base_h - p.sup_drop * ctx.size())
-        .max(p.x_height / 4.0 + sup_d);
+    if !is_char_box {
+        shift_up = shift_up.max(base_h - sup_params.sup_drop * sup_size_ratio);
+    }
+    shift_up = shift_up.max(p.x_height / 4.0 + sup_d);
 
-    let mut shift_down = p.sub2.max(base_d + p.sub_drop * ctx.size());
-
-    let gap = (shift_up - sup_d) - (sub_h - shift_down);
-    if gap < 4.0 * p.rule_thickness {
-        let adjust = (4.0 * p.rule_thickness - gap) / 2.0;
-        shift_up += adjust;
-        shift_down += adjust;
+    let mut shift_down = p.sub2;
+    if !is_char_box {
+        shift_down = shift_down.max(base_d + sub_params.sub_drop * sub_size_ratio);
     }
 
-    let sup_bottom = shift_up - sup_d;
-    if sup_bottom < (4.0 * p.x_height / 5.0) {
-        let delta = (4.0 * p.x_height / 5.0) - sup_bottom;
-        shift_up += delta;
+    // Bug 3 fix: ensure gap between sub top and sup bottom (Rule 18d)
+    let gap = (shift_up - sup_d) - (sub_h - shift_down);
+    let min_gap = 4.0 * p.rule_thickness * ctx.size();
+    if gap < min_gap {
+        shift_down = min_gap - (shift_up - sup_d) + sub_h;
+    }
+
+    let psi = 0.8 * p.x_height * ctx.size() - (shift_up - sup_d);
+    if psi > 0.0 {
+        shift_up += psi;
+        shift_down -= psi;
     }
 
     let sup_dx = base_w + ic;
@@ -6003,12 +6228,21 @@ fn layout_prescripts_arena(
     let mut total_h = base_h;
     let mut total_d = base_d;
 
+    // Bug 1 fix: use child style params for prescripts too
+    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+
     // Layout pre-superscript and pre-subscript
     let pre_sup_id = if pre_sup.is_some() {
-        let sup_ctx = ctx.with_style(ctx.style.sup());
+        let sup_style = ctx.style.sup();
+        let sup_params = TexParams::for_size_class(sup_style.size_class());
+        let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
+        let sup_ctx = ctx.with_style(sup_style);
         let sid = layout_node_arena(ast, pre_sup, arena, &sup_ctx);
         let b = arena.get(sid);
-        let shift_up = p.sup2.max(base_h - p.sup_drop * ctx.size());
+        let mut shift_up = p.sup2;
+        if !is_char_box {
+            shift_up = shift_up.max(base_h - sup_params.sup_drop * sup_size_ratio);
+        }
         pre_width = pre_width.max(b.width);
         total_h = total_h.max(shift_up + b.height);
         Some((sid, shift_up))
@@ -6017,10 +6251,16 @@ fn layout_prescripts_arena(
     };
 
     let pre_sub_id = if pre_sub.is_some() {
-        let sub_ctx = ctx.with_style(ctx.style.sub());
+        let sub_style = ctx.style.sub();
+        let sub_params = TexParams::for_size_class(sub_style.size_class());
+        let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
+        let sub_ctx = ctx.with_style(sub_style);
         let sid = layout_node_arena(ast, pre_sub, arena, &sub_ctx);
         let b = arena.get(sid);
-        let shift_down = p.sub1.max(base_d + p.sub_drop * ctx.size());
+        let mut shift_down = p.sub1;
+        if !is_char_box {
+            shift_down = shift_down.max(base_d + sub_params.sub_drop * sub_size_ratio);
+        }
         pre_width = pre_width.max(b.width);
         total_d = total_d.max(shift_down + b.depth);
         Some((sid, shift_down))
