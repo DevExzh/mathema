@@ -1163,10 +1163,10 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
 
     // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
     // Place annotation centered above the brace, not as a regular superscript.
-    if let MathNode::Overscript { base: inner_base, over, .. } = base {
-        if node_is_overbrace(over) {
-            return layout_overbrace_annotated(inner_base, over, sup, ctx);
-        }
+    if let MathNode::Overscript { base: inner_base, over, .. } = base
+        && node_is_overbrace(over)
+    {
+        return layout_overbrace_annotated(inner_base, over, sup, ctx);
     }
 
     let base_box = layout_node(base, ctx);
@@ -1227,10 +1227,10 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
 
     // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
     // Place annotation centered below the brace, not as a regular subscript.
-    if let MathNode::Underscript { base: inner_base, under, .. } = base {
-        if node_is_underbrace(under) {
-            return layout_underbrace_annotated(inner_base, under, sub, ctx);
-        }
+    if let MathNode::Underscript { base: inner_base, under, .. } = base
+        && node_is_underbrace(under)
+    {
+        return layout_underbrace_annotated(inner_base, under, sub, ctx);
     }
 
     let base_box = layout_node(base, ctx);
@@ -3043,10 +3043,10 @@ fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &Layou
     }
 
     // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
-    if let CompactNode::Overscript { base: inner_base, over, .. } = *arena.node(base) {
-        if node_is_overbrace_c(arena, over) {
-            return layout_overbrace_annotated_c(arena, inner_base, sup, ctx);
-        }
+    if let CompactNode::Overscript { base: inner_base, over, .. } = *arena.node(base)
+        && node_is_overbrace_c(arena, over)
+    {
+        return layout_overbrace_annotated_c(arena, inner_base, sup, ctx);
     }
 
     let base_box = layout_node_c(arena, base, ctx);
@@ -3101,10 +3101,10 @@ fn layout_subscript_c(arena: &AstArena, base: NodeId, sub: NodeId, ctx: &LayoutC
     }
 
     // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
-    if let CompactNode::Underscript { base: inner_base, under, .. } = *arena.node(base) {
-        if node_is_underbrace_c(arena, under) {
-            return layout_underbrace_annotated_c(arena, inner_base, sub, ctx);
-        }
+    if let CompactNode::Underscript { base: inner_base, under, .. } = *arena.node(base)
+        && node_is_underbrace_c(arena, under)
+    {
+        return layout_underbrace_annotated_c(arena, inner_base, sub, ctx);
     }
 
     let base_box = layout_node_c(arena, base, ctx);
@@ -5090,10 +5090,10 @@ fn layout_superscript_arena(
     }
 
     // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
-    if let CompactNode::Overscript { base: inner_base, over, .. } = *ast.node(base) {
-        if node_is_overbrace_c(ast, over) {
-            return layout_overbrace_annotated_arena(ast, inner_base, sup, arena, ctx);
-        }
+    if let CompactNode::Overscript { base: inner_base, over, .. } = *ast.node(base)
+        && node_is_overbrace_c(ast, over)
+    {
+        return layout_overbrace_annotated_arena(ast, inner_base, sup, arena, ctx);
     }
 
     let base_id = layout_node_arena(ast, base, arena, ctx);
@@ -5161,10 +5161,10 @@ fn layout_subscript_arena(
     }
 
     // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
-    if let CompactNode::Underscript { base: inner_base, under, .. } = *ast.node(base) {
-        if node_is_underbrace_c(ast, under) {
-            return layout_underbrace_annotated_arena(ast, inner_base, sub, arena, ctx);
-        }
+    if let CompactNode::Underscript { base: inner_base, under, .. } = *ast.node(base)
+        && node_is_underbrace_c(ast, under)
+    {
+        return layout_underbrace_annotated_arena(ast, inner_base, sub, arena, ctx);
     }
 
     let base_id = layout_node_arena(ast, base, arena, ctx);
