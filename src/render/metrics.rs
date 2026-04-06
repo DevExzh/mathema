@@ -30,7 +30,7 @@ impl GlyphMetrics {
     }
 }
 
-/// Look up glyph metrics for a character.
+/// Look up glyph metrics for a character (italic/math-italic variant).
 /// Falls back to heuristic defaults based on character category.
 #[inline]
 pub fn glyph_metrics(ch: char) -> GlyphMetrics {
@@ -51,12 +51,64 @@ pub fn glyph_metrics(ch: char) -> GlyphMetrics {
     heuristic_metrics(ch)
 }
 
+/// Look up glyph metrics for an upright (non-italic) character.
+/// Uses Main-Regular (cmr10) widths for ASCII letters, which are significantly
+/// different from italic widths (e.g. 'i' is 0.278em upright vs 0.345em italic).
+/// Falls back to `glyph_metrics()` for non-ASCII characters.
+#[inline]
+pub fn glyph_metrics_upright(ch: char) -> GlyphMetrics {
+    let code = ch as u32;
+    if code < 128 {
+        let m = &UPRIGHT_ASCII_METRICS[code as usize];
+        if m.width >= 0.0 {
+            return *m;
+        }
+        return heuristic_metrics(ch);
+    }
+    // Non-ASCII: no separate upright data, use italic metrics
+    if let Some(m) = lookup_metrics(ch) {
+        return m;
+    }
+    heuristic_metrics(ch)
+}
+
 fn lookup_metrics(ch: char) -> Option<GlyphMetrics> {
     // Binary search on sorted table
     GLYPH_TABLE
         .binary_search_by_key(&ch, |&(c, _)| c)
         .ok()
         .map(|i| GLYPH_TABLE[i].1)
+}
+
+/// Scale factor for large operators in display mode, matching KaTeX's Size2/Size1 ratios.
+/// Integral-like operators scale by ~2.0x; sum-like operators by ~1.6x.
+#[inline]
+pub fn display_op_scale(ch: char) -> f64 {
+    match ch {
+        '∫' | '∬' | '∭' | '∮' | '∯' | '∰' => 2.0,
+        _ => 1.6, // ∑, ∏, ∐, ⋂, ⋃, ⋁, ⋀, ⨀, ⨁, ⨂, etc.
+    }
+}
+
+/// Glyph metrics for display-mode large operators (KaTeX Size2-Regular proportions).
+/// Height/depth proportions differ from text-mode: integrals extend more below baseline,
+/// sum-like operators are more symmetric. Values normalized to ~1.0em total height;
+/// multiply by `display_op_scale(ch) * base_size` for absolute dimensions.
+#[inline]
+pub fn glyph_metrics_display(ch: char) -> GlyphMetrics {
+    match ch {
+        // Integrals: KaTeX Size2 proportions (h=1.36, d=0.862 → normalized h/total, d/total)
+        '∫' | '∮' | '∯' | '∰' => GlyphMetrics::new(0.612, 0.388, 0.556, 0.444),
+        '∬' => GlyphMetrics::new(0.612, 0.388, 0.944, 0.444),
+        '∭' => GlyphMetrics::new(0.612, 0.388, 1.333, 0.444),
+        // Sum-like: KaTeX Size2 proportions (h=1.05, d=0.55 → normalized)
+        '∑' => GlyphMetrics::new(0.656, 0.344, 1.111, 0.0),
+        '∏' | '∐' => GlyphMetrics::new(0.656, 0.344, 1.000, 0.0),
+        '⋂' | '⋃' => GlyphMetrics::new(0.656, 0.344, 0.833, 0.0),
+        '⋁' | '⋀' => GlyphMetrics::new(0.656, 0.344, 0.833, 0.0),
+        '⨀' | '⨁' | '⨂' => GlyphMetrics::new(0.656, 0.344, 1.000, 0.0),
+        _ => glyph_metrics(ch),
+    }
 }
 
 fn heuristic_metrics(ch: char) -> GlyphMetrics {
@@ -110,6 +162,7 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('<', GlyphMetrics::new(0.540, 0.040, 0.778, 0.0)),
     ('=', GlyphMetrics::new(0.390, 0.0, 0.778, 0.0)),
     ('>', GlyphMetrics::new(0.540, 0.040, 0.778, 0.0)),
+    ('?', GlyphMetrics::new(0.694, 0.0, 0.472, 0.0)),
     // Uppercase Latin (U+0041–U+005A, cmmi10 italic)
     ('A', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
     ('B', GlyphMetrics::new(0.683, 0.0, 0.759, 0.0)),
@@ -147,26 +200,26 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('d', GlyphMetrics::new(0.694, 0.0, 0.520, 0.0)),
     ('e', GlyphMetrics::new(0.431, 0.0, 0.466, 0.0)),
     ('f', GlyphMetrics::new(0.694, 0.194, 0.490, 0.108)),
-    ('g', GlyphMetrics::new(0.431, 0.194, 0.477, 0.0)),
+    ('g', GlyphMetrics::new(0.431, 0.194, 0.477, 0.036)),
     ('h', GlyphMetrics::new(0.694, 0.0, 0.576, 0.0)),
     ('i', GlyphMetrics::new(0.668, 0.0, 0.345, 0.0)),
-    ('j', GlyphMetrics::new(0.668, 0.194, 0.412, 0.0)),
-    ('k', GlyphMetrics::new(0.694, 0.0, 0.521, 0.0)),
-    ('l', GlyphMetrics::new(0.694, 0.0, 0.298, 0.0)),
+    ('j', GlyphMetrics::new(0.668, 0.194, 0.412, 0.057)),
+    ('k', GlyphMetrics::new(0.694, 0.0, 0.521, 0.031)),
+    ('l', GlyphMetrics::new(0.694, 0.0, 0.298, 0.020)),
     ('m', GlyphMetrics::new(0.431, 0.0, 0.878, 0.0)),
     ('n', GlyphMetrics::new(0.431, 0.0, 0.600, 0.0)),
     ('o', GlyphMetrics::new(0.431, 0.0, 0.485, 0.0)),
     ('p', GlyphMetrics::new(0.431, 0.194, 0.503, 0.0)),
-    ('q', GlyphMetrics::new(0.431, 0.194, 0.446, 0.0)),
-    ('r', GlyphMetrics::new(0.431, 0.0, 0.451, 0.0)),
+    ('q', GlyphMetrics::new(0.431, 0.194, 0.446, 0.036)),
+    ('r', GlyphMetrics::new(0.431, 0.0, 0.451, 0.028)),
     ('s', GlyphMetrics::new(0.431, 0.0, 0.469, 0.0)),
     ('t', GlyphMetrics::new(0.615, 0.0, 0.361, 0.0)),
     ('u', GlyphMetrics::new(0.431, 0.0, 0.572, 0.0)),
-    ('v', GlyphMetrics::new(0.431, 0.0, 0.485, 0.0)),
-    ('w', GlyphMetrics::new(0.431, 0.0, 0.716, 0.0)),
+    ('v', GlyphMetrics::new(0.431, 0.0, 0.485, 0.036)),
+    ('w', GlyphMetrics::new(0.431, 0.0, 0.716, 0.027)),
     ('x', GlyphMetrics::new(0.431, 0.0, 0.572, 0.0)),
-    ('y', GlyphMetrics::new(0.431, 0.194, 0.490, 0.0)),
-    ('z', GlyphMetrics::new(0.431, 0.0, 0.465, 0.0)),
+    ('y', GlyphMetrics::new(0.431, 0.194, 0.490, 0.036)),
+    ('z', GlyphMetrics::new(0.431, 0.0, 0.465, 0.044)),
     // Braces and pipe (U+007B–U+007D)
     ('{', GlyphMetrics::new(0.750, 0.250, 0.500, 0.0)),
     ('|', GlyphMetrics::new(0.750, 0.250, 0.278, 0.0)),
@@ -276,6 +329,83 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('\u{2A02}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ⨂ bigotimes
 ];
 
+/// Main-Regular (cmr10) upright metrics from KaTeX font data.
+/// Used for non-italic text: operator names (\sin, \cos), numbers, \text{}, \mathrm{}.
+/// Key differences from italic (cmmi10): 'i' w=0.278 vs 0.345, 'f' w=0.306 vs 0.490,
+/// 's' w=0.394 vs 0.469 — these compound in operator names (e.g. "sin" 15% narrower upright).
+static UPRIGHT_TABLE: &[(char, GlyphMetrics)] = &[
+    // Digits (cmr10 upright) — all have d=0.0 (no descenders), unlike Math-Italic
+    // where digits 3,4,5,7,9 have old-style descenders (d=0.194).
+    ('0', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('1', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('2', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('3', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('4', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('5', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('6', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('7', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('8', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    ('9', GlyphMetrics::new(0.644, 0.0, 0.500, 0.0)),
+    // Lowercase Latin (cmr10 upright) — largest width differences from italic
+    ('a', GlyphMetrics::new(0.431, 0.0, 0.500, 0.0)),
+    ('b', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)),
+    ('c', GlyphMetrics::new(0.431, 0.0, 0.444, 0.0)),
+    ('d', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)),
+    ('e', GlyphMetrics::new(0.431, 0.0, 0.444, 0.0)),
+    ('f', GlyphMetrics::new(0.694, 0.0, 0.306, 0.0)),
+    ('g', GlyphMetrics::new(0.431, 0.194, 0.500, 0.0)),
+    ('h', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)),
+    ('i', GlyphMetrics::new(0.668, 0.0, 0.278, 0.0)),
+    ('j', GlyphMetrics::new(0.668, 0.194, 0.306, 0.0)),
+    ('k', GlyphMetrics::new(0.694, 0.0, 0.528, 0.0)),
+    ('l', GlyphMetrics::new(0.694, 0.0, 0.278, 0.0)),
+    ('m', GlyphMetrics::new(0.431, 0.0, 0.833, 0.0)),
+    ('n', GlyphMetrics::new(0.431, 0.0, 0.556, 0.0)),
+    ('o', GlyphMetrics::new(0.431, 0.0, 0.500, 0.0)),
+    ('p', GlyphMetrics::new(0.431, 0.194, 0.556, 0.0)),
+    ('q', GlyphMetrics::new(0.431, 0.194, 0.528, 0.0)),
+    ('r', GlyphMetrics::new(0.431, 0.0, 0.392, 0.0)),
+    ('s', GlyphMetrics::new(0.431, 0.0, 0.394, 0.0)),
+    ('t', GlyphMetrics::new(0.615, 0.0, 0.389, 0.0)),
+    ('u', GlyphMetrics::new(0.431, 0.0, 0.556, 0.0)),
+    ('v', GlyphMetrics::new(0.431, 0.0, 0.528, 0.0)),
+    ('w', GlyphMetrics::new(0.431, 0.0, 0.722, 0.0)),
+    ('x', GlyphMetrics::new(0.431, 0.0, 0.528, 0.0)),
+    ('y', GlyphMetrics::new(0.431, 0.194, 0.528, 0.0)),
+    ('z', GlyphMetrics::new(0.431, 0.0, 0.444, 0.0)),
+    // Uppercase Latin (cmr10 upright) — different widths from italic
+    ('A', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
+    ('B', GlyphMetrics::new(0.683, 0.0, 0.708, 0.0)),
+    ('C', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)),
+    ('D', GlyphMetrics::new(0.683, 0.0, 0.764, 0.0)),
+    ('E', GlyphMetrics::new(0.683, 0.0, 0.681, 0.0)),
+    ('F', GlyphMetrics::new(0.683, 0.0, 0.653, 0.0)),
+    ('G', GlyphMetrics::new(0.683, 0.0, 0.785, 0.0)),
+    ('H', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
+    ('I', GlyphMetrics::new(0.683, 0.0, 0.361, 0.0)),
+    ('J', GlyphMetrics::new(0.683, 0.0, 0.514, 0.0)),
+    ('K', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)),
+    ('L', GlyphMetrics::new(0.683, 0.0, 0.625, 0.0)),
+    ('M', GlyphMetrics::new(0.683, 0.0, 0.917, 0.0)),
+    ('N', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
+    ('O', GlyphMetrics::new(0.683, 0.0, 0.778, 0.0)),
+    ('P', GlyphMetrics::new(0.683, 0.0, 0.681, 0.0)),
+    ('Q', GlyphMetrics::new(0.683, 0.194, 0.778, 0.0)),
+    ('R', GlyphMetrics::new(0.683, 0.0, 0.736, 0.0)),
+    ('S', GlyphMetrics::new(0.683, 0.0, 0.556, 0.0)),
+    ('T', GlyphMetrics::new(0.683, 0.0, 0.722, 0.0)),
+    ('U', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
+    ('V', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
+    ('W', GlyphMetrics::new(0.683, 0.0, 1.028, 0.0)),
+    ('X', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
+    ('Y', GlyphMetrics::new(0.683, 0.0, 0.750, 0.0)),
+    ('Z', GlyphMetrics::new(0.683, 0.0, 0.611, 0.0)),
+    // Equals sign: h=0.367 (centered on math axis), not 0.390
+    ('=', GlyphMetrics::new(0.367, 0.0, 0.778, 0.0)),
+    // Question mark: h=0.694, w=0.472 (KaTeX Main-Regular)
+    ('?', GlyphMetrics::new(0.694, 0.0, 0.472, 0.0)),
+];
+
 /// Sentinel value: width == -1.0 means "no entry in table; fall through to heuristic".
 const NO_ENTRY: GlyphMetrics = GlyphMetrics::new(0.0, 0.0, -1.0, 0.0);
 
@@ -283,11 +413,31 @@ const NO_ENTRY: GlyphMetrics = GlyphMetrics::new(0.0, 0.0, -1.0, 0.0);
 /// Entries not in GLYPH_TABLE use the NO_ENTRY sentinel.
 static ASCII_METRICS: [GlyphMetrics; 128] = build_ascii_table();
 
+/// Direct lookup table for upright ASCII characters (0..128).
+static UPRIGHT_ASCII_METRICS: [GlyphMetrics; 128] = build_upright_ascii_table();
+
 const fn build_ascii_table() -> [GlyphMetrics; 128] {
     let mut table = [NO_ENTRY; 128];
     let mut i = 0;
     while i < GLYPH_TABLE.len() {
         let (ch, m) = GLYPH_TABLE[i];
+        let code = ch as u32;
+        if code < 128 {
+            table[code as usize] = m;
+        }
+        i += 1;
+    }
+    table
+}
+
+/// Build upright ASCII table: start with italic metrics, override with upright where available.
+const fn build_upright_ascii_table() -> [GlyphMetrics; 128] {
+    // Start with the italic table as baseline (for chars not in UPRIGHT_TABLE)
+    let mut table = build_ascii_table();
+    // Override with upright metrics where they differ
+    let mut i = 0;
+    while i < UPRIGHT_TABLE.len() {
+        let (ch, m) = UPRIGHT_TABLE[i];
         let code = ch as u32;
         if code < 128 {
             table[code as usize] = m;
