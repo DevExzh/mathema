@@ -311,7 +311,8 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
         | CompactNode::Rule { .. }
-        | CompactNode::StyleSwitch(_) => {},
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_) => {},
 
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
             for &child in arena.children(span) {
@@ -439,7 +440,8 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
         | CompactNode::Rule { .. }
-        | CompactNode::StyleSwitch(_) => {},
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_) => {},
 
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
             let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(span).into();

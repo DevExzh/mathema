@@ -98,8 +98,7 @@ impl LayoutBox {
     }
 
     #[inline]
-    fn glyph(ch: char, style: MathStyle, italic: bool) -> Self {
-        let size = style.size_multiplier();
+    fn glyph(ch: char, size: f64, italic: bool) -> Self {
         let m = if italic {
             metrics::glyph_metrics(ch)
         } else {
@@ -218,6 +217,11 @@ fn italic_correction(base: &LayoutBox) -> f64 {
     }
 }
 
+/// Font size scale factors for LaTeX sizing commands (\tiny..\Huge).
+const SIZE_SCALE_TABLE: [f64; 10] = [
+    0.5, 0.7, 0.8, 0.9, 1.0, 1.2, 1.44, 1.728, 2.074, 2.488,
+];
+
 
 #[derive(Clone)]
 struct LayoutCtx<'a> {
@@ -225,11 +229,12 @@ struct LayoutCtx<'a> {
     params: TexParams,
     options: &'a RenderOptions,
     depth: u32,
+    size_scale: f64,
 }
 
 impl<'a> LayoutCtx<'a> {
     fn size(&self) -> f64 {
-        self.style.size_multiplier()
+        self.style.size_multiplier() * self.size_scale
     }
 
     fn with_style(&self, style: MathStyle) -> LayoutCtx<'a> {
@@ -238,6 +243,7 @@ impl<'a> LayoutCtx<'a> {
             params: TexParams::for_size_class(style.size_class()),
             options: self.options,
             depth: self.depth,
+            size_scale: self.size_scale,
         }
     }
 
@@ -248,6 +254,7 @@ impl<'a> LayoutCtx<'a> {
             params: self.params,
             options: self.options,
             depth: self.depth + 1,
+            size_scale: self.size_scale,
         }
     }
 }
@@ -817,6 +824,7 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
         params: TexParams::for_size_class(style.size_class()),
         options,
         depth: 0,
+        size_scale: 1.0,
     };
     layout_row(&expr.nodes, &ctx)
 }
@@ -877,7 +885,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 // Single-char identifiers are italic; chars().next() is safe
                 // because chars().count() == 1 guarantees at least one char
                 let ch = s.chars().next().expect("non-empty checked");
-                LayoutBox::glyph(ch, ctx.style, is_math_italic_char(ch))
+                LayoutBox::glyph(ch, ctx.size(), is_math_italic_char(ch))
             } else {
                 layout_text_run(s, ctx, false)
             }
@@ -890,7 +898,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                     let m = metrics::glyph_metrics_display(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
-                    let glyph = LayoutBox::glyph(ch, ctx.style, false);
+                    let glyph = LayoutBox::glyph(ch, ctx.size(), false);
                     if is_axis_centered_char(ch) {
                         center_glyph_on_axis(glyph, ctx)
                     } else {
@@ -2188,7 +2196,7 @@ fn layout_accent(
             },
         }
     } else {
-        LayoutBox::glyph(accent, ctx.style, false)
+        LayoutBox::glyph(accent, ctx.size(), false)
     };
 
     let accent_dx = (base_width - accent_box.width) / 2.0;
@@ -2464,6 +2472,7 @@ pub fn layout_expr_c(expr: &CompactExpr, style: MathStyle, options: &RenderOptio
         params: TexParams::for_size_class(style.size_class()),
         options,
         depth: 0,
+        size_scale: 1.0,
     };
     layout_row_c(&expr.arena, expr.roots, &ctx)
 }
@@ -2485,11 +2494,18 @@ fn layout_row_c(arena: &AstArena, span: NodeSpan, ctx: &LayoutCtx) -> LayoutBox 
         // Handle style switches — update context for subsequent children
         if let CompactNode::StyleSwitch(s) = *arena.node(id) {
             current_ctx = match s {
-                0 => ctx.with_style(MathStyle::Display),
-                1 => ctx.with_style(MathStyle::Text),
-                2 => ctx.with_style(MathStyle::Script),
-                _ => ctx.with_style(MathStyle::ScriptScript),
+                0 => current_ctx.with_style(MathStyle::Display),
+                1 => current_ctx.with_style(MathStyle::Text),
+                2 => current_ctx.with_style(MathStyle::Script),
+                _ => current_ctx.with_style(MathStyle::ScriptScript),
             };
+            continue;
+        }
+
+        // Handle size scale switches — update scale for subsequent children
+        if let CompactNode::SizeScale(idx) = *arena.node(id) {
+            let scale = SIZE_SCALE_TABLE.get(idx as usize).copied().unwrap_or(1.0);
+            current_ctx.size_scale = scale;
             continue;
         }
 
@@ -2534,7 +2550,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             let s = arena.str_val(sid);
             if s.chars().count() == 1 {
                 let ch = s.chars().next().expect("non-empty checked");
-                LayoutBox::glyph(ch, ctx.style, is_math_italic_char(ch))
+                LayoutBox::glyph(ch, ctx.size(), is_math_italic_char(ch))
             } else {
                 layout_text_run(s, ctx, false)
             }
@@ -2548,7 +2564,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
                     let m = metrics::glyph_metrics_display(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
-                    let glyph = LayoutBox::glyph(ch, ctx.style, false);
+                    let glyph = LayoutBox::glyph(ch, ctx.size(), false);
                     if is_axis_centered_char(ch) {
                         center_glyph_on_axis(glyph, ctx)
                     } else {
@@ -2610,6 +2626,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Color { color, content } => layout_color_c(arena, color, content, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => LayoutBox::kern(0.0),
         CompactNode::StyleSwitch(_) => LayoutBox::kern(0.0),
+        CompactNode::SizeScale(_) => LayoutBox::kern(0.0),
         CompactNode::Rule { width, height } => {
             let w = width.as_f64() * ctx.size();
             let h = height.as_f64() * ctx.size();
@@ -3731,7 +3748,7 @@ fn layout_accent_c(
             },
         }
     } else {
-        LayoutBox::glyph(accent, ctx.style, false)
+        LayoutBox::glyph(accent, ctx.size(), false)
     };
 
     let accent_dx = (base_width - accent_box.width) / 2.0;
@@ -4045,7 +4062,7 @@ fn layout_styled_c(arena: &AstArena, style: TextStyle, span: NodeSpan, ctx: &Lay
                 let styled_italic = matches!(style, TextStyle::Italic | TextStyle::BoldItalic | TextStyle::SansSerifItalic | TextStyle::SansSerifBoldItalic);
                 if mapped.chars().count() == 1 {
                     let ch = mapped.chars().next().expect("non-empty checked");
-                    LayoutBox::glyph(ch, ctx.style, styled_italic)
+                    LayoutBox::glyph(ch, ctx.size(), styled_italic)
                 } else {
                     layout_text_run(&mapped, ctx, styled_italic)
                 }
@@ -4111,6 +4128,7 @@ impl<'a> LayoutBuilder<'a> {
             params: TexParams::for_size_class(self.style.size_class()),
             options: self.options,
             depth: 0,
+            size_scale: 1.0,
         };
         layout_row_arena(&expr.arena, expr.roots, arena, &ctx)
     }
@@ -4122,11 +4140,12 @@ struct ArenaLayoutCtx<'a> {
     params: TexParams,
     options: &'a RenderOptions,
     depth: u32,
+    size_scale: f64,
 }
 
 impl<'a> ArenaLayoutCtx<'a> {
     fn size(&self) -> f64 {
-        self.style.size_multiplier()
+        self.style.size_multiplier() * self.size_scale
     }
 
     fn with_style(&self, style: MathStyle) -> ArenaLayoutCtx<'a> {
@@ -4135,6 +4154,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             params: TexParams::for_size_class(style.size_class()),
             options: self.options,
             depth: self.depth,
+            size_scale: self.size_scale,
         }
     }
 
@@ -4144,14 +4164,14 @@ impl<'a> ArenaLayoutCtx<'a> {
             params: self.params,
             options: self.options,
             depth: self.depth + 1,
+            size_scale: self.size_scale,
         }
     }
 }
 
 // ── Leaf helpers ──────────────────────────────────────────────────────
 
-fn alloc_glyph(arena: &mut LayoutArena, ch: char, style: MathStyle, italic: bool) -> LayoutBoxId {
-    let size = style.size_multiplier();
+fn alloc_glyph(arena: &mut LayoutArena, ch: char, size: f64, italic: bool) -> LayoutBoxId {
     let m = if italic {
         metrics::glyph_metrics(ch)
     } else {
@@ -4267,11 +4287,18 @@ fn layout_row_arena(
         // Handle style switches — update context for subsequent children
         if let CompactNode::StyleSwitch(s) = *ast.node(id) {
             current_ctx = match s {
-                0 => ctx.with_style(MathStyle::Display),
-                1 => ctx.with_style(MathStyle::Text),
-                2 => ctx.with_style(MathStyle::Script),
-                _ => ctx.with_style(MathStyle::ScriptScript),
+                0 => current_ctx.with_style(MathStyle::Display),
+                1 => current_ctx.with_style(MathStyle::Text),
+                2 => current_ctx.with_style(MathStyle::Script),
+                _ => current_ctx.with_style(MathStyle::ScriptScript),
             };
+            continue;
+        }
+
+        // Handle size scale switches — update scale for subsequent children
+        if let CompactNode::SizeScale(idx) = *ast.node(id) {
+            let scale = SIZE_SCALE_TABLE.get(idx as usize).copied().unwrap_or(1.0);
+            current_ctx.size_scale = scale;
             continue;
         }
 
@@ -4328,7 +4355,7 @@ fn layout_node_arena(
             let s = ast.str_val(sid);
             if s.chars().count() == 1 {
                 let ch = s.chars().next().expect("non-empty checked");
-                alloc_glyph(arena, ch, ctx.style, is_math_italic_char(ch))
+                alloc_glyph(arena, ch, ctx.size(), is_math_italic_char(ch))
             } else {
                 layout_text_run_arena(s, arena, ctx, false)
             }
@@ -4342,7 +4369,7 @@ fn layout_node_arena(
                     let m = metrics::glyph_metrics_display(ch);
                     alloc_glyph_with_metrics(arena, ch, m, size, false)
                 } else {
-                    let glyph_id = alloc_glyph(arena, ch, ctx.style, false);
+                    let glyph_id = alloc_glyph(arena, ch, ctx.size(), false);
                     if is_axis_centered_char(ch) {
                         center_glyph_on_axis_arena(glyph_id, arena, ctx)
                     } else {
@@ -4378,6 +4405,7 @@ fn layout_node_arena(
         CompactNode::Color { color, content } => layout_color_arena(ast, color, content, arena, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
+        CompactNode::SizeScale(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::Rule { width, height } => {
             let w = width.as_f64() * ctx.size();
             let h = height.as_f64() * ctx.size();
@@ -5725,7 +5753,7 @@ fn layout_accent_arena(
             },
         }
     } else {
-        alloc_glyph(arena, accent, ctx.style, false)
+        alloc_glyph(arena, accent, ctx.size(), false)
     };
 
     let accent_w = arena.get(accent_id).width;
@@ -6107,7 +6135,7 @@ fn layout_styled_arena(
                 let styled_italic = matches!(style, TextStyle::Italic | TextStyle::BoldItalic | TextStyle::SansSerifItalic | TextStyle::SansSerifBoldItalic);
                 if mapped.chars().count() == 1 {
                     let ch = mapped.chars().next().expect("non-empty checked");
-                    alloc_glyph(arena, ch, ctx.style, styled_italic)
+                    alloc_glyph(arena, ch, ctx.size(), styled_italic)
                 } else {
                     layout_text_run_arena(&mapped, arena, ctx, styled_italic)
                 }
@@ -6363,6 +6391,7 @@ mod tests {
                 params: TexParams::default(),
                 options: &default_options(),
                 depth: 0,
+                size_scale: 1.0,
             },
         );
         let expr = MathExpr::inline(vec![MathNode::Phantom(Box::new(content.clone()))]);
@@ -6387,6 +6416,7 @@ mod tests {
                 params: TexParams::default(),
                 options: &default_options(),
                 depth: 0,
+                size_scale: 1.0,
             },
         );
         let expr = MathExpr::inline(vec![MathNode::Boxed(Box::new(content.clone()))]);
@@ -6419,6 +6449,7 @@ mod tests {
                 params: TexParams::default(),
                 options: &default_options(),
                 depth: 0,
+                size_scale: 1.0,
             },
         );
         let expr = MathExpr::inline(vec![MathNode::Scaled {

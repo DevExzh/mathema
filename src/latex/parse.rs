@@ -1666,11 +1666,17 @@ impl LatexCompactParser {
             | "limits" | "nolimits" => {
                 Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
             },
-            // Font sizing commands — meaningless in math mode; consume silently
-            "Huge" | "huge" | "LARGE" | "Large" | "large" | "normalsize" | "small"
-            | "footnotesize" | "scriptsize" | "tiny" => {
-                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
-            },
+            // Font sizing commands — emit SizeScale nodes for the layout engine
+            "Huge" => Some(self.arena.push_node(CompactNode::SizeScale(9))),
+            "huge" => Some(self.arena.push_node(CompactNode::SizeScale(8))),
+            "LARGE" => Some(self.arena.push_node(CompactNode::SizeScale(7))),
+            "Large" => Some(self.arena.push_node(CompactNode::SizeScale(6))),
+            "large" => Some(self.arena.push_node(CompactNode::SizeScale(5))),
+            "normalsize" => Some(self.arena.push_node(CompactNode::SizeScale(4))),
+            "small" => Some(self.arena.push_node(CompactNode::SizeScale(3))),
+            "footnotesize" => Some(self.arena.push_node(CompactNode::SizeScale(2))),
+            "scriptsize" => Some(self.arena.push_node(CompactNode::SizeScale(1))),
+            "tiny" => Some(self.arena.push_node(CompactNode::SizeScale(0))),
             // Mod operator
             "bmod" => {
                 let sid = self.arena.push_str("mod");

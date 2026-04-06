@@ -381,7 +381,8 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
         | CompactNode::Rule { .. }
-        | CompactNode::StyleSwitch(_) => {},
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_) => {},
     }
 }
 

@@ -826,7 +826,7 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
         CompactNode::Color { content, .. } => write_node_c(w, arena, content),
 
         // Helper nodes that should not normally appear at the top level
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) => Ok(()),
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => Ok(()),
     }
 }
 
@@ -1292,7 +1292,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Color { content, .. } => write_node_cf(buf, arena, content),
 
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) => {},
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {},
     }
 }
 

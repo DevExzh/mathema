@@ -957,6 +957,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("/>");
         },
         CompactNode::StyleSwitch(_) => {},
+        CompactNode::SizeScale(_) => {},
     }
 }
 

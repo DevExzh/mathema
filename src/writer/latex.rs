@@ -503,6 +503,21 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 _ => buf.push_str("\\scriptscriptstyle "),
             }
         },
+        CompactNode::SizeScale(idx) => {
+            let cmd = match idx {
+                0 => "\\tiny ",
+                1 => "\\scriptsize ",
+                2 => "\\footnotesize ",
+                3 => "\\small ",
+                4 => "\\normalsize ",
+                5 => "\\large ",
+                6 => "\\Large ",
+                7 => "\\LARGE ",
+                8 => "\\huge ",
+                _ => "\\Huge ",
+            };
+            buf.push_str(cmd);
+        },
     }
 }
 

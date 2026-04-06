@@ -229,6 +229,9 @@ pub enum CompactNode {
 
     /// Math style switch: 0=Display, 1=Text, 2=Script, 3=ScriptScript.
     StyleSwitch(u8),
+
+    /// Font size scale: 0=tiny..9=Huge. See SIZE_SCALE_TABLE in layout.rs.
+    SizeScale(u8),
 }
 
 // Compile-time size check: CompactNode must fit in 32 bytes.
@@ -754,6 +757,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         },
         CompactNode::StyleSwitch(_) => {
             // Style switches are layout-only directives; reconstruct as empty row
+            MathNode::Row(Vec::new())
+        },
+        CompactNode::SizeScale(_) => {
+            // Size scale nodes are layout-only directives; reconstruct as empty row
             MathNode::Row(Vec::new())
         },
     }
