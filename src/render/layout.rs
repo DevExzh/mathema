@@ -287,6 +287,166 @@ fn is_stretchy_overunder(sym: &str) -> bool {
     )
 }
 
+/// Returns true if `ch` is an extensible arrow character used by \xrightarrow etc.
+fn is_extensible_arrow(ch: char) -> bool {
+    matches!(ch,
+        '\u{2190}' // ← leftarrow
+        | '\u{2192}' // → rightarrow
+        | '\u{21D0}' // ⇐ Leftarrow
+        | '\u{21D2}' // ⇒ Rightarrow
+        | '\u{2194}' // ↔ leftrightarrow
+        | '\u{21D4}' // ⇔ Leftrightarrow
+        | '\u{21A9}' // ↩ hookleftarrow
+        | '\u{21AA}' // ↪ hookrightarrow
+        | '\u{21A6}' // ↦ mapsto
+        | '\u{21CC}' // ⇌ rightleftharpoons
+        | '\u{21CB}' // ⇋ leftrightharpoons
+        | '\u{21A0}' // ↠ twoheadrightarrow
+        | '\u{219E}' // ↞ twoheadleftarrow
+        | '\u{21BC}' // ↼ leftharpoonup
+        | '\u{21BD}' // ↽ leftharpoondown
+        | '\u{21C0}' // ⇀ rightharpoonup
+        | '\u{21C1}' // ⇁ rightharpoondown
+    )
+}
+
+/// Check if a CompactNode (in AstArena) is an extensible arrow symbol and return the char.
+fn get_extensible_arrow_c(arena: &AstArena, id: NodeId) -> Option<char> {
+    if let CompactNode::Symbol(_, sid) = *arena.node(id) {
+        let s = arena.str_val(sid);
+        if let Some(ch) = s.chars().next()
+            && is_extensible_arrow(ch)
+        {
+            return Some(ch);
+        }
+    }
+    None
+}
+
+/// Check if a heap MathNode is an extensible arrow symbol and return the char.
+fn get_extensible_arrow_heap(node: &MathNode) -> Option<char> {
+    if let MathNode::Symbol(_, s) = node
+        && let Some(ch) = s.chars().next()
+        && is_extensible_arrow(ch)
+    {
+        return Some(ch);
+    }
+    None
+}
+
+/// Generate a stretchy SVG path for an extensible arrow character at given width and em-size.
+fn stretchy_arrow_svg(ch: char, w: f64, em: f64) -> String {
+    let t = 0.02 * em;    // half-thickness of arrow shaft
+    let tip = 0.24 * em;  // arrowhead length
+    let tw = 0.12 * em;   // arrowhead half-width (perpendicular to shaft)
+    let mid_y = 0.22 * em; // vertical center
+
+    match ch {
+        // → rightarrow: shaft + right arrowhead
+        '\u{2192}' => {
+            let ax = w - tip;
+            format!("F:M0,{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{y1:.4} L0,{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ← leftarrow: left arrowhead + shaft
+        '\u{2190}' => {
+            format!("F:M{w:.4},{y0:.4} L{tip:.4},{y0:.4} L{tip:.4},{t1:.4} L0,{mid:.4} L{tip:.4},{t2:.4} L{tip:.4},{y1:.4} L{w:.4},{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, tip = tip, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ↔ leftrightarrow: arrowheads on both ends
+        '\u{2194}' => {
+            let ax = w - tip;
+            format!("F:M0,{mid:.4} L{tip:.4},{t1:.4} L{tip:.4},{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{y1:.4} L{tip:.4},{y1:.4} L{tip:.4},{t2:.4} Z", y0 = mid_y - t, y1 = mid_y + t, tip = tip, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ⇒ double rightarrow: two shafts + right double arrowhead
+        '\u{21D2}' => {
+            let gap = 0.06 * em;
+            let upper = mid_y - gap;
+            let lower = mid_y + gap;
+            let ax = w - tip;
+            format!("F:M0,{u0:.4} L{ax:.4},{u0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{l1:.4} L0,{l1:.4} L0,{l0:.4} L{ax:.4},{l0:.4} L{ax:.4},{u1:.4} L0,{u1:.4} Z", u0 = upper - t, u1 = upper + t, l0 = lower - t, l1 = lower + t, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ⇐ double leftarrow
+        '\u{21D0}' => {
+            let gap = 0.06 * em;
+            let upper = mid_y - gap;
+            let lower = mid_y + gap;
+            format!("F:M{w:.4},{u0:.4} L{tip:.4},{u0:.4} L{tip:.4},{t1:.4} L0,{mid:.4} L{tip:.4},{t2:.4} L{tip:.4},{l1:.4} L{w:.4},{l1:.4} L{w:.4},{l0:.4} L{tip:.4},{l0:.4} L{tip:.4},{u1:.4} L{w:.4},{u1:.4} Z", u0 = upper - t, u1 = upper + t, l0 = lower - t, l1 = lower + t, tip = tip, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ⇔ double leftrightarrow
+        '\u{21D4}' => {
+            let gap = 0.06 * em;
+            let upper = mid_y - gap;
+            let lower = mid_y + gap;
+            let ax = w - tip;
+            format!("F:M0,{mid:.4} L{tip:.4},{t1:.4} L{tip:.4},{u0:.4} L{ax:.4},{u0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{l1:.4} L{tip:.4},{l1:.4} L{tip:.4},{t2:.4} Z M{tip:.4},{u1:.4} L{ax:.4},{u1:.4} L{ax:.4},{l0:.4} L{tip:.4},{l0:.4} Z", u0 = upper - t, u1 = upper + t, l0 = lower - t, l1 = lower + t, tip = tip, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ↦ mapsto: vertical bar + shaft + right arrowhead
+        '\u{21A6}' => {
+            let bar_w = 0.04 * em;
+            let ax = w - tip;
+            format!("F:M0,{t1:.4} L0,{t2:.4} L{bw:.4},{t2:.4} L{bw:.4},{y1:.4} L{ax:.4},{y1:.4} L{ax:.4},{t2b:.4} L{w:.4},{mid:.4} L{ax:.4},{t1b:.4} L{ax:.4},{y0:.4} L{bw:.4},{y0:.4} L{bw:.4},{t1:.4} Z", bw = bar_w, y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw, t1b = mid_y - tw, t2b = mid_y + tw)
+        }
+        // ↪ hookrightarrow: shaft + right arrowhead (simplified)
+        '\u{21AA}' => {
+            let ax = w - tip;
+            format!("F:M0,{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{y1:.4} L0,{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ↩ hookleftarrow (simplified)
+        '\u{21A9}' => {
+            format!("F:M{w:.4},{y0:.4} L{tip:.4},{y0:.4} L{tip:.4},{t1:.4} L0,{mid:.4} L{tip:.4},{t2:.4} L{tip:.4},{y1:.4} L{w:.4},{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, tip = tip, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+        // ⇌ rightleftharpoons: upper right harpoon + lower left harpoon
+        '\u{21CC}' => {
+            let gap = 0.08 * em;
+            let upper = mid_y - gap;
+            let lower = mid_y + gap;
+            let ax = w - tip;
+            format!("F:M0,{u0:.4} L{ax:.4},{u0:.4} L{ax:.4},{ut:.4} L{w:.4},{u1:.4} L{ax:.4},{u1:.4} L0,{u1:.4} Z M{w:.4},{l0:.4} L{tip:.4},{l0:.4} L{tip:.4},{lt:.4} L0,{l0:.4} L{tip:.4},{l1:.4} L{w:.4},{l1:.4} Z", u0 = upper - t, u1 = upper + t, ut = upper - tw, l0 = lower - t, l1 = lower + t, lt = lower + tw, tip = tip, ax = ax, w = w)
+        }
+        // ⇋ leftrightharpoons
+        '\u{21CB}' => {
+            let gap = 0.08 * em;
+            let upper = mid_y - gap;
+            let lower = mid_y + gap;
+            let ax = w - tip;
+            format!("F:M{w:.4},{u0:.4} L{tip:.4},{u0:.4} L{tip:.4},{ut:.4} L0,{u1:.4} L{tip:.4},{u1:.4} L{w:.4},{u1:.4} Z M0,{l0:.4} L{ax:.4},{l0:.4} L{ax:.4},{lt:.4} L{w:.4},{l0:.4} L{ax:.4},{l1:.4} L0,{l1:.4} Z", u0 = upper - t, u1 = upper + t, ut = upper - tw, l0 = lower - t, l1 = lower + t, lt = lower + tw, tip = tip, ax = ax, w = w)
+        }
+        // ↠ twoheadrightarrow
+        '\u{21A0}' => {
+            let ax1 = w - tip;
+            let ax2 = w - tip * 1.6;
+            format!("F:M0,{y0:.4} L{ax2:.4},{y0:.4} L{ax2:.4},{t1:.4} L{ax1:.4},{mid:.4} L{ax1:.4},{t1b:.4} L{w:.4},{mid:.4} L{ax1:.4},{t2b:.4} L{ax1:.4},{mid:.4} L{ax2:.4},{t2:.4} L{ax2:.4},{y1:.4} L0,{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, ax1 = ax1, ax2 = ax2, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw, t1b = mid_y - tw, t2b = mid_y + tw)
+        }
+        // ↞ twoheadleftarrow
+        '\u{219E}' => {
+            let t2x = tip * 1.6;
+            format!("F:M{w:.4},{y0:.4} L{t2x:.4},{y0:.4} L{t2x:.4},{t1:.4} L{tip:.4},{mid:.4} L{tip:.4},{t1b:.4} L0,{mid:.4} L{tip:.4},{t2b:.4} L{tip:.4},{mid:.4} L{t2x:.4},{t2:.4} L{t2x:.4},{y1:.4} L{w:.4},{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, tip = tip, t2x = t2x, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw, t1b = mid_y - tw, t2b = mid_y + tw)
+        }
+        // ↼ leftharpoonup: shaft + upper-left half arrowhead
+        '\u{21BC}' => {
+            format!("F:M{w:.4},{y0:.4} L{tip:.4},{y0:.4} L{tip:.4},{t1:.4} L0,{y1:.4} L{tip:.4},{y1:.4} L{w:.4},{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, tip = tip, w = w, t1 = mid_y - tw)
+        }
+        // ↽ leftharpoondown: shaft + lower-left half arrowhead
+        '\u{21BD}' => {
+            format!("F:M{w:.4},{y0:.4} L{tip:.4},{y0:.4} L0,{y0:.4} L{tip:.4},{t2:.4} L{tip:.4},{y1:.4} L{w:.4},{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, tip = tip, w = w, t2 = mid_y + tw)
+        }
+        // ⇀ rightharpoonup: shaft + upper-right half arrowhead
+        '\u{21C0}' => {
+            let ax = w - tip;
+            format!("F:M0,{y0:.4} L{ax:.4},{y0:.4} L{w:.4},{y0:.4} L{ax:.4},{t1:.4} L{ax:.4},{y1:.4} L0,{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, t1 = mid_y - tw)
+        }
+        // ⇁ rightharpoondown: shaft + lower-right half arrowhead
+        '\u{21C1}' => {
+            let ax = w - tip;
+            format!("F:M0,{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t2:.4} L{w:.4},{y1:.4} L{ax:.4},{y1:.4} L0,{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, t2 = mid_y + tw)
+        }
+        // Fallback: simple right arrow
+        _ => {
+            let ax = w - tip;
+            format!("F:M0,{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{y1:.4} L0,{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // KaTeX-derived SVG path data for widehat, widetilde, and widecheck accents.
 // Each accent has 4 tiers (progressively wider), selected by base width.
@@ -1700,6 +1860,42 @@ fn make_stretchy_overunder_box(sym: &str, width: f64, size: f64) -> LayoutBox {
 fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        let over_box = layout_node(over, &over_ctx);
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let arrow_w = over_box.width.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_box = LayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        };
+
+        let gap = p.big_op_spacing[2] * size;
+        let max_w = arrow_box.width.max(over_box.width);
+        let base_dx = (max_w - arrow_box.width) / 2.0;
+        let over_dx = (max_w - over_box.width) / 2.0;
+        let over_dy = arrow_box.height + gap + over_box.depth;
+        let over_h = over_box.height;
+
+        let children = vec![
+            PositionedBox::new(base_dx, 0.0, arrow_box),
+            PositionedBox::new(over_dx, over_dy, over_box),
+        ];
+
+        return LayoutBox {
+            width: max_w,
+            height: over_dy + over_h,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::VBox { children },
+        };
+    }
+
     let base_box = layout_node(base, ctx);
     let base_w = base_box.width;
 
@@ -1736,6 +1932,42 @@ fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> Layou
 fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        let under_box = layout_node(under, &under_ctx);
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let arrow_w = under_box.width.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_box = LayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        };
+
+        let gap = p.big_op_spacing[4] * size;
+        let max_w = arrow_box.width.max(under_box.width);
+        let base_dx = (max_w - arrow_box.width) / 2.0;
+        let under_dx = (max_w - under_box.width) / 2.0;
+        let under_dy = arrow_box.depth + gap + under_box.height;
+        let under_d = under_box.depth;
+
+        let children = vec![
+            PositionedBox::new(base_dx, 0.0, arrow_box),
+            PositionedBox::new(under_dx, -under_dy, under_box),
+        ];
+
+        return LayoutBox {
+            width: max_w,
+            height: arrow_h / 2.0,
+            depth: under_dy + under_d,
+            kind: BoxKind::VBox { children },
+        };
+    }
+
     let base_box = layout_node(base, ctx);
     let base_w = base_box.width;
 
@@ -1777,6 +2009,50 @@ fn layout_underover(
 ) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        let over_box = layout_node(over, &over_ctx);
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        let under_box = layout_node(under, &under_ctx);
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let content_w = over_box.width.max(under_box.width);
+        let arrow_w = content_w.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_box = LayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        };
+
+        let gap_above = p.big_op_spacing[2] * size;
+        let gap_below = p.big_op_spacing[4] * size;
+        let max_w = arrow_box.width.max(over_box.width).max(under_box.width);
+        let base_dx = (max_w - arrow_box.width) / 2.0;
+        let over_dx = (max_w - over_box.width) / 2.0;
+        let under_dx = (max_w - under_box.width) / 2.0;
+        let over_dy = arrow_box.height + gap_above + over_box.depth;
+        let under_dy = arrow_box.depth + gap_below + under_box.height;
+        let over_h = over_box.height;
+        let under_d = under_box.depth;
+
+        let children = vec![
+            PositionedBox::new(over_dx, over_dy, over_box),
+            PositionedBox::new(base_dx, 0.0, arrow_box),
+            PositionedBox::new(under_dx, -under_dy, under_box),
+        ];
+
+        return LayoutBox {
+            width: max_w,
+            height: over_dy + over_h,
+            depth: under_dy + under_d,
+            kind: BoxKind::VBox { children },
+        };
+    }
+
     let base_box = layout_node(base, ctx);
     let base_w = base_box.width;
 
@@ -3121,6 +3397,42 @@ fn get_stretchy_overunder_sym_c(arena: &AstArena, id: NodeId) -> Option<&str> {
 fn layout_overscript_c(arena: &AstArena, base: NodeId, over: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_c(arena, base) {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        let over_box = layout_node_c(arena, over, &over_ctx);
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let arrow_w = over_box.width.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_box = LayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        };
+
+        let gap = p.big_op_spacing[2] * size;
+        let max_w = arrow_box.width.max(over_box.width);
+        let base_dx = (max_w - arrow_box.width) / 2.0;
+        let over_dx = (max_w - over_box.width) / 2.0;
+        let over_dy = arrow_box.height + gap + over_box.depth;
+        let over_h = over_box.height;
+
+        let children = vec![
+            PositionedBox::new(base_dx, 0.0, arrow_box),
+            PositionedBox::new(over_dx, over_dy, over_box),
+        ];
+
+        return LayoutBox {
+            width: max_w,
+            height: over_dy + over_h,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::VBox { children },
+        };
+    }
+
     let base_box = layout_node_c(arena, base, ctx);
     let base_w = base_box.width;
 
@@ -3160,6 +3472,42 @@ fn layout_underscript_c(
 ) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_c(arena, base) {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        let under_box = layout_node_c(arena, under, &under_ctx);
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let arrow_w = under_box.width.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_box = LayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        };
+
+        let gap = p.big_op_spacing[4] * size;
+        let max_w = arrow_box.width.max(under_box.width);
+        let base_dx = (max_w - arrow_box.width) / 2.0;
+        let under_dx = (max_w - under_box.width) / 2.0;
+        let under_dy = arrow_box.depth + gap + under_box.height;
+        let under_d = under_box.depth;
+
+        let children = vec![
+            PositionedBox::new(base_dx, 0.0, arrow_box),
+            PositionedBox::new(under_dx, -under_dy, under_box),
+        ];
+
+        return LayoutBox {
+            width: max_w,
+            height: arrow_h / 2.0,
+            depth: under_dy + under_d,
+            kind: BoxKind::VBox { children },
+        };
+    }
+
     let base_box = layout_node_c(arena, base, ctx);
     let base_w = base_box.width;
 
@@ -3200,6 +3548,50 @@ fn layout_underover_c(
 ) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_c(arena, base) {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        let over_box = layout_node_c(arena, over, &over_ctx);
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        let under_box = layout_node_c(arena, under, &under_ctx);
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let content_w = over_box.width.max(under_box.width);
+        let arrow_w = content_w.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_box = LayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        };
+
+        let gap_above = p.big_op_spacing[2] * size;
+        let gap_below = p.big_op_spacing[4] * size;
+        let max_w = arrow_box.width.max(over_box.width).max(under_box.width);
+        let base_dx = (max_w - arrow_box.width) / 2.0;
+        let over_dx = (max_w - over_box.width) / 2.0;
+        let under_dx = (max_w - under_box.width) / 2.0;
+        let over_dy = arrow_box.height + gap_above + over_box.depth;
+        let under_dy = arrow_box.depth + gap_below + under_box.height;
+        let over_h = over_box.height;
+        let under_d = under_box.depth;
+
+        let children = vec![
+            PositionedBox::new(over_dx, over_dy, over_box),
+            PositionedBox::new(base_dx, 0.0, arrow_box),
+            PositionedBox::new(under_dx, -under_dy, under_box),
+        ];
+
+        return LayoutBox {
+            width: max_w,
+            height: over_dy + over_h,
+            depth: under_dy + under_d,
+            kind: BoxKind::VBox { children },
+        };
+    }
+
     let base_box = layout_node_c(arena, base, ctx);
     let base_w = base_box.width;
 
@@ -4921,6 +5313,45 @@ fn layout_overscript_arena(
 ) -> LayoutBoxId {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_c(ast, base) {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        let over_id = layout_node_arena(ast, over, arena, &over_ctx);
+        let over_w = arena.get(over_id).width;
+        let over_h = arena.get(over_id).height;
+        let over_d = arena.get(over_id).depth;
+
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let arrow_w = over_w.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_id = arena.alloc(ArenaLayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        });
+
+        let gap = p.big_op_spacing[2] * size;
+        let max_w = arrow_w.max(over_w);
+        let base_dx = (max_w - arrow_w) / 2.0;
+        let over_dx = (max_w - over_w) / 2.0;
+        let over_dy = arrow_h / 2.0 + gap + over_d;
+
+        let children_start = arena.begin_children();
+        arena.push_child(ArenaPositionedBox { dx: base_dx, dy: 0.0, id: arrow_id });
+        arena.push_child(ArenaPositionedBox { dx: over_dx, dy: over_dy, id: over_id });
+        let children = arena.finish_children(children_start);
+
+        return arena.alloc(ArenaLayoutBox {
+            width: max_w,
+            height: over_dy + over_h,
+            depth: arrow_h / 2.0,
+            kind: ArenaBoxKind::VBox { children },
+        });
+    }
+
     let base_id = layout_node_arena(ast, base, arena, ctx);
 
     let base_w = arena.get(base_id).width;
@@ -4974,6 +5405,45 @@ fn layout_underscript_arena(
 ) -> LayoutBoxId {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_c(ast, base) {
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        let under_id = layout_node_arena(ast, under, arena, &under_ctx);
+        let under_w = arena.get(under_id).width;
+        let under_h = arena.get(under_id).height;
+        let under_d = arena.get(under_id).depth;
+
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let arrow_w = under_w.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_id = arena.alloc(ArenaLayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        });
+
+        let gap = p.big_op_spacing[4] * size;
+        let max_w = arrow_w.max(under_w);
+        let base_dx = (max_w - arrow_w) / 2.0;
+        let under_dx = (max_w - under_w) / 2.0;
+        let under_dy = arrow_h / 2.0 + gap + under_h;
+
+        let children_start = arena.begin_children();
+        arena.push_child(ArenaPositionedBox { dx: base_dx, dy: 0.0, id: arrow_id });
+        arena.push_child(ArenaPositionedBox { dx: under_dx, dy: -under_dy, id: under_id });
+        let children = arena.finish_children(children_start);
+
+        return arena.alloc(ArenaLayoutBox {
+            width: max_w,
+            height: arrow_h / 2.0,
+            depth: under_dy + under_d,
+            kind: ArenaBoxKind::VBox { children },
+        });
+    }
+
     let base_id = layout_node_arena(ast, base, arena, ctx);
 
     let base_w = arena.get(base_id).width;
@@ -5027,6 +5497,56 @@ fn layout_underover_arena(
 ) -> LayoutBoxId {
     let p = &ctx.params;
     let size = ctx.size();
+
+    // Check if base is an extensible arrow
+    if let Some(arrow_ch) = get_extensible_arrow_c(ast, base) {
+        let over_ctx = ctx.with_style(ctx.style.sup());
+        let over_id = layout_node_arena(ast, over, arena, &over_ctx);
+        let under_ctx = ctx.with_style(ctx.style.sub());
+        let under_id = layout_node_arena(ast, under, arena, &under_ctx);
+
+        let over_w = arena.get(over_id).width;
+        let over_h = arena.get(over_id).height;
+        let over_d = arena.get(over_id).depth;
+        let under_w = arena.get(under_id).width;
+        let under_h = arena.get(under_id).height;
+        let under_d = arena.get(under_id).depth;
+
+        let padding = 0.6 * size;
+        let min_width = 1.5 * size;
+        let content_w = over_w.max(under_w);
+        let arrow_w = content_w.max(min_width) + padding;
+        let arrow_h = 0.44 * size;
+        let arrow_id = arena.alloc(ArenaLayoutBox {
+            width: arrow_w,
+            height: arrow_h / 2.0,
+            depth: arrow_h / 2.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+        });
+
+        let gap_above = p.big_op_spacing[2] * size;
+        let gap_below = p.big_op_spacing[4] * size;
+        let max_w = arrow_w.max(over_w).max(under_w);
+        let base_dx = (max_w - arrow_w) / 2.0;
+        let over_dx = (max_w - over_w) / 2.0;
+        let under_dx = (max_w - under_w) / 2.0;
+        let over_dy = arrow_h / 2.0 + gap_above + over_d;
+        let under_dy = arrow_h / 2.0 + gap_below + under_h;
+
+        let children_start = arena.begin_children();
+        arena.push_child(ArenaPositionedBox { dx: over_dx, dy: over_dy, id: over_id });
+        arena.push_child(ArenaPositionedBox { dx: base_dx, dy: 0.0, id: arrow_id });
+        arena.push_child(ArenaPositionedBox { dx: under_dx, dy: -under_dy, id: under_id });
+        let children = arena.finish_children(children_start);
+
+        return arena.alloc(ArenaLayoutBox {
+            width: max_w,
+            height: over_dy + over_h,
+            depth: under_dy + under_d,
+            kind: ArenaBoxKind::VBox { children },
+        });
+    }
+
     let base_id = layout_node_arena(ast, base, arena, ctx);
 
     let base_w = arena.get(base_id).width;
