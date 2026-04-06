@@ -1,5 +1,11 @@
 /// TeX typesetting parameters (FONTDIMEN values from Latin Modern / Computer Modern).
 /// All values in em units relative to the base font size.
+///
+/// Style-dependent values (sigma parameters from cmsy10/cmsy7/cmsy5 and
+/// xi parameters from cmex10/cmex7) vary by size class:
+///   0 = text/display (cmsy10, cmex10)
+///   1 = script       (cmsy7,  cmex7)
+///   2 = scriptscript (cmsy5,  cmex7)
 
 #[derive(Debug, Clone, Copy)]
 pub struct TexParams {
@@ -41,28 +47,67 @@ pub struct TexParams {
     pub big_op_spacing: [f64; 5],
 }
 
-impl Default for TexParams {
-    fn default() -> Self {
-        // Values from Computer Modern / Latin Modern (cmr10, cmsy10, cmex10)
+/// Style-dependent parameter tables from KaTeX's fontMetricsData.
+/// Each array is [text/display, script, scriptscript].
+/// Sources: cmsy10 (sigma, text), cmsy7 (sigma, script), cmsy5 (sigma, scriptscript),
+///          cmex10 (xi, text), cmex7 (xi, script/scriptscript).
+const SIGMA_SUP1: [f64; 3] = [0.413, 0.503, 0.504];
+const SIGMA_SUP2: [f64; 3] = [0.363, 0.431, 0.404];
+const SIGMA_SUP3: [f64; 3] = [0.289, 0.286, 0.294];
+const SIGMA_SUB1: [f64; 3] = [0.150, 0.143, 0.200];
+const SIGMA_SUB2: [f64; 3] = [0.247, 0.286, 0.400];
+const SIGMA_SUP_DROP: [f64; 3] = [0.386, 0.353, 0.494];
+const SIGMA_SUB_DROP: [f64; 3] = [0.050, 0.071, 0.100];
+const SIGMA_NUM1: [f64; 3] = [0.677, 0.732, 0.925];
+const SIGMA_NUM2: [f64; 3] = [0.394, 0.384, 0.387];
+const SIGMA_DENOM1: [f64; 3] = [0.686, 0.752, 1.025];
+const SIGMA_DENOM2: [f64; 3] = [0.345, 0.344, 0.532];
+const SIGMA_DELIM1: [f64; 3] = [2.390, 1.700, 1.980];
+const SIGMA_DELIM2: [f64; 3] = [1.010, 1.157, 1.420];
+const XI_RULE: [f64; 3] = [0.040, 0.049, 0.049];
+const SIGMA_QUAD: [f64; 3] = [1.000, 1.171, 1.472];
+const XI_BIG_OP_SPACING: [[f64; 5]; 3] = [
+    [0.111, 0.166, 0.200, 0.600, 0.100],
+    [0.111, 0.166, 0.200, 0.611, 0.143],
+    [0.111, 0.166, 0.200, 0.611, 0.143],
+];
+
+impl TexParams {
+    /// Return TeX parameters resolved for the given size class.
+    ///
+    /// Size classes follow TeX/KaTeX convention:
+    ///   0 = text/display (cmsy10 sigma, cmex10 xi)
+    ///   1 = script       (cmsy7 sigma,  cmex7 xi)
+    ///   2 = scriptscript (cmsy5 sigma,  cmex7 xi)
+    #[must_use]
+    pub fn for_size_class(idx: usize) -> Self {
+        let i = idx.min(2);
         Self {
             axis_height: 0.250,
-            rule_thickness: 0.060,
+            rule_thickness: XI_RULE[i],
             x_height: 0.431,
-            quad: 1.000,
-            sup1: 0.413,
-            sup2: 0.363,
-            sup3: 0.289,
-            sub1: 0.150,
-            sub2: 0.247,
-            sup_drop: 0.386,
-            sub_drop: 0.050,
-            delim1: 2.390,
-            delim2: 1.010,
-            num1: 0.677,
-            num2: 0.394,
-            denom1: 0.686,
-            denom2: 0.345,
-            big_op_spacing: [0.111, 0.167, 0.200, 0.600, 0.100],
+            quad: SIGMA_QUAD[i],
+            sup1: SIGMA_SUP1[i],
+            sup2: SIGMA_SUP2[i],
+            sup3: SIGMA_SUP3[i],
+            sub1: SIGMA_SUB1[i],
+            sub2: SIGMA_SUB2[i],
+            sup_drop: SIGMA_SUP_DROP[i],
+            sub_drop: SIGMA_SUB_DROP[i],
+            delim1: SIGMA_DELIM1[i],
+            delim2: SIGMA_DELIM2[i],
+            num1: SIGMA_NUM1[i],
+            num2: SIGMA_NUM2[i],
+            denom1: SIGMA_DENOM1[i],
+            denom2: SIGMA_DENOM2[i],
+            big_op_spacing: XI_BIG_OP_SPACING[i],
         }
+    }
+}
+
+impl Default for TexParams {
+    fn default() -> Self {
+        // Text/display style values (size class 0)
+        Self::for_size_class(0)
     }
 }

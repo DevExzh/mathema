@@ -1,4 +1,5 @@
 pub mod arena;
+pub mod delimiter_paths;
 pub mod emit;
 pub mod layout;
 pub mod metrics;
@@ -41,7 +42,7 @@ impl Default for RenderOptions {
             font_size_px: 16.0,
             display_mode: None,
             fg_color: "currentColor".into(),
-            font_family: "serif".into(),
+            font_family: "KaTeX_Main, Latin Modern Math, STIX Two Math, Cambria Math, serif".into(),
         }
     }
 }

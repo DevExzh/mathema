@@ -94,6 +94,18 @@ impl MathStyle {
             Self::ScriptScript | Self::ScriptScriptCramped => 0.5,
         }
     }
+
+    /// Size class index for style-dependent TeX parameters.
+    /// 0 = text/display (cmsy10), 1 = script (cmsy7), 2 = scriptscript (cmsy5).
+    #[must_use]
+    #[inline]
+    pub fn size_class(self) -> usize {
+        match self {
+            Self::Display | Self::DisplayCramped | Self::Text | Self::TextCramped => 0,
+            Self::Script | Self::ScriptCramped => 1,
+            Self::ScriptScript | Self::ScriptScriptCramped => 2,
+        }
+    }
 }
 
 #[cfg(test)]

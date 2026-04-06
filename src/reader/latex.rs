@@ -358,4 +358,240 @@ mod tests {
         let node = parse_one("\\begin{equation} x = 1 \\end{equation}");
         assert!(!matches!(node, MathNode::Array { .. }));
     }
+
+    // =======================================================================
+    // Tests for newly implemented LaTeX commands
+    // =======================================================================
+
+    #[test]
+    fn cfrac() {
+        let node = parse_one("\\cfrac{1}{2}");
+        assert!(matches!(
+            node,
+            MathNode::Fraction {
+                kind: FractionKind::Display,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn cfrac_nested() {
+        let node = parse_one("\\cfrac{1}{1+\\cfrac{1}{2}}");
+        if let MathNode::Fraction { kind, den, .. } = &node {
+            assert_eq!(*kind, FractionKind::Display);
+            // den should be a Row containing "1 + cfrac{1}{2}"
+            if let MathNode::Row(children) = den.as_ref() {
+                assert!(children.iter().any(|n| matches!(
+                    n,
+                    MathNode::Fraction {
+                        kind: FractionKind::Display,
+                        ..
+                    }
+                )));
+            }
+        } else {
+            panic!("expected Display fraction, got {node:?}");
+        }
+    }
+
+    #[test]
+    fn ensuremath() {
+        let nodes = parse("\\ensuremath{\\pi^2}");
+        assert_eq!(nodes.len(), 1);
+        // Should parse as superscript of pi^2, not literal "ensuremath"
+        assert!(matches!(nodes[0], MathNode::Superscript { .. }));
+    }
+
+    #[test]
+    fn over_infix() {
+        let node = parse_one("{a \\over b}");
+        assert!(matches!(
+            node,
+            MathNode::Fraction {
+                kind: FractionKind::Normal,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn atop_infix() {
+        let node = parse_one("{a \\atop b}");
+        assert!(matches!(
+            node,
+            MathNode::Fraction {
+                kind: FractionKind::NoBar,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn choose_infix() {
+        let node = parse_one("{n \\choose k}");
+        // Should produce a Fenced (parenthesized) node containing a NoBar fraction
+        assert!(matches!(node, MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn brace_infix() {
+        let node = parse_one("{a \\brace b}");
+        if let MathNode::Fenced { open, close, .. } = &node {
+            assert_eq!(open, "{");
+            assert_eq!(close, "}");
+        } else {
+            panic!("expected Fenced, got {node:?}");
+        }
+    }
+
+    #[test]
+    fn brack_infix() {
+        let node = parse_one("{a \\brack b}");
+        if let MathNode::Fenced { open, close, .. } = &node {
+            assert_eq!(open, "[");
+            assert_eq!(close, "]");
+        } else {
+            panic!("expected Fenced, got {node:?}");
+        }
+    }
+
+    #[test]
+    fn font_sizing_noop() {
+        // Font sizing commands should not appear as literal text
+        for cmd in &[
+            "\\Huge", "\\huge", "\\LARGE", "\\Large", "\\large",
+            "\\normalsize", "\\small", "\\footnotesize", "\\scriptsize", "\\tiny",
+        ] {
+            let input = format!("{} x", cmd);
+            let nodes = parse(&input);
+            // Should have exactly one identifier "x" (sizing is no-op)
+            assert!(
+                nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == "x")),
+                "font sizing command {cmd} did not parse as no-op: {nodes:?}"
+            );
+            // Should NOT have an identifier with the command name
+            let cmd_name = &cmd[1..]; // strip backslash
+            assert!(
+                !nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == cmd_name)),
+                "font sizing command {cmd} appeared as literal text"
+            );
+        }
+    }
+
+    #[test]
+    fn mathop_wrapper() {
+        let nodes = parse("\\mathop{\\text{li}}");
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(nodes[0], MathNode::Text(TextStyle::Normal, _)));
+    }
+
+    #[test]
+    fn mathrel_wrapper() {
+        let nodes = parse("\\mathrel{\\#}");
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn mathbin_wrapper() {
+        let nodes = parse("\\mathbin{+}");
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn mathord_wrapper() {
+        let nodes = parse("\\mathord{x}");
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(nodes[0], MathNode::Identifier(_)));
+    }
+
+    #[test]
+    fn kern_with_pt() {
+        let nodes = parse("a\\kern5pt b");
+        assert!(
+            nodes.iter().any(|n| matches!(n, MathNode::Space(_))),
+            "\\kern should produce a Space node: {nodes:?}"
+        );
+    }
+
+    #[test]
+    fn kern_with_em() {
+        let nodes = parse("a\\kern1em b");
+        assert!(
+            nodes.iter().any(|n| matches!(n, MathNode::Space(r) if r.as_f64() > 0.0)),
+            "\\kern 1em should produce positive space"
+        );
+    }
+
+    #[test]
+    fn mkern_with_mu() {
+        let nodes = parse("a\\mkern18mu b");
+        assert!(
+            nodes.iter().any(|n| matches!(n, MathNode::Space(_))),
+            "\\mkern should produce a Space node"
+        );
+    }
+
+    #[test]
+    fn hspace_braced() {
+        let nodes = parse("a\\hspace{1em}b");
+        assert!(
+            nodes.iter().any(|n| matches!(n, MathNode::Space(_))),
+            "\\hspace should produce a Space node"
+        );
+    }
+
+    #[test]
+    fn hspace_star() {
+        let nodes = parse("a\\hspace*{2pt}b");
+        assert!(
+            nodes.iter().any(|n| matches!(n, MathNode::Space(_))),
+            "\\hspace* should produce a Space node"
+        );
+    }
+
+    #[test]
+    fn rule_consumed() {
+        let nodes = parse("a\\rule{1cm}{2cm}b");
+        // \rule should be consumed, not produce literal "rule"
+        assert!(
+            !nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == "rule")),
+            "\\rule should not appear as literal text"
+        );
+    }
+
+    #[test]
+    fn rule_with_depth() {
+        let nodes = parse("a\\rule[1pt]{1cm}{2cm}b");
+        assert!(
+            !nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == "rule")),
+            "\\rule with optional depth should not appear as literal text"
+        );
+    }
+
+    #[test]
+    fn middle_outside_leftright() {
+        // \middle outside \left..\right should still parse as a fence symbol
+        let nodes = parse("\\middle|");
+        assert_eq!(nodes.len(), 1);
+        assert!(matches!(nodes[0], MathNode::Symbol(SymbolKind::Fence, _)));
+    }
+
+    #[test]
+    fn color_shorthand_blue() {
+        let nodes = parse("\\blue{x}");
+        assert_eq!(nodes.len(), 1);
+        // In the MathNode representation, Color is unwrapped to content
+        // since MathNode doesn't have a Color variant
+        assert!(matches!(nodes[0], MathNode::Identifier(_)));
+    }
+
+    #[test]
+    fn color_shorthand_red_single_token() {
+        let nodes = parse("\\red x");
+        // Should wrap x in color
+        assert!(!nodes.is_empty());
+        // The content should be identifier "x" (Color stripped during reconstruction)
+        assert!(nodes.iter().any(|n| matches!(n, MathNode::Identifier(_))));
+    }
 }

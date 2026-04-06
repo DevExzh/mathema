@@ -143,8 +143,8 @@ pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     push_f3(&mut svg, width_px);
     svg.push(' ');
     push_f3(&mut svg, height_px);
-    svg.push_str(r#"" style="vertical-align: -"#);
-    push_f3(&mut svg, depth_px);
+    svg.push_str(r#"" style="vertical-align: "#);
+    push_f3(&mut svg, -depth_px);
     svg.push_str(r#"px">"#);
 
     // Render content
@@ -256,13 +256,22 @@ fn emit_box(
                 push_f3(svg, ty);
                 svg.push_str(r#") scale("#);
                 push_f3(svg, em);
-                svg.push_str(r#")"><path d=""#);
-                push_xml_escaped(svg, &dp.path_data);
-                svg.push_str(r#"" stroke=""#);
-                svg.push_str(&attrs.fg_color);
-                svg.push_str(r#"" stroke-width=""#);
-                push_f3(svg, dp.stroke_width);
-                svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+                // "F:" prefix indicates a filled path (parens, braces)
+                if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
+                    svg.push_str(r#")"><path d=""#);
+                    push_xml_escaped(svg, fill_path);
+                    svg.push_str(r#"" fill=""#);
+                    svg.push_str(&attrs.fg_color);
+                    svg.push_str(r#""/></g>"#);
+                } else {
+                    svg.push_str(r#")"><path d=""#);
+                    push_xml_escaped(svg, &dp.path_data);
+                    svg.push_str(r#"" stroke=""#);
+                    svg.push_str(&attrs.fg_color);
+                    svg.push_str(r#"" stroke-width=""#);
+                    push_f3(svg, dp.stroke_width);
+                    svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+                }
             } else {
                 // Fallback: text element with font-size scaling
                 let font_size = target_height * em;
@@ -294,15 +303,35 @@ fn emit_box(
             push_f3(svg, ty);
             svg.push_str(r#") scale("#);
             push_f3(svg, em);
-            svg.push_str(r#")"><path d=""#);
-            push_xml_escaped(svg, path);
-            svg.push_str(r#"" stroke=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
+            // "F:" prefix indicates a filled path (KaTeX-style accents)
+            if let Some(fill_path) = path.strip_prefix("F:") {
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, fill_path);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#""/></g>"#);
+            } else {
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, path);
+                svg.push_str(r#"" stroke=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
+            }
         },
 
         BoxKind::Color { color, child } => {
-            // Use the color as a group wrapper
+            // Propagate color to child elements via both a group wrapper (for
+            // any SVG elements that don't explicitly set fill/stroke) and via
+            // modified attrs (so elements that emit explicit fill= use the
+            // correct color instead of "currentColor").
+            let color_attrs = EscapedAttrs {
+                font_family: attrs.font_family.clone(),
+                fg_color: {
+                    let mut c = String::new();
+                    push_xml_escaped(&mut c, color);
+                    c
+                },
+            };
             svg.push_str(r#"<g fill=""#);
             push_xml_escaped(svg, color);
             svg.push_str(r#"" stroke=""#);
@@ -310,7 +339,7 @@ fn emit_box(
             svg.push_str(r#"">"#);
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_box(svg, &child.layout, cx, cy, em, attrs);
+            emit_box(svg, &child.layout, cx, cy, em, &color_attrs);
             svg.push_str("</g>");
         },
 
@@ -373,8 +402,8 @@ pub fn emit_svg_arena(
     push_f3(&mut svg, width_px);
     svg.push(' ');
     push_f3(&mut svg, height_px);
-    svg.push_str(r#"" style="vertical-align: -"#);
-    push_f3(&mut svg, depth_px);
+    svg.push_str(r#"" style="vertical-align: "#);
+    push_f3(&mut svg, -depth_px);
     svg.push_str(r#"px">"#);
 
     // Render content
@@ -484,13 +513,22 @@ fn emit_box_arena(
                 push_f3(svg, ty);
                 svg.push_str(r#") scale("#);
                 push_f3(svg, em);
-                svg.push_str(r#")"><path d=""#);
-                push_xml_escaped(svg, &dp.path_data);
-                svg.push_str(r#"" stroke=""#);
-                svg.push_str(&attrs.fg_color);
-                svg.push_str(r#"" stroke-width=""#);
-                push_f3(svg, dp.stroke_width);
-                svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+                // "F:" prefix indicates a filled path (parens, braces)
+                if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
+                    svg.push_str(r#")"><path d=""#);
+                    push_xml_escaped(svg, fill_path);
+                    svg.push_str(r#"" fill=""#);
+                    svg.push_str(&attrs.fg_color);
+                    svg.push_str(r#""/></g>"#);
+                } else {
+                    svg.push_str(r#")"><path d=""#);
+                    push_xml_escaped(svg, &dp.path_data);
+                    svg.push_str(r#"" stroke=""#);
+                    svg.push_str(&attrs.fg_color);
+                    svg.push_str(r#"" stroke-width=""#);
+                    push_f3(svg, dp.stroke_width);
+                    svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+                }
             } else {
                 // Fallback: text element with font-size scaling
                 let font_size = target_height * em;
@@ -519,21 +557,38 @@ fn emit_box_arena(
             push_f3(svg, ty);
             svg.push_str(r#") scale("#);
             push_f3(svg, em);
-            svg.push_str(r#")"><path d=""#);
-            push_xml_escaped(svg, path);
-            svg.push_str(r#"" stroke=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
+            // "F:" prefix indicates a filled path (KaTeX-style accents)
+            if let Some(fill_path) = path.strip_prefix("F:") {
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, fill_path);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#""/></g>"#);
+            } else {
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, path);
+                svg.push_str(r#"" stroke=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
+            }
         },
 
         ArenaBoxKind::Color { color, child } => {
+            let color_attrs = EscapedAttrs {
+                font_family: attrs.font_family.clone(),
+                fg_color: {
+                    let mut c = String::new();
+                    push_xml_escaped(&mut c, color);
+                    c
+                },
+            };
             svg.push_str(r#"<g fill=""#);
             push_xml_escaped(svg, color);
             svg.push_str(r#"" stroke=""#);
             push_xml_escaped(svg, color);
             svg.push_str(r#"">"#);
             // Color child is rendered at same position (no dx/dy offset)
-            emit_box_arena(svg, arena, *child, x, y, em, attrs);
+            emit_box_arena(svg, arena, *child, x, y, em, &color_attrs);
             svg.push_str("</g>");
         },
 
@@ -790,9 +845,10 @@ mod tests {
             svg.contains("<path"),
             "tall delimiters should use SVG path rendering: {svg}"
         );
+        // Filled paths use fill="currentColor", stroked paths use stroke-linecap
         assert!(
-            svg.contains("stroke-linecap=\"round\""),
-            "delimiter paths should have round linecap"
+            svg.contains("fill=\"currentColor\"") || svg.contains("stroke-linecap=\"round\""),
+            "delimiter paths should be filled or have round linecap: {svg}"
         );
     }
 

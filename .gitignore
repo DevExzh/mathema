@@ -1,3 +1,23 @@
+# Build outputs
 /target
-3rdparty/
 pkg/
+
+# Third-party vendored sources
+3rdparty/
+
+# Fuzz testing
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/target/
+fuzz/Cargo.lock
+
+# Node/npm (visual regression tooling)
+node_modules/
+package.json
+package-lock.json
+
+# Generated test data
+tests/data/
+
+# Downloaded external specs
+docs/specs/
