@@ -13,7 +13,7 @@ use std::fmt::Write;
 /// Threshold: use SVG paths only when the delimiter is significantly taller
 /// than normal text size. Below this ratio (target_height / size), we fall
 /// back to text rendering which looks better at small sizes.
-const PATH_THRESHOLD: f64 = 1.2;
+const PATH_THRESHOLD: f64 = 0.9;
 
 /// Information about a generated delimiter path.
 pub struct DelimiterPath {
@@ -517,9 +517,9 @@ mod tests {
 
     #[test]
     fn should_use_path_respects_threshold() {
-        // At normal text size (size=1.0), a delimiter with target_height 0.9
+        // At normal text size (size=1.0), a delimiter with target_height 0.8
         // is below the threshold and should use text.
-        assert!(!should_use_path('(', 0.9, 1.0));
+        assert!(!should_use_path('(', 0.8, 1.0));
         // At 1.5x, it should use path rendering.
         assert!(should_use_path('(', 1.5, 1.0));
     }

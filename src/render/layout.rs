@@ -1504,7 +1504,11 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         max_d = max_d.max(child.depth);
     }
 
-    let target_h = max_h + max_d;
+    // Axis-centered target height (KaTeX-compatible): delimiters extend
+    // symmetrically around the math axis, ensuring proper visual balance.
+    let axis = ctx.params.axis_height * ctx.size();
+    let max_dist_from_axis = (max_h - axis).max(max_d + axis);
+    let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
 
     // Compute delimiter width.
     // For path-based delimiters (tall content), use the path width which stays
@@ -3076,7 +3080,11 @@ fn layout_fenced_c(
         max_d = max_d.max(child.depth);
     }
 
-    let target_h = max_h + max_d;
+    // Axis-centered target height (KaTeX-compatible): delimiters extend
+    // symmetrically around the math axis, ensuring proper visual balance.
+    let axis = ctx.params.axis_height * ctx.size();
+    let max_dist_from_axis = (max_h - axis).max(max_d + axis);
+    let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
 
     // Compute delimiter width using path-based sizing for tall content
     use super::delimiter_paths;
@@ -4974,7 +4982,11 @@ fn layout_fenced_arena(
         max_d = max_d.max(b.depth);
     }
 
-    let target_h = max_h + max_d;
+    // Axis-centered target height (KaTeX-compatible): delimiters extend
+    // symmetrically around the math axis, ensuring proper visual balance.
+    let axis = ctx.params.axis_height * ctx.size();
+    let max_dist_from_axis = (max_h - axis).max(max_d + axis);
+    let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
 
     // Compute delimiter width using path-based sizing for tall content
     use super::delimiter_paths;
