@@ -447,6 +447,8 @@ impl CompactParser {
             col_aligns,
             cells,
             num_cols,
+            arraystretch_pct: 100,
+            add_jot: false,
         });
         Ok((remaining, id))
     }

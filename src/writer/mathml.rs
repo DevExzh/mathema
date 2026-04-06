@@ -393,7 +393,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             Ok(())
         },
 
-        MathNode::Array { columns, rows } => {
+        MathNode::Array { columns, rows, .. } => {
             w.write_event(Event::Start(BytesStart::new("mtable")))
                 .map_err(to_err)?;
             for row in rows {
@@ -854,6 +854,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             col_aligns,
             cells,
             num_cols,
+            ..
         } => {
             let nc = num_cols as usize;
             let cell_ids = arena.children(cells);

@@ -434,6 +434,8 @@ impl<'a> MathmlCompactParser<'a> {
                     col_aligns,
                     cells,
                     num_cols,
+                    arraystretch_pct: 100,
+                    add_jot: false,
                 }))
             },
             "mphantom" => {

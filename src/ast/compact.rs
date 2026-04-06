@@ -199,6 +199,8 @@ pub enum CompactNode {
         col_aligns: NodeSpan,
         cells: NodeSpan,
         num_cols: u16,
+        arraystretch_pct: u8,
+        add_jot: bool,
     },
 
     // ── Decorators ─────────────────────────────────────────────────
@@ -486,7 +488,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             })
         },
 
-        MathNode::Array { columns, rows } => {
+        MathNode::Array { columns, rows, arraystretch, add_jot } => {
             // Push column alignments as ColAlign nodes
             let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
             for col in columns {
@@ -510,10 +512,17 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             }
             let cells = arena.push_children(&cell_ids);
 
+            let arraystretch_pct = match arraystretch {
+                Some(v) => (v * 100.0).round() as u8,
+                None => 100,
+            };
+
             arena.push_node(CompactNode::Array {
                 col_aligns,
                 cells,
                 num_cols,
+                arraystretch_pct,
+                add_jot: *add_jot,
             })
         },
 
@@ -693,6 +702,8 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             col_aligns,
             cells,
             num_cols,
+            arraystretch_pct,
+            add_jot,
         } => {
             // Reconstruct column alignments
             let columns: Vec<ColumnAlign> = arena
@@ -725,7 +736,13 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 rows.push(row);
             }
 
-            MathNode::Array { columns, rows }
+            let arraystretch = if arraystretch_pct == 100 {
+                None
+            } else {
+                Some(arraystretch_pct as f64 / 100.0)
+            };
+
+            MathNode::Array { columns, rows, arraystretch, add_jot }
         },
 
         CompactNode::Phantom(inner) => MathNode::Phantom(Box::new(reconstruct_node(arena, inner))),
@@ -921,6 +938,8 @@ mod tests {
                 col_aligns: span,
                 cells: span,
                 num_cols: 1,
+                arraystretch_pct: 100,
+                add_jot: false,
             },
             CompactNode::Phantom(id),
             CompactNode::Boxed(id),
@@ -1102,6 +1121,8 @@ mod tests {
                     vec![MathNode::Number("4".into())],
                 ],
             ],
+            arraystretch: None,
+            add_jot: false,
         }]));
     }
 

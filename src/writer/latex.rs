@@ -389,6 +389,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             col_aligns,
             cells,
             num_cols,
+            ..
         } => {
             buf.push_str("\\begin{array}{");
             for &align_id in arena.children(col_aligns) {

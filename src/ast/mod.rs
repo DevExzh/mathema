@@ -132,6 +132,8 @@ pub enum MathNode {
     Array {
         columns: Vec<ColumnAlign>,
         rows: Vec<Vec<Vec<MathNode>>>,
+        arraystretch: Option<f64>,
+        add_jot: bool,
     },
 
     // === Decorators ===
@@ -703,6 +705,8 @@ mod tests {
             MathNode::Array {
                 columns: vec![ColumnAlign::Center],
                 rows: vec![vec![vec![MathNode::Number("1".into())]]],
+                arraystretch: None,
+                add_jot: false,
             },
             MathNode::Phantom(Box::new(MathNode::Number("0".into()))),
             MathNode::Boxed(Box::new(MathNode::Number("1".into()))),

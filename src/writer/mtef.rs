@@ -333,7 +333,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             }
             write_node(buf, base)?;
         },
-        MathNode::Array { columns, rows } => {
+        MathNode::Array { columns, rows, .. } => {
             let num_rows = u8::try_from(rows.len()).map_err(|_| {
                 crate::error::Error::Unsupported(format!(
                     "MTEF matrix rows ({}) exceeds maximum of 255",

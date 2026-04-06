@@ -709,6 +709,8 @@ mod tests {
                     vec![MathNode::Number("4".into())],
                 ],
             ],
+            arraystretch: None,
+            add_jot: false,
         });
         assert!(output.starts_with('\u{25A0}'));
         assert!(output.contains('&'));

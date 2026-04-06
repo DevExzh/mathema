@@ -540,6 +540,17 @@ impl LatexCompactParser {
         columns: &[ColumnAlign],
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
+        self.build_array_with_spacing(columns, rows, 100, false)
+    }
+
+    /// Build an Array node with explicit spacing parameters.
+    fn build_array_with_spacing(
+        &mut self,
+        columns: &[ColumnAlign],
+        rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
+        arraystretch_pct: u8,
+        add_jot: bool,
+    ) -> NodeId {
         // Compute the actual number of columns as the maximum of the declared
         // column spec and the widest row.  This ensures the flat cell array
         // stride is correct even when rows contain more `&` separators than
@@ -569,6 +580,8 @@ impl LatexCompactParser {
             col_aligns,
             cells,
             num_cols,
+            arraystretch_pct,
+            add_jot,
         })
     }
 
@@ -2787,9 +2800,12 @@ impl LatexCompactParser {
             | "matrix*" | "pmatrix*" | "bmatrix*" | "vmatrix*" | "Bmatrix*" | "Vmatrix*" => {
                 self.parse_matrix_env(input, env_name)
             },
-            "cases" => self.parse_cases_env(input),
+            "smallmatrix" => self.parse_smallmatrix_env(input, env_name),
+            "cases" | "dcases" => self.parse_cases_env(input, env_name),
+            "rcases" | "drcases" => self.parse_rcases_env(input, env_name),
             "aligned" | "align" | "align*" => self.parse_align_env(input, env_name),
             "alignedat" => self.parse_alignedat_env(input, env_name),
+            "gathered" => self.parse_gather_env(input, env_name),
             "gather" | "gather*" => self.parse_gather_env(input, env_name),
             "equation" | "equation*" => self.parse_equation_env(input, env_name),
             "multline" | "multline*" => self.parse_multline_env(input, env_name),
@@ -2899,16 +2915,16 @@ impl LatexCompactParser {
         }
     }
 
-    fn parse_cases_env<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+    fn parse_cases_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
         let (input, rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        let (input, _) = tag("cases")(input)?;
+        let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        let array_id = self.build_array(&[ColumnAlign::Left, ColumnAlign::Left], rows);
+        let array_id = self.build_array_with_spacing(&[ColumnAlign::Left, ColumnAlign::Left], rows, 120, false);
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
         let content = self.arena.push_children(&[array_id]);
@@ -2920,6 +2936,47 @@ impl LatexCompactParser {
                 content,
             }),
         ))
+    }
+
+    fn parse_rcases_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
+        let (input, rows) = self.parse_table_body(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = tag("\\end")(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, _) = tag(env_name)(input)?;
+        let (input, _) = char('}')(input)?;
+
+        let array_id = self.build_array_with_spacing(&[ColumnAlign::Left, ColumnAlign::Left], rows, 120, false);
+        let open = self.arena.push_str("");
+        let close = self.arena.push_str("}");
+        let content = self.arena.push_children(&[array_id]);
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Fenced {
+                open,
+                close,
+                content,
+            }),
+        ))
+    }
+
+    fn parse_smallmatrix_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
+        let (input, rows) = self.parse_table_body(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = tag("\\end")(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, _) = tag(env_name)(input)?;
+        let (input, _) = char('}')(input)?;
+
+        let columns: SmallVec<[ColumnAlign; 4]> = if let Some(first_row) = rows.first() {
+            smallvec::smallvec![ColumnAlign::Center; first_row.len()]
+        } else {
+            SmallVec::new()
+        };
+
+        Ok((input, self.build_array_with_spacing(&columns, rows, 50, false)))
     }
 
     fn parse_align_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
@@ -2942,7 +2999,7 @@ impl LatexCompactParser {
             .take(max_row_len.max(base_pattern.len()))
             .collect();
 
-        Ok((input, self.build_array(&columns, rows)))
+        Ok((input, self.build_array_with_spacing(&columns, rows, 100, true)))
     }
 
     fn parse_alignedat_env<'a>(
@@ -2979,7 +3036,7 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        Ok((input, self.build_array(&[ColumnAlign::Center], rows)))
+        Ok((input, self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true)))
     }
 
     fn parse_equation_env<'a>(

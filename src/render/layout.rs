@@ -998,7 +998,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             accent,
             position,
         } => layout_accent(base, *accent, *position, ctx),
-        MathNode::Array { columns, rows } => layout_array(columns, rows, ctx),
+        MathNode::Array { columns, rows, arraystretch, add_jot } => layout_array(columns, rows, *arraystretch, *add_jot, ctx),
         MathNode::Phantom(content) => layout_phantom(content, ctx),
         MathNode::Boxed(content) => layout_boxed(content, ctx),
         MathNode::Cancel { stroke, content } => layout_cancel(*stroke, content, ctx),
@@ -2501,17 +2501,20 @@ fn layout_accent(
 fn layout_array(
     columns: &[ColumnAlign],
     rows: &[Vec<Vec<MathNode>>],
+    arraystretch_opt: Option<f64>,
+    add_jot: bool,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
     let col_gap = 1.0 * size; // column separation
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
-    let arraystretch = 1.0_f64;
+    let arraystretch = arraystretch_opt.unwrap_or(1.0);
     let baselineskip = 1.2 * size;
     let arrayskip = arraystretch * baselineskip;
     let arstrut_height = 0.7 * arrayskip;
     let arstrut_depth = 0.3 * arrayskip;
+    let jot = 0.3 * size;
 
     // Layout all cells
     let mut cell_layouts: Vec<Vec<LayoutBox>> = Vec::new();
@@ -2538,6 +2541,13 @@ fn layout_array(
             col_widths[j] = col_widths[j].max(cell.width);
             row_heights[i] = row_heights[i].max(cell.height);
             row_depths[i] = row_depths[i].max(cell.depth);
+        }
+    }
+
+    // addJot: extra 0.3em depth on every non-last row
+    if add_jot {
+        for d in row_depths.iter_mut().take(n_rows.saturating_sub(1)) {
+            *d += jot;
         }
     }
 
@@ -2905,7 +2915,9 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             col_aligns,
             cells,
             num_cols,
-        } => layout_array_c(arena, col_aligns, cells, num_cols, ctx),
+            arraystretch_pct,
+            add_jot,
+        } => layout_array_c(arena, col_aligns, cells, num_cols, arraystretch_pct, add_jot, ctx),
         CompactNode::Phantom(inner) => layout_phantom_c(arena, inner, ctx),
         CompactNode::Boxed(inner) => layout_boxed_c(arena, inner, ctx),
         CompactNode::Cancel { stroke, content } => layout_cancel_c(arena, stroke, content, ctx),
@@ -4275,17 +4287,20 @@ fn layout_array_c(
     col_aligns: NodeSpan,
     cells: NodeSpan,
     num_cols: u16,
+    arraystretch_pct: u8,
+    add_jot: bool,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
     let col_gap = 1.0 * size;
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
-    let arraystretch = 1.0_f64;
+    let arraystretch = arraystretch_pct as f64 / 100.0;
     let baselineskip = 1.2 * size;
     let arrayskip = arraystretch * baselineskip;
     let arstrut_height = 0.7 * arrayskip;
     let arstrut_depth = 0.3 * arrayskip;
+    let jot = 0.3 * size;
 
     // Extract column alignments
     let columns: Vec<ColumnAlign> = arena
@@ -4330,6 +4345,13 @@ fn layout_array_c(
                 row_heights[i] = row_heights[i].max(cell_layouts[idx].height);
                 row_depths[i] = row_depths[i].max(cell_layouts[idx].depth);
             }
+        }
+    }
+
+    // addJot: extra 0.3em depth on every non-last row
+    if add_jot {
+        for d in row_depths.iter_mut().take(n_rows.saturating_sub(1)) {
+            *d += jot;
         }
     }
 
@@ -4903,7 +4925,7 @@ fn layout_node_arena(
         CompactNode::Root { index, radicand } => layout_sqrt_arena(ast, radicand, Some(index), arena, ctx),
         CompactNode::Nary { op, sub, sup, body, limits } => layout_nary_arena(ast, op, sub, sup, body, limits, arena, ctx),
         CompactNode::Accent { base, accent, position } => layout_accent_arena(ast, base, accent, position, arena, ctx),
-        CompactNode::Array { col_aligns, cells, num_cols } => layout_array_arena(ast, col_aligns, cells, num_cols, arena, ctx),
+        CompactNode::Array { col_aligns, cells, num_cols, arraystretch_pct, add_jot } => layout_array_arena(ast, col_aligns, cells, num_cols, arraystretch_pct, add_jot, arena, ctx),
         CompactNode::Phantom(inner) => layout_phantom_arena(ast, inner, arena, ctx),
         CompactNode::Boxed(inner) => layout_boxed_arena(ast, inner, arena, ctx),
         CompactNode::Cancel { stroke, content } => layout_cancel_arena(ast, stroke, content, arena, ctx),
@@ -6530,11 +6552,14 @@ fn layout_accent_arena(
 }
 
 #[allow(clippy::needless_range_loop)]
+#[allow(clippy::too_many_arguments)]
 fn layout_array_arena(
     ast: &AstArena,
     col_aligns: NodeSpan,
     cells: NodeSpan,
     num_cols: u16,
+    arraystretch_pct: u8,
+    add_jot: bool,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -6542,11 +6567,12 @@ fn layout_array_arena(
     let col_gap = 1.0 * size;
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
-    let arraystretch = 1.0_f64;
+    let arraystretch = arraystretch_pct as f64 / 100.0;
     let baselineskip = 1.2 * size;
     let arrayskip = arraystretch * baselineskip;
     let arstrut_height = 0.7 * arrayskip;
     let arstrut_depth = 0.3 * arrayskip;
+    let jot = 0.3 * size;
 
     // Extract column alignments
     let columns: Vec<ColumnAlign> = ast
@@ -6592,6 +6618,13 @@ fn layout_array_arena(
                 row_heights[i] = row_heights[i].max(b.height);
                 row_depths[i] = row_depths[i].max(b.depth);
             }
+        }
+    }
+
+    // addJot: extra 0.3em depth on every non-last row
+    if add_jot {
+        for d in row_depths.iter_mut().take(n_rows.saturating_sub(1)) {
+            *d += jot;
         }
     }
 
@@ -7070,6 +7103,8 @@ mod tests {
                 ],
             ],
             columns: vec![ColumnAlign::Center, ColumnAlign::Center],
+            arraystretch: None,
+            add_jot: false,
         }]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         assert!(root.width > 0.0);
