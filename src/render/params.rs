@@ -39,6 +39,8 @@ pub struct TexParams {
     pub num1: f64,
     /// Text-mode fraction numerator shift up.
     pub num2: f64,
+    /// Numerator shift up for no-bar fractions in non-display styles.
+    pub num3: f64,
     /// Display-mode fraction denominator shift down.
     pub denom1: f64,
     /// Text-mode fraction denominator shift down.
@@ -60,6 +62,7 @@ const SIGMA_SUP_DROP: [f64; 3] = [0.386, 0.353, 0.494];
 const SIGMA_SUB_DROP: [f64; 3] = [0.050, 0.071, 0.100];
 const SIGMA_NUM1: [f64; 3] = [0.677, 0.732, 0.925];
 const SIGMA_NUM2: [f64; 3] = [0.394, 0.384, 0.387];
+const SIGMA_NUM3: [f64; 3] = [0.444, 0.471, 0.504];
 const SIGMA_DENOM1: [f64; 3] = [0.686, 0.752, 1.025];
 const SIGMA_DENOM2: [f64; 3] = [0.345, 0.344, 0.532];
 const SIGMA_DELIM1: [f64; 3] = [2.390, 1.700, 1.980];
@@ -98,6 +101,7 @@ impl TexParams {
             delim2: SIGMA_DELIM2[i],
             num1: SIGMA_NUM1[i],
             num2: SIGMA_NUM2[i],
+            num3: SIGMA_NUM3[i],
             denom1: SIGMA_DENOM1[i],
             denom2: SIGMA_DENOM2[i],
             big_op_spacing: XI_BIG_OP_SPACING[i],

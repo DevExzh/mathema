@@ -1245,9 +1245,11 @@ fn layout_fraction(
         _ => p.rule_thickness * size,
     };
 
-    // Shifts from axis
+    // Shifts from axis (num3 used for no-bar fractions in non-display styles)
     let (num_shift, den_shift) = if ctx.style.is_display() {
         (p.num1 * size, p.denom1 * size)
+    } else if bar_thickness == 0.0 {
+        (p.num3 * size, p.denom2 * size)
     } else {
         (p.num2 * size, p.denom2 * size)
     };
@@ -2907,6 +2909,8 @@ fn layout_fraction_c(
 
     let (num_shift, den_shift) = if ctx.style.is_display() {
         (p.num1 * size, p.denom1 * size)
+    } else if bar_thickness == 0.0 {
+        (p.num3 * size, p.denom2 * size)
     } else {
         (p.num2 * size, p.denom2 * size)
     };
@@ -4780,6 +4784,8 @@ fn layout_fraction_arena(
 
     let (num_shift, den_shift) = if ctx.style.is_display() {
         (p.num1 * size, p.denom1 * size)
+    } else if bar_thickness == 0.0 {
+        (p.num3 * size, p.denom2 * size)
     } else {
         (p.num2 * size, p.denom2 * size)
     };
