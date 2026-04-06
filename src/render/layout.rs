@@ -294,6 +294,44 @@ fn is_stretchy_overunder(sym: &str) -> bool {
     )
 }
 
+/// Returns `true` if the symbol string is an overbrace character (U+23DE).
+fn is_overbrace_sym(sym: &str) -> bool {
+    sym == "\u{23DE}"
+}
+
+/// Returns `true` if the symbol string is an underbrace character (U+23DF).
+fn is_underbrace_sym(sym: &str) -> bool {
+    sym == "\u{23DF}"
+}
+
+/// Check if a MathNode is a Symbol containing overbrace ⏞.
+fn node_is_overbrace(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(_, s) if is_overbrace_sym(s))
+}
+
+/// Check if a MathNode is a Symbol containing underbrace ⏟.
+fn node_is_underbrace(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(_, s) if is_underbrace_sym(s))
+}
+
+/// Check if a CompactNode (via arena) is a Symbol containing overbrace ⏞.
+fn node_is_overbrace_c(arena: &AstArena, id: NodeId) -> bool {
+    if let CompactNode::Symbol(_, sid) = *arena.node(id) {
+        is_overbrace_sym(arena.str_val(sid))
+    } else {
+        false
+    }
+}
+
+/// Check if a CompactNode (via arena) is a Symbol containing underbrace ⏟.
+fn node_is_underbrace_c(arena: &AstArena, id: NodeId) -> bool {
+    if let CompactNode::Symbol(_, sid) = *arena.node(id) {
+        is_underbrace_sym(arena.str_val(sid))
+    } else {
+        false
+    }
+}
+
 /// Returns true if `ch` is an extensible arrow character used by \xrightarrow etc.
 fn is_extensible_arrow(ch: char) -> bool {
     matches!(ch,
@@ -774,35 +812,50 @@ fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
 /// Generate an SVG path string for a stretchy over/under decoration.
 /// Coordinates are in em units with (0,0) at top-left.
 fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
+    // Thickness for filled brace shapes (proportion of height)
+    let t = (h * 0.18).max(0.02);
     match sym {
-        // Overbrace ⏞ — curly brace above, tip points up
+        // Overbrace ⏞ — filled curly brace above, tip points up
         "\u{23DE}" => {
             let mid = w / 2.0;
             let q = w * 0.25;
             let tq = w * 0.75;
+            // Outer curve: bottom-left to tip(top) to bottom-right
+            // Inner curve: bottom-right (offset up by t) back to bottom-left (offset up by t)
             format!(
-                "M0,{h:.4} Q{q:.4},{h:.4} {mid:.4},0 Q{tq:.4},{h:.4} {w:.4},{h:.4}"
+                "F:M0,{h:.4} Q{q:.4},{h:.4} {mid:.4},0 Q{tq:.4},{h:.4} {w:.4},{h:.4} \
+                 L{w:.4},{ht:.4} Q{tq:.4},{ht:.4} {mid:.4},{t:.4} Q{q:.4},{ht:.4} 0,{ht:.4} Z",
+                h = h, q = q, mid = mid, tq = tq, w = w, ht = h - t, t = t
             )
         },
-        // Underbrace ⏟ — curly brace below, tip points down
+        // Underbrace ⏟ — filled curly brace below, tip points down
         "\u{23DF}" => {
             let mid = w / 2.0;
             let q = w * 0.25;
             let tq = w * 0.75;
+            // Outer curve: top-left to tip(bottom) to top-right
+            // Inner curve: top-right (offset down by t) back to top-left (offset down by t)
+            let hi = h - t;
             format!(
-                "M0,0 Q{q:.4},0 {mid:.4},{h:.4} Q{tq:.4},0 {w:.4},0"
+                "F:M0,0 Q{q:.4},0 {mid:.4},{h:.4} Q{tq:.4},0 {w:.4},0 \
+                 L{w:.4},{t:.4} Q{tq:.4},{t:.4} {mid:.4},{hi:.4} Q{q:.4},{t:.4} 0,{t:.4} Z",
+                h = h, q = q, mid = mid, tq = tq, w = w, t = t, hi = hi
             )
         },
-        // Overbracket ⎴ — square bracket above
+        // Overbracket ⎴ — square bracket above (filled)
         "\u{23B4}" => {
             format!(
-                "M0,{h:.4} L0,0 L{w:.4},0 L{w:.4},{h:.4}"
+                "F:M0,{h:.4} L0,0 L{w:.4},0 L{w:.4},{h:.4} \
+                 L{wi:.4},{h:.4} L{wi:.4},{t:.4} L{t:.4},{t:.4} L{t:.4},{h:.4} Z",
+                h = h, w = w, wi = w - t, t = t
             )
         },
-        // Underbracket ⎵ — square bracket below
+        // Underbracket ⎵ — square bracket below (filled)
         "\u{23B5}" => {
             format!(
-                "M0,0 L0,{h:.4} L{w:.4},{h:.4} L{w:.4},0"
+                "F:M0,0 L0,{h:.4} L{w:.4},{h:.4} L{w:.4},0 \
+                 L{wi:.4},0 L{wi:.4},{hi:.4} L{t:.4},{hi:.4} L{t:.4},0 Z",
+                h = h, w = w, wi = w - t, hi = h - t, t = t
             )
         },
         // Overline ‾ — horizontal rule
@@ -992,6 +1045,114 @@ fn layout_operator(op: &OperatorAttr, ctx: &LayoutCtx) -> LayoutBox {
 
 // === Structure node layouts ===
 
+/// Layout `\overbrace{content}^{annotation}` — stack annotation centered above the brace.
+/// Produces: annotation (top) → brace → content (bottom), all centered.
+fn layout_overbrace_annotated(
+    inner_base: &MathNode,
+    _over: &MathNode,
+    annotation: &MathNode,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let size = ctx.size();
+    let p = &ctx.params;
+
+    // 1. Layout the inner content
+    let content_box = layout_node(inner_base, ctx);
+    let content_w = content_box.width;
+
+    // 2. Create brace decoration
+    let sym = "\u{23DE}";
+    let brace_box = make_stretchy_overunder_box(sym, content_w.max(0.5 * size), size);
+    let brace_h = brace_box.height;
+
+    // 3. Layout annotation in script style
+    let ann_ctx = ctx.with_style(ctx.style.sup());
+    let ann_box = layout_node(annotation, &ann_ctx);
+
+    // 4. Compute vertical stacking
+    let gap1 = p.big_op_spacing[2] * size; // gap between content and brace
+    let gap2 = p.big_op_spacing[2] * size; // gap between brace and annotation
+
+    let max_w = content_w.max(brace_box.width).max(ann_box.width);
+    let content_dx = (max_w - content_box.width) / 2.0;
+    let brace_dx = (max_w - brace_box.width) / 2.0;
+    let ann_dx = (max_w - ann_box.width) / 2.0;
+
+    // content is at baseline (dy=0). Brace goes above content, annotation above brace.
+    let brace_dy = content_box.height + gap1 + brace_box.depth;
+    let ann_dy = brace_dy + brace_h + gap2 + ann_box.depth;
+
+    let total_height = ann_dy + ann_box.height;
+    let total_depth = content_box.depth;
+
+    let children = vec![
+        PositionedBox::new(content_dx, 0.0, content_box),
+        PositionedBox::new(brace_dx, brace_dy, brace_box),
+        PositionedBox::new(ann_dx, ann_dy, ann_box),
+    ];
+
+    LayoutBox {
+        width: max_w,
+        height: total_height,
+        depth: total_depth,
+        kind: BoxKind::VBox { children },
+    }
+}
+
+/// Layout `\underbrace{content}_{annotation}` — stack annotation centered below the brace.
+/// Produces: content (top) → brace → annotation (bottom), all centered.
+fn layout_underbrace_annotated(
+    inner_base: &MathNode,
+    _under: &MathNode,
+    annotation: &MathNode,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let size = ctx.size();
+    let p = &ctx.params;
+
+    // 1. Layout the inner content
+    let content_box = layout_node(inner_base, ctx);
+    let content_w = content_box.width;
+
+    // 2. Create brace decoration
+    let sym = "\u{23DF}";
+    let brace_box = make_stretchy_overunder_box(sym, content_w.max(0.5 * size), size);
+    let brace_h = brace_box.height;
+
+    // 3. Layout annotation in script style
+    let ann_ctx = ctx.with_style(ctx.style.sub());
+    let ann_box = layout_node(annotation, &ann_ctx);
+
+    // 4. Compute vertical stacking
+    let gap1 = p.big_op_spacing[4] * size; // gap between content and brace
+    let gap2 = p.big_op_spacing[4] * size; // gap between brace and annotation
+
+    let max_w = content_w.max(brace_box.width).max(ann_box.width);
+    let content_dx = (max_w - content_box.width) / 2.0;
+    let brace_dx = (max_w - brace_box.width) / 2.0;
+    let ann_dx = (max_w - ann_box.width) / 2.0;
+
+    // content is at baseline (dy=0). Brace goes below content, annotation below brace.
+    let brace_dy = content_box.depth + gap1 + brace_h;
+    let ann_dy = brace_dy + brace_box.depth + gap2 + ann_box.height;
+
+    let total_height = content_box.height;
+    let total_depth = ann_dy + ann_box.depth;
+
+    let children = vec![
+        PositionedBox::new(content_dx, 0.0, content_box),
+        PositionedBox::new(brace_dx, -brace_dy, brace_box),
+        PositionedBox::new(ann_dx, -ann_dy, ann_box),
+    ];
+
+    LayoutBox {
+        width: max_w,
+        height: total_height,
+        depth: total_depth,
+        kind: BoxKind::VBox { children },
+    }
+}
+
 /// TeXBook Rule 18a: superscript positioning.
 /// When the base is a large operator in display mode, place the superscript above as a limit.
 fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
@@ -999,6 +1160,15 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
     if is_large_op(base) && ctx.style.is_display() {
         return layout_big_op_limits_heap(base, None, Some(sup), ctx);
     }
+
+    // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
+    // Place annotation centered above the brace, not as a regular superscript.
+    if let MathNode::Overscript { base: inner_base, over, .. } = base {
+        if node_is_overbrace(over) {
+            return layout_overbrace_annotated(inner_base, over, sup, ctx);
+        }
+    }
+
     let base_box = layout_node(base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_box = layout_node(sup, &sup_ctx);
@@ -1054,6 +1224,15 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
     if is_large_op(base) && ctx.style.is_display() {
         return layout_big_op_limits_heap(base, Some(sub), None, ctx);
     }
+
+    // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
+    // Place annotation centered below the brace, not as a regular subscript.
+    if let MathNode::Underscript { base: inner_base, under, .. } = base {
+        if node_is_underbrace(under) {
+            return layout_underbrace_annotated(inner_base, under, sub, ctx);
+        }
+    }
+
     let base_box = layout_node(base, ctx);
     let sub_ctx = ctx.with_style(ctx.style.sub());
     let sub_box = layout_node(sub, &sub_ctx);
@@ -1955,7 +2134,7 @@ fn get_stretchy_overunder_sym(node: &MathNode) -> Option<&str> {
 
 /// Create a stretchy overunder decoration LayoutBox at the given width.
 fn make_stretchy_overunder_box(sym: &str, width: f64, size: f64) -> LayoutBox {
-    let deco_h = 0.12 * size;
+    let deco_h = 0.40 * size;
     LayoutBox {
         width,
         height: deco_h,
@@ -2749,11 +2928,115 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     }
 }
 
+/// Compact-path: layout `\overbrace{content}^{annotation}` with annotation above brace.
+fn layout_overbrace_annotated_c(
+    arena: &AstArena,
+    inner_base: NodeId,
+    annotation: NodeId,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let size = ctx.size();
+    let p = &ctx.params;
+
+    let content_box = layout_node_c(arena, inner_base, ctx);
+    let content_w = content_box.width;
+
+    let sym = "\u{23DE}";
+    let brace_box = make_stretchy_overunder_box(sym, content_w.max(0.5 * size), size);
+    let brace_h = brace_box.height;
+
+    let ann_ctx = ctx.with_style(ctx.style.sup());
+    let ann_box = layout_node_c(arena, annotation, &ann_ctx);
+
+    let gap1 = p.big_op_spacing[2] * size;
+    let gap2 = p.big_op_spacing[2] * size;
+
+    let max_w = content_w.max(brace_box.width).max(ann_box.width);
+    let content_dx = (max_w - content_box.width) / 2.0;
+    let brace_dx = (max_w - brace_box.width) / 2.0;
+    let ann_dx = (max_w - ann_box.width) / 2.0;
+
+    let brace_dy = content_box.height + gap1 + brace_box.depth;
+    let ann_dy = brace_dy + brace_h + gap2 + ann_box.depth;
+
+    let total_height = ann_dy + ann_box.height;
+    let total_depth = content_box.depth;
+
+    let children = vec![
+        PositionedBox::new(content_dx, 0.0, content_box),
+        PositionedBox::new(brace_dx, brace_dy, brace_box),
+        PositionedBox::new(ann_dx, ann_dy, ann_box),
+    ];
+
+    LayoutBox {
+        width: max_w,
+        height: total_height,
+        depth: total_depth,
+        kind: BoxKind::VBox { children },
+    }
+}
+
+/// Compact-path: layout `\underbrace{content}_{annotation}` with annotation below brace.
+fn layout_underbrace_annotated_c(
+    arena: &AstArena,
+    inner_base: NodeId,
+    annotation: NodeId,
+    ctx: &LayoutCtx,
+) -> LayoutBox {
+    let size = ctx.size();
+    let p = &ctx.params;
+
+    let content_box = layout_node_c(arena, inner_base, ctx);
+    let content_w = content_box.width;
+
+    let sym = "\u{23DF}";
+    let brace_box = make_stretchy_overunder_box(sym, content_w.max(0.5 * size), size);
+    let brace_h = brace_box.height;
+
+    let ann_ctx = ctx.with_style(ctx.style.sub());
+    let ann_box = layout_node_c(arena, annotation, &ann_ctx);
+
+    let gap1 = p.big_op_spacing[4] * size;
+    let gap2 = p.big_op_spacing[4] * size;
+
+    let max_w = content_w.max(brace_box.width).max(ann_box.width);
+    let content_dx = (max_w - content_box.width) / 2.0;
+    let brace_dx = (max_w - brace_box.width) / 2.0;
+    let ann_dx = (max_w - ann_box.width) / 2.0;
+
+    let brace_dy = content_box.depth + gap1 + brace_h;
+    let ann_dy = brace_dy + brace_box.depth + gap2 + ann_box.height;
+
+    let total_height = content_box.height;
+    let total_depth = ann_dy + ann_box.depth;
+
+    let children = vec![
+        PositionedBox::new(content_dx, 0.0, content_box),
+        PositionedBox::new(brace_dx, -brace_dy, brace_box),
+        PositionedBox::new(ann_dx, -ann_dy, ann_box),
+    ];
+
+    LayoutBox {
+        width: max_w,
+        height: total_height,
+        depth: total_depth,
+        kind: BoxKind::VBox { children },
+    }
+}
+
 fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     // Large operator in display mode: place superscript above (limits)
     if is_large_op_c(arena, base) && ctx.style.is_display() {
         return layout_big_op_limits_c(arena, base, None, Some(sup), ctx);
     }
+
+    // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
+    if let CompactNode::Overscript { base: inner_base, over, .. } = *arena.node(base) {
+        if node_is_overbrace_c(arena, over) {
+            return layout_overbrace_annotated_c(arena, inner_base, sup, ctx);
+        }
+    }
+
     let base_box = layout_node_c(arena, base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_box = layout_node_c(arena, sup, &sup_ctx);
@@ -2804,6 +3087,14 @@ fn layout_subscript_c(arena: &AstArena, base: NodeId, sub: NodeId, ctx: &LayoutC
     if is_large_op_c(arena, base) && ctx.style.is_display() {
         return layout_big_op_limits_c(arena, base, Some(sub), None, ctx);
     }
+
+    // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
+    if let CompactNode::Underscript { base: inner_base, under, .. } = *arena.node(base) {
+        if node_is_underbrace_c(arena, under) {
+            return layout_underbrace_annotated_c(arena, inner_base, sub, ctx);
+        }
+    }
+
     let base_box = layout_node_c(arena, base, ctx);
     let sub_ctx = ctx.with_style(ctx.style.sub());
     let sub_box = layout_node_c(arena, sub, &sub_ctx);
@@ -4637,6 +4928,133 @@ fn layout_node_arena(
 
 // ── Script and fraction arena layout ─────────────────────────────────
 
+/// Arena-path: layout `\overbrace{content}^{annotation}` with annotation above brace.
+fn layout_overbrace_annotated_arena(
+    ast: &AstArena,
+    inner_base: NodeId,
+    annotation: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    let p = &ctx.params;
+
+    let content_id = layout_node_arena(ast, inner_base, arena, ctx);
+    let content_w = arena.get(content_id).width;
+    let content_h = arena.get(content_id).height;
+    let content_d = arena.get(content_id).depth;
+
+    let sym = "\u{23DE}";
+    let deco_w = content_w.max(0.5 * size);
+    let deco_h = 0.40 * size;
+    let brace_id = arena.alloc(ArenaLayoutBox {
+        width: deco_w,
+        height: deco_h,
+        depth: 0.0,
+        kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+    });
+
+    let ann_ctx = ctx.with_style(ctx.style.sup());
+    let ann_id = layout_node_arena(ast, annotation, arena, &ann_ctx);
+    let ann_w = arena.get(ann_id).width;
+    let ann_h = arena.get(ann_id).height;
+    let ann_d = arena.get(ann_id).depth;
+
+    let brace_w = arena.get(brace_id).width;
+    let brace_h = arena.get(brace_id).height;
+    let brace_d = arena.get(brace_id).depth;
+
+    let gap1 = p.big_op_spacing[2] * size;
+    let gap2 = p.big_op_spacing[2] * size;
+
+    let max_w = content_w.max(brace_w).max(ann_w);
+    let content_dx = (max_w - content_w) / 2.0;
+    let brace_dx = (max_w - brace_w) / 2.0;
+    let ann_dx = (max_w - ann_w) / 2.0;
+
+    let brace_dy = content_h + gap1 + brace_d;
+    let ann_dy = brace_dy + brace_h + gap2 + ann_d;
+
+    let total_height = ann_dy + ann_h;
+    let total_depth = content_d;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: content_dx, dy: 0.0, id: content_id });
+    arena.push_child(ArenaPositionedBox { dx: brace_dx, dy: brace_dy, id: brace_id });
+    arena.push_child(ArenaPositionedBox { dx: ann_dx, dy: ann_dy, id: ann_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: max_w,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::VBox { children },
+    })
+}
+
+/// Arena-path: layout `\underbrace{content}_{annotation}` with annotation below brace.
+fn layout_underbrace_annotated_arena(
+    ast: &AstArena,
+    inner_base: NodeId,
+    annotation: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    let p = &ctx.params;
+
+    let content_id = layout_node_arena(ast, inner_base, arena, ctx);
+    let content_w = arena.get(content_id).width;
+    let content_h = arena.get(content_id).height;
+    let content_d = arena.get(content_id).depth;
+
+    let sym = "\u{23DF}";
+    let deco_w = content_w.max(0.5 * size);
+    let deco_h = 0.40 * size;
+    let brace_id = arena.alloc(ArenaLayoutBox {
+        width: deco_w,
+        height: deco_h,
+        depth: 0.0,
+        kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
+    });
+
+    let ann_ctx = ctx.with_style(ctx.style.sub());
+    let ann_id = layout_node_arena(ast, annotation, arena, &ann_ctx);
+    let ann_w = arena.get(ann_id).width;
+    let ann_h = arena.get(ann_id).height;
+    let ann_d = arena.get(ann_id).depth;
+
+    let brace_w = arena.get(brace_id).width;
+    let brace_h = arena.get(brace_id).height;
+
+    let gap1 = p.big_op_spacing[4] * size;
+    let gap2 = p.big_op_spacing[4] * size;
+
+    let max_w = content_w.max(brace_w).max(ann_w);
+    let content_dx = (max_w - content_w) / 2.0;
+    let brace_dx = (max_w - brace_w) / 2.0;
+    let ann_dx = (max_w - ann_w) / 2.0;
+
+    let brace_dy = content_d + gap1 + brace_h;
+    let ann_dy = brace_dy + 0.0 + gap2 + ann_h;
+
+    let total_height = content_h;
+    let total_depth = ann_dy + ann_d;
+
+    let children_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox { dx: content_dx, dy: 0.0, id: content_id });
+    arena.push_child(ArenaPositionedBox { dx: brace_dx, dy: -brace_dy, id: brace_id });
+    arena.push_child(ArenaPositionedBox { dx: ann_dx, dy: -ann_dy, id: ann_id });
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: max_w,
+        height: total_height,
+        depth: total_depth,
+        kind: ArenaBoxKind::VBox { children },
+    })
+}
+
 fn layout_superscript_arena(
     ast: &AstArena,
     base: NodeId,
@@ -4648,6 +5066,14 @@ fn layout_superscript_arena(
     if is_large_op_c(ast, base) && ctx.style.is_display() {
         return layout_big_op_limits_arena(ast, base, None, Some(sup), arena, ctx);
     }
+
+    // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
+    if let CompactNode::Overscript { base: inner_base, over, .. } = *ast.node(base) {
+        if node_is_overbrace_c(ast, over) {
+            return layout_overbrace_annotated_arena(ast, inner_base, sup, arena, ctx);
+        }
+    }
+
     let base_id = layout_node_arena(ast, base, arena, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_id = layout_node_arena(ast, sup, arena, &sup_ctx);
@@ -4711,6 +5137,14 @@ fn layout_subscript_arena(
     if is_large_op_c(ast, base) && ctx.style.is_display() {
         return layout_big_op_limits_arena(ast, base, Some(sub), None, arena, ctx);
     }
+
+    // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
+    if let CompactNode::Underscript { base: inner_base, under, .. } = *ast.node(base) {
+        if node_is_underbrace_c(ast, under) {
+            return layout_underbrace_annotated_arena(ast, inner_base, sub, arena, ctx);
+        }
+    }
+
     let base_id = layout_node_arena(ast, base, arena, ctx);
     let sub_ctx = ctx.with_style(ctx.style.sub());
     let sub_id = layout_node_arena(ast, sub, arena, &sub_ctx);
@@ -5720,7 +6154,7 @@ fn layout_overscript_arena(
     // Check if the over node is a stretchy decoration symbol
     let over_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
         let deco_w = base_w.max(0.5 * size);
-        let deco_h = 0.12 * size;
+        let deco_h = 0.40 * size;
         arena.alloc(ArenaLayoutBox {
             width: deco_w,
             height: deco_h,
@@ -5811,7 +6245,7 @@ fn layout_underscript_arena(
 
     let under_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
         let deco_w = base_w.max(0.5 * size);
-        let deco_h = 0.12 * size;
+        let deco_h = 0.40 * size;
         arena.alloc(ArenaLayoutBox {
             width: deco_w,
             height: deco_h,
@@ -5914,7 +6348,7 @@ fn layout_underover_arena(
 
     let over_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
         let deco_w = base_w.max(0.5 * size);
-        let deco_h = 0.12 * size;
+        let deco_h = 0.40 * size;
         arena.alloc(ArenaLayoutBox {
             width: deco_w,
             height: deco_h,
@@ -5928,7 +6362,7 @@ fn layout_underover_arena(
 
     let under_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
         let deco_w = base_w.max(0.5 * size);
-        let deco_h = 0.12 * size;
+        let deco_h = 0.40 * size;
         arena.alloc(ArenaLayoutBox {
             width: deco_w,
             height: deco_h,
