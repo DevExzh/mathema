@@ -495,6 +495,14 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             let _ = write!(buf, "{}em", height.as_f64());
             buf.push('}');
         },
+        CompactNode::StyleSwitch(s) => {
+            match s {
+                0 => buf.push_str("\\displaystyle "),
+                1 => buf.push_str("\\textstyle "),
+                2 => buf.push_str("\\scriptstyle "),
+                _ => buf.push_str("\\scriptscriptstyle "),
+            }
+        },
     }
 }
 

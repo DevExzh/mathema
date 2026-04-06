@@ -488,7 +488,8 @@ fn check_compact_depth(
         | CompactNode::Space(_)
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
-        | CompactNode::Rule { .. } => Ok(()),
+        | CompactNode::Rule { .. }
+        | CompactNode::StyleSwitch(_) => Ok(()),
 
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
             for &child in arena.children(span) {

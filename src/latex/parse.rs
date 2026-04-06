@@ -1652,15 +1652,15 @@ impl LatexCompactParser {
                 self.arena
                     .push_node(CompactNode::Space(Rational::new(1, 2))),
             ),
-            // Style commands — \displaystyle sets the display mode flag;
-            // others are silently consumed for now.
+            // Style commands — emit StyleSwitch nodes that the layout engine uses
+            // to change the math style for subsequent siblings in the same row.
             "displaystyle" => {
                 self.display_override = true;
-                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
+                Some(self.arena.push_node(CompactNode::StyleSwitch(0)))
             },
-            "textstyle" | "scriptstyle" | "scriptscriptstyle" => {
-                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
-            },
+            "textstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(1))),
+            "scriptstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(2))),
+            "scriptscriptstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(3))),
             // Line break / no-op commands consumed silently
             "newline" | "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak"
             | "limits" | "nolimits" => {
@@ -2111,7 +2111,34 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Alpha,
             )));
         };
-        let sid = self.arena.push_str(name);
+        // Resolve LaTeX commands within the name (e.g., \Gamma → Γ)
+        let sid = if name.contains('\\') {
+            let mut resolved = String::with_capacity(name.len());
+            let mut chars = name.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '\\' {
+                    let mut cmd = String::new();
+                    while let Some(&c) = chars.peek() {
+                        if c.is_ascii_alphabetic() {
+                            cmd.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Some(unicode) = latex_to_unicode(&cmd) {
+                        resolved.push(unicode);
+                    } else if !cmd.is_empty() {
+                        resolved.push_str(&cmd);
+                    }
+                } else {
+                    resolved.push(ch);
+                }
+            }
+            self.arena.push_str(&resolved)
+        } else {
+            self.arena.push_str(name)
+        };
         Ok((
             input,
             self.arena.push_node(CompactNode::Operator {

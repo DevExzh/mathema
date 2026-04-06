@@ -226,6 +226,9 @@ pub enum CompactNode {
 
     /// `\rule[lift]{width}{height}` — visible filled rectangle.
     Rule { width: Rational, height: Rational },
+
+    /// Math style switch: 0=Display, 1=Text, 2=Script, 3=ScriptScript.
+    StyleSwitch(u8),
 }
 
 // Compile-time size check: CompactNode must fit in 32 bytes.
@@ -748,6 +751,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         CompactNode::Rule { width, height: _ } => {
             // Reconstruct as a Space with the width dimension (best approximation)
             MathNode::Space(width)
+        },
+        CompactNode::StyleSwitch(_) => {
+            // Style switches are layout-only directives; reconstruct as empty row
+            MathNode::Row(Vec::new())
         },
     }
 }

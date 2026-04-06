@@ -124,7 +124,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
                 AtomType::Ord
             }
         },
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } => AtomType::Ord,
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) => AtomType::Ord,
     }
 }
 

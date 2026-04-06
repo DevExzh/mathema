@@ -549,7 +549,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             write_node_c(out, arena, content);
         },
 
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } => {},
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) => {},
     }
 }
 

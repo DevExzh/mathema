@@ -219,6 +219,7 @@ fn italic_correction(base: &LayoutBox) -> f64 {
 }
 
 
+#[derive(Clone)]
 struct LayoutCtx<'a> {
     style: MathStyle,
     params: TexParams,
@@ -2194,21 +2195,33 @@ fn layout_row_c(arena: &AstArena, span: NodeSpan, ctx: &LayoutCtx) -> LayoutBox 
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
+    let mut current_ctx = ctx.clone();
 
     for &id in ids {
+        // Handle style switches — update context for subsequent children
+        if let CompactNode::StyleSwitch(s) = *arena.node(id) {
+            current_ctx = match s {
+                0 => ctx.with_style(MathStyle::Display),
+                1 => ctx.with_style(MathStyle::Text),
+                2 => ctx.with_style(MathStyle::Script),
+                _ => ctx.with_style(MathStyle::ScriptScript),
+            };
+            continue;
+        }
+
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
         let raw_atom = spacing::classify_node_c(arena, id);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, ctx.style);
+            let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.style);
             if space > 0.0 {
-                let kern_width = space * ctx.size();
+                let kern_width = space * current_ctx.size();
                 cursor_x += kern_width;
             }
         }
 
-        let layout = layout_node_c(arena, id, ctx);
+        let layout = layout_node_c(arena, id, &current_ctx);
         max_height = max_height.max(layout.height);
         max_depth = max_depth.max(layout.depth);
 
@@ -2312,6 +2325,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Styled(style, span) => layout_styled_c(arena, style, span, ctx),
         CompactNode::Color { color, content } => layout_color_c(arena, color, content, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => LayoutBox::kern(0.0),
+        CompactNode::StyleSwitch(_) => LayoutBox::kern(0.0),
         CompactNode::Rule { width, height } => {
             let w = width.as_f64() * ctx.size();
             let h = height.as_f64() * ctx.size();
@@ -3694,6 +3708,7 @@ impl<'a> LayoutBuilder<'a> {
     }
 }
 
+#[derive(Clone)]
 struct ArenaLayoutCtx<'a> {
     style: MathStyle,
     params: TexParams,
@@ -3832,26 +3847,38 @@ fn layout_row_arena(
     // Phase 1: layout all children and collect (box_id, dx) pairs.
     // We must NOT call begin_children/push_child while nested layout calls
     // are still in progress, because they also push into the same flat array.
-    // SmallVec avoids heap allocation for rows with ≤16 children (the common case).
+    // SmallVec avoids heap allocation for rows with <=16 children (the common case).
     let mut laid_out: SmallVec<[(LayoutBoxId, f64); 16]> = SmallVec::new();
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
+    let mut current_ctx = ctx.clone();
 
     for &id in ids {
+        // Handle style switches — update context for subsequent children
+        if let CompactNode::StyleSwitch(s) = *ast.node(id) {
+            current_ctx = match s {
+                0 => ctx.with_style(MathStyle::Display),
+                1 => ctx.with_style(MathStyle::Text),
+                2 => ctx.with_style(MathStyle::Script),
+                _ => ctx.with_style(MathStyle::ScriptScript),
+            };
+            continue;
+        }
+
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
         let raw_atom = spacing::classify_node_c(ast, id);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, ctx.style);
+            let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.style);
             if space > 0.0 {
-                cursor_x += space * ctx.size();
+                cursor_x += space * current_ctx.size();
             }
         }
 
-        let box_id = layout_node_arena(ast, id, arena, ctx);
+        let box_id = layout_node_arena(ast, id, arena, &current_ctx);
         let b = arena.get(box_id);
         max_height = max_height.max(b.height);
         max_depth = max_depth.max(b.depth);
@@ -3942,6 +3969,7 @@ fn layout_node_arena(
         CompactNode::Styled(style, span) => layout_styled_arena(ast, style, span, arena, ctx),
         CompactNode::Color { color, content } => layout_color_arena(ast, color, content, arena, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
+        CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::Rule { width, height } => {
             let w = width.as_f64() * ctx.size();
             let h = height.as_f64() * ctx.size();

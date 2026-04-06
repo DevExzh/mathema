@@ -956,6 +956,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             let _ = write!(buf, " height=\"{}em\"", height.as_f64());
             buf.push_str("/>");
         },
+        CompactNode::StyleSwitch(_) => {},
     }
 }
 
