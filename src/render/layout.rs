@@ -333,41 +333,25 @@ const WIDEHAT_PATHS: [KatexAccentPath; 4] = [
 const WIDETILDE_PATHS: [KatexAccentPath; 4] = [
     // tilde1: viewBox 0 0 600 260
     KatexAccentPath {
-        path: "M200 55.538c-77 0-168 73.953-177 73.953-3 0-7\
-               -2.175-9-5.437L2 97c-1-2-2-4-2-6 0-4 2-7 5-9l20-12C116 12 171 0 207 0c86 0\
-                114 68 191 68 78 0 168-68 177-68 4 0 7 2 9 5l12 19c1 2.175 2 4.35 2 6.525 0\
-                4.35-2 7.613-5 9.788l-19 13.05c-92 63.077-116.937 75.308-183 76.128\
-               -68.267.847-113-73.952-191-73.952z",
+        path: "M200 55.538c-77 0-168 73.953-177 73.953-3 0-7-2.175-9-5.437L2 97c-1-2-2-4-2-6 0-4 2-7 5-9l20-12C116 12 171 0 207 0c86 0 114 68 191 68 78 0 168-68 177-68 4 0 7 2 9 5l12 19c1 2.175 2 4.35 2 6.525 0 4.35-2 7.613-5 9.788l-19 13.05c-92 63.077-116.937 75.308-183 76.128-68.267.847-113-73.952-191-73.952z",
         viewbox_w: 600.0,
         viewbox_h: 260.0,
     },
     // tilde2: viewBox 0 0 1033 286
     KatexAccentPath {
-        path: "M344 55.266c-142 0-300.638 81.316-311.5 86.418\
-               -8.01 3.762-22.5 10.91-23.5 5.562L1 120c-1-2-1-3-1-4 0-5 3-9 8-10l18.4-9C160.9\
-                31.9 283 0 358 0c148 0 188 122 331 122s314-97 326-97c4 0 8 2 10 7l7 21.114\
-               c1 2.14 1 3.21 1 4.28 0 5.347-3 9.626-7 10.696l-22.3 12.622C852.6 158.372 751\
-                181.476 676 181.476c-149 0-189-126.21-332-126.21z",
+        path: "M344 55.266c-142 0-300.638 81.316-311.5 86.418-8.01 3.762-22.5 10.91-23.5 5.562L1 120c-1-2-1-3-1-4 0-5 3-9 8-10l18.4-9C160.9 31.9 283 0 358 0c148 0 188 122 331 122s314-97 326-97c4 0 8 2 10 7l7 21.114c1 2.14 1 3.21 1 4.28 0 5.347-3 9.626-7 10.696l-22.3 12.622C852.6 158.372 751 181.476 676 181.476c-149 0-189-126.21-332-126.21z",
         viewbox_w: 1033.0,
         viewbox_h: 286.0,
     },
     // tilde3: viewBox 0 0 2339 306
     KatexAccentPath {
-        path: "M786 59C457 59 32 175.242 13 175.242c-6 0-10-3.457\
-               -11-10.37L.15 138c-1-7 3-12 10-13l19.2-6.4C378.4 40.7 634.3 0 804.3 0c337 0\
-                411.8 157 746.8 157 328 0 754-112 773-112 5 0 10 3 11 9l1 14.075c1 8.066-.697\
-                16.595-6.697 17.492l-21.052 7.31c-367.9 98.146-609.15 122.696-778.15 122.696\
-               -338 0-409-156.573-744-156.573z",
+        path: "M786 59C457 59 32 175.242 13 175.242c-6 0-10-3.457-11-10.37L.15 138c-1-7 3-12 10-13l19.2-6.4C378.4 40.7 634.3 0 804.3 0c337 0 411.8 157 746.8 157 328 0 754-112 773-112 5 0 10 3 11 9l1 14.075c1 8.066-.697 16.595-6.697 17.492l-21.052 7.31c-367.9 98.146-609.15 122.696-778.15 122.696-338 0-409-156.573-744-156.573z",
         viewbox_w: 2339.0,
         viewbox_h: 306.0,
     },
     // tilde4: viewBox 0 0 2340 312
     KatexAccentPath {
-        path: "M786 58C457 58 32 177.487 13 177.487c-6 0-10-3.345\
-               -11-10.035L.15 143c-1-7 3-12 10-13l22-6.7C381.2 35 637.15 0 807.15 0c337 0 409\
-                177 744 177 328 0 754-127 773-127 5 0 10 3 11 9l1 14.794c1 7.805-3 13.38-9\
-                14.495l-20.7 5.574c-366.85 99.79-607.3 139.372-776.3 139.372-338 0-409\
-               -175.236-744-175.236z",
+        path: "M786 58C457 58 32 177.487 13 177.487c-6 0-10-3.345-11-10.035L.15 143c-1-7 3-12 10-13l22-6.7C381.2 35 637.15 0 807.15 0c337 0 409 177 744 177 328 0 754-127 773-127 5 0 10 3 11 9l1 14.794c1 7.805-3 13.38-9 14.495l-20.7 5.574c-366.85 99.79-607.3 139.372-776.3 139.372-338 0-409-175.236-744-175.236z",
         viewbox_w: 2340.0,
         viewbox_h: 312.0,
     },
@@ -497,6 +481,13 @@ fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
                         }
                     }
                 };
+                // Ensure a separator before this number if the previous char
+                // could be mistaken as part of the same token (digit or '.').
+                if let Some(&last) = result.as_bytes().last()
+                    && (last.is_ascii_digit() || last == b'.')
+                {
+                    result.push(' ');
+                }
                 // Format with up to 4 decimal places, trimming trailing zeros
                 let formatted = format!("{:.4}", scaled);
                 let formatted = formatted.trim_end_matches('0');
@@ -530,6 +521,13 @@ fn katex_accent_scaled(paths: &[KatexAccentPath; 4], w: f64, h: f64) -> String {
 /// Coordinates are in em units with (0,0) at top-left.
 /// Paths prefixed with "F:" are filled shapes (rendered without stroke);
 /// others use stroke-based rendering.
+/// Generate a filled circle SVG path for dot accents.
+/// `r` is the radius in em-equivalent units. The path fits in a 2r × 2r box.
+fn dot_circle_path(r: f64) -> String {
+    let d = r * 2.0;
+    format!("F:M{d:.4},{r:.4} a{r:.4},{r:.4} 0 1 1 -{d:.4},0 a{r:.4},{r:.4} 0 1 1 {d:.4},0 Z")
+}
+
 fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
     let stroke = 0.04; // matches emit.rs stroke-width
     match accent {
@@ -1845,7 +1843,12 @@ fn layout_accent(
             '\u{0307}' => {
                 let dot_r = 0.04 * size; // dot radius in em
                 let dot_size = dot_r * 2.0;
-                let dot = LayoutBox::rule(dot_size, dot_size);
+                let dot = LayoutBox {
+                    width: dot_size,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(dot_circle_path(dot_r)),
+                };
                 let dx = (base_width - dot_size) / 2.0;
                 LayoutBox {
                     width: base_width,
@@ -1864,8 +1867,18 @@ fn layout_accent(
                 let total_dots_w = dot_size * 2.0 + gap;
                 let dx_left = (base_width - total_dots_w) / 2.0;
                 let dx_right = dx_left + dot_size + gap;
-                let dot1 = LayoutBox::rule(dot_size, dot_size);
-                let dot2 = LayoutBox::rule(dot_size, dot_size);
+                let dot1 = LayoutBox {
+                    width: dot_size,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(dot_circle_path(dot_r)),
+                };
+                let dot2 = LayoutBox {
+                    width: dot_size,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(dot_circle_path(dot_r)),
+                };
                 LayoutBox {
                     width: base_width,
                     height: dot_size,
@@ -2299,6 +2312,16 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Styled(style, span) => layout_styled_c(arena, style, span, ctx),
         CompactNode::Color { color, content } => layout_color_c(arena, color, content, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => LayoutBox::kern(0.0),
+        CompactNode::Rule { width, height } => {
+            let w = width.as_f64() * ctx.size();
+            let h = height.as_f64() * ctx.size();
+            LayoutBox {
+                width: w,
+                height: h,
+                depth: 0.0,
+                kind: BoxKind::Rule { thickness: h },
+            }
+        },
     }
 }
 
@@ -3228,7 +3251,12 @@ fn layout_accent_c(
             '\u{0307}' => {
                 let dot_r = 0.04 * size;
                 let dot_size = dot_r * 2.0;
-                let dot = LayoutBox::rule(dot_size, dot_size);
+                let dot = LayoutBox {
+                    width: dot_size,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(dot_circle_path(dot_r)),
+                };
                 let dx = (base_width - dot_size) / 2.0;
                 LayoutBox {
                     width: base_width,
@@ -3246,8 +3274,18 @@ fn layout_accent_c(
                 let total_dots_w = dot_size * 2.0 + gap;
                 let dx_left = (base_width - total_dots_w) / 2.0;
                 let dx_right = dx_left + dot_size + gap;
-                let dot1 = LayoutBox::rule(dot_size, dot_size);
-                let dot2 = LayoutBox::rule(dot_size, dot_size);
+                let dot1 = LayoutBox {
+                    width: dot_size,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(dot_circle_path(dot_r)),
+                };
+                let dot2 = LayoutBox {
+                    width: dot_size,
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(dot_circle_path(dot_r)),
+                };
                 LayoutBox {
                     width: base_width,
                     height: dot_size,
@@ -3904,6 +3942,16 @@ fn layout_node_arena(
         CompactNode::Styled(style, span) => layout_styled_arena(ast, style, span, arena, ctx),
         CompactNode::Color { color, content } => layout_color_arena(ast, color, content, arena, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
+        CompactNode::Rule { width, height } => {
+            let w = width.as_f64() * ctx.size();
+            let h = height.as_f64() * ctx.size();
+            arena.alloc(ArenaLayoutBox {
+                width: w,
+                height: h,
+                depth: 0.0,
+                kind: ArenaBoxKind::Rule { thickness: h },
+            })
+        },
     }
 }
 
@@ -5050,9 +5098,9 @@ fn layout_accent_arena(
                 let dx = (base_w - dot_size) / 2.0;
                 let dot_id = arena.alloc(ArenaLayoutBox {
                     width: dot_size,
-                    height: dot_size / 2.0,
-                    depth: dot_size / 2.0,
-                    kind: ArenaBoxKind::Rule { thickness: dot_size },
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::SvgPath(dot_circle_path(dot_r)),
                 });
                 let children_start = arena.begin_children();
                 arena.push_child(ArenaPositionedBox { dx, dy: 0.0, id: dot_id });
@@ -5073,15 +5121,15 @@ fn layout_accent_arena(
                 let dx_right = dx_left + dot_size + gap;
                 let dot1 = arena.alloc(ArenaLayoutBox {
                     width: dot_size,
-                    height: dot_size / 2.0,
-                    depth: dot_size / 2.0,
-                    kind: ArenaBoxKind::Rule { thickness: dot_size },
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::SvgPath(dot_circle_path(dot_r)),
                 });
                 let dot2 = arena.alloc(ArenaLayoutBox {
                     width: dot_size,
-                    height: dot_size / 2.0,
-                    depth: dot_size / 2.0,
-                    kind: ArenaBoxKind::Rule { thickness: dot_size },
+                    height: dot_size,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::SvgPath(dot_circle_path(dot_r)),
                 });
                 let children_start = arena.begin_children();
                 arena.push_child(ArenaPositionedBox { dx: dx_left, dy: 0.0, id: dot1 });

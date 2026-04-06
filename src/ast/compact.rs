@@ -223,6 +223,9 @@ pub enum CompactNode {
     Middle(StrId),
     /// Array column alignment storage node.
     ColAlign(ColumnAlign),
+
+    /// `\rule[lift]{width}{height}` — visible filled rectangle.
+    Rule { width: Rational, height: Rational },
 }
 
 // Compile-time size check: CompactNode must fit in 32 bytes.
@@ -742,6 +745,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             MathNode::Symbol(SymbolKind::Fence, arena.str_val(sid).to_owned())
         },
         CompactNode::ColAlign(_) => MathNode::Space(Rational::zero()),
+        CompactNode::Rule { width, height: _ } => {
+            // Reconstruct as a Space with the width dimension (best approximation)
+            MathNode::Space(width)
+        },
     }
 }
 

@@ -487,6 +487,14 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str(arena.str_val(sid));
         },
         CompactNode::ColAlign(_) => {},
+        CompactNode::Rule { width, height } => {
+            use std::fmt::Write as _;
+            buf.push_str("\\rule{");
+            let _ = write!(buf, "{}em", width.as_f64());
+            buf.push_str("}{");
+            let _ = write!(buf, "{}em", height.as_f64());
+            buf.push('}');
+        },
     }
 }
 

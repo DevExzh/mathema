@@ -949,6 +949,13 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
         // Helper nodes
         CompactNode::Middle(sid) => write_mo_fence_fast(buf, arena.str_val(sid)),
         CompactNode::ColAlign(_) => {},
+        CompactNode::Rule { width, height } => {
+            use std::fmt::Write as _;
+            buf.push_str("<mspace");
+            let _ = write!(buf, " width=\"{}em\"", width.as_f64());
+            let _ = write!(buf, " height=\"{}em\"", height.as_f64());
+            buf.push_str("/>");
+        },
     }
 }
 

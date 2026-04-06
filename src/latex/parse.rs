@@ -86,6 +86,66 @@ fn negate_char(ch: char) -> Option<char> {
     }
 }
 
+/// Process raw LaTeX text-mode content: strip braces, handle `~`, `\ `, dashes, etc.
+fn clean_text_content(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        match bytes[i] {
+            b'{' | b'}' => { i += 1; } // strip grouping braces
+            b'~' => { out.push('\u{00A0}'); i += 1; } // non-breaking space
+            b'\\' if i + 1 < len => {
+                match bytes[i + 1] {
+                    b' ' => { out.push(' '); i += 2; }
+                    b'&' => { out.push('&'); i += 2; }
+                    b'#' => { out.push('#'); i += 2; }
+                    b'$' => { out.push('$'); i += 2; }
+                    b'%' => { out.push('%'); i += 2; }
+                    b'_' => { out.push('_'); i += 2; }
+                    b'\\' => { out.push(' '); i += 2; } // \\ = line break → space
+                    b',' => { out.push('\u{2009}'); i += 2; } // thin space
+                    b';' => { out.push('\u{2005}'); i += 2; } // medium space
+                    _ => {
+                        // Skip unknown commands: consume \word
+                        i += 1; // skip backslash
+                        let start = i;
+                        while i < len && bytes[i].is_ascii_alphabetic() { i += 1; }
+                        if i == start {
+                            // Single non-alpha char after \, pass through
+                            out.push(bytes[i] as char);
+                            i += 1;
+                        }
+                        // Otherwise silently drop the command name
+                    }
+                }
+            }
+            b'-' if i + 2 < len && bytes[i + 1] == b'-' && bytes[i + 2] == b'-' => {
+                out.push('\u{2014}'); // em-dash
+                i += 3;
+            }
+            b'-' if i + 1 < len && bytes[i + 1] == b'-' => {
+                out.push('\u{2013}'); // en-dash
+                i += 2;
+            }
+            b'`' if i + 1 < len && bytes[i + 1] == b'`' => {
+                out.push('\u{201C}'); // left double quote
+                i += 2;
+            }
+            b'\'' if i + 1 < len && bytes[i + 1] == b'\'' => {
+                out.push('\u{201D}'); // right double quote
+                i += 2;
+            }
+            _ => {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
 fn parse_column_spec(spec: &str) -> SmallVec<[ColumnAlign; 4]> {
     let mut result = SmallVec::new();
     let mut chars = spec.chars().peekable();
@@ -1981,9 +2041,10 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Char,
             )));
         }
-        let text = &input[..end];
+        let raw = &input[..end];
         let rest = &input[end + 1..]; // skip the closing '}'
-        let sid = self.arena.push_str(text);
+        let text = clean_text_content(raw);
+        let sid = self.arena.push_str(&text);
         Ok((rest, self.arena.push_node(CompactNode::Text(style, sid))))
     }
 
@@ -2279,10 +2340,10 @@ impl LatexCompactParser {
         Ok((rest, self.arena.push_node(CompactNode::Space(Rational::zero()))))
     }
 
-    /// `\rule[lift]{width}{height}` — consume arguments, emit a small space placeholder.
+    /// `\rule[lift]{width}{height}` — parse dimensions and emit a filled rectangle.
     fn parse_rule<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        // Optional [lift]
+        // Optional [lift] — consume but ignore
         let input = if input.starts_with('[') {
             if let Some(end) = input.find(']') {
                 &input[end + 1..]
@@ -2293,11 +2354,28 @@ impl LatexCompactParser {
             input
         };
         // Required {width}
-        let (input, _) = self.parse_required_group(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let width_end = input.find('}').ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let width_str = &input[..width_end];
+        let input = &input[width_end + 1..];
+        let mut wp = LatexCompactParser::with_capacity(width_str.len());
+        let width = wp.parse_dimension(width_str).map(|(_, r)| r).unwrap_or(Rational::zero());
+
         // Required {height}
-        let (input, _) = self.parse_required_group(input)?;
-        // Emit empty space (rule is visual only)
-        Ok((input, self.arena.push_node(CompactNode::Space(Rational::zero()))))
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let height_end = input.find('}').ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let height_str = &input[..height_end];
+        let input = &input[height_end + 1..];
+        let mut hp = LatexCompactParser::with_capacity(height_str.len());
+        let height = hp.parse_dimension(height_str).map(|(_, r)| r).unwrap_or(Rational::zero());
+
+        Ok((input, self.arena.push_node(CompactNode::Rule { width, height })))
     }
 
     fn parse_extensible_arrow<'a>(

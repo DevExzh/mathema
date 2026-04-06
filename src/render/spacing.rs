@@ -124,7 +124,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
                 AtomType::Ord
             }
         },
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) => AtomType::Ord,
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } => AtomType::Ord,
     }
 }
 
@@ -135,19 +135,69 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
 const SPACING_TABLE: [[i8; 8]; 8] = [
     //         Ord  Op  Bin  Rel  Open Close Punct Inner
     /* Ord   */
-    [0, 1, 2, 3, 0, 0, 0, 1],
-    /* Op    */ [1, 1, -2, 3, 0, 0, 0, 1],
-    /* Bin   */ [2, 2, 0, 0, 2, 0, 0, 2],
-    /* Rel   */ [3, 3, 0, 0, 3, 0, 0, 3],
+    [0, 1, -2, -3, 0, 0, 0, -1],
+    /* Op    */ [1, 1, 0, -3, 0, 0, 0, -1],
+    /* Bin   */ [-2, -2, 0, 0, -2, 0, 0, -2],
+    /* Rel   */ [-3, -3, 0, 0, -3, 0, 0, -3],
     /* Open  */ [0, 0, 0, 0, 0, 0, 0, 0],
-    /* Close */ [0, 1, 2, 3, 0, 0, 0, 1],
-    /* Punct */ [1, 1, 0, 1, 1, 1, 1, 1],
-    /* Inner */ [1, 1, 2, 3, 1, 0, 1, 1],
+    /* Close */ [0, 1, -2, -3, 0, 0, 0, -1],
+    /* Punct */ [-1, -1, 0, -1, -1, -1, -1, -1],
+    /* Inner */ [-1, 1, -2, -3, -1, 0, -1, -1],
 ];
 
 /// Pre-computed mu-to-em spacing values.
 /// 0→0.0, 1→3/18, 2→4/18, 3→5/18
 const MU_TO_EM: [f64; 4] = [0.0, 3.0 / 18.0, 4.0 / 18.0, 5.0 / 18.0];
+
+/// Reclassify binary operators based on context (TeXBook Ch. 26).
+///
+/// In TeX, a `Bin` atom is reclassified as `Ord` in certain contexts:
+///
+///   * **Right atom is `Bin`**: becomes `Ord` when the left atom is
+///     `None` (start of expression), `Bin`, `Op`, `Rel`, `Open`, or `Punct`.
+///   * **Left atom is `Bin`**: becomes `Ord` when the right atom is
+///     `Rel`, `Close`, `Punct`, or `None` (end of expression).
+///
+/// Returns the adjusted `(left, right)` atom types to be used for the
+/// spacing-table lookup.
+#[inline]
+pub fn adjust_bin_context(
+    left: Option<AtomType>,
+    right: Option<AtomType>,
+) -> (Option<AtomType>, Option<AtomType>) {
+    let mut l = left;
+    let mut r = right;
+
+    // Right atom is Bin and context says it should be Ord
+    if r == Some(AtomType::Bin) {
+        match l {
+            None
+            | Some(AtomType::Bin)
+            | Some(AtomType::Op)
+            | Some(AtomType::Rel)
+            | Some(AtomType::Open)
+            | Some(AtomType::Punct) => {
+                r = Some(AtomType::Ord);
+            }
+            _ => {}
+        }
+    }
+
+    // Left atom is Bin and context says it should be Ord
+    if l == Some(AtomType::Bin) {
+        match r {
+            None
+            | Some(AtomType::Rel)
+            | Some(AtomType::Close)
+            | Some(AtomType::Punct) => {
+                l = Some(AtomType::Ord);
+            }
+            _ => {}
+        }
+    }
+
+    (l, r)
+}
 
 /// Get the inter-atom spacing in em units.
 #[inline]
@@ -203,13 +253,12 @@ mod tests {
     }
 
     #[test]
-    fn script_suppresses_negative_entries() {
-        // Op-Bin has entry -2, suppressed in script styles
+    fn op_bin_zero_space() {
+        // Op-Bin is 0 in all styles (matching KaTeX)
         let s = inter_atom_space(AtomType::Op, AtomType::Bin, MathStyle::Script);
         assert_eq!(s, 0.0);
-        // But not in display
         let s = inter_atom_space(AtomType::Op, AtomType::Bin, MathStyle::Display);
-        assert!((s - 4.0 / 18.0).abs() < 0.001);
+        assert_eq!(s, 0.0);
     }
 
     #[test]
@@ -364,29 +413,121 @@ mod tests {
     }
 
     #[test]
-    fn script_suppresses_all_negative() {
-        // Op-Bin has entry -2; in script styles it should be suppressed to 0
-        for style in [
-            MathStyle::Script,
-            MathStyle::ScriptCramped,
-            MathStyle::ScriptScript,
-            MathStyle::ScriptScriptCramped,
-        ] {
-            let s = inter_atom_space(AtomType::Op, AtomType::Bin, style);
-            assert_eq!(s, 0.0, "script style should suppress negative spacing");
-        }
+    fn punct_rel_thin_space() {
+        // Punct-Rel is thin space in display/text (suppressed in script), matching KaTeX
+        let s = inter_atom_space(AtomType::Punct, AtomType::Rel, MathStyle::Display);
+        assert!(
+            (s - 3.0 / 18.0).abs() < 0.001,
+            "Punct-Rel should be thin space in display mode"
+        );
+        // Suppressed in script style
+        let s2 = inter_atom_space(AtomType::Punct, AtomType::Rel, MathStyle::Script);
+        assert!(
+            s2.abs() < 0.001,
+            "Punct-Rel should be suppressed in script mode"
+        );
+    }
+
+    // ── adjust_bin_context tests (TeXBook Ch.26) ─────────────────────
+
+    #[test]
+    fn bin_at_start_becomes_ord() {
+        // Right is Bin, left is None (start of expression) => Bin -> Ord
+        let (l, r) = adjust_bin_context(None, Some(AtomType::Bin));
+        assert_eq!(l, None);
+        assert_eq!(r, Some(AtomType::Ord));
     }
 
     #[test]
-    fn display_and_text_allow_negative() {
-        for style in [
-            MathStyle::Display,
-            MathStyle::Text,
-            MathStyle::DisplayCramped,
-            MathStyle::TextCramped,
-        ] {
-            let s = inter_atom_space(AtomType::Op, AtomType::Bin, style);
-            assert!(s > 0.0, "{:?} should allow negative-origin spacing", style);
-        }
+    fn bin_after_open_becomes_ord() {
+        // Right is Bin, left is Open => Bin -> Ord
+        let (l, r) = adjust_bin_context(Some(AtomType::Open), Some(AtomType::Bin));
+        assert_eq!(l, Some(AtomType::Open));
+        assert_eq!(r, Some(AtomType::Ord));
+    }
+
+    #[test]
+    fn bin_after_bin_becomes_ord() {
+        // Right is Bin, left is Bin => right Bin -> Ord
+        let (l, r) = adjust_bin_context(Some(AtomType::Bin), Some(AtomType::Bin));
+        // left Bin also checked: right was Bin but is now Ord, so left stays Bin
+        // Actually: right becomes Ord first, then left Bin check sees right=Ord
+        // which is not in {Rel, Close, Punct, None}, so left stays Bin.
+        assert_eq!(l, Some(AtomType::Bin));
+        assert_eq!(r, Some(AtomType::Ord));
+    }
+
+    #[test]
+    fn bin_after_rel_becomes_ord() {
+        let (_, r) = adjust_bin_context(Some(AtomType::Rel), Some(AtomType::Bin));
+        assert_eq!(r, Some(AtomType::Ord));
+    }
+
+    #[test]
+    fn bin_after_op_becomes_ord() {
+        let (_, r) = adjust_bin_context(Some(AtomType::Op), Some(AtomType::Bin));
+        assert_eq!(r, Some(AtomType::Ord));
+    }
+
+    #[test]
+    fn bin_after_punct_becomes_ord() {
+        let (_, r) = adjust_bin_context(Some(AtomType::Punct), Some(AtomType::Bin));
+        assert_eq!(r, Some(AtomType::Ord));
+    }
+
+    #[test]
+    fn bin_after_ord_stays_bin() {
+        // Ord-Bin: no reclassification
+        let (l, r) = adjust_bin_context(Some(AtomType::Ord), Some(AtomType::Bin));
+        assert_eq!(l, Some(AtomType::Ord));
+        assert_eq!(r, Some(AtomType::Bin));
+    }
+
+    #[test]
+    fn bin_after_close_stays_bin() {
+        // Close-Bin: no reclassification of right
+        let (l, r) = adjust_bin_context(Some(AtomType::Close), Some(AtomType::Bin));
+        assert_eq!(l, Some(AtomType::Close));
+        assert_eq!(r, Some(AtomType::Bin));
+    }
+
+    #[test]
+    fn bin_before_rel_becomes_ord() {
+        // Left is Bin, right is Rel => left Bin -> Ord
+        let (l, r) = adjust_bin_context(Some(AtomType::Bin), Some(AtomType::Rel));
+        assert_eq!(l, Some(AtomType::Ord));
+        assert_eq!(r, Some(AtomType::Rel));
+    }
+
+    #[test]
+    fn bin_before_close_becomes_ord() {
+        let (l, _) = adjust_bin_context(Some(AtomType::Bin), Some(AtomType::Close));
+        assert_eq!(l, Some(AtomType::Ord));
+    }
+
+    #[test]
+    fn bin_before_punct_becomes_ord() {
+        let (l, _) = adjust_bin_context(Some(AtomType::Bin), Some(AtomType::Punct));
+        assert_eq!(l, Some(AtomType::Ord));
+    }
+
+    #[test]
+    fn bin_at_end_becomes_ord() {
+        // Left is Bin, right is None (end of expression) => left Bin -> Ord
+        let (l, r) = adjust_bin_context(Some(AtomType::Bin), None);
+        assert_eq!(l, Some(AtomType::Ord));
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    fn non_bin_atoms_unchanged() {
+        // Non-Bin atoms should pass through unmodified
+        let (l, r) = adjust_bin_context(Some(AtomType::Ord), Some(AtomType::Rel));
+        assert_eq!(l, Some(AtomType::Ord));
+        assert_eq!(r, Some(AtomType::Rel));
+
+        let (l, r) = adjust_bin_context(Some(AtomType::Open), Some(AtomType::Close));
+        assert_eq!(l, Some(AtomType::Open));
+        assert_eq!(r, Some(AtomType::Close));
     }
 }
