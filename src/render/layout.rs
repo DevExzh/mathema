@@ -1723,9 +1723,19 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
     let axis = ctx.params.axis_height * ctx.size();
     let max_dist_from_axis = (max_h - axis).max(max_d + axis);
     let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
-    // Axis-centered delimiter box dimensions
-    let delim_h = (axis + max_dist_from_axis).max(max_h);
-    let delim_d = (max_dist_from_axis - axis).max(max_d);
+    // Add clearance so delimiters extend slightly past content (TeXBook)
+    let target_h = target_h + 2.0 * ctx.params.rule_thickness * ctx.size();
+    // Apply TeX minimum delimiter sizes (delim1 for display, delim2 for text)
+    let min_delim = if ctx.style.is_display() {
+        ctx.params.delim1 * ctx.size()
+    } else {
+        ctx.params.delim2 * ctx.size()
+    };
+    let target_h = target_h.max(min_delim);
+    // Recompute axis-centered delimiter box dimensions with updated target
+    let half = target_h / 2.0;
+    let delim_h = half + axis;
+    let delim_d = half - axis;
 
     // Compute delimiter width.
     // For path-based delimiters (tall content), use the path width which stays
@@ -1805,8 +1815,8 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
 
     LayoutBox {
         width: cursor_x,
-        height: max_h,
-        depth: max_d,
+        height: max_h.max(delim_h),
+        depth: max_d.max(delim_d),
         kind: BoxKind::HBox { children },
     }
 }
@@ -2781,6 +2791,77 @@ fn layout_row_c(arena: &AstArena, span: NodeSpan, ctx: &LayoutCtx) -> LayoutBox 
         return LayoutBox::kern(0.0);
     }
 
+    // Fast path: no newlines => single-line layout (unchanged behaviour)
+    let has_newlines = ids.iter().any(|&id| matches!(*arena.node(id), CompactNode::Newline));
+    if !has_newlines {
+        return layout_row_segment_c(arena, ids, ctx);
+    }
+
+    // Multi-line: split at Newline boundaries and layout each line
+    let size = ctx.size();
+    let baselineskip = 1.2 * size;
+    let mut lines: Vec<LayoutBox> = Vec::new();
+    let mut line_start = 0;
+
+    for i in 0..ids.len() {
+        if matches!(*arena.node(ids[i]), CompactNode::Newline) {
+            let line = layout_row_segment_c(arena, &ids[line_start..i], ctx);
+            lines.push(line);
+            line_start = i + 1;
+        }
+    }
+    // Last segment after final newline (or all remaining nodes)
+    let line = layout_row_segment_c(arena, &ids[line_start..], ctx);
+    lines.push(line);
+
+    if lines.len() == 1 {
+        return lines.into_iter().next().unwrap();
+    }
+
+    // Stack lines vertically using the same convention as layout_array_c:
+    // cursor_y accumulates top-down, then we convert to VBox dy coordinates.
+    let mut total_width: f64 = 0.0;
+    let mut children = Vec::new();
+    let mut cursor_y: f64 = 0.0;
+
+    let mut row_heights = Vec::with_capacity(lines.len());
+    let mut row_depths = Vec::with_capacity(lines.len());
+    for line in &lines {
+        row_heights.push(line.height.max(0.7 * baselineskip));
+        row_depths.push(line.depth.max(0.3 * baselineskip));
+    }
+
+    for (i, line) in lines.into_iter().enumerate() {
+        total_width = total_width.max(line.width);
+        cursor_y += row_heights[i];
+        children.push(PositionedBox::new(0.0, cursor_y, line));
+        cursor_y += row_depths[i];
+    }
+
+    let total_extent = cursor_y;
+    let axis = ctx.params.axis_height * size;
+    let half = total_extent / 2.0;
+    let box_height = half + axis;
+
+    // Convert top-down cursor_y positions to VBox dy coordinates
+    for child in &mut children {
+        child.dy = box_height - child.dy;
+    }
+
+    LayoutBox {
+        width: total_width,
+        height: box_height,
+        depth: half - axis,
+        kind: BoxKind::VBox { children },
+    }
+}
+
+/// Layout a contiguous segment of nodes as a single horizontal line.
+fn layout_row_segment_c(arena: &AstArena, ids: &[NodeId], ctx: &LayoutCtx) -> LayoutBox {
+    if ids.is_empty() {
+        return LayoutBox::kern(0.0);
+    }
+
     let mut children = Vec::new();
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<AtomType> = None;
@@ -2927,6 +3008,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => LayoutBox::kern(0.0),
         CompactNode::StyleSwitch(_) => LayoutBox::kern(0.0),
         CompactNode::SizeScale(_) => LayoutBox::kern(0.0),
+        CompactNode::Newline => LayoutBox::kern(0.0),
         CompactNode::Rule { width, height } => {
             let w = width.as_f64() * ctx.size();
             let h = height.as_f64() * ctx.size();
@@ -3510,8 +3592,19 @@ fn layout_fenced_c(
     let axis = ctx.params.axis_height * ctx.size();
     let max_dist_from_axis = (max_h - axis).max(max_d + axis);
     let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
-    let delim_h = (axis + max_dist_from_axis).max(max_h);
-    let delim_d = (max_dist_from_axis - axis).max(max_d);
+    // Add clearance so delimiters extend slightly past content (TeXBook)
+    let target_h = target_h + 2.0 * ctx.params.rule_thickness * ctx.size();
+    // Apply TeX minimum delimiter sizes (delim1 for display, delim2 for text)
+    let min_delim = if ctx.style.is_display() {
+        ctx.params.delim1 * ctx.size()
+    } else {
+        ctx.params.delim2 * ctx.size()
+    };
+    let target_h = target_h.max(min_delim);
+    // Recompute axis-centered delimiter box dimensions with updated target
+    let half = target_h / 2.0;
+    let delim_h = half + axis;
+    let delim_d = half - axis;
 
     // Compute delimiter width using path-based sizing for tall content
     use super::delimiter_paths;
@@ -3589,8 +3682,8 @@ fn layout_fenced_c(
 
     LayoutBox {
         width: cursor_x,
-        height: max_h,
-        depth: max_d,
+        height: max_h.max(delim_h),
+        depth: max_d.max(delim_d),
         kind: BoxKind::HBox { children },
     }
 }
@@ -4801,10 +4894,85 @@ fn layout_row_arena(
         return arena.alloc(ArenaLayoutBox::kern(0.0));
     }
 
+    // Fast path: no newlines => single-line layout (unchanged behaviour)
+    let has_newlines = ids.iter().any(|&id| matches!(*ast.node(id), CompactNode::Newline));
+    if !has_newlines {
+        return layout_row_segment_arena(ast, ids, arena, ctx);
+    }
+
+    // Multi-line: split at Newline boundaries and layout each line
+    let size = ctx.size();
+    let baselineskip = 1.2 * size;
+    let mut line_ids: Vec<LayoutBoxId> = Vec::new();
+    let mut line_start = 0;
+
+    for i in 0..ids.len() {
+        if matches!(*ast.node(ids[i]), CompactNode::Newline) {
+            let line = layout_row_segment_arena(ast, &ids[line_start..i], arena, ctx);
+            line_ids.push(line);
+            line_start = i + 1;
+        }
+    }
+    // Last segment after final newline
+    let line = layout_row_segment_arena(ast, &ids[line_start..], arena, ctx);
+    line_ids.push(line);
+
+    if line_ids.len() == 1 {
+        return line_ids[0];
+    }
+
+    // Compute row heights/depths with strut minimums, then position
+    let mut row_heights = Vec::with_capacity(line_ids.len());
+    let mut row_depths = Vec::with_capacity(line_ids.len());
+    let mut total_width: f64 = 0.0;
+    for &lid in &line_ids {
+        let b = arena.get(lid);
+        total_width = total_width.max(b.width);
+        row_heights.push(b.height.max(0.7 * baselineskip));
+        row_depths.push(b.depth.max(0.3 * baselineskip));
+    }
+
+    // Phase 1: compute positions top-down
+    let mut positions: SmallVec<[(LayoutBoxId, f64); 8]> = SmallVec::new();
+    let mut cursor_y: f64 = 0.0;
+    for (i, &lid) in line_ids.iter().enumerate() {
+        cursor_y += row_heights[i];
+        positions.push((lid, cursor_y));
+        cursor_y += row_depths[i];
+    }
+
+    let total_extent = cursor_y;
+    let axis = ctx.params.axis_height * size;
+    let half = total_extent / 2.0;
+    let box_height = half + axis;
+
+    // Phase 2: push children with converted dy
+    let children_start = arena.begin_children();
+    for &(lid, cy) in &positions {
+        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: box_height - cy, id: lid });
+    }
+    let children = arena.finish_children(children_start);
+
+    arena.alloc(ArenaLayoutBox {
+        width: total_width,
+        height: box_height,
+        depth: half - axis,
+        kind: ArenaBoxKind::VBox { children },
+    })
+}
+
+/// Layout a contiguous segment of nodes as a single horizontal line (arena path).
+fn layout_row_segment_arena(
+    ast: &AstArena,
+    ids: &[NodeId],
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    if ids.is_empty() {
+        return arena.alloc(ArenaLayoutBox::kern(0.0));
+    }
+
     // Phase 1: layout all children and collect (box_id, dx) pairs.
-    // We must NOT call begin_children/push_child while nested layout calls
-    // are still in progress, because they also push into the same flat array.
-    // SmallVec avoids heap allocation for rows with <=16 children (the common case).
     let mut laid_out: SmallVec<[(LayoutBoxId, f64); 16]> = SmallVec::new();
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<AtomType> = None;
@@ -4935,6 +5103,7 @@ fn layout_node_arena(
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::SizeScale(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
+        CompactNode::Newline => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::Rule { width, height } => {
             let w = width.as_f64() * ctx.size();
             let h = height.as_f64() * ctx.size();
@@ -5652,8 +5821,19 @@ fn layout_fenced_arena(
     let axis = ctx.params.axis_height * ctx.size();
     let max_dist_from_axis = (max_h - axis).max(max_d + axis);
     let target_h = (2.0 * max_dist_from_axis).max(max_h + max_d);
-    let delim_h = (axis + max_dist_from_axis).max(max_h);
-    let delim_d = (max_dist_from_axis - axis).max(max_d);
+    // Add clearance so delimiters extend slightly past content (TeXBook)
+    let target_h = target_h + 2.0 * ctx.params.rule_thickness * ctx.size();
+    // Apply TeX minimum delimiter sizes (delim1 for display, delim2 for text)
+    let min_delim = if ctx.style.is_display() {
+        ctx.params.delim1 * ctx.size()
+    } else {
+        ctx.params.delim2 * ctx.size()
+    };
+    let target_h = target_h.max(min_delim);
+    // Recompute axis-centered delimiter box dimensions with updated target
+    let half = target_h / 2.0;
+    let delim_h = half + axis;
+    let delim_d = half - axis;
 
     // Compute delimiter width using path-based sizing for tall content
     use super::delimiter_paths;
@@ -5731,8 +5911,8 @@ fn layout_fenced_arena(
     let children = arena.finish_children(children_start);
     arena.alloc(ArenaLayoutBox {
         width: cursor_x,
-        height: max_h,
-        depth: max_d,
+        height: max_h.max(delim_h),
+        depth: max_d.max(delim_d),
         kind: ArenaBoxKind::HBox { children },
     })
 }
