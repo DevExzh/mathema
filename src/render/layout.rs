@@ -1551,9 +1551,7 @@ fn layout_fraction(
 ///
 /// The returned string is prefixed with "F:" so the emitter renders it as
 /// a filled shape (`fill="currentColor"`) rather than a stroked path.
-fn radical_path(w: f64, h: f64) -> String {
-    // Thickness of the vinculum and the baked-in stroke width (in em).
-    let t = 0.04;
+fn radical_path(w: f64, h: f64, t: f64) -> String {
 
     // --- Key x landmarks (as fractions of w) ---
     let tail_x = 0.08 * w; // right end of the small horizontal tail
@@ -1613,6 +1611,8 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
     let inner = layout_node(radicand, &cramped_ctx);
 
     let rule_thickness = p.rule_thickness * size;
+    // Radical strokes thicker than fraction rules for better visibility
+    let radical_thickness = (rule_thickness * 1.5).max(0.06 * size);
 
     // KaTeX-compatible clearance: theta + phi/4
     // where phi = xHeight in display mode, theta otherwise
@@ -1645,7 +1645,7 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
         width: radical_width,
         height: surd_height,
         depth: 0.0,
-        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height)),
+        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
     };
 
     // Vinculum (horizontal rule on top)
@@ -3489,6 +3489,8 @@ fn layout_sqrt_c(
     let inner = layout_node_c(arena, radicand, &cramped_ctx);
 
     let rule_thickness = p.rule_thickness * size;
+    // Radical strokes thicker than fraction rules for better visibility
+    let radical_thickness = (rule_thickness * 1.5).max(0.06 * size);
 
     // KaTeX-compatible clearance: theta + phi/4
     // where phi = xHeight in display mode, theta otherwise
@@ -3519,7 +3521,7 @@ fn layout_sqrt_c(
         width: radical_width,
         height: surd_height,
         depth: 0.0,
-        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height)),
+        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
     };
 
     let vinculum = LayoutBox::rule(inner.width, rule_thickness);
@@ -5695,6 +5697,8 @@ fn layout_sqrt_arena(
     let inner_d = arena.get(inner_id).depth;
 
     let rule_thickness = p.rule_thickness * size;
+    // Radical strokes thicker than fraction rules for better visibility
+    let radical_thickness = (rule_thickness * 1.5).max(0.06 * size);
 
     // KaTeX-compatible clearance: theta + phi/4
     // where phi = xHeight in display mode, theta otherwise
@@ -5725,7 +5729,7 @@ fn layout_sqrt_arena(
         width: radical_width,
         height: surd_height,
         depth: 0.0,
-        kind: ArenaBoxKind::SvgPath(radical_path(radical_width, surd_height)),
+        kind: ArenaBoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
     });
 
     let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, rule_thickness));
