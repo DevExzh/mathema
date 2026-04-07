@@ -81,12 +81,12 @@ fn lookup_metrics(ch: char) -> Option<GlyphMetrics> {
 }
 
 /// Scale factor for large operators in display mode, matching KaTeX's Size2/Size1 ratios.
-/// Integral-like operators scale by ~2.0x; sum-like operators by ~1.6x.
+/// Integral-like operators scale by ~2.0x; sum-like operators by ~2.4x.
 #[inline]
 pub fn display_op_scale(ch: char) -> f64 {
     match ch {
         '∫' | '∬' | '∭' | '∮' | '∯' | '∰' => 2.0,
-        _ => 1.6, // ∑, ∏, ∐, ⋂, ⋃, ⋁, ⋀, ⨀, ⨁, ⨂, etc.
+        _ => 2.4, // ∑, ∏, ∐, ⋂, ⋃, ⋁, ⋀, ⨀, ⨁, ⨂, etc.
     }
 }
 
