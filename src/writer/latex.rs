@@ -433,10 +433,30 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push('}');
         },
 
-        CompactNode::Boxed(inner) => {
-            buf.push_str("\\boxed{");
-            write_node(buf, arena, inner);
-            buf.push('}');
+        CompactNode::Boxed { content: inner, bg_color, border_color } => {
+            let bg = arena.str_val(bg_color);
+            let border = arena.str_val(border_color);
+            if !bg.is_empty() && !border.is_empty() {
+                // \fcolorbox{border}{bg}{content}
+                buf.push_str("\\fcolorbox{");
+                buf.push_str(border);
+                buf.push_str("}{");
+                buf.push_str(bg);
+                buf.push_str("}{");
+                write_node(buf, arena, inner);
+                buf.push('}');
+            } else if !bg.is_empty() {
+                // \colorbox{bg}{content}
+                buf.push_str("\\colorbox{");
+                buf.push_str(bg);
+                buf.push_str("}{");
+                write_node(buf, arena, inner);
+                buf.push('}');
+            } else {
+                buf.push_str("\\boxed{");
+                write_node(buf, arena, inner);
+                buf.push('}');
+            }
         },
 
         CompactNode::Cancel { stroke, content } => {
@@ -519,6 +539,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             };
             buf.push_str(cmd);
         },
+        CompactNode::Newline => buf.push_str("\\\\ "),
     }
 }
 
@@ -726,5 +747,18 @@ mod tests {
     #[test]
     fn boxed() {
         assert_eq!(roundtrip("\\boxed{x}"), "\\boxed{x}");
+    }
+
+    #[test]
+    fn colorbox_roundtrip() {
+        assert_eq!(roundtrip("\\colorbox{teal}{B}"), "\\colorbox{teal}{B}");
+    }
+
+    #[test]
+    fn fcolorbox_roundtrip() {
+        assert_eq!(
+            roundtrip("\\fcolorbox{blue}{red}{C}"),
+            "\\fcolorbox{blue}{red}{C}"
+        );
     }
 }

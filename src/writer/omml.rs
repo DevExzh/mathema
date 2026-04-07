@@ -353,7 +353,7 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             end(w, "m:phant")
         },
 
-        MathNode::Boxed(inner) => {
+        MathNode::Boxed { content: inner, .. } => {
             start(w, "m:borderBox")?;
             write_e(w, inner)?;
             end(w, "m:borderBox")
@@ -789,7 +789,7 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
             end(w, "m:phant")
         },
 
-        CompactNode::Boxed(inner) => {
+        CompactNode::Boxed { content: inner, .. } => {
             start(w, "m:borderBox")?;
             write_e_c(w, arena, inner)?;
             end(w, "m:borderBox")
@@ -826,7 +826,7 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
         CompactNode::Color { content, .. } => write_node_c(w, arena, content),
 
         // Helper nodes that should not normally appear at the top level
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => Ok(()),
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => Ok(()),
     }
 }
 
@@ -1258,7 +1258,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_end(buf, "m:phant");
         },
 
-        CompactNode::Boxed(inner) => {
+        CompactNode::Boxed { content: inner, .. } => {
             f_start(buf, "m:borderBox");
             f_e(buf, arena, inner);
             f_end(buf, "m:borderBox");
@@ -1292,7 +1292,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Color { content, .. } => write_node_cf(buf, arena, content),
 
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {},
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},
     }
 }
 
@@ -1390,7 +1390,11 @@ mod tests {
 
     #[test]
     fn boxed() {
-        let output = write(MathNode::Boxed(Box::new(MathNode::Number("1".into()))));
+        let output = write(MathNode::Boxed {
+            content: Box::new(MathNode::Number("1".into())),
+            bg_color: None,
+            border_color: None,
+        });
         assert!(output.contains("<m:borderBox>"));
     }
 }

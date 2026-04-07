@@ -125,7 +125,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
             }
         },
 
-        MathNode::Phantom(inner) | MathNode::Boxed(inner) => {
+        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
             v.visit_node(inner);
         },
         MathNode::Cancel { content, .. } => {
@@ -264,7 +264,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
             }
         },
 
-        MathNode::Phantom(inner) | MathNode::Boxed(inner) => {
+        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
             v.visit_node_mut(inner);
         },
         MathNode::Cancel { content, .. } => {
@@ -308,6 +308,7 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         | CompactNode::Symbol(_, _)
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
+        | CompactNode::Newline
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
         | CompactNode::Rule { .. }
@@ -402,7 +403,7 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
             }
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
             v.visit_node(arena, inner);
         },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
@@ -437,6 +438,7 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
         | CompactNode::Symbol(_, _)
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
+        | CompactNode::Newline
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
         | CompactNode::Rule { .. }
@@ -534,7 +536,7 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
             }
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
             v.visit_node_mut(arena, inner);
         },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {

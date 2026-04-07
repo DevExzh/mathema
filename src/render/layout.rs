@@ -47,6 +47,8 @@ pub enum BoxKind {
     Boxed {
         child: Box<PositionedBox>,
         padding: f64,
+        bg_color: Option<String>,
+        border_color: Option<String>,
     },
     /// A run of text characters rendered as a single `<text>` element.
     TextRun { text: String, size: f64, italic: bool },
@@ -1000,7 +1002,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         } => layout_accent(base, *accent, *position, ctx),
         MathNode::Array { columns, rows, arraystretch, add_jot } => layout_array(columns, rows, *arraystretch, *add_jot, ctx),
         MathNode::Phantom(content) => layout_phantom(content, ctx),
-        MathNode::Boxed(content) => layout_boxed(content, ctx),
+        MathNode::Boxed { content, bg_color, border_color } => layout_boxed(content, bg_color.as_deref(), border_color.as_deref(), ctx),
         MathNode::Cancel { stroke, content } => layout_cancel(*stroke, content, ctx),
         MathNode::Scaled { factor, content } => layout_scaled(*factor, content, ctx),
         MathNode::Styled(style, children) => layout_styled(*style, children, ctx),
@@ -2680,7 +2682,7 @@ fn layout_phantom(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     }
 }
 
-fn layout_boxed(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_boxed(content: &MathNode, bg_color: Option<&str>, border_color: Option<&str>, ctx: &LayoutCtx) -> LayoutBox {
     let size = ctx.size();
     let padding = 0.1 * size;
     let inner = layout_node(content, ctx);
@@ -2692,6 +2694,8 @@ fn layout_boxed(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         kind: BoxKind::Boxed {
             child: Box::new(PositionedBox::new(padding, 0.0, inner)),
             padding,
+            bg_color: bg_color.filter(|s| !s.is_empty()).map(|s| s.to_owned()),
+            border_color: border_color.filter(|s| !s.is_empty()).map(|s| s.to_owned()),
         },
     }
 }
@@ -3000,7 +3004,17 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             add_jot,
         } => layout_array_c(arena, col_aligns, cells, num_cols, arraystretch_pct, add_jot, ctx),
         CompactNode::Phantom(inner) => layout_phantom_c(arena, inner, ctx),
-        CompactNode::Boxed(inner) => layout_boxed_c(arena, inner, ctx),
+        CompactNode::Boxed { content: inner, bg_color, border_color } => {
+            let bg = {
+                let s = arena.str_val(bg_color);
+                if s.is_empty() { None } else { Some(s.to_owned()) }
+            };
+            let border = {
+                let s = arena.str_val(border_color);
+                if s.is_empty() { None } else { Some(s.to_owned()) }
+            };
+            layout_boxed_c(arena, inner, bg, border, ctx)
+        },
         CompactNode::Cancel { stroke, content } => layout_cancel_c(arena, stroke, content, ctx),
         CompactNode::Scaled { factor, content } => layout_scaled_c(arena, factor, content, ctx),
         CompactNode::Styled(style, span) => layout_styled_c(arena, style, span, ctx),
@@ -4572,7 +4586,7 @@ fn layout_phantom_c(arena: &AstArena, content: NodeId, ctx: &LayoutCtx) -> Layou
     }
 }
 
-fn layout_boxed_c(arena: &AstArena, content: NodeId, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_boxed_c(arena: &AstArena, content: NodeId, bg_color: Option<String>, border_color: Option<String>, ctx: &LayoutCtx) -> LayoutBox {
     let size = ctx.size();
     let padding = 0.1 * size;
     let inner = layout_node_c(arena, content, ctx);
@@ -4584,6 +4598,8 @@ fn layout_boxed_c(arena: &AstArena, content: NodeId, ctx: &LayoutCtx) -> LayoutB
         kind: BoxKind::Boxed {
             child: Box::new(PositionedBox::new(padding, 0.0, inner)),
             padding,
+            bg_color,
+            border_color,
         },
     }
 }
@@ -5097,7 +5113,17 @@ fn layout_node_arena(
         CompactNode::Accent { base, accent, position } => layout_accent_arena(ast, base, accent, position, arena, ctx),
         CompactNode::Array { col_aligns, cells, num_cols, arraystretch_pct, add_jot } => layout_array_arena(ast, col_aligns, cells, num_cols, arraystretch_pct, add_jot, arena, ctx),
         CompactNode::Phantom(inner) => layout_phantom_arena(ast, inner, arena, ctx),
-        CompactNode::Boxed(inner) => layout_boxed_arena(ast, inner, arena, ctx),
+        CompactNode::Boxed { content: inner, bg_color, border_color } => {
+            let bg = {
+                let s = ast.str_val(bg_color);
+                if s.is_empty() { None } else { Some(s.to_owned()) }
+            };
+            let border = {
+                let s = ast.str_val(border_color);
+                if s.is_empty() { None } else { Some(s.to_owned()) }
+            };
+            layout_boxed_arena(ast, inner, bg, border, arena, ctx)
+        },
         CompactNode::Cancel { stroke, content } => layout_cancel_arena(ast, stroke, content, arena, ctx),
         CompactNode::Scaled { factor, content } => layout_scaled_arena(ast, factor, content, arena, ctx),
         CompactNode::Styled(style, span) => layout_styled_arena(ast, style, span, arena, ctx),
@@ -6967,6 +6993,8 @@ fn layout_phantom_arena(
 fn layout_boxed_arena(
     ast: &AstArena,
     content: NodeId,
+    bg_color: Option<String>,
+    border_color: Option<String>,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -6984,6 +7012,8 @@ fn layout_boxed_arena(
         kind: ArenaBoxKind::Boxed {
             child: inner_id,
             padding,
+            bg_color,
+            border_color,
         },
     })
 }
@@ -7396,7 +7426,11 @@ mod tests {
                 size_scale: 1.0,
             },
         );
-        let expr = MathExpr::inline(vec![MathNode::Boxed(Box::new(content.clone()))]);
+        let expr = MathExpr::inline(vec![MathNode::Boxed {
+            content: Box::new(content.clone()),
+            bg_color: None,
+            border_color: None,
+        }]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         // Boxed should be wider than inner due to padding
         assert!(

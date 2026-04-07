@@ -94,7 +94,12 @@ pub enum ArenaBoxKind {
     /// Invisible placeholder (takes space but doesn't render).
     Phantom,
     /// Box with border.
-    Boxed { child: LayoutBoxId, padding: f64 },
+    Boxed {
+        child: LayoutBoxId,
+        padding: f64,
+        bg_color: Option<String>,
+        border_color: Option<String>,
+    },
     /// A run of text characters rendered as a single `<text>` element.
     TextRun { text: String, size: f64, italic: bool },
 }

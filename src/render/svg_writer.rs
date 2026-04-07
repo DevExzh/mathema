@@ -171,18 +171,21 @@ fn emit_box_embedded(
 
         BoxKind::Phantom => {}
 
-        BoxKind::Boxed { child, padding: _ } => {
+        BoxKind::Boxed { child, padding: _, bg_color, border_color } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
+            let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
+            let fill_color = bg_color.as_deref().unwrap_or("none");
             let _ = write!(
                 svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{color}" fill="none" stroke-width="1"/>"#,
+                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="1"/>"#,
                 x = x,
                 ry = ry,
                 w = w_px,
                 h = h_px,
-                color = XmlAttrEscape(&options.fg_color),
+                stroke = XmlAttrEscape(stroke_color),
+                fill = XmlAttrEscape(fill_color),
             );
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
@@ -397,18 +400,21 @@ fn emit_box_arena_embedded(
 
         ArenaBoxKind::Phantom => {}
 
-        ArenaBoxKind::Boxed { child, padding } => {
+        ArenaBoxKind::Boxed { child, padding, bg_color, border_color } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
+            let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
+            let fill_color = bg_color.as_deref().unwrap_or("none");
             let _ = write!(
                 svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{color}" fill="none" stroke-width="1"/>"#,
+                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="1"/>"#,
                 x = x,
                 ry = ry,
                 w = w_px,
                 h = h_px,
-                color = XmlAttrEscape(&options.fg_color),
+                stroke = XmlAttrEscape(stroke_color),
+                fill = XmlAttrEscape(fill_color),
             );
             emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
         }

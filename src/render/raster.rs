@@ -262,7 +262,22 @@ fn emit_raster_box(
             ctx.fg = old_fg;
         },
 
-        BoxKind::Boxed { child, padding: _ } => {
+        BoxKind::Boxed { child, padding: _, bg_color, border_color } => {
+            // Background fill
+            if let Some(bg) = bg_color {
+                let w_px = (layout.width * em) as f32;
+                let h_px = ((layout.height + layout.depth) * em) as f32;
+                let ry = (y - layout.height * em) as f32;
+
+                if let Some(rect) = Rect::from_xywh(x as f32, ry, w_px, h_px) {
+                    let mut paint = Paint::default();
+                    let rgb = parse_color(bg);
+                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
+                    paint.anti_alias = true;
+                    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                }
+            }
+
             // Border rectangle
             let w_px = (layout.width * em) as f32;
             let h_px = ((layout.height + layout.depth) * em) as f32;
@@ -276,7 +291,12 @@ fn emit_raster_box(
             pb.close();
             if let Some(path) = pb.finish() {
                 let mut paint = Paint::default();
-                paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                if let Some(bc) = border_color {
+                    let rgb = parse_color(bc);
+                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
+                } else {
+                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                }
                 paint.anti_alias = true;
                 let stroke = Stroke {
                     width: 1.0,

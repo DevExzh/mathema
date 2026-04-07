@@ -1099,7 +1099,7 @@ impl LatexCompactParser {
                 } else {
                     rest
                 };
-                return Ok((rest, self.arena.push_node(CompactNode::Space(Rational::zero()))));
+                return Ok((rest, self.arena.push_node(CompactNode::Newline)));
             },
             ' ' => CompactNode::Space(Rational::new(1, 4)),
             '$' => {
@@ -1256,7 +1256,12 @@ impl LatexCompactParser {
             },
             "boxed" | "fbox" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
-                Ok((input, self.arena.push_node(CompactNode::Boxed(arg_id))))
+                let empty_sid = self.arena.push_str("");
+                Ok((input, self.arena.push_node(CompactNode::Boxed {
+                    content: arg_id,
+                    bg_color: empty_sid,
+                    border_color: empty_sid,
+                })))
             },
             "cancel" => self.parse_cancel(input, StrokeKind::Forward),
             "bcancel" => self.parse_cancel(input, StrokeKind::Backward),
@@ -2639,28 +2644,40 @@ impl LatexCompactParser {
         }
     }
 
-    /// `\colorbox{color}{content}` — consume color arg, emit content in a box.
+    /// `\colorbox{color}{content}` — consume color arg, emit content in a colored box.
     fn parse_colorbox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        let (input, _color) = take_while(|c: char| c != '}')(input)?;
+        let (input, color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
-        Ok((input, self.arena.push_node(CompactNode::Boxed(content_id))))
+        let bg_sid = self.arena.push_str(color);
+        let border_sid = self.arena.push_str("");
+        Ok((input, self.arena.push_node(CompactNode::Boxed {
+            content: content_id,
+            bg_color: bg_sid,
+            border_color: border_sid,
+        })))
     }
 
-    /// `\fcolorbox{framecolor}{bgcolor}{content}` — consume two color args, emit content in a box.
+    /// `\fcolorbox{framecolor}{bgcolor}{content}` — consume two color args, emit content in a colored box.
     fn parse_fcolorbox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        let (input, _frame_color) = take_while(|c: char| c != '}')(input)?;
+        let (input, frame_color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        let (input, _bg_color) = take_while(|c: char| c != '}')(input)?;
+        let (input, bg_color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
-        Ok((input, self.arena.push_node(CompactNode::Boxed(content_id))))
+        let bg_sid = self.arena.push_str(bg_color);
+        let border_sid = self.arena.push_str(frame_color);
+        Ok((input, self.arena.push_node(CompactNode::Boxed {
+            content: content_id,
+            bg_color: bg_sid,
+            border_color: border_sid,
+        })))
     }
 
     /// `\raisebox{dimension}{content}` — consume dimension, emit content.

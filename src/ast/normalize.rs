@@ -154,7 +154,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
             }
         },
 
-        MathNode::Phantom(inner) | MathNode::Boxed(inner) => {
+        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
             normalize_node_depth(inner, d);
         },
         MathNode::Cancel { content, .. } => {
@@ -361,7 +361,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             }
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
             normalize_compact_node(arena, inner, d);
         },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
@@ -378,6 +378,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         | CompactNode::Symbol(_, _)
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
+        | CompactNode::Newline
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
         | CompactNode::Rule { .. }

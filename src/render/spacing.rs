@@ -59,7 +59,7 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
         MathNode::Accent { base, .. } => classify_node_depth(base, depth + 1),
         MathNode::Array { .. } => AtomType::Inner,
         MathNode::Phantom(_) => AtomType::Ord,
-        MathNode::Boxed(_) => AtomType::Inner,
+        MathNode::Boxed { .. } => AtomType::Inner,
         MathNode::Cancel { content, .. } => classify_node_depth(content, depth + 1),
         MathNode::Scaled { content, .. } => classify_node_depth(content, depth + 1),
         MathNode::Styled(_, children) => {
@@ -112,7 +112,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
         CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, depth + 1),
         CompactNode::Array { .. } => AtomType::Inner,
         CompactNode::Phantom(_) => AtomType::Ord,
-        CompactNode::Boxed(_) => AtomType::Inner,
+        CompactNode::Boxed { .. } => AtomType::Inner,
         CompactNode::Cancel { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Scaled { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Color { content, .. } => classify_node_c_depth(arena, content, depth + 1),
@@ -124,7 +124,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
                 AtomType::Ord
             }
         },
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => AtomType::Ord,
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => AtomType::Ord,
     }
 }
 

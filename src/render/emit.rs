@@ -347,7 +347,7 @@ fn emit_box(
             // Invisible — takes space but doesn't render
         },
 
-        BoxKind::Boxed { child, padding: _ } => {
+        BoxKind::Boxed { child, padding: _, bg_color, border_color } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
@@ -362,8 +362,18 @@ fn emit_box(
             svg.push_str(r#"" height=""#);
             push_f3(svg, h_px);
             svg.push_str(r#"" stroke=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"" fill="none" stroke-width="1"/>"#);
+            if let Some(bc) = border_color {
+                push_xml_escaped(svg, bc);
+            } else {
+                svg.push_str(&attrs.fg_color);
+            }
+            svg.push_str(r#"" fill=""#);
+            if let Some(bg) = bg_color {
+                push_xml_escaped(svg, bg);
+            } else {
+                svg.push_str("none");
+            }
+            svg.push_str(r#"" stroke-width="1"/>"#);
 
             // Content
             let cx = x + child.dx * em;
@@ -596,7 +606,7 @@ fn emit_box_arena(
             // Invisible — takes space but doesn't render
         },
 
-        ArenaBoxKind::Boxed { child, padding } => {
+        ArenaBoxKind::Boxed { child, padding, bg_color, border_color } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
@@ -611,8 +621,18 @@ fn emit_box_arena(
             svg.push_str(r#"" height=""#);
             push_f3(svg, h_px);
             svg.push_str(r#"" stroke=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"" fill="none" stroke-width="1"/>"#);
+            if let Some(bc) = border_color {
+                push_xml_escaped(svg, bc);
+            } else {
+                svg.push_str(&attrs.fg_color);
+            }
+            svg.push_str(r#"" fill=""#);
+            if let Some(bg) = bg_color {
+                push_xml_escaped(svg, bg);
+            } else {
+                svg.push_str("none");
+            }
+            svg.push_str(r#"" stroke-width="1"/>"#);
 
             // Content — arena version stores child without position offset,
             // so we must apply padding here (heap version stored dx=padding in PositionedBox)
@@ -729,14 +749,53 @@ mod tests {
 
     #[test]
     fn boxed_svg_has_border_rect() {
-        let svg = render(vec![MathNode::Boxed(Box::new(MathNode::Identifier(
-            "x".into(),
-        )))]);
+        let svg = render(vec![MathNode::Boxed {
+            content: Box::new(MathNode::Identifier("x".into())),
+            bg_color: None,
+            border_color: None,
+        }]);
         assert!(
             svg.contains("stroke="),
             "boxed should have a stroked border rect"
         );
         assert!(svg.contains("<rect"), "boxed should contain rect element");
+        // Plain boxed should have fill="none"
+        assert!(
+            svg.contains(r#"fill="none""#),
+            "plain boxed should have fill=none"
+        );
+    }
+
+    #[test]
+    fn colorbox_svg_has_bg_fill() {
+        let svg = render(vec![MathNode::Boxed {
+            content: Box::new(MathNode::Identifier("B".into())),
+            bg_color: Some("teal".into()),
+            border_color: None,
+        }]);
+        assert!(svg.contains("<rect"), "colorbox should contain rect element");
+        assert!(
+            svg.contains(r#"fill="teal""#),
+            "colorbox should have fill=teal, got: {svg}"
+        );
+    }
+
+    #[test]
+    fn fcolorbox_svg_has_bg_and_border() {
+        let svg = render(vec![MathNode::Boxed {
+            content: Box::new(MathNode::Identifier("C".into())),
+            bg_color: Some("red".into()),
+            border_color: Some("blue".into()),
+        }]);
+        assert!(svg.contains("<rect"), "fcolorbox should contain rect element");
+        assert!(
+            svg.contains(r#"fill="red""#),
+            "fcolorbox should have fill=red, got: {svg}"
+        );
+        assert!(
+            svg.contains(r#"stroke="blue""#),
+            "fcolorbox should have stroke=blue, got: {svg}"
+        );
     }
 
     #[test]

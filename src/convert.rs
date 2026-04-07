@@ -402,4 +402,21 @@ mod tests {
         let result = convert("", Format::LaTeX, Format::MathML).unwrap();
         assert!(result.contains("<math"));
     }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn colorbox_renders_with_fill() {
+        let result = from_latex(r"\colorbox{teal}{B}").unwrap();
+        let svg = result.to_svg().unwrap();
+        assert!(svg.contains(r#"fill="teal""#), "colorbox SVG should contain fill=teal, got: {svg}");
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn fcolorbox_renders_with_fill_and_border() {
+        let result = from_latex(r"\fcolorbox{blue}{red}{C}").unwrap();
+        let svg = result.to_svg().unwrap();
+        assert!(svg.contains(r#"fill="red""#), "fcolorbox SVG should contain fill=red, got: {svg}");
+        assert!(svg.contains(r#"stroke="blue""#), "fcolorbox SVG should contain stroke=blue, got: {svg}");
+    }
 }

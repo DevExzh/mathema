@@ -303,7 +303,7 @@ fn count_arena_nodes(expr: &CompactExpr) -> usize {
             } => {
                 n += count_span(arena, col_aligns) + count_span(arena, cells);
             },
-            CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+            CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
                 n += count_node(arena, inner);
             },
             CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {

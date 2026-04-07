@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn boxed() {
         let node = parse_one("\\boxed{x}");
-        assert!(matches!(node, MathNode::Boxed(_)));
+        assert!(matches!(node, MathNode::Boxed { .. }));
     }
 
     #[test]

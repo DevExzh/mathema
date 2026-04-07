@@ -446,7 +446,12 @@ impl<'a> MathmlCompactParser<'a> {
                 let notation = get_attr(start, "notation").unwrap_or_default();
                 let id = self.parse_child_id(name)?;
                 if notation.contains("box") || notation.contains("roundedbox") {
-                    Ok(self.arena.push_node(CompactNode::Boxed(id)))
+                    let empty = self.arena.push_str("");
+                    Ok(self.arena.push_node(CompactNode::Boxed {
+                        content: id,
+                        bg_color: empty,
+                        border_color: empty,
+                    }))
                 } else if notation.contains("updiagonalstrike") {
                     Ok(self.arena.push_node(CompactNode::Cancel {
                         stroke: StrokeKind::Forward,
@@ -463,7 +468,12 @@ impl<'a> MathmlCompactParser<'a> {
                         content: id,
                     }))
                 } else {
-                    Ok(self.arena.push_node(CompactNode::Boxed(id)))
+                    let empty = self.arena.push_str("");
+                    Ok(self.arena.push_node(CompactNode::Boxed {
+                        content: id,
+                        bg_color: empty,
+                        border_color: empty,
+                    }))
                 }
             },
             "mstyle" => {

@@ -369,7 +369,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             // No MTEF phantom; just write content
             write_node(buf, inner)?;
         },
-        MathNode::Boxed(inner) => {
+        MathNode::Boxed { content: inner, .. } => {
             write_node(buf, inner)?;
         },
         MathNode::Cancel { content, .. } => {
@@ -736,7 +736,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         CompactNode::Phantom(inner) => {
             write_node_c(buf, arena, inner)?;
         },
-        CompactNode::Boxed(inner) => {
+        CompactNode::Boxed { content: inner, .. } => {
             write_node_c(buf, arena, inner)?;
         },
         CompactNode::Cancel { content, .. } => {
@@ -754,7 +754,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_node_c(buf, arena, content)?;
         },
         // Helper nodes that shouldn't appear as standalone roots
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {},
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},
     }
     Ok(())
 }

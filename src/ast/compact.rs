@@ -117,6 +117,7 @@ pub enum CompactNode {
     Symbol(SymbolKind, StrId),
     Text(TextStyle, StrId),
     Space(Rational),
+    Newline,
 
     // ── Grouping ───────────────────────────────────────────────────
     Row(NodeSpan),
@@ -205,7 +206,11 @@ pub enum CompactNode {
 
     // ── Decorators ─────────────────────────────────────────────────
     Phantom(NodeId),
-    Boxed(NodeId),
+    Boxed {
+        content: NodeId,
+        bg_color: StrId,
+        border_color: StrId,
+    },
     Cancel {
         stroke: StrokeKind,
         content: NodeId,
@@ -530,9 +535,15 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             let inner_id = push_math_node(arena, inner);
             arena.push_node(CompactNode::Phantom(inner_id))
         },
-        MathNode::Boxed(inner) => {
-            let inner_id = push_math_node(arena, inner);
-            arena.push_node(CompactNode::Boxed(inner_id))
+        MathNode::Boxed { content, bg_color, border_color } => {
+            let inner_id = push_math_node(arena, content);
+            let bg_sid = arena.push_str(bg_color.as_deref().unwrap_or(""));
+            let border_sid = arena.push_str(border_color.as_deref().unwrap_or(""));
+            arena.push_node(CompactNode::Boxed {
+                content: inner_id,
+                bg_color: bg_sid,
+                border_color: border_sid,
+            })
         },
         MathNode::Cancel { stroke, content } => {
             let content_id = push_math_node(arena, content);
@@ -746,7 +757,21 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         },
 
         CompactNode::Phantom(inner) => MathNode::Phantom(Box::new(reconstruct_node(arena, inner))),
-        CompactNode::Boxed(inner) => MathNode::Boxed(Box::new(reconstruct_node(arena, inner))),
+        CompactNode::Boxed { content, bg_color, border_color } => {
+            let bg = {
+                let s = arena.str_val(bg_color);
+                if s.is_empty() { None } else { Some(s.to_owned()) }
+            };
+            let border = {
+                let s = arena.str_val(border_color);
+                if s.is_empty() { None } else { Some(s.to_owned()) }
+            };
+            MathNode::Boxed {
+                content: Box::new(reconstruct_node(arena, content)),
+                bg_color: bg,
+                border_color: border,
+            }
+        },
         CompactNode::Cancel { stroke, content } => MathNode::Cancel {
             stroke,
             content: Box::new(reconstruct_node(arena, content)),
@@ -779,6 +804,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         CompactNode::SizeScale(_) => {
             // Size scale nodes are layout-only directives; reconstruct as empty row
             MathNode::Row(Vec::new())
+        },
+        CompactNode::Newline => {
+            // Newlines are layout-only directives; reconstruct as zero-width space
+            MathNode::Space(Rational::zero())
         },
     }
 }
@@ -942,7 +971,7 @@ mod tests {
                 add_jot: false,
             },
             CompactNode::Phantom(id),
-            CompactNode::Boxed(id),
+            CompactNode::Boxed { content: id, bg_color: s, border_color: s },
             CompactNode::Cancel {
                 stroke: StrokeKind::Forward,
                 content: id,
@@ -1130,7 +1159,11 @@ mod tests {
     fn roundtrip_decorators() {
         assert_roundtrip(&MathExpr::inline(vec![
             MathNode::Phantom(Box::new(MathNode::Number("0".into()))),
-            MathNode::Boxed(Box::new(MathNode::Number("1".into()))),
+            MathNode::Boxed {
+                content: Box::new(MathNode::Number("1".into())),
+                bg_color: None,
+                border_color: None,
+            },
             MathNode::Cancel {
                 stroke: StrokeKind::Forward,
                 content: Box::new(MathNode::Number("0".into())),

@@ -139,8 +139,12 @@ pub enum MathNode {
     // === Decorators ===
     /// Invisible but occupies space
     Phantom(Box<MathNode>),
-    /// Bordered box around content
-    Boxed(Box<MathNode>),
+    /// Bordered box around content (with optional background/border colors for \colorbox/\fcolorbox)
+    Boxed {
+        content: Box<MathNode>,
+        bg_color: Option<String>,
+        border_color: Option<String>,
+    },
     /// Strikethrough/cancellation
     Cancel {
         stroke: StrokeKind,
@@ -461,7 +465,9 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             }
             Ok(())
         },
-        MathNode::Phantom(inner) | MathNode::Boxed(inner) => check_node_depth(inner, d),
+        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
+            check_node_depth(inner, d)
+        },
         MathNode::Cancel { content, .. } | MathNode::Scaled { content, .. } => {
             check_node_depth(content, d)
         },
@@ -488,6 +494,7 @@ fn check_compact_depth(
         | CompactNode::Symbol(_, _)
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
+        | CompactNode::Newline
         | CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
         | CompactNode::Rule { .. }
@@ -582,7 +589,7 @@ fn check_compact_depth(
             Ok(())
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed(inner) => {
+        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
             check_compact_depth(arena, inner, d)
         },
         CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
@@ -709,7 +716,11 @@ mod tests {
                 add_jot: false,
             },
             MathNode::Phantom(Box::new(MathNode::Number("0".into()))),
-            MathNode::Boxed(Box::new(MathNode::Number("1".into()))),
+            MathNode::Boxed {
+                content: Box::new(MathNode::Number("1".into())),
+                bg_color: None,
+                border_color: None,
+            },
             MathNode::Cancel {
                 stroke: StrokeKind::Forward,
                 content: Box::new(MathNode::Number("0".into())),

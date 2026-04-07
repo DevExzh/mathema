@@ -230,7 +230,12 @@ impl<'a> OmmlCompactParser<'a> {
 
             "borderBox" => {
                 let id = self.parse_child_id(name)?;
-                Ok(self.arena.push_node(CompactNode::Boxed(id)))
+                let empty = self.arena.push_str("");
+                Ok(self.arena.push_node(CompactNode::Boxed {
+                    content: id,
+                    bg_color: empty,
+                    border_color: empty,
+                }))
             },
 
             "phant" => {
@@ -1510,7 +1515,7 @@ mod tests {
     fn border_box() {
         let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:borderBox><m:e><m:r><m:t>x</m:t></m:r></m:e></m:borderBox></m:oMath>"#;
         let node = parse_one(input);
-        assert!(matches!(node, MathNode::Boxed(_)));
+        assert!(matches!(node, MathNode::Boxed { .. }));
     }
 
     #[test]

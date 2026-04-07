@@ -433,9 +433,23 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             Ok(())
         },
 
-        MathNode::Boxed(inner) => {
+        MathNode::Boxed { content: inner, bg_color, border_color } => {
             let mut elem = BytesStart::new("menclose");
             elem.push_attribute(("notation", "box"));
+            if let Some(bg) = bg_color {
+                let mut style = String::new();
+                if let Some(bc) = border_color {
+                    style.push_str("border-color: ");
+                    style.push_str(bc);
+                    style.push_str("; ");
+                }
+                style.push_str("background-color: ");
+                style.push_str(bg);
+                elem.push_attribute(("style", style.as_str()));
+            } else if let Some(bc) = border_color {
+                let style = format!("border-color: {bc}");
+                elem.push_attribute(("style", style.as_str()));
+            }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_node(w, inner)?;
             w.write_event(Event::End(BytesEnd::new("menclose")))
@@ -905,8 +919,24 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("</mphantom>");
         },
 
-        CompactNode::Boxed(inner) => {
-            buf.push_str("<menclose notation=\"box\">");
+        CompactNode::Boxed { content: inner, bg_color, border_color } => {
+            let bg = arena.str_val(bg_color);
+            let border = arena.str_val(border_color);
+            if !bg.is_empty() || !border.is_empty() {
+                buf.push_str("<menclose notation=\"box\" style=\"");
+                if !border.is_empty() {
+                    buf.push_str("border-color: ");
+                    buf.push_str(border);
+                    buf.push_str("; ");
+                }
+                if !bg.is_empty() {
+                    buf.push_str("background-color: ");
+                    buf.push_str(bg);
+                }
+                buf.push_str("\">");
+            } else {
+                buf.push_str("<menclose notation=\"box\">");
+            }
             write_node_fast(buf, arena, inner);
             buf.push_str("</menclose>");
         },
@@ -959,6 +989,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
         CompactNode::StyleSwitch(_) => {},
         CompactNode::SizeScale(_) => {},
+        CompactNode::Newline => {},
     }
 }
 
@@ -1079,7 +1110,11 @@ mod tests {
 
     #[test]
     fn boxed() {
-        let output = write(MathNode::Boxed(Box::new(MathNode::Number("1".into()))));
+        let output = write(MathNode::Boxed {
+            content: Box::new(MathNode::Number("1".into())),
+            bg_color: None,
+            border_color: None,
+        });
         assert!(output.contains("<menclose"));
         assert!(output.contains("notation=\"box\""));
     }

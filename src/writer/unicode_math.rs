@@ -221,7 +221,7 @@ fn write_node(out: &mut String, node: &MathNode) {
             write_paren_if_complex(out, inner);
         },
 
-        MathNode::Boxed(inner) => {
+        MathNode::Boxed { content: inner, .. } => {
             out.push('\u{25AD}'); // rectangle
             write_paren_if_complex(out, inner);
         },
@@ -514,7 +514,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             write_paren_if_complex_c(out, arena, inner);
         },
 
-        CompactNode::Boxed(inner) => {
+        CompactNode::Boxed { content: inner, .. } => {
             out.push('\u{25AD}');
             write_paren_if_complex_c(out, arena, inner);
         },
@@ -549,7 +549,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             write_node_c(out, arena, content);
         },
 
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {},
+        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},
     }
 }
 
