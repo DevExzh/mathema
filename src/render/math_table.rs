@@ -97,6 +97,64 @@ pub fn font_glyph_metrics_upright(ch: char) -> Option<GlyphMetrics> {
     FONT_DATA.metrics.get(&ch).copied()
 }
 
+/// Math constants extracted from the OpenType MATH table.
+#[derive(Debug, Clone, Copy)]
+pub struct MathConstants {
+    pub axis_height: f64,
+    pub fraction_rule_thickness: f64,
+    pub overbar_rule_thickness: f64,
+    pub underbar_rule_thickness: f64,
+    pub radical_rule_thickness: f64,
+    pub fraction_num_display_gap: f64,
+    pub fraction_denom_display_gap: f64,
+    pub stack_display_gap: f64,
+    pub stack_gap: f64,
+    pub superscript_shift_up: f64,
+    pub subscript_shift_down: f64,
+    pub radical_vertical_gap: f64,
+    pub radical_display_vertical_gap: f64,
+    pub accent_base_height: f64,
+    pub delimiter_factor: i16,
+    pub delimiter_shortfall: f64,
+}
+
+static MATH_CONSTANTS: LazyLock<Option<MathConstants>> = LazyLock::new(|| {
+    let face = ttf_parser::Face::parse(super::FONT_DATA, 0).ok()?;
+    extract_math_constants(&face)
+});
+
+/// Get the MATH table constants from the embedded font.
+pub fn math_constants() -> Option<&'static MathConstants> {
+    MATH_CONSTANTS.as_ref()
+}
+
+fn extract_math_constants(face: &ttf_parser::Face) -> Option<MathConstants> {
+    let math = face.tables().math.as_ref()?;
+    let consts = math.constants.as_ref()?;
+    let upem = face.units_per_em() as f64;
+
+    Some(MathConstants {
+        axis_height: consts.axis_height().value as f64 / upem,
+        fraction_rule_thickness: consts.fraction_rule_thickness().value as f64 / upem,
+        overbar_rule_thickness: consts.overbar_rule_thickness().value as f64 / upem,
+        underbar_rule_thickness: consts.underbar_rule_thickness().value as f64 / upem,
+        radical_rule_thickness: consts.radical_rule_thickness().value as f64 / upem,
+        fraction_num_display_gap: consts.fraction_num_display_style_gap_min().value as f64 / upem,
+        fraction_denom_display_gap: consts.fraction_denom_display_style_gap_min().value as f64
+            / upem,
+        stack_display_gap: consts.stack_display_style_gap_min().value as f64 / upem,
+        stack_gap: consts.stack_gap_min().value as f64 / upem,
+        superscript_shift_up: consts.superscript_shift_up().value as f64 / upem,
+        subscript_shift_down: consts.subscript_shift_down().value as f64 / upem,
+        radical_vertical_gap: consts.radical_vertical_gap().value as f64 / upem,
+        radical_display_vertical_gap: consts.radical_display_style_vertical_gap().value as f64
+            / upem,
+        accent_base_height: consts.accent_base_height().value as f64 / upem,
+        delimiter_factor: 901, // Not in MATH table, kept from TeX tradition
+        delimiter_shortfall: 0.5, // Not in MATH table; TeX default of 5pt ≈ 0.5em
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +238,31 @@ mod tests {
         let m = font_glyph_metrics('0').expect("digit 0 should have metrics");
         assert!(m.height > 0.4, "digit height should be > 0.4em");
         assert!(m.width > 0.3, "digit width should be > 0.3em");
+    }
+
+    #[test]
+    fn math_constants_are_extracted() {
+        let consts = math_constants();
+        assert!(consts.is_some(), "MATH table constants should be extractable");
+        let c = consts.unwrap();
+        assert!(
+            (c.axis_height - 0.25).abs() < 0.05,
+            "axis_height={}",
+            c.axis_height
+        );
+        assert!(c.fraction_rule_thickness > 0.01 && c.fraction_rule_thickness < 0.1);
+    }
+
+    #[test]
+    fn math_constants_superscript_shift() {
+        let c = math_constants().unwrap();
+        assert!(
+            c.superscript_shift_up > 0.2,
+            "superscript shift should be > 0.2em"
+        );
+        assert!(
+            c.subscript_shift_down > 0.05,
+            "subscript shift should be > 0.05em"
+        );
     }
 }
