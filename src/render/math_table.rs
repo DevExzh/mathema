@@ -17,7 +17,7 @@ struct FontMetrics {
 }
 
 /// Lazily-parsed font metrics, initialized on first access.
-static FONT_DATA: LazyLock<FontMetrics> = LazyLock::new(|| {
+static PARSED_METRICS: LazyLock<FontMetrics> = LazyLock::new(|| {
     let font_bytes = super::FONT_DATA;
     let face = ttf_parser::Face::parse(font_bytes, 0).expect("embedded font data must be valid");
     let upem = face.units_per_em() as f64;
@@ -83,7 +83,7 @@ static FONT_DATA: LazyLock<FontMetrics> = LazyLock::new(|| {
 /// Returns `None` if the character is not present in the embedded font.
 #[inline]
 pub fn font_glyph_metrics(ch: char) -> Option<GlyphMetrics> {
-    FONT_DATA.metrics.get(&ch).copied()
+    PARSED_METRICS.metrics.get(&ch).copied()
 }
 
 /// Look up font-derived glyph metrics for an upright character.
@@ -94,7 +94,7 @@ pub fn font_glyph_metrics(ch: char) -> Option<GlyphMetrics> {
 /// upright font face if available.
 #[inline]
 pub fn font_glyph_metrics_upright(ch: char) -> Option<GlyphMetrics> {
-    FONT_DATA.metrics.get(&ch).copied()
+    PARSED_METRICS.metrics.get(&ch).copied()
 }
 
 /// Math constants extracted from the OpenType MATH table.
@@ -161,9 +161,9 @@ mod tests {
 
     #[test]
     fn can_parse_embedded_font() {
-        let _ = &*FONT_DATA;
+        let _ = &*PARSED_METRICS;
         assert!(
-            !FONT_DATA.metrics.is_empty(),
+            !PARSED_METRICS.metrics.is_empty(),
             "should extract some metrics"
         );
     }
@@ -191,9 +191,9 @@ mod tests {
     #[test]
     fn metrics_count_exceeds_hardcoded() {
         assert!(
-            FONT_DATA.metrics.len() > 500,
+            PARSED_METRICS.metrics.len() > 500,
             "font should have >500 glyphs, got {}",
-            FONT_DATA.metrics.len()
+            PARSED_METRICS.metrics.len()
         );
     }
 
