@@ -48,6 +48,10 @@ pub fn glyph_metrics(ch: char) -> GlyphMetrics {
     if let Some(m) = lookup_metrics(ch) {
         return m;
     }
+    // Font-derived metrics from embedded Latin Modern Math OTF
+    if let Some(m) = super::math_table::font_glyph_metrics(ch) {
+        return m;
+    }
     heuristic_metrics(ch)
 }
 
@@ -69,6 +73,10 @@ pub fn glyph_metrics_upright(ch: char) -> GlyphMetrics {
     if let Some(m) = lookup_metrics(ch) {
         return m;
     }
+    // Font-derived metrics from embedded Latin Modern Math OTF
+    if let Some(m) = super::math_table::font_glyph_metrics_upright(ch) {
+        return m;
+    }
     heuristic_metrics(ch)
 }
 
@@ -81,32 +89,40 @@ fn lookup_metrics(ch: char) -> Option<GlyphMetrics> {
 }
 
 /// Scale factor for large operators in display mode, matching KaTeX's Size2/Size1 ratios.
-/// Integral-like operators scale by ~2.0x; sum-like operators by ~2.4x.
+/// Sum-like operators scale by 1.6x; integral-like operators by 2.0x.
+/// These are the exact total-height ratios from KaTeX's Size2-Regular vs Size1-Regular
+/// font metrics (e.g. ∑ Size2 total=1.6em / Size1 total=1.0em = 1.6).
 #[inline]
 pub fn display_op_scale(ch: char) -> f64 {
     match ch {
         '∫' | '∬' | '∭' | '∮' | '∯' | '∰' => 2.0,
-        _ => 2.4, // ∑, ∏, ∐, ⋂, ⋃, ⋁, ⋀, ⨀, ⨁, ⨂, etc.
+        _ => 1.6, // ∑, ∏, ∐, ⋂, ⋃, ⋁, ⋀, ⨀, ⨁, ⨂, etc.
     }
 }
 
 /// Glyph metrics for display-mode large operators (KaTeX Size2-Regular proportions).
-/// Height/depth proportions differ from text-mode: integrals extend more below baseline,
-/// sum-like operators are more symmetric. Values normalized to ~1.0em total height;
-/// multiply by `display_op_scale(ch) * base_size` for absolute dimensions.
+///
+/// Values are KaTeX Size2-Regular absolute metrics divided by `display_op_scale()`,
+/// so that `metric * display_op_scale(ch) * base_size` yields the correct absolute
+/// dimensions matching KaTeX's display-mode operator layout.
+///
+/// Source data from KaTeX fontMetricsData.js (Size2-Regular entries).
 #[inline]
 pub fn glyph_metrics_display(ch: char) -> GlyphMetrics {
     match ch {
-        // Integrals: KaTeX Size2 proportions (h=1.36, d=0.862 → normalized h/total, d/total)
-        '∫' | '∮' | '∯' | '∰' => GlyphMetrics::new(0.612, 0.388, 0.556, 0.444),
-        '∬' => GlyphMetrics::new(0.612, 0.388, 0.944, 0.444),
-        '∭' => GlyphMetrics::new(0.612, 0.388, 1.333, 0.444),
-        // Sum-like: KaTeX Size2 proportions (h=1.05, d=0.55 → normalized)
-        '∑' => GlyphMetrics::new(0.656, 0.344, 1.111, 0.0),
-        '∏' | '∐' => GlyphMetrics::new(0.656, 0.344, 1.000, 0.0),
-        '⋂' | '⋃' => GlyphMetrics::new(0.656, 0.344, 0.833, 0.0),
-        '⋁' | '⋀' => GlyphMetrics::new(0.656, 0.344, 0.833, 0.0),
-        '⨀' | '⨁' | '⨂' => GlyphMetrics::new(0.656, 0.344, 1.000, 0.0),
+        // Integrals: Size2 h=1.360, d=0.862, total=2.222, scale=2.0
+        // Normalized: h=0.680, d=0.431, w=Size2_w/2.0, i=Size2_i/2.0
+        '∫' | '∮' | '∯' | '∰' => GlyphMetrics::new(0.680, 0.431, 0.278, 0.222),
+        '∬' => GlyphMetrics::new(0.680, 0.431, 0.472, 0.222),
+        '∭' => GlyphMetrics::new(0.680, 0.431, 0.667, 0.222),
+        // Sum-like: Size2 h=1.050, d=0.550, total=1.600, scale=1.6
+        // Normalized: h=0.656, d=0.344, w=Size2_w/1.6, i=0
+        '∑' => GlyphMetrics::new(0.656, 0.344, 0.903, 0.0),
+        '∏' | '∐' => GlyphMetrics::new(0.656, 0.344, 0.799, 0.0),
+        '⋂' | '⋃' => GlyphMetrics::new(0.656, 0.344, 0.694, 0.0),
+        '⋁' | '⋀' => GlyphMetrics::new(0.656, 0.344, 0.694, 0.0),
+        '⨀' | '⨁' | '⨂' => GlyphMetrics::new(0.656, 0.344, 0.944, 0.0),
+        '⨄' | '⨆' => GlyphMetrics::new(0.656, 0.344, 0.694, 0.0),
         _ => glyph_metrics(ch),
     }
 }
@@ -286,6 +302,7 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('\u{2209}', GlyphMetrics::new(0.750, 0.250, 0.667, 0.0)), // ∉ notin
     ('\u{220B}', GlyphMetrics::new(0.540, 0.040, 0.667, 0.0)), // ∋ ni
     ('\u{220F}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ∏ product
+    ('\u{2210}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ∐ coproduct
     ('\u{2211}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ∑ sum
     ('\u{221A}', GlyphMetrics::new(0.800, 0.200, 0.833, 0.0)), // √ sqrt
     ('\u{221E}', GlyphMetrics::new(0.431, 0.0, 0.778, 0.0)), // ∞ infty
@@ -323,10 +340,12 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     // Angle brackets (U+27E8–U+27E9)
     ('\u{27E8}', GlyphMetrics::new(0.750, 0.250, 0.389, 0.0)), // ⟨ langle
     ('\u{27E9}', GlyphMetrics::new(0.750, 0.250, 0.389, 0.0)), // ⟩ rangle
-    // Large operators (U+2A00–U+2A02)
+    // Large operators (U+2A00–U+2A06)
     ('\u{2A00}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ⨀ bigodot
     ('\u{2A01}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ⨁ bigoplus
     ('\u{2A02}', GlyphMetrics::new(0.750, 0.250, 1.000, 0.0)), // ⨂ bigotimes
+    ('\u{2A04}', GlyphMetrics::new(0.750, 0.250, 0.833, 0.0)), // ⨄ biguplus
+    ('\u{2A06}', GlyphMetrics::new(0.750, 0.250, 0.833, 0.0)), // ⨆ bigsqcup
 ];
 
 /// Main-Regular (cmr10) upright metrics from KaTeX font data.
@@ -609,5 +628,19 @@ mod tests {
         let m = glyph_metrics('f');
         // Just verify it doesn't panic and returns valid metrics
         assert!(m.width > 0.0);
+    }
+
+    #[test]
+    fn font_derived_metrics_for_nabla() {
+        let m = glyph_metrics('\u{2207}');
+        assert!(m.height > 0.5, "nabla height from font should be > 0.5");
+        assert!(m.width > 0.5, "nabla width from font should be > 0.5");
+    }
+
+    #[test]
+    fn font_covers_math_symbols_beyond_hardcoded() {
+        // U+210F is NOT in the hardcoded table but IS in Latin Modern Math
+        let m = glyph_metrics('\u{210F}');
+        assert!(m.width > 0.0, "hbar should have positive width");
     }
 }
