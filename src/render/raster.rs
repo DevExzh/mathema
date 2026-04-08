@@ -217,7 +217,7 @@ fn emit_raster_box(
 
                     let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
                     if is_fill {
-                        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, transform, None);
+                        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
                     } else if dp.stroke_width > 0.0 {
                         let stroke = Stroke {
                             width: dp.stroke_width as f32,
@@ -247,7 +247,7 @@ fn emit_raster_box(
 
                 let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
                 if is_fill {
-                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, transform, None);
+                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
                 } else {
                     let stroke = Stroke {
                         width: 0.04,
