@@ -3,6 +3,7 @@ pub mod delimiter_paths;
 pub mod emit;
 pub mod layout;
 pub(crate) mod math_table;
+pub(crate) mod css_colors;
 pub mod metrics;
 pub mod params;
 #[cfg(feature = "raster")]

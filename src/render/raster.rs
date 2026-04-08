@@ -594,34 +594,17 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f32>
 
 pub(crate) fn parse_color(s: &str) -> [u8; 3] {
     let s = s.trim();
-    // Hex colors
     if let Some(hex) = s.strip_prefix('#') {
         return parse_hex_color(hex);
     }
-    // Named colors
-    match s.to_lowercase().as_str() {
-        "black" | "currentcolor" => [0, 0, 0],
-        "white" => [255, 255, 255],
-        "red" => [255, 0, 0],
-        "green" => [0, 128, 0],
-        "blue" => [0, 0, 255],
-        "yellow" => [255, 255, 0],
-        "cyan" | "aqua" => [0, 255, 255],
-        "magenta" | "fuchsia" => [255, 0, 255],
-        "orange" => [255, 165, 0],
-        "purple" => [128, 0, 128],
-        "gray" | "grey" => [128, 128, 128],
-        "darkgray" | "darkgrey" => [169, 169, 169],
-        "lightgray" | "lightgrey" => [211, 211, 211],
-        "brown" => [165, 42, 42],
-        "navy" => [0, 0, 128],
-        "teal" => [0, 128, 128],
-        "olive" => [128, 128, 0],
-        "maroon" => [128, 0, 0],
-        "lime" => [0, 255, 0],
-        "silver" => [192, 192, 192],
-        _ => [0, 0, 0], // fallback to black
+    if s.eq_ignore_ascii_case("currentcolor") {
+        return [0, 0, 0];
     }
+    // Full CSS named colors (148 colors)
+    if let Some(rgb) = super::css_colors::lookup_css_color(s) {
+        return rgb;
+    }
+    [0, 0, 0] // fallback to black
 }
 
 fn parse_hex_color(hex: &str) -> [u8; 3] {
