@@ -2,6 +2,7 @@ pub mod arena;
 pub mod delimiter_paths;
 pub mod emit;
 pub mod layout;
+pub(crate) mod math_table;
 pub mod metrics;
 pub mod params;
 #[cfg(feature = "raster")]
@@ -16,7 +17,6 @@ pub mod subset;
 pub(crate) mod svg_writer;
 
 /// Embedded Latin Modern Math font data, shared between font-embed and raster features.
-#[cfg(any(feature = "font-embed", feature = "raster"))]
 pub(crate) static FONT_DATA: &[u8] = include_bytes!("fonts/LatinModernMath-Regular.otf");
 
 use crate::ast::compact::CompactExpr;
