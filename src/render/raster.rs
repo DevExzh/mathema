@@ -169,7 +169,7 @@ fn emit_raster_box(
             draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic);
         },
 
-        BoxKind::TextRun { text, size, italic } => {
+        BoxKind::TextRun { text, size, italic, .. } => {
             let font_size_px = (em * size).max(1.0) as f32;
             let mut cx = x;
             for ch in text.chars() {
@@ -206,7 +206,7 @@ fn emit_raster_box(
         BoxKind::Delimiter { ch, target_height } => {
             // Use SVG path for tall delimiters
             if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
-                if let Some(path) = parse_svg_path(&dp.path_data) {
+                if let Some((path, is_fill)) = parse_svg_path_ex(&dp.path_data) {
                     let tx = x as f32;
                     let ty = (y - layout.height * em) as f32;
                     let scale = em as f32;
@@ -215,15 +215,18 @@ fn emit_raster_box(
                     paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                     paint.anti_alias = true;
 
-                    let stroke = Stroke {
-                        width: dp.stroke_width as f32,
-                        line_cap: tiny_skia::LineCap::Round,
-                        line_join: tiny_skia::LineJoin::Round,
-                        ..Stroke::default()
-                    };
-
                     let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
-                    pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                    if is_fill {
+                        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, transform, None);
+                    } else if dp.stroke_width > 0.0 {
+                        let stroke = Stroke {
+                            width: dp.stroke_width as f32,
+                            line_cap: tiny_skia::LineCap::Round,
+                            line_join: tiny_skia::LineJoin::Round,
+                            ..Stroke::default()
+                        };
+                        pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                    }
                 }
             } else {
                 // Fallback: render as text glyph
@@ -233,7 +236,7 @@ fn emit_raster_box(
         },
 
         BoxKind::SvgPath(path_data) => {
-            if let Some(path) = parse_svg_path(path_data) {
+            if let Some((path, is_fill)) = parse_svg_path_ex(path_data) {
                 let tx = x as f32;
                 let ty = (y - layout.height * em) as f32;
                 let scale = em as f32;
@@ -242,13 +245,16 @@ fn emit_raster_box(
                 paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                 paint.anti_alias = true;
 
-                let stroke = Stroke {
-                    width: 0.04,
-                    ..Stroke::default()
-                };
-
                 let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
-                pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                if is_fill {
+                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::EvenOdd, transform, None);
+                } else {
+                    let stroke = Stroke {
+                        width: 0.04,
+                        ..Stroke::default()
+                    };
+                    pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                }
             }
         },
 
@@ -382,6 +388,19 @@ fn draw_glyph(
 // ---------------------------------------------------------------------------
 // SVG path parser (handles only M and L commands used in layout.rs)
 // ---------------------------------------------------------------------------
+
+/// Parse an SVG path string, detecting the `F:` fill prefix.
+///
+/// Returns `(path, is_fill)` where `is_fill` is `true` when the path data
+/// started with `"F:"`, indicating the path should be filled rather than
+/// stroked.
+fn parse_svg_path_ex(d: &str) -> Option<(tiny_skia::Path, bool)> {
+    let (path_str, is_fill) = match d.strip_prefix("F:") {
+        Some(rest) => (rest, true),
+        None => (d, false),
+    };
+    parse_svg_path(path_str).map(|p| (p, is_fill))
+}
 
 fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
@@ -750,5 +769,19 @@ mod tests {
     fn identifier_renders() {
         let png = render_png(vec![MathNode::Identifier("x".into())]);
         assert!(png.len() > 50);
+    }
+
+    #[test]
+    fn parse_svg_path_handles_fill_prefix() {
+        let (_, is_fill) = parse_svg_path_ex("F:M0,0 L1,0 L1,1 L0,1 Z").unwrap();
+        assert!(is_fill, "F: prefix should indicate a filled path");
+        let (_, is_fill) = parse_svg_path_ex("M0,0 L1,0 L1,1").unwrap();
+        assert!(!is_fill, "no prefix should indicate a stroked path");
+    }
+
+    #[test]
+    fn parse_svg_path_ex_returns_none_for_empty() {
+        assert!(parse_svg_path_ex("").is_none());
+        assert!(parse_svg_path_ex("F:").is_none());
     }
 }
