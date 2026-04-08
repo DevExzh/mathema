@@ -402,6 +402,185 @@ fn parse_svg_path_ex(d: &str) -> Option<(tiny_skia::Path, bool)> {
     parse_svg_path(path_str).map(|p| (p, is_fill))
 }
 
+/// Parse an SVG arc flag (0 or 1) as a single character.
+///
+/// Arc flags are always a single digit and may appear without separators
+/// between them or before the next coordinate value.
+fn parse_flag(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<bool> {
+    skip_separators(chars);
+    match chars.peek().copied() {
+        Some('0') => {
+            chars.next();
+            Some(false)
+        }
+        Some('1') => {
+            chars.next();
+            Some(true)
+        }
+        _ => None,
+    }
+}
+
+/// Compute the angle (in radians) of vector (vx, vy) relative to (ux, uy).
+fn arc_angle(ux: f32, uy: f32, vx: f32, vy: f32) -> f32 {
+    let n = (ux * ux + uy * uy).sqrt() * (vx * vx + vy * vy).sqrt();
+    if n < 1e-10 {
+        return 0.0;
+    }
+    let c = (ux * vx + uy * vy) / n;
+    let c = c.clamp(-1.0, 1.0);
+    let angle = c.acos();
+    if ux * vy - uy * vx < 0.0 {
+        -angle
+    } else {
+        angle
+    }
+}
+
+/// Approximate an arc segment (from theta1 to theta2 on an ellipse) as a
+/// single cubic bezier and append it to the path builder.
+#[allow(clippy::too_many_arguments)]
+fn arc_segment_to_cubic(
+    pb: &mut PathBuilder,
+    cx: f32,
+    cy: f32,
+    rx: f32,
+    ry: f32,
+    sin_phi: f32,
+    cos_phi: f32,
+    theta1: f32,
+    theta2: f32,
+) {
+    let alpha = (theta2 - theta1).sin()
+        * ((4.0 + 3.0 * ((theta2 - theta1) / 2.0).tan().powi(2)).sqrt() - 1.0)
+        / 3.0;
+
+    let cos1 = theta1.cos();
+    let sin1 = theta1.sin();
+    let cos2 = theta2.cos();
+    let sin2 = theta2.sin();
+
+    // Endpoint 1 (on the ellipse at theta1)
+    let ex1 = rx * cos1;
+    let ey1 = ry * sin1;
+    // Endpoint 2 (on the ellipse at theta2)
+    let ex2 = rx * cos2;
+    let ey2 = ry * sin2;
+
+    // Control point 1: P1 + alpha * P1'
+    let dx1 = -rx * sin1;
+    let dy1 = ry * cos1;
+    let qx1 = ex1 + alpha * dx1;
+    let qy1 = ey1 + alpha * dy1;
+
+    // Control point 2: P2 - alpha * P2'
+    let dx2 = -rx * sin2;
+    let dy2 = ry * cos2;
+    let qx2 = ex2 - alpha * dx2;
+    let qy2 = ey2 - alpha * dy2;
+
+    // Transform back from unit circle coordinates
+    let cp1x = cos_phi * qx1 - sin_phi * qy1 + cx;
+    let cp1y = sin_phi * qx1 + cos_phi * qy1 + cy;
+    let cp2x = cos_phi * qx2 - sin_phi * qy2 + cx;
+    let cp2y = sin_phi * qx2 + cos_phi * qy2 + cy;
+    let ep_x = cos_phi * ex2 - sin_phi * ey2 + cx;
+    let ep_y = sin_phi * ex2 + cos_phi * ey2 + cy;
+
+    pb.cubic_to(cp1x, cp1y, cp2x, cp2y, ep_x, ep_y);
+}
+
+/// Convert an SVG arc (endpoint parameterization) to cubic bezier curves.
+///
+/// Implements the SVG spec F.6.5-F.6.6 conversion from endpoint to center
+/// parameterization, then splits into segments of at most pi/2 radians and
+/// approximates each with a cubic bezier.
+#[allow(clippy::too_many_arguments)]
+fn arc_to_cubics(
+    pb: &mut PathBuilder,
+    cur_x: f32,
+    cur_y: f32,
+    mut rx: f32,
+    mut ry: f32,
+    x_rotation: f32,
+    large_arc: bool,
+    sweep: bool,
+    end_x: f32,
+    end_y: f32,
+) {
+    // Degenerate cases
+    if (cur_x - end_x).abs() < 1e-7 && (cur_y - end_y).abs() < 1e-7 {
+        return;
+    }
+    if rx.abs() < 1e-7 || ry.abs() < 1e-7 {
+        pb.line_to(end_x, end_y);
+        return;
+    }
+    rx = rx.abs();
+    ry = ry.abs();
+
+    let phi = x_rotation.to_radians();
+    let (sin_phi, cos_phi) = phi.sin_cos();
+
+    // Step 1: Compute (x1', y1') -- rotated midpoint
+    let dx2 = (cur_x - end_x) / 2.0;
+    let dy2 = (cur_y - end_y) / 2.0;
+    let x1p = cos_phi * dx2 + sin_phi * dy2;
+    let y1p = -sin_phi * dx2 + cos_phi * dy2;
+
+    // Step 2: Ensure radii are large enough
+    let x1p2 = x1p * x1p;
+    let y1p2 = y1p * y1p;
+    let mut rx2 = rx * rx;
+    let mut ry2 = ry * ry;
+    let lambda = x1p2 / rx2 + y1p2 / ry2;
+    if lambda > 1.0 {
+        let s = lambda.sqrt();
+        rx *= s;
+        ry *= s;
+        rx2 = rx * rx;
+        ry2 = ry * ry;
+    }
+
+    // Step 3: Compute center point (cx', cy')
+    let num = (rx2 * ry2 - rx2 * y1p2 - ry2 * x1p2).max(0.0);
+    let den = rx2 * y1p2 + ry2 * x1p2;
+    let sq = if den > 0.0 { (num / den).sqrt() } else { 0.0 };
+    let sign = if large_arc == sweep { -1.0 } else { 1.0 };
+    let cxp = sign * sq * (rx * y1p / ry);
+    let cyp = sign * sq * -(ry * x1p / rx);
+
+    // Step 4: Compute center (cx, cy) in original coordinates
+    let cx = cos_phi * cxp - sin_phi * cyp + (cur_x + end_x) / 2.0;
+    let cy = sin_phi * cxp + cos_phi * cyp + (cur_y + end_y) / 2.0;
+
+    // Step 5: Compute start and sweep angles
+    let theta1 = arc_angle(1.0, 0.0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+    let mut dtheta = arc_angle(
+        (x1p - cxp) / rx,
+        (y1p - cyp) / ry,
+        (-x1p - cxp) / rx,
+        (-y1p - cyp) / ry,
+    );
+
+    if !sweep && dtheta > 0.0 {
+        dtheta -= std::f32::consts::TAU;
+    } else if sweep && dtheta < 0.0 {
+        dtheta += std::f32::consts::TAU;
+    }
+
+    // Step 6: Split into segments and emit cubics
+    let n_segs = (dtheta.abs() / (std::f32::consts::FRAC_PI_2 + 0.001)).ceil() as usize;
+    let n_segs = n_segs.max(1);
+    let seg_angle = dtheta / n_segs as f32;
+
+    for i in 0..n_segs {
+        let t1 = theta1 + seg_angle * i as f32;
+        let t2 = theta1 + seg_angle * (i + 1) as f32;
+        arc_segment_to_cubic(pb, cx, cy, rx, ry, sin_phi, cos_phi, t1, t2);
+    }
+}
+
 fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
     let mut chars = d.chars().peekable();
@@ -535,6 +714,185 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qy = ry;
                 }
             },
+            // -------------------------------------------------------
+            // Relative (lowercase) commands — coordinates relative to
+            // cur_x/cur_y, converted to absolute before calling PathBuilder.
+            // -------------------------------------------------------
+            Some('m') => {
+                chars.next();
+                if let Some((dx, dy)) = parse_coord_pair(&mut chars) {
+                    let x = cur_x + dx;
+                    let y = cur_y + dy;
+                    pb.move_to(x, y);
+                    has_content = true;
+                    cur_x = x;
+                    cur_y = y;
+                    prev_cx = x;
+                    prev_cy = y;
+                    prev_qx = x;
+                    prev_qy = y;
+                }
+            }
+            Some('l') => {
+                chars.next();
+                if let Some((dx, dy)) = parse_coord_pair(&mut chars) {
+                    let x = cur_x + dx;
+                    let y = cur_y + dy;
+                    pb.line_to(x, y);
+                    cur_x = x;
+                    cur_y = y;
+                    prev_cx = x;
+                    prev_cy = y;
+                    prev_qx = x;
+                    prev_qy = y;
+                }
+            }
+            Some('h') => {
+                chars.next();
+                skip_separators(&mut chars);
+                if let Some(dx) = parse_number(&mut chars) {
+                    let x = cur_x + dx;
+                    pb.line_to(x, cur_y);
+                    cur_x = x;
+                    prev_cx = x;
+                    prev_cy = cur_y;
+                    prev_qx = x;
+                    prev_qy = cur_y;
+                }
+            }
+            Some('v') => {
+                chars.next();
+                skip_separators(&mut chars);
+                if let Some(dy) = parse_number(&mut chars) {
+                    let y = cur_y + dy;
+                    pb.line_to(cur_x, y);
+                    cur_y = y;
+                    prev_cx = cur_x;
+                    prev_cy = y;
+                    prev_qx = cur_x;
+                    prev_qy = y;
+                }
+            }
+            Some('c') => {
+                chars.next();
+                if let Some((dx1, dy1)) = parse_coord_pair(&mut chars)
+                    && let Some((dx2, dy2)) = parse_coord_pair(&mut chars)
+                    && let Some((dx3, dy3)) = parse_coord_pair(&mut chars)
+                {
+                    let x1 = cur_x + dx1;
+                    let y1 = cur_y + dy1;
+                    let x2 = cur_x + dx2;
+                    let y2 = cur_y + dy2;
+                    let x3 = cur_x + dx3;
+                    let y3 = cur_y + dy3;
+                    pb.cubic_to(x1, y1, x2, y2, x3, y3);
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = x3;
+                    prev_qy = y3;
+                    cur_x = x3;
+                    cur_y = y3;
+                }
+            }
+            Some('s') => {
+                chars.next();
+                if let Some((dx2, dy2)) = parse_coord_pair(&mut chars)
+                    && let Some((dx3, dy3)) = parse_coord_pair(&mut chars)
+                {
+                    let rx = 2.0 * cur_x - prev_cx;
+                    let ry = 2.0 * cur_y - prev_cy;
+                    let x2 = cur_x + dx2;
+                    let y2 = cur_y + dy2;
+                    let x3 = cur_x + dx3;
+                    let y3 = cur_y + dy3;
+                    pb.cubic_to(rx, ry, x2, y2, x3, y3);
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = x3;
+                    prev_qy = y3;
+                    cur_x = x3;
+                    cur_y = y3;
+                }
+            }
+            Some('q') => {
+                chars.next();
+                if let Some((dx1, dy1)) = parse_coord_pair(&mut chars)
+                    && let Some((dx2, dy2)) = parse_coord_pair(&mut chars)
+                {
+                    let x1 = cur_x + dx1;
+                    let y1 = cur_y + dy1;
+                    let x2 = cur_x + dx2;
+                    let y2 = cur_y + dy2;
+                    pb.quad_to(x1, y1, x2, y2);
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = x1;
+                    prev_qy = y1;
+                    cur_x = x2;
+                    cur_y = y2;
+                }
+            }
+            Some('t') => {
+                chars.next();
+                if let Some((dx, dy)) = parse_coord_pair(&mut chars) {
+                    let x2 = cur_x + dx;
+                    let y2 = cur_y + dy;
+                    let rx = 2.0 * cur_x - prev_qx;
+                    let ry = 2.0 * cur_y - prev_qy;
+                    pb.quad_to(rx, ry, x2, y2);
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = rx;
+                    prev_qy = ry;
+                    cur_x = x2;
+                    cur_y = y2;
+                }
+            }
+            // -------------------------------------------------------
+            // Arc commands
+            // -------------------------------------------------------
+            Some('A') => {
+                chars.next();
+                // A rx ry x-rotation large-arc-flag sweep-flag x y
+                skip_separators(&mut chars);
+                if let Some(rx) = parse_number(&mut chars)
+                    && let Some(ry) = { skip_separators(&mut chars); parse_number(&mut chars) }
+                    && let Some(x_rot) = { skip_separators(&mut chars); parse_number(&mut chars) }
+                    && let Some(large_arc) = parse_flag(&mut chars)
+                    && let Some(sweep) = parse_flag(&mut chars)
+                    && let Some((ex, ey)) = parse_coord_pair(&mut chars)
+                {
+                    arc_to_cubics(&mut pb, cur_x, cur_y, rx, ry, x_rot, large_arc, sweep, ex, ey);
+                    cur_x = ex;
+                    cur_y = ey;
+                    prev_cx = ex;
+                    prev_cy = ey;
+                    prev_qx = ex;
+                    prev_qy = ey;
+                }
+            }
+            Some('a') => {
+                chars.next();
+                // a rx ry x-rotation large-arc-flag sweep-flag dx dy (relative)
+                skip_separators(&mut chars);
+                if let Some(rx) = parse_number(&mut chars)
+                    && let Some(ry) = { skip_separators(&mut chars); parse_number(&mut chars) }
+                    && let Some(x_rot) = { skip_separators(&mut chars); parse_number(&mut chars) }
+                    && let Some(large_arc) = parse_flag(&mut chars)
+                    && let Some(sweep) = parse_flag(&mut chars)
+                    && let Some((dx, dy)) = parse_coord_pair(&mut chars)
+                {
+                    let ex = cur_x + dx;
+                    let ey = cur_y + dy;
+                    arc_to_cubics(&mut pb, cur_x, cur_y, rx, ry, x_rot, large_arc, sweep, ex, ey);
+                    cur_x = ex;
+                    cur_y = ey;
+                    prev_cx = ex;
+                    prev_cy = ey;
+                    prev_qx = ex;
+                    prev_qy = ey;
+                }
+            }
             Some('Z') | Some('z') => {
                 chars.next();
                 pb.close();
@@ -881,5 +1239,78 @@ mod tests {
     fn parse_svg_path_smooth_quad() {
         let path = parse_svg_path("M0,0 Q1,1 2,0 T4,0");
         assert!(path.is_some(), "T command should be supported");
+    }
+
+    // --- Relative (lowercase) command tests ---
+
+    #[test]
+    fn parse_svg_path_relative_line() {
+        let path = parse_svg_path("M10,10 l5,5 l-5,0");
+        assert!(path.is_some(), "relative l should work");
+    }
+
+    #[test]
+    fn parse_svg_path_relative_h_v() {
+        let path = parse_svg_path("M0,0 h10 v10 h-10 z");
+        assert!(path.is_some(), "relative h/v should work");
+    }
+
+    #[test]
+    fn parse_svg_path_relative_cubic() {
+        // Mixed case commands as seen in widehat paths
+        let path =
+            parse_svg_path("M529 0h5l519 115c5 1 9 5 9 10 0 1-1 2-1 3l-4 22z");
+        assert!(path.is_some(), "mixed case commands should work");
+    }
+
+    #[test]
+    fn parse_svg_path_relative_move() {
+        let path = parse_svg_path("M0,0 L5,5 m10,10 L20,20");
+        assert!(path.is_some(), "relative m should work");
+    }
+
+    #[test]
+    fn parse_svg_path_relative_smooth_cubic() {
+        let path = parse_svg_path("M0,0 c1,1 2,0 3,0 s2,1 3,0");
+        assert!(path.is_some(), "relative s (smooth cubic) should work");
+    }
+
+    #[test]
+    fn parse_svg_path_relative_quad() {
+        let path = parse_svg_path("M0,0 q1,1 2,0 t2,0");
+        assert!(path.is_some(), "relative q and t should work");
+    }
+
+    // --- Arc command tests ---
+
+    #[test]
+    fn parse_svg_path_arc() {
+        let path =
+            parse_svg_path("M0.14,0.07 a0.07,0.07 0 1 1 -0.14,0 a0.07,0.07 0 1 1 0.14,0 Z");
+        assert!(path.is_some(), "arc command should work");
+    }
+
+    #[test]
+    fn parse_svg_path_arc_absolute() {
+        let path = parse_svg_path("M10,80 A25,25 0 0 1 50,80");
+        assert!(path.is_some(), "absolute arc command should work");
+    }
+
+    #[test]
+    fn parse_svg_path_dot_circle_filled() {
+        let result = parse_svg_path_ex(
+            "F:M0.1400,0.0700 a0.0700,0.0700 0 1 1 -0.1400,0 a0.0700,0.0700 0 1 1 0.1400,0 Z",
+        );
+        assert!(result.is_some(), "dot circle should parse");
+        let (_, is_fill) = result.unwrap();
+        assert!(is_fill, "dot circle should be filled");
+    }
+
+    #[test]
+    fn parse_svg_path_widehat() {
+        let path = parse_svg_path(
+            "M529 0h5l519 115c5 1 9 5 9 10 0 1-1 2-1 3l-4 22c-1 5-5 9-11 9h-2L532 67 19 159h-2c-5 0-9-4-11-9l-5-22c-1-6 2-12 8-13z",
+        );
+        assert!(path.is_some(), "widehat path should parse");
     }
 }
