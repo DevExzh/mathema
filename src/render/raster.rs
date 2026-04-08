@@ -407,6 +407,16 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
     let mut chars = d.chars().peekable();
     let mut has_content = false;
 
+    // Current position tracking
+    let mut cur_x: f32 = 0.0;
+    let mut cur_y: f32 = 0.0;
+
+    // Previous control point tracking for smooth curves
+    let mut prev_cx: f32 = 0.0; // last cubic control point (2nd)
+    let mut prev_cy: f32 = 0.0;
+    let mut prev_qx: f32 = 0.0; // last quadratic control point
+    let mut prev_qy: f32 = 0.0;
+
     while chars.peek().is_some() {
         // Skip whitespace
         while chars.peek().is_some_and(|c| c.is_whitespace()) {
@@ -418,12 +428,48 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                 if let Some((x, y)) = parse_coord_pair(&mut chars) {
                     pb.move_to(x, y);
                     has_content = true;
+                    cur_x = x;
+                    cur_y = y;
+                    prev_cx = x;
+                    prev_cy = y;
+                    prev_qx = x;
+                    prev_qy = y;
                 }
             },
             Some('L') => {
                 chars.next();
                 if let Some((x, y)) = parse_coord_pair(&mut chars) {
                     pb.line_to(x, y);
+                    cur_x = x;
+                    cur_y = y;
+                    prev_cx = x;
+                    prev_cy = y;
+                    prev_qx = x;
+                    prev_qy = y;
+                }
+            },
+            Some('H') => {
+                chars.next();
+                skip_separators(&mut chars);
+                if let Some(x) = parse_number(&mut chars) {
+                    pb.line_to(x, cur_y);
+                    cur_x = x;
+                    prev_cx = x;
+                    prev_cy = cur_y;
+                    prev_qx = x;
+                    prev_qy = cur_y;
+                }
+            },
+            Some('V') => {
+                chars.next();
+                skip_separators(&mut chars);
+                if let Some(y) = parse_number(&mut chars) {
+                    pb.line_to(cur_x, y);
+                    cur_y = y;
+                    prev_cx = cur_x;
+                    prev_cy = y;
+                    prev_qx = cur_x;
+                    prev_qy = y;
                 }
             },
             Some('C') => {
@@ -434,6 +480,29 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     && let Some((x3, y3)) = parse_coord_pair(&mut chars)
                 {
                     pb.cubic_to(x1, y1, x2, y2, x3, y3);
+                    cur_x = x3;
+                    cur_y = y3;
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = x3;
+                    prev_qy = y3;
+                }
+            },
+            Some('S') => {
+                chars.next();
+                // Smooth cubic: S x2,y2 x3,y3
+                if let Some((x2, y2)) = parse_coord_pair(&mut chars)
+                    && let Some((x3, y3)) = parse_coord_pair(&mut chars)
+                {
+                    let rx = 2.0 * cur_x - prev_cx;
+                    let ry = 2.0 * cur_y - prev_cy;
+                    pb.cubic_to(rx, ry, x2, y2, x3, y3);
+                    cur_x = x3;
+                    cur_y = y3;
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = x3;
+                    prev_qy = y3;
                 }
             },
             Some('Q') => {
@@ -443,11 +512,39 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     && let Some((x2, y2)) = parse_coord_pair(&mut chars)
                 {
                     pb.quad_to(x1, y1, x2, y2);
+                    cur_x = x2;
+                    cur_y = y2;
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = x1;
+                    prev_qy = y1;
+                }
+            },
+            Some('T') => {
+                chars.next();
+                // Smooth quadratic: T x2,y2
+                if let Some((x2, y2)) = parse_coord_pair(&mut chars) {
+                    let rx = 2.0 * cur_x - prev_qx;
+                    let ry = 2.0 * cur_y - prev_qy;
+                    pb.quad_to(rx, ry, x2, y2);
+                    cur_x = x2;
+                    cur_y = y2;
+                    prev_cx = x2;
+                    prev_cy = y2;
+                    prev_qx = rx;
+                    prev_qy = ry;
                 }
             },
             Some('Z') | Some('z') => {
                 chars.next();
                 pb.close();
+                // Z does not change cur_x/cur_y per SVG spec (it returns to
+                // the start of the current subpath), but for simplicity we
+                // reset control points to current position.
+                prev_cx = cur_x;
+                prev_cy = cur_y;
+                prev_qx = cur_x;
+                prev_qy = cur_y;
             },
             None => break,
             _ => {
@@ -783,5 +880,23 @@ mod tests {
     fn parse_svg_path_ex_returns_none_for_empty() {
         assert!(parse_svg_path_ex("").is_none());
         assert!(parse_svg_path_ex("F:").is_none());
+    }
+
+    #[test]
+    fn parse_svg_path_horizontal_vertical() {
+        let path = parse_svg_path("M0,0 H5 V3 Z");
+        assert!(path.is_some(), "H and V commands should be supported");
+    }
+
+    #[test]
+    fn parse_svg_path_smooth_cubic() {
+        let path = parse_svg_path("M0,0 C1,1 2,0 3,0 S5,1 6,0");
+        assert!(path.is_some(), "S command should be supported");
+    }
+
+    #[test]
+    fn parse_svg_path_smooth_quad() {
+        let path = parse_svg_path("M0,0 Q1,1 2,0 T4,0");
+        assert!(path.is_some(), "T command should be supported");
     }
 }
