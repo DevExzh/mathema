@@ -386,7 +386,7 @@ fn draw_glyph(
 }
 
 // ---------------------------------------------------------------------------
-// SVG path parser (handles only M and L commands used in layout.rs)
+// SVG path parser (M/L/H/V/C/S/Q/T/A/Z, both absolute and relative)
 // ---------------------------------------------------------------------------
 
 /// Parse an SVG path string, detecting the `F:` fill prefix.
