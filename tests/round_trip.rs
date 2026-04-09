@@ -106,6 +106,30 @@ fn rt_subsup() {
 }
 
 #[test]
+fn rt_prime_as_superscript() {
+    // f' should parse as f^{\prime}, which round-trips as f^{\prime}
+    let config = Config::default();
+    let parsed = LatexReader::parse("f'", &config).unwrap();
+    let output = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert_eq!(output, "f^{\\prime}");
+
+    // f'' -> f^{\prime\prime}
+    let parsed = LatexReader::parse("f''", &config).unwrap();
+    let output = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert_eq!(output, "f^{\\prime\\prime}");
+
+    // f''' -> f^{\prime\prime\prime}
+    let parsed = LatexReader::parse("f'''", &config).unwrap();
+    let output = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert_eq!(output, "f^{\\prime\\prime\\prime}");
+
+    // f'_0 -> f_0^{\prime} (SubSup with sub=0, sup=prime)
+    let parsed = LatexReader::parse("f'_0", &config).unwrap();
+    let output = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert_eq!(output, "f_0^{\\prime}");
+}
+
+#[test]
 fn rt_fraction() {
     latex_roundtrip("\\frac{a}{b}");
     latex_roundtrip("\\frac{1}{2}");

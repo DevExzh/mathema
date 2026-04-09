@@ -684,8 +684,8 @@ impl LatexCompactParser {
     /// Parse one element: an atom optionally followed by scripts.
     #[inline]
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        // Handle leading ^/_ with implicit empty base (e.g., {^3+1})
-        if input.starts_with('^') || input.starts_with('_') {
+        // Handle leading ^/_ /' with implicit empty base (e.g., {^3+1})
+        if input.starts_with('^') || input.starts_with('_') || input.starts_with('\'') {
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             return self.parse_scripts(input, base);
         }
@@ -723,11 +723,57 @@ impl LatexCompactParser {
     }
 
     /// Attach optional sub/super scripts to a base node.
+    ///
+    /// Handles `'` (prime) as LaTeX shorthand for `^{\prime}`.  Multiple
+    /// consecutive primes are gathered into a single superscript containing a
+    /// row of U+2032 PRIME symbols.  A trailing `_` after primes produces a
+    /// `SubSup` node.
     #[inline]
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
-        // Skip whitespace, then check for ^ or _ via byte inspection
+        // Skip whitespace, then check for ^, _, or ' via byte inspection
         let skip = skip_ws_bytes(input.as_bytes());
         let input = &input[skip..];
+
+        // --- Prime (') handling -------------------------------------------
+        if input.as_bytes().first() == Some(&b'\'') {
+            // Count consecutive prime characters
+            let prime_count = input.bytes().take_while(|&b| b == b'\'').count();
+            let input = &input[prime_count..];
+
+            // Build prime symbol nodes (one U+2032 per ')
+            let mut prime_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
+            for _ in 0..prime_count {
+                let sid = self.arena.push_str("\u{2032}");
+                prime_ids.push(self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)));
+            }
+            let sup_node = self.flatten_single(&prime_ids);
+
+            // Check for a following subscript (_)
+            let skip2 = skip_ws_bytes(input.as_bytes());
+            let input2 = &input[skip2..];
+            if input2.as_bytes().first() == Some(&b'_') {
+                let input2 = &input2[1..];
+                let (input2, sub_arg) = self.parse_script_arg(input2)?;
+                return Ok((
+                    input2,
+                    self.arena.push_node(CompactNode::SubSup {
+                        base,
+                        sub: sub_arg,
+                        sup: sup_node,
+                    }),
+                ));
+            }
+
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Superscript {
+                    base,
+                    sup: sup_node,
+                }),
+            ));
+        }
+
+        // --- Normal ^/_ handling ------------------------------------------
         let first = match input.as_bytes().first() {
             Some(b'^') => '^',
             Some(b'_') => '_',
@@ -3216,8 +3262,8 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Eof,
             )));
         }
-        // Handle leading ^/_ with implicit empty base in table cells
-        if input.starts_with('^') || input.starts_with('_') {
+        // Handle leading ^/_ /' with implicit empty base in table cells
+        if input.starts_with('^') || input.starts_with('_') || input.starts_with('\'') {
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             return self.parse_scripts(input, base);
         }
