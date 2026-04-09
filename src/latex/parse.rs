@@ -2523,7 +2523,7 @@ impl LatexCompactParser {
 
         let table_rows: Vec<Vec<SmallVec<[NodeId; 8]>>> =
             cells.into_iter().map(|cell| vec![cell]).collect();
-        Ok((input, self.build_array(&[ColumnAlign::Center], table_rows)))
+        Ok((input, self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false)))
     }
 
     fn parse_big_delim<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
