@@ -746,6 +746,20 @@ impl LatexCompactParser {
                 let sid = self.arena.push_str("\u{2032}");
                 prime_ids.push(self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)));
             }
+
+            // If an explicit `^` follows the primes, merge its argument into
+            // the superscript group so that e.g. `f'^2` becomes `f^{\prime 2}`
+            // instead of two separate superscript nodes.
+            let skip_caret = skip_ws_bytes(input.as_bytes());
+            let input = if input.as_bytes().get(skip_caret) == Some(&b'^') {
+                let after_caret = &input[skip_caret + 1..];
+                let (rest, extra_sup) = self.parse_script_arg(after_caret)?;
+                prime_ids.push(extra_sup);
+                rest
+            } else {
+                input
+            };
+
             let sup_node = self.flatten_single(&prime_ids);
 
             // Check for a following subscript (_)
@@ -790,6 +804,27 @@ impl LatexCompactParser {
         let has_second = input2.as_bytes().first() == Some(&second_ch);
 
         if !has_second {
+            // When the first script was `_` and there is no `^`, also check
+            // for `'` as a complementary superscript so that `f_0'` produces
+            // a single SubSup node instead of separate Subscript + Superscript.
+            if first == '_' && input2.as_bytes().first() == Some(&b'\'') {
+                let prime_count = input2.bytes().take_while(|&b| b == b'\'').count();
+                let input2 = &input2[prime_count..];
+                let mut prime_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
+                for _ in 0..prime_count {
+                    let sid = self.arena.push_str("\u{2032}");
+                    prime_ids.push(self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)));
+                }
+                let sup_node = self.flatten_single(&prime_ids);
+                return Ok((
+                    input2,
+                    self.arena.push_node(CompactNode::SubSup {
+                        base,
+                        sub: first_arg,
+                        sup: sup_node,
+                    }),
+                ));
+            }
             return if first == '^' {
                 Ok((
                     input,
