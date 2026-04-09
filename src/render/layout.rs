@@ -2070,7 +2070,7 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         // Add inter-atom spacing
         let raw_atom = spacing::classify_node(n);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-        let cur_atom = adj_cur.unwrap();
+        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
             let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
             if space > 0.0 {
@@ -4280,7 +4280,7 @@ fn layout_fenced_c(
                 // Add inter-atom spacing
                 let raw_atom = spacing::classify_node_c(arena, child_id);
                 let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-                let cur_atom = adj_cur.unwrap();
+                let cur_atom = adj_cur.unwrap(); // safe: we passed Some
                 if let Some(prev) = adj_prev {
                     let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
                     if space > 0.0 {
@@ -6815,7 +6815,7 @@ fn layout_fenced_arena(
                 // Add inter-atom spacing
                 let raw_atom = spacing::classify_node_c(ast, child_id);
                 let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-                let cur_atom = adj_cur.unwrap();
+                let cur_atom = adj_cur.unwrap(); // safe: we passed Some
                 if let Some(prev) = adj_prev {
                     let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
                     if space > 0.0 {
