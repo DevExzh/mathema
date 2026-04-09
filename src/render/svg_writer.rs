@@ -85,7 +85,14 @@ fn emit_box_embedded(
             let mut cx = x;
             for ch in text.chars() {
                 emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic);
-                cx += super::metrics::glyph_metrics(ch).width * size * em;
+                // Use the same metric lookup as layout_text_run to keep
+                // glyph positions consistent with the layout pass.
+                let m = if *italic {
+                    super::metrics::glyph_metrics(ch)
+                } else {
+                    super::metrics::glyph_metrics_upright(ch)
+                };
+                cx += m.width * size * em;
             }
         }
 
@@ -316,7 +323,14 @@ fn emit_box_arena_embedded(
             let mut cx = x;
             for ch in text.chars() {
                 emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic);
-                cx += super::metrics::glyph_metrics(ch).width * size * em;
+                // Use the same metric lookup as layout_text_run to keep
+                // glyph positions consistent with the layout pass.
+                let m = if *italic {
+                    super::metrics::glyph_metrics(ch)
+                } else {
+                    super::metrics::glyph_metrics_upright(ch)
+                };
+                cx += m.width * size * em;
             }
         }
 
