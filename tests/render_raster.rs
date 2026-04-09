@@ -135,3 +135,126 @@ fn jpeg_with_quality() {
         "higher quality JPEG should be >= lower quality"
     );
 }
+
+// =========================================================================
+// Comprehensive formula rendering tests
+// =========================================================================
+
+fn assert_png(tex: &str) {
+    let result = from_latex(tex).unwrap();
+    let png = result.to_png().unwrap();
+    assert_eq!(
+        &png[..4],
+        b"\x89PNG",
+        "should produce valid PNG for: {tex}"
+    );
+    assert!(
+        png.len() > 50,
+        "PNG should have content for: {tex} (got {} bytes)",
+        png.len()
+    );
+}
+
+#[test]
+fn png_nested_fractions() {
+    assert_png(r"\frac{1}{1+\frac{1}{1+\frac{1}{x}}}");
+}
+
+#[test]
+fn png_display_integral() {
+    let result = mathema::from_latex_with(
+        r"\int_{0}^{\infty} e^{-x^2} \, dx = \frac{\sqrt{\pi}}{2}",
+        &mathema::error::Config {
+            strictness: mathema::error::Strictness::Lenient,
+            display: mathema::ast::DisplayStyle::Block,
+        },
+    )
+    .unwrap();
+    let png = result.to_png().unwrap();
+    assert_eq!(&png[..4], b"\x89PNG");
+}
+
+#[test]
+fn png_matrix() {
+    assert_png(r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}");
+}
+
+#[test]
+fn png_cases() {
+    assert_png(r"f(x) = \begin{cases} x^2 & \text{if } x \geq 0 \\ -x^2 & \text{if } x < 0 \end{cases}");
+}
+
+#[test]
+fn png_aligned() {
+    assert_png(r"\begin{aligned} a &= b + c \\ d &= e + f \end{aligned}");
+}
+
+#[test]
+fn png_accents() {
+    assert_png(r"\hat{x} + \bar{y} + \tilde{z} + \vec{v} + \dot{a} + \ddot{b}");
+}
+
+#[test]
+fn png_wide_accents() {
+    assert_png(r"\widehat{abc} + \widetilde{xyz} + \overline{pqr}");
+}
+
+#[test]
+fn png_delimiters() {
+    assert_png(r"\left( \frac{a}{b} \right) + \left[ \frac{c}{d} \right]");
+}
+
+#[test]
+fn png_overbrace_underbrace() {
+    assert_png(r"\overbrace{a+b+c}^{\text{sum}} + \underbrace{x+y}_{\text{terms}}");
+}
+
+#[test]
+fn png_cfrac() {
+    assert_png(r"a_0 + \cfrac{1}{a_1 + \cfrac{1}{a_2 + \cfrac{1}{a_3}}}");
+}
+
+#[test]
+fn png_color() {
+    assert_png(r"\color{red}{a} + \color{blue}{b}");
+}
+
+#[test]
+fn png_bold_greek() {
+    assert_png(r"\mathbf{A} \cdot \boldsymbol{\alpha}");
+}
+
+#[test]
+fn png_xrightarrow() {
+    assert_png(r"A \xrightarrow{f} B \xrightarrow{g} C");
+}
+
+#[test]
+fn png_binomial() {
+    assert_png(r"\binom{n}{k} = \frac{n!}{k!(n-k)!}");
+}
+
+#[test]
+fn png_big_operators() {
+    assert_png(r"\bigcup_{i=1}^{n} A_i \cap \bigcap_{j=1}^{m} B_j");
+}
+
+#[test]
+fn png_overset_underset() {
+    assert_png(r"\overset{def}{=} \quad \underset{x \to 0}{\lim}");
+}
+
+#[test]
+fn png_deeply_nested_scripts() {
+    assert_png(r"x^{x^{x^x}} \quad a_{a_{a_a}}");
+}
+
+#[test]
+fn png_prescripts() {
+    assert_png(r"{}^{14}_{6}\text{C} \quad {}^{235}_{92}\text{U}");
+}
+
+#[test]
+fn png_bra_ket() {
+    assert_png(r"\langle \psi | \hat{H} | \psi \rangle = E");
+}

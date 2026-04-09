@@ -217,7 +217,7 @@ fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
     if is_aligned {
         // Even column (R) → next column (L): within an rl-pair → tight
         // Odd column (L) → next column (R): between rl-pairs → wide
-        if j % 2 == 0 {
+        if j.is_multiple_of(2) {
             ALIGN_INTERNAL_GAP_EM * size
         } else {
             ALIGN_PAIR_GAP_EM * size
@@ -830,16 +830,15 @@ fn katex_accent_scaled(paths: &[KatexAccentPath; 4], w: f64, h: f64) -> String {
 
 /// Compute the height of a KaTeX accent path for a given tier.
 ///
-/// The raw KaTeX formula (`viewbox_h / 1000 * size`) produces accents that
-/// are too small at typical rendering sizes (e.g. 2-3 px at 16 px/em).
-/// We apply a 1.8x multiplier and a minimum of 0.32 em so that hat, tilde,
-/// and check accents remain clearly visible even on single-character bases.
+/// The viewbox_h value (e.g. 239 for widehat tier 0) represents the accent
+/// height in 1/1000 em units in KaTeX's coordinate system. We convert this
+/// directly to em, matching KaTeX's proportions. A minimum of 0.15 em
+/// ensures accents remain visible at small rendering sizes.
 fn katex_accent_natural_height(paths: &[KatexAccentPath; 4], w: f64, size: f64) -> f64 {
     let tier = katex_accent_tier(w);
     let data = &paths[tier];
     let raw = data.viewbox_h / 1000.0 * size;
-    // Scale up and enforce a minimum so accents are clearly visible
-    (raw * 1.8).max(0.32 * size)
+    raw.max(0.15 * size)
 }
 
 /// Compute the correct height for a stretchy accent at the given base width.
@@ -9512,10 +9511,10 @@ mod tests {
     #[test]
     fn accent_hat_minimum_height() {
         let (_, accent_h, _) = accent_dimensions('\u{0302}');
-        // Hat accent should be at least 0.28 em tall (clearly visible)
+        // Hat accent should be at least 0.15 em tall (clearly visible)
         assert!(
-            accent_h >= 0.28,
-            "hat accent should be at least 0.28 em, got {accent_h:.4}"
+            accent_h >= 0.15,
+            "hat accent should be at least 0.15 em, got {accent_h:.4}"
         );
     }
 
@@ -9523,8 +9522,8 @@ mod tests {
     fn accent_tilde_minimum_height() {
         let (_, accent_h, _) = accent_dimensions('\u{0303}');
         assert!(
-            accent_h >= 0.28,
-            "tilde accent should be at least 0.28 em, got {accent_h:.4}"
+            accent_h >= 0.15,
+            "tilde accent should be at least 0.15 em, got {accent_h:.4}"
         );
     }
 

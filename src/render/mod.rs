@@ -1,6 +1,7 @@
 pub mod arena;
 pub mod delimiter_paths;
 pub mod emit;
+pub(crate) mod glyph_variants;
 pub mod layout;
 pub(crate) mod math_table;
 #[cfg(feature = "raster")]

@@ -154,9 +154,16 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Space(r) => write_space(buf, r),
 
         CompactNode::Row(span) => {
-            buf.push('{');
-            write_nodes(buf, arena, span);
-            buf.push('}');
+            let children = arena.children(span);
+            if children.len() == 1 {
+                // Single-child Row: emit without braces to keep output canonical.
+                // This avoids `{11}` vs `11` round-trip divergence.
+                write_node(buf, arena, children[0]);
+            } else {
+                buf.push('{');
+                write_nodes(buf, arena, span);
+                buf.push('}');
+            }
         },
 
         CompactNode::Fenced {

@@ -99,6 +99,7 @@ pub fn font_glyph_metrics_upright(ch: char) -> Option<GlyphMetrics> {
 
 /// Math constants extracted from the OpenType MATH table.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct MathConstants {
     pub axis_height: f64,
     pub fraction_rule_thickness: f64,
@@ -118,16 +119,19 @@ pub struct MathConstants {
     pub delimiter_shortfall: f64,
 }
 
+#[allow(dead_code)]
 static MATH_CONSTANTS: LazyLock<Option<MathConstants>> = LazyLock::new(|| {
     let face = ttf_parser::Face::parse(super::FONT_DATA, 0).ok()?;
     extract_math_constants(&face)
 });
 
 /// Get the MATH table constants from the embedded font.
+#[allow(dead_code)]
 pub fn math_constants() -> Option<&'static MathConstants> {
     MATH_CONSTANTS.as_ref()
 }
 
+#[allow(dead_code)]
 fn extract_math_constants(face: &ttf_parser::Face) -> Option<MathConstants> {
     let math = face.tables().math.as_ref()?;
     let consts = math.constants.as_ref()?;
@@ -238,6 +242,16 @@ mod tests {
         let m = font_glyph_metrics('0').expect("digit 0 should have metrics");
         assert!(m.height > 0.4, "digit height should be > 0.4em");
         assert!(m.width > 0.3, "digit width should be > 0.3em");
+    }
+
+    #[test]
+    fn bold_greek_has_metrics() {
+        // Bold alpha U+1D6C2 should be present in Latin Modern Math
+        let bold_alpha = char::from_u32(0x1D6C2).unwrap();
+        let _normal_alpha = '\u{03B1}';
+        let m_bold = font_glyph_metrics(bold_alpha);
+        let _m_normal = font_glyph_metrics(_normal_alpha);
+        assert!(m_bold.is_some(), "Bold alpha (U+1D6C2) should have font metrics");
     }
 
     #[test]

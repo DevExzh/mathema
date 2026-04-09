@@ -54,6 +54,12 @@ fn push_xml_escaped(out: &mut String, s: &str) {
 /// `std::fmt` formatting overhead. This is 3-5x faster than `write!(buf, "{:.3}", v)`.
 #[inline]
 fn push_f3(out: &mut String, v: f64) {
+    // Guard against NaN/Infinity producing corrupt SVG attribute values
+    if !v.is_finite() {
+        out.push_str("0.000");
+        return;
+    }
+
     // Handle negative
     if v < 0.0 {
         out.push('-');
@@ -1069,5 +1075,41 @@ mod tests {
         let arena_svg = emit_svg_arena(&arena, arena_root, &options);
 
         assert_eq!(heap_svg, arena_svg);
+    }
+
+    #[test]
+    fn push_f3_handles_nan() {
+        let mut buf = String::new();
+        push_f3(&mut buf, f64::NAN);
+        assert_eq!(buf, "0.000");
+    }
+
+    #[test]
+    fn push_f3_handles_infinity() {
+        let mut buf = String::new();
+        push_f3(&mut buf, f64::INFINITY);
+        assert_eq!(buf, "0.000");
+    }
+
+    #[test]
+    fn push_f3_handles_neg_infinity() {
+        let mut buf = String::new();
+        push_f3(&mut buf, f64::NEG_INFINITY);
+        assert_eq!(buf, "0.000");
+    }
+
+    #[test]
+    fn push_f3_normal_values() {
+        let mut buf = String::new();
+        push_f3(&mut buf, 1.23456);
+        assert_eq!(buf, "1.235");
+
+        buf.clear();
+        push_f3(&mut buf, -2.5);
+        assert_eq!(buf, "-2.500");
+
+        buf.clear();
+        push_f3(&mut buf, 0.0);
+        assert_eq!(buf, "0.000");
     }
 }

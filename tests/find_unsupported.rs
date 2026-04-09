@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mathema::ast::{DisplayStyle, MathExpr, MathNode};
+use mathema::ast::{DisplayStyle, MathNode};
 use mathema::error::{Config, Strictness};
 use mathema::from_latex_with;
 
@@ -176,6 +176,7 @@ fn is_known_math_function(s: &str) -> bool {
 }
 
 /// SVG text content extraction (for double checking)
+#[allow(dead_code)]
 fn extract_svg_text_content(svg: &str) -> Vec<String> {
     let mut texts = Vec::new();
     let mut search_from = 0;

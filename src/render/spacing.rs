@@ -40,7 +40,7 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
             SymbolKind::Open => AtomType::Open,
             SymbolKind::Close => AtomType::Close,
             SymbolKind::Punctuation => AtomType::Punct,
-            SymbolKind::Fence => AtomType::Open,
+            SymbolKind::Fence => AtomType::Ord,
         },
         MathNode::Text(..) => AtomType::Ord,
         MathNode::Space(_) => AtomType::Ord,
@@ -94,7 +94,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
             SymbolKind::Open => AtomType::Open,
             SymbolKind::Close => AtomType::Close,
             SymbolKind::Punctuation => AtomType::Punct,
-            SymbolKind::Fence => AtomType::Open,
+            SymbolKind::Fence => AtomType::Ord,
         },
         CompactNode::Text(..) => AtomType::Ord,
         CompactNode::Space(_) => AtomType::Ord,
@@ -305,7 +305,7 @@ mod tests {
         );
         assert_eq!(
             classify_node(&MathNode::Symbol(SymbolKind::Fence, "|".into())),
-            AtomType::Open
+            AtomType::Ord
         );
     }
 

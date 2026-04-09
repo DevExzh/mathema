@@ -23,6 +23,11 @@ static MATH_FONT: LazyLock<Font> = LazyLock::new(|| {
     Font::from_bytes(super::FONT_DATA, FontSettings::default()).expect("embedded font must be valid")
 });
 
+/// Lazily-parsed ttf-parser face for glyph outline extraction (MATH variants).
+static TTF_FACE: LazyLock<ttf_parser::Face<'static>> = LazyLock::new(|| {
+    ttf_parser::Face::parse(super::FONT_DATA, 0).expect("embedded font data must be valid")
+});
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -229,8 +234,28 @@ fn emit_raster_box(
     let fg = ctx.fg;
     match &layout.kind {
         BoxKind::Glyph { ch, size, italic } => {
-            let font_size_px = (em * size).max(1.0) as f32;
-            draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic);
+            // For large operators at display size, use MATH table variant glyphs
+            // for better quality (properly designed display glyphs vs scaled base).
+            let used_variant = if *size > 1.2 && is_large_op_char(*ch) {
+                if let Some(variant) = super::glyph_variants::display_operator_variant(*ch) {
+                    let target_px = em * size;
+                    let font_size_px = if variant.advance_em > 0.01 {
+                        target_px / variant.advance_em
+                    } else {
+                        target_px
+                    };
+                    draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !used_variant {
+                let font_size_px = (em * size).max(1.0) as f32;
+                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic);
+            }
         },
 
         BoxKind::TextRun { text, size, italic, .. } => {
@@ -274,34 +299,54 @@ fn emit_raster_box(
         },
 
         BoxKind::Delimiter { ch, target_height } => {
-            // Use SVG path for tall delimiters
-            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
-                if let Some((path, is_fill)) = parse_svg_path_ex(&dp.path_data) {
-                    let tx = x as f32;
-                    let ty = (y - layout.height * em) as f32;
-                    let scale = em as f32;
-
-                    let mut paint = Paint::default();
-                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
-                    paint.anti_alias = true;
-
-                    let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
-                    if is_fill {
-                        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
-                    } else if dp.stroke_width > 0.0 {
-                        let stroke = Stroke {
-                            width: dp.stroke_width as f32,
-                            line_cap: tiny_skia::LineCap::Round,
-                            line_join: tiny_skia::LineJoin::Round,
-                            ..Stroke::default()
-                        };
-                        pixmap.stroke_path(&path, &paint, &stroke, transform, None);
-                    }
-                }
+            // Try MATH table glyph variant first for better quality.
+            let variant_rendered = if let Some(variant) =
+                super::glyph_variants::select_vertical_variant(*ch, *target_height)
+            {
+                // Render the variant glyph scaled to match the layout's target height.
+                // font_size_px = target_height_pixels / advance_em
+                let target_px = target_height * em;
+                let font_size_px = if variant.advance_em > 0.01 {
+                    target_px / variant.advance_em
+                } else {
+                    em
+                };
+                draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                true
             } else {
-                // Fallback: render as text glyph
-                let font_size_px = (target_height * em).max(1.0) as f32;
-                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false);
+                false
+            };
+
+            if !variant_rendered {
+                // Fall back to SVG path for tall delimiters
+                if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+                    if let Some((path, is_fill)) = parse_svg_path_ex(&dp.path_data) {
+                        let tx = x as f32;
+                        let ty = (y - layout.height * em) as f32;
+                        let scale = em as f32;
+
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                        paint.anti_alias = true;
+
+                        let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                        if is_fill {
+                            pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
+                        } else if dp.stroke_width > 0.0 {
+                            let stroke = Stroke {
+                                width: dp.stroke_width as f32,
+                                line_cap: tiny_skia::LineCap::Round,
+                                line_join: tiny_skia::LineJoin::Round,
+                                ..Stroke::default()
+                            };
+                            pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                        }
+                    }
+                } else {
+                    // Final fallback: render as text glyph
+                    let font_size_px = (target_height * em).max(1.0) as f32;
+                    draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false);
+                }
             }
         },
 
@@ -393,6 +438,16 @@ fn emit_raster_box(
 // Glyph rasterization
 // ---------------------------------------------------------------------------
 
+/// Check whether a character is a large (n-ary) operator that may have display variants.
+#[inline]
+fn is_large_op_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '∑' | '∏' | '∐' | '∫' | '∬' | '∭' | '∮' | '∯' | '∰'
+            | '⋂' | '⋃' | '⋁' | '⋀' | '⨀' | '⨁' | '⨂' | '⨄' | '⨆'
+    )
+}
+
 fn draw_glyph(
     pixmap: &mut Pixmap,
     ctx: &mut RasterCtx,
@@ -452,6 +507,102 @@ fn draw_glyph(
             transform,
             None,
         );
+    }
+}
+
+/// Render a glyph by its font glyph index (for MATH table variants).
+///
+/// Uses ttf-parser for outline extraction and tiny-skia for path rendering,
+/// because fontdue cannot rasterize non-cmap glyph IDs (MATH table variants
+/// are typically not mapped to Unicode codepoints).
+fn draw_glyph_variant(
+    pixmap: &mut Pixmap,
+    fg: [u8; 3],
+    glyph_id: u16,
+    font_size_px: f64,
+    x: f64,
+    baseline_y: f64,
+) {
+    if font_size_px < 0.5 {
+        return;
+    }
+    let face = &*TTF_FACE;
+    let upem = face.units_per_em() as f64;
+    let scale = font_size_px / upem;
+
+    let gid = ttf_parser::GlyphId(glyph_id);
+
+    // Extract the outline as a tiny-skia path.
+    let mut builder = GlyphPathBuilder::new();
+    if face.outline_glyph(gid, &mut builder).is_none() {
+        return;
+    }
+    let Some(path) = builder.finish() else {
+        return;
+    };
+
+    // Transform: scale from design units to pixels, flip y-axis, position at (x, baseline_y).
+    // Font coordinates: y-up from baseline.
+    // Screen coordinates: y-down from top-left.
+    // Transform: x' = x + du_x * scale, y' = baseline_y - du_y * scale
+    let transform = Transform::from_row(
+        scale as f32,
+        0.0,
+        0.0,
+        -(scale as f32),
+        x as f32,
+        baseline_y as f32,
+    );
+
+    let mut paint = Paint::default();
+    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+    paint.anti_alias = true;
+
+    pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        transform,
+        None,
+    );
+}
+
+/// OutlineBuilder that converts ttf-parser glyph outlines to tiny-skia Paths.
+struct GlyphPathBuilder {
+    pb: PathBuilder,
+}
+
+impl GlyphPathBuilder {
+    fn new() -> Self {
+        Self {
+            pb: PathBuilder::new(),
+        }
+    }
+
+    fn finish(self) -> Option<tiny_skia::Path> {
+        self.pb.finish()
+    }
+}
+
+impl ttf_parser::OutlineBuilder for GlyphPathBuilder {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.pb.move_to(x, y);
+    }
+
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.pb.line_to(x, y);
+    }
+
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.pb.quad_to(x1, y1, x, y);
+    }
+
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.pb.cubic_to(x1, y1, x2, y2, x, y);
+    }
+
+    fn close(&mut self) {
+        self.pb.close();
     }
 }
 
@@ -660,6 +811,10 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
     let mut cur_x: f32 = 0.0;
     let mut cur_y: f32 = 0.0;
 
+    // Subpath start position (set by M/m, restored by Z/z per SVG spec)
+    let mut subpath_x: f32 = 0.0;
+    let mut subpath_y: f32 = 0.0;
+
     // Previous control point tracking for smooth curves
     let mut prev_cx: f32 = 0.0; // last cubic control point (2nd)
     let mut prev_cy: f32 = 0.0;
@@ -679,6 +834,8 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     has_content = true;
                     cur_x = x;
                     cur_y = y;
+                    subpath_x = x;
+                    subpath_y = y;
                     prev_cx = x;
                     prev_cy = y;
                     prev_qx = x;
@@ -797,6 +954,8 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     has_content = true;
                     cur_x = x;
                     cur_y = y;
+                    subpath_x = x;
+                    subpath_y = y;
                     prev_cx = x;
                     prev_cy = y;
                     prev_qx = x;
@@ -966,9 +1125,9 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
             Some('Z') | Some('z') => {
                 chars.next();
                 pb.close();
-                // Z does not change cur_x/cur_y per SVG spec (it returns to
-                // the start of the current subpath), but for simplicity we
-                // reset control points to current position.
+                // Per SVG spec, Z returns to the start of the current subpath
+                cur_x = subpath_x;
+                cur_y = subpath_y;
                 prev_cx = cur_x;
                 prev_cy = cur_y;
                 prev_qx = cur_x;
@@ -1426,5 +1585,37 @@ mod tests {
         let (min_x, max_x) = compute_x_bounds(&root, 0.0);
         assert!(min_x < 0.0, "min_x should be negative: got {min_x}");
         assert!((max_x - 0.1).abs() < 1e-9, "max_x should be 0.1: got {max_x}");
+    }
+
+    #[test]
+    fn parse_svg_path_z_restores_subpath_start() {
+        // After Z, the current position should be the subpath start (M coords).
+        // Then a relative lineto should be relative to that start, not the last point before Z.
+        let path = parse_svg_path("M10,10 L20,20 Z l5,0");
+        assert!(path.is_some(), "path with Z followed by relative command should parse");
+    }
+
+    #[test]
+    fn parse_svg_path_multiple_subpaths() {
+        // Two subpaths: first closes at M origin, second starts elsewhere
+        let path = parse_svg_path("M0,0 L10,10 Z M20,20 L30,30 Z");
+        assert!(path.is_some(), "multiple closed subpaths should parse");
+    }
+
+    #[test]
+    fn parse_svg_path_filled_prefix() {
+        // Test the F: prefix for filled paths
+        let result = parse_svg_path_ex("F:M0,0 L10,0 L10,10 Z");
+        assert!(result.is_some(), "filled path should parse");
+        let (_, is_fill) = result.unwrap();
+        assert!(is_fill, "F: prefix should set fill mode");
+    }
+
+    #[test]
+    fn parse_svg_path_stroke_no_prefix() {
+        let result = parse_svg_path_ex("M0,0 L10,0 L10,10 Z");
+        assert!(result.is_some(), "stroke path should parse");
+        let (_, is_fill) = result.unwrap();
+        assert!(!is_fill, "no prefix should be stroke mode");
     }
 }
