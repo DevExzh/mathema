@@ -184,6 +184,49 @@ const MAX_LAYOUT_DEPTH: u32 = 128;
 /// especially for compact matrix environments with single-character cells.
 const MATRIX_COL_GAP_EM: f64 = 0.8;
 
+/// Column gap within an rl-pair at alignment points in aligned environments.
+/// KaTeX uses 0 for this gap (R→L boundary); we use a tiny value so content
+/// doesn't collide.
+const ALIGN_INTERNAL_GAP_EM: f64 = 0.0;
+
+/// Column gap between rl-pairs in aligned environments (L→R boundary).
+/// KaTeX uses 2 * arraycolsep = 10pt ≈ 1.0em; we use the same.
+const ALIGN_PAIR_GAP_EM: f64 = 1.0;
+
+/// Detect whether columns follow an aligned `[R, L, R, L, ...]` pattern and
+/// return `true` if so.  Used to switch from a uniform column gap to the
+/// tighter per-pair gaps that KaTeX applies.
+fn is_aligned_rl_pattern(columns: &[ColumnAlign]) -> bool {
+    columns.len() >= 2
+        && columns
+            .iter()
+            .enumerate()
+            .all(|(i, &a)| {
+                if i % 2 == 0 {
+                    a == ColumnAlign::Right
+                } else {
+                    a == ColumnAlign::Left
+                }
+            })
+}
+
+/// Return the column gap that should appear *after* column `j` (0-indexed)
+/// in an array.  For aligned environments (detected via `is_aligned`) the gap
+/// alternates between near-zero (within an rl-pair) and wider (between pairs).
+fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
+    if is_aligned {
+        // Even column (R) → next column (L): within an rl-pair → tight
+        // Odd column (L) → next column (R): between rl-pairs → wide
+        if j % 2 == 0 {
+            ALIGN_INTERNAL_GAP_EM * size
+        } else {
+            ALIGN_PAIR_GAP_EM * size
+        }
+    } else {
+        MATRIX_COL_GAP_EM * size
+    }
+}
+
 /// Integral-like operators that default to `\nolimits` (side placement) in TeX.
 /// These use superscript/subscript even in display mode, unlike \sum and \prod.
 #[inline]
@@ -2484,10 +2527,10 @@ fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> Layou
     if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
         let over_ctx = ctx.with_style(ctx.style.sup());
         let over_box = layout_node(over, &over_ctx);
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let arrow_w = over_box.width.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_box = LayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -2557,10 +2600,10 @@ fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> Lay
     if let Some(arrow_ch) = get_extensible_arrow_heap(base) {
         let under_ctx = ctx.with_style(ctx.style.sub());
         let under_box = layout_node(under, &under_ctx);
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let arrow_w = under_box.width.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_box = LayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -2636,11 +2679,11 @@ fn layout_underover(
         let over_box = layout_node(over, &over_ctx);
         let under_ctx = ctx.with_style(ctx.style.sub());
         let under_box = layout_node(under, &under_ctx);
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let content_w = over_box.width.max(under_box.width);
         let arrow_w = content_w.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_box = LayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -3000,7 +3043,7 @@ fn layout_array(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
-    let col_gap = MATRIX_COL_GAP_EM * size;
+    let aligned = is_aligned_rl_pattern(columns);
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_opt.unwrap_or(1.0);
@@ -3067,15 +3110,17 @@ fn layout_array(
             }
             cursor_x += col_w;
             if j < n_cols - 1 {
-                cursor_x += col_gap;
+                cursor_x += col_gap_after(j, aligned, size);
             }
         }
 
         cursor_y += row_depths[i];
     }
 
-    let total_width: f64 =
-        col_widths.iter().sum::<f64>() + col_gap * (n_cols.saturating_sub(1) as f64);
+    let total_gap: f64 = (0..n_cols.saturating_sub(1))
+        .map(|j| col_gap_after(j, aligned, size))
+        .sum();
+    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
     let total_extent = cursor_y;
     // Center vertically around the axis
     let axis = ctx.params.axis_height * size;
@@ -4672,10 +4717,10 @@ fn layout_overscript_c(arena: &AstArena, base: NodeId, over: NodeId, ctx: &Layou
     if let Some(arrow_ch) = get_extensible_arrow_c(arena, base) {
         let over_ctx = ctx.with_style(ctx.style.sup());
         let over_box = layout_node_c(arena, over, &over_ctx);
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let arrow_w = over_box.width.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_box = LayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -4748,10 +4793,10 @@ fn layout_underscript_c(
     if let Some(arrow_ch) = get_extensible_arrow_c(arena, base) {
         let under_ctx = ctx.with_style(ctx.style.sub());
         let under_box = layout_node_c(arena, under, &under_ctx);
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let arrow_w = under_box.width.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_box = LayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -4826,11 +4871,11 @@ fn layout_underover_c(
         let over_box = layout_node_c(arena, over, &over_ctx);
         let under_ctx = ctx.with_style(ctx.style.sub());
         let under_box = layout_node_c(arena, under, &under_ctx);
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let content_w = over_box.width.max(under_box.width);
         let arrow_w = content_w.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_box = LayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -5131,7 +5176,6 @@ fn layout_array_c(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
-    let col_gap = MATRIX_COL_GAP_EM * size;
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_pct as f64 / 100.0;
@@ -5150,6 +5194,7 @@ fn layout_array_c(
             _ => ColumnAlign::Center,
         })
         .collect();
+    let aligned = is_aligned_rl_pattern(&columns);
 
     // Layout all cells (flat storage, row-major, stride = num_cols)
     let cell_ids = arena.children(cells);
@@ -5220,15 +5265,17 @@ fn layout_array_c(
                 cursor_x += col_widths.get(j).copied().unwrap_or(0.0);
             }
             if j < n_cols - 1 {
-                cursor_x += col_gap;
+                cursor_x += col_gap_after(j, aligned, size);
             }
         }
 
         cursor_y += row_depths[i];
     }
 
-    let total_width: f64 =
-        col_widths.iter().sum::<f64>() + col_gap * (n_cols.saturating_sub(1) as f64);
+    let total_gap: f64 = (0..n_cols.saturating_sub(1))
+        .map(|j| col_gap_after(j, aligned, size))
+        .sum();
+    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
     let total_extent = cursor_y;
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
@@ -7259,10 +7306,10 @@ fn layout_overscript_arena(
         let over_h = arena.get(over_id).height;
         let over_d = arena.get(over_id).depth;
 
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let arrow_w = over_w.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_id = arena.alloc(ArenaLayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -7353,10 +7400,10 @@ fn layout_underscript_arena(
         let under_h = arena.get(under_id).height;
         let under_d = arena.get(under_id).depth;
 
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let arrow_w = under_w.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_id = arena.alloc(ArenaLayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -7451,11 +7498,11 @@ fn layout_underover_arena(
         let under_h = arena.get(under_id).height;
         let under_d = arena.get(under_id).depth;
 
-        let padding = 0.6 * size;
-        let min_width = 1.5 * size;
+        let padding = 0.5 * size;
+        let min_width = 1.75 * size;
         let content_w = over_w.max(under_w);
         let arrow_w = content_w.max(min_width) + padding;
-        let arrow_h = 0.44 * size;
+        let arrow_h = 0.36 * size;
         let arrow_id = arena.alloc(ArenaLayoutBox {
             width: arrow_w,
             height: arrow_h / 2.0,
@@ -7804,7 +7851,6 @@ fn layout_array_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let size = ctx.size();
-    let col_gap = MATRIX_COL_GAP_EM * size;
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_pct as f64 / 100.0;
@@ -7823,6 +7869,7 @@ fn layout_array_arena(
             _ => ColumnAlign::Center,
         })
         .collect();
+    let aligned = is_aligned_rl_pattern(&columns);
 
     // Layout all cells (flat storage, row-major, stride = num_cols)
     let cell_ids_ast = ast.children(cells);
@@ -7905,7 +7952,7 @@ fn layout_array_arena(
                 cursor_x += col_widths.get(j).copied().unwrap_or(0.0);
             }
             if j < n_cols - 1 {
-                cursor_x += col_gap;
+                cursor_x += col_gap_after(j, aligned, size);
             }
         }
 
@@ -7913,8 +7960,10 @@ fn layout_array_arena(
     }
 
     let children = arena.finish_children(children_start);
-    let total_width: f64 =
-        col_widths.iter().sum::<f64>() + col_gap * (n_cols.saturating_sub(1) as f64);
+    let total_gap: f64 = (0..n_cols.saturating_sub(1))
+        .map(|j| col_gap_after(j, aligned, size))
+        .sum();
+    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
 
     arena.alloc(ArenaLayoutBox {
         width: total_width,
