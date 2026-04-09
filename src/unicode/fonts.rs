@@ -104,6 +104,26 @@ fn bold_offset(ch: char) -> Option<u32> {
         'A'..='Z' => Some(0x1D400 + (ch as u32 - b'A' as u32)),
         'a'..='z' => Some(0x1D41A + (ch as u32 - b'a' as u32)),
         '0'..='9' => Some(0x1D7CE + (ch as u32 - b'0' as u32)),
+        // Bold uppercase Greek: Α(U+0391)..Ρ(U+03A1) → U+1D6A8..
+        '\u{0391}'..='\u{03A1}' => Some(0x1D6A8 + (ch as u32 - 0x0391)),
+        // Bold uppercase Greek: Σ(U+03A3)..Ω(U+03A9) → U+1D6BA..
+        // (U+03A2 is unassigned in Unicode, so we skip it)
+        '\u{03A3}'..='\u{03A9}' => Some(0x1D6BA + (ch as u32 - 0x03A3)),
+        // Bold lowercase Greek: α(U+03B1)..ρ(U+03C1) → U+1D6C2..
+        '\u{03B1}'..='\u{03C1}' => Some(0x1D6C2 + (ch as u32 - 0x03B1)),
+        // Bold lowercase Greek: ς(U+03C2, final sigma) → U+1D6D3
+        '\u{03C2}' => Some(0x1D6D3),
+        // Bold lowercase Greek: σ(U+03C3)..ω(U+03C9) → U+1D6D4..
+        '\u{03C3}'..='\u{03C9}' => Some(0x1D6D4 + (ch as u32 - 0x03C3)),
+        // Bold special math symbols
+        '\u{2202}' => Some(0x1D6DB), // ∂ → bold partial
+        '\u{2207}' => Some(0x1D6C1), // ∇ → bold nabla
+        '\u{03F5}' => Some(0x1D6DC), // ϵ → bold epsilon symbol
+        '\u{03D1}' => Some(0x1D6DD), // ϑ → bold theta symbol
+        '\u{03F0}' => Some(0x1D6DE), // ϰ → bold kappa symbol
+        '\u{03D5}' => Some(0x1D6DF), // ϕ → bold phi symbol
+        '\u{03F1}' => Some(0x1D6E0), // ϱ → bold rho symbol
+        '\u{03D6}' => Some(0x1D6E1), // ϖ → bold pi symbol
         _ => None,
     }
 }
@@ -123,6 +143,16 @@ fn bold_italic_offset(ch: char) -> Option<u32> {
     match ch {
         'A'..='Z' => Some(0x1D468 + (ch as u32 - b'A' as u32)),
         'a'..='z' => Some(0x1D482 + (ch as u32 - b'a' as u32)),
+        // Bold italic uppercase Greek: Α(U+0391)..Ρ(U+03A1) → U+1D71C..
+        '\u{0391}'..='\u{03A1}' => Some(0x1D71C + (ch as u32 - 0x0391)),
+        // Bold italic uppercase Greek: Σ(U+03A3)..Ω(U+03A9) → U+1D72E..
+        '\u{03A3}'..='\u{03A9}' => Some(0x1D72E + (ch as u32 - 0x03A3)),
+        // Bold italic lowercase Greek: α(U+03B1)..ρ(U+03C1) → U+1D736..
+        '\u{03B1}'..='\u{03C1}' => Some(0x1D736 + (ch as u32 - 0x03B1)),
+        // Bold italic lowercase Greek: ς(U+03C2, final sigma) → U+1D747
+        '\u{03C2}' => Some(0x1D747),
+        // Bold italic lowercase Greek: σ(U+03C3)..ω(U+03C9) → U+1D748..
+        '\u{03C3}'..='\u{03C9}' => Some(0x1D748 + (ch as u32 - 0x03C3)),
         _ => None,
     }
 }
@@ -332,5 +362,50 @@ mod tests {
         assert_eq!(latex_font_to_style("mathbb"), Some(TextStyle::DoubleStruck));
         assert_eq!(latex_font_to_style("mathfrak"), Some(TextStyle::Fraktur));
         assert_eq!(latex_font_to_style("unknown"), None);
+    }
+
+    #[test]
+    fn bold_greek_lowercase() {
+        // α (U+03B1) → bold alpha U+1D6C2 '𝛂'
+        assert_eq!(styled_char('\u{03B1}', TextStyle::Bold), Some('\u{1D6C2}'));
+        // β (U+03B2) → bold beta U+1D6C3
+        assert_eq!(styled_char('\u{03B2}', TextStyle::Bold), Some('\u{1D6C3}'));
+        // ω (U+03C9) → bold omega U+1D6DA
+        assert_eq!(styled_char('\u{03C9}', TextStyle::Bold), Some('\u{1D6DA}'));
+        // σ (U+03C3) → bold sigma U+1D6D4
+        assert_eq!(styled_char('\u{03C3}', TextStyle::Bold), Some('\u{1D6D4}'));
+        // ς (U+03C2, final sigma) → U+1D6D3
+        assert_eq!(styled_char('\u{03C2}', TextStyle::Bold), Some('\u{1D6D3}'));
+    }
+
+    #[test]
+    fn bold_greek_uppercase() {
+        // Α (U+0391) → bold Alpha U+1D6A8
+        assert_eq!(styled_char('\u{0391}', TextStyle::Bold), Some('\u{1D6A8}'));
+        // Σ (U+03A3) → bold Sigma U+1D6BA
+        assert_eq!(styled_char('\u{03A3}', TextStyle::Bold), Some('\u{1D6BA}'));
+        // Ω (U+03A9) → bold Omega U+1D6C0
+        assert_eq!(styled_char('\u{03A9}', TextStyle::Bold), Some('\u{1D6C0}'));
+    }
+
+    #[test]
+    fn bold_special_math_symbols() {
+        assert_eq!(styled_char('\u{2202}', TextStyle::Bold), Some('\u{1D6DB}')); // ∂
+        assert_eq!(styled_char('\u{2207}', TextStyle::Bold), Some('\u{1D6C1}')); // ∇
+        assert_eq!(styled_char('\u{03F5}', TextStyle::Bold), Some('\u{1D6DC}')); // ϵ
+        assert_eq!(styled_char('\u{03D1}', TextStyle::Bold), Some('\u{1D6DD}')); // ϑ
+        assert_eq!(styled_char('\u{03D5}', TextStyle::Bold), Some('\u{1D6DF}')); // ϕ
+    }
+
+    #[test]
+    fn bold_italic_greek() {
+        // α (U+03B1) → bold italic alpha U+1D736
+        assert_eq!(styled_char('\u{03B1}', TextStyle::BoldItalic), Some('\u{1D736}'));
+        // Α (U+0391) → bold italic Alpha U+1D71C
+        assert_eq!(styled_char('\u{0391}', TextStyle::BoldItalic), Some('\u{1D71C}'));
+        // Σ (U+03A3) → bold italic Sigma U+1D72E
+        assert_eq!(styled_char('\u{03A3}', TextStyle::BoldItalic), Some('\u{1D72E}'));
+        // ω (U+03C9) → bold italic omega U+1D74E
+        assert_eq!(styled_char('\u{03C9}', TextStyle::BoldItalic), Some('\u{1D74E}'));
     }
 }
