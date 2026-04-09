@@ -147,7 +147,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             strictness: Strictness::Strict,
-            display: DisplayStyle::Inline,
+            display: DisplayStyle::Block,
         }
     }
 }
