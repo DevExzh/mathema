@@ -262,11 +262,20 @@ struct LayoutCtx<'a> {
     options: &'a RenderOptions,
     depth: u32,
     size_scale: f64,
+    /// When set, use this style for inter-atom spacing calculations instead of
+    /// `self.style`.  This allows fraction numerators/denominators to preserve
+    /// medium/thick spacing even when the layout style drops to Script or below.
+    spacing_style: Option<MathStyle>,
 }
 
 impl<'a> LayoutCtx<'a> {
     fn size(&self) -> f64 {
         self.style.size_multiplier() * self.size_scale
+    }
+
+    /// Style to use for inter-atom spacing calculations.
+    fn effective_spacing_style(&self) -> MathStyle {
+        self.spacing_style.unwrap_or(self.style)
     }
 
     fn with_style(&self, style: MathStyle) -> LayoutCtx<'a> {
@@ -276,6 +285,7 @@ impl<'a> LayoutCtx<'a> {
             options: self.options,
             depth: self.depth,
             size_scale: self.size_scale,
+            spacing_style: self.spacing_style,
         }
     }
 
@@ -287,6 +297,7 @@ impl<'a> LayoutCtx<'a> {
             options: self.options,
             depth: self.depth + 1,
             size_scale: self.size_scale,
+            spacing_style: self.spacing_style,
         }
     }
 }
@@ -967,6 +978,7 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
         options,
         depth: 0,
         size_scale: 1.0,
+        spacing_style: None,
     };
     layout_row(&expr.nodes, &ctx)
 }
@@ -988,7 +1000,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, ctx.style);
+            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
             if space > 0.0 {
                 let kern_width = space * ctx.size();
                 cursor_x += kern_width;
@@ -1639,8 +1651,21 @@ fn layout_fraction(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let num_ctx = ctx.with_style(ctx.style.fracnum());
-    let den_ctx = ctx.with_style(ctx.style.fracden());
+    let num_style = ctx.style.fracnum();
+    let den_style = ctx.style.fracden();
+    // Fraction content should always preserve at least text-level inter-atom
+    // spacing (medium and thick spaces).  Without this floor, inline fractions
+    // (Text→Script) suppress binary-operator spacing, producing visually
+    // cramped numerators/denominators.  The layout SIZE still follows the
+    // normal fracnum/fracden rules; only the spacing calculation is upgraded.
+    let mut num_ctx = ctx.with_style(num_style);
+    num_ctx.spacing_style = Some(
+        num_ctx.effective_spacing_style().min_text_level()
+    );
+    let mut den_ctx = ctx.with_style(den_style);
+    den_ctx.spacing_style = Some(
+        den_ctx.effective_spacing_style().min_text_level()
+    );
     let num_box = layout_node(num, &num_ctx);
     let den_box = layout_node(den, &den_ctx);
 
@@ -3165,6 +3190,7 @@ pub fn layout_expr_c(expr: &CompactExpr, style: MathStyle, options: &RenderOptio
         options,
         depth: 0,
         size_scale: 1.0,
+        spacing_style: None,
     };
     layout_row_c(&expr.arena, expr.roots, &ctx)
 }
@@ -3277,7 +3303,7 @@ fn layout_row_segment_c(arena: &AstArena, ids: &[NodeId], ctx: &LayoutCtx) -> La
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.style);
+            let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
             if space > 0.0 {
                 let kern_width = space * current_ctx.size();
                 cursor_x += kern_width;
@@ -3895,8 +3921,17 @@ fn layout_fraction_c(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let num_ctx = ctx.with_style(ctx.style.fracnum());
-    let den_ctx = ctx.with_style(ctx.style.fracden());
+    let num_style = ctx.style.fracnum();
+    let den_style = ctx.style.fracden();
+    // Preserve at least text-level spacing in fraction content (see heap path).
+    let mut num_ctx = ctx.with_style(num_style);
+    num_ctx.spacing_style = Some(
+        num_ctx.effective_spacing_style().min_text_level()
+    );
+    let mut den_ctx = ctx.with_style(den_style);
+    den_ctx.spacing_style = Some(
+        den_ctx.effective_spacing_style().min_text_level()
+    );
     let num_box = layout_node_c(arena, num, &num_ctx);
     let den_box = layout_node_c(arena, den, &den_ctx);
 
@@ -5370,6 +5405,7 @@ impl<'a> LayoutBuilder<'a> {
             options: self.options,
             depth: 0,
             size_scale: 1.0,
+            spacing_style: None,
         };
         layout_row_arena(&expr.arena, expr.roots, arena, &ctx)
     }
@@ -5382,11 +5418,19 @@ struct ArenaLayoutCtx<'a> {
     options: &'a RenderOptions,
     depth: u32,
     size_scale: f64,
+    /// When set, use this style for inter-atom spacing calculations instead of
+    /// `self.style`.  See `LayoutCtx::spacing_style` for rationale.
+    spacing_style: Option<MathStyle>,
 }
 
 impl<'a> ArenaLayoutCtx<'a> {
     fn size(&self) -> f64 {
         self.style.size_multiplier() * self.size_scale
+    }
+
+    /// Style to use for inter-atom spacing calculations.
+    fn effective_spacing_style(&self) -> MathStyle {
+        self.spacing_style.unwrap_or(self.style)
     }
 
     fn with_style(&self, style: MathStyle) -> ArenaLayoutCtx<'a> {
@@ -5396,6 +5440,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             options: self.options,
             depth: self.depth,
             size_scale: self.size_scale,
+            spacing_style: self.spacing_style,
         }
     }
 
@@ -5406,6 +5451,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             options: self.options,
             depth: self.depth + 1,
             size_scale: self.size_scale,
+            spacing_style: self.spacing_style,
         }
     }
 }
@@ -5623,7 +5669,7 @@ fn layout_row_segment_arena(
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.style);
+            let space = spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
             if space > 0.0 {
                 cursor_x += space * current_ctx.size();
             }
@@ -6343,8 +6389,17 @@ fn layout_fraction_arena(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let num_ctx = ctx.with_style(ctx.style.fracnum());
-    let den_ctx = ctx.with_style(ctx.style.fracden());
+    let num_style = ctx.style.fracnum();
+    let den_style = ctx.style.fracden();
+    // Preserve at least text-level spacing in fraction content (see heap path).
+    let mut num_ctx = ctx.with_style(num_style);
+    num_ctx.spacing_style = Some(
+        num_ctx.effective_spacing_style().min_text_level()
+    );
+    let mut den_ctx = ctx.with_style(den_style);
+    den_ctx.spacing_style = Some(
+        den_ctx.effective_spacing_style().min_text_level()
+    );
     let num_id = layout_node_arena(ast, num, arena, &num_ctx);
     let den_id = layout_node_arena(ast, den, arena, &den_ctx);
 
@@ -8264,6 +8319,7 @@ mod tests {
                 options: &default_options(),
                 depth: 0,
                 size_scale: 1.0,
+                spacing_style: None,
             },
         );
         let expr = MathExpr::inline(vec![MathNode::Phantom(Box::new(content.clone()))]);
@@ -8289,6 +8345,7 @@ mod tests {
                 options: &default_options(),
                 depth: 0,
                 size_scale: 1.0,
+                spacing_style: None,
             },
         );
         let expr = MathExpr::inline(vec![MathNode::Boxed {
@@ -8326,6 +8383,7 @@ mod tests {
                 options: &default_options(),
                 depth: 0,
                 size_scale: 1.0,
+                spacing_style: None,
             },
         );
         let expr = MathExpr::inline(vec![MathNode::Scaled {
@@ -9439,6 +9497,154 @@ mod tests {
             );
         } else {
             panic!("expected HBox at root");
+        }
+    }
+
+    /// Verify that binary operators inside a fraction numerator/denominator
+    /// receive non-zero inter-atom spacing in display mode.
+    #[test]
+    fn fraction_binop_spacing_display() {
+        use crate::ast::SymbolKind;
+        // \frac{a + b}{c - d}  in display mode
+        let num = MathNode::Row(vec![
+            MathNode::Identifier("a".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+            MathNode::Identifier("b".into()),
+        ]);
+        let den = MathNode::Row(vec![
+            MathNode::Identifier("c".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "\u{2212}".into()), // minus
+            MathNode::Identifier("d".into()),
+        ]);
+        let expr = MathExpr::inline(vec![MathNode::Fraction {
+            kind: FractionKind::Normal,
+            num: Box::new(num),
+            den: Box::new(den),
+        }]);
+        let opts = default_options();
+        let root = layout_expr(&expr, MathStyle::Display, &opts);
+
+        // Dig into the VBox (fraction) to find the numerator HBox
+        if let BoxKind::HBox { ref children } = root.kind {
+            let frac = &children[0].layout;
+            if let BoxKind::VBox { ref children } = frac.kind {
+                // children[0] = numerator, children[1] = denominator
+                let check_spacing = |label: &str, layout: &LayoutBox| {
+                    if let BoxKind::HBox { ref children } = layout.kind {
+                        assert!(
+                            children.len() >= 3,
+                            "{label}: expected at least 3 children (a, op, b), got {}",
+                            children.len()
+                        );
+                        // Gap before the operator
+                        let gap_before = children[1].dx
+                            - (children[0].dx + children[0].layout.width);
+                        // Gap after the operator
+                        let gap_after = children[2].dx
+                            - (children[1].dx + children[1].layout.width);
+                        assert!(
+                            gap_before > 0.05,
+                            "{label}: gap before binary op should be > 0.05, got {:.4}",
+                            gap_before
+                        );
+                        assert!(
+                            gap_after > 0.05,
+                            "{label}: gap after binary op should be > 0.05, got {:.4}",
+                            gap_after
+                        );
+                    } else {
+                        panic!("{label}: expected HBox");
+                    }
+                };
+                check_spacing("numerator", &children[0].layout);
+                check_spacing("denominator", &children[1].layout);
+            } else {
+                panic!("fraction should be VBox");
+            }
+        } else {
+            panic!("root should be HBox");
+        }
+    }
+
+    /// Verify that binary operators inside a fraction numerator/denominator
+    /// receive non-zero inter-atom spacing even in inline (text) mode.
+    /// This tests the spacing floor added by the fraction layout functions.
+    #[test]
+    fn fraction_binop_spacing_inline() {
+        use crate::ast::SymbolKind;
+        // \frac{a + b}{c - d}  in inline (text) mode
+        let num = MathNode::Row(vec![
+            MathNode::Identifier("a".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+            MathNode::Identifier("b".into()),
+        ]);
+        let den = MathNode::Row(vec![
+            MathNode::Identifier("c".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "\u{2212}".into()),
+            MathNode::Identifier("d".into()),
+        ]);
+        let expr = MathExpr::inline(vec![MathNode::Fraction {
+            kind: FractionKind::Normal,
+            num: Box::new(num),
+            den: Box::new(den),
+        }]);
+        let opts = default_options();
+        let root = layout_expr(&expr, MathStyle::Text, &opts);
+
+        // In inline mode, fracnum(Text) = Script. Without the spacing floor
+        // fix, medium space would be suppressed. With the fix, it should be
+        // non-zero.
+        if let BoxKind::HBox { ref children } = root.kind {
+            let frac = &children[0].layout;
+            if let BoxKind::VBox { ref children } = frac.kind {
+                let check_spacing = |label: &str, layout: &LayoutBox| {
+                    if let BoxKind::HBox { ref children } = layout.kind {
+                        assert!(
+                            children.len() >= 3,
+                            "{label}: expected at least 3 children, got {}",
+                            children.len()
+                        );
+                        let gap_before = children[1].dx
+                            - (children[0].dx + children[0].layout.width);
+                        assert!(
+                            gap_before > 0.01,
+                            "{label}: inline fraction should still have spacing around binary ops, got {:.4}",
+                            gap_before
+                        );
+                    } else {
+                        panic!("{label}: expected HBox");
+                    }
+                };
+                check_spacing("numerator", &children[0].layout);
+                check_spacing("denominator", &children[1].layout);
+            } else {
+                panic!("fraction should be VBox");
+            }
+        } else {
+            panic!("root should be HBox");
+        }
+    }
+
+    /// Verify the compact path produces identical spacing to the heap path
+    /// for fractions with binary operators.
+    #[test]
+    fn fraction_spacing_compact_matches_heap() {
+        let latex = r"\frac{a + b}{c - d}";
+        let parsed = crate::latex::parse::parse(latex, &Default::default())
+            .expect("parse failed");
+        let compact = crate::latex::parse::parse_compact(latex, &Default::default())
+            .expect("compact parse failed");
+        let opts = default_options();
+
+        for &style in &[MathStyle::Display, MathStyle::Text] {
+            let heap_root = layout_expr(&parsed.expr, style, &opts);
+            let compact_root = layout_expr_c(&compact.expr, style, &opts);
+            let diff = (heap_root.width - compact_root.width).abs();
+            assert!(
+                diff < 0.01,
+                "heap and compact should match for {:?}: heap={:.4} compact={:.4}",
+                style, heap_root.width, compact_root.width
+            );
         }
     }
 }
