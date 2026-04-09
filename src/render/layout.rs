@@ -176,6 +176,14 @@ const MAX_LAYOUT_DEPTH: u32 = 128;
 // BIG_OP_DISPLAY_SCALE removed: display-mode operators now use per-operator
 // scale factors from metrics::display_op_scale() matching KaTeX Size2/Size1 ratios.
 
+/// Matrix/array inter-column gap as a fraction of the current font size (em).
+///
+/// Standard LaTeX uses `2 * \arraycolsep = 10pt = 1.0em` at 10pt, but KaTeX's
+/// rendered output appears tighter due to CSS padding interactions and glyph
+/// metrics. A value of 0.8em produces output that matches KaTeX more closely,
+/// especially for compact matrix environments with single-character cells.
+const MATRIX_COL_GAP_EM: f64 = 0.8;
+
 /// Integral-like operators that default to `\nolimits` (side placement) in TeX.
 /// These use superscript/subscript even in display mode, unlike \sum and \prod.
 #[inline]
@@ -916,30 +924,71 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
     let t = (h * 0.18).max(0.02);
     match sym {
         // Overbrace ⏞ — filled curly brace above, tip points up
+        // Multi-segment cubic bezier for smooth wing-tip-wing shape (KaTeX style)
         "\u{23DE}" => {
             let mid = w / 2.0;
-            let q = w * 0.25;
-            let tq = w * 0.75;
-            // Outer curve: bottom-left to tip(top) to bottom-right
-            // Inner curve: bottom-right (offset up by t) back to bottom-left (offset up by t)
+            // Outer curve control points — wing from bottom up to sharp center tip
+            // Left wing: gentle S-curve from (0,h) up to (mid,0)
+            let c1x = w * 0.10;    // first control: near left edge
+            let c1y = h * 0.16;    // pulled high (near top)
+            let c2x = mid * 0.55;  // second control: approaching center
+            let c2y = 0.0;         // at top
+            // Right wing mirrors left
+            let c3x = w - mid * 0.55;
+            let c3y = 0.0;
+            let c4x = w - w * 0.10;
+            let c4y = h * 0.16;
+            // Inner curve (offset inward by thickness t)
+            let ih = h - t; // inner baseline
+            let it = t;     // inner tip y
+            let ic1y = h * 0.16 + t * 0.2;
+            let ic4y = ic1y;
             format!(
-                "F:M0,{h:.4} Q{q:.4},{h:.4} {mid:.4},0 Q{tq:.4},{h:.4} {w:.4},{h:.4} \
-                 L{w:.4},{ht:.4} Q{tq:.4},{ht:.4} {mid:.4},{t:.4} Q{q:.4},{ht:.4} 0,{ht:.4} Z",
-                h = h, q = q, mid = mid, tq = tq, w = w, ht = h - t, t = t
+                "F:M0,{h:.4} \
+                 C{c1x:.4},{c1y:.4} {c2x:.4},{c2y:.4} {mid:.4},0 \
+                 C{c3x:.4},{c3y:.4} {c4x:.4},{c4y:.4} {w:.4},{h:.4} \
+                 L{w:.4},{ih:.4} \
+                 C{c4x:.4},{ic4y:.4} {c3x:.4},{it:.4} {mid:.4},{it:.4} \
+                 C{c2x:.4},{it:.4} {c1x:.4},{ic1y:.4} 0,{ih:.4} \
+                 Z",
+                h = h, mid = mid, w = w,
+                c1x = c1x, c1y = c1y, c2x = c2x, c2y = c2y,
+                c3x = c3x, c3y = c3y, c4x = c4x, c4y = c4y,
+                ih = ih, it = it, ic1y = ic1y, ic4y = ic4y,
             )
         },
         // Underbrace ⏟ — filled curly brace below, tip points down
+        // Multi-segment cubic bezier for smooth wing-tip-wing shape (KaTeX style)
         "\u{23DF}" => {
             let mid = w / 2.0;
-            let q = w * 0.25;
-            let tq = w * 0.75;
-            // Outer curve: top-left to tip(bottom) to top-right
-            // Inner curve: top-right (offset down by t) back to top-left (offset down by t)
-            let hi = h - t;
+            // Outer curve control points — wing from top down to sharp center tip
+            // Left wing: S-curve from (0,0) down to (mid,h)
+            let c1x = w * 0.10;
+            let c1y = h - h * 0.16;  // pulled low (near bottom)
+            let c2x = mid * 0.55;
+            let c2y = h;             // at bottom
+            // Right wing mirrors left
+            let c3x = w - mid * 0.55;
+            let c3y = h;
+            let c4x = w - w * 0.10;
+            let c4y = h - h * 0.16;
+            // Inner curve (offset inward by thickness t)
+            let it = t;      // inner baseline
+            let ih = h - t;  // inner tip y
+            let ic1y = h - h * 0.16 - t * 0.2;
+            let ic4y = ic1y;
             format!(
-                "F:M0,0 Q{q:.4},0 {mid:.4},{h:.4} Q{tq:.4},0 {w:.4},0 \
-                 L{w:.4},{t:.4} Q{tq:.4},{t:.4} {mid:.4},{hi:.4} Q{q:.4},{t:.4} 0,{t:.4} Z",
-                h = h, q = q, mid = mid, tq = tq, w = w, t = t, hi = hi
+                "F:M0,0 \
+                 C{c1x:.4},{c1y:.4} {c2x:.4},{c2y:.4} {mid:.4},{h:.4} \
+                 C{c3x:.4},{c3y:.4} {c4x:.4},{c4y:.4} {w:.4},0 \
+                 L{w:.4},{it:.4} \
+                 C{c4x:.4},{ic4y:.4} {c3x:.4},{ih:.4} {mid:.4},{ih:.4} \
+                 C{c2x:.4},{ih:.4} {c1x:.4},{ic1y:.4} 0,{it:.4} \
+                 Z",
+                h = h, mid = mid, w = w,
+                c1x = c1x, c1y = c1y, c2x = c2x, c2y = c2y,
+                c3x = c3x, c3y = c3y, c4x = c4x, c4y = c4y,
+                it = it, ih = ih, ic1y = ic1y, ic4y = ic4y,
             )
         },
         // Overbracket ⎴ — square bracket above (filled)
@@ -2922,7 +2971,7 @@ fn layout_array(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
-    let col_gap = 1.0 * size; // column separation
+    let col_gap = MATRIX_COL_GAP_EM * size;
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_opt.unwrap_or(1.0);
@@ -5036,7 +5085,7 @@ fn layout_array_c(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
-    let col_gap = 1.0 * size;
+    let col_gap = MATRIX_COL_GAP_EM * size;
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_pct as f64 / 100.0;
@@ -7693,7 +7742,7 @@ fn layout_array_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let size = ctx.size();
-    let col_gap = 1.0 * size;
+    let col_gap = MATRIX_COL_GAP_EM * size;
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_pct as f64 / 100.0;
