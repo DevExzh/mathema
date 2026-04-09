@@ -260,44 +260,56 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     // Filled curly brace { — outer + inner contour approach.
     //
     // Shape anatomy (left brace):
-    //   top hook: curves from (w, 0) inward to the arm
-    //   upper arm: descends to middle tip
-    //   middle tip: sharp point extending to x ≈ 0
-    //   lower arm: descends from middle tip
-    //   bottom hook: curves outward to (w, h)
+    //   top hook: sharp serif-like turn from (w, 0) inward to the arm
+    //   upper arm: nearly vertical descent to middle tip
+    //   middle tip: pronounced V-shaped point extending to x ≈ 0
+    //   lower arm: nearly vertical ascent from middle tip
+    //   bottom hook: sharp serif-like turn outward to (w, h)
     let mid = h * 0.5;
     let thick = (0.065_f64).min(w * 0.22); // stroke thickness
 
     // Where the vertical arm runs
-    let arm = w * 0.42;
-    // Hook height (how tall the top/bottom curves are)
-    let hk = (h * 0.16).clamp(0.08, 0.28);
+    let arm = w * 0.40;
+    // Hook height (how tall the top/bottom curves are) — taller for sharper hooks
+    let hk = (h * 0.18).clamp(0.10, 0.35);
     // Middle tip x (extends to left edge)
-    let tip = (w * 0.02).min(0.01);
+    let tip = 0.0_f64;
     // Endpoint taper — visible thickness at hook endpoints
     let end_gap = (thick * 0.6).max(0.03);
 
+    // V-tip parameters: control points offset from (tip, mid) to create angled
+    // approach/departure, producing a sharp V-shape at center
+    let tip_dx = w * 0.12;
+    let tip_dy = h * 0.06;
+
     // === Outer contour (clockwise) ===
     // Segment 1: top hook — (w, 0) → (arm, hk)
+    //   c1x = w*0.45 keeps entry nearly horizontal, c2y = hk*0.08 makes sharp turn
     let _ = write!(d,
-        "F:M{w:.4},0 C{c1:.4},0 {arm:.4},{h1:.4} {arm:.4},{hk:.4}",
-        c1 = w * 0.65, h1 = hk * 0.25,
+        "F:M{w:.4},0 C{c1x:.4},0 {arm:.4},{c2y:.4} {arm:.4},{hk:.4}",
+        c1x = w * 0.45, c2y = hk * 0.08,
     );
     // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
+    //   Arm stays relatively straight; last control point is above-right of tip
+    //   to create angled V approach
     let _ = write!(d,
-        " C{arm:.4},{h2:.4} {tip:.4},{h3:.4} {tip:.4},{mid:.4}",
-        h2 = mid * 0.55, h3 = mid * 0.82,
+        " C{arm:.4},{c3y:.4} {c4x:.4},{c4y:.4} {tip:.4},{mid:.4}",
+        c3y = mid * 0.40,
+        c4x = tip + tip_dx, c4y = mid - tip_dy,
     );
     // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
+    //   First control point is below-right of tip for angled V departure
     let _ = write!(d,
-        " C{tip:.4},{h4:.4} {arm:.4},{h5:.4} {arm:.4},{lk:.4}",
-        h4 = mid + (mid * 0.18), h5 = mid + (h - mid) * 0.45,
+        " C{c5x:.4},{c5y:.4} {arm:.4},{c6y:.4} {arm:.4},{lk:.4}",
+        c5x = tip + tip_dx, c5y = mid + tip_dy,
+        c6y = mid + (h - mid) * 0.60,
         lk = h - hk,
     );
     // Segment 4: bottom hook — (arm, h - hk) → (w, h)
+    //   c2y near h-hk*0.08 for sharp turn, c1x = w*0.45 for horizontal exit
     let _ = write!(d,
-        " C{arm:.4},{h6:.4} {c2:.4},{h:.4} {w:.4},{h:.4}",
-        h6 = h - hk * 0.25, c2 = w * 0.65,
+        " C{arm:.4},{c7y:.4} {c8x:.4},{h:.4} {w:.4},{h:.4}",
+        c7y = h - hk * 0.08, c8x = w * 0.45,
     );
 
     // === Inner contour (counter-clockwise) — offset inward by `thick` ===
@@ -305,27 +317,31 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     let itip = tip + thick;
     let wi = w - end_gap;
     let eg = end_gap;
-    // Segment 4i: bottom hook inner
+    let itip_dx = tip_dx.max(thick * 0.5); // ensure inner V control offset is meaningful
+
+    // Segment 4i: bottom hook inner — (wi, h-eg) → (iarm, h-hk)
     let _ = write!(d,
-        " L{wi:.4},{hi:.4} C{c2i:.4},{hi:.4} {iarm:.4},{h6i:.4} {iarm:.4},{lki:.4}",
+        " L{wi:.4},{hi:.4} C{c8xi:.4},{hi:.4} {iarm:.4},{c7yi:.4} {iarm:.4},{lki:.4}",
         hi = h - eg,
-        c2i = w * 0.68, h6i = h - hk * 0.30,
+        c8xi = w * 0.50, c7yi = h - hk * 0.12,
         lki = h - hk,
     );
-    // Segment 3i: lower arm → tip inner
+    // Segment 3i: lower arm → tip inner — (iarm, h-hk) → (itip, mid)
     let _ = write!(d,
-        " C{iarm:.4},{h5i:.4} {itip:.4},{h4i:.4} {itip:.4},{mid:.4}",
-        h5i = mid + (h - mid) * 0.45, h4i = mid + (mid * 0.18),
+        " C{iarm:.4},{c6yi:.4} {c5xi:.4},{c5yi:.4} {itip:.4},{mid:.4}",
+        c6yi = mid + (h - mid) * 0.60,
+        c5xi = itip + itip_dx, c5yi = mid + tip_dy,
     );
-    // Segment 2i: tip → upper arm inner
+    // Segment 2i: tip → upper arm inner — (itip, mid) → (iarm, hk)
     let _ = write!(d,
-        " C{itip:.4},{h3i:.4} {iarm:.4},{h2i:.4} {iarm:.4},{hk:.4}",
-        h3i = mid * 0.82, h2i = mid * 0.55,
+        " C{c4xi:.4},{c4yi:.4} {iarm:.4},{c3yi:.4} {iarm:.4},{hk:.4}",
+        c4xi = itip + itip_dx, c4yi = mid - tip_dy,
+        c3yi = mid * 0.40,
     );
-    // Segment 1i: top hook inner
+    // Segment 1i: top hook inner — (iarm, hk) → (wi, eg)
     let _ = write!(d,
-        " C{iarm:.4},{h1i:.4} {c1i:.4},{eg:.4} {wi:.4},{eg:.4} Z",
-        h1i = hk * 0.30, c1i = w * 0.68,
+        " C{iarm:.4},{c2yi:.4} {c1xi:.4},{eg:.4} {wi:.4},{eg:.4} Z",
+        c2yi = hk * 0.12, c1xi = w * 0.50,
     );
 
     DelimiterPath {
@@ -339,63 +355,80 @@ fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
     let w = brace_width(h);
     let mut d = String::with_capacity(512);
     // Filled curly brace } — mirror of left brace, middle tip points right.
+    //
+    // Shape anatomy (right brace):
+    //   top hook: sharp serif-like turn from (0, 0) inward to the arm
+    //   upper arm: nearly vertical descent to middle tip
+    //   middle tip: pronounced V-shaped point extending to x ≈ w
+    //   lower arm: nearly vertical ascent from middle tip
+    //   bottom hook: sharp serif-like turn outward to (0, h)
     let mid = h * 0.5;
     let thick = (0.065_f64).min(w * 0.22);
 
-    let arm = w * 0.58; // arm x position (mirrored from left brace)
-    let hk = (h * 0.16).clamp(0.08, 0.28);
-    let tip = w - (w * 0.02).min(0.01); // tip extends to right edge
+    let arm = w * 0.60; // arm x position (mirrored from left brace's 0.40)
+    let hk = (h * 0.18).clamp(0.10, 0.35);
+    let tip = w; // tip extends to right edge
     // Endpoint taper — visible thickness at hook endpoints
     let end_gap = (thick * 0.6).max(0.03);
+
+    // V-tip parameters (mirrored)
+    let tip_dx = w * 0.12;
+    let tip_dy = h * 0.06;
 
     // === Outer contour (clockwise) ===
     // Segment 1: top hook — (0, 0) → (arm, hk)
     let _ = write!(d,
-        "F:M0,0 C{c1:.4},0 {arm:.4},{h1:.4} {arm:.4},{hk:.4}",
-        c1 = w * 0.35, h1 = hk * 0.25,
+        "F:M0,0 C{c1x:.4},0 {arm:.4},{c2y:.4} {arm:.4},{hk:.4}",
+        c1x = w * 0.55, c2y = hk * 0.08,
     );
     // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
     let _ = write!(d,
-        " C{arm:.4},{h2:.4} {tip:.4},{h3:.4} {tip:.4},{mid:.4}",
-        h2 = mid * 0.55, h3 = mid * 0.82,
+        " C{arm:.4},{c3y:.4} {c4x:.4},{c4y:.4} {tip:.4},{mid:.4}",
+        c3y = mid * 0.40,
+        c4x = tip - tip_dx, c4y = mid - tip_dy,
     );
     // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
     let _ = write!(d,
-        " C{tip:.4},{h4:.4} {arm:.4},{h5:.4} {arm:.4},{lk:.4}",
-        h4 = mid + (mid * 0.18), h5 = mid + (h - mid) * 0.45,
+        " C{c5x:.4},{c5y:.4} {arm:.4},{c6y:.4} {arm:.4},{lk:.4}",
+        c5x = tip - tip_dx, c5y = mid + tip_dy,
+        c6y = mid + (h - mid) * 0.60,
         lk = h - hk,
     );
     // Segment 4: bottom hook — (arm, h - hk) → (0, h)
     let _ = write!(d,
-        " C{arm:.4},{h6:.4} {c2:.4},{h:.4} 0,{h:.4}",
-        h6 = h - hk * 0.25, c2 = w * 0.35,
+        " C{arm:.4},{c7y:.4} {c8x:.4},{h:.4} 0,{h:.4}",
+        c7y = h - hk * 0.08, c8x = w * 0.55,
     );
 
     // === Inner contour (counter-clockwise) ===
     let iarm = arm - thick;
     let itip = tip - thick;
     let eg = end_gap;
-    // Segment 4i: bottom hook inner
+    let itip_dx = tip_dx.max(thick * 0.5);
+
+    // Segment 4i: bottom hook inner — (eg, h-eg) → (iarm, h-hk)
     let _ = write!(d,
-        " L{eg:.4},{hi:.4} C{c2i:.4},{hi:.4} {iarm:.4},{h6i:.4} {iarm:.4},{lki:.4}",
+        " L{eg:.4},{hi:.4} C{c8xi:.4},{hi:.4} {iarm:.4},{c7yi:.4} {iarm:.4},{lki:.4}",
         hi = h - eg,
-        c2i = w * 0.32, h6i = h - hk * 0.30,
+        c8xi = w * 0.50, c7yi = h - hk * 0.12,
         lki = h - hk,
     );
-    // Segment 3i: lower arm → tip inner
+    // Segment 3i: lower arm → tip inner — (iarm, h-hk) → (itip, mid)
     let _ = write!(d,
-        " C{iarm:.4},{h5i:.4} {itip:.4},{h4i:.4} {itip:.4},{mid:.4}",
-        h5i = mid + (h - mid) * 0.45, h4i = mid + (mid * 0.18),
+        " C{iarm:.4},{c6yi:.4} {c5xi:.4},{c5yi:.4} {itip:.4},{mid:.4}",
+        c6yi = mid + (h - mid) * 0.60,
+        c5xi = itip - itip_dx, c5yi = mid + tip_dy,
     );
-    // Segment 2i: tip → upper arm inner
+    // Segment 2i: tip → upper arm inner — (itip, mid) → (iarm, hk)
     let _ = write!(d,
-        " C{itip:.4},{h3i:.4} {iarm:.4},{h2i:.4} {iarm:.4},{hk:.4}",
-        h3i = mid * 0.82, h2i = mid * 0.55,
+        " C{c4xi:.4},{c4yi:.4} {iarm:.4},{c3yi:.4} {iarm:.4},{hk:.4}",
+        c4xi = itip - itip_dx, c4yi = mid - tip_dy,
+        c3yi = mid * 0.40,
     );
-    // Segment 1i: top hook inner
+    // Segment 1i: top hook inner — (iarm, hk) → (eg, eg)
     let _ = write!(d,
-        " C{iarm:.4},{h1i:.4} {c1i:.4},{eg:.4} {eg:.4},{eg:.4} Z",
-        h1i = hk * 0.30, c1i = w * 0.32,
+        " C{iarm:.4},{c2yi:.4} {c1xi:.4},{eg:.4} {eg:.4},{eg:.4} Z",
+        c2yi = hk * 0.12, c1xi = w * 0.50,
     );
 
     DelimiterPath {
