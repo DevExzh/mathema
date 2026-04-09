@@ -762,25 +762,30 @@ fn katex_accent_scaled(paths: &[KatexAccentPath; 4], w: f64, h: f64) -> String {
     format!("F:{scaled}")
 }
 
-/// Compute the fixed height of a KaTeX accent path for a given tier.
-/// KaTeX uses viewbox_h / 1000 em as a fixed height per tier — the accent
-/// is stretched horizontally to match the base width but NOT scaled
-/// proportionally in height. `size` is the current font-size multiplier.
+/// Compute the height of a KaTeX accent path for a given tier.
+///
+/// The raw KaTeX formula (`viewbox_h / 1000 * size`) produces accents that
+/// are too small at typical rendering sizes (e.g. 2-3 px at 16 px/em).
+/// We apply a 1.8x multiplier and a minimum of 0.32 em so that hat, tilde,
+/// and check accents remain clearly visible even on single-character bases.
 fn katex_accent_natural_height(paths: &[KatexAccentPath; 4], w: f64, size: f64) -> f64 {
     let tier = katex_accent_tier(w);
     let data = &paths[tier];
-    data.viewbox_h / 1000.0 * size
+    let raw = data.viewbox_h / 1000.0 * size;
+    // Scale up and enforce a minimum so accents are clearly visible
+    (raw * 1.8).max(0.32 * size)
 }
 
 /// Compute the correct height for a stretchy accent at the given base width.
 /// For KaTeX-path-based accents (hat, tilde, check), the height is fixed per
-/// tier (matching KaTeX). For other accents (arrows), uses 0.12 * size.
+/// tier. For other accents (arrows, vec), uses 0.25 * size so the arrowhead
+/// is clearly visible.
 fn stretchy_accent_height(accent: char, w: f64, size: f64) -> f64 {
     match accent {
         '\u{0302}' => katex_accent_natural_height(&WIDEHAT_PATHS, w, size),
         '\u{030C}' => katex_accent_natural_height(&WIDECHECK_PATHS, w, size),
         '\u{0303}' => katex_accent_natural_height(&WIDETILDE_PATHS, w, size),
-        _ => 0.12 * size,
+        _ => 0.25 * size,
     }
 }
 
@@ -2639,14 +2644,15 @@ fn layout_accent(
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
         let size = ctx.size();
         match accent {
-            // Bar: horizontal rule across base width
+            // Bar: horizontal rule across base width — thicker than fraction
+            // rules so the accent is clearly visible.
             '\u{0304}' => {
-                let thickness = ctx.params.rule_thickness * size;
+                let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
                 LayoutBox::rule(base_width, thickness)
             },
             // Dot: small filled square centered above base
             '\u{0307}' => {
-                let dot_r = 0.04 * size; // dot radius in em
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let dot = LayoutBox {
                     width: dot_size,
@@ -2666,7 +2672,7 @@ fn layout_accent(
             },
             // Double dot: two small filled squares
             '\u{0308}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.12 * size; // gap between dots
                 let total_dots_w = dot_size * 2.0 + gap;
@@ -2698,13 +2704,13 @@ fn layout_accent(
             },
             // Grave accent (U+0300): diagonal stroke upper-left to lower-right
             '\u{0300}' => {
-                let ah = 0.15 * size;
-                let aw = 0.22 * size;
+                let ah = 0.22 * size;
+                let aw = 0.30 * size;
                 let accent = LayoutBox {
                     width: aw,
                     height: ah,
                     depth: 0.0,
-                    kind: BoxKind::SvgPath(format!("M{:.4},0 L{:.4},{:.4}", 0.04 * size, 0.18 * size, ah)),
+                    kind: BoxKind::SvgPath(format!("M{:.4},0 L{:.4},{:.4}", 0.04 * size, 0.26 * size, ah)),
                 };
                 let dx = (base_width - aw) / 2.0;
                 LayoutBox {
@@ -2718,13 +2724,13 @@ fn layout_accent(
             },
             // Acute accent (U+0301): diagonal stroke lower-left to upper-right
             '\u{0301}' => {
-                let ah = 0.15 * size;
-                let aw = 0.22 * size;
+                let ah = 0.22 * size;
+                let aw = 0.30 * size;
                 let accent = LayoutBox {
                     width: aw,
                     height: ah,
                     depth: 0.0,
-                    kind: BoxKind::SvgPath(format!("M{:.4},{:.4} L{:.4},0", 0.04 * size, ah, 0.18 * size)),
+                    kind: BoxKind::SvgPath(format!("M{:.4},{:.4} L{:.4},0", 0.04 * size, ah, 0.26 * size)),
                 };
                 let dx = (base_width - aw) / 2.0;
                 LayoutBox {
@@ -2738,7 +2744,7 @@ fn layout_accent(
             },
             // Breve (U+0306): cup/U curve
             '\u{0306}' => {
-                let ah = 0.12 * size;
+                let ah = 0.18 * size;
                 let aw = 0.30 * size;
                 let accent = LayoutBox {
                     width: aw,
@@ -2761,7 +2767,7 @@ fn layout_accent(
             },
             // Ring above / mathring (U+030A): small unfilled circle
             '\u{030A}' => {
-                let ring_r = 0.06 * size;
+                let ring_r = 0.08 * size;
                 let ring_size = ring_r * 2.0;
                 let ring = LayoutBox {
                     width: ring_size,
@@ -2781,7 +2787,7 @@ fn layout_accent(
             },
             // Triple dot (U+20DB): three filled dots
             '\u{20DB}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.10 * size;
                 let total_w = dot_size * 3.0 + gap * 2.0;
@@ -2806,7 +2812,7 @@ fn layout_accent(
             },
             // Quadruple dot (U+20DC): four filled dots
             '\u{20DC}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.10 * size;
                 let total_w = dot_size * 4.0 + gap * 3.0;
@@ -2857,15 +2863,15 @@ fn layout_accent(
     let accent_dx = (base_width - accent_box.width) / 2.0;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
-            let dy = base_box.height + 0.02 * ctx.size(); // small gap
+            let dy = base_box.height + 0.05 * ctx.size(); // small gap
             (dy, dy + accent_box.height, base_box.depth)
         },
         AccentPosition::Below => {
-            let dy = -(base_box.depth + accent_box.height + 0.02 * ctx.size());
+            let dy = -(base_box.depth + accent_box.height + 0.05 * ctx.size());
             (
                 dy,
                 base_box.height,
-                base_box.depth + accent_box.height + 0.02 * ctx.size(),
+                base_box.depth + accent_box.height + 0.05 * ctx.size(),
             )
         },
     };
@@ -4802,11 +4808,11 @@ fn layout_accent_c(
         let size = ctx.size();
         match accent {
             '\u{0304}' => {
-                let thickness = ctx.params.rule_thickness * size;
+                let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
                 LayoutBox::rule(base_width, thickness)
             },
             '\u{0307}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let dot = LayoutBox {
                     width: dot_size,
@@ -4825,7 +4831,7 @@ fn layout_accent_c(
                 }
             },
             '\u{0308}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.12 * size;
                 let total_dots_w = dot_size * 2.0 + gap;
@@ -4857,11 +4863,11 @@ fn layout_accent_c(
             },
             // Grave accent (U+0300)
             '\u{0300}' => {
-                let ah = 0.15 * size;
-                let aw = 0.22 * size;
+                let ah = 0.22 * size;
+                let aw = 0.30 * size;
                 let accent = LayoutBox {
                     width: aw, height: ah, depth: 0.0,
-                    kind: BoxKind::SvgPath(format!("M{:.4},0 L{:.4},{:.4}", 0.04 * size, 0.18 * size, ah)),
+                    kind: BoxKind::SvgPath(format!("M{:.4},0 L{:.4},{:.4}", 0.04 * size, 0.26 * size, ah)),
                 };
                 let dx = (base_width - aw) / 2.0;
                 LayoutBox { width: base_width, height: ah, depth: 0.0,
@@ -4869,11 +4875,11 @@ fn layout_accent_c(
             },
             // Acute accent (U+0301)
             '\u{0301}' => {
-                let ah = 0.15 * size;
-                let aw = 0.22 * size;
+                let ah = 0.22 * size;
+                let aw = 0.30 * size;
                 let accent = LayoutBox {
                     width: aw, height: ah, depth: 0.0,
-                    kind: BoxKind::SvgPath(format!("M{:.4},{:.4} L{:.4},0", 0.04 * size, ah, 0.18 * size)),
+                    kind: BoxKind::SvgPath(format!("M{:.4},{:.4} L{:.4},0", 0.04 * size, ah, 0.26 * size)),
                 };
                 let dx = (base_width - aw) / 2.0;
                 LayoutBox { width: base_width, height: ah, depth: 0.0,
@@ -4881,7 +4887,7 @@ fn layout_accent_c(
             },
             // Breve (U+0306)
             '\u{0306}' => {
-                let ah = 0.12 * size;
+                let ah = 0.18 * size;
                 let aw = 0.30 * size;
                 let accent = LayoutBox {
                     width: aw, height: ah, depth: 0.0,
@@ -4893,7 +4899,7 @@ fn layout_accent_c(
             },
             // Ring above (U+030A)
             '\u{030A}' => {
-                let ring_r = 0.06 * size;
+                let ring_r = 0.08 * size;
                 let ring_size = ring_r * 2.0;
                 let ring = LayoutBox {
                     width: ring_size, height: ring_size, depth: 0.0,
@@ -4905,7 +4911,7 @@ fn layout_accent_c(
             },
             // Triple dot (U+20DB)
             '\u{20DB}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.10 * size;
                 let total_w = dot_size * 3.0 + gap * 2.0;
@@ -4921,7 +4927,7 @@ fn layout_accent_c(
             },
             // Quadruple dot (U+20DC)
             '\u{20DC}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.10 * size;
                 let total_w = dot_size * 4.0 + gap * 3.0;
@@ -4958,15 +4964,15 @@ fn layout_accent_c(
     let accent_dx = (base_width - accent_box.width) / 2.0;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
-            let dy = base_box.height + 0.02 * ctx.size();
+            let dy = base_box.height + 0.05 * ctx.size();
             (dy, dy + accent_box.height, base_box.depth)
         },
         AccentPosition::Below => {
-            let dy = -(base_box.depth + accent_box.height + 0.02 * ctx.size());
+            let dy = -(base_box.depth + accent_box.height + 0.05 * ctx.size());
             (
                 dy,
                 base_box.height,
-                base_box.depth + accent_box.height + 0.02 * ctx.size(),
+                base_box.depth + accent_box.height + 0.05 * ctx.size(),
             )
         },
     };
@@ -7415,7 +7421,7 @@ fn layout_accent_arena(
         let size = ctx.size();
         match accent {
             '\u{0304}' => {
-                let thickness = ctx.params.rule_thickness * size;
+                let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
                 arena.alloc(ArenaLayoutBox {
                     width: base_w,
                     height: thickness / 2.0,
@@ -7424,7 +7430,7 @@ fn layout_accent_arena(
                 })
             },
             '\u{0307}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let dx = (base_w - dot_size) / 2.0;
                 let dot_id = arena.alloc(ArenaLayoutBox {
@@ -7444,7 +7450,7 @@ fn layout_accent_arena(
                 })
             },
             '\u{0308}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.12 * size;
                 let total_dots_w = dot_size * 2.0 + gap;
@@ -7475,11 +7481,11 @@ fn layout_accent_arena(
             },
             // Grave accent (U+0300)
             '\u{0300}' => {
-                let ah = 0.15 * size;
-                let aw = 0.22 * size;
+                let ah = 0.22 * size;
+                let aw = 0.30 * size;
                 let acc_id = arena.alloc(ArenaLayoutBox {
                     width: aw, height: ah, depth: 0.0,
-                    kind: ArenaBoxKind::SvgPath(format!("M{:.4},0 L{:.4},{:.4}", 0.04 * size, 0.18 * size, ah)),
+                    kind: ArenaBoxKind::SvgPath(format!("M{:.4},0 L{:.4},{:.4}", 0.04 * size, 0.26 * size, ah)),
                 });
                 let dx = (base_w - aw) / 2.0;
                 let cs = arena.begin_children();
@@ -7489,11 +7495,11 @@ fn layout_accent_arena(
             },
             // Acute accent (U+0301)
             '\u{0301}' => {
-                let ah = 0.15 * size;
-                let aw = 0.22 * size;
+                let ah = 0.22 * size;
+                let aw = 0.30 * size;
                 let acc_id = arena.alloc(ArenaLayoutBox {
                     width: aw, height: ah, depth: 0.0,
-                    kind: ArenaBoxKind::SvgPath(format!("M{:.4},{:.4} L{:.4},0", 0.04 * size, ah, 0.18 * size)),
+                    kind: ArenaBoxKind::SvgPath(format!("M{:.4},{:.4} L{:.4},0", 0.04 * size, ah, 0.26 * size)),
                 });
                 let dx = (base_w - aw) / 2.0;
                 let cs = arena.begin_children();
@@ -7503,7 +7509,7 @@ fn layout_accent_arena(
             },
             // Breve (U+0306)
             '\u{0306}' => {
-                let ah = 0.12 * size;
+                let ah = 0.18 * size;
                 let aw = 0.30 * size;
                 let acc_id = arena.alloc(ArenaLayoutBox {
                     width: aw, height: ah, depth: 0.0,
@@ -7517,7 +7523,7 @@ fn layout_accent_arena(
             },
             // Ring above (U+030A)
             '\u{030A}' => {
-                let ring_r = 0.06 * size;
+                let ring_r = 0.08 * size;
                 let ring_size = ring_r * 2.0;
                 let ring_id = arena.alloc(ArenaLayoutBox {
                     width: ring_size, height: ring_size, depth: 0.0,
@@ -7531,7 +7537,7 @@ fn layout_accent_arena(
             },
             // Triple dot (U+20DB)
             '\u{20DB}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.10 * size;
                 let total_w = dot_size * 3.0 + gap * 2.0;
@@ -7549,7 +7555,7 @@ fn layout_accent_arena(
             },
             // Quadruple dot (U+20DC)
             '\u{20DC}' => {
-                let dot_r = 0.04 * size;
+                let dot_r = 0.07 * size;
                 let dot_size = dot_r * 2.0;
                 let gap = 0.10 * size;
                 let total_w = dot_size * 4.0 + gap * 3.0;
@@ -7593,15 +7599,15 @@ fn layout_accent_arena(
     let accent_dx = (base_w - accent_w) / 2.0;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
-            let dy = base_h + 0.02 * ctx.size();
+            let dy = base_h + 0.05 * ctx.size();
             (dy, dy + accent_h, base_d)
         },
         AccentPosition::Below => {
-            let dy = -(base_d + accent_h + 0.02 * ctx.size());
+            let dy = -(base_d + accent_h + 0.05 * ctx.size());
             (
                 dy,
                 base_h,
-                base_d + accent_h + 0.02 * ctx.size(),
+                base_d + accent_h + 0.05 * ctx.size(),
             )
         },
     };
@@ -9262,6 +9268,102 @@ mod tests {
             display_root.height + display_root.depth > text_root.height + text_root.depth,
             "heap display \\lim should be taller than text \\lim: {}+{} vs {}+{}",
             display_root.height, display_root.depth, text_root.height, text_root.depth
+        );
+    }
+
+    // =====================================================================
+    // Accent sizing tests — verify accents are visually large enough
+    // =====================================================================
+
+    /// Helper: layout an accent expression and return (base_height, accent_height, total_height).
+    fn accent_dimensions(accent_char: char) -> (f64, f64, f64) {
+        let expr = MathExpr::inline(vec![MathNode::Accent {
+            base: Box::new(MathNode::Identifier("x".into())),
+            accent: accent_char,
+            position: AccentPosition::Above,
+        }]);
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        // The x glyph height at size 1.0 is ~0.431 em
+        let base_h = 0.431;
+        let accent_h = root.height - base_h - 0.05; // subtract gap
+        (base_h, accent_h, root.height)
+    }
+
+    #[test]
+    fn accent_hat_minimum_height() {
+        let (_, accent_h, _) = accent_dimensions('\u{0302}');
+        // Hat accent should be at least 0.28 em tall (clearly visible)
+        assert!(
+            accent_h >= 0.28,
+            "hat accent should be at least 0.28 em, got {accent_h:.4}"
+        );
+    }
+
+    #[test]
+    fn accent_tilde_minimum_height() {
+        let (_, accent_h, _) = accent_dimensions('\u{0303}');
+        assert!(
+            accent_h >= 0.28,
+            "tilde accent should be at least 0.28 em, got {accent_h:.4}"
+        );
+    }
+
+    #[test]
+    fn accent_bar_visible_thickness() {
+        let expr = MathExpr::inline(vec![MathNode::Accent {
+            base: Box::new(MathNode::Identifier("y".into())),
+            accent: '\u{0304}',
+            position: AccentPosition::Above,
+        }]);
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        // Bar thickness (rule_thickness * 1.8, min 0.06) at size 1.0 =>
+        // 0.04 * 1.8 = 0.072, so half is 0.036. Total height should be
+        // base_height + gap + bar_height.
+        let base_h = 0.431; // y height (no depth)
+        let gap = 0.05;
+        let min_bar = 0.06 / 2.0; // minimum bar half-height
+        assert!(
+            root.height >= base_h + gap + min_bar,
+            "bar accent should produce visible rule, height={:.4}",
+            root.height
+        );
+    }
+
+    #[test]
+    fn accent_dot_visible_size() {
+        let (_, accent_h, _) = accent_dimensions('\u{0307}');
+        // Dot diameter = 2 * 0.07 = 0.14 em
+        assert!(
+            accent_h >= 0.10,
+            "dot accent should be at least 0.10 em diameter, got {accent_h:.4}"
+        );
+    }
+
+    #[test]
+    fn accent_vec_visible_arrow() {
+        let (_, accent_h, _) = accent_dimensions('\u{20D7}');
+        // Vec arrow height = 0.25 em
+        assert!(
+            accent_h >= 0.20,
+            "vec accent should be at least 0.20 em tall, got {accent_h:.4}"
+        );
+    }
+
+    #[test]
+    fn accent_gap_separates_from_base() {
+        let expr = MathExpr::inline(vec![MathNode::Accent {
+            base: Box::new(MathNode::Identifier("x".into())),
+            accent: '\u{0302}',
+            position: AccentPosition::Above,
+        }]);
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        let base_h = 0.431;
+        // Total height = base_h + gap + accent_h. The gap should be 0.05 em.
+        // So root.height - base_h should include at least 0.05 gap.
+        let above_base = root.height - base_h;
+        assert!(
+            above_base >= 0.05,
+            "accent should have at least 0.05 em gap above base, got {above_base:.4}"
         );
     }
 }
