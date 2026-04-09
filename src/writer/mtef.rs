@@ -383,6 +383,10 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
                 write_node(buf, child)?;
             }
         },
+        MathNode::MathChoice { display, .. } => {
+            // MTEF doesn't have mathchoice; output the display branch
+            write_node(buf, display)?;
+        },
     }
     Ok(())
 }
@@ -752,6 +756,10 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::Color { content, .. } => {
             write_node_c(buf, arena, content)?;
+        },
+        CompactNode::MathChoice { display, .. } => {
+            // MTEF doesn't have mathchoice; output the display branch
+            write_node_c(buf, arena, display)?;
         },
         // Helper nodes that shouldn't appear as standalone roots
         CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},

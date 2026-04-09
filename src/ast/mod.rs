@@ -21,7 +21,7 @@ pub enum DisplayStyle {
     Inline,
 }
 
-/// The core math AST node. 26 variants covering the union of all target formats.
+/// The core math AST node. 27 variants covering the union of all target formats.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MathNode {
@@ -157,6 +157,13 @@ pub enum MathNode {
     },
     /// Applies a text/font style to children
     Styled(TextStyle, Vec<MathNode>),
+    /// Style-dependent content: \mathchoice{D}{T}{S}{SS}
+    MathChoice {
+        display: Box<MathNode>,
+        text: Box<MathNode>,
+        script: Box<MathNode>,
+        script_script: Box<MathNode>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -471,6 +478,12 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         MathNode::Cancel { content, .. } | MathNode::Scaled { content, .. } => {
             check_node_depth(content, d)
         },
+        MathNode::MathChoice { display, text, script, script_script } => {
+            check_node_depth(display, d)?;
+            check_node_depth(text, d)?;
+            check_node_depth(script, d)?;
+            check_node_depth(script_script, d)
+        },
     }
 }
 
@@ -596,6 +609,12 @@ fn check_compact_depth(
             check_compact_depth(arena, content, d)
         },
         CompactNode::Color { content, .. } => check_compact_depth(arena, content, d),
+        CompactNode::MathChoice { display, text, script, script_script } => {
+            check_compact_depth(arena, display, d)?;
+            check_compact_depth(arena, text, d)?;
+            check_compact_depth(arena, script, d)?;
+            check_compact_depth(arena, script_script, d)
+        },
     }
 }
 
@@ -635,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn all_26_variants_constructible() {
+    fn all_27_variants_constructible() {
         // Verify every variant can be constructed without panic
         let nodes: Vec<MathNode> = vec![
             MathNode::Number("1".into()),
@@ -730,7 +749,13 @@ mod tests {
                 content: Box::new(MathNode::Number("1".into())),
             },
             MathNode::Styled(TextStyle::Bold, vec![MathNode::Identifier("x".into())]),
+            MathNode::MathChoice {
+                display: Box::new(MathNode::Identifier("D".into())),
+                text: Box::new(MathNode::Identifier("T".into())),
+                script: Box::new(MathNode::Identifier("S".into())),
+                script_script: Box::new(MathNode::Identifier("SS".into())),
+            },
         ];
-        assert_eq!(nodes.len(), 26);
+        assert_eq!(nodes.len(), 27);
     }
 }

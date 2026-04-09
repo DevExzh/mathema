@@ -186,7 +186,7 @@ fn emit_box(
             svg.push_str("</text>");
         },
 
-        BoxKind::TextRun { text, size, italic } => {
+        BoxKind::TextRun { text, size, italic, text_style } => {
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -195,9 +195,22 @@ fn emit_box(
             svg.push_str(r#"" font-size=""#);
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
-            svg.push_str(&attrs.font_family);
+            match text_style {
+                Some(crate::ast::TextStyle::SansSerif | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifItalic | crate::ast::TextStyle::SansSerifBoldItalic) => {
+                    svg.push_str("sans-serif");
+                }
+                Some(crate::ast::TextStyle::Monospace) => {
+                    svg.push_str("monospace");
+                }
+                _ => {
+                    svg.push_str(&attrs.font_family);
+                }
+            }
             if *italic {
                 svg.push_str(r#"" font-style="italic"#);
+            }
+            if matches!(text_style, Some(crate::ast::TextStyle::Bold | crate::ast::TextStyle::BoldItalic | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifBoldItalic | crate::ast::TextStyle::BoldScript | crate::ast::TextStyle::BoldFraktur)) {
+                    svg.push_str(r#"" font-weight="bold"#);
             }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
@@ -262,7 +275,7 @@ fn emit_box(
                     push_xml_escaped(svg, fill_path);
                     svg.push_str(r#"" fill=""#);
                     svg.push_str(&attrs.fg_color);
-                    svg.push_str(r#""/></g>"#);
+                    svg.push_str(r#"" stroke="none"/></g>"#);
                 } else {
                     svg.push_str(r#")"><path d=""#);
                     push_xml_escaped(svg, &dp.path_data);
@@ -309,7 +322,7 @@ fn emit_box(
                 push_xml_escaped(svg, fill_path);
                 svg.push_str(r#"" fill=""#);
                 svg.push_str(&attrs.fg_color);
-                svg.push_str(r#""/></g>"#);
+                svg.push_str(r#"" stroke="none"/></g>"#);
             } else {
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, path);
@@ -455,7 +468,7 @@ fn emit_box_arena(
             svg.push_str("</text>");
         },
 
-        ArenaBoxKind::TextRun { text, size, italic } => {
+        ArenaBoxKind::TextRun { text, size, italic, text_style } => {
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -464,9 +477,22 @@ fn emit_box_arena(
             svg.push_str(r#"" font-size=""#);
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
-            svg.push_str(&attrs.font_family);
+            match text_style {
+                Some(crate::ast::TextStyle::SansSerif | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifItalic | crate::ast::TextStyle::SansSerifBoldItalic) => {
+                    svg.push_str("sans-serif");
+                }
+                Some(crate::ast::TextStyle::Monospace) => {
+                    svg.push_str("monospace");
+                }
+                _ => {
+                    svg.push_str(&attrs.font_family);
+                }
+            }
             if *italic {
                 svg.push_str(r#"" font-style="italic"#);
+            }
+            if matches!(text_style, Some(crate::ast::TextStyle::Bold | crate::ast::TextStyle::BoldItalic | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifBoldItalic | crate::ast::TextStyle::BoldScript | crate::ast::TextStyle::BoldFraktur)) {
+                    svg.push_str(r#"" font-weight="bold"#);
             }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
@@ -529,7 +555,7 @@ fn emit_box_arena(
                     push_xml_escaped(svg, fill_path);
                     svg.push_str(r#"" fill=""#);
                     svg.push_str(&attrs.fg_color);
-                    svg.push_str(r#""/></g>"#);
+                    svg.push_str(r#"" stroke="none"/></g>"#);
                 } else {
                     svg.push_str(r#")"><path d=""#);
                     push_xml_escaped(svg, &dp.path_data);
@@ -573,7 +599,7 @@ fn emit_box_arena(
                 push_xml_escaped(svg, fill_path);
                 svg.push_str(r#"" fill=""#);
                 svg.push_str(&attrs.fg_color);
-                svg.push_str(r#""/></g>"#);
+                svg.push_str(r#"" stroke="none"/></g>"#);
             } else {
                 svg.push_str(r#")"><path d=""#);
                 push_xml_escaped(svg, path);

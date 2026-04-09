@@ -139,6 +139,12 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
                 v.visit_node(child);
             }
         },
+        MathNode::MathChoice { display, text, script, script_script } => {
+            v.visit_node(display);
+            v.visit_node(text);
+            v.visit_node(script);
+            v.visit_node(script_script);
+        },
     }
 }
 
@@ -278,6 +284,12 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
                 v.visit_node_mut(child);
             }
         },
+        MathNode::MathChoice { display, text, script, script_script } => {
+            v.visit_node_mut(display);
+            v.visit_node_mut(text);
+            v.visit_node_mut(script);
+            v.visit_node_mut(script_script);
+        },
     }
 }
 
@@ -412,6 +424,12 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         CompactNode::Color { content, .. } => {
             v.visit_node(arena, content);
         },
+        CompactNode::MathChoice { display, text, script, script_script } => {
+            v.visit_node(arena, display);
+            v.visit_node(arena, text);
+            v.visit_node(arena, script);
+            v.visit_node(arena, script_script);
+        },
     }
 }
 
@@ -544,6 +562,12 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
         },
         CompactNode::Color { content, .. } => {
             v.visit_node_mut(arena, content);
+        },
+        CompactNode::MathChoice { display, text, script, script_script } => {
+            v.visit_node_mut(arena, display);
+            v.visit_node_mut(arena, text);
+            v.visit_node_mut(arena, script);
+            v.visit_node_mut(arena, script_script);
         },
     }
 }

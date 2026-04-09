@@ -69,6 +69,7 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
                 AtomType::Ord
             }
         },
+        MathNode::MathChoice { display, .. } => classify_node_depth(display, depth + 1),
     }
 }
 
@@ -124,6 +125,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
                 AtomType::Ord
             }
         },
+        CompactNode::MathChoice { display, .. } => classify_node_c_depth(arena, display, depth + 1),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => AtomType::Ord,
     }
 }
@@ -529,5 +531,42 @@ mod tests {
         let (l, r) = adjust_bin_context(Some(AtomType::Open), Some(AtomType::Close));
         assert_eq!(l, Some(AtomType::Open));
         assert_eq!(r, Some(AtomType::Close));
+    }
+
+    #[test]
+    fn exclamation_is_ordinary() {
+        // `!` in math mode is ordinary (e.g. factorial n!), not a relation
+        let node = MathNode::Symbol(SymbolKind::Ordinary, "!".into());
+        assert_eq!(classify_node(&node), AtomType::Ord);
+    }
+
+    #[test]
+    fn close_ord_zero_space() {
+        // Close-Ord (e.g. )! in factorial) should have zero spacing
+        let s = inter_atom_space(AtomType::Close, AtomType::Ord, MathStyle::Text);
+        assert_eq!(s, 0.0, "Close-Ord should be zero (factorial '!' after ')')");
+    }
+
+    #[test]
+    fn paren_spacing_zero_around_content() {
+        // Verify all paren-adjacent pairs have zero spacing
+        // Ord-Open: Γ(
+        assert_eq!(
+            inter_atom_space(AtomType::Ord, AtomType::Open, MathStyle::Text),
+            0.0,
+            "Ord-Open should be zero"
+        );
+        // Open-Ord: (n
+        assert_eq!(
+            inter_atom_space(AtomType::Open, AtomType::Ord, MathStyle::Text),
+            0.0,
+            "Open-Ord should be zero"
+        );
+        // Ord-Close: n)
+        assert_eq!(
+            inter_atom_space(AtomType::Ord, AtomType::Close, MathStyle::Text),
+            0.0,
+            "Ord-Close should be zero"
+        );
     }
 }

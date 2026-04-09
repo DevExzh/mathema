@@ -540,6 +540,17 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str(cmd);
         },
         CompactNode::Newline => buf.push_str("\\\\ "),
+        CompactNode::MathChoice { display, text, script, script_script } => {
+            buf.push_str("\\mathchoice{");
+            write_node(buf, arena, display);
+            buf.push_str("}{");
+            write_node(buf, arena, text);
+            buf.push_str("}{");
+            write_node(buf, arena, script);
+            buf.push_str("}{");
+            write_node(buf, arena, script_script);
+            buf.push('}');
+        },
     }
 }
 

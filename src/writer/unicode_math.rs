@@ -249,6 +249,10 @@ fn write_node(out: &mut String, node: &MathNode) {
                 }
             }
         },
+        MathNode::MathChoice { display, .. } => {
+            // UnicodeMath doesn't have mathchoice; output the display branch
+            write_node(out, display);
+        },
     }
 }
 
@@ -547,6 +551,10 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Color { content, .. } => {
             write_node_c(out, arena, content);
+        },
+
+        CompactNode::MathChoice { display, .. } => {
+            write_node_c(out, arena, display);
         },
 
         CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},

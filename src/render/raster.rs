@@ -173,7 +173,13 @@ fn emit_raster_box(
             let font_size_px = (em * size).max(1.0) as f32;
             let mut cx = x;
             for ch in text.chars() {
-                let m = super::metrics::glyph_metrics(ch);
+                // Use the same metric lookup as layout_text_run to keep
+                // glyph positions consistent with the layout pass.
+                let m = if *italic {
+                    super::metrics::glyph_metrics(ch)
+                } else {
+                    super::metrics::glyph_metrics_upright(ch)
+                };
                 draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic);
                 cx += m.width * size * em;
             }

@@ -9366,4 +9366,79 @@ mod tests {
             "accent should have at least 0.05 em gap above base, got {above_base:.4}"
         );
     }
+
+    /// Verify that `\Gamma(n)=(n-1)!` has zero inter-atom space around
+    /// all parentheses and between `)` and `!` (factorial).
+    #[test]
+    fn gamma_paren_factorial_tight_spacing() {
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact(
+            r"\Gamma(n)=(n-1)!",
+            &config,
+        ).unwrap();
+        let options = default_options();
+        let root = layout_expr_c(&result.expr, MathStyle::Text, &options);
+
+        if let BoxKind::HBox { ref children } = root.kind {
+            // Expect 11 glyphs: Γ ( n ) = ( n - 1 ) !
+            assert!(
+                children.len() >= 11,
+                "expected at least 11 children, got {}",
+                children.len()
+            );
+
+            // Helper: gap between child i's right edge and child i+1's left edge
+            let gap = |i: usize| -> f64 {
+                let right_edge = children[i].dx + children[i].layout.width;
+                children[i + 1].dx - right_edge
+            };
+
+            // Γ( — Ord-Open should be 0
+            assert!(
+                gap(0).abs() < 0.001,
+                "Γ-( gap should be ~0, got {:.4}",
+                gap(0)
+            );
+            // (n — Open-Ord should be 0
+            assert!(
+                gap(1).abs() < 0.001,
+                "(-n gap should be ~0, got {:.4}",
+                gap(1)
+            );
+            // n) — Ord-Close should be 0
+            assert!(
+                gap(2).abs() < 0.001,
+                "n-) gap should be ~0, got {:.4}",
+                gap(2)
+            );
+            // )= — Close-Rel should be >0 (thick space)
+            assert!(
+                gap(3) > 0.1,
+                ")-= gap should be thick space, got {:.4}",
+                gap(3)
+            );
+            // =( — Rel-Open should be >0 (thick space)
+            assert!(
+                gap(4) > 0.1,
+                "=-( gap should be thick space, got {:.4}",
+                gap(4)
+            );
+            // (n — Open-Ord should be 0
+            assert!(
+                gap(5).abs() < 0.001,
+                "(-n gap should be ~0, got {:.4}",
+                gap(5)
+            );
+
+            // )! — Close-Ord should be 0 (! is Ordinary, not Relation)
+            assert!(
+                gap(9).abs() < 0.001,
+                ")-! gap should be ~0 (factorial), got {:.4}",
+                gap(9)
+            );
+        } else {
+            panic!("expected HBox at root");
+        }
+    }
 }

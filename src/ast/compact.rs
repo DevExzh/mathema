@@ -221,6 +221,15 @@ pub enum CompactNode {
     },
     Styled(TextStyle, NodeSpan),
 
+    // ── MathChoice ─────────────────────────────────────────────────
+    /// Style-dependent content: \mathchoice{D}{T}{S}{SS}
+    MathChoice {
+        display: NodeId,
+        text: NodeId,
+        script: NodeId,
+        script_script: NodeId,
+    },
+
     // ── Color ───────────────────────────────────────────────────────
     /// Color wrapper: applies a named color to its content.
     Color { color: StrId, content: NodeId },
@@ -563,6 +572,18 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             let span = push_children(arena, children);
             arena.push_node(CompactNode::Styled(*style, span))
         },
+        MathNode::MathChoice { display, text, script, script_script } => {
+            let display_id = push_math_node(arena, display);
+            let text_id = push_math_node(arena, text);
+            let script_id = push_math_node(arena, script);
+            let ss_id = push_math_node(arena, script_script);
+            arena.push_node(CompactNode::MathChoice {
+                display: display_id,
+                text: text_id,
+                script: script_id,
+                script_script: ss_id,
+            })
+        },
     }
 }
 
@@ -782,6 +803,15 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         },
         CompactNode::Styled(style, span) => {
             MathNode::Styled(style, reconstruct_children(arena, span))
+        },
+
+        CompactNode::MathChoice { display, text, script, script_script } => {
+            MathNode::MathChoice {
+                display: Box::new(reconstruct_node(arena, display)),
+                text: Box::new(reconstruct_node(arena, text)),
+                script: Box::new(reconstruct_node(arena, script)),
+                script_script: Box::new(reconstruct_node(arena, script_script)),
+            }
         },
 
         // Color wrapper — no MathNode::Color exists, so reconstruct content only.

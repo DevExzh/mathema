@@ -80,7 +80,7 @@ fn emit_box_embedded(
             emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
         }
 
-        BoxKind::TextRun { text, size, italic } => {
+        BoxKind::TextRun { text, size, italic, .. } => {
             // For font-embed, we still need per-character glyph paths
             let mut cx = x;
             for ch in text.chars() {
@@ -311,7 +311,7 @@ fn emit_box_arena_embedded(
             emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
         }
 
-        ArenaBoxKind::TextRun { text, size, italic } => {
+        ArenaBoxKind::TextRun { text, size, italic, .. } => {
             // For font-embed, we still need per-character glyph paths
             let mut cx = x;
             for ch in text.chars() {

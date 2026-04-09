@@ -488,6 +488,10 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 .map_err(to_err)?;
             Ok(())
         },
+        MathNode::MathChoice { display, .. } => {
+            // MathML doesn't have mathchoice; output the display branch
+            write_node(w, display)
+        },
     }
 }
 
@@ -990,6 +994,10 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::StyleSwitch(_) => {},
         CompactNode::SizeScale(_) => {},
         CompactNode::Newline => {},
+        CompactNode::MathChoice { display, .. } => {
+            // MathML doesn't have mathchoice; output the display branch
+            write_node_fast(buf, arena, display);
+        },
     }
 }
 

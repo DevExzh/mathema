@@ -1,6 +1,7 @@
 // src/render/arena.rs
 
 use std::num::NonZeroU32;
+use crate::ast::TextStyle;
 
 // ── Index types ────────────────────────────────────────────────────────
 
@@ -101,7 +102,7 @@ pub enum ArenaBoxKind {
         border_color: Option<String>,
     },
     /// A run of text characters rendered as a single `<text>` element.
-    TextRun { text: String, size: f64, italic: bool },
+    TextRun { text: String, size: f64, italic: bool, text_style: Option<TextStyle> },
 }
 
 /// Positioned child reference stored in `LayoutArena::children`.
@@ -163,6 +164,12 @@ impl LayoutArena {
     #[inline]
     pub fn get(&self, id: LayoutBoxId) -> &ArenaLayoutBox {
         &self.boxes[id.index()]
+    }
+
+    /// Mutably access a box by ID.
+    #[inline]
+    pub fn get_mut(&mut self, id: LayoutBoxId) -> &mut ArenaLayoutBox {
+        &mut self.boxes[id.index()]
     }
 
     /// Access children of a span.

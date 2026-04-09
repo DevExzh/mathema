@@ -386,6 +386,10 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             }
             Ok(())
         },
+        MathNode::MathChoice { display, .. } => {
+            // OMML doesn't have mathchoice; output the display branch
+            write_node(w, display)
+        },
     }
 }
 
@@ -824,6 +828,8 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
 
         // Color: OMML has no direct color support, just write the content
         CompactNode::Color { content, .. } => write_node_c(w, arena, content),
+
+        CompactNode::MathChoice { display, .. } => write_node_c(w, arena, display),
 
         // Helper nodes that should not normally appear at the top level
         CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => Ok(()),
@@ -1291,6 +1297,8 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Color { content, .. } => write_node_cf(buf, arena, content),
+
+        CompactNode::MathChoice { display, .. } => write_node_cf(buf, arena, display),
 
         CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},
     }

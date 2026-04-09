@@ -54,7 +54,8 @@ fn classify_char(c: char) -> SymbolKind {
     match c {
         '+' | '-' | '*' => SymbolKind::BinaryOp,
         '/' => SymbolKind::BinaryOp,
-        '=' | '<' | '>' | '!' => SymbolKind::Relation,
+        '=' | '<' | '>' => SymbolKind::Relation,
+        '!' => SymbolKind::Ordinary,
         ',' | ';' => SymbolKind::Punctuation,
         '.' | ':' | '?' | '\'' | '@' => SymbolKind::Ordinary,
         '|' => SymbolKind::Fence,
@@ -1510,14 +1511,19 @@ impl LatexCompactParser {
                 Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
             },
 
-            // --- Mathchoice: pick first (display) argument ---
+            // --- Mathchoice: store all 4 branches for style-dependent selection ---
             "mathchoice" => {
-                // \mathchoice{D}{T}{S}{SS} — pick display argument, consume rest
+                // \mathchoice{D}{T}{S}{SS} — store all four branches
                 let (input, display_id) = self.parse_required_group(input)?;
-                let (input, _text_id) = self.parse_required_group(input)?;
-                let (input, _script_id) = self.parse_required_group(input)?;
-                let (input, _sscript_id) = self.parse_required_group(input)?;
-                Ok((input, display_id))
+                let (input, text_id) = self.parse_required_group(input)?;
+                let (input, script_id) = self.parse_required_group(input)?;
+                let (input, sscript_id) = self.parse_required_group(input)?;
+                Ok((input, self.arena.push_node(CompactNode::MathChoice {
+                    display: display_id,
+                    text: text_id,
+                    script: script_id,
+                    script_script: sscript_id,
+                })))
             },
 
             // --- Intop (integral with limits style) ---

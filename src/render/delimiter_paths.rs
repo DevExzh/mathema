@@ -13,7 +13,7 @@ use std::fmt::Write;
 /// Threshold: use SVG paths only when the delimiter is significantly taller
 /// than normal text size. Below this ratio (target_height / size), we fall
 /// back to text rendering which looks better at small sizes.
-const PATH_THRESHOLD: f64 = 0.9;
+const PATH_THRESHOLD: f64 = 0.5;
 
 /// Information about a generated delimiter path.
 pub struct DelimiterPath {
@@ -108,7 +108,7 @@ fn bracket_width(h: f64) -> f64 {
 
 #[inline]
 fn brace_width(h: f64) -> f64 {
-    (0.18 * h).clamp(0.18, 0.42)
+    (0.25 * h).clamp(0.30, 0.55)
 }
 
 #[inline]
@@ -257,63 +257,75 @@ fn right_bracket(h: f64, sw: f64) -> DelimiterPath {
 fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     let w = brace_width(h);
     let mut d = String::with_capacity(512);
-    // Filled curly brace { with a sharp middle bump pointing left.
-    // Outer contour traces the visible edge; inner contour is slightly inset.
+    // Filled curly brace { — outer + inner contour approach.
+    //
+    // Shape anatomy (left brace):
+    //   top hook: curves from (w, 0) inward to the arm
+    //   upper arm: descends to middle tip
+    //   middle tip: sharp point extending to x ≈ 0
+    //   lower arm: descends from middle tip
+    //   bottom hook: curves outward to (w, h)
     let mid = h * 0.5;
-    let tip = 0.015; // taper at top/bottom tips
-    let thick = 0.04; // thickness at the straight portions
-    let bump_out = w * 0.05; // how far the outer midpoint extends left of 0
-    let bump_in = bump_out + thick; // inner midpoint (further right)
+    let thick = (0.065_f64).min(w * 0.22); // stroke thickness
 
-    // -- Outer contour (clockwise: top-right → mid-left → bottom-right) --
-    let _ = write!(
-        d,
-        "F:M{tr:.4},0 C{c1x:.4},{c1y:.4} {c2x:.4},{c2y:.4} {mx:.4},{mid:.4}",
-        tr = w,
-        c1x = w * 0.35,
-        c1y = 0.0,
-        c2x = bump_out,
-        c2y = mid * 0.45,
-        mx = bump_out,
-        mid = mid,
+    // Where the vertical arm runs
+    let arm = w * 0.42;
+    // Hook height (how tall the top/bottom curves are)
+    let hk = (h * 0.16).clamp(0.08, 0.28);
+    // Middle tip x (extends to left edge)
+    let tip = (w * 0.02).min(0.01);
+    // Endpoint taper — visible thickness at hook endpoints
+    let end_gap = (thick * 0.6).max(0.03);
+
+    // === Outer contour (clockwise) ===
+    // Segment 1: top hook — (w, 0) → (arm, hk)
+    let _ = write!(d,
+        "F:M{w:.4},0 C{c1:.4},0 {arm:.4},{h1:.4} {arm:.4},{hk:.4}",
+        c1 = w * 0.65, h1 = hk * 0.25,
     );
-    let _ = write!(
-        d,
-        " C{c3x:.4},{c3y:.4} {c4x:.4},{c4y:.4} {br:.4},{h:.4}",
-        c3x = bump_out,
-        c3y = mid + (h - mid) * 0.55,
-        c4x = w * 0.35,
-        c4y = h,
-        br = w,
-        h = h,
+    // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
+    let _ = write!(d,
+        " C{arm:.4},{h2:.4} {tip:.4},{h3:.4} {tip:.4},{mid:.4}",
+        h2 = mid * 0.55, h3 = mid * 0.82,
+    );
+    // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
+    let _ = write!(d,
+        " C{tip:.4},{h4:.4} {arm:.4},{h5:.4} {arm:.4},{lk:.4}",
+        h4 = mid + (mid * 0.18), h5 = mid + (h - mid) * 0.45,
+        lk = h - hk,
+    );
+    // Segment 4: bottom hook — (arm, h - hk) → (w, h)
+    let _ = write!(d,
+        " C{arm:.4},{h6:.4} {c2:.4},{h:.4} {w:.4},{h:.4}",
+        h6 = h - hk * 0.25, c2 = w * 0.65,
     );
 
-    // -- Inner contour (counter-clockwise: bottom-right inset → mid-left inset → top-right inset) --
-    let _ = write!(
-        d,
-        " L{br:.4},{hy:.4}",
-        br = w - tip,
-        hy = h - tip,
+    // === Inner contour (counter-clockwise) — offset inward by `thick` ===
+    let iarm = arm + thick;
+    let itip = tip + thick;
+    let wi = w - end_gap;
+    let eg = end_gap;
+    // Segment 4i: bottom hook inner
+    let _ = write!(d,
+        " L{wi:.4},{hi:.4} C{c2i:.4},{hi:.4} {iarm:.4},{h6i:.4} {iarm:.4},{lki:.4}",
+        hi = h - eg,
+        c2i = w * 0.68, h6i = h - hk * 0.30,
+        lki = h - hk,
     );
-    let _ = write!(
-        d,
-        " C{c5x:.4},{c5y:.4} {c6x:.4},{c6y:.4} {imx:.4},{mid:.4}",
-        c5x = w * 0.40,
-        c5y = h - tip,
-        c6x = bump_in,
-        c6y = mid + (h - mid) * 0.55,
-        imx = bump_in,
-        mid = mid,
+    // Segment 3i: lower arm → tip inner
+    let _ = write!(d,
+        " C{iarm:.4},{h5i:.4} {itip:.4},{h4i:.4} {itip:.4},{mid:.4}",
+        h5i = mid + (h - mid) * 0.45, h4i = mid + (mid * 0.18),
     );
-    let _ = write!(
-        d,
-        " C{c7x:.4},{c7y:.4} {c8x:.4},{c8y:.4} {it:.4},{ty:.4} Z",
-        c7x = bump_in,
-        c7y = mid * 0.45,
-        c8x = w * 0.40,
-        c8y = tip,
-        it = w - tip,
-        ty = tip,
+    // Segment 2i: tip → upper arm inner
+    let _ = write!(d,
+        " C{itip:.4},{h3i:.4} {iarm:.4},{h2i:.4} {iarm:.4},{hk:.4}",
+        h3i = mid * 0.82, h2i = mid * 0.55,
+    );
+    // Segment 1i: top hook inner
+    let _ = write!(d,
+        " C{iarm:.4},{h1i:.4} {c1i:.4},{eg:.4} {wi:.4},{eg:.4} Z",
+        h1i = hk * 0.30, c1i = w * 0.68,
     );
 
     DelimiterPath {
@@ -326,60 +338,64 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
 fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
     let w = brace_width(h);
     let mut d = String::with_capacity(512);
-    // Filled curly brace } — mirror of left brace, middle bump points right.
+    // Filled curly brace } — mirror of left brace, middle tip points right.
     let mid = h * 0.5;
-    let tip = 0.015;
-    let thick = 0.04;
-    let bump_out = w * 0.95; // outer midpoint x (right of w)
-    let bump_in = bump_out - thick; // inner midpoint x
+    let thick = (0.065_f64).min(w * 0.22);
 
-    // -- Outer contour (clockwise: top-left → mid-right → bottom-left) --
-    let _ = write!(
-        d,
-        "F:M0,0 C{c1x:.4},{c1y:.4} {c2x:.4},{c2y:.4} {mx:.4},{mid:.4}",
-        c1x = w * 0.65,
-        c1y = 0.0,
-        c2x = bump_out,
-        c2y = mid * 0.45,
-        mx = bump_out,
-        mid = mid,
+    let arm = w * 0.58; // arm x position (mirrored from left brace)
+    let hk = (h * 0.16).clamp(0.08, 0.28);
+    let tip = w - (w * 0.02).min(0.01); // tip extends to right edge
+    // Endpoint taper — visible thickness at hook endpoints
+    let end_gap = (thick * 0.6).max(0.03);
+
+    // === Outer contour (clockwise) ===
+    // Segment 1: top hook — (0, 0) → (arm, hk)
+    let _ = write!(d,
+        "F:M0,0 C{c1:.4},0 {arm:.4},{h1:.4} {arm:.4},{hk:.4}",
+        c1 = w * 0.35, h1 = hk * 0.25,
     );
-    let _ = write!(
-        d,
-        " C{c3x:.4},{c3y:.4} {c4x:.4},{c4y:.4} 0,{h:.4}",
-        c3x = bump_out,
-        c3y = mid + (h - mid) * 0.55,
-        c4x = w * 0.65,
-        c4y = h,
-        h = h,
+    // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
+    let _ = write!(d,
+        " C{arm:.4},{h2:.4} {tip:.4},{h3:.4} {tip:.4},{mid:.4}",
+        h2 = mid * 0.55, h3 = mid * 0.82,
+    );
+    // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
+    let _ = write!(d,
+        " C{tip:.4},{h4:.4} {arm:.4},{h5:.4} {arm:.4},{lk:.4}",
+        h4 = mid + (mid * 0.18), h5 = mid + (h - mid) * 0.45,
+        lk = h - hk,
+    );
+    // Segment 4: bottom hook — (arm, h - hk) → (0, h)
+    let _ = write!(d,
+        " C{arm:.4},{h6:.4} {c2:.4},{h:.4} 0,{h:.4}",
+        h6 = h - hk * 0.25, c2 = w * 0.35,
     );
 
-    // -- Inner contour (counter-clockwise: bottom-left inset → mid-right inset → top-left inset) --
-    let _ = write!(
-        d,
-        " L{bl:.4},{hy:.4}",
-        bl = tip,
-        hy = h - tip,
+    // === Inner contour (counter-clockwise) ===
+    let iarm = arm - thick;
+    let itip = tip - thick;
+    let eg = end_gap;
+    // Segment 4i: bottom hook inner
+    let _ = write!(d,
+        " L{eg:.4},{hi:.4} C{c2i:.4},{hi:.4} {iarm:.4},{h6i:.4} {iarm:.4},{lki:.4}",
+        hi = h - eg,
+        c2i = w * 0.32, h6i = h - hk * 0.30,
+        lki = h - hk,
     );
-    let _ = write!(
-        d,
-        " C{c5x:.4},{c5y:.4} {c6x:.4},{c6y:.4} {imx:.4},{mid:.4}",
-        c5x = w * 0.60,
-        c5y = h - tip,
-        c6x = bump_in,
-        c6y = mid + (h - mid) * 0.55,
-        imx = bump_in,
-        mid = mid,
+    // Segment 3i: lower arm → tip inner
+    let _ = write!(d,
+        " C{iarm:.4},{h5i:.4} {itip:.4},{h4i:.4} {itip:.4},{mid:.4}",
+        h5i = mid + (h - mid) * 0.45, h4i = mid + (mid * 0.18),
     );
-    let _ = write!(
-        d,
-        " C{c7x:.4},{c7y:.4} {c8x:.4},{c8y:.4} {it:.4},{ty:.4} Z",
-        c7x = bump_in,
-        c7y = mid * 0.45,
-        c8x = w * 0.60,
-        c8y = tip,
-        it = tip,
-        ty = tip,
+    // Segment 2i: tip → upper arm inner
+    let _ = write!(d,
+        " C{itip:.4},{h3i:.4} {iarm:.4},{h2i:.4} {iarm:.4},{hk:.4}",
+        h3i = mid * 0.82, h2i = mid * 0.55,
+    );
+    // Segment 1i: top hook inner
+    let _ = write!(d,
+        " C{iarm:.4},{h1i:.4} {c1i:.4},{eg:.4} {eg:.4},{eg:.4} Z",
+        h1i = hk * 0.30, c1i = w * 0.32,
     );
 
     DelimiterPath {
@@ -517,9 +533,11 @@ mod tests {
 
     #[test]
     fn should_use_path_respects_threshold() {
-        // At normal text size (size=1.0), a delimiter with target_height 0.8
+        // At normal text size (size=1.0), a delimiter with target_height 0.4
         // is below the threshold and should use text.
-        assert!(!should_use_path('(', 0.8, 1.0));
+        assert!(!should_use_path('(', 0.4, 1.0));
+        // At 0.8, it should now use path rendering (threshold lowered to 0.5).
+        assert!(should_use_path('(', 0.8, 1.0));
         // At 1.5x, it should use path rendering.
         assert!(should_use_path('(', 1.5, 1.0));
     }

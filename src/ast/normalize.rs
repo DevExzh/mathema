@@ -166,6 +166,12 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         MathNode::Styled(_, children) => {
             normalize_nodes_depth(children, d);
         },
+        MathNode::MathChoice { display, text, script, script_script } => {
+            normalize_node_depth(display, d);
+            normalize_node_depth(text, d);
+            normalize_node_depth(script, d);
+            normalize_node_depth(script_script, d);
+        },
 
         // Leaf nodes: nothing to normalize
         MathNode::Number(_)
@@ -369,6 +375,12 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         },
         CompactNode::Color { content, .. } => {
             normalize_compact_node(arena, content, d);
+        },
+        CompactNode::MathChoice { display, text, script, script_script } => {
+            normalize_compact_node(arena, display, d);
+            normalize_compact_node(arena, text, d);
+            normalize_compact_node(arena, script, d);
+            normalize_compact_node(arena, script_script, d);
         },
 
         // Leaf nodes: nothing to normalize

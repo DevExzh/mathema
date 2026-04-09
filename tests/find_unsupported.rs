@@ -113,6 +113,12 @@ fn collect_suspicious_identifiers(node: &MathNode, found: &mut Vec<String>) {
         MathNode::Cancel { content, .. } | MathNode::Scaled { content, .. } => {
             collect_suspicious_identifiers(content, found);
         }
+        MathNode::MathChoice { display, text, script, script_script } => {
+            collect_suspicious_identifiers(display, found);
+            collect_suspicious_identifiers(text, found);
+            collect_suspicious_identifiers(script, found);
+            collect_suspicious_identifiers(script_script, found);
+        }
         // Leaves that don't contain sub-nodes
         MathNode::Number(_) | MathNode::Operator(_) | MathNode::Symbol(_, _)
         | MathNode::Text(_, _) | MathNode::Space(_) => {}
