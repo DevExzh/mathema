@@ -2060,17 +2060,31 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         })
         .collect();
 
+    // Layout content as a row with inter-atom spacing (like layout_row)
     let mut inner_children = Vec::new();
-    for n in &inner_nodes {
-        inner_children.push(layout_node(n, ctx));
-    }
-
-    // Compute max height/depth of content
+    let mut content_cursor = 0.0;
+    let mut prev_atom: Option<spacing::AtomType> = None;
     let mut max_h: f64 = 0.0;
     let mut max_d: f64 = 0.0;
-    for child in &inner_children {
+    for n in &inner_nodes {
+        // Add inter-atom spacing
+        let raw_atom = spacing::classify_node(n);
+        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+        let cur_atom = adj_cur.unwrap();
+        if let Some(prev) = adj_prev {
+            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+            if space > 0.0 {
+                content_cursor += space * ctx.size();
+            }
+        }
+
+        let child = layout_node(n, ctx);
         max_h = max_h.max(child.height);
         max_d = max_d.max(child.depth);
+        let w = child.width;
+        inner_children.push((content_cursor, child));
+        content_cursor += w;
+        prev_atom = Some(cur_atom);
     }
 
     // Detect fraction-with-delimiters (e.g., \binom{n}{k}) — TeX Rule 15e:
@@ -2140,12 +2154,11 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
         cursor_x += delim_w;
     }
 
-    // Content -- capture width before moving each child
-    for child in inner_children {
-        let w = child.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, child));
-        cursor_x += w;
+    // Content -- place with pre-computed spacing offsets
+    for (offset, child) in inner_children {
+        children.push(PositionedBox::new(cursor_x + offset, 0.0, child));
     }
+    cursor_x += content_cursor;
 
     // Close delimiter
     if !close.is_empty()
@@ -4254,22 +4267,36 @@ fn layout_fenced_c(
     content: NodeSpan,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
-    // Layout content, skipping Middle separator nodes
+    // Layout content with inter-atom spacing, skipping Middle separator nodes
     let mut inner_children = Vec::new();
+    let mut content_cursor = 0.0;
+    let mut prev_atom: Option<spacing::AtomType> = None;
+    let mut max_h: f64 = 0.0;
+    let mut max_d: f64 = 0.0;
     for &child_id in arena.children(content) {
         match *arena.node(child_id) {
             CompactNode::Middle(_) => {},
             _ => {
-                inner_children.push(layout_node_c(arena, child_id, ctx));
+                // Add inter-atom spacing
+                let raw_atom = spacing::classify_node_c(arena, child_id);
+                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+                let cur_atom = adj_cur.unwrap();
+                if let Some(prev) = adj_prev {
+                    let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+                    if space > 0.0 {
+                        content_cursor += space * ctx.size();
+                    }
+                }
+
+                let child = layout_node_c(arena, child_id, ctx);
+                max_h = max_h.max(child.height);
+                max_d = max_d.max(child.depth);
+                let w = child.width;
+                inner_children.push((content_cursor, child));
+                content_cursor += w;
+                prev_atom = Some(cur_atom);
             },
         }
-    }
-
-    let mut max_h: f64 = 0.0;
-    let mut max_d: f64 = 0.0;
-    for child in &inner_children {
-        max_h = max_h.max(child.height);
-        max_d = max_d.max(child.depth);
     }
 
     // Detect fraction-with-delimiters (e.g., \binom) — TeX Rule 15e
@@ -4334,11 +4361,10 @@ fn layout_fenced_c(
         cursor_x += delim_w;
     }
 
-    for child in inner_children {
-        let w = child.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, child));
-        cursor_x += w;
+    for (offset, child) in inner_children {
+        children.push(PositionedBox::new(cursor_x + offset, 0.0, child));
     }
+    cursor_x += content_cursor;
 
     // Close delimiter
     let close_str = arena.str_val(close);
@@ -6776,26 +6802,37 @@ fn layout_fenced_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    // Layout content, skipping Middle separator nodes
-    // We need to collect IDs first, then measure
-    let mut inner_ids: Vec<LayoutBoxId> = Vec::new();
+    // Layout content with inter-atom spacing, skipping Middle separator nodes
+    let mut inner_ids: Vec<(f64, LayoutBoxId)> = Vec::new();
+    let mut content_cursor = 0.0;
+    let mut prev_atom: Option<spacing::AtomType> = None;
+    let mut max_h: f64 = 0.0;
+    let mut max_d: f64 = 0.0;
     for &child_id in ast.children(content) {
         match *ast.node(child_id) {
             CompactNode::Middle(_) => {},
             _ => {
+                // Add inter-atom spacing
+                let raw_atom = spacing::classify_node_c(ast, child_id);
+                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+                let cur_atom = adj_cur.unwrap();
+                if let Some(prev) = adj_prev {
+                    let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+                    if space > 0.0 {
+                        content_cursor += space * ctx.size();
+                    }
+                }
+
                 let laid = layout_node_arena(ast, child_id, arena, ctx);
-                inner_ids.push(laid);
+                let b = arena.get(laid);
+                max_h = max_h.max(b.height);
+                max_d = max_d.max(b.depth);
+                let w = b.width;
+                inner_ids.push((content_cursor, laid));
+                content_cursor += w;
+                prev_atom = Some(cur_atom);
             },
         }
-    }
-
-    // Compute max height/depth of content
-    let mut max_h: f64 = 0.0;
-    let mut max_d: f64 = 0.0;
-    for &id in &inner_ids {
-        let b = arena.get(id);
-        max_h = max_h.max(b.height);
-        max_d = max_d.max(b.depth);
     }
 
     // Detect fraction-with-delimiters (e.g., \binom) — TeX Rule 15e
@@ -6860,12 +6897,11 @@ fn layout_fenced_arena(
         cursor_x += delim_w;
     }
 
-    // Content
-    for &id in &inner_ids {
-        let w = arena.get(id).width;
-        arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id });
-        cursor_x += w;
+    // Content with pre-computed spacing offsets
+    for &(offset, id) in &inner_ids {
+        arena.push_child(ArenaPositionedBox { dx: cursor_x + offset, dy: 0.0, id });
     }
+    cursor_x += content_cursor;
 
     // Close delimiter
     let close_str = ast.str_val(close);
@@ -8405,6 +8441,38 @@ mod tests {
         assert!(
             fenced.width > content_only.width,
             "fenced expression should be wider than content alone (delimiters add width)"
+        );
+    }
+
+    #[test]
+    fn layout_fenced_has_interatom_spacing() {
+        // \left(x + y\right) — content has three items with binary op spacing
+        let fenced_spaced = MathExpr::inline(vec![MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![
+                FencedItem::Element(MathNode::Identifier("x".into())),
+                FencedItem::Element(MathNode::Symbol(SymbolKind::BinaryOp, "+".into())),
+                FencedItem::Element(MathNode::Identifier("y".into())),
+            ],
+        }]);
+        let root_spaced = layout_expr(&fenced_spaced, MathStyle::Text, &default_options());
+
+        // \left(xy\right) — content has two identifiers, no binary op spacing
+        let fenced_noop = MathExpr::inline(vec![MathNode::Fenced {
+            open: "(".into(),
+            close: ")".into(),
+            content: vec![
+                FencedItem::Element(MathNode::Identifier("x".into())),
+                FencedItem::Element(MathNode::Identifier("y".into())),
+            ],
+        }]);
+        let root_noop = layout_expr(&fenced_noop, MathStyle::Text, &default_options());
+
+        assert!(
+            root_spaced.width > root_noop.width,
+            "\\left(x + y\\right) should be wider than \\left(xy\\right) due to inter-atom spacing \
+             (spaced: {}, unspaced: {})", root_spaced.width, root_noop.width
         );
     }
 

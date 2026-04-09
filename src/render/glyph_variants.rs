@@ -86,7 +86,7 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
                         if !glyph_variants.is_empty() {
                             // Sort by advance (should already be sorted per spec, but be safe).
                             glyph_variants
-                                .sort_by(|a, b| a.advance_em.partial_cmp(&b.advance_em).unwrap());
+                                .sort_by(|a, b| a.advance_em.total_cmp(&b.advance_em));
                             vertical.push((ch, glyph_variants));
                         }
                     }
