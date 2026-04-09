@@ -1116,7 +1116,9 @@ impl LatexCompactParser {
         let c = input.as_bytes()[0] as char;
         let rest = &input[1..]; // all symbol chars are single-byte ASCII
         let kind = classify_char(c);
-        let sid = self.push_char_str(c);
+        // Remap ASCII hyphen-minus to proper math minus sign
+        let ch = if c == '-' { '\u{2212}' } else { c };
+        let sid = self.push_char_str(ch);
         Ok((rest, self.arena.push_node(CompactNode::Symbol(kind, sid))))
     }
 

@@ -300,6 +300,28 @@ fn italic_correction(base: &LayoutBox) -> f64 {
     }
 }
 
+/// Returns true if the superscript node consists entirely of prime symbols (U+2032).
+/// TeX skips italic correction for prime superscripts so they sit tight against the base.
+fn is_prime_sup(node: &MathNode) -> bool {
+    match node {
+        MathNode::Symbol(_, s) => s.chars().all(|c| c == '\u{2032}'),
+        MathNode::Row(children) => !children.is_empty() && children.iter().all(is_prime_sup),
+        _ => false,
+    }
+}
+
+/// Compact-AST version of `is_prime_sup`.
+fn is_prime_sup_c(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Symbol(_, sid) => arena.str_val(sid).chars().all(|c| c == '\u{2032}'),
+        CompactNode::Row(span) => {
+            let ids = arena.children(span);
+            !ids.is_empty() && ids.iter().all(|&nid| is_prime_sup_c(arena, nid))
+        }
+        _ => false,
+    }
+}
+
 /// Font size scale factors for LaTeX sizing commands (\tiny..\Huge).
 const SIZE_SCALE_TABLE: [f64; 10] = [
     0.5, 0.7, 0.8, 0.9, 1.0, 1.2, 1.44, 1.728, 2.074, 2.488,
@@ -1420,8 +1442,9 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    // Italic correction: shift superscript right by the base glyph's italic correction
-    let ic = italic_correction(&base_box);
+    // Italic correction: shift superscript right by the base glyph's italic correction.
+    // TeX skips italic correction for prime superscripts — primes sit tight against the base.
+    let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
 
     let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
@@ -1566,8 +1589,9 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
         shift_down -= psi;
     }
 
-    // Italic correction: superscript shifts right, subscript shifts left by half
-    let ic = italic_correction(&base_box);
+    // Italic correction: superscript shifts right, subscript shifts left by half.
+    // TeX skips italic correction for prime superscripts.
+    let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
     let sup_dx = base_box.width + ic;
     let sub_dx = (base_box.width - ic / 2.0).max(0.0);
 
@@ -2351,7 +2375,7 @@ fn layout_superscript_from_box_heap(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    let ic = italic_correction(&base_box);
+    let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
 
     let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
@@ -2471,7 +2495,7 @@ fn layout_subsup_from_box_heap(
         shift_down -= psi;
     }
 
-    let ic = italic_correction(&base_box);
+    let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
     let sup_dx = base_box.width + ic;
     let sub_dx = (base_box.width - ic / 2.0).max(0.0);
 
@@ -3719,7 +3743,8 @@ fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &Layou
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    let ic = italic_correction(&base_box);
+    // TeX skips italic correction for prime superscripts.
+    let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
 
     let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
@@ -3858,7 +3883,7 @@ fn layout_subsup_c(
         shift_down -= psi;
     }
 
-    let ic = italic_correction(&base_box);
+    let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
     let sup_dx = base_box.width + ic;
     let sub_dx = (base_box.width - ic / 2.0).max(0.0);
 
@@ -4549,7 +4574,7 @@ fn layout_superscript_from_box(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    let ic = italic_correction(&base_box);
+    let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
 
     let total_width = base_box.width + ic + sup_box.width;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
@@ -4671,7 +4696,7 @@ fn layout_subsup_from_box(
         shift_down -= psi;
     }
 
-    let ic = italic_correction(&base_box);
+    let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
     let sup_dx = base_box.width + ic;
     let sub_dx = (base_box.width - ic / 2.0).max(0.0);
 
@@ -6115,7 +6140,8 @@ fn layout_superscript_arena(
     let sup_d = arena.get(sup_id).depth;
     let sup_w = arena.get(sup_id).width;
 
-    let ic = italic_correction_arena(base_id, arena);
+    // TeX skips italic correction for prime superscripts.
+    let ic = if is_prime_sup_c(ast, sup) { 0.0 } else { italic_correction_arena(base_id, arena) };
 
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
@@ -6258,7 +6284,7 @@ fn layout_subsup_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let ic = italic_correction_arena(base_id, arena);
+    let ic = if is_prime_sup_c(ast, sup) { 0.0 } else { italic_correction_arena(base_id, arena) };
 
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
@@ -7098,7 +7124,7 @@ fn layout_superscript_from_box_arena(
     let sup_d = arena.get(sup_id).depth;
     let sup_w = arena.get(sup_id).width;
 
-    let ic = italic_correction_arena(base_id, arena);
+    let ic = if is_prime_sup_c(ast, sup) { 0.0 } else { italic_correction_arena(base_id, arena) };
 
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
@@ -7217,7 +7243,7 @@ fn layout_subsup_from_box_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let ic = italic_correction_arena(base_id, arena);
+    let ic = if is_prime_sup_c(ast, sup) { 0.0 } else { italic_correction_arena(base_id, arena) };
 
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });

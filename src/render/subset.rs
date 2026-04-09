@@ -112,7 +112,7 @@ pub fn build_glyph_set(font_data: &[u8], chars: &HashSet<char>) -> Option<GlyphS
 mod tests {
     use super::*;
     use crate::render::RenderOptions;
-    use crate::render::layout::layout_expr;
+    use crate::render::layout::{layout_expr, PositionedBox};
     use crate::render::style::MathStyle;
     use crate::ast::*;
 
@@ -135,17 +135,67 @@ mod tests {
 
     #[test]
     fn collect_chars_finds_delimiters() {
-        let expr = MathExpr::inline(vec![MathNode::Fenced {
-            open: "(".into(),
-            close: ")".into(),
-            content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
-        }]);
-        let options = RenderOptions::default();
-        let root = layout_expr(&expr, MathStyle::Text, &options);
+        // Build a layout tree manually so the test is independent of
+        // whether the layout engine decides to use SVG-path delimiters.
+        let glyph_x = LayoutBox {
+            width: 0.5,
+            height: 0.43,
+            depth: 0.0,
+            kind: BoxKind::Glyph { ch: 'x', size: 1.0, italic: false },
+        };
+        // Use a small target_height so SVG path threshold is NOT met
+        let delim_open = LayoutBox {
+            width: 0.3,
+            height: 0.43,
+            depth: 0.0,
+            kind: BoxKind::Delimiter { ch: '(', target_height: 0.3 },
+        };
+        let delim_close = LayoutBox {
+            width: 0.3,
+            height: 0.43,
+            depth: 0.0,
+            kind: BoxKind::Delimiter { ch: ')', target_height: 0.3 },
+        };
+        let root = LayoutBox {
+            width: 1.1,
+            height: 0.43,
+            depth: 0.0,
+            kind: BoxKind::HBox {
+                children: vec![
+                    PositionedBox::at_origin(delim_open),
+                    PositionedBox::at_origin(glyph_x),
+                    PositionedBox::at_origin(delim_close),
+                ],
+            },
+        };
         let chars = collect_chars(&root);
         assert!(chars.contains(&'('));
         assert!(chars.contains(&')'));
         assert!(chars.contains(&'x'));
+    }
+
+    #[test]
+    fn collect_chars_skips_svg_path_delimiters() {
+        // When target_height is large enough for SVG path rendering,
+        // collect_chars should NOT include the delimiter character
+        // (the SVG writer uses the path, not a font glyph).
+        let delim = LayoutBox {
+            width: 0.3,
+            height: 1.0,
+            depth: 0.5,
+            kind: BoxKind::Delimiter { ch: '(', target_height: 1.5 },
+        };
+        let root = LayoutBox {
+            width: 0.3,
+            height: 1.0,
+            depth: 0.5,
+            kind: BoxKind::HBox {
+                children: vec![PositionedBox::at_origin(delim)],
+            },
+        };
+        let chars = collect_chars(&root);
+        // '(' has an SVG path at this height, so it should NOT be collected
+        assert!(!chars.contains(&'('));
     }
 
     #[test]

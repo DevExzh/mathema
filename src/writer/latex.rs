@@ -581,6 +581,11 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
 fn write_symbol(buf: &mut String, arena: &AstArena, _kind: SymbolKind, sid: compact::StrId) {
     let s = arena.str_val(sid);
     let ch = s.chars().next().unwrap_or('?');
+    // Math minus sign → ASCII hyphen-minus for LaTeX output
+    if ch == '\u{2212}' {
+        buf.push('-');
+        return;
+    }
     // ASCII symbols are written directly
     if ch.is_ascii() {
         match ch {

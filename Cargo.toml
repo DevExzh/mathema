@@ -64,6 +64,22 @@ required-features = ["cli"]
 name = "mangen"
 required-features = ["cli"]
 
+[[example]]
+name = "edge_test"
+required-features = ["raster"]
+
+[[example]]
+name = "edge2_test"
+required-features = ["raster"]
+
+[[example]]
+name = "render_comparison_test"
+required-features = ["raster"]
+
+[[example]]
+name = "render_test_formulas"
+required-features = ["raster"]
+
 [[bench]]
 name = "benchmark"
 harness = false

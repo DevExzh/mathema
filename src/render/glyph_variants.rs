@@ -10,6 +10,10 @@
 //!
 //! This module currently implements (1) — pre-designed variant selection.
 
+// Functions and types in this module are infrastructure for upcoming glyph-variant
+// integration in the layout engine; suppress dead-code warnings until wired in.
+#![allow(dead_code)]
+
 use std::sync::LazyLock;
 
 /// A pre-designed glyph variant from the MATH table.
