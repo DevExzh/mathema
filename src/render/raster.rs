@@ -93,6 +93,56 @@ pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> R
     rasterize_layout(&root, options)
 }
 
+/// Recursively compute the horizontal extent of all visible content in a layout
+/// tree.  Returns `(min_x, max_x)` in **em units** relative to the tree root's
+/// origin.  Invisible nodes (`Kern`, `Phantom`) are skipped.
+fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
+    match &layout.kind {
+        // Visible leaf nodes: occupy [x, x + width].
+        BoxKind::Glyph { .. }
+        | BoxKind::TextRun { .. }
+        | BoxKind::Rule { .. }
+        | BoxKind::Delimiter { .. }
+        | BoxKind::SvgPath(_) => (x, x + layout.width),
+
+        // Container nodes: recurse into children.
+        BoxKind::HBox { children } | BoxKind::VBox { children } => {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for child in children {
+                let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
+                if cmin < lo {
+                    lo = cmin;
+                }
+                if cmax > hi {
+                    hi = cmax;
+                }
+            }
+            // If there are no children, fall back to the box's own extent.
+            if lo > hi {
+                (x, x + layout.width)
+            } else {
+                (lo, hi)
+            }
+        }
+
+        // Color wrapper: recurse into the single child.
+        BoxKind::Color { child, .. } => {
+            compute_x_bounds(&child.layout, x + child.dx)
+        }
+
+        // Boxed wrapper: recurse into the single child but also account for the
+        // box border itself.
+        BoxKind::Boxed { child, .. } => {
+            let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
+            (cmin.min(x), cmax.max(x + layout.width))
+        }
+
+        // Invisible nodes contribute no visible content.
+        BoxKind::Kern | BoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
+    }
+}
+
 fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>> {
     let em = options.render.font_size_px * options.scale;
     let padding = 2.0 * options.scale; // 2px padding at 1x
@@ -100,7 +150,19 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
     // Guard against excessive dimensions that could cause OOM
     const MAX_PIXMAP_DIMENSION: u32 = 8192;
 
-    let width = (root.width * em + padding * 2.0).ceil().max(1.0) as u32;
+    // Compute actual horizontal extent of visible content so that negative
+    // kerns (e.g. `\!\!\!x`) do not clip glyphs that sit left of x = 0.
+    let (min_x, max_x) = compute_x_bounds(root, 0.0);
+    let x_shift = if min_x < 0.0 { -min_x } else { 0.0 };
+    let content_width = if min_x < 0.0 {
+        max_x - min_x
+    } else {
+        // When there is no negative overshoot, still respect max_x in case it
+        // exceeds root.width (shouldn't normally happen, but be safe).
+        root.width.max(max_x)
+    };
+
+    let width = (content_width * em + padding * 2.0).ceil().max(1.0) as u32;
     let height = ((root.height + root.depth) * em + padding * 2.0)
         .ceil()
         .max(1.0) as u32;
@@ -137,8 +199,10 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
         cache: HashMap::new(),
     };
 
+    // Shift content right by |min_x| so that negatively-positioned glyphs
+    // are inside the pixmap.
     let baseline_y = root.height * em + padding;
-    emit_raster_box(&mut pixmap, &mut ctx, root, padding, baseline_y);
+    emit_raster_box(&mut pixmap, &mut ctx, root, padding + x_shift * em, baseline_y);
 
     encode_image(&pixmap, options)
 }
@@ -1318,5 +1382,49 @@ mod tests {
             "M529 0h5l519 115c5 1 9 5 9 10 0 1-1 2-1 3l-4 22c-1 5-5 9-11 9h-2L532 67 19 159h-2c-5 0-9-4-11-9l-5-22c-1-6 2-12 8-13z",
         );
         assert!(path.is_some(), "widehat path should parse");
+    }
+
+    // --- Negative space / clipping tests ---
+
+    #[test]
+    fn negative_space_does_not_clip() {
+        // Triple negative thin space (\!\!\!x) should produce a valid PNG,
+        // not blank or clipped output.
+        let nodes = vec![
+            MathNode::Space(Rational::new(-3, 18)),
+            MathNode::Space(Rational::new(-3, 18)),
+            MathNode::Space(Rational::new(-3, 18)),
+            MathNode::Identifier("x".into()),
+        ];
+        let png = render_png(nodes);
+        assert!(png.len() > 100, "negative-space expression should produce a non-trivial image");
+        assert_eq!(&png[..4], b"\x89PNG");
+    }
+
+    #[test]
+    fn compute_x_bounds_detects_negative_shift() {
+        use crate::render::layout::PositionedBox;
+        // Build a minimal HBox with a negative kern followed by a glyph
+        let kern = PositionedBox::at_origin(LayoutBox {
+            width: 0.0,
+            height: 0.0,
+            depth: 0.0,
+            kind: BoxKind::Kern,
+        });
+        let glyph = PositionedBox::new(-0.5, 0.0, LayoutBox {
+            width: 0.6,
+            height: 0.7,
+            depth: 0.1,
+            kind: BoxKind::Glyph { ch: 'x', size: 1.0, italic: false },
+        });
+        let root = LayoutBox {
+            width: 0.1, // artificially narrow
+            height: 0.7,
+            depth: 0.1,
+            kind: BoxKind::HBox { children: vec![kern, glyph] },
+        };
+        let (min_x, max_x) = compute_x_bounds(&root, 0.0);
+        assert!(min_x < 0.0, "min_x should be negative: got {min_x}");
+        assert!((max_x - 0.1).abs() < 1e-9, "max_x should be 0.1: got {max_x}");
     }
 }
