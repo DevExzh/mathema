@@ -364,18 +364,22 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             base,
             accent,
             position,
+            wide,
         } => {
-            let cmd = match (accent, position) {
-                ('\u{0302}', AccentPosition::Above) => "hat",
-                ('\u{0304}', AccentPosition::Above) => "bar",
-                ('\u{20D7}', AccentPosition::Above) => "vec",
-                ('\u{0307}', AccentPosition::Above) => "dot",
-                ('\u{0308}', AccentPosition::Above) => "ddot",
-                ('\u{0303}', AccentPosition::Above) => "tilde",
-                ('\u{0306}', AccentPosition::Above) => "breve",
-                ('\u{030C}', AccentPosition::Above) => "check",
-                ('\u{0301}', AccentPosition::Above) => "acute",
-                ('\u{0300}', AccentPosition::Above) => "grave",
+            let cmd = match (accent, position, wide) {
+                ('\u{0302}', AccentPosition::Above, true) => "widehat",
+                ('\u{0302}', AccentPosition::Above, false) => "hat",
+                ('\u{0304}', AccentPosition::Above, _) => "bar",
+                ('\u{20D7}', AccentPosition::Above, _) => "vec",
+                ('\u{0307}', AccentPosition::Above, _) => "dot",
+                ('\u{0308}', AccentPosition::Above, _) => "ddot",
+                ('\u{0303}', AccentPosition::Above, true) => "widetilde",
+                ('\u{0303}', AccentPosition::Above, false) => "tilde",
+                ('\u{0306}', AccentPosition::Above, _) => "breve",
+                ('\u{030C}', AccentPosition::Above, true) => "widecheck",
+                ('\u{030C}', AccentPosition::Above, false) => "check",
+                ('\u{0301}', AccentPosition::Above, _) => "acute",
+                ('\u{0300}', AccentPosition::Above, _) => "grave",
                 _ => "hat",
             };
             buf.push('\\');

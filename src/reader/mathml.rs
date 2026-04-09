@@ -360,6 +360,7 @@ impl<'a> MathmlCompactParser<'a> {
                             base,
                             accent: ch,
                             position: AccentPosition::Above,
+                            wide: false,
                         }));
                     }
                 }

@@ -159,6 +159,7 @@ fn arb_math_node() -> impl Strategy<Value = MathNode> {
                 base: Box::new(base),
                 accent: '\u{0302}', // hat
                 position: AccentPosition::Above,
+                wide: false,
             }),
             // Styled
             1 => (arb_text_style(), inner.clone())

@@ -700,6 +700,7 @@ impl<'a> OmmlCompactParser<'a> {
             base,
             accent: accent_char,
             position: AccentPosition::Above,
+            wide: false,
         }))
     }
 

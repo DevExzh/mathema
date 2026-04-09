@@ -378,6 +378,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             base,
             accent,
             position,
+            ..
         } => {
             let tag = match position {
                 AccentPosition::Above => "mover",
@@ -855,6 +856,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             base,
             accent,
             position,
+            ..
         } => {
             let tag = match position {
                 AccentPosition::Above => "mover",

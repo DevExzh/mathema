@@ -191,6 +191,7 @@ pub enum CompactNode {
         base: NodeId,
         accent: char,
         position: AccentPosition,
+        wide: bool,
     },
 
     // ── Array ──────────────────────────────────────────────────────
@@ -493,12 +494,14 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             base,
             accent,
             position,
+            wide,
         } => {
             let base_id = push_math_node(arena, base);
             arena.push_node(CompactNode::Accent {
                 base: base_id,
                 accent: *accent,
                 position: *position,
+                wide: *wide,
             })
         },
 
@@ -724,10 +727,12 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             base,
             accent,
             position,
+            wide,
         } => MathNode::Accent {
             base: Box::new(reconstruct_node(arena, base)),
             accent,
             position,
+            wide,
         },
 
         CompactNode::Array {
@@ -992,6 +997,7 @@ mod tests {
                 base: id,
                 accent: '\u{0302}',
                 position: AccentPosition::Above,
+                wide: false,
             },
             CompactNode::Array {
                 col_aligns: span,
@@ -1163,6 +1169,7 @@ mod tests {
             base: Box::new(MathNode::Identifier("x".into())),
             accent: '\u{0302}',
             position: AccentPosition::Above,
+            wide: false,
         }]));
     }
 

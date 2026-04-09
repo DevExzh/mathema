@@ -1154,7 +1154,8 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             base,
             accent,
             position,
-        } => layout_accent(base, *accent, *position, ctx),
+            wide,
+        } => layout_accent(base, *accent, *position, *wide, ctx),
         MathNode::Array { columns, rows, arraystretch, add_jot } => layout_array(columns, rows, *arraystretch, *add_jot, ctx),
         MathNode::Phantom(content) => layout_phantom(content, ctx),
         MathNode::Boxed { content, bg_color, border_color } => layout_boxed(content, bg_color.as_deref(), border_color.as_deref(), ctx),
@@ -2709,6 +2710,7 @@ fn layout_accent(
     base: &MathNode,
     accent: char,
     position: AccentPosition,
+    wide: bool,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let base_box = layout_node(base, ctx);
@@ -2717,6 +2719,20 @@ fn layout_accent(
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
         let size = ctx.size();
+
+        // For non-wide accents (\hat, \tilde, \check), use a fixed-size accent
+        // instead of stretching to base width when the base is narrow (single char).
+        let effective_width = if !wide && (accent == '\u{0302}' || accent == '\u{0303}' || accent == '\u{030C}') {
+            let fixed = 0.45 * size;
+            if base_width < fixed * 1.2 {
+                fixed
+            } else {
+                base_width
+            }
+        } else {
+            base_width
+        };
+
         match accent {
             // Bar: horizontal rule across base width — thicker than fraction
             // rules so the accent is clearly visible.
@@ -2921,12 +2937,12 @@ fn layout_accent(
             },
             // Other stretchy accents: SVG path
             _ => {
-                let accent_h = stretchy_accent_height(accent, base_width, size);
+                let accent_h = stretchy_accent_height(accent, effective_width, size);
                 LayoutBox {
-                    width: base_width,
+                    width: effective_width,
                     height: accent_h,
                     depth: 0.0,
-                    kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+                    kind: BoxKind::SvgPath(stretchy_accent_path(accent, effective_width, accent_h)),
                 }
             },
         }
@@ -3457,7 +3473,8 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             base,
             accent,
             position,
-        } => layout_accent_c(arena, base, accent, position, ctx),
+            wide,
+        } => layout_accent_c(arena, base, accent, position, wide, ctx),
         CompactNode::Array {
             col_aligns,
             cells,
@@ -4882,6 +4899,7 @@ fn layout_accent_c(
     base: NodeId,
     accent: char,
     position: AccentPosition,
+    wide: bool,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let base_box = layout_node_c(arena, base, ctx);
@@ -4890,6 +4908,20 @@ fn layout_accent_c(
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
         let size = ctx.size();
+
+        // For non-wide accents (\hat, \tilde, \check), use a fixed-size accent
+        // instead of stretching to base width when the base is narrow (single char).
+        let effective_width = if !wide && (accent == '\u{0302}' || accent == '\u{0303}' || accent == '\u{030C}') {
+            let fixed = 0.45 * size;
+            if base_width < fixed * 1.2 {
+                fixed
+            } else {
+                base_width
+            }
+        } else {
+            base_width
+        };
+
         match accent {
             '\u{0304}' => {
                 let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
@@ -5032,12 +5064,12 @@ fn layout_accent_c(
                     kind: BoxKind::SvgPath(stretchy_accent_path('\u{0303}', base_width, accent_h)) }
             },
             _ => {
-                let accent_h = stretchy_accent_height(accent, base_width, size);
+                let accent_h = stretchy_accent_height(accent, effective_width, size);
                 LayoutBox {
-                    width: base_width,
+                    width: effective_width,
                     height: accent_h,
                     depth: 0.0,
-                    kind: BoxKind::SvgPath(stretchy_accent_path(accent, base_width, accent_h)),
+                    kind: BoxKind::SvgPath(stretchy_accent_path(accent, effective_width, accent_h)),
                 }
             },
         }
@@ -5816,7 +5848,7 @@ fn layout_node_arena(
         CompactNode::Sqrt(inner) => layout_sqrt_arena(ast, inner, None, arena, ctx),
         CompactNode::Root { index, radicand } => layout_sqrt_arena(ast, radicand, Some(index), arena, ctx),
         CompactNode::Nary { op, sub, sup, body, limits } => layout_nary_arena(ast, op, sub, sup, body, limits, arena, ctx),
-        CompactNode::Accent { base, accent, position } => layout_accent_arena(ast, base, accent, position, arena, ctx),
+        CompactNode::Accent { base, accent, position, wide } => layout_accent_arena(ast, base, accent, position, wide, arena, ctx),
         CompactNode::Array { col_aligns, cells, num_cols, arraystretch_pct, add_jot } => layout_array_arena(ast, col_aligns, cells, num_cols, arraystretch_pct, add_jot, arena, ctx),
         CompactNode::Phantom(inner) => layout_phantom_arena(ast, inner, arena, ctx),
         CompactNode::Boxed { content: inner, bg_color, border_color } => {
@@ -7511,6 +7543,7 @@ fn layout_accent_arena(
     base: NodeId,
     accent: char,
     position: AccentPosition,
+    wide: bool,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -7523,6 +7556,20 @@ fn layout_accent_arena(
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_id = if is_stretchy_accent(accent) && base_w > 0.0 {
         let size = ctx.size();
+
+        // For non-wide accents (\hat, \tilde, \check), use a fixed-size accent
+        // instead of stretching to base width when the base is narrow (single char).
+        let effective_width = if !wide && (accent == '\u{0302}' || accent == '\u{0303}' || accent == '\u{030C}') {
+            let fixed = 0.45 * size;
+            if base_w < fixed * 1.2 {
+                fixed
+            } else {
+                base_w
+            }
+        } else {
+            base_w
+        };
+
         match accent {
             '\u{0304}' => {
                 let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
@@ -7684,12 +7731,12 @@ fn layout_accent_arena(
                 })
             },
             _ => {
-                let accent_h = stretchy_accent_height(accent, base_w, size);
+                let accent_h = stretchy_accent_height(accent, effective_width, size);
                 arena.alloc(ArenaLayoutBox {
-                    width: base_w,
+                    width: effective_width,
                     height: accent_h,
                     depth: 0.0,
-                    kind: ArenaBoxKind::SvgPath(stretchy_accent_path(accent, base_w, accent_h)),
+                    kind: ArenaBoxKind::SvgPath(stretchy_accent_path(accent, effective_width, accent_h)),
                 })
             },
         }
@@ -8314,6 +8361,7 @@ mod tests {
             base: Box::new(MathNode::Identifier("x".into())),
             accent: '\u{0302}', // combining circumflex
             position: AccentPosition::Above,
+            wide: false,
         }]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         assert!(root.width > 0.0);
@@ -9388,6 +9436,7 @@ mod tests {
             base: Box::new(MathNode::Identifier("x".into())),
             accent: accent_char,
             position: AccentPosition::Above,
+            wide: false,
         }]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         // The x glyph height at size 1.0 is ~0.431 em
@@ -9421,6 +9470,7 @@ mod tests {
             base: Box::new(MathNode::Identifier("y".into())),
             accent: '\u{0304}',
             position: AccentPosition::Above,
+            wide: false,
         }]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         // Bar thickness (rule_thickness * 1.8, min 0.06) at size 1.0 =>
@@ -9462,6 +9512,7 @@ mod tests {
             base: Box::new(MathNode::Identifier("x".into())),
             accent: '\u{0302}',
             position: AccentPosition::Above,
+            wide: false,
         }]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         let base_h = 0.431;

@@ -125,6 +125,9 @@ pub enum MathNode {
         base: Box<MathNode>,
         accent: char,
         position: AccentPosition,
+        /// `true` for wide/stretchy accents like `\widehat`, `\widetilde`, `\widecheck`.
+        /// `false` for fixed-size accents like `\hat`, `\tilde`, `\check`.
+        wide: bool,
     },
 
     // === Tables/Arrays ===
@@ -727,6 +730,7 @@ mod tests {
                 base: Box::new(MathNode::Identifier("x".into())),
                 accent: '\u{0302}',
                 position: AccentPosition::Above,
+                wide: false,
             },
             MathNode::Array {
                 columns: vec![ColumnAlign::Center],

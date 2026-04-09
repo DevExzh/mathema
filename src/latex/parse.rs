@@ -1145,7 +1145,8 @@ impl LatexCompactParser {
             "sqrt" => self.parse_sqrt(input),
 
             // --- Accents (above) ---
-            "hat" | "widehat" => self.parse_accent(input, '\u{0302}', AccentPosition::Above),
+            "hat" => self.parse_accent(input, '\u{0302}', AccentPosition::Above),
+            "widehat" => self.parse_accent_wide(input, '\u{0302}', AccentPosition::Above, true),
             "bar" => self.parse_accent(input, '\u{0304}', AccentPosition::Above),
             "overline" => self.parse_overunder(input, true),
             "underline" | "underbar" => self.parse_overunder(input, false),
@@ -1154,9 +1155,11 @@ impl LatexCompactParser {
             "ddot" => self.parse_accent(input, '\u{0308}', AccentPosition::Above),
             "dddot" => self.parse_accent(input, '\u{20DB}', AccentPosition::Above),
             "ddddot" => self.parse_accent(input, '\u{20DC}', AccentPosition::Above),
-            "tilde" | "widetilde" => self.parse_accent(input, '\u{0303}', AccentPosition::Above),
+            "tilde" => self.parse_accent(input, '\u{0303}', AccentPosition::Above),
+            "widetilde" => self.parse_accent_wide(input, '\u{0303}', AccentPosition::Above, true),
             "breve" => self.parse_accent(input, '\u{0306}', AccentPosition::Above),
-            "check" | "widecheck" => self.parse_accent(input, '\u{030C}', AccentPosition::Above),
+            "check" => self.parse_accent(input, '\u{030C}', AccentPosition::Above),
+            "widecheck" => self.parse_accent_wide(input, '\u{030C}', AccentPosition::Above, true),
             "acute" => self.parse_accent(input, '\u{0301}', AccentPosition::Above),
             "grave" => self.parse_accent(input, '\u{0300}', AccentPosition::Above),
             "mathring" => self.parse_accent(input, '\u{030A}', AccentPosition::Above),
@@ -1870,6 +1873,16 @@ impl LatexCompactParser {
         accent_char: char,
         position: AccentPosition,
     ) -> IResult<&'a str, NodeId> {
+        self.parse_accent_wide(input, accent_char, position, false)
+    }
+
+    fn parse_accent_wide<'a>(
+        &mut self,
+        input: &'a str,
+        accent_char: char,
+        position: AccentPosition,
+        wide: bool,
+    ) -> IResult<&'a str, NodeId> {
         let (input, base_id) = self.parse_required_group(input)?;
         Ok((
             input,
@@ -1877,6 +1890,7 @@ impl LatexCompactParser {
                 base: base_id,
                 accent: accent_char,
                 position,
+                wide,
             }),
         ))
     }

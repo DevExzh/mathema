@@ -321,7 +321,7 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
         MathNode::Accent {
             base,
             accent,
-            position: _,
+            ..
         } => {
             start(w, "m:acc")?;
             start(w, "m:accPr")?;
@@ -749,7 +749,7 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
         CompactNode::Accent {
             base,
             accent,
-            position: _,
+            ..
         } => {
             start(w, "m:acc")?;
             start(w, "m:accPr")?;
@@ -1221,7 +1221,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Accent {
             base,
             accent,
-            position: _,
+            ..
         } => {
             f_start(buf, "m:acc");
             f_start(buf, "m:accPr");
@@ -1384,6 +1384,7 @@ mod tests {
             base: Box::new(MathNode::Identifier("x".into())),
             accent: '\u{0302}',
             position: AccentPosition::Above,
+            wide: false,
         });
         assert!(output.contains("<m:acc>"));
     }

@@ -1170,6 +1170,7 @@ impl<'a> MtefCompactParser<'a> {
             base,
             accent: accent_char,
             position,
+            wide: false,
         })
     }
 }
