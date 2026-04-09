@@ -775,7 +775,11 @@ fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
 fn katex_accent_scaled(paths: &[KatexAccentPath; 4], w: f64, h: f64) -> String {
     let tier = katex_accent_tier(w);
     let data = &paths[tier];
-    let sx = w / data.viewbox_w;
+    // KaTeX SVG accent paths have internal whitespace margins — the visible
+    // shape occupies ~87% of the viewbox width. Scale wider to compensate
+    // so the accent visually spans the full base width.
+    let compensation = 1.15; // 1/0.87 ≈ 1.15
+    let sx = (w * compensation) / data.viewbox_w;
     let sy = h / data.viewbox_h;
     let scaled = scale_svg_path(data.path, sx, sy);
     format!("F:{scaled}")
