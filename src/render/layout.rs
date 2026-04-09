@@ -2937,7 +2937,8 @@ fn layout_accent(
                     kind: BoxKind::HBox { children },
                 }
             },
-            // Tilde below / utilde (U+0330): reuse tilde path
+            // Tilde below / utilde (U+0330): always stretchy (no fixed-size variant),
+            // so use base_width directly instead of effective_width.
             '\u{0330}' => {
                 let accent_h = stretchy_accent_height('\u{0303}', base_width, size);
                 LayoutBox {
@@ -5069,7 +5070,8 @@ fn layout_accent_c(
                 LayoutBox { width: base_width, height: dot_size, depth: 0.0,
                     kind: BoxKind::HBox { children } }
             },
-            // Tilde below / utilde (U+0330)
+            // Tilde below / utilde (U+0330): always stretchy (no fixed-size variant),
+            // so use base_width directly instead of effective_width.
             '\u{0330}' => {
                 let accent_h = stretchy_accent_height('\u{0303}', base_width, size);
                 LayoutBox { width: base_width, height: accent_h, depth: 0.0,
@@ -7734,7 +7736,8 @@ fn layout_accent_arena(
                 let children = arena.finish_children(cs);
                 arena.alloc(ArenaLayoutBox { width: base_w, height: dot_size, depth: 0.0, kind: ArenaBoxKind::HBox { children } })
             },
-            // Tilde below / utilde (U+0330)
+            // Tilde below / utilde (U+0330): always stretchy (no fixed-size variant),
+            // so use base_w directly instead of effective_width.
             '\u{0330}' => {
                 let accent_h = stretchy_accent_height('\u{0303}', base_w, size);
                 arena.alloc(ArenaLayoutBox {

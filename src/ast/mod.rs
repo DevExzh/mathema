@@ -127,6 +127,7 @@ pub enum MathNode {
         position: AccentPosition,
         /// `true` for wide/stretchy accents like `\widehat`, `\widetilde`, `\widecheck`.
         /// `false` for fixed-size accents like `\hat`, `\tilde`, `\check`.
+        #[cfg_attr(feature = "serde", serde(default))]
         wide: bool,
     },
 
