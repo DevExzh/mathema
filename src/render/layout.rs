@@ -931,20 +931,23 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
         // Multi-segment cubic bezier for smooth wing-tip-wing shape (KaTeX style)
         "\u{23DE}" => {
             let mid = w / 2.0;
+            // Vertical offset so curves approach the center tip at an angle (V-cusp)
+            let cusp_dy = (h * 0.08).max(0.015);
             // Outer curve control points — wing from bottom up to sharp center tip
             // Left wing: gentle S-curve from (0,h) up to (mid,0)
             let c1x = w * 0.10;    // first control: near left edge
             let c1y = h * 0.16;    // pulled high (near top)
             let c2x = mid * 0.55;  // second control: approaching center
-            let c2y = 0.0;         // at top
+            let c2y = cusp_dy;     // offset below tip for V-cusp angle
             // Right wing mirrors left
             let c3x = w - mid * 0.55;
-            let c3y = 0.0;
+            let c3y = cusp_dy;     // offset below tip for V-cusp angle
             let c4x = w - w * 0.10;
             let c4y = h * 0.16;
             // Inner curve (offset inward by thickness t)
             let ih = h - t; // inner baseline
             let it = t;     // inner tip y
+            let inner_cusp = it + cusp_dy; // inner tip offset for V-cusp
             let ic1y = h * 0.16 + t * 0.2;
             let ic4y = ic1y;
             format!(
@@ -952,33 +955,37 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
                  C{c1x:.4},{c1y:.4} {c2x:.4},{c2y:.4} {mid:.4},0 \
                  C{c3x:.4},{c3y:.4} {c4x:.4},{c4y:.4} {w:.4},{h:.4} \
                  L{w:.4},{ih:.4} \
-                 C{c4x:.4},{ic4y:.4} {c3x:.4},{it:.4} {mid:.4},{it:.4} \
-                 C{c2x:.4},{it:.4} {c1x:.4},{ic1y:.4} 0,{ih:.4} \
+                 C{c4x:.4},{ic4y:.4} {c3x:.4},{inner_cusp:.4} {mid:.4},{it:.4} \
+                 C{c2x:.4},{inner_cusp:.4} {c1x:.4},{ic1y:.4} 0,{ih:.4} \
                  Z",
                 h = h, mid = mid, w = w,
                 c1x = c1x, c1y = c1y, c2x = c2x, c2y = c2y,
                 c3x = c3x, c3y = c3y, c4x = c4x, c4y = c4y,
-                ih = ih, it = it, ic1y = ic1y, ic4y = ic4y,
+                ih = ih, it = it, inner_cusp = inner_cusp,
+                ic1y = ic1y, ic4y = ic4y,
             )
         },
         // Underbrace ⏟ — filled curly brace below, tip points down
         // Multi-segment cubic bezier for smooth wing-tip-wing shape (KaTeX style)
         "\u{23DF}" => {
             let mid = w / 2.0;
+            // Vertical offset so curves approach the center tip at an angle (V-cusp)
+            let cusp_dy = (h * 0.08).max(0.015);
             // Outer curve control points — wing from top down to sharp center tip
             // Left wing: S-curve from (0,0) down to (mid,h)
             let c1x = w * 0.10;
-            let c1y = h - h * 0.16;  // pulled low (near bottom)
+            let c1y = h - h * 0.16;      // pulled low (near bottom)
             let c2x = mid * 0.55;
-            let c2y = h;             // at bottom
+            let c2y = h - cusp_dy;        // offset above tip for V-cusp angle
             // Right wing mirrors left
             let c3x = w - mid * 0.55;
-            let c3y = h;
+            let c3y = h - cusp_dy;        // offset above tip for V-cusp angle
             let c4x = w - w * 0.10;
             let c4y = h - h * 0.16;
             // Inner curve (offset inward by thickness t)
             let it = t;      // inner baseline
             let ih = h - t;  // inner tip y
+            let inner_cusp = ih - cusp_dy; // inner tip offset for V-cusp
             let ic1y = h - h * 0.16 - t * 0.2;
             let ic4y = ic1y;
             format!(
@@ -986,13 +993,14 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
                  C{c1x:.4},{c1y:.4} {c2x:.4},{c2y:.4} {mid:.4},{h:.4} \
                  C{c3x:.4},{c3y:.4} {c4x:.4},{c4y:.4} {w:.4},0 \
                  L{w:.4},{it:.4} \
-                 C{c4x:.4},{ic4y:.4} {c3x:.4},{ih:.4} {mid:.4},{ih:.4} \
-                 C{c2x:.4},{ih:.4} {c1x:.4},{ic1y:.4} 0,{it:.4} \
+                 C{c4x:.4},{ic4y:.4} {c3x:.4},{inner_cusp:.4} {mid:.4},{ih:.4} \
+                 C{c2x:.4},{inner_cusp:.4} {c1x:.4},{ic1y:.4} 0,{it:.4} \
                  Z",
                 h = h, mid = mid, w = w,
                 c1x = c1x, c1y = c1y, c2x = c2x, c2y = c2y,
                 c3x = c3x, c3y = c3y, c4x = c4x, c4y = c4y,
-                it = it, ih = ih, ic1y = ic1y, ic4y = ic4y,
+                it = it, ih = ih, inner_cusp = inner_cusp,
+                ic1y = ic1y, ic4y = ic4y,
             )
         },
         // Overbracket ⎴ — square bracket above (filled)
