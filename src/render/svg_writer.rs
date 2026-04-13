@@ -24,14 +24,20 @@ pub fn emit_svg_with_fonts(
     let height_px = (root.height + root.depth) * em;
     let depth_px = root.depth * em;
 
+    // Small padding so paths are not clipped at the exact bounding box edge
+    // (matches the padding in emit.rs).
+    let pad = 0.08 * em;
+
     let mut svg = String::with_capacity(4096);
 
     let _ = write!(
         svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.3}" height="{height:.3}" viewBox="0 0 {width:.3} {height:.3}" style="vertical-align: -{depth:.3}px">"#,
-        width = width_px,
-        height = height_px,
-        depth = depth_px,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3}" height="{h:.3}" viewBox="{vx:.3} {vy:.3} {w:.3} {h:.3}" style="vertical-align: -{d:.3}px">"#,
+        w = width_px + 2.0 * pad,
+        h = height_px + 2.0 * pad,
+        vx = -pad,
+        vy = -pad,
+        d = depth_px + pad,
     );
 
     emit_defs(&mut svg, glyphs);
@@ -134,16 +140,29 @@ fn emit_box_embedded(
             if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
                 let tx = x;
                 let ty = y - layout.height * em;
-                let _ = write!(
-                    svg,
-                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
-                    tx = tx,
-                    ty = ty,
-                    s = em,
-                    path = XmlAttrEscape(&dp.path_data),
-                    color = XmlAttrEscape(&options.fg_color),
-                    sw = dp.stroke_width,
-                );
+                // "F:" prefix indicates a filled path (parentheses, braces)
+                if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
+                    let _ = write!(
+                        svg,
+                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
+                        tx = tx,
+                        ty = ty,
+                        s = em,
+                        path = XmlAttrEscape(fill_path),
+                        color = XmlAttrEscape(&options.fg_color),
+                    );
+                } else {
+                    let _ = write!(
+                        svg,
+                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
+                        tx = tx,
+                        ty = ty,
+                        s = em,
+                        path = XmlAttrEscape(&dp.path_data),
+                        color = XmlAttrEscape(&options.fg_color),
+                        sw = dp.stroke_width,
+                    );
+                }
             } else {
                 // Fallback to glyph rendering
                 emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
@@ -153,27 +172,36 @@ fn emit_box_embedded(
         BoxKind::SvgPath(path) => {
             let tx = x;
             let ty = y - layout.height * em;
-            let _ = write!(
-                svg,
-                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
-                tx = tx,
-                ty = ty,
-                s = em,
-                path = XmlAttrEscape(path),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            // "F:" prefix indicates a filled path (KaTeX-style accents, arrows)
+            if let Some(fill_path) = path.strip_prefix("F:") {
+                let _ = write!(
+                    svg,
+                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
+                    tx = tx,
+                    ty = ty,
+                    s = em,
+                    path = XmlAttrEscape(fill_path),
+                    color = XmlAttrEscape(&options.fg_color),
+                );
+            } else {
+                let _ = write!(
+                    svg,
+                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
+                    tx = tx,
+                    ty = ty,
+                    s = em,
+                    path = XmlAttrEscape(path),
+                    color = XmlAttrEscape(&options.fg_color),
+                );
+            }
         }
 
         BoxKind::Color { color, child } => {
-            let _ = write!(
-                svg,
-                r#"<g fill="{color}" stroke="{color}">"#,
-                color = XmlAttrEscape(color)
-            );
+            let mut color_opts = options.clone();
+            color_opts.fg_color = color.clone();
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
-            svg.push_str("</g>");
+            emit_box_embedded(svg, &child.layout, cx, cy, em, &color_opts, glyphs);
         }
 
         BoxKind::Phantom => {}
@@ -184,15 +212,17 @@ fn emit_box_embedded(
             let ry = y - layout.height * em;
             let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
             let fill_color = bg_color.as_deref().unwrap_or("none");
+            let sw = 0.04 * em; // proportional stroke width
             let _ = write!(
                 svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="1"/>"#,
+                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="{sw:.3}"/>"#,
                 x = x,
                 ry = ry,
                 w = w_px,
                 h = h_px,
                 stroke = XmlAttrEscape(stroke_color),
                 fill = XmlAttrEscape(fill_color),
+                sw = sw,
             );
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
@@ -214,6 +244,24 @@ fn emit_glyph(
     glyphs: &GlyphSet,
     italic: bool,
 ) {
+    // Try actual Math Italic glyph first when italic
+    if italic {
+        if let Some(italic_ch) = super::layout::math_italic_codepoint(ch) {
+            if glyphs.glyphs.contains_key(&italic_ch) {
+                let scale = size * em / glyphs.font_info.units_per_em;
+                let _ = write!(
+                    svg,
+                    r##"<use href="#g{cp}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
+                    cp = italic_ch as u32,
+                    x = x,
+                    y = y,
+                    s = scale,
+                    color = XmlAttrEscape(&options.fg_color),
+                );
+                return;
+            }
+        }
+    }
     if glyphs.glyphs.contains_key(&ch) {
         let scale = size * em / glyphs.font_info.units_per_em;
         if italic {
@@ -282,14 +330,20 @@ pub fn emit_svg_with_fonts_arena(
     let height_px = (root_box.height + root_box.depth) * em;
     let depth_px = root_box.depth * em;
 
+    // Small padding so paths are not clipped at the exact bounding box edge
+    // (matches the padding in emit.rs).
+    let pad = 0.08 * em;
+
     let mut svg = String::with_capacity(4096);
 
     let _ = write!(
         svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.3}" height="{height:.3}" viewBox="0 0 {width:.3} {height:.3}" style="vertical-align: -{depth:.3}px">"#,
-        width = width_px,
-        height = height_px,
-        depth = depth_px,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3}" height="{h:.3}" viewBox="{vx:.3} {vy:.3} {w:.3} {h:.3}" style="vertical-align: -{d:.3}px">"#,
+        w = width_px + 2.0 * pad,
+        h = height_px + 2.0 * pad,
+        vx = -pad,
+        vy = -pad,
+        d = depth_px + pad,
     );
 
     emit_defs(&mut svg, glyphs);
@@ -372,16 +426,29 @@ fn emit_box_arena_embedded(
             if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
                 let tx = x;
                 let ty = y - layout.height * em;
-                let _ = write!(
-                    svg,
-                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
-                    tx = tx,
-                    ty = ty,
-                    s = em,
-                    path = XmlAttrEscape(&dp.path_data),
-                    color = XmlAttrEscape(&options.fg_color),
-                    sw = dp.stroke_width,
-                );
+                // "F:" prefix indicates a filled path (parentheses, braces)
+                if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
+                    let _ = write!(
+                        svg,
+                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
+                        tx = tx,
+                        ty = ty,
+                        s = em,
+                        path = XmlAttrEscape(fill_path),
+                        color = XmlAttrEscape(&options.fg_color),
+                    );
+                } else {
+                    let _ = write!(
+                        svg,
+                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
+                        tx = tx,
+                        ty = ty,
+                        s = em,
+                        path = XmlAttrEscape(&dp.path_data),
+                        color = XmlAttrEscape(&options.fg_color),
+                        sw = dp.stroke_width,
+                    );
+                }
             } else {
                 // Fallback to glyph rendering
                 emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
@@ -391,25 +458,34 @@ fn emit_box_arena_embedded(
         ArenaBoxKind::SvgPath(path) => {
             let tx = x;
             let ty = y - layout.height * em;
-            let _ = write!(
-                svg,
-                r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
-                tx = tx,
-                ty = ty,
-                s = em,
-                path = XmlAttrEscape(path),
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            // "F:" prefix indicates a filled path (KaTeX-style accents, arrows)
+            if let Some(fill_path) = path.strip_prefix("F:") {
+                let _ = write!(
+                    svg,
+                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
+                    tx = tx,
+                    ty = ty,
+                    s = em,
+                    path = XmlAttrEscape(fill_path),
+                    color = XmlAttrEscape(&options.fg_color),
+                );
+            } else {
+                let _ = write!(
+                    svg,
+                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
+                    tx = tx,
+                    ty = ty,
+                    s = em,
+                    path = XmlAttrEscape(path),
+                    color = XmlAttrEscape(&options.fg_color),
+                );
+            }
         }
 
         ArenaBoxKind::Color { color, child } => {
-            let _ = write!(
-                svg,
-                r#"<g fill="{color}" stroke="{color}">"#,
-                color = XmlAttrEscape(color)
-            );
-            emit_box_arena_embedded(svg, arena, *child, x, y, em, options, glyphs);
-            svg.push_str("</g>");
+            let mut color_opts = options.clone();
+            color_opts.fg_color = color.clone();
+            emit_box_arena_embedded(svg, arena, *child, x, y, em, &color_opts, glyphs);
         }
 
         ArenaBoxKind::Phantom => {}
@@ -420,15 +496,17 @@ fn emit_box_arena_embedded(
             let ry = y - layout.height * em;
             let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
             let fill_color = bg_color.as_deref().unwrap_or("none");
+            let sw = 0.04 * em; // proportional stroke width
             let _ = write!(
                 svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="1"/>"#,
+                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="{sw:.3}"/>"#,
                 x = x,
                 ry = ry,
                 w = w_px,
                 h = h_px,
                 stroke = XmlAttrEscape(stroke_color),
                 fill = XmlAttrEscape(fill_color),
+                sw = sw,
             );
             emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
         }
@@ -479,9 +557,10 @@ mod tests {
             svg.contains("<use"),
             "should use <use> to reference glyph"
         );
+        // 'x' is italic in math mode, so it uses Math Italic U+1D465 (119909)
         assert!(
-            svg.contains("href=\"#g120\""),
-            "should reference glyph definition"
+            svg.contains("href=\"#g119909\""),
+            "should reference Math Italic glyph definition"
         );
     }
 
@@ -523,16 +602,17 @@ mod tests {
         let defs_start = svg.find("<defs>").unwrap();
         let defs_end = svg.find("</defs>").unwrap();
         let defs_section = &svg[defs_start..defs_end];
+        // 'x' is italic in math mode → Math Italic U+1D465 (119909)
         assert_eq!(
-            defs_section.matches("g120").count(),
+            defs_section.matches("g119909").count(),
             1,
-            "glyph 'x' should be defined exactly once in defs"
+            "Math Italic glyph 'x' should be defined exactly once in defs"
         );
         let body = &svg[defs_end..];
         assert_eq!(
-            body.matches("#g120").count(),
+            body.matches("#g119909").count(),
             2,
-            "'x' should be referenced twice"
+            "Math Italic 'x' should be referenced twice"
         );
     }
 

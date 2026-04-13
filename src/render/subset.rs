@@ -24,8 +24,13 @@ pub fn collect_chars(root: &LayoutBox) -> HashSet<char> {
 
 fn collect_chars_inner(node: &LayoutBox, chars: &mut HashSet<char>) {
     match &node.kind {
-        BoxKind::Glyph { ch, .. } => {
+        BoxKind::Glyph { ch, italic, .. } => {
             chars.insert(*ch);
+            if *italic {
+                if let Some(italic_ch) = super::layout::math_italic_codepoint(*ch) {
+                    chars.insert(italic_ch);
+                }
+            }
         }
         BoxKind::Delimiter { ch, target_height } => {
             // Only collect the char if it won't be rendered as an SVG path
@@ -61,8 +66,13 @@ pub fn collect_chars_arena(arena: &LayoutArena, root: LayoutBoxId) -> HashSet<ch
 fn collect_chars_arena_inner(arena: &LayoutArena, id: LayoutBoxId, chars: &mut HashSet<char>) {
     let node = arena.get(id);
     match &node.kind {
-        ArenaBoxKind::Glyph { ch, .. } => {
+        ArenaBoxKind::Glyph { ch, italic, .. } => {
             chars.insert(*ch);
+            if *italic {
+                if let Some(italic_ch) = super::layout::math_italic_codepoint(*ch) {
+                    chars.insert(italic_ch);
+                }
+            }
         }
         ArenaBoxKind::Delimiter { ch, target_height } => {
             // Only collect the char if it won't be rendered as an SVG path
@@ -208,7 +218,7 @@ mod tests {
         let options = RenderOptions::default();
         let root = layout_expr(&expr, MathStyle::Text, &options);
         let chars = collect_chars(&root);
-        assert_eq!(chars.len(), 2); // 'x' and '+'
+        assert_eq!(chars.len(), 3); // 'x', italic 'x' (U+1D465), and '+'
     }
 
     #[test]

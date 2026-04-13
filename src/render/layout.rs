@@ -1,6 +1,7 @@
 use smallvec::SmallVec;
 use super::RenderOptions;
 use super::metrics::{self, GlyphMetrics};
+use super::math_table;
 use super::params::TexParams;
 use super::spacing::{self, AtomType};
 use super::style::MathStyle;
@@ -129,7 +130,11 @@ impl LayoutBox {
 /// (e.g. \cdots, \ddots) rather than placed at the baseline.
 #[inline]
 fn is_axis_centered_char(ch: char) -> bool {
-    matches!(ch, '\u{22EF}' | '\u{22F1}')  // ⋯ (cdots), ⋱ (ddots)
+    matches!(ch,
+        '\u{22EF}' | '\u{22F1}' |  // ⋯ (cdots), ⋱ (ddots)
+        '\u{22EE}' |                // ⋮ (vdots)
+        '\u{22F0}'                  // ⋰ (iddots / reverse ddots)
+    )
 }
 
 /// Determine whether a single character should be rendered italic in math mode.
@@ -150,6 +155,31 @@ fn is_math_italic_char(ch: char) -> bool {
     }
 }
 
+/// Map a character to its Mathematical Italic Unicode codepoint.
+/// Returns `None` for non-mappable characters (digits, symbols, Greek uppercase).
+#[inline]
+pub(crate) fn math_italic_codepoint(ch: char) -> Option<char> {
+    match ch {
+        'A'..='Z' => char::from_u32(0x1D434 + (ch as u32 - b'A' as u32)),
+        'h' => Some('\u{210E}'),
+        'a'..='z' => char::from_u32(0x1D44E + (ch as u32 - b'a' as u32)),
+        // Greek lowercase α-ρ → U+1D6FC-U+1D70C
+        '\u{03B1}'..='\u{03C1}' => char::from_u32(0x1D6FC + (ch as u32 - 0x03B1)),
+        // Greek ς (final sigma) → U+1D70D
+        '\u{03C2}' => char::from_u32(0x1D70D),
+        // Greek σ-ω → U+1D70E-U+1D714
+        '\u{03C3}'..='\u{03C9}' => char::from_u32(0x1D70E + (ch as u32 - 0x03C3)),
+        // Greek variants: ϵ ϑ ϰ ϕ ϱ ϖ
+        '\u{03F5}' => char::from_u32(0x1D716), // ϵ → italic epsilon
+        '\u{03D1}' => char::from_u32(0x1D717), // ϑ → italic theta
+        '\u{03F0}' => char::from_u32(0x1D718), // ϰ → italic kappa
+        '\u{03D5}' => char::from_u32(0x1D719), // ϕ → italic phi
+        '\u{03F1}' => char::from_u32(0x1D71A), // ϱ → italic rho
+        '\u{03D6}' => char::from_u32(0x1D71B), // ϖ → italic pi
+        _ => None,
+    }
+}
+
 /// Wrap a glyph LayoutBox so it is centered on the math axis.
 /// The shift moves the glyph's vertical center to `axis_height * size`.
 fn center_glyph_on_axis(glyph: LayoutBox, ctx: &LayoutCtx) -> LayoutBox {
@@ -158,7 +188,7 @@ fn center_glyph_on_axis(glyph: LayoutBox, ctx: &LayoutCtx) -> LayoutBox {
     let glyph_center = (glyph.height - glyph.depth) / 2.0;
     let shift = axis - glyph_center;
     let glyph_w = glyph.width;
-    let new_height = (glyph.height + shift).max(glyph.height);
+    let new_height = (glyph.height + shift).max(0.0);
     let new_depth = (glyph.depth - shift).max(0.0);
     LayoutBox {
         width: glyph_w,
@@ -192,6 +222,10 @@ const ALIGN_INTERNAL_GAP_EM: f64 = 0.0;
 /// Column gap between rl-pairs in aligned environments (L→R boundary).
 /// KaTeX uses 2 * arraycolsep = 10pt ≈ 1.0em; we use the same.
 const ALIGN_PAIR_GAP_EM: f64 = 1.0;
+
+/// TeX \scriptspace: 0.5pt at 10pt = 0.05em.
+/// Added after super/subscripts per TeXBook Rule 18.
+const SCRIPT_SPACE: f64 = 0.05;
 
 /// Detect whether columns follow an aligned `[R, L, R, L, ...]` pattern and
 /// return `true` if so.  Used to switch from a uniform column gap to the
@@ -244,7 +278,9 @@ fn is_large_op(node: &MathNode) -> bool {
 /// or Operator with Default limits in display mode.
 fn wants_limits_above_below(node: &MathNode, style: MathStyle) -> bool {
     match node {
-        MathNode::Symbol(SymbolKind::LargeOp, _) => style.is_display(),
+        MathNode::Symbol(SymbolKind::LargeOp, s) => {
+            style.is_display() && !s.chars().next().is_some_and(is_nolimits_op)
+        }
         MathNode::Operator(op) => match op.limit_style {
             LimitStyle::AboveBelow => true,
             LimitStyle::Default => style.is_display(),
@@ -280,7 +316,9 @@ fn large_op_char_c(arena: &AstArena, id: NodeId) -> Option<char> {
 /// or Operator with Default limits in display mode.
 fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
     match *arena.node(id) {
-        CompactNode::Symbol(SymbolKind::LargeOp, _) => style.is_display(),
+        CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
+            style.is_display() && !arena.str_val(sid).chars().next().is_some_and(is_nolimits_op)
+        }
         CompactNode::Operator { limits, .. } => match limits {
             LimitStyle::AboveBelow => true,
             LimitStyle::Default => style.is_display(),
@@ -553,14 +591,24 @@ fn stretchy_arrow_svg(ch: char, w: f64, em: f64) -> String {
             let ax = w - tip;
             format!("F:M0,{t1:.4} L0,{t2:.4} L{bw:.4},{t2:.4} L{bw:.4},{y1:.4} L{ax:.4},{y1:.4} L{ax:.4},{t2b:.4} L{w:.4},{mid:.4} L{ax:.4},{t1b:.4} L{ax:.4},{y0:.4} L{bw:.4},{y0:.4} L{bw:.4},{t1:.4} Z", bw = bar_w, y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw, t1b = mid_y - tw, t2b = mid_y + tw)
         }
-        // ↪ hookrightarrow: shaft + right arrowhead (simplified)
+        // ↪ hookrightarrow: shaft + right arrowhead + downward hook at tail
         '\u{21AA}' => {
             let ax = w - tip;
-            format!("F:M0,{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{y1:.4} L0,{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+            let hx = t * 3.0; // hook offset from left edge
+            let hr = t * 4.0; // hook depth below shaft
+            format!("F:M{hx:.4},{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{y1:.4} L{hx:.4},{y1:.4} C0,{cb:.4} 0,{ct:.4} {hx:.4},{y0:.4} Z",
+                y0 = mid_y - t, y1 = mid_y + t, ax = ax, w = w, mid = mid_y,
+                t1 = mid_y - tw, t2 = mid_y + tw, hx = hx,
+                cb = mid_y + t + hr, ct = mid_y - t)
         }
-        // ↩ hookleftarrow (simplified)
+        // ↩ hookleftarrow: shaft + left arrowhead + downward hook at tail
         '\u{21A9}' => {
-            format!("F:M{w:.4},{y0:.4} L{tip:.4},{y0:.4} L{tip:.4},{t1:.4} L0,{mid:.4} L{tip:.4},{t2:.4} L{tip:.4},{y1:.4} L{w:.4},{y1:.4} Z", y0 = mid_y - t, y1 = mid_y + t, tip = tip, w = w, mid = mid_y, t1 = mid_y - tw, t2 = mid_y + tw)
+            let hx = w - t * 3.0; // hook offset from right edge
+            let hr = t * 4.0;
+            format!("F:M{hx:.4},{y0:.4} L{tip:.4},{y0:.4} L{tip:.4},{t1:.4} L0,{mid:.4} L{tip:.4},{t2:.4} L{tip:.4},{y1:.4} L{hx:.4},{y1:.4} C{w:.4},{cb:.4} {w:.4},{ct:.4} {hx:.4},{y0:.4} Z",
+                y0 = mid_y - t, y1 = mid_y + t, tip = tip, w = w, mid = mid_y,
+                t1 = mid_y - tw, t2 = mid_y + tw, hx = hx,
+                cb = mid_y + t + hr, ct = mid_y - t)
         }
         // ⇌ rightleftharpoons: upper right harpoon + lower left harpoon
         '\u{21CC}' => {
@@ -780,6 +828,16 @@ fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
                     i += 1;
                 }
             }
+            // Scientific notation (e.g. 1.5e-3)
+            if i < len && (bytes[i] == b'e' || bytes[i] == b'E') {
+                i += 1;
+                if i < len && (bytes[i] == b'-' || bytes[i] == b'+') {
+                    i += 1;
+                }
+                while i < len && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
             let num_str = &path[start..i];
             if let Ok(val) = num_str.parse::<f64>() {
                 let cmd_upper = cmd.to_ascii_uppercase();
@@ -989,30 +1047,30 @@ fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
 /// Coordinates are in em units with (0,0) at top-left.
 fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
     // Thickness for filled brace shapes (proportion of height)
-    let t = (h * 0.18).max(0.02);
+    // KaTeX's brace glyphs have ~12-15% visible stroke weight relative to height
+    let t = (h * 0.22).max(0.03);
     match sym {
         // Overbrace ⏞ — filled curly brace above, tip points up
-        // Multi-segment cubic bezier for smooth wing-tip-wing shape (KaTeX style)
+        // Three-segment shape: left wing → sharp center cusp → right wing
         "\u{23DE}" => {
             let mid = w / 2.0;
-            // Vertical offset so curves approach the center tip at an angle (V-cusp)
-            let cusp_dy = (h * 0.08).max(0.015);
-            // Outer curve control points — wing from bottom up to sharp center tip
-            // Left wing: gentle S-curve from (0,h) up to (mid,0)
-            let c1x = w * 0.10;    // first control: near left edge
-            let c1y = h * 0.16;    // pulled high (near top)
-            let c2x = mid * 0.55;  // second control: approaching center
-            let c2y = cusp_dy;     // offset below tip for V-cusp angle
+            // Cusp depth: how far the tip extends above the wing baseline
+            let cusp_dy = (h * 0.12).max(0.02);
+            // Outer curve control points — wings from bottom up to sharp center tip
+            let c1x = w * 0.08;     // first control: near left edge
+            let c1y = h * 0.12;     // pulled high (near top)
+            let c2x = mid * 0.50;   // second control: approaching center
+            let c2y = cusp_dy;      // offset below tip for V-cusp angle
             // Right wing mirrors left
-            let c3x = w - mid * 0.55;
-            let c3y = cusp_dy;     // offset below tip for V-cusp angle
-            let c4x = w - w * 0.10;
-            let c4y = h * 0.16;
+            let c3x = w - mid * 0.50;
+            let c3y = cusp_dy;
+            let c4x = w - w * 0.08;
+            let c4y = h * 0.12;
             // Inner curve (offset inward by thickness t)
-            let ih = h - t; // inner baseline
-            let it = t;     // inner tip y
-            let inner_cusp = it + cusp_dy; // inner tip offset for V-cusp
-            let ic1y = h * 0.16 + t * 0.2;
+            let ih = h - t;          // inner baseline
+            let it = t;              // inner tip y
+            let inner_cusp = it + cusp_dy;
+            let ic1y = h * 0.12 + t * 0.3;
             let ic4y = ic1y;
             format!(
                 "F:M0,{h:.4} \
@@ -1030,27 +1088,21 @@ fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
             )
         },
         // Underbrace ⏟ — filled curly brace below, tip points down
-        // Multi-segment cubic bezier for smooth wing-tip-wing shape (KaTeX style)
         "\u{23DF}" => {
             let mid = w / 2.0;
-            // Vertical offset so curves approach the center tip at an angle (V-cusp)
-            let cusp_dy = (h * 0.08).max(0.015);
-            // Outer curve control points — wing from top down to sharp center tip
-            // Left wing: S-curve from (0,0) down to (mid,h)
-            let c1x = w * 0.10;
-            let c1y = h - h * 0.16;      // pulled low (near bottom)
-            let c2x = mid * 0.55;
-            let c2y = h - cusp_dy;        // offset above tip for V-cusp angle
-            // Right wing mirrors left
-            let c3x = w - mid * 0.55;
-            let c3y = h - cusp_dy;        // offset above tip for V-cusp angle
-            let c4x = w - w * 0.10;
-            let c4y = h - h * 0.16;
-            // Inner curve (offset inward by thickness t)
-            let it = t;      // inner baseline
-            let ih = h - t;  // inner tip y
-            let inner_cusp = ih - cusp_dy; // inner tip offset for V-cusp
-            let ic1y = h - h * 0.16 - t * 0.2;
+            let cusp_dy = (h * 0.12).max(0.02);
+            let c1x = w * 0.08;
+            let c1y = h - h * 0.12;
+            let c2x = mid * 0.50;
+            let c2y = h - cusp_dy;
+            let c3x = w - mid * 0.50;
+            let c3y = h - cusp_dy;
+            let c4x = w - w * 0.08;
+            let c4y = h - h * 0.12;
+            let it = t;
+            let ih = h - t;
+            let inner_cusp = ih - cusp_dy;
+            let ic1y = h - h * 0.12 - t * 0.3;
             let ic4y = ic1y;
             format!(
                 "F:M0,0 \
@@ -1113,7 +1165,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         return LayoutBox::kern(0.0);
     }
 
-    let mut children = Vec::new();
+    let mut children = Vec::with_capacity(nodes.len() * 2);
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;
@@ -1233,7 +1285,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             wide,
         } => layout_accent(base, *accent, *position, *wide, ctx),
         MathNode::Array { columns, rows, arraystretch, add_jot } => layout_array(columns, rows, *arraystretch, *add_jot, ctx),
-        MathNode::Phantom(content) => layout_phantom(content, ctx),
+        MathNode::Phantom(content, kind) => layout_phantom(content, *kind, ctx),
         MathNode::Boxed { content, bg_color, border_color } => layout_boxed(content, bg_color.as_deref(), border_color.as_deref(), ctx),
         MathNode::Cancel { stroke, content } => layout_cancel(*stroke, content, ctx),
         MathNode::Scaled { factor, content } => layout_scaled(*factor, content, ctx),
@@ -1247,6 +1299,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             };
             layout_node(chosen, ctx)
         },
+        MathNode::MathAtom { content, .. } => layout_node(content, ctx),
     }
 }
 
@@ -1446,7 +1499,7 @@ fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> Layou
     // TeX skips italic correction for prime superscripts — primes sit tight against the base.
     let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
 
-    let total_width = base_box.width + ic + sup_box.width;
+    let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -1507,7 +1560,9 @@ fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutB
     let ic = italic_correction(&base_box);
     let sub_dx = (base_box.width - ic).max(0.0);
 
-    let total_width = sub_dx + sub_box.width;
+    // Ensure total width is at least base width — large italic correction
+    // can shift the subscript far left, but the base itself still occupies space.
+    let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -1587,9 +1642,10 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
     if psi > 0.0 {
         shift_up += psi;
         shift_down -= psi;
+        // Safety: ensure subscript stays below baseline
+        shift_down = shift_down.max(0.0);
     }
 
-    // Italic correction: superscript shifts right, subscript shifts left by half.
     // TeX skips italic correction for prime superscripts.
     let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
     let sup_dx = base_box.width + ic;
@@ -1598,7 +1654,7 @@ fn layout_subsup(base: &MathNode, sub: &MathNode, sup: &MathNode, ctx: &LayoutCt
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
         .max(0.0);
-    let total_width = base_box.width + script_width;
+    let total_width = base_box.width + script_width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -1893,6 +1949,9 @@ fn layout_fraction(
 ///   - A vinculum strip extending to the right edge
 ///   - An inner return path giving the shape proper thickness
 ///
+/// Uses cubic bezier curves for smooth transitions between segments,
+/// matching the quality of font-based radical glyphs.
+///
 /// The returned string is prefixed with "F:" so the emitter renders it as
 /// a filled shape (`fill="currentColor"`) rather than a stroked path.
 fn radical_path(w: f64, h: f64, t: f64) -> String {
@@ -1937,9 +1996,10 @@ fn radical_path(w: f64, h: f64, t: f64) -> String {
     // P6: top of upstroke (inner right edge)
     let ix0 = top_x + up_hw;
     let iy0 = t;
-    // P7: V-bottom inner — raised well above outer V for a sharp point
+    // P7: V-bottom inner — raised well above outer V for a sharp point.
+    // Clamp so the inner contour stays below the vinculum even for thin radicals.
     let ix1 = bottom_x + t * 0.30;
-    let iy1 = h - t * 1.5;
+    let iy1 = (h - t * 1.5).max(t * 2.0).min(h - t * 0.5);
     // P8: inner tail end
     let ix2 = tail_x + t * 0.15;
     let iy2 = tail_y + tail_drop - t * 0.7;
@@ -1947,10 +2007,32 @@ fn radical_path(w: f64, h: f64, t: f64) -> String {
     let ix3 = 0.0;
     let iy3 = tail_y + t * 0.35;
 
+    // Use cubic bezier curves for smooth transitions:
+    // - Tail to downstroke: smooth curve through P0→P1→P2
+    // - V-bottom to upstroke: smooth sharp turn at P2→P3
+    // - Inner return: smooth curves for consistent stroke weight
+
+    // Control points for outer V-bottom curve (P1→P2→P3)
+    // The downstroke approaches the bottom nearly vertically
+    let cp_down_x = ox1 + (ox2 - ox1) * 0.3;
+    let cp_down_y = oy1 + (oy2 - oy1) * 0.7;
+    // The upstroke leaves the bottom nearly vertically
+    let cp_up_x = ox2 + (ox3 - ox2) * 0.05;
+    let cp_up_y = oy2 - (oy2 - oy3) * 0.02;
+
+    // Control points for inner V-bottom curve (ix0→ix1→ix2)
+    let cp_idown_x = ix0 + (ix1 - ix0) * 0.05;
+    let cp_idown_y = iy0 + (iy1 - iy0) * 0.5;
+    let cp_iup_x = ix1 + (ix2 - ix1) * 0.3;
+    let cp_iup_y = iy1 - (iy1 - iy2) * 0.1;
+
     format!(
-        "F:M{ox0:.4},{oy0:.4} L{ox1:.4},{oy1:.4} L{ox2:.4},{oy2:.4} \
-         L{ox3:.4},{oy3:.4} L{vx0:.4},{vy0:.4} L{vx1:.4},{vy1:.4} \
-         L{ix0:.4},{iy0:.4} L{ix1:.4},{iy1:.4} L{ix2:.4},{iy2:.4} \
+        "F:M{ox0:.4},{oy0:.4} L{ox1:.4},{oy1:.4} \
+         C{cp_down_x:.4},{cp_down_y:.4} {ox2:.4},{oy2:.4} {ox2:.4},{oy2:.4} \
+         C{cp_up_x:.4},{cp_up_y:.4} {ox3:.4},{oy3:.4} {ox3:.4},{oy3:.4} \
+         L{vx0:.4},{vy0:.4} L{vx1:.4},{vy1:.4} L{ix0:.4},{iy0:.4} \
+         C{cp_idown_x:.4},{cp_idown_y:.4} {ix1:.4},{iy1:.4} {ix1:.4},{iy1:.4} \
+         C{cp_iup_x:.4},{cp_iup_y:.4} {ix2:.4},{iy2:.4} {ix2:.4},{iy2:.4} \
          L{ix3:.4},{iy3:.4} Z",
     )
 }
@@ -1964,7 +2046,9 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
 
     let rule_thickness = p.rule_thickness * size;
     // Radical strokes thicker than fraction rules for better visibility
-    let radical_thickness = (rule_thickness * 1.5).max(0.06 * size);
+    let radical_thickness = math_table::math_constants()
+        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
+        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
 
     // KaTeX-compatible clearance: theta + phi/4
     // where phi = xHeight in display mode, theta otherwise
@@ -1975,22 +2059,13 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
     };
     let extra_clearance = rule_thickness + phi / 4.0;
 
-    // Total height the radical must cover
-    let inner_total = inner.height + inner.depth + extra_clearance + rule_thickness;
+    // Total height the radical must cover (use radical_thickness for vinculum)
+    let inner_total = inner.height + inner.depth + extra_clearance + radical_thickness;
 
-    // KaTeX discrete surd glyph sizes (em): small, Size1, Size2, Size3, Size4
-    // Snap to next discrete size for visual consistency with KaTeX
-    let surd_height = [1.0, 1.2, 1.8, 2.4, 3.0].iter()
-        .map(|&s| s * size)
-        .find(|&s| s >= inner_total)
-        .unwrap_or(inner_total);
-
-    // If surd is taller than needed, redistribute extra space evenly
-    let extra_clearance = if surd_height > inner_total {
-        extra_clearance + (surd_height - inner_total) / 2.0
-    } else {
-        extra_clearance
-    };
+    // Use exact height needed — font glyph variant selection (in raster.rs)
+    // handles choosing the right pre-designed size variant.  Snapping to
+    // discrete sizes here caused excessive vertical space in nested radicals.
+    let surd_height = inner_total;
 
     // Radical sign
     let radical_width = 0.833 * size; // approximate radical sign width
@@ -2001,10 +2076,10 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
         kind: BoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
     };
 
-    // Vinculum (horizontal rule on top)
-    let vinculum = LayoutBox::rule(inner.width, rule_thickness);
+    // Vinculum (horizontal rule on top) — match radical_thickness for seamless junction
+    let vinculum = LayoutBox::rule(inner.width, radical_thickness);
 
-    let shift_up = inner.height + extra_clearance + rule_thickness;
+    let shift_up = inner.height + extra_clearance + radical_thickness;
 
     // Capture dimensions before moving inner into children vec
     let inner_width = inner.width;
@@ -2018,25 +2093,44 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
     ];
 
     let mut total_width = radical_width + inner_width;
-    let total_height = shift_up + rule_thickness;
+    let extra_ascender = math_table::math_constants()
+        .map(|c| c.radical_extra_ascender * size)
+        .unwrap_or(0.0);
+    let total_height = shift_up + radical_thickness + extra_ascender;
     let total_depth = inner_depth.max(surd_height - shift_up);
 
     // Optional root index
     if let Some(idx) = index {
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box = layout_node(idx, &idx_ctx);
-        let idx_shift = total_height * 0.6; // raise index
+        // Use MATH table radical_degree_bottom_raise_percent (default 60%)
+        let raise_pct = math_table::math_constants()
+            .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
+            .unwrap_or(0.6);
+        let idx_shift = total_height * raise_pct; // raise index
         let idx_width = idx_box.width;
-        children.push(PositionedBox::new(0.0, idx_shift, idx_box));
-        // Adjust if index overflows to the left
-        let idx_overflow = idx_width.max(radical_width * 0.5);
-        if idx_overflow > radical_width * 0.5 {
-            let extra = idx_overflow - radical_width * 0.5;
-            // Shift everything right by extra
+
+        // Use MATH table kern values for degree positioning (OpenType MATH spec)
+        let kern_before = math_table::math_constants()
+            .map(|c| c.radical_kern_before_degree * size)
+            .unwrap_or(0.0);
+        let kern_after = math_table::math_constants()
+            .map(|c| c.radical_kern_after_degree * size)
+            .unwrap_or(0.0);
+
+        // Degree placed at kern_before; radical at kern_before + idx_width + kern_after
+        let degree_x = kern_before;
+        let radical_start = (degree_x + idx_width + kern_after).max(0.0);
+
+        // Place degree
+        children.push(PositionedBox::new(degree_x, idx_shift, idx_box));
+
+        // If radical needs to shift right, adjust existing children
+        if radical_start > 0.0 {
             for child in &mut children[..3] {
-                child.dx += extra;
+                child.dx += radical_start;
             }
-            total_width += extra;
+            total_width = radical_start + radical_width + inner_width;
         }
     }
 
@@ -2051,47 +2145,35 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
 // === Remaining node layouts ===
 
 fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCtx) -> LayoutBox {
-    // Layout content
-    let inner_nodes: Vec<&MathNode> = content
-        .iter()
-        .filter_map(|item| match item {
-            FencedItem::Element(n) => Some(n),
-            FencedItem::Middle(_) => None,
-        })
-        .collect();
+    use super::delimiter_paths;
 
-    // Layout content as a row with inter-atom spacing (like layout_row)
-    let mut inner_children = Vec::new();
-    let mut content_cursor = 0.0;
-    let mut prev_atom: Option<spacing::AtomType> = None;
+    // Pass 1: Layout all Element items, compute max_h/max_d for delimiter sizing.
+    // Store laid-out boxes for reuse in pass 2.
+    let mut laid_out: Vec<Option<LayoutBox>> = Vec::with_capacity(content.len());
     let mut max_h: f64 = 0.0;
     let mut max_d: f64 = 0.0;
-    for n in &inner_nodes {
-        // Add inter-atom spacing
-        let raw_atom = spacing::classify_node(n);
-        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
-        if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
-            if space > 0.0 {
-                content_cursor += space * ctx.size();
+    let mut element_count = 0usize;
+    let mut sole_nobar_frac = false;
+
+    for item in content {
+        match item {
+            FencedItem::Element(n) => {
+                let child = layout_node(n, ctx);
+                max_h = max_h.max(child.height);
+                max_d = max_d.max(child.depth);
+                laid_out.push(Some(child));
+                element_count += 1;
+                sole_nobar_frac = element_count == 1
+                    && matches!(n, MathNode::Fraction { kind: FractionKind::NoBar, .. });
+            }
+            FencedItem::Middle(_) => {
+                laid_out.push(None);
             }
         }
-
-        let child = layout_node(n, ctx);
-        max_h = max_h.max(child.height);
-        max_d = max_d.max(child.depth);
-        let w = child.width;
-        inner_children.push((content_cursor, child));
-        content_cursor += w;
-        prev_atom = Some(cur_atom);
     }
 
-    // Detect fraction-with-delimiters (e.g., \binom{n}{k}) — TeX Rule 15e:
-    // use delim1 (display) or delim2 (text) as the minimum delimiter height,
-    // NOT the delimiterFactor/delimiterShortfall formula (Rule 19).
-    let is_genfrac = inner_nodes.len() == 1
-        && matches!(inner_nodes[0], MathNode::Fraction { kind: FractionKind::NoBar, .. });
+    // Detect fraction-with-delimiters (e.g., \binom{n}{k}) — TeX Rule 15e
+    let is_genfrac = element_count == 1 && sole_nobar_frac;
 
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
@@ -2115,79 +2197,99 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
     let delim_h = half + axis;
     let delim_d = half - axis;
 
-    // Compute delimiter width.
-    // For path-based delimiters (tall content), use the path width which stays
-    // thin. For text-based delimiters (normal size), use proportional scaling.
-    use super::delimiter_paths;
+    // Helper: compute delimiter width for a character at the computed target height
+    let compute_delim_w = |ch: char| -> f64 {
+        if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        }
+    };
 
-    // Build positioned children
+    // Pass 2: Build positioned children with open, content, middle delimiters, close
     let mut children = Vec::new();
     let mut cursor_x = 0.0;
+    let mut prev_atom: Option<spacing::AtomType> = None;
+    let mut laid_iter = laid_out.into_iter();
 
     // Open delimiter
     if !open.is_empty()
         && open != "."
         && let Some(ch) = open.chars().next()
     {
-        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-        } else {
-            let base_delim_width = 0.389 * ctx.size();
-            let standard_height = 0.9 * ctx.size();
-            if target_h > standard_height {
-                base_delim_width * (target_h / standard_height)
-            } else {
-                base_delim_width
-            }
-        };
-        let delim = LayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: BoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
-        };
-        let delim_w = delim.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, delim));
-        cursor_x += delim_w;
+        let dw = compute_delim_w(ch);
+        children.push(PositionedBox::new(cursor_x, 0.0, LayoutBox {
+            width: dw, height: delim_h, depth: delim_d,
+            kind: BoxKind::Delimiter { ch, target_height: target_h },
+        }));
+        cursor_x += dw;
+        // Inner padding between open delimiter and content (TeX null-delimiter-space)
+        cursor_x += 0.12 * ctx.size();
     }
 
-    // Content -- place with pre-computed spacing offsets
-    for (offset, child) in inner_children {
-        children.push(PositionedBox::new(cursor_x + offset, 0.0, child));
+    // Content + middle delimiters
+    for item in content {
+        match item {
+            FencedItem::Element(n) => {
+                // Safety: laid_out has one entry per content item
+                let child = laid_iter.next().expect("fenced layout: iterator exhausted").expect("fenced layout: element was None");
+                // Inter-atom spacing
+                let raw_atom = spacing::classify_node(n);
+                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+                let cur_atom = adj_cur.unwrap(); // safe: we passed Some
+                if let Some(prev) = adj_prev {
+                    let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+                    if space > 0.0 {
+                        cursor_x += space * ctx.size();
+                    }
+                }
+                let w = child.width;
+                children.push(PositionedBox::new(cursor_x, 0.0, child));
+                cursor_x += w;
+                prev_atom = Some(cur_atom);
+            }
+            FencedItem::Middle(s) => {
+                laid_iter.next(); // consume the None placeholder
+                if s != "." && let Some(ch) = s.chars().next() {
+                    // Spacing before middle delimiter (treat as Inner atom)
+                    if let Some(prev) = prev_atom {
+                        let space = spacing::inter_atom_space(prev, spacing::AtomType::Inner, ctx.effective_spacing_style());
+                        if space > 0.0 {
+                            cursor_x += space * ctx.size();
+                        }
+                    }
+                    let dw = compute_delim_w(ch);
+                    children.push(PositionedBox::new(cursor_x, 0.0, LayoutBox {
+                        width: dw, height: delim_h, depth: delim_d,
+                        kind: BoxKind::Delimiter { ch, target_height: target_h },
+                    }));
+                    cursor_x += dw;
+                    // Next element sees middle delimiter as Inner for spacing
+                    prev_atom = Some(spacing::AtomType::Inner);
+                }
+            }
+        }
     }
-    cursor_x += content_cursor;
 
     // Close delimiter
     if !close.is_empty()
         && close != "."
         && let Some(ch) = close.chars().next()
     {
-        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-        } else {
-            let base_delim_width = 0.389 * ctx.size();
-            let standard_height = 0.9 * ctx.size();
-            if target_h > standard_height {
-                base_delim_width * (target_h / standard_height)
-            } else {
-                base_delim_width
-            }
-        };
-        let delim = LayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: BoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
-        };
-        let delim_w = delim.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, delim));
-        cursor_x += delim_w;
+        // Inner padding between content and close delimiter
+        cursor_x += 0.12 * ctx.size();
+        let dw = compute_delim_w(ch);
+        children.push(PositionedBox::new(cursor_x, 0.0, LayoutBox {
+            width: dw, height: delim_h, depth: delim_d,
+            kind: BoxKind::Delimiter { ch, target_height: target_h },
+        }));
+        cursor_x += dw;
     }
 
     LayoutBox {
@@ -2217,6 +2319,14 @@ fn layout_nary(
     };
     let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, false);
 
+    // TeX: center the large operator on the math axis.
+    // delta = axis_height - (height - depth) / 2
+    let axis_delta = if ctx.style.is_display() {
+        p.axis_height * size - (op_box.height - op_box.depth) / 2.0
+    } else {
+        0.0
+    };
+
     let body_box = layout_node(body, ctx);
     // Capture body dimensions before any move
     let body_w = body_box.width;
@@ -2233,8 +2343,11 @@ fn layout_nary(
     if use_limits {
         // Limits above/below
         let mut children = Vec::new();
-        let mut total_h = op_box.height;
-        let mut total_d = op_box.depth;
+        // Account for axis centering shift in effective op dimensions
+        let eff_op_h = op_box.height + axis_delta;
+        let eff_op_d = (op_box.depth - axis_delta).max(0.0);
+        let mut total_h = eff_op_h;
+        let mut total_d = eff_op_d;
         let mut max_w = op_box.width;
 
         let sup_box = sup.as_ref().map(|s| {
@@ -2270,14 +2383,13 @@ fn layout_nary(
 
         if let Some(sb) = sup_box {
             let sup_dx = (max_w - sb.width) / 2.0;
-            let sup_dy = op_box.height + sup_gap + sb.depth;
+            let sup_dy = eff_op_h + sup_gap + sb.depth;
             children.push(PositionedBox::new(sup_dx, sup_dy, sb));
         }
-        let op_depth = op_box.depth;
-        children.push(PositionedBox::new(op_dx, 0.0, op_box));
+        children.push(PositionedBox::new(op_dx, axis_delta, op_box));
         if let Some(sb) = sub_box {
             let sub_dx = (max_w - sb.width) / 2.0;
-            let sub_dy = -(op_depth + sub_gap + sb.height);
+            let sub_dy = -(eff_op_d + sub_gap + sb.height);
             children.push(PositionedBox::new(sub_dx, sub_dy, sb));
         }
 
@@ -2287,8 +2399,8 @@ fn layout_nary(
         children.push(PositionedBox::new(nary_width + thin_space, 0.0, body_box));
         LayoutBox {
             width: nary_width + thin_space + body_w,
-            height: total_h,
-            depth: total_d,
+            height: total_h.max(body_h),
+            depth: total_d.max(body_d),
             kind: BoxKind::HBox { children },
         }
     } else {
@@ -2298,15 +2410,16 @@ fn layout_nary(
         // Wrap large-op glyph in HBox so is_char_box returns false in subsup layout.
         // KaTeX does not treat large operator symbols as character boxes, allowing
         // the sup_drop term (base.height - supDrop) to position scripts proportionally.
+        // Apply axis_delta to center the operator on the math axis (TeX Rule 13a/13b).
         let op_box = {
             let w = op_box.width;
-            let h = op_box.height;
-            let d = op_box.depth;
+            let h = op_box.height + axis_delta;
+            let d = (op_box.depth - axis_delta).max(0.0);
             LayoutBox {
                 width: w,
                 height: h,
                 depth: d,
-                kind: BoxKind::HBox { children: vec![PositionedBox::at_origin(op_box)] },
+                kind: BoxKind::HBox { children: vec![PositionedBox::new(0.0, axis_delta, op_box)] },
             }
         };
 
@@ -2390,7 +2503,7 @@ fn layout_superscript_from_box_heap(
 
     let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
 
-    let total_width = base_box.width + ic + sup_box.width;
+    let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -2435,7 +2548,7 @@ fn layout_subscript_from_box_heap(
     let ic = italic_correction(&base_box);
     let sub_dx = (base_box.width - ic).max(0.0);
 
-    let total_width = sub_dx + sub_box.width;
+    let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -2506,6 +2619,8 @@ fn layout_subsup_from_box_heap(
     if psi > 0.0 {
         shift_up += psi;
         shift_down -= psi;
+        // Safety: ensure subscript stays below baseline
+        shift_down = shift_down.max(0.0);
     }
 
     let ic = if is_prime_sup(sup) { 0.0 } else { italic_correction(&base_box) };
@@ -2515,7 +2630,7 @@ fn layout_subsup_from_box_heap(
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
         .max(0.0);
-    let total_width = base_box.width + script_width;
+    let total_width = base_box.width + script_width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -2545,8 +2660,16 @@ fn get_stretchy_overunder_sym(node: &MathNode) -> Option<&str> {
 
 /// Create a stretchy overunder decoration LayoutBox at the given width.
 fn make_stretchy_overunder_box(sym: &str, width: f64, size: f64) -> LayoutBox {
-    // Overline/underline U+203E is a thin rule — use minimal box height (KaTeX Rule 9/10)
-    let deco_h = if sym == "\u{203E}" { 0.08 * size } else { 0.40 * size };
+    // Heights matched to KaTeX's katexImagesData (viewBoxHeight / 1000):
+    //   overbrace/underbrace: 548 → 0.548em
+    //   overbracket/underbracket: ~440 → 0.44em
+    //   overline: thin rule
+    let deco_h = match sym {
+        "\u{23DE}" | "\u{23DF}" => 0.548 * size,  // overbrace/underbrace
+        "\u{23B4}" | "\u{23B5}" => 0.44 * size,   // overbracket/underbracket
+        "\u{203E}" => 0.08 * size,                 // overline
+        _ => 0.40 * size,
+    };
     LayoutBox {
         width,
         height: deco_h,
@@ -2797,6 +2920,21 @@ fn layout_underover(
     }
 }
 
+/// Compute the italic skew correction for accent positioning.
+/// When the base of an accent is a single italic character, TeX shifts the accent
+/// right by half the italic correction to compensate for the italic slant.
+fn accent_skew(base: &MathNode, size: f64) -> f64 {
+    if let MathNode::Identifier(s) = base {
+        let mut chars = s.chars();
+        if let Some(ch) = chars.next()
+            && chars.next().is_none()
+        {
+            return metrics::glyph_metrics(ch).italic * size / 2.0;
+        }
+    }
+    0.0
+}
+
 fn layout_accent(
     base: &MathNode,
     accent: char,
@@ -2828,7 +2966,9 @@ fn layout_accent(
             // Bar: horizontal rule across base width — thicker than fraction
             // rules so the accent is clearly visible.
             '\u{0304}' => {
-                let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
+                let thickness = math_table::math_constants()
+                    .map(|c| (c.overbar_rule_thickness * size).max(0.06 * size))
+                    .unwrap_or((ctx.params.rule_thickness * size * 1.8).max(0.06 * size));
                 LayoutBox::rule(base_width, thickness)
             },
             // Dot: small filled square centered above base
@@ -3042,10 +3182,21 @@ fn layout_accent(
         LayoutBox::glyph(accent, ctx.size(), false)
     };
 
-    let accent_dx = (base_width - accent_box.width) / 2.0;
+    // TeX Rule 12: italic skew correction only for above accents.
+    let skew = match position {
+        AccentPosition::Above => accent_skew(base, ctx.size()),
+        AccentPosition::Below => 0.0,
+    };
+    let accent_dx = (base_width - accent_box.width) / 2.0 + skew;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
-            let dy = base_box.height + 0.05 * ctx.size(); // small gap
+            // OpenType MATH: use accent_base_height as minimum base height
+            // so accents sit at a consistent level for short characters.
+            let accent_base_h = math_table::math_constants()
+                .map(|c| c.accent_base_height * ctx.size())
+                .unwrap_or(0.0);
+            let effective_h = base_box.height.max(accent_base_h);
+            let dy = effective_h + 0.05 * ctx.size();
             (dy, dy + accent_box.height, base_box.depth)
         },
         AccentPosition::Below => {
@@ -3187,15 +3338,15 @@ fn layout_prescripts(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let mut children = Vec::new();
     let mut pre_width: f64 = 0.0;
     let mut total_h = base_box.height;
     let mut total_d = base_box.depth;
 
-    // Bug 1 fix: use child style params for prescripts too
     let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let has_both = pre_sup.is_some() && pre_sub.is_some();
 
-    if let Some(sup) = pre_sup {
+    // Layout pre-superscript
+    let sup_data = if let Some(sup) = pre_sup {
         let sup_style = ctx.style.sup();
         let sup_params = TexParams::for_size_class(sup_style.size_class());
         let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
@@ -3206,43 +3357,97 @@ fn layout_prescripts(
             shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio * size);
         }
         pre_width = pre_width.max(sup_box.width);
-        total_h = total_h.max(shift_up + sup_box.height);
-        children.push(PositionedBox::new(0.0, shift_up, sup_box));
-    }
-    if let Some(sub) = pre_sub {
+        Some((sup_box, shift_up))
+    } else {
+        None
+    };
+
+    // Layout pre-subscript; use sub2 when both scripts present (Rule 18d)
+    let sub_data = if let Some(sub) = pre_sub {
         let sub_style = ctx.style.sub();
         let sub_params = TexParams::for_size_class(sub_style.size_class());
         let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
         let sub_ctx = ctx.with_style(sub_style);
         let sub_box = layout_node(sub, &sub_ctx);
-        let mut shift_down = p.sub1 * size;
+        let mut shift_down = if has_both { p.sub2 } else { p.sub1 } * size;
         if !is_char_box {
             shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio * size);
         }
         pre_width = pre_width.max(sub_box.width);
+        Some((sub_box, shift_down))
+    } else {
+        None
+    };
+
+    // Rule 18e: ensure minimum gap between pre-sub top and pre-sup bottom
+    let (sup_data, sub_data) = match (sup_data, sub_data) {
+        (Some((sup_box, mut shift_up)), Some((sub_box, mut shift_down))) => {
+            let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
+            let min_gap = 4.0 * p.rule_thickness * size;
+            if gap < min_gap {
+                shift_down = min_gap - (shift_up - sup_box.depth) + sub_box.height;
+            }
+            let psi = 0.8 * p.x_height * size - (shift_up - sup_box.depth);
+            if psi > 0.0 {
+                shift_up += psi;
+                shift_down -= psi;
+                shift_down = shift_down.max(0.0);
+            }
+            (Some((sup_box, shift_up)), Some((sub_box, shift_down)))
+        }
+        other => other,
+    };
+
+    let mut children = Vec::new();
+    // Right-align pre-scripts within the pre-column (TeX convention)
+    if let Some((sup_box, shift_up)) = sup_data {
+        total_h = total_h.max(shift_up + sup_box.height);
+        let dx = pre_width - sup_box.width;
+        children.push(PositionedBox::new(dx, shift_up, sup_box));
+    }
+    if let Some((sub_box, shift_down)) = sub_data {
         total_d = total_d.max(shift_down + sub_box.depth);
-        children.push(PositionedBox::new(0.0, -shift_down, sub_box));
+        let dx = pre_width - sub_box.width;
+        children.push(PositionedBox::new(dx, -shift_down, sub_box));
     }
 
-    // Capture width before moving base_box into children vec
     let base_width = base_box.width;
-    children.push(PositionedBox::new(pre_width, 0.0, base_box));
+    let kern = SCRIPT_SPACE * size;
+    children.push(PositionedBox::new(pre_width + kern, 0.0, base_box));
 
     LayoutBox {
-        width: pre_width + base_width,
+        width: pre_width + kern + base_width,
         height: total_h,
         depth: total_d,
         kind: BoxKind::HBox { children },
     }
 }
 
-fn layout_phantom(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_phantom(content: &MathNode, kind: PhantomKind, ctx: &LayoutCtx) -> LayoutBox {
     let inner = layout_node(content, ctx);
-    LayoutBox {
-        width: inner.width,
-        height: inner.height,
-        depth: inner.depth,
-        kind: BoxKind::Phantom,
+    match kind {
+        // Phantom: invisible but occupies space
+        PhantomKind::Full | PhantomKind::Vertical | PhantomKind::Horizontal => {
+            LayoutBox {
+                width: if kind == PhantomKind::Vertical { 0.0 } else { inner.width },
+                height: if kind == PhantomKind::Horizontal { 0.0 } else { inner.height },
+                depth: if kind == PhantomKind::Horizontal { 0.0 } else { inner.depth },
+                kind: BoxKind::Phantom,
+            }
+        },
+        // Smash: visible but with zeroed height/depth
+        PhantomKind::SmashBoth | PhantomKind::SmashBottom | PhantomKind::SmashTop => {
+            let h = if kind == PhantomKind::SmashTop || kind == PhantomKind::SmashBoth { 0.0 } else { inner.height };
+            let d = if kind == PhantomKind::SmashBottom || kind == PhantomKind::SmashBoth { 0.0 } else { inner.depth };
+            LayoutBox {
+                width: inner.width,
+                height: h,
+                depth: d,
+                kind: BoxKind::HBox {
+                    children: vec![PositionedBox::new(0.0, 0.0, inner)],
+                },
+            }
+        },
     }
 }
 
@@ -3306,6 +3511,196 @@ fn layout_cancel(stroke: StrokeKind, content: &MathNode, ctx: &LayoutCtx) -> Lay
     }
 }
 
+/// Scale numeric coordinate values in an SVG path data string by `f`.
+///
+/// Handles our "F:" fill-prefix and all standard SVG path commands.
+/// For arc commands (`A`/`a`), parameters 3-5 (x-rotation, large-arc-flag,
+/// sweep-flag) are preserved unscaled since they are angles/flags, not coordinates.
+pub(crate) fn scale_svg_path_data(path: &str, f: f64) -> String {
+    // Preserve the "F:" prefix if present
+    let (prefix, data) = if let Some(rest) = path.strip_prefix("F:") {
+        ("F:", rest)
+    } else {
+        ("", path)
+    };
+
+    let mut result = String::with_capacity(path.len() + 16);
+    result.push_str(prefix);
+
+    let bytes = data.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    // Track current command and parameter index for arc handling
+    let mut cmd = b'M'; // default command
+    let mut param_idx: usize = 0;
+
+    /// Number of parameters per SVG path command.
+    fn param_count(c: u8) -> usize {
+        match c.to_ascii_uppercase() {
+            b'M' | b'L' | b'T' => 2,
+            b'H' | b'V' => 1,
+            b'C' => 6,
+            b'S' | b'Q' => 4,
+            b'A' => 7,
+            _ => 0, // Z and unknown
+        }
+    }
+
+    /// Whether this parameter index should NOT be scaled for arc commands.
+    /// Arc: rx(0) ry(1) x-rot(2) large-arc(3) sweep(4) x(5) y(6)
+    /// Indices 2,3,4 are angle/flag values that must not be scaled.
+    fn is_arc_noscale(c: u8, idx: usize) -> bool {
+        c.eq_ignore_ascii_case(&b'A') && (2..=4).contains(&(idx % 7))
+    }
+
+    while i < len {
+        let b = bytes[i];
+        if b.is_ascii_alphabetic() && b != b'e' && b != b'E' {
+            // SVG path command letter — pass through unchanged
+            cmd = b;
+            param_idx = 0;
+            result.push(b as char);
+            i += 1;
+        } else if b == b'-' || b == b'+' || b == b'.' || b.is_ascii_digit() {
+            // Start of a number — collect it, parse, optionally scale, and re-emit
+            let start = i;
+            if b == b'-' || b == b'+' {
+                i += 1;
+            }
+            while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            // Handle scientific notation (e.g., 1.5e-3)
+            if i < len && (bytes[i] == b'e' || bytes[i] == b'E') {
+                i += 1;
+                if i < len && (bytes[i] == b'-' || bytes[i] == b'+') {
+                    i += 1;
+                }
+                while i < len && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            let num_str = &data[start..i];
+            if let Ok(val) = num_str.parse::<f64>() {
+                use std::fmt::Write;
+                if is_arc_noscale(cmd, param_idx) {
+                    // Preserve arc rotation/flags unscaled
+                    let _ = write!(result, "{:.4}", val);
+                } else {
+                    let _ = write!(result, "{:.4}", val * f);
+                }
+            } else {
+                result.push_str(num_str);
+            }
+            param_idx += 1;
+            // Handle implicit command repeats (wrap around param count)
+            let pc = param_count(cmd);
+            if pc > 0 && param_idx >= pc {
+                param_idx = 0;
+                // After M, implicit repeats become L
+                if cmd == b'M' {
+                    cmd = b'L';
+                } else if cmd == b'm' {
+                    cmd = b'l';
+                }
+            }
+        } else {
+            // Whitespace, comma, or other separator — pass through
+            result.push(b as char);
+            i += 1;
+        }
+    }
+    result
+}
+
+/// Recursively scale all child positions (dx/dy) and dimensions in a BoxKind
+/// so that `\scalebox` and friends produce correctly positioned content.
+fn scale_box_kind(kind: BoxKind, f: f64) -> BoxKind {
+    match kind {
+        BoxKind::HBox { children } => BoxKind::HBox {
+            children: children
+                .into_iter()
+                .map(|c| PositionedBox::new(
+                    c.dx * f,
+                    c.dy * f,
+                    LayoutBox {
+                        width: c.layout.width * f,
+                        height: c.layout.height * f,
+                        depth: c.layout.depth * f,
+                        kind: scale_box_kind(c.layout.kind, f),
+                    },
+                ))
+                .collect(),
+        },
+        BoxKind::VBox { children } => BoxKind::VBox {
+            children: children
+                .into_iter()
+                .map(|c| PositionedBox::new(
+                    c.dx * f,
+                    c.dy * f,
+                    LayoutBox {
+                        width: c.layout.width * f,
+                        height: c.layout.height * f,
+                        depth: c.layout.depth * f,
+                        kind: scale_box_kind(c.layout.kind, f),
+                    },
+                ))
+                .collect(),
+        },
+        BoxKind::Color { color, child } => BoxKind::Color {
+            color,
+            child: Box::new(PositionedBox::new(
+                child.dx * f,
+                child.dy * f,
+                LayoutBox {
+                    width: child.layout.width * f,
+                    height: child.layout.height * f,
+                    depth: child.layout.depth * f,
+                    kind: scale_box_kind(child.layout.kind, f),
+                },
+            )),
+        },
+        BoxKind::Boxed { child, padding, bg_color, border_color } => BoxKind::Boxed {
+            child: Box::new(PositionedBox::new(
+                child.dx * f,
+                child.dy * f,
+                LayoutBox {
+                    width: child.layout.width * f,
+                    height: child.layout.height * f,
+                    depth: child.layout.depth * f,
+                    kind: scale_box_kind(child.layout.kind, f),
+                },
+            )),
+            padding: padding * f,
+            bg_color,
+            border_color,
+        },
+        BoxKind::Glyph { ch, size, italic } => BoxKind::Glyph {
+            ch,
+            size: size * f,
+            italic,
+        },
+        BoxKind::TextRun { text, size, italic, text_style } => BoxKind::TextRun {
+            text,
+            size: size * f,
+            italic,
+            text_style,
+        },
+        BoxKind::Rule { thickness } => BoxKind::Rule {
+            thickness: thickness * f,
+        },
+        BoxKind::Delimiter { ch, target_height } => BoxKind::Delimiter {
+            ch,
+            target_height: target_height * f,
+        },
+        // Kern, Phantom don't need child scaling.
+        // SvgPath: scale all numeric coordinates in the path data.
+        BoxKind::SvgPath(path) => BoxKind::SvgPath(scale_svg_path_data(&path, f)),
+        other => other,
+    }
+}
+
 fn layout_scaled(factor: Rational, content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     let inner = layout_node(content, ctx);
     let f = factor.as_f64();
@@ -3313,28 +3708,64 @@ fn layout_scaled(factor: Rational, content: &MathNode, ctx: &LayoutCtx) -> Layou
         width: inner.width * f,
         height: inner.height * f,
         depth: inner.depth * f,
-        kind: inner.kind,
+        kind: scale_box_kind(inner.kind, f),
     }
 }
 
 fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     use crate::unicode::fonts::styled_char;
 
-    let styled_children: Vec<MathNode> = children
-        .iter()
-        .map(|node| match node {
+    if children.is_empty() {
+        return LayoutBox::kern(0.0);
+    }
+
+    // Inline the row layout logic to avoid cloning non-leaf nodes.
+    // Only Identifier/Number leaves need remapping; everything else is
+    // laid out directly from the original reference.
+    let mut boxes = Vec::with_capacity(children.len() * 2);
+    let mut cursor_x = 0.0;
+    let mut prev_atom: Option<AtomType> = None;
+    let mut max_height: f64 = 0.0;
+    let mut max_depth: f64 = 0.0;
+
+    for node in children {
+        let raw_atom = spacing::classify_node(node);
+        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+        let cur_atom = adj_cur.expect("passed Some");
+        if let Some(prev) = adj_prev {
+            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+            if space > 0.0 {
+                cursor_x += space * ctx.size();
+            }
+        }
+
+        let layout = match node {
             MathNode::Identifier(s) => {
-                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
-                MathNode::Identifier(mapped)
-            },
+                let mapped: String =
+                    s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                layout_node(&MathNode::Identifier(mapped), ctx)
+            }
             MathNode::Number(s) => {
-                let mapped: String = s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
-                MathNode::Number(mapped)
-            },
-            other => other.clone(),
-        })
-        .collect();
-    layout_row(&styled_children, ctx)
+                let mapped: String =
+                    s.chars().map(|c| styled_char(c, style).unwrap_or(c)).collect();
+                layout_node(&MathNode::Number(mapped), ctx)
+            }
+            other => layout_node(other, ctx),
+        };
+        max_height = max_height.max(layout.height);
+        max_depth = max_depth.max(layout.depth);
+        let w = layout.width;
+        boxes.push(PositionedBox::new(cursor_x, 0.0, layout));
+        cursor_x += w;
+        prev_atom = Some(cur_atom);
+    }
+
+    LayoutBox {
+        width: cursor_x,
+        height: max_height,
+        depth: max_depth,
+        kind: BoxKind::HBox { children: boxes },
+    }
 }
 
 // ==========================================================================
@@ -3384,6 +3815,7 @@ fn layout_row_c(arena: &AstArena, span: NodeSpan, ctx: &LayoutCtx) -> LayoutBox 
     lines.push(line);
 
     if lines.len() == 1 {
+        // Safety: lines.len() == 1 checked above, so next() is guaranteed Some
         return lines.into_iter().next().unwrap();
     }
 
@@ -3431,7 +3863,7 @@ fn layout_row_segment_c(arena: &AstArena, ids: &[NodeId], ctx: &LayoutCtx) -> La
         return LayoutBox::kern(0.0);
     }
 
-    let mut children = Vec::new();
+    let mut children = Vec::with_capacity(ids.len() * 2);
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;
@@ -3575,8 +4007,9 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             num_cols,
             arraystretch_pct,
             add_jot,
-        } => layout_array_c(arena, col_aligns, cells, num_cols, arraystretch_pct, add_jot, ctx),
-        CompactNode::Phantom(inner) => layout_phantom_c(arena, inner, ctx),
+            col_seps,
+        } => layout_array_c(arena, col_aligns, cells, num_cols, arraystretch_pct, add_jot, col_seps, ctx),
+        CompactNode::Phantom(inner, kind) => layout_phantom_c(arena, inner, kind, ctx),
         CompactNode::Boxed { content: inner, bg_color, border_color } => {
             let bg = {
                 let s = arena.str_val(bg_color);
@@ -3601,6 +4034,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             };
             layout_node_c(arena, chosen, ctx)
         },
+        CompactNode::MathAtom { content, .. } => layout_node_c(arena, content, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => LayoutBox::kern(0.0),
         CompactNode::StyleSwitch(_) => LayoutBox::kern(0.0),
         CompactNode::SizeScale(_) => LayoutBox::kern(0.0),
@@ -3759,7 +4193,7 @@ fn layout_superscript_c(arena: &AstArena, base: NodeId, sup: NodeId, ctx: &Layou
     // TeX skips italic correction for prime superscripts.
     let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
 
-    let total_width = base_box.width + ic + sup_box.width;
+    let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -3815,7 +4249,7 @@ fn layout_subscript_c(arena: &AstArena, base: NodeId, sub: NodeId, ctx: &LayoutC
     let ic = italic_correction(&base_box);
     let sub_dx = (base_box.width - ic).max(0.0);
 
-    let total_width = sub_dx + sub_box.width;
+    let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -3894,6 +4328,8 @@ fn layout_subsup_c(
     if psi > 0.0 {
         shift_up += psi;
         shift_down -= psi;
+        // Safety: ensure subscript stays below baseline
+        shift_down = shift_down.max(0.0);
     }
 
     let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
@@ -3903,7 +4339,7 @@ fn layout_subsup_c(
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
         .max(0.0);
-    let total_width = base_box.width + script_width;
+    let total_width = base_box.width + script_width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -4184,7 +4620,9 @@ fn layout_sqrt_c(
 
     let rule_thickness = p.rule_thickness * size;
     // Radical strokes thicker than fraction rules for better visibility
-    let radical_thickness = (rule_thickness * 1.5).max(0.06 * size);
+    let radical_thickness = math_table::math_constants()
+        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
+        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
 
     // KaTeX-compatible clearance: theta + phi/4
     // where phi = xHeight in display mode, theta otherwise
@@ -4195,20 +4633,11 @@ fn layout_sqrt_c(
     };
     let extra_clearance = rule_thickness + phi / 4.0;
 
-    let inner_total = inner.height + inner.depth + extra_clearance + rule_thickness;
+    let inner_total = inner.height + inner.depth + extra_clearance + radical_thickness;
 
-    // KaTeX discrete surd glyph sizes (em): small, Size1, Size2, Size3, Size4
-    let surd_height = [1.0, 1.2, 1.8, 2.4, 3.0].iter()
-        .map(|&s| s * size)
-        .find(|&s| s >= inner_total)
-        .unwrap_or(inner_total);
-
-    // If surd is taller than needed, redistribute extra space evenly
-    let extra_clearance = if surd_height > inner_total {
-        extra_clearance + (surd_height - inner_total) / 2.0
-    } else {
-        extra_clearance
-    };
+    // Use exact height needed — font glyph variant selection (in raster.rs)
+    // handles choosing the right pre-designed size variant.
+    let surd_height = inner_total;
 
     let radical_width = 0.833 * size;
     let radical = LayoutBox {
@@ -4218,9 +4647,9 @@ fn layout_sqrt_c(
         kind: BoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
     };
 
-    let vinculum = LayoutBox::rule(inner.width, rule_thickness);
+    let vinculum = LayoutBox::rule(inner.width, radical_thickness);
 
-    let shift_up = inner.height + extra_clearance + rule_thickness;
+    let shift_up = inner.height + extra_clearance + radical_thickness;
 
     let inner_width = inner.width;
     let inner_depth = inner.depth;
@@ -4233,22 +4662,40 @@ fn layout_sqrt_c(
     ];
 
     let mut total_width = radical_width + inner_width;
-    let total_height = shift_up + rule_thickness;
+    let extra_ascender = math_table::math_constants()
+        .map(|c| c.radical_extra_ascender * size)
+        .unwrap_or(0.0);
+    let total_height = shift_up + radical_thickness + extra_ascender;
     let total_depth = inner_depth.max(surd_height - shift_up);
 
     if let Some(idx_id) = index {
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box = layout_node_c(arena, idx_id, &idx_ctx);
-        let idx_shift = total_height * 0.6;
+        // Use MATH table radical_degree_bottom_raise_percent (default 60%)
+        let raise_pct = math_table::math_constants()
+            .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
+            .unwrap_or(0.6);
+        let idx_shift = total_height * raise_pct;
         let idx_width = idx_box.width;
-        children.push(PositionedBox::new(0.0, idx_shift, idx_box));
-        let idx_overflow = idx_width.max(radical_width * 0.5);
-        if idx_overflow > radical_width * 0.5 {
-            let extra = idx_overflow - radical_width * 0.5;
+
+        // Use MATH table kern values for degree positioning (OpenType MATH spec)
+        let kern_before = math_table::math_constants()
+            .map(|c| c.radical_kern_before_degree * size)
+            .unwrap_or(0.0);
+        let kern_after = math_table::math_constants()
+            .map(|c| c.radical_kern_after_degree * size)
+            .unwrap_or(0.0);
+
+        let degree_x = kern_before;
+        let radical_start = (degree_x + idx_width + kern_after).max(0.0);
+
+        children.push(PositionedBox::new(degree_x, idx_shift, idx_box));
+
+        if radical_start > 0.0 {
             for child in &mut children[..3] {
-                child.dx += extra;
+                child.dx += radical_start;
             }
-            total_width += extra;
+            total_width = radical_start + radical_width + inner_width;
         }
     }
 
@@ -4267,42 +4714,35 @@ fn layout_fenced_c(
     content: NodeSpan,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
-    // Layout content with inter-atom spacing, skipping Middle separator nodes
-    let mut inner_children = Vec::new();
-    let mut content_cursor = 0.0;
-    let mut prev_atom: Option<spacing::AtomType> = None;
+    use super::delimiter_paths;
+
+    // Pass 1: Layout all Element items, compute max_h/max_d for delimiter sizing.
+    let content_children = arena.children(content);
+    let mut laid_out: Vec<Option<LayoutBox>> = Vec::with_capacity(content_children.len());
     let mut max_h: f64 = 0.0;
     let mut max_d: f64 = 0.0;
-    for &child_id in arena.children(content) {
-        match *arena.node(child_id) {
-            CompactNode::Middle(_) => {},
-            _ => {
-                // Add inter-atom spacing
-                let raw_atom = spacing::classify_node_c(arena, child_id);
-                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-                let cur_atom = adj_cur.unwrap(); // safe: we passed Some
-                if let Some(prev) = adj_prev {
-                    let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
-                    if space > 0.0 {
-                        content_cursor += space * ctx.size();
-                    }
-                }
+    let mut element_count = 0usize;
+    let mut sole_nobar_frac = false;
 
+    for &child_id in content_children {
+        match *arena.node(child_id) {
+            CompactNode::Middle(_) => {
+                laid_out.push(None);
+            }
+            _ => {
                 let child = layout_node_c(arena, child_id, ctx);
                 max_h = max_h.max(child.height);
                 max_d = max_d.max(child.depth);
-                let w = child.width;
-                inner_children.push((content_cursor, child));
-                content_cursor += w;
-                prev_atom = Some(cur_atom);
-            },
+                laid_out.push(Some(child));
+                element_count += 1;
+                sole_nobar_frac = element_count == 1
+                    && matches!(*arena.node(child_id), CompactNode::Fraction { kind: FractionKind::NoBar, .. });
+            }
         }
     }
 
     // Detect fraction-with-delimiters (e.g., \binom) — TeX Rule 15e
-    let content_children_ast = arena.children(content);
-    let is_genfrac = content_children_ast.len() == 1
-        && matches!(*arena.node(content_children_ast[0]), CompactNode::Fraction { kind: FractionKind::NoBar, .. });
+    let is_genfrac = element_count == 1 && sole_nobar_frac;
 
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
@@ -4324,11 +4764,26 @@ fn layout_fenced_c(
     let delim_h = half + axis;
     let delim_d = half - axis;
 
-    // Compute delimiter width using path-based sizing for tall content
-    use super::delimiter_paths;
+    // Helper: compute delimiter width for a character at the computed target height
+    let compute_delim_w = |ch: char| -> f64 {
+        if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+        } else {
+            let base_delim_width = 0.389 * ctx.size();
+            let standard_height = 0.9 * ctx.size();
+            if target_h > standard_height {
+                base_delim_width * (target_h / standard_height)
+            } else {
+                base_delim_width
+            }
+        }
+    };
 
+    // Pass 2: Build positioned children
     let mut children = Vec::new();
     let mut cursor_x = 0.0;
+    let mut prev_atom: Option<spacing::AtomType> = None;
+    let mut laid_iter = laid_out.into_iter();
 
     // Open delimiter
     let open_str = arena.str_val(open);
@@ -4336,35 +4791,58 @@ fn layout_fenced_c(
         && open_str != "."
         && let Some(ch) = open_str.chars().next()
     {
-        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-        } else {
-            let base_delim_width = 0.389 * ctx.size();
-            let standard_height = 0.9 * ctx.size();
-            if target_h > standard_height {
-                base_delim_width * (target_h / standard_height)
-            } else {
-                base_delim_width
-            }
-        };
-        let delim = LayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: BoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
-        };
-        let delim_w = delim.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, delim));
-        cursor_x += delim_w;
+        let dw = compute_delim_w(ch);
+        children.push(PositionedBox::new(cursor_x, 0.0, LayoutBox {
+            width: dw, height: delim_h, depth: delim_d,
+            kind: BoxKind::Delimiter { ch, target_height: target_h },
+        }));
+        cursor_x += dw;
+        // Inner padding between open delimiter and content (TeX null-delimiter-space)
+        cursor_x += 0.12 * ctx.size();
     }
 
-    for (offset, child) in inner_children {
-        children.push(PositionedBox::new(cursor_x + offset, 0.0, child));
+    // Content + middle delimiters
+    for &child_id in content_children {
+        match *arena.node(child_id) {
+            CompactNode::Middle(sid) => {
+                laid_iter.next(); // consume the None placeholder
+                let s = arena.str_val(sid);
+                if s != "." && let Some(ch) = s.chars().next() {
+                    // Spacing before middle delimiter (treat as Inner atom)
+                    if let Some(prev) = prev_atom {
+                        let space = spacing::inter_atom_space(prev, spacing::AtomType::Inner, ctx.effective_spacing_style());
+                        if space > 0.0 {
+                            cursor_x += space * ctx.size();
+                        }
+                    }
+                    let dw = compute_delim_w(ch);
+                    children.push(PositionedBox::new(cursor_x, 0.0, LayoutBox {
+                        width: dw, height: delim_h, depth: delim_d,
+                        kind: BoxKind::Delimiter { ch, target_height: target_h },
+                    }));
+                    cursor_x += dw;
+                    prev_atom = Some(spacing::AtomType::Inner);
+                }
+            }
+            _ => {
+                let child = laid_iter.next().expect("fenced layout: iterator exhausted").expect("fenced layout: element was None");
+                // Inter-atom spacing
+                let raw_atom = spacing::classify_node_c(arena, child_id);
+                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+                let cur_atom = adj_cur.unwrap(); // safe: we passed Some(raw_atom)
+                if let Some(prev) = adj_prev {
+                    let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+                    if space > 0.0 {
+                        cursor_x += space * ctx.size();
+                    }
+                }
+                let w = child.width;
+                children.push(PositionedBox::new(cursor_x, 0.0, child));
+                cursor_x += w;
+                prev_atom = Some(cur_atom);
+            }
+        }
     }
-    cursor_x += content_cursor;
 
     // Close delimiter
     let close_str = arena.str_val(close);
@@ -4372,29 +4850,14 @@ fn layout_fenced_c(
         && close_str != "."
         && let Some(ch) = close_str.chars().next()
     {
-        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-        } else {
-            let base_delim_width = 0.389 * ctx.size();
-            let standard_height = 0.9 * ctx.size();
-            if target_h > standard_height {
-                base_delim_width * (target_h / standard_height)
-            } else {
-                base_delim_width
-            }
-        };
-        let delim = LayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: BoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
-        };
-        let delim_w = delim.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, delim));
-        cursor_x += delim_w;
+        // Inner padding between content and close delimiter
+        cursor_x += 0.12 * ctx.size();
+        let dw = compute_delim_w(ch);
+        children.push(PositionedBox::new(cursor_x, 0.0, LayoutBox {
+            width: dw, height: delim_h, depth: delim_d,
+            kind: BoxKind::Delimiter { ch, target_height: target_h },
+        }));
+        cursor_x += dw;
     }
 
     LayoutBox {
@@ -4424,6 +4887,13 @@ fn layout_nary_c(
     };
     let op_box = LayoutBox::glyph_with_metrics(op, m, op_size, false);
 
+    // TeX: center the large operator on the math axis.
+    let axis_delta = if ctx.style.is_display() {
+        p.axis_height * size - (op_box.height - op_box.depth) / 2.0
+    } else {
+        0.0
+    };
+
     let body_box = layout_node_c(arena, body, ctx);
     let body_w = body_box.width;
     let body_h = body_box.height;
@@ -4438,8 +4908,10 @@ fn layout_nary_c(
 
     if use_limits {
         let mut children = Vec::new();
-        let mut total_h = op_box.height;
-        let mut total_d = op_box.depth;
+        let eff_op_h = op_box.height + axis_delta;
+        let eff_op_d = (op_box.depth - axis_delta).max(0.0);
+        let mut total_h = eff_op_h;
+        let mut total_d = eff_op_d;
         let mut max_w = op_box.width;
 
         let sup_box = if sup.is_some() {
@@ -4478,14 +4950,13 @@ fn layout_nary_c(
 
         if let Some(sb) = sup_box {
             let sup_dx = (max_w - sb.width) / 2.0;
-            let sup_dy = op_box.height + sup_gap + sb.depth;
+            let sup_dy = eff_op_h + sup_gap + sb.depth;
             children.push(PositionedBox::new(sup_dx, sup_dy, sb));
         }
-        let op_depth = op_box.depth;
-        children.push(PositionedBox::new(op_dx, 0.0, op_box));
+        children.push(PositionedBox::new(op_dx, axis_delta, op_box));
         if let Some(sb) = sub_box {
             let sub_dx = (max_w - sb.width) / 2.0;
-            let sub_dy = -(op_depth + sub_gap + sb.height);
+            let sub_dy = -(eff_op_d + sub_gap + sb.height);
             children.push(PositionedBox::new(sub_dx, sub_dy, sb));
         }
 
@@ -4494,8 +4965,8 @@ fn layout_nary_c(
         children.push(PositionedBox::new(nary_width + thin_space, 0.0, body_box));
         LayoutBox {
             width: nary_width + thin_space + body_w,
-            height: total_h,
-            depth: total_d,
+            height: total_h.max(body_h),
+            depth: total_d.max(body_d),
             kind: BoxKind::HBox { children },
         }
     } else {
@@ -4524,15 +4995,16 @@ fn layout_nary_c(
         // Wrap large-op glyph in HBox so is_char_box returns false in subsup layout.
         // KaTeX does not treat large operator symbols as character boxes, allowing
         // the sup_drop term (base.height - supDrop) to position scripts proportionally.
+        // Apply axis_delta to center the operator on the math axis (TeX Rule 13a/13b).
         let op_glyph_box = {
             let w = op_box.width;
-            let h = op_box.height;
-            let d = op_box.depth;
+            let h = op_box.height + axis_delta;
+            let d = (op_box.depth - axis_delta).max(0.0);
             LayoutBox {
                 width: w,
                 height: h,
                 depth: d,
-                kind: BoxKind::HBox { children: vec![PositionedBox::at_origin(op_box)] },
+                kind: BoxKind::HBox { children: vec![PositionedBox::new(0.0, axis_delta, op_box)] },
             }
         };
 
@@ -4602,7 +5074,7 @@ fn layout_superscript_from_box(
 
     let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
 
-    let total_width = base_box.width + ic + sup_box.width;
+    let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -4648,7 +5120,7 @@ fn layout_subscript_from_box(
     let ic = italic_correction(&base_box);
     let sub_dx = (base_box.width - ic).max(0.0);
 
-    let total_width = sub_dx + sub_box.width;
+    let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -4720,6 +5192,8 @@ fn layout_subsup_from_box(
     if psi > 0.0 {
         shift_up += psi;
         shift_down -= psi;
+        // Safety: ensure subscript stays below baseline
+        shift_down = shift_down.max(0.0);
     }
 
     let ic = if is_prime_sup_c(arena, sup) { 0.0 } else { italic_correction(&base_box) };
@@ -4729,7 +5203,7 @@ fn layout_subsup_from_box(
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
         .max(0.0);
-    let total_width = base_box.width + script_width;
+    let total_width = base_box.width + script_width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -5002,6 +5476,20 @@ fn layout_underover_c(
     }
 }
 
+/// Compact-arena variant of `accent_skew`.
+fn accent_skew_c(arena: &AstArena, base: NodeId, size: f64) -> f64 {
+    if let CompactNode::Identifier(sid) = arena.node(base) {
+        let s = arena.str_val(*sid);
+        let mut chars = s.chars();
+        if let Some(ch) = chars.next()
+            && chars.next().is_none()
+        {
+            return metrics::glyph_metrics(ch).italic * size / 2.0;
+        }
+    }
+    0.0
+}
+
 fn layout_accent_c(
     arena: &AstArena,
     base: NodeId,
@@ -5032,7 +5520,9 @@ fn layout_accent_c(
 
         match accent {
             '\u{0304}' => {
-                let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
+                let thickness = math_table::math_constants()
+                    .map(|c| (c.overbar_rule_thickness * size).max(0.06 * size))
+                    .unwrap_or((ctx.params.rule_thickness * size * 1.8).max(0.06 * size));
                 LayoutBox::rule(base_width, thickness)
             },
             '\u{0307}' => {
@@ -5186,10 +5676,18 @@ fn layout_accent_c(
         LayoutBox::glyph(accent, ctx.size(), false)
     };
 
-    let accent_dx = (base_width - accent_box.width) / 2.0;
+    let skew = match position {
+        AccentPosition::Above => accent_skew_c(arena, base, ctx.size()),
+        AccentPosition::Below => 0.0,
+    };
+    let accent_dx = (base_width - accent_box.width) / 2.0 + skew;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
-            let dy = base_box.height + 0.05 * ctx.size();
+            let accent_base_h = math_table::math_constants()
+                .map(|c| c.accent_base_height * ctx.size())
+                .unwrap_or(0.0);
+            let effective_h = base_box.height.max(accent_base_h);
+            let dy = effective_h + 0.05 * ctx.size();
             (dy, dy + accent_box.height, base_box.depth)
         },
         AccentPosition::Below => {
@@ -5216,6 +5714,7 @@ fn layout_accent_c(
 }
 
 #[allow(clippy::needless_range_loop)]
+#[allow(clippy::too_many_arguments)]
 fn layout_array_c(
     arena: &AstArena,
     col_aligns: NodeSpan,
@@ -5223,6 +5722,7 @@ fn layout_array_c(
     num_cols: u16,
     arraystretch_pct: u8,
     add_jot: bool,
+    col_seps: u32,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
@@ -5337,6 +5837,41 @@ fn layout_array_c(
         child.dy = box_height - child.dy;
     }
 
+    // Add vertical separator rules if col_seps is non-zero
+    if col_seps != 0 {
+        let rule_w = 0.04 * size;
+        let rule_total_h = box_height + (half - axis);
+        let box_depth = half - axis;
+
+        // Compute column boundary x positions
+        let mut boundary_x = Vec::with_capacity(n_cols + 1);
+        let mut x_acc = 0.0;
+        for j in 0..n_cols {
+            boundary_x.push(x_acc);
+            x_acc += col_widths[j];
+            if j < n_cols - 1 {
+                x_acc += col_gap_after(j, aligned, size);
+            }
+        }
+        boundary_x.push(x_acc); // right edge
+
+        for (pos, &bx) in boundary_x.iter().enumerate() {
+            if pos < 32 && (col_seps >> pos) & 1 != 0 {
+                let path = format!(
+                    "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                    rule_w, rule_w, rule_total_h, rule_total_h
+                );
+                let rule_box = LayoutBox {
+                    width: rule_w,
+                    height: box_height,
+                    depth: box_depth,
+                    kind: BoxKind::SvgPath(path),
+                };
+                children.push(PositionedBox::new(bx - rule_w / 2.0, 0.0, rule_box));
+            }
+        }
+    }
+
     LayoutBox {
         width: total_width,
         height: box_height,
@@ -5356,15 +5891,15 @@ fn layout_prescripts_c(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let mut children = Vec::new();
     let mut pre_width: f64 = 0.0;
     let mut total_h = base_box.height;
     let mut total_d = base_box.depth;
 
-    // Bug 1 fix: use child style params for prescripts too
     let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let has_both = pre_sup.is_some() && pre_sub.is_some();
 
-    if pre_sup.is_some() {
+    // Layout pre-superscript
+    let sup_data = if pre_sup.is_some() {
         let sup_style = ctx.style.sup();
         let sup_params = TexParams::for_size_class(sup_style.size_class());
         let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
@@ -5375,42 +5910,97 @@ fn layout_prescripts_c(
             shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio * size);
         }
         pre_width = pre_width.max(sup_box.width);
-        total_h = total_h.max(shift_up + sup_box.height);
-        children.push(PositionedBox::new(0.0, shift_up, sup_box));
-    }
-    if pre_sub.is_some() {
+        Some((sup_box, shift_up))
+    } else {
+        None
+    };
+
+    // Layout pre-subscript; use sub2 when both scripts present (Rule 18d)
+    let sub_data = if pre_sub.is_some() {
         let sub_style = ctx.style.sub();
         let sub_params = TexParams::for_size_class(sub_style.size_class());
         let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
         let sub_ctx = ctx.with_style(sub_style);
         let sub_box = layout_node_c(arena, pre_sub, &sub_ctx);
-        let mut shift_down = p.sub1 * size;
+        let mut shift_down = if has_both { p.sub2 } else { p.sub1 } * size;
         if !is_char_box {
             shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio * size);
         }
         pre_width = pre_width.max(sub_box.width);
+        Some((sub_box, shift_down))
+    } else {
+        None
+    };
+
+    // Rule 18e: ensure minimum gap between pre-sub top and pre-sup bottom
+    let (sup_data, sub_data) = match (sup_data, sub_data) {
+        (Some((sup_box, mut shift_up)), Some((sub_box, mut shift_down))) => {
+            let gap = (shift_up - sup_box.depth) - (sub_box.height - shift_down);
+            let min_gap = 4.0 * p.rule_thickness * size;
+            if gap < min_gap {
+                shift_down = min_gap - (shift_up - sup_box.depth) + sub_box.height;
+            }
+            let psi = 0.8 * p.x_height * size - (shift_up - sup_box.depth);
+            if psi > 0.0 {
+                shift_up += psi;
+                shift_down -= psi;
+                shift_down = shift_down.max(0.0);
+            }
+            (Some((sup_box, shift_up)), Some((sub_box, shift_down)))
+        }
+        other => other,
+    };
+
+    let mut children = Vec::new();
+    // Right-align pre-scripts within the pre-column (TeX convention)
+    if let Some((sup_box, shift_up)) = sup_data {
+        total_h = total_h.max(shift_up + sup_box.height);
+        let dx = pre_width - sup_box.width;
+        children.push(PositionedBox::new(dx, shift_up, sup_box));
+    }
+    if let Some((sub_box, shift_down)) = sub_data {
         total_d = total_d.max(shift_down + sub_box.depth);
-        children.push(PositionedBox::new(0.0, -shift_down, sub_box));
+        let dx = pre_width - sub_box.width;
+        children.push(PositionedBox::new(dx, -shift_down, sub_box));
     }
 
     let base_width = base_box.width;
-    children.push(PositionedBox::new(pre_width, 0.0, base_box));
+    let kern = SCRIPT_SPACE * size;
+    children.push(PositionedBox::new(pre_width + kern, 0.0, base_box));
 
     LayoutBox {
-        width: pre_width + base_width,
+        width: pre_width + kern + base_width,
         height: total_h,
         depth: total_d,
         kind: BoxKind::HBox { children },
     }
 }
 
-fn layout_phantom_c(arena: &AstArena, content: NodeId, ctx: &LayoutCtx) -> LayoutBox {
+fn layout_phantom_c(arena: &AstArena, content: NodeId, kind: PhantomKind, ctx: &LayoutCtx) -> LayoutBox {
     let inner = layout_node_c(arena, content, ctx);
-    LayoutBox {
-        width: inner.width,
-        height: inner.height,
-        depth: inner.depth,
-        kind: BoxKind::Phantom,
+    match kind {
+        // Phantom: invisible but occupies space
+        PhantomKind::Full | PhantomKind::Vertical | PhantomKind::Horizontal => {
+            LayoutBox {
+                width: if kind == PhantomKind::Vertical { 0.0 } else { inner.width },
+                height: if kind == PhantomKind::Horizontal { 0.0 } else { inner.height },
+                depth: if kind == PhantomKind::Horizontal { 0.0 } else { inner.depth },
+                kind: BoxKind::Phantom,
+            }
+        },
+        // Smash: visible but with zeroed height/depth
+        PhantomKind::SmashBoth | PhantomKind::SmashBottom | PhantomKind::SmashTop => {
+            let h = if kind == PhantomKind::SmashTop || kind == PhantomKind::SmashBoth { 0.0 } else { inner.height };
+            let d = if kind == PhantomKind::SmashBottom || kind == PhantomKind::SmashBoth { 0.0 } else { inner.depth };
+            LayoutBox {
+                width: inner.width,
+                height: h,
+                depth: d,
+                kind: BoxKind::HBox {
+                    children: vec![PositionedBox::new(0.0, 0.0, inner)],
+                },
+            }
+        },
     }
 }
 
@@ -5505,7 +6095,7 @@ fn layout_scaled_c(
         width: inner.width * f,
         height: inner.height * f,
         depth: inner.depth * f,
-        kind: inner.kind,
+        kind: scale_box_kind(inner.kind, f),
     }
 }
 
@@ -5521,8 +6111,23 @@ fn layout_styled_c(arena: &AstArena, style: TextStyle, span: NodeSpan, ctx: &Lay
     let mut cursor_x = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
+    let mut prev_atom: Option<AtomType> = None;
 
     for &id in ids {
+        // Inter-atom spacing (matching layout_row_segment_c)
+        let raw_atom = spacing::classify_node_c(arena, id);
+        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
+        if let Some(prev) = adj_prev {
+            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+            if space > 0.0 {
+                let kern_width = space * ctx.size();
+                children.push(PositionedBox::new(cursor_x, 0.0, LayoutBox::kern(kern_width)));
+                cursor_x += kern_width;
+            }
+        }
+        prev_atom = Some(cur_atom);
+
         let layout = match *arena.node(id) {
             CompactNode::Identifier(sid) => {
                 let s = arena.str_val(sid);
@@ -5693,7 +6298,7 @@ fn center_glyph_on_axis_arena(
     let glyph_w = b.width;
     let glyph_center = (glyph_h - glyph_d) / 2.0;
     let shift = axis - glyph_center;
-    let new_height = (glyph_h + shift).max(glyph_h);
+    let new_height = (glyph_h + shift).max(0.0);
     let new_depth = (glyph_d - shift).max(0.0);
 
     let children_start = arena.begin_children();
@@ -5960,8 +6565,8 @@ fn layout_node_arena(
         CompactNode::Root { index, radicand } => layout_sqrt_arena(ast, radicand, Some(index), arena, ctx),
         CompactNode::Nary { op, sub, sup, body, limits } => layout_nary_arena(ast, op, sub, sup, body, limits, arena, ctx),
         CompactNode::Accent { base, accent, position, wide } => layout_accent_arena(ast, base, accent, position, wide, arena, ctx),
-        CompactNode::Array { col_aligns, cells, num_cols, arraystretch_pct, add_jot } => layout_array_arena(ast, col_aligns, cells, num_cols, arraystretch_pct, add_jot, arena, ctx),
-        CompactNode::Phantom(inner) => layout_phantom_arena(ast, inner, arena, ctx),
+        CompactNode::Array { col_aligns, cells, num_cols, arraystretch_pct, add_jot, col_seps } => layout_array_arena(ast, col_aligns, cells, num_cols, arraystretch_pct, add_jot, col_seps, arena, ctx),
+        CompactNode::Phantom(inner, kind) => layout_phantom_arena(ast, inner, kind, arena, ctx),
         CompactNode::Boxed { content: inner, bg_color, border_color } => {
             let bg = {
                 let s = ast.str_val(bg_color);
@@ -5986,6 +6591,7 @@ fn layout_node_arena(
             };
             layout_node_arena(ast, chosen, arena, ctx)
         },
+        CompactNode::MathAtom { content, .. } => layout_node_arena(ast, content, arena, ctx),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::SizeScale(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
@@ -6191,7 +6797,7 @@ fn layout_superscript_arena(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_d);
 
-    let total_width = base_w + ic + sup_w;
+    let total_width = base_w + ic + sup_w + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
@@ -6261,7 +6867,7 @@ fn layout_subscript_arena(
     }
     let shift_down = shift_down.max(sub_h - (4.0 * p.x_height * size / 5.0));
 
-    let total_width = sub_dx + sub_w;
+    let total_width = (sub_dx + sub_w).max(base_w) + SCRIPT_SPACE * size;
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -6354,6 +6960,8 @@ fn layout_subsup_arena(
     if psi > 0.0 {
         shift_up += psi;
         shift_down -= psi;
+        // Safety: ensure subscript stays below baseline
+        shift_down = shift_down.max(0.0);
     }
 
     let sup_dx = base_w + ic;
@@ -6362,7 +6970,7 @@ fn layout_subsup_arena(
     let script_width = (sup_dx - base_w + sup_w)
         .max(sub_dx - base_w + sub_w)
         .max(0.0);
-    let total_width = base_w + script_width;
+    let total_width = base_w + script_width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -6700,7 +7308,9 @@ fn layout_sqrt_arena(
 
     let rule_thickness = p.rule_thickness * size;
     // Radical strokes thicker than fraction rules for better visibility
-    let radical_thickness = (rule_thickness * 1.5).max(0.06 * size);
+    let radical_thickness = math_table::math_constants()
+        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
+        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
 
     // KaTeX-compatible clearance: theta + phi/4
     // where phi = xHeight in display mode, theta otherwise
@@ -6711,20 +7321,11 @@ fn layout_sqrt_arena(
     };
     let extra_clearance = rule_thickness + phi / 4.0;
 
-    let inner_total = inner_h + inner_d + extra_clearance + rule_thickness;
+    let inner_total = inner_h + inner_d + extra_clearance + radical_thickness;
 
-    // KaTeX discrete surd glyph sizes (em): small, Size1, Size2, Size3, Size4
-    let surd_height = [1.0, 1.2, 1.8, 2.4, 3.0].iter()
-        .map(|&s| s * size)
-        .find(|&s| s >= inner_total)
-        .unwrap_or(inner_total);
-
-    // If surd is taller than needed, redistribute extra space evenly
-    let extra_clearance = if surd_height > inner_total {
-        extra_clearance + (surd_height - inner_total) / 2.0
-    } else {
-        extra_clearance
-    };
+    // Use exact height needed — font glyph variant selection (in raster.rs)
+    // handles choosing the right pre-designed size variant.
+    let surd_height = inner_total;
 
     let radical_width = 0.833 * size;
     let radical_id = arena.alloc(ArenaLayoutBox {
@@ -6734,9 +7335,9 @@ fn layout_sqrt_arena(
         kind: ArenaBoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
     });
 
-    let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, rule_thickness));
+    let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, radical_thickness));
 
-    let shift_up = inner_h + extra_clearance + rule_thickness;
+    let shift_up = inner_h + extra_clearance + radical_thickness;
 
     // Build children: radical, vinculum, inner
     // We may need to adjust dx values if there's an index, so we track the span start
@@ -6745,7 +7346,10 @@ fn layout_sqrt_arena(
     let mut vinculum_dx = radical_width;
     let mut inner_dx = radical_width;
     let mut total_width = radical_width + inner_w;
-    let total_height = shift_up + rule_thickness;
+    let extra_ascender = math_table::math_constants()
+        .map(|c| c.radical_extra_ascender * size)
+        .unwrap_or(0.0);
+    let total_height = shift_up + radical_thickness + extra_ascender;
     // Radical tail extends below baseline
     let radical_dy = shift_up - surd_height; // negative: tail below baseline
     let total_depth = inner_d.max(surd_height - shift_up);
@@ -6755,21 +7359,33 @@ fn layout_sqrt_arena(
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box_id = layout_node_arena(ast, idx_id_node, arena, &idx_ctx);
         let idx_w = arena.get(idx_box_id).width;
-        let idx_shift = total_height * 0.6;
-        let idx_overflow = idx_w.max(radical_width * 0.5);
-        if idx_overflow > radical_width * 0.5 {
-            let extra = idx_overflow - radical_width * 0.5;
-            radical_dx += extra;
-            vinculum_dx += extra;
-            inner_dx += extra;
-            total_width += extra;
-        }
+        // Use MATH table radical_degree_bottom_raise_percent (default 60%)
+        let raise_pct = math_table::math_constants()
+            .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
+            .unwrap_or(0.6);
+        let idx_shift = total_height * raise_pct;
+
+        // Use MATH table kern values for degree positioning (OpenType MATH spec)
+        let kern_before = math_table::math_constants()
+            .map(|c| c.radical_kern_before_degree * size)
+            .unwrap_or(0.0);
+        let kern_after = math_table::math_constants()
+            .map(|c| c.radical_kern_after_degree * size)
+            .unwrap_or(0.0);
+
+        let degree_x = kern_before;
+        let radical_start = (degree_x + idx_w + kern_after).max(0.0);
+
+        radical_dx += radical_start;
+        vinculum_dx += radical_start;
+        inner_dx += radical_start;
+        total_width = radical_start + radical_width + inner_w;
 
         let children_start = arena.begin_children();
         arena.push_child(ArenaPositionedBox { dx: radical_dx, dy: radical_dy, id: radical_id });
         arena.push_child(ArenaPositionedBox { dx: vinculum_dx, dy: shift_up, id: vinculum_id });
         arena.push_child(ArenaPositionedBox { dx: inner_dx, dy: 0.0, id: inner_id });
-        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: idx_shift, id: idx_box_id });
+        arena.push_child(ArenaPositionedBox { dx: degree_x, dy: idx_shift, id: idx_box_id });
         let children = arena.finish_children(children_start);
 
         arena.alloc(ArenaLayoutBox {
@@ -6802,43 +7418,36 @@ fn layout_fenced_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    // Layout content with inter-atom spacing, skipping Middle separator nodes
-    let mut inner_ids: Vec<(f64, LayoutBoxId)> = Vec::new();
-    let mut content_cursor = 0.0;
-    let mut prev_atom: Option<spacing::AtomType> = None;
+    use super::delimiter_paths;
+
+    // Pass 1: Layout all Element items, compute max_h/max_d for delimiter sizing.
+    let content_children = ast.children(content);
+    let mut laid_out: Vec<Option<LayoutBoxId>> = Vec::with_capacity(content_children.len());
     let mut max_h: f64 = 0.0;
     let mut max_d: f64 = 0.0;
-    for &child_id in ast.children(content) {
-        match *ast.node(child_id) {
-            CompactNode::Middle(_) => {},
-            _ => {
-                // Add inter-atom spacing
-                let raw_atom = spacing::classify_node_c(ast, child_id);
-                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-                let cur_atom = adj_cur.unwrap(); // safe: we passed Some
-                if let Some(prev) = adj_prev {
-                    let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
-                    if space > 0.0 {
-                        content_cursor += space * ctx.size();
-                    }
-                }
+    let mut element_count = 0usize;
+    let mut sole_nobar_frac = false;
 
+    for &child_id in content_children {
+        match *ast.node(child_id) {
+            CompactNode::Middle(_) => {
+                laid_out.push(None);
+            }
+            _ => {
                 let laid = layout_node_arena(ast, child_id, arena, ctx);
                 let b = arena.get(laid);
                 max_h = max_h.max(b.height);
                 max_d = max_d.max(b.depth);
-                let w = b.width;
-                inner_ids.push((content_cursor, laid));
-                content_cursor += w;
-                prev_atom = Some(cur_atom);
-            },
+                laid_out.push(Some(laid));
+                element_count += 1;
+                sole_nobar_frac = element_count == 1
+                    && matches!(*ast.node(child_id), CompactNode::Fraction { kind: FractionKind::NoBar, .. });
+            }
         }
     }
 
     // Detect fraction-with-delimiters (e.g., \binom) — TeX Rule 15e
-    let content_children_ast = ast.children(content);
-    let is_genfrac = content_children_ast.len() == 1
-        && matches!(*ast.node(content_children_ast[0]), CompactNode::Fraction { kind: FractionKind::NoBar, .. });
+    let is_genfrac = element_count == 1 && sole_nobar_frac;
 
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
@@ -6861,11 +7470,10 @@ fn layout_fenced_arena(
     let delim_h = half + axis;
     let delim_d = half - axis;
 
-    // Compute delimiter width using path-based sizing for tall content
-    use super::delimiter_paths;
-
     let children_start = arena.begin_children();
     let mut cursor_x = 0.0;
+    let mut prev_atom: Option<spacing::AtomType> = None;
+    let mut laid_iter = laid_out.into_iter();
 
     // Open delimiter
     let open_str = ast.str_val(open);
@@ -6884,30 +7492,80 @@ fn layout_fenced_arena(
             }
         };
         let delim_id = arena.alloc(ArenaLayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: ArenaBoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
+            width: delim_width, height: delim_h, depth: delim_d,
+            kind: ArenaBoxKind::Delimiter { ch, target_height: target_h },
         });
-        let delim_w = arena.get(delim_id).width;
+        let dw = arena.get(delim_id).width;
         arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: delim_id });
-        cursor_x += delim_w;
+        cursor_x += dw;
+        // Inner padding between open delimiter and content (TeX null-delimiter-space)
+        cursor_x += 0.12 * ctx.size();
     }
 
-    // Content with pre-computed spacing offsets
-    for &(offset, id) in &inner_ids {
-        arena.push_child(ArenaPositionedBox { dx: cursor_x + offset, dy: 0.0, id });
+    // Content + middle delimiters
+    for &child_id in content_children {
+        match *ast.node(child_id) {
+            CompactNode::Middle(sid) => {
+                laid_iter.next(); // consume the None placeholder
+                let s = ast.str_val(sid);
+                if s != "." && let Some(ch) = s.chars().next() {
+                    // Spacing before middle delimiter (treat as Inner atom)
+                    if let Some(prev) = prev_atom {
+                        let space = spacing::inter_atom_space(prev, spacing::AtomType::Inner, ctx.effective_spacing_style());
+                        if space > 0.0 {
+                            cursor_x += space * ctx.size();
+                        }
+                    }
+                    let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+                        delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
+                    } else {
+                        let base_delim_width = 0.389 * ctx.size();
+                        let standard_height = 0.9 * ctx.size();
+                        if target_h > standard_height {
+                            base_delim_width * (target_h / standard_height)
+                        } else {
+                            base_delim_width
+                        }
+                    };
+                    let delim_id = arena.alloc(ArenaLayoutBox {
+                        width: delim_width, height: delim_h, depth: delim_d,
+                        kind: ArenaBoxKind::Delimiter { ch, target_height: target_h },
+                    });
+                    let dw = arena.get(delim_id).width;
+                    arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: delim_id });
+                    cursor_x += dw;
+                    prev_atom = Some(spacing::AtomType::Inner);
+                }
+            }
+            _ => {
+                // Safety: laid_iter yields one item per non-delimiter child; unwrap safe because
+                // the iterator was built from the same child list we're iterating
+                let laid = laid_iter.next().unwrap().unwrap();
+                // Inter-atom spacing
+                let raw_atom = spacing::classify_node_c(ast, child_id);
+                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+                let cur_atom = adj_cur.unwrap(); // safe: we passed Some(raw_atom)
+                if let Some(prev) = adj_prev {
+                    let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+                    if space > 0.0 {
+                        cursor_x += space * ctx.size();
+                    }
+                }
+                let w = arena.get(laid).width;
+                arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: laid });
+                cursor_x += w;
+                prev_atom = Some(cur_atom);
+            }
+        }
     }
-    cursor_x += content_cursor;
 
     // Close delimiter
     let close_str = ast.str_val(close);
     if !close_str.is_empty() && close_str != "."
         && let Some(ch) = close_str.chars().next()
     {
+        // Inner padding between content and close delimiter
+        cursor_x += 0.12 * ctx.size();
         let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
@@ -6920,17 +7578,12 @@ fn layout_fenced_arena(
             }
         };
         let delim_id = arena.alloc(ArenaLayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: ArenaBoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
+            width: delim_width, height: delim_h, depth: delim_d,
+            kind: ArenaBoxKind::Delimiter { ch, target_height: target_h },
         });
-        let delim_w = arena.get(delim_id).width;
+        let dw = arena.get(delim_id).width;
         arena.push_child(ArenaPositionedBox { dx: cursor_x, dy: 0.0, id: delim_id });
-        cursor_x += delim_w;
+        cursor_x += dw;
     }
 
     let children = arena.finish_children(children_start);
@@ -6964,6 +7617,15 @@ fn layout_nary_arena(
     };
     let op_id = alloc_glyph_with_metrics(arena, op, m, op_size, false);
 
+    // TeX: center the large operator on the math axis.
+    let op_h_raw = arena.get(op_id).height;
+    let op_d_raw = arena.get(op_id).depth;
+    let axis_delta = if ctx.style.is_display() {
+        p.axis_height * size - (op_h_raw - op_d_raw) / 2.0
+    } else {
+        0.0
+    };
+
     let body_id = layout_node_arena(ast, body, arena, ctx);
     let body_w = arena.get(body_id).width;
     let body_h = arena.get(body_id).height;
@@ -6982,8 +7644,10 @@ fn layout_nary_arena(
         let op_h = arena.get(op_id).height;
         let op_d = arena.get(op_id).depth;
 
-        let mut total_h = op_h;
-        let mut total_d = op_d;
+        let eff_op_h = op_h + axis_delta;
+        let eff_op_d = (op_d - axis_delta).max(0.0);
+        let mut total_h = eff_op_h;
+        let mut total_d = eff_op_d;
         let mut max_w = op_w;
 
         let sup_id_opt = if sup.is_some() {
@@ -7040,13 +7704,13 @@ fn layout_nary_arena(
 
         if let Some(sid) = sup_id_opt {
             let sup_dx = (max_w - sup_w_opt) / 2.0;
-            let sup_dy = op_h + sup_gap + sup_d_opt;
+            let sup_dy = eff_op_h + sup_gap + sup_d_opt;
             arena.push_child(ArenaPositionedBox { dx: sup_dx, dy: sup_dy, id: sid });
         }
-        arena.push_child(ArenaPositionedBox { dx: op_dx, dy: 0.0, id: op_id });
+        arena.push_child(ArenaPositionedBox { dx: op_dx, dy: axis_delta, id: op_id });
         if let Some(sid) = sub_id_opt {
             let sub_dx = (max_w - sub_w_opt) / 2.0;
-            let sub_dy = -(op_d + sub_gap + sub_h_opt);
+            let sub_dy = -(eff_op_d + sub_gap + sub_h_opt);
             arena.push_child(ArenaPositionedBox { dx: sub_dx, dy: sub_dy, id: sid });
         }
 
@@ -7058,8 +7722,8 @@ fn layout_nary_arena(
 
         arena.alloc(ArenaLayoutBox {
             width: nary_width + thin_space + body_w,
-            height: total_h,
-            depth: total_d,
+            height: total_h.max(body_h),
+            depth: total_d.max(body_d),
             kind: ArenaBoxKind::HBox { children },
         })
     } else {
@@ -7069,13 +7733,14 @@ fn layout_nary_arena(
         // Wrap large-op glyph in HBox so is_char_box returns false in subsup layout.
         // KaTeX does not treat large operator symbols as character boxes, allowing
         // the sup_drop term (base.height - supDrop) to position scripts proportionally.
+        // Apply axis_delta to center the operator on the math axis (TeX Rule 13a/13b).
         let op_glyph_id = {
             let b = arena.get(op_id);
             let w = b.width;
-            let h = b.height;
-            let d = b.depth;
+            let h = b.height + axis_delta;
+            let d = (b.depth - axis_delta).max(0.0);
             let cs = arena.begin_children();
-            arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: op_id });
+            arena.push_child(ArenaPositionedBox { dx: 0.0, dy: axis_delta, id: op_id });
             let children = arena.finish_children(cs);
             arena.alloc(ArenaLayoutBox {
                 width: w,
@@ -7184,7 +7849,7 @@ fn layout_superscript_from_box_arena(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_d);
 
-    let total_width = base_w + ic + sup_w;
+    let total_width = base_w + ic + sup_w + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
@@ -7238,7 +7903,7 @@ fn layout_subscript_from_box_arena(
     }
     let shift_down = shift_down.max(sub_h - (4.0 * p.x_height * size / 5.0));
 
-    let total_width = sub_dx + sub_w;
+    let total_width = (sub_dx + sub_w).max(base_w) + SCRIPT_SPACE * size;
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -7323,6 +7988,8 @@ fn layout_subsup_from_box_arena(
     if psi > 0.0 {
         shift_up += psi;
         shift_down -= psi;
+        // Safety: ensure subscript stays below baseline
+        shift_down = shift_down.max(0.0);
     }
 
     let sup_dx = base_w + ic;
@@ -7331,7 +7998,7 @@ fn layout_subsup_from_box_arena(
     let script_width = (sup_dx - base_w + sup_w)
         .max(sub_dx - base_w + sub_w)
         .max(0.0);
-    let total_width = base_w + script_width;
+    let total_width = base_w + script_width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -7694,7 +8361,9 @@ fn layout_accent_arena(
 
         match accent {
             '\u{0304}' => {
-                let thickness = (ctx.params.rule_thickness * size * 1.8).max(0.06 * size);
+                let thickness = math_table::math_constants()
+                    .map(|c| (c.overbar_rule_thickness * size).max(0.06 * size))
+                    .unwrap_or((ctx.params.rule_thickness * size * 1.8).max(0.06 * size));
                 arena.alloc(ArenaLayoutBox {
                     width: base_w,
                     height: thickness / 2.0,
@@ -7870,10 +8539,18 @@ fn layout_accent_arena(
     let accent_w = arena.get(accent_id).width;
     let accent_h = arena.get(accent_id).height;
 
-    let accent_dx = (base_w - accent_w) / 2.0;
+    let skew = match position {
+        AccentPosition::Above => accent_skew_c(ast, base, ctx.size()),
+        AccentPosition::Below => 0.0,
+    };
+    let accent_dx = (base_w - accent_w) / 2.0 + skew;
     let (accent_dy, total_h, total_d) = match position {
         AccentPosition::Above => {
-            let dy = base_h + 0.05 * ctx.size();
+            let accent_base_h = math_table::math_constants()
+                .map(|c| c.accent_base_height * ctx.size())
+                .unwrap_or(0.0);
+            let effective_h = base_h.max(accent_base_h);
+            let dy = effective_h + 0.05 * ctx.size();
             (dy, dy + accent_h, base_d)
         },
         AccentPosition::Below => {
@@ -7908,6 +8585,7 @@ fn layout_array_arena(
     num_cols: u16,
     arraystretch_pct: u8,
     add_jot: bool,
+    col_seps: u32,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -8020,6 +8698,44 @@ fn layout_array_arena(
         cursor_y += row_depths[i];
     }
 
+    // Add vertical separator rules if col_seps is non-zero
+    if col_seps != 0 {
+        let rule_w = 0.04 * size;
+        let rule_total_h = box_height + (half - axis);
+        let box_depth = half - axis;
+
+        let mut boundary_x = Vec::with_capacity(n_cols + 1);
+        let mut x_acc = 0.0;
+        for j in 0..n_cols {
+            boundary_x.push(x_acc);
+            x_acc += col_widths[j];
+            if j < n_cols - 1 {
+                x_acc += col_gap_after(j, aligned, size);
+            }
+        }
+        boundary_x.push(x_acc);
+
+        for (pos, &bx) in boundary_x.iter().enumerate() {
+            if pos < 32 && (col_seps >> pos) & 1 != 0 {
+                let path = format!(
+                    "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                    rule_w, rule_w, rule_total_h, rule_total_h
+                );
+                let rule_id = arena.alloc(ArenaLayoutBox {
+                    width: rule_w,
+                    height: box_height,
+                    depth: box_depth,
+                    kind: ArenaBoxKind::SvgPath(path),
+                });
+                arena.push_child(ArenaPositionedBox {
+                    dx: bx - rule_w / 2.0,
+                    dy: 0.0,
+                    id: rule_id,
+                });
+            }
+        }
+    }
+
     let children = arena.finish_children(children_start);
     let total_gap: f64 = (0..n_cols.saturating_sub(1))
         .map(|j| col_gap_after(j, aligned, size))
@@ -8054,11 +8770,11 @@ fn layout_prescripts_arena(
     let mut total_h = base_h;
     let mut total_d = base_d;
 
-    // Bug 1 fix: use child style params for prescripts too
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+    let has_both = pre_sup.is_some() && pre_sub.is_some();
 
-    // Layout pre-superscript and pre-subscript
-    let pre_sup_id = if pre_sup.is_some() {
+    // Layout pre-superscript
+    let mut pre_sup_id = if pre_sup.is_some() {
         let sup_style = ctx.style.sup();
         let sup_params = TexParams::for_size_class(sup_style.size_class());
         let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
@@ -8070,42 +8786,64 @@ fn layout_prescripts_arena(
             shift_up = shift_up.max(base_h - sup_params.sup_drop * sup_size_ratio * size);
         }
         pre_width = pre_width.max(b.width);
-        total_h = total_h.max(shift_up + b.height);
         Some((sid, shift_up))
     } else {
         None
     };
 
-    let pre_sub_id = if pre_sub.is_some() {
+    // Layout pre-subscript; use sub2 when both scripts present (Rule 18d)
+    let mut pre_sub_id = if pre_sub.is_some() {
         let sub_style = ctx.style.sub();
         let sub_params = TexParams::for_size_class(sub_style.size_class());
         let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
         let sub_ctx = ctx.with_style(sub_style);
         let sid = layout_node_arena(ast, pre_sub, arena, &sub_ctx);
         let b = arena.get(sid);
-        let mut shift_down = p.sub1 * size;
+        let mut shift_down = if has_both { p.sub2 } else { p.sub1 } * size;
         if !is_char_box {
             shift_down = shift_down.max(base_d + sub_params.sub_drop * sub_size_ratio * size);
         }
         pre_width = pre_width.max(b.width);
-        total_d = total_d.max(shift_down + b.depth);
         Some((sid, shift_down))
     } else {
         None
     };
 
+    // Rule 18e: ensure minimum gap between pre-sub top and pre-sup bottom
+    if let (Some((sup_sid, shift_up)), Some((sub_sid, shift_down))) = (&mut pre_sup_id, &mut pre_sub_id) {
+        let sup_depth = arena.get(*sup_sid).depth;
+        let sub_height = arena.get(*sub_sid).height;
+        let gap = (*shift_up - sup_depth) - (sub_height - *shift_down);
+        let min_gap = 4.0 * p.rule_thickness * size;
+        if gap < min_gap {
+            *shift_down = min_gap - (*shift_up - sup_depth) + sub_height;
+        }
+        let psi = 0.8 * p.x_height * size - (*shift_up - sup_depth);
+        if psi > 0.0 {
+            *shift_up += psi;
+            *shift_down -= psi;
+            *shift_down = (*shift_down).max(0.0);
+        }
+    }
+
     let children_start = arena.begin_children();
+    // Right-align pre-scripts within the pre-column (TeX convention)
     if let Some((sid, shift_up)) = pre_sup_id {
-        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: shift_up, id: sid });
+        total_h = total_h.max(shift_up + arena.get(sid).height);
+        let dx = pre_width - arena.get(sid).width;
+        arena.push_child(ArenaPositionedBox { dx, dy: shift_up, id: sid });
     }
     if let Some((sid, shift_down)) = pre_sub_id {
-        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: -shift_down, id: sid });
+        total_d = total_d.max(shift_down + arena.get(sid).depth);
+        let dx = pre_width - arena.get(sid).width;
+        arena.push_child(ArenaPositionedBox { dx, dy: -shift_down, id: sid });
     }
-    arena.push_child(ArenaPositionedBox { dx: pre_width, dy: 0.0, id: base_id });
+    let kern = SCRIPT_SPACE * size;
+    arena.push_child(ArenaPositionedBox { dx: pre_width + kern, dy: 0.0, id: base_id });
     let children = arena.finish_children(children_start);
 
     arena.alloc(ArenaLayoutBox {
-        width: pre_width + base_w,
+        width: pre_width + kern + base_w,
         height: total_h,
         depth: total_d,
         kind: ArenaBoxKind::HBox { children },
@@ -8115,6 +8853,7 @@ fn layout_prescripts_arena(
 fn layout_phantom_arena(
     ast: &AstArena,
     content: NodeId,
+    kind: PhantomKind,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -8123,12 +8862,29 @@ fn layout_phantom_arena(
     let inner_h = arena.get(inner_id).height;
     let inner_d = arena.get(inner_id).depth;
 
-    arena.alloc(ArenaLayoutBox {
-        width: inner_w,
-        height: inner_h,
-        depth: inner_d,
-        kind: ArenaBoxKind::Phantom,
-    })
+    match kind {
+        PhantomKind::Full | PhantomKind::Vertical | PhantomKind::Horizontal => {
+            arena.alloc(ArenaLayoutBox {
+                width: if kind == PhantomKind::Vertical { 0.0 } else { inner_w },
+                height: if kind == PhantomKind::Horizontal { 0.0 } else { inner_h },
+                depth: if kind == PhantomKind::Horizontal { 0.0 } else { inner_d },
+                kind: ArenaBoxKind::Phantom,
+            })
+        },
+        PhantomKind::SmashBoth | PhantomKind::SmashBottom | PhantomKind::SmashTop => {
+            let h = if kind == PhantomKind::SmashTop || kind == PhantomKind::SmashBoth { 0.0 } else { inner_h };
+            let d = if kind == PhantomKind::SmashBottom || kind == PhantomKind::SmashBoth { 0.0 } else { inner_d };
+            let children_start = arena.begin_children();
+            arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: inner_id });
+            let children = arena.finish_children(children_start);
+            arena.alloc(ArenaLayoutBox {
+                width: inner_w,
+                height: h,
+                depth: d,
+                kind: ArenaBoxKind::HBox { children },
+            })
+        },
+    }
 }
 
 fn layout_boxed_arena(
@@ -8240,18 +8996,10 @@ fn layout_scaled_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let inner_id = layout_node_arena(ast, content, arena, ctx);
-    let inner_w = arena.get(inner_id).width;
-    let inner_h = arena.get(inner_id).height;
-    let inner_d = arena.get(inner_id).depth;
-    let inner_kind = arena.get(inner_id).kind.clone();
     let f = factor.as_f64();
-
-    arena.alloc(ArenaLayoutBox {
-        width: inner_w * f,
-        height: inner_h * f,
-        depth: inner_d * f,
-        kind: inner_kind,
-    })
+    // Recursively scale all positions and dimensions in the subtree
+    arena.scale_subtree(inner_id, f);
+    inner_id
 }
 
 fn layout_styled_arena(
@@ -8526,6 +9274,28 @@ mod tests {
     }
 
     #[test]
+    fn accent_skew_nonzero_for_italic_f() {
+        // 'f' has significant italic correction in math italic fonts.
+        let base = MathNode::Identifier("f".into());
+        let skew = accent_skew(&base, 1.0);
+        assert!(skew > 0.0, "f should have positive accent skew, got {skew}");
+    }
+
+    #[test]
+    fn accent_skew_zero_for_multi_char() {
+        // Multi-character identifiers should have no skew correction.
+        let base = MathNode::Identifier("abc".into());
+        assert_eq!(accent_skew(&base, 1.0), 0.0);
+    }
+
+    #[test]
+    fn accent_skew_zero_for_non_identifier() {
+        // Non-identifier nodes should have no skew correction.
+        let base = MathNode::Number("2".into());
+        assert_eq!(accent_skew(&base, 1.0), 0.0);
+    }
+
+    #[test]
     fn layout_overscript() {
         let expr = MathExpr::inline(vec![MathNode::Overscript {
             base: Box::new(MathNode::Identifier("x".into())),
@@ -8576,7 +9346,7 @@ mod tests {
                 spacing_style: None,
             },
         );
-        let expr = MathExpr::inline(vec![MathNode::Phantom(Box::new(content.clone()))]);
+        let expr = MathExpr::inline(vec![MathNode::Phantom(Box::new(content.clone()), PhantomKind::Full)]);
         let root = layout_expr(&expr, MathStyle::Text, &default_options());
         assert!(
             (root.width - visible.width).abs() < 0.01,
@@ -8585,6 +9355,73 @@ mod tests {
         if let BoxKind::HBox { children } = &root.kind {
             let phantom_kind = &children[0].layout.kind;
             assert!(matches!(phantom_kind, BoxKind::Phantom));
+        }
+    }
+
+    #[test]
+    fn layout_vphantom_has_zero_width() {
+        let content = MathNode::Identifier("x".into());
+        let visible = layout_node(
+            &content,
+            &LayoutCtx {
+                style: MathStyle::Text,
+                params: TexParams::default(),
+                options: &default_options(),
+                depth: 0,
+                size_scale: 1.0,
+                spacing_style: None,
+            },
+        );
+        let expr = MathExpr::inline(vec![MathNode::Phantom(Box::new(content.clone()), PhantomKind::Vertical)]);
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        // vphantom: zero width, preserve height/depth
+        if let BoxKind::HBox { children } = &root.kind {
+            let phantom = &children[0].layout;
+            assert!(phantom.width < 0.01, "vphantom should have zero width, got {}", phantom.width);
+            assert!((phantom.height - visible.height).abs() < 0.01, "vphantom should preserve height");
+            assert!((phantom.depth - visible.depth).abs() < 0.01, "vphantom should preserve depth");
+        }
+    }
+
+    #[test]
+    fn layout_hphantom_has_zero_height_depth() {
+        let content = MathNode::Identifier("x".into());
+        let visible = layout_node(
+            &content,
+            &LayoutCtx {
+                style: MathStyle::Text,
+                params: TexParams::default(),
+                options: &default_options(),
+                depth: 0,
+                size_scale: 1.0,
+                spacing_style: None,
+            },
+        );
+        let expr = MathExpr::inline(vec![MathNode::Phantom(Box::new(content.clone()), PhantomKind::Horizontal)]);
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        // hphantom: preserve width, zero height/depth
+        if let BoxKind::HBox { children } = &root.kind {
+            let phantom = &children[0].layout;
+            assert!((phantom.width - visible.width).abs() < 0.01, "hphantom should preserve width");
+            assert!(phantom.height < 0.01, "hphantom should have zero height, got {}", phantom.height);
+            assert!(phantom.depth < 0.01, "hphantom should have zero depth, got {}", phantom.depth);
+        }
+    }
+
+    #[test]
+    fn layout_smash_renders_with_zero_height_depth() {
+        let expr = MathExpr::inline(vec![MathNode::Phantom(
+            Box::new(MathNode::Identifier("X".into())),
+            PhantomKind::SmashBoth,
+        )]);
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        // smash: visible (not BoxKind::Phantom) but with zero height/depth
+        if let BoxKind::HBox { children } = &root.kind {
+            let smash = &children[0].layout;
+            assert!(smash.height < 0.01, "smash should have zero height, got {}", smash.height);
+            assert!(smash.depth < 0.01, "smash should have zero depth, got {}", smash.depth);
+            // smash should be visible (HBox, not Phantom)
+            assert!(!matches!(smash.kind, BoxKind::Phantom), "smash content should be visible");
         }
     }
 
@@ -8652,6 +9489,50 @@ mod tests {
                 (scaled.width - normal.width * 2.0).abs() < 0.01,
                 "scaled by 2 should double the width"
             );
+        }
+    }
+
+    #[test]
+    fn layout_scaled_scales_child_positions() {
+        // Scale a multi-node expression and verify child positions are also scaled
+        let content = MathNode::Row(vec![
+            MathNode::Identifier("a".into()),
+            MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+            MathNode::Identifier("b".into()),
+        ]);
+        let factor = Rational::new(2, 1);
+        let ctx = LayoutCtx {
+            style: MathStyle::Text,
+            params: TexParams::default(),
+            options: &default_options(),
+            depth: 0,
+            size_scale: 1.0,
+            spacing_style: None,
+        };
+        let normal = layout_node(&content, &ctx);
+        let scaled = layout_scaled(factor, &content, &ctx);
+
+        // The scaled box should have approximately double the width
+        assert!(
+            (scaled.width - normal.width * 2.0).abs() < 0.01,
+            "width should be scaled"
+        );
+
+        // If the inner is an HBox, verify children have scaled positions
+        if let (BoxKind::HBox { children: nc }, BoxKind::HBox { children: sc }) =
+            (&normal.kind, &scaled.kind)
+            && nc.len() == sc.len() && nc.len() > 1
+        {
+            // dx of later children should be approximately 2x
+            let normal_last_dx = nc.last().unwrap().dx;
+            let scaled_last_dx = sc.last().unwrap().dx;
+            if normal_last_dx > 0.01 {
+                let ratio = scaled_last_dx / normal_last_dx;
+                assert!(
+                    (ratio - 2.0).abs() < 0.1,
+                    "child dx should be scaled by 2x, got ratio {ratio:.2}"
+                );
+            }
         }
     }
 
@@ -9554,6 +10435,20 @@ mod tests {
     }
 
     #[test]
+    fn integral_large_op_no_above_below() {
+        // Integral operators should NOT get above/below limits even in display mode
+        let int = MathNode::Symbol(SymbolKind::LargeOp, "\u{222B}".into());
+        assert!(!wants_limits_above_below(&int, MathStyle::Display));
+        assert!(!wants_limits_above_below(&int, MathStyle::Text));
+        // Double integral
+        let iint = MathNode::Symbol(SymbolKind::LargeOp, "\u{222C}".into());
+        assert!(!wants_limits_above_below(&iint, MathStyle::Display));
+        // Contour integral
+        let oint = MathNode::Symbol(SymbolKind::LargeOp, "\u{222E}".into());
+        assert!(!wants_limits_above_below(&oint, MathStyle::Display));
+    }
+
+    #[test]
     fn wants_limits_above_below_ordinary() {
         let node = MathNode::Identifier("x".into());
         assert!(!wants_limits_above_below(&node, MathStyle::Display));
@@ -9903,5 +10798,103 @@ mod tests {
                 style, heap_root.width, compact_root.width
             );
         }
+    }
+
+    #[test]
+    fn middle_delimiter_is_rendered() {
+        // \left( x \middle| y \right) should render the | as a delimiter
+        let latex = r"\left( x \middle| y \right)";
+        let parsed = crate::latex::parse::parse(latex, &Default::default())
+            .expect("parse failed");
+        let opts = default_options();
+        let root = layout_expr(&parsed.expr, MathStyle::Display, &opts);
+        // Count Delimiter boxes recursively
+        fn count_delimiters(b: &LayoutBox) -> usize {
+            match &b.kind {
+                BoxKind::Delimiter { .. } => 1,
+                BoxKind::HBox { children } | BoxKind::VBox { children } => {
+                    children.iter().map(|c| count_delimiters(&c.layout)).sum()
+                }
+                BoxKind::Color { child, .. } => count_delimiters(&child.layout),
+                _ => 0,
+            }
+        }
+        let delim_count = count_delimiters(&root);
+        assert!(
+            delim_count >= 3,
+            "expected at least 3 delimiters (open, middle, close), got {delim_count}"
+        );
+    }
+
+    #[test]
+    fn middle_delimiter_width_increases_total() {
+        // Expression with \middle should be wider than without
+        let with_middle = r"\left( x \middle| y \right)";
+        let without_middle = r"\left( x y \right)";
+        let parsed_with = crate::latex::parse::parse(with_middle, &Default::default())
+            .expect("parse failed");
+        let parsed_without = crate::latex::parse::parse(without_middle, &Default::default())
+            .expect("parse failed");
+        let opts = default_options();
+        let root_with = layout_expr(&parsed_with.expr, MathStyle::Display, &opts);
+        let root_without = layout_expr(&parsed_without.expr, MathStyle::Display, &opts);
+        assert!(
+            root_with.width > root_without.width,
+            "expression with \\middle should be wider: {:.4} vs {:.4}",
+            root_with.width, root_without.width
+        );
+    }
+
+    #[test]
+    fn middle_delimiter_compact_matches_heap() {
+        let latex = r"\left( x \middle| y \right)";
+        let parsed = crate::latex::parse::parse(latex, &Default::default())
+            .expect("parse failed");
+        let compact = crate::latex::parse::parse_compact(latex, &Default::default())
+            .expect("compact parse failed");
+        let opts = default_options();
+        let heap_root = layout_expr(&parsed.expr, MathStyle::Display, &opts);
+        let compact_root = layout_expr_c(&compact.expr, MathStyle::Display, &opts);
+        let diff = (heap_root.width - compact_root.width).abs();
+        assert!(
+            diff < 0.01,
+            "heap and compact \\middle should match: heap={:.4} compact={:.4}",
+            heap_root.width, compact_root.width
+        );
+    }
+
+    #[test]
+    fn scale_svg_path_preserves_arc_flags() {
+        // Arc: A rx ry x-rotation large-arc-flag sweep-flag x y
+        // Parameters 3,4,5 (rotation, flags) must NOT be scaled.
+        let path = "M0,0 A10,20 45 1 0 30,40";
+        let scaled = scale_svg_path_data(path, 2.0);
+        // rx=10*2=20, ry=20*2=40, rot=45 (unchanged), flag=1 (unchanged),
+        // flag=0 (unchanged), x=30*2=60, y=40*2=80
+        assert_eq!(scaled, "M0.0000,0.0000 A20.0000,40.0000 45.0000 1.0000 0.0000 60.0000,80.0000");
+    }
+
+    #[test]
+    fn scale_svg_path_arc_relative() {
+        let path = "M0,0 a5,10 30 0 1 15,20";
+        let scaled = scale_svg_path_data(path, 3.0);
+        assert_eq!(scaled, "M0.0000,0.0000 a15.0000,30.0000 30.0000 0.0000 1.0000 45.0000,60.0000");
+    }
+
+    #[test]
+    fn scale_svg_path_fill_prefix_preserved() {
+        let path = "F:M0,0 L10,20";
+        let scaled = scale_svg_path_data(path, 2.0);
+        assert!(scaled.starts_with("F:"));
+        assert!(scaled.contains("20.0000"));
+        assert!(scaled.contains("40.0000"));
+    }
+
+    #[test]
+    fn scale_svg_path_implicit_lineto_after_move() {
+        // After M, implicit repeats become L
+        let path = "M10,20 30,40";
+        let scaled = scale_svg_path_data(path, 2.0);
+        assert_eq!(scaled, "M20.0000,40.0000 60.0000,80.0000");
     }
 }

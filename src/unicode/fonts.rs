@@ -134,6 +134,19 @@ fn italic_offset(ch: char) -> Option<u32> {
         'A'..='Z' => Some(0x1D434 + (ch as u32 - b'A' as u32)),
         'h' => Some(0x210E),
         'a'..='z' => Some(0x1D44E + (ch as u32 - b'a' as u32)),
+        // Greek lowercase α-ρ → U+1D6FC-U+1D70C
+        '\u{03B1}'..='\u{03C1}' => Some(0x1D6FC + (ch as u32 - 0x03B1)),
+        // Greek ς (final sigma) → U+1D70D
+        '\u{03C2}' => Some(0x1D70D),
+        // Greek σ-ω → U+1D70E-U+1D714
+        '\u{03C3}'..='\u{03C9}' => Some(0x1D70E + (ch as u32 - 0x03C3)),
+        // Greek variants: ϵ ϑ ϰ ϕ ϱ ϖ
+        '\u{03F5}' => Some(0x1D716),
+        '\u{03D1}' => Some(0x1D717),
+        '\u{03F0}' => Some(0x1D718),
+        '\u{03D5}' => Some(0x1D719),
+        '\u{03F1}' => Some(0x1D71A),
+        '\u{03D6}' => Some(0x1D71B),
         _ => None,
     }
 }
