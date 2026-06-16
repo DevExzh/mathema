@@ -1459,14 +1459,16 @@ impl LatexCompactParser {
         let (input, (sub_id, sup_id)) = self.parse_optional_limits(input)?;
         let (input, _) = ws(input)?;
 
-        // The body is the next atom (or empty row if nothing follows).
-        // Allow scripts on the body: \int_0^1 x^2 → body is x^2, not just x.
+        // The body is the next element (or empty row if nothing follows).
+        // Use `parse_element` (not bare `parse_atom`) so a nested n-ary operator
+        // body — e.g. the 2nd integral in `\int\limits.. \int\limits.. f` — is
+        // itself routed through `parse_nary_rest` and keeps its \limits/limits.
         let (input, body_id) = if is_table_boundary(input) {
             let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             (input, row_id)
         } else {
-            match self.parse_atom(input) {
-                Ok((rest, id)) => self.parse_scripts(rest, id)?,
+            match self.parse_element(input) {
+                Ok((rest, id)) => (rest, id),
                 Err(_) => {
                     let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
                     (input, row_id)

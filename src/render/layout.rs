@@ -3021,13 +3021,15 @@ fn layout_nary(
         let op_dx = (max_w - op_box.width) / 2.0;
 
         if let Some(sb) = sup_box {
-            let sup_dx = (max_w - sb.width) / 2.0;
+            // Center over the op; for a slanted operator (integral) nudge toward
+            // the glyph's top by half its italic correction.
+            let sup_dx = (max_w - sb.width) / 2.0 + op_ic / 2.0;
             let sup_dy = eff_op_h + sup_gap + sb.depth;
             children.push(PositionedBox::new(sup_dx, sup_dy, sb));
         }
         children.push(PositionedBox::new(op_dx, axis_delta, op_box));
         if let Some(sb) = sub_box {
-            let sub_dx = (max_w - sb.width) / 2.0;
+            let sub_dx = (max_w - sb.width) / 2.0 - op_ic / 2.0;
             let sub_dy = -(eff_op_d + sub_gap + sb.height);
             children.push(PositionedBox::new(sub_dx, sub_dy, sb));
         }
@@ -5872,13 +5874,15 @@ fn layout_nary_c(
         let op_dx = (max_w - op_box.width) / 2.0;
 
         if let Some(sb) = sup_box {
-            let sup_dx = (max_w - sb.width) / 2.0;
+            // Center over the op; for a slanted operator (integral) nudge toward
+            // the glyph's top by half its italic correction.
+            let sup_dx = (max_w - sb.width) / 2.0 + op_ic / 2.0;
             let sup_dy = eff_op_h + sup_gap + sb.depth;
             children.push(PositionedBox::new(sup_dx, sup_dy, sb));
         }
         children.push(PositionedBox::new(op_dx, axis_delta, op_box));
         if let Some(sb) = sub_box {
-            let sub_dx = (max_w - sb.width) / 2.0;
+            let sub_dx = (max_w - sb.width) / 2.0 - op_ic / 2.0;
             let sub_dy = -(eff_op_d + sub_gap + sb.height);
             children.push(PositionedBox::new(sub_dx, sub_dy, sb));
         }
@@ -9195,7 +9199,7 @@ fn layout_nary_arena(
         let children_start = arena.begin_children();
 
         if let Some(sid) = sup_id_opt {
-            let sup_dx = (max_w - sup_w_opt) / 2.0;
+            let sup_dx = (max_w - sup_w_opt) / 2.0 + op_ic / 2.0;
             let sup_dy = eff_op_h + sup_gap + sup_d_opt;
             arena.push_child(ArenaPositionedBox {
                 dx: sup_dx,
@@ -9209,7 +9213,7 @@ fn layout_nary_arena(
             id: op_id,
         });
         if let Some(sid) = sub_id_opt {
-            let sub_dx = (max_w - sub_w_opt) / 2.0;
+            let sub_dx = (max_w - sub_w_opt) / 2.0 - op_ic / 2.0;
             let sub_dy = -(eff_op_d + sub_gap + sub_h_opt);
             arena.push_child(ArenaPositionedBox {
                 dx: sub_dx,
