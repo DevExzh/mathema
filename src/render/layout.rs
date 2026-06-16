@@ -1,5 +1,6 @@
 use super::RenderOptions;
 use super::fonts_registry::{self, FontId};
+use super::glyph_variants;
 use super::math_table;
 use super::metrics::{self, GlyphMetrics};
 use super::params::TexParams;
@@ -2386,8 +2387,7 @@ pub(crate) fn fmt_fixed4_trim(out: &mut String, v: f64) {
 ///
 /// The returned string is prefixed with "F:" so the emitter renders it as
 /// a filled shape (`fill="currentColor"`) rather than a stroked path.
-fn radical_path(w: f64, h: f64, t: f64) -> String {
-    // --- Key x landmarks (as fractions of w) ---
+pub(crate) fn radical_path(w: f64, h: f64, t: f64) -> String {
     // These proportions are derived from KaTeX's sqrtMain glyph geometry.
     let tail_x = 0.10 * w; // right end of the small tail/serif
     let bottom_x = 0.20 * w; // x of the V-bottom (closer to left for sharper look)
@@ -2505,57 +2505,162 @@ fn radical_path(w: f64, h: f64, t: f64) -> String {
     s
 }
 
+/// Build the synthetic radical `<path>` for a `√` `Delimiter` box of the given
+/// width and total height (em units). Used by the text-based SVG emitter, which
+/// cannot embed font glyph outlines and would otherwise scale a `√` character.
+pub(crate) fn radical_delim_path(width: f64, total_height: f64) -> String {
+    let t = math_table::math_constants()
+        .map(|c| c.radical_rule_thickness.max(0.06))
+        .unwrap_or(0.06);
+    radical_path(width, total_height, t)
+}
+
+/// Resolved geometry for drawing a radical surd, shared by the heap / compact /
+/// arena `\sqrt` layouts so all three position the surd glyph identically.
+struct RadicalGeom {
+    /// Radical (vinculum) rule thickness, in absolute units.
+    thickness: f64,
+    /// Height at which the vinculum / surd top sits above the row baseline.
+    shift_up: f64,
+    /// Horizontal width occupied by the surd glyph, in absolute units.
+    surd_width: f64,
+    /// Surd box height (above its own baseline).
+    box_height: f64,
+    /// Surd box depth (below its own baseline).
+    box_depth: f64,
+    /// Vertical offset (baseline shift) at which to place the surd box.
+    surd_dy: f64,
+    /// Target height passed to `BoxKind::Delimiter` so the emitters pick the
+    /// same MATH-table variant the layout positioned against. `None` means no
+    /// font variant is available — callers fall back to the synthetic path.
+    surd_target: Option<f64>,
+    /// Synthetic-path height, used only when `surd_target` is `None`.
+    synthetic_height: f64,
+}
+
+/// Compute radical surd geometry for a radicand of the given height/depth.
+///
+/// When the Latin Modern Math font exposes `√` (U+221A) MATH-table size
+/// variants (it does), the surd is rendered from the real font glyph selected
+/// to enclose the radicand — matching KaTeX/MathJax optical sizing. The
+/// vinculum top is aligned with the surd glyph top, and the surd descends to
+/// cover the radicand depth. Falls back to a synthetic path otherwise.
+fn radical_geometry(
+    inner_height: f64,
+    inner_depth: f64,
+    size: f64,
+    rule_thickness_em: f64,
+    x_height_em: f64,
+    is_display: bool,
+) -> RadicalGeom {
+    let rule_thickness = rule_thickness_em * size;
+    // Radical strokes thicker than fraction rules for better visibility.
+    let thickness = math_table::math_constants()
+        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
+        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
+
+    // KaTeX-compatible clearance: theta + phi/4, where phi = xHeight in display
+    // mode (≈ the MATH `radicalDisplayStyleVerticalGap`) and theta otherwise
+    // (≈ the MATH `radicalVerticalGap`).
+    let phi = if is_display {
+        x_height_em * size
+    } else {
+        rule_thickness
+    };
+    let clearance = rule_thickness + phi / 4.0;
+
+    // Total surd height needed to clear the radicand plus the vinculum.
+    let min_height = inner_height + inner_depth + clearance + thickness;
+    // The vinculum / surd top.
+    let shift_up = inner_height + clearance + thickness;
+
+    if let Some(v) = glyph_variants::select_vertical_variant('\u{221A}', min_height)
+        && v.advance_em > 0.01
+    {
+        // The emitters render the chosen variant scaled so its vertical advance
+        // equals `target_height`; replicate that scale here for placement.
+        let scale = min_height / v.advance_em;
+        let surd_top = v.y_max_em * scale; // glyph top above its own baseline
+        let surd_bottom = v.y_min_em * scale; // glyph bottom (≤ 0)
+        let surd_width = (v.h_adv_em * scale).max(0.4 * size);
+        RadicalGeom {
+            thickness,
+            shift_up,
+            surd_width,
+            box_height: surd_top,
+            box_depth: -surd_bottom,
+            // Place the box so the (scaled) glyph top lands exactly at `shift_up`.
+            surd_dy: shift_up - surd_top,
+            surd_target: Some(min_height),
+            synthetic_height: min_height,
+        }
+    } else {
+        // Fallback: synthetic path sized to the exact required height.
+        RadicalGeom {
+            thickness,
+            shift_up,
+            surd_width: 0.833 * size,
+            box_height: min_height,
+            box_depth: 0.0,
+            surd_dy: shift_up - min_height,
+            surd_target: None,
+            synthetic_height: min_height,
+        }
+    }
+}
+
 /// TeXBook Rule 11: square root.
 fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -> LayoutBox {
-    let p = &ctx.params;
     let size = ctx.size();
     let cramped_ctx = ctx.with_style(ctx.style.cramped());
     let inner = layout_node(radicand, &cramped_ctx);
 
-    let rule_thickness = p.rule_thickness * size;
-    // Radical strokes thicker than fraction rules for better visibility
-    let radical_thickness = math_table::math_constants()
-        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
-        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
+    let g = radical_geometry(
+        inner.height,
+        inner.depth,
+        size,
+        ctx.params.rule_thickness,
+        ctx.params.x_height,
+        ctx.style.is_display(),
+    );
+    let radical_thickness = g.thickness;
+    let radical_width = g.surd_width;
 
-    // KaTeX-compatible clearance: theta + phi/4
-    // where phi = xHeight in display mode, theta otherwise
-    let phi = if ctx.style.is_display() {
-        p.x_height * size // ~0.431em — the x-height
+    // Radical sign: prefer the real font surd glyph (MATH-table variant), so it
+    // scales optically to the radicand; fall back to the synthetic path.
+    let radical = if let Some(target) = g.surd_target {
+        LayoutBox {
+            width: radical_width,
+            height: g.box_height,
+            depth: g.box_depth,
+            kind: BoxKind::Delimiter {
+                ch: '\u{221A}',
+                target_height: target,
+            },
+        }
     } else {
-        rule_thickness // 0.04em — same as theta
-    };
-    let extra_clearance = rule_thickness + phi / 4.0;
-
-    // Total height the radical must cover (use radical_thickness for vinculum)
-    let inner_total = inner.height + inner.depth + extra_clearance + radical_thickness;
-
-    // Use exact height needed — font glyph variant selection (in raster.rs)
-    // handles choosing the right pre-designed size variant.  Snapping to
-    // discrete sizes here caused excessive vertical space in nested radicals.
-    let surd_height = inner_total;
-
-    // Radical sign
-    let radical_width = 0.833 * size; // approximate radical sign width
-    let radical = LayoutBox {
-        width: radical_width,
-        height: surd_height,
-        depth: 0.0,
-        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
+        LayoutBox {
+            width: radical_width,
+            height: g.synthetic_height,
+            depth: 0.0,
+            kind: BoxKind::SvgPath(radical_path(
+                radical_width,
+                g.synthetic_height,
+                radical_thickness,
+            )),
+        }
     };
 
     // Vinculum (horizontal rule on top) — match radical_thickness for seamless junction
     let vinculum = LayoutBox::rule(inner.width, radical_thickness);
 
-    let shift_up = inner.height + extra_clearance + radical_thickness;
+    let shift_up = g.shift_up;
 
     // Capture dimensions before moving inner into children vec
     let inner_width = inner.width;
     let inner_depth = inner.depth;
-    // Position radical so its vinculum aligns with shift_up and tail extends below baseline
-    let radical_dy = shift_up - surd_height; // negative: tail below baseline
     let mut children = vec![
-        PositionedBox::new(0.0, radical_dy, radical),
+        PositionedBox::new(0.0, g.surd_dy, radical),
         PositionedBox::new(radical_width, shift_up, vinculum),
         PositionedBox::new(radical_width, 0.0, inner),
     ];
@@ -2565,7 +2670,7 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
         .map(|c| c.radical_extra_ascender * size)
         .unwrap_or(0.0);
     let total_height = shift_up + radical_thickness + extra_ascender;
-    let total_depth = inner_depth.max(surd_height - shift_up);
+    let total_depth = inner_depth.max(g.box_depth - g.surd_dy);
 
     // Optional root index
     if let Some(idx) = index {
@@ -2842,6 +2947,9 @@ fn layout_nary(
     };
 
     let body_box = layout_node(body, ctx);
+    // Italic correction of the operator glyph (lost once it is wrapped in an
+    // HBox), used to offset side-set scripts diagonally (e.g. integral limits).
+    let op_ic = m.italic * op_size;
     // Capture body dimensions before any move
     let body_w = body_box.width;
     let body_h = body_box.height;
@@ -2959,13 +3067,13 @@ fn layout_nary(
         };
 
         if let (Some(sub_n), Some(sup_n)) = (sub, sup) {
-            let result = layout_subsup_from_box_heap(op_box, sub_n, sup_n, ctx);
+            let result = layout_subsup_from_box_heap(op_box, op_ic, sub_n, sup_n, ctx);
             return build_hbox(result, body_box);
         } else if let Some(sub_n) = sub {
-            let result = layout_subscript_from_box_heap(op_box, sub_n, ctx);
+            let result = layout_subscript_from_box_heap(op_box, op_ic, sub_n, ctx);
             return build_hbox(result, body_box);
         } else if let Some(sup_n) = sup {
-            let result = layout_superscript_from_box_heap(op_box, sup_n, ctx);
+            let result = layout_superscript_from_box_heap(op_box, op_ic, sup_n, ctx);
             return build_hbox(result, body_box);
         }
 
@@ -2989,6 +3097,7 @@ fn layout_nary(
 /// Helper: superscript layout where the base is an already-laid-out LayoutBox (heap path).
 fn layout_superscript_from_box_heap(
     base_box: LayoutBox,
+    base_ic: f64,
     sup: &MathNode,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
@@ -3020,7 +3129,7 @@ fn layout_superscript_from_box_heap(
     let ic = if is_prime_sup(sup) {
         0.0
     } else {
-        italic_correction(&base_box)
+        base_ic
     };
 
     let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
@@ -3044,6 +3153,7 @@ fn layout_superscript_from_box_heap(
 /// Helper: subscript layout where the base is an already-laid-out LayoutBox (heap path).
 fn layout_subscript_from_box_heap(
     base_box: LayoutBox,
+    base_ic: f64,
     sub: &MathNode,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
@@ -3065,7 +3175,7 @@ fn layout_subscript_from_box_heap(
     }
     let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height * size / 5.0));
 
-    let ic = italic_correction(&base_box);
+    let ic = base_ic;
     let sub_dx = (base_box.width - ic).max(0.0);
 
     let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
@@ -3088,6 +3198,7 @@ fn layout_subscript_from_box_heap(
 /// Helper: combined sub+superscript layout where the base is an already-laid-out LayoutBox (heap path).
 fn layout_subsup_from_box_heap(
     base_box: LayoutBox,
+    base_ic: f64,
     sub: &MathNode,
     sup: &MathNode,
     ctx: &LayoutCtx,
@@ -3146,7 +3257,7 @@ fn layout_subsup_from_box_heap(
     let ic = if is_prime_sup(sup) {
         0.0
     } else {
-        italic_correction(&base_box)
+        base_ic
     };
     let sup_dx = base_box.width + ic;
     let sub_dx = (base_box.width - ic / 2.0).max(0.0);
@@ -5355,50 +5466,51 @@ fn layout_sqrt_c(
     index: Option<NodeId>,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
-    let p = &ctx.params;
     let size = ctx.size();
     let cramped_ctx = ctx.with_style(ctx.style.cramped());
     let inner = layout_node_c(arena, radicand, &cramped_ctx);
 
-    let rule_thickness = p.rule_thickness * size;
-    // Radical strokes thicker than fraction rules for better visibility
-    let radical_thickness = math_table::math_constants()
-        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
-        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
+    let g = radical_geometry(
+        inner.height,
+        inner.depth,
+        size,
+        ctx.params.rule_thickness,
+        ctx.params.x_height,
+        ctx.style.is_display(),
+    );
+    let radical_thickness = g.thickness;
+    let radical_width = g.surd_width;
 
-    // KaTeX-compatible clearance: theta + phi/4
-    // where phi = xHeight in display mode, theta otherwise
-    let phi = if ctx.style.is_display() {
-        p.x_height * size // ~0.431em — the x-height
+    let radical = if let Some(target) = g.surd_target {
+        LayoutBox {
+            width: radical_width,
+            height: g.box_height,
+            depth: g.box_depth,
+            kind: BoxKind::Delimiter {
+                ch: '\u{221A}',
+                target_height: target,
+            },
+        }
     } else {
-        rule_thickness // 0.04em — same as theta
-    };
-    let extra_clearance = rule_thickness + phi / 4.0;
-
-    let inner_total = inner.height + inner.depth + extra_clearance + radical_thickness;
-
-    // Use exact height needed — font glyph variant selection (in raster.rs)
-    // handles choosing the right pre-designed size variant.
-    let surd_height = inner_total;
-
-    let radical_width = 0.833 * size;
-    let radical = LayoutBox {
-        width: radical_width,
-        height: surd_height,
-        depth: 0.0,
-        kind: BoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
+        LayoutBox {
+            width: radical_width,
+            height: g.synthetic_height,
+            depth: 0.0,
+            kind: BoxKind::SvgPath(radical_path(
+                radical_width,
+                g.synthetic_height,
+                radical_thickness,
+            )),
+        }
     };
 
     let vinculum = LayoutBox::rule(inner.width, radical_thickness);
-
-    let shift_up = inner.height + extra_clearance + radical_thickness;
+    let shift_up = g.shift_up;
 
     let inner_width = inner.width;
     let inner_depth = inner.depth;
-    // Position radical so its vinculum aligns with shift_up and tail extends below baseline
-    let radical_dy = shift_up - surd_height; // negative: tail below baseline
     let mut children = vec![
-        PositionedBox::new(0.0, radical_dy, radical),
+        PositionedBox::new(0.0, g.surd_dy, radical),
         PositionedBox::new(radical_width, shift_up, vinculum),
         PositionedBox::new(radical_width, 0.0, inner),
     ];
@@ -5408,7 +5520,7 @@ fn layout_sqrt_c(
         .map(|c| c.radical_extra_ascender * size)
         .unwrap_or(0.0);
     let total_height = shift_up + radical_thickness + extra_ascender;
-    let total_depth = inner_depth.max(surd_height - shift_up);
+    let total_depth = inner_depth.max(g.box_depth - g.surd_dy);
 
     if let Some(idx_id) = index {
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
@@ -5683,6 +5795,9 @@ fn layout_nary_c(
     };
 
     let body_box = layout_node_c(arena, body, ctx);
+    // Italic correction of the operator glyph (lost once it is wrapped in an
+    // HBox), used to offset side-set scripts diagonally (e.g. integral limits).
+    let op_ic = m.italic * op_size;
     let body_w = body_box.width;
     let body_h = body_box.height;
     let body_d = body_box.depth;
@@ -5799,16 +5914,16 @@ fn layout_nary_c(
         };
 
         if sub.is_some() && sup.is_some() {
-            let result = layout_subsup_from_box(op_glyph_box, arena, sub, sup, ctx);
+            let result = layout_subsup_from_box(op_glyph_box, op_ic, arena, sub, sup, ctx);
             return build_hbox(result, body_box);
         } else if sub.is_some() {
             return build_hbox(
-                layout_subscript_from_box(op_glyph_box, arena, sub, ctx),
+                layout_subscript_from_box(op_glyph_box, op_ic, arena, sub, ctx),
                 body_box,
             );
         } else if sup.is_some() {
             return build_hbox(
-                layout_superscript_from_box(op_glyph_box, arena, sup, ctx),
+                layout_superscript_from_box(op_glyph_box, op_ic, arena, sup, ctx),
                 body_box,
             );
         }
@@ -5833,6 +5948,7 @@ fn layout_nary_c(
 /// Helper: superscript layout where the base is an already-laid-out LayoutBox.
 fn layout_superscript_from_box(
     base_box: LayoutBox,
+    base_ic: f64,
     arena: &AstArena,
     sup: NodeId,
     ctx: &LayoutCtx,
@@ -5865,7 +5981,7 @@ fn layout_superscript_from_box(
     let ic = if is_prime_sup_c(arena, sup) {
         0.0
     } else {
-        italic_correction(&base_box)
+        base_ic
     };
 
     let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
@@ -5889,6 +6005,7 @@ fn layout_superscript_from_box(
 /// Helper: subscript layout where the base is an already-laid-out LayoutBox.
 fn layout_subscript_from_box(
     base_box: LayoutBox,
+    base_ic: f64,
     arena: &AstArena,
     sub: NodeId,
     ctx: &LayoutCtx,
@@ -5911,7 +6028,7 @@ fn layout_subscript_from_box(
     }
     let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height * size / 5.0));
 
-    let ic = italic_correction(&base_box);
+    let ic = base_ic;
     let sub_dx = (base_box.width - ic).max(0.0);
 
     let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
@@ -5934,6 +6051,7 @@ fn layout_subscript_from_box(
 /// Helper: subsup layout where the base is an already-laid-out LayoutBox.
 fn layout_subsup_from_box(
     base_box: LayoutBox,
+    base_ic: f64,
     arena: &AstArena,
     sub: NodeId,
     sup: NodeId,
@@ -5993,7 +6111,7 @@ fn layout_subsup_from_box(
     let ic = if is_prime_sup_c(arena, sup) {
         0.0
     } else {
-        italic_correction(&base_box)
+        base_ic
     };
     let sup_dx = base_box.width + ic;
     let sub_dx = (base_box.width - ic / 2.0).max(0.0);
@@ -8554,7 +8672,6 @@ fn layout_sqrt_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    let p = &ctx.params;
     let size = ctx.size();
     let cramped_ctx = ctx.with_style(ctx.style.cramped());
     let inner_id = layout_node_arena(ast, radicand, arena, &cramped_ctx);
@@ -8563,38 +8680,43 @@ fn layout_sqrt_arena(
     let inner_h = arena.get(inner_id).height;
     let inner_d = arena.get(inner_id).depth;
 
-    let rule_thickness = p.rule_thickness * size;
-    // Radical strokes thicker than fraction rules for better visibility
-    let radical_thickness = math_table::math_constants()
-        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
-        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
+    let g = radical_geometry(
+        inner_h,
+        inner_d,
+        size,
+        ctx.params.rule_thickness,
+        ctx.params.x_height,
+        ctx.style.is_display(),
+    );
+    let radical_thickness = g.thickness;
+    let radical_width = g.surd_width;
 
-    // KaTeX-compatible clearance: theta + phi/4
-    // where phi = xHeight in display mode, theta otherwise
-    let phi = if ctx.style.is_display() {
-        p.x_height * size // ~0.431em — the x-height
+    let radical_id = if let Some(target) = g.surd_target {
+        arena.alloc(ArenaLayoutBox {
+            width: radical_width,
+            height: g.box_height,
+            depth: g.box_depth,
+            kind: ArenaBoxKind::Delimiter {
+                ch: '\u{221A}',
+                target_height: target,
+            },
+        })
     } else {
-        rule_thickness // 0.04em — same as theta
+        arena.alloc(ArenaLayoutBox {
+            width: radical_width,
+            height: g.synthetic_height,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(radical_path(
+                radical_width,
+                g.synthetic_height,
+                radical_thickness,
+            )),
+        })
     };
-    let extra_clearance = rule_thickness + phi / 4.0;
-
-    let inner_total = inner_h + inner_d + extra_clearance + radical_thickness;
-
-    // Use exact height needed — font glyph variant selection (in raster.rs)
-    // handles choosing the right pre-designed size variant.
-    let surd_height = inner_total;
-
-    let radical_width = 0.833 * size;
-    let radical_id = arena.alloc(ArenaLayoutBox {
-        width: radical_width,
-        height: surd_height,
-        depth: 0.0,
-        kind: ArenaBoxKind::SvgPath(radical_path(radical_width, surd_height, radical_thickness)),
-    });
 
     let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, radical_thickness));
 
-    let shift_up = inner_h + extra_clearance + radical_thickness;
+    let shift_up = g.shift_up;
 
     // Build children: radical, vinculum, inner
     // We may need to adjust dx values if there's an index, so we track the span start
@@ -8607,9 +8729,10 @@ fn layout_sqrt_arena(
         .map(|c| c.radical_extra_ascender * size)
         .unwrap_or(0.0);
     let total_height = shift_up + radical_thickness + extra_ascender;
-    // Radical tail extends below baseline
-    let radical_dy = shift_up - surd_height; // negative: tail below baseline
-    let total_depth = inner_d.max(surd_height - shift_up);
+    // Radical surd baseline offset (positions the glyph top at the vinculum).
+    let radical_dy = g.surd_dy;
+    let total_depth = inner_d.max(g.box_depth - g.surd_dy);
+
 
     // Optional root index
     if let Some(idx_id_node) = index {
@@ -8962,6 +9085,9 @@ fn layout_nary_arena(
     };
 
     let body_id = layout_node_arena(ast, body, arena, ctx);
+    // Italic correction of the operator glyph (lost once it is wrapped in an
+    // HBox), used to offset side-set scripts diagonally (e.g. integral limits).
+    let op_ic = m.italic * op_size;
     let body_w = arena.get(body_id).width;
     let body_h = arena.get(body_id).height;
     let body_d = arena.get(body_id).depth;
@@ -9110,13 +9236,16 @@ fn layout_nary_arena(
         };
 
         if sub.is_some() && sup.is_some() {
-            let result_id = layout_subsup_from_box_arena(op_glyph_id, ast, sub, sup, arena, ctx);
+            let result_id =
+                layout_subsup_from_box_arena(op_glyph_id, op_ic, ast, sub, sup, arena, ctx);
             return build_hbox_arena(result_id, body_id, thin_space, arena);
         } else if sub.is_some() {
-            let result_id = layout_subscript_from_box_arena(op_glyph_id, ast, sub, arena, ctx);
+            let result_id =
+                layout_subscript_from_box_arena(op_glyph_id, op_ic, ast, sub, arena, ctx);
             return build_hbox_arena(result_id, body_id, thin_space, arena);
         } else if sup.is_some() {
-            let result_id = layout_superscript_from_box_arena(op_glyph_id, ast, sup, arena, ctx);
+            let result_id =
+                layout_superscript_from_box_arena(op_glyph_id, op_ic, ast, sup, arena, ctx);
             return build_hbox_arena(result_id, body_id, thin_space, arena);
         }
 
@@ -9185,6 +9314,7 @@ fn build_hbox_arena(
 /// Helper: superscript layout where the base is an already-laid-out arena box.
 fn layout_superscript_from_box_arena(
     base_id: LayoutBoxId,
+    base_ic: f64,
     ast: &AstArena,
     sup: NodeId,
     arena: &mut LayoutArena,
@@ -9203,7 +9333,7 @@ fn layout_superscript_from_box_arena(
     let ic = if is_prime_sup_c(ast, sup) {
         0.0
     } else {
-        italic_correction_arena(base_id, arena)
+        base_ic
     };
 
     // Bug 2 fix: check if base is a single character
@@ -9256,6 +9386,7 @@ fn layout_superscript_from_box_arena(
 /// Helper: subscript layout where the base is an already-laid-out arena box.
 fn layout_subscript_from_box_arena(
     base_id: LayoutBoxId,
+    base_ic: f64,
     ast: &AstArena,
     sub: NodeId,
     arena: &mut LayoutArena,
@@ -9271,7 +9402,7 @@ fn layout_subscript_from_box_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let ic = italic_correction_arena(base_id, arena);
+    let ic = base_ic;
     let sub_dx = (base_w - ic).max(0.0);
 
     // Bug 2 fix: check if base is a single character
@@ -9318,6 +9449,7 @@ fn layout_subscript_from_box_arena(
 /// Helper: subsup layout where the base is an already-laid-out arena box.
 fn layout_subsup_from_box_arena(
     base_id: LayoutBoxId,
+    base_ic: f64,
     ast: &AstArena,
     sub: NodeId,
     sup: NodeId,
@@ -9342,7 +9474,7 @@ fn layout_subsup_from_box_arena(
     let ic = if is_prime_sup_c(ast, sup) {
         0.0
     } else {
-        italic_correction_arena(base_id, arena)
+        base_ic
     };
 
     // Bug 2 fix: check if base is a single character

@@ -469,8 +469,27 @@ fn emit_box(
         },
 
         BoxKind::Delimiter { ch, target_height } => {
-            // Use SVG path for tall delimiters, text fallback for normal-sized ones
-            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+            // The radical (√) renders from the synthetic path here (the text-based
+            // SVG cannot embed font outlines); standalone SVG / raster use the
+            // real MATH-table variant glyph.
+            if *ch == '\u{221A}' {
+                let tx = x;
+                let ty = y - layout.height * em;
+                let path = super::layout::radical_delim_path(layout.width, *target_height);
+                svg.push_str(r#"<g transform="translate("#);
+                push_f3(svg, tx);
+                svg.push(',');
+                push_f3(svg, ty);
+                svg.push_str(r#") scale("#);
+                push_f3(svg, em);
+                let fill_path = path.strip_prefix("F:").unwrap_or(&path);
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, fill_path);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"" stroke="none"/></g>"#);
+            } else if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+            {
                 let tx = x;
                 let ty = y - layout.height * em;
                 svg.push_str(r#"<g transform="translate("#);
@@ -816,8 +835,25 @@ fn emit_box_arena(
         },
 
         ArenaBoxKind::Delimiter { ch, target_height } => {
-            // Use SVG path for tall delimiters, text fallback for normal-sized ones
-            if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+            // See the heap `BoxKind::Delimiter` arm: √ uses the synthetic path here.
+            if *ch == '\u{221A}' {
+                let tx = x;
+                let ty = y - layout.height * em;
+                let path = super::layout::radical_delim_path(layout.width, *target_height);
+                svg.push_str(r#"<g transform="translate("#);
+                push_f3(svg, tx);
+                svg.push(',');
+                push_f3(svg, ty);
+                svg.push_str(r#") scale("#);
+                push_f3(svg, em);
+                let fill_path = path.strip_prefix("F:").unwrap_or(&path);
+                svg.push_str(r#")"><path d=""#);
+                push_xml_escaped(svg, fill_path);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"" stroke="none"/></g>"#);
+            } else if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+            {
                 let tx = x;
                 let ty = y - layout.height * em;
                 svg.push_str(r#"<g transform="translate("#);

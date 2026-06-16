@@ -20,6 +20,13 @@ pub struct VariantGlyph {
     pub glyph_id: u16,
     /// The advance measurement in em units (height for vertical, width for horizontal).
     pub advance_em: f64,
+    /// Glyph bounding-box top (y-max) above the baseline, in em units (nominal scale).
+    pub y_max_em: f64,
+    /// Glyph bounding-box bottom (y-min) relative to the baseline, in em units
+    /// (negative when the glyph descends below the baseline).
+    pub y_min_em: f64,
+    /// Horizontal advance of the glyph, in em units (nominal scale).
+    pub h_adv_em: f64,
 }
 
 /// Parsed vertical and horizontal glyph variants for all covered glyphs.
@@ -61,6 +68,24 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
     let mut vertical = Vec::new();
     let mut horizontal = Vec::new();
 
+    // Build a `VariantGlyph`, looking up the variant glyph's bounding box and
+    // horizontal advance (needed so the layout can position e.g. a radical
+    // surd precisely relative to its vinculum).
+    let mk_variant = |gid: ttf_parser::GlyphId, advance_em: f64| -> VariantGlyph {
+        let (y_max_em, y_min_em) = face
+            .glyph_bounding_box(gid)
+            .map(|b| (b.y_max as f64 / upem, b.y_min as f64 / upem))
+            .unwrap_or((0.0, 0.0));
+        let h_adv_em = face.glyph_hor_advance(gid).unwrap_or(0) as f64 / upem;
+        VariantGlyph {
+            glyph_id: gid.0,
+            advance_em,
+            y_max_em,
+            y_min_em,
+            h_adv_em,
+        }
+    };
+
     if let Some(ref variants) = math.variants {
         // Iterate all cmap entries to find characters with vertical/horizontal variants.
         if let Some(cmap) = face.tables().cmap.as_ref() {
@@ -82,10 +107,10 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
                             let Some(v) = construction.variants.get(i) else {
                                 continue;
                             };
-                            glyph_variants.push(VariantGlyph {
-                                glyph_id: v.variant_glyph.0,
-                                advance_em: v.advance_measurement as f64 / upem,
-                            });
+                            glyph_variants.push(mk_variant(
+                                v.variant_glyph,
+                                v.advance_measurement as f64 / upem,
+                            ));
                         }
                         if !glyph_variants.is_empty() {
                             // Sort by advance (should already be sorted per spec, but be safe).
@@ -100,10 +125,10 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
                             let Some(v) = construction.variants.get(i) else {
                                 continue;
                             };
-                            glyph_variants.push(VariantGlyph {
-                                glyph_id: v.variant_glyph.0,
-                                advance_em: v.advance_measurement as f64 / upem,
-                            });
+                            glyph_variants.push(mk_variant(
+                                v.variant_glyph,
+                                v.advance_measurement as f64 / upem,
+                            ));
                         }
                         if !glyph_variants.is_empty() {
                             glyph_variants.sort_by(|a, b| a.advance_em.total_cmp(&b.advance_em));

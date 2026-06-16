@@ -1890,6 +1890,56 @@ fn svg_sqrt_empty_no_panic() {
     assert_valid_svg(&svg, "sqrt empty");
 }
 
+// =========================================================================
+// Regression: radical optical sizing — the surd must enclose its radicand
+// and grow with taller content (font MATH-table size variants).
+// =========================================================================
+
+#[test]
+fn svg_sqrt_surd_encloses_and_grows() {
+    // The surd must rise above its radicand (vinculum + clearance), so a
+    // radical is taller than its bare radicand.
+    let h_x = extract_svg_dimension(&latex_to_svg("x"), "height");
+    let h_sqrt_x = extract_svg_dimension(&latex_to_svg(r"\sqrt{x}"), "height");
+    assert!(
+        h_sqrt_x > h_x + 1.0,
+        "sqrt must add a vinculum + clearance above the radicand: {h_sqrt_x} vs {h_x}"
+    );
+
+    // A taller radicand must produce a taller surd (optical size variant).
+    let h_sqrt_tall = extract_svg_dimension(&latex_to_svg(r"\sqrt{x^2}"), "height");
+    assert!(
+        h_sqrt_tall > h_sqrt_x,
+        "taller radicand must select a taller surd: {h_sqrt_tall} vs {h_sqrt_x}"
+    );
+
+    // A fraction radicand is taller still.
+    let h_sqrt_frac = extract_svg_dimension(&latex_to_svg(r"\sqrt{\frac{a}{b}}"), "height");
+    assert!(
+        h_sqrt_frac > h_sqrt_tall,
+        "sqrt of a fraction must grow further: {h_sqrt_frac} vs {h_sqrt_tall}"
+    );
+}
+
+// =========================================================================
+// Regression: integral side-limits render diagonally (operator italic
+// correction offsets the superscript from the subscript).
+// =========================================================================
+
+#[test]
+fn svg_integral_side_limits_render() {
+    let svg = latex_to_svg(r"\int_0^\infty");
+    assert_valid_svg(&svg, "integral side limits");
+    // The limits must add width beyond the bare integral sign.
+    let w_bare = extract_svg_dimension(&latex_to_svg(r"\int"), "width");
+    let w_lim = extract_svg_dimension(&svg, "width");
+    assert!(
+        w_lim > w_bare,
+        "integral with limits must be wider than the bare integral: {w_lim} vs {w_bare}"
+    );
+}
+
+
 #[test]
 fn svg_sqrt_tiny_content() {
     // Very small content like a single dot — tests the radical_path v-bottom clamp
