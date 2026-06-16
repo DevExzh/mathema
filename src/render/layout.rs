@@ -574,6 +574,7 @@ fn is_extensible_arrow(ch: char) -> bool {
         | '\u{21BD}' // ↽ leftharpoondown
         | '\u{21C0}' // ⇀ rightharpoonup
         | '\u{21C1}' // ⇁ rightharpoondown
+        | '=' // \xlongequal — stretchy double-bar equals
     )
 }
 
@@ -880,6 +881,20 @@ fn stretchy_arrow_svg(ch: char, w: f64, em: f64) -> String {
                 ax = ax,
                 w = w,
                 t2 = mid_y + tw
+            )
+        },
+        // = long equals (\xlongequal): two horizontal bars spanning the width
+        '=' => {
+            let gap = 0.055 * em;
+            let upper = mid_y - gap;
+            let lower = mid_y + gap;
+            format!(
+                "F:M0,{u0:.4} L{w:.4},{u0:.4} L{w:.4},{u1:.4} L0,{u1:.4} Z M0,{l0:.4} L{w:.4},{l0:.4} L{w:.4},{l1:.4} L0,{l1:.4} Z",
+                u0 = upper - t,
+                u1 = upper + t,
+                l0 = lower - t,
+                l1 = lower + t,
+                w = w,
             )
         },
         // Fallback: simple right arrow
