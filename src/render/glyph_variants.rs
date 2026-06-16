@@ -223,11 +223,32 @@ pub fn select_horizontal_variant(ch: char, target_width_em: f64) -> Option<Varia
     variants.last().copied()
 }
 
+/// Select a vertical variant for a stretchy **delimiter** at `target_height_em`,
+/// but only when the variant fits without significant stretching.
+///
+/// `select_vertical_variant` always returns *some* variant (the largest when
+/// none is tall enough), which the emitters then scale to the exact target —
+/// stretching the largest discrete glyph by 1.5–2× looks badly distorted. For
+/// delimiters we instead return `None` once the target exceeds the largest
+/// variant by more than ~5%, so the caller falls back to the synthetic
+/// delimiter path, which scales cleanly to any height. Layout and every emitter
+/// call this so the reserved width and the drawn glyph always agree.
+#[allow(dead_code)]
+pub fn delimiter_variant(ch: char, target_height_em: f64) -> Option<VariantGlyph> {
+    let v = select_vertical_variant(ch, target_height_em)?;
+    if v.advance_em > 0.01 && target_height_em <= v.advance_em * 1.05 {
+        Some(v)
+    } else {
+        None
+    }
+}
+
 /// Get the display_operator_min_height from the MATH table, in em units.
 #[allow(dead_code)]
 pub fn display_operator_min_height() -> f64 {
     VARIANT_TABLE.display_op_min_height
 }
+
 
 /// Whether a character is a large (n-ary) operator that may have display-size
 /// MATH-table variants (∑, ∫, ∏, …). Shared by the raster and SVG emitters so

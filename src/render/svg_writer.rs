@@ -221,7 +221,7 @@ fn emit_box_embedded(
 
         BoxKind::Delimiter { ch, target_height } => {
             // Prefer a MATH-table variant glyph (matches the raster backend).
-            if let Some(v) = super::glyph_variants::select_vertical_variant(*ch, *target_height)
+            if let Some(v) = super::glyph_variants::delimiter_variant(*ch, *target_height)
                 && glyphs.variants.contains_key(&v.glyph_id)
             {
                 let target_px = target_height * em;
@@ -599,7 +599,7 @@ fn emit_box_arena_embedded(
 
         ArenaBoxKind::Delimiter { ch, target_height } => {
             // Prefer a MATH-table variant glyph (matches the raster backend).
-            if let Some(v) = super::glyph_variants::select_vertical_variant(*ch, *target_height)
+            if let Some(v) = super::glyph_variants::delimiter_variant(*ch, *target_height)
                 && glyphs.variants.contains_key(&v.glyph_id)
             {
                 let target_px = target_height * em;

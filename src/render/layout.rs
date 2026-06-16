@@ -2778,7 +2778,9 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
 
     // Helper: compute delimiter width for a character at the computed target height
     let compute_delim_w = |ch: char| -> f64 {
-        if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+        if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
+            v.h_adv_em * (target_h / v.advance_em)
+        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
             let base_delim_width = 0.389 * ctx.size();
@@ -5626,7 +5628,11 @@ fn layout_fenced_c(
 
     // Helper: compute delimiter width for a character at the computed target height
     let compute_delim_w = |ch: char| -> f64 {
-        if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+        if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
+            // Width of the variant glyph as the emitter will draw it (uniform
+            // scale to the target height).
+            v.h_adv_em * (target_h / v.advance_em)
+        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
             let base_delim_width = 0.389 * ctx.size();
@@ -5645,7 +5651,6 @@ fn layout_fenced_c(
     let mut prev_atom: Option<spacing::AtomType> = None;
     let mut laid_iter = laid_out.into_iter();
 
-    // Open delimiter
     let open_str = arena.str_val(open);
     if !open_str.is_empty()
         && open_str != "."
@@ -8895,7 +8900,9 @@ fn layout_fenced_arena(
         && open_str != "."
         && let Some(ch) = open_str.chars().next()
     {
-        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+        let delim_width = if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
+            v.h_adv_em * (target_h / v.advance_em)
+        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
             let base_delim_width = 0.389 * ctx.size();
@@ -8946,8 +8953,11 @@ fn layout_fenced_arena(
                             cursor_x += space * ctx.size();
                         }
                     }
-                    let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size())
+                    let delim_width = if let Some(v) =
+                        glyph_variants::delimiter_variant(ch, target_h)
                     {
+                        v.h_adv_em * (target_h / v.advance_em)
+                    } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
                         delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
                     } else {
                         let base_delim_width = 0.389 * ctx.size();
@@ -9012,7 +9022,9 @@ fn layout_fenced_arena(
     {
         // Inner padding between content and close delimiter
         cursor_x += 0.12 * ctx.size();
-        let delim_width = if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+        let delim_width = if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
+            v.h_adv_em * (target_h / v.advance_em)
+        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
             let base_delim_width = 0.389 * ctx.size();

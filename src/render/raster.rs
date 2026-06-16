@@ -349,7 +349,7 @@ fn emit_raster_box(
         BoxKind::Delimiter { ch, target_height } => {
             // Try MATH table glyph variant first for better quality.
             let variant_rendered = if let Some(variant) =
-                super::glyph_variants::select_vertical_variant(*ch, *target_height)
+                super::glyph_variants::delimiter_variant(*ch, *target_height)
             {
                 // Render the variant glyph scaled to match the layout's target height.
                 // font_size_px = target_height_pixels / advance_em
