@@ -1,5 +1,5 @@
 use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::events::{BytesText, Event};
 use smallvec::SmallVec;
 
 use crate::ast::arena::AstArena;
@@ -9,6 +9,8 @@ use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
 };
 use crate::reader::Reader as MathReader;
+
+mod content;
 
 pub struct MathmlReader;
 
@@ -166,7 +168,7 @@ impl<'a> MathmlCompactParser<'a> {
                     nodes.push(self.parse_empty_element(&name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default();
+                    let text = unescape_text(&e);
                     if !text.trim().is_empty() {
                         nodes.push(self.classify_text_compact(&text));
                     }
@@ -199,7 +201,7 @@ impl<'a> MathmlCompactParser<'a> {
                     nodes.push(self.parse_empty_element(&name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default();
+                    let text = unescape_text(&e);
                     if !text.trim().is_empty() {
                         nodes.push(self.classify_text_compact(&text));
                     }
@@ -225,6 +227,52 @@ impl<'a> MathmlCompactParser<'a> {
     fn parse_child_id(&mut self, parent_tag: &str) -> Result<NodeId> {
         let children = self.parse_children(parent_tag)?;
         Ok(self.flatten_ids(&children))
+    }
+
+    /// Read the next XML event, mapping reader errors to our error type.
+    /// Shared by the Content MathML lowering in the `content` submodule.
+    fn reader_read_event(&mut self) -> Result<Event<'static>> {
+        match self.reader.read_event() {
+            Ok(ev) => Ok(ev.into_owned()),
+            Err(e) => Err(Error::MathmlParse {
+                message: format!("XML error: {e}"),
+            }),
+        }
+    }
+
+    /// Increment the nesting-depth guard, erroring if it is exceeded.
+    fn bump_depth(&mut self, tag: &str) -> Result<()> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(Error::MathmlParse {
+                message: format!("maximum nesting depth ({MAX_PARSE_DEPTH}) exceeded in <{tag}>"),
+            });
+        }
+        Ok(())
+    }
+
+    fn unbump_depth(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
+    /// Consume events until the matching end tag of `tag` (for elements whose
+    /// content we don't need, e.g. operator tokens that unexpectedly have a body).
+    fn skip_element(&mut self, tag: &str) -> Result<()> {
+        let mut depth = 1usize;
+        loop {
+            match self.reader_read_event()? {
+                Event::Start(e) if Self::local_name(&e) == tag => depth += 1,
+                Event::End(e) if Self::local_name_end(&e) == tag => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                },
+                Event::Eof => break,
+                _ => {},
+            }
+        }
+        Ok(())
     }
 
     fn flatten_ids(&mut self, ids: &[NodeId]) -> NodeId {
@@ -301,6 +349,27 @@ impl<'a> MathmlCompactParser<'a> {
             "mtext" => {
                 let text = self.read_text_content(name)?;
                 let sid = self.arena.push_str(&text);
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Text(TextStyle::Normal, sid)))
+            },
+            "ms" => {
+                // String literal: render content wrapped in quotes.
+                let lquote = get_attr(start, "lquote").unwrap_or_else(|| "\"".into());
+                let rquote = get_attr(start, "rquote").unwrap_or_else(|| "\"".into());
+                let text = self.read_text_content(name)?;
+                let quoted = format!("{lquote}{text}{rquote}");
+                let sid = self.arena.push_str(&quoted);
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Text(TextStyle::Normal, sid)))
+            },
+            "mglyph" => {
+                // Glyph by font reference; we cannot load arbitrary fonts, so
+                // fall back to the `alt` text (or the referenced character).
+                let alt = get_attr(start, "alt").unwrap_or_default();
+                self.skip_element(name)?;
+                let sid = self.arena.push_str(&alt);
                 Ok(self
                     .arena
                     .push_node(CompactNode::Text(TextStyle::Normal, sid)))
@@ -534,6 +603,9 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(self.empty_row())
             },
             _ => {
+                if content::is_content_element(name) {
+                    return self.parse_content_element(name, start, false);
+                }
                 let children = self.parse_children(name)?;
                 Ok(self.flatten_ids(&children))
             },
@@ -553,7 +625,19 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "mprescripts" => Ok(self.empty_row()),
             "none" => Ok(self.empty_row()),
-            _ => Ok(self.empty_row()),
+            "mglyph" => {
+                let alt = get_attr(start, "alt").unwrap_or_default();
+                let sid = self.arena.push_str(&alt);
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Text(TextStyle::Normal, sid)))
+            },
+            _ => {
+                if content::is_content_element(name) {
+                    return self.parse_content_element(name, start, true);
+                }
+                Ok(self.empty_row())
+            },
         }
     }
 
@@ -562,7 +646,7 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Text(e)) => {
-                    text.push_str(&e.unescape().unwrap_or_default());
+                    text.push_str(&unescape_text(&e));
                 },
                 Ok(Event::End(e)) => {
                     if Self::local_name_end(&e) == tag_name {
@@ -570,9 +654,24 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 },
                 Ok(Event::Eof) => break,
-                Ok(Event::Start(_)) => {
-                    // Nested element inside text content — skip it
-                    continue;
+                Ok(Event::Empty(e)) => {
+                    // A nested `<mglyph/>` contributes its `alt` text.
+                    if Self::local_name(&e) == "mglyph"
+                        && let Some(alt) = get_attr(&e, "alt")
+                    {
+                        text.push_str(&alt);
+                    }
+                },
+                Ok(Event::Start(e)) => {
+                    // Nested element inside text content — capture mglyph alt,
+                    // otherwise skip its body.
+                    let n = Self::local_name(&e);
+                    if n == "mglyph"
+                        && let Some(alt) = get_attr(&e, "alt")
+                    {
+                        text.push_str(&alt);
+                    }
+                    let _ = self.skip_element(&n);
                 },
                 _ => continue,
             }
@@ -610,6 +709,22 @@ impl<'a> MathmlCompactParser<'a> {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
                         cells.push(self.parse_children("mtd")?);
+                    } else {
+                        // Inferred cell: a non-<mtd> child is its own cell.
+                        let id = self.parse_element_by_name(&name, &e)?;
+                        cells.push(smallvec::smallvec![id]);
+                    }
+                },
+                Ok(Event::Empty(e)) => {
+                    let name = Self::local_name(&e);
+                    let id = self.parse_empty_element(&name, &e)?;
+                    cells.push(smallvec::smallvec![id]);
+                },
+                Ok(Event::Text(e)) => {
+                    let text = unescape_text(&e);
+                    if !text.trim().is_empty() {
+                        let id = self.classify_text_compact(&text);
+                        cells.push(smallvec::smallvec![id]);
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -748,7 +863,7 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 },
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default();
+                    let text = unescape_text(&e);
                     if !text.trim().is_empty() {
                         let id = self.classify_text_compact(&text);
                         if !seen_base {
@@ -793,7 +908,56 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key.as_bytes())
-        .and_then(|a| a.unescape_value().ok().map(|value| value.into_owned()))
+        .map(|a| unescape_attr(&a.value))
+}
+
+/// Unescape text content, resolving the full MathML/HTML named-entity set
+/// (e.g. `&alpha;`, `&InvisibleTimes;`, `&ApplyFunction;`) plus numeric
+/// references. Falls back to a manual pass if quick-xml reports an error so
+/// that a single unknown entity never discards the surrounding text.
+fn unescape_text(e: &BytesText<'_>) -> String {
+    match e.unescape_with(|name| crate::unicode::MATHML_ENTITIES.get(name).copied()) {
+        Ok(cow) => cow.into_owned(),
+        Err(_) => {
+            let raw = String::from_utf8_lossy(e.as_ref());
+            resolve_entities_lossy(&raw)
+        },
+    }
+}
+
+/// Unescape an attribute value the same way text content is unescaped.
+fn unescape_attr(raw: &[u8]) -> String {
+    resolve_entities_lossy(&String::from_utf8_lossy(raw))
+}
+
+/// Manual entity resolver used as a robust fallback: replaces every
+/// `&name;` / `&#nnn;` / `&#xhhh;` it recognizes and leaves the rest intact.
+fn resolve_entities_lossy(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        if let Some(semi) = after.find(';') {
+            let name = &after[..semi];
+            if let Some(rep) = crate::unicode::resolve_entity(name) {
+                out.push_str(&rep);
+            } else {
+                out.push('&');
+                out.push_str(name);
+                out.push(';');
+            }
+            rest = &after[semi + 1..];
+        } else {
+            out.push('&');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn classify_mo(text: &str) -> SymbolKind {
@@ -1142,5 +1306,128 @@ mod tests {
                 content: Box::new(MathNode::Identifier("x".into())),
             }
         );
+    }
+
+    // ── Named-entity resolution ────────────────────────────────────────
+    fn to_latex(input: &str) -> String {
+        let cfg = Config::default();
+        crate::from_mathml_with(input, &cfg)
+            .unwrap()
+            .to_latex()
+            .unwrap()
+    }
+
+    #[test]
+    fn named_entities_resolve_in_text() {
+        let node = parse_one("<math><mi>&alpha;</mi></math>");
+        assert_eq!(node, MathNode::Identifier("\u{03B1}".into()));
+    }
+
+    #[test]
+    fn named_entities_resolve_in_operators_and_attrs() {
+        // &InvisibleTimes; and a numeric reference both resolve.
+        let nodes = parse("<math><mo>&InvisibleTimes;</mo><mn>&#x32;</mn></math>");
+        assert!(matches!(&nodes[0], MathNode::Symbol(_, s) if s == "\u{2062}"));
+        assert!(matches!(&nodes[1], MathNode::Number(s) if s == "2"));
+    }
+
+    #[test]
+    fn unknown_entity_is_preserved_not_dropped() {
+        // A bogus entity must not wipe out the surrounding text.
+        let node = parse_one("<math><mtext>a&notreal;b</mtext></math>");
+        assert!(matches!(&node, MathNode::Text(_, t) if t.contains('a') && t.contains('b')));
+    }
+
+    // ── Content MathML ─────────────────────────────────────────────────
+    #[test]
+    fn content_apply_factorial() {
+        assert_eq!(
+            to_latex("<math><apply><factorial/><cn>3</cn></apply></math>"),
+            "{3!}"
+        );
+    }
+
+    #[test]
+    fn content_apply_plus_and_times() {
+        let l = to_latex("<math><apply><plus/><ci>a</ci><ci>b</ci></apply></math>");
+        assert!(l.contains('a') && l.contains('+') && l.contains('b'), "{l}");
+    }
+
+    #[test]
+    fn content_function_ln() {
+        let l = to_latex("<math><apply><ln/><ci>a</ci></apply></math>");
+        assert!(l.contains("\\ln"), "{l}");
+    }
+
+    #[test]
+    fn content_power_is_superscript() {
+        let node = parse_one("<math><apply><power/><ci>x</ci><cn>2</cn></apply></math>");
+        assert!(matches!(node, MathNode::Superscript { .. }));
+    }
+
+    #[test]
+    fn content_divide_is_fraction() {
+        let node = parse_one("<math><apply><divide/><ci>a</ci><ci>b</ci></apply></math>");
+        assert!(matches!(node, MathNode::Fraction { .. }));
+    }
+
+    #[test]
+    fn content_root_with_degree_is_root() {
+        let node =
+            parse_one("<math><apply><root/><degree><cn>3</cn></degree><ci>x</ci></apply></math>");
+        assert!(matches!(node, MathNode::Root { .. }));
+    }
+
+    #[test]
+    fn content_sum_builds_nary() {
+        let node = parse_one(
+            "<math><apply><sum/><bvar><ci>i</ci></bvar><lowlimit><cn>1</cn></lowlimit>\
+             <uplimit><ci>n</ci></uplimit><ci>i</ci></apply></math>",
+        );
+        assert!(matches!(node, MathNode::Nary { .. }));
+    }
+
+    #[test]
+    fn content_constant_pi() {
+        let l = to_latex("<math><pi/></math>");
+        assert!(l.contains('\u{03C0}') || l.contains("\\pi"), "{l}");
+    }
+
+    #[test]
+    fn content_ci_with_embedded_presentation() {
+        // <ci> wrapping <msub> must preserve the subscript structure.
+        let node = parse_one("<math><ci><msub><mi>x</mi><mi>a</mi></msub></ci></math>");
+        assert!(matches!(node, MathNode::Subscript { .. }));
+    }
+
+    // ── Token elements ────────────────────────────────────────────────
+    #[test]
+    fn ms_wraps_in_quotes() {
+        let node = parse_one("<math><ms>hi</ms></math>");
+        assert!(matches!(&node, MathNode::Text(_, t) if t == "\"hi\""));
+    }
+
+    #[test]
+    fn mglyph_uses_alt_text() {
+        // <mglyph> inside <mi> contributes its alt text to the identifier.
+        let node =
+            parse_one(r#"<math><mi><mglyph fontfamily="f" index="2" alt="braid"/></mi></math>"#);
+        assert!(matches!(&node, MathNode::Identifier(t) if t == "braid"));
+    }
+
+    #[test]
+    fn mtr_infers_cells_without_mtd() {
+        // <mtr> children that are not <mtd> are each an inferred table cell.
+        let node = parse_one(
+            "<math><mtable><mtr><mn>1</mn><mn>2</mn></mtr>\
+             <mtr><mn>3</mn><mn>4</mn></mtr></mtable></math>",
+        );
+        match node {
+            MathNode::Array { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+                assert_eq!(rows[0].len(), 2, "expected 2 inferred cells per row");
+            },
+            other => panic!("expected Array, got {other:?}"),
+        }
     }
 }

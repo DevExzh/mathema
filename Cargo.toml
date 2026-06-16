@@ -71,6 +71,10 @@ name = "render_comparison"
 required-features = ["render"]
 
 [[example]]
+name = "mathml_audit"
+required-features = ["render"]
+
+[[example]]
 name = "quality_check"
 required-features = ["render"]
 

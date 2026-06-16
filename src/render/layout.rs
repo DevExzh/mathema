@@ -107,6 +107,14 @@ impl LayoutBox {
 
     #[inline]
     fn glyph(ch: char, size: f64, italic: bool) -> Self {
+        if is_invisible_char(ch) {
+            return Self {
+                width: 0.0,
+                height: 0.0,
+                depth: 0.0,
+                kind: BoxKind::Kern,
+            };
+        }
         let m = if italic {
             metrics::glyph_metrics(ch)
         } else {
@@ -129,6 +137,20 @@ impl LayoutBox {
             kind: BoxKind::Glyph { ch, size, italic },
         }
     }
+}
+
+/// Returns true for math "invisible" operators and zero-width formatting
+/// characters. These must occupy no space and draw no glyph (otherwise they
+/// render as missing-glyph "tofu" boxes). Covers ApplyFunction, InvisibleTimes,
+/// InvisibleComma/Separator, InvisiblePlus, and the common zero-width controls.
+#[inline]
+fn is_invisible_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{2061}' | '\u{2062}' | '\u{2063}' | '\u{2064}' // function application / invisible ops
+            | '\u{200B}' | '\u{200C}' | '\u{200D}'        // ZWSP, ZWNJ, ZWJ
+            | '\u{2060}' | '\u{FEFF}' // word joiner, ZWNBSP
+    )
 }
 
 /// Returns true for characters that should be vertically centered on the math axis
@@ -7121,6 +7143,14 @@ impl<'a> ArenaLayoutCtx<'a> {
 // ── Leaf helpers ──────────────────────────────────────────────────────
 
 fn alloc_glyph(arena: &mut LayoutArena, ch: char, size: f64, italic: bool) -> LayoutBoxId {
+    if is_invisible_char(ch) {
+        return arena.alloc(ArenaLayoutBox {
+            width: 0.0,
+            height: 0.0,
+            depth: 0.0,
+            kind: ArenaBoxKind::Kern,
+        });
+    }
     let m = if italic {
         metrics::glyph_metrics(ch)
     } else {
@@ -7141,6 +7171,14 @@ fn alloc_glyph_with_metrics(
     size: f64,
     italic: bool,
 ) -> LayoutBoxId {
+    if is_invisible_char(ch) {
+        return arena.alloc(ArenaLayoutBox {
+            width: 0.0,
+            height: 0.0,
+            depth: 0.0,
+            kind: ArenaBoxKind::Kern,
+        });
+    }
     arena.alloc(ArenaLayoutBox {
         width: m.width * size,
         height: m.height * size,
@@ -10595,6 +10633,20 @@ fn layout_styled_arena(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invisible_operators_are_zero_width_kerns() {
+        for ch in ['\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}', '\u{200B}'] {
+            assert!(is_invisible_char(ch), "{ch:?} should be invisible");
+            let g = LayoutBox::glyph(ch, 1.0, false);
+            assert_eq!(g.width, 0.0, "{ch:?} must have zero width");
+            assert!(
+                matches!(g.kind, BoxKind::Kern),
+                "{ch:?} must not draw a glyph"
+            );
+        }
+        assert!(!is_invisible_char('x'));
+    }
 
     fn default_options() -> RenderOptions {
         RenderOptions::default()

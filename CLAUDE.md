@@ -38,6 +38,8 @@ Input string ──Reader──▶ MathExpr (AST) ──Writer──▶ Output s
 
 **Reader trait** (`src/reader/mod.rs`): `fn parse(input: &str, config: &Config) -> Result<ParseResult>`. One implementation per format in `src/reader/{latex,mathml,omml,mtef,unicode_math}.rs`. LaTeX and UnicodeMath use `nom` combinators; MathML and OMML use `quick-xml`.
 
+The MathML reader handles **both Presentation and Content MathML**. Content forms (`<apply>`, `<ci>`, `<cn>`, `<plus/>`, `<sin/>`, `<int/>`, `<matrix>`, `<piecewise>`, …) are lowered to the same presentation AST by `src/reader/mathml/content.rs` (a submodule of `mathml`, so it reuses the parser's private arena/helpers). Named character references (`&alpha;`, `&InvisibleTimes;`, the full ~2100-entry W3C set) resolve via `src/unicode/entities.rs` (auto-generated `phf` map) through `unicode::resolve_entity`; the reader's `unescape_text`/`unescape_attr` apply it to text and attributes. Math "invisible" operators (U+2061–2064, zero-width controls) render as zero-width kerns — see `render::layout::is_invisible_char`. Use `cargo run --example mathml_audit --features render -- <dir>` to audit a corpus (e.g. the W3C `testsuite`).
+
 **Writer trait** (`src/writer/mod.rs`): `fn write(expr: &MathExpr, config: &Config) -> Result<String>`. Mirror structure in `src/writer/`.
 
 **Render pipeline** (`src/render/`, feature-gated):
