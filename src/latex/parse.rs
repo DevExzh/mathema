@@ -2003,6 +2003,7 @@ impl LatexCompactParser {
             // --- Overset / Underset ---
             "overset" | "stackrel" => self.parse_overset(input),
             "underset" => self.parse_underset(input),
+            "sideset" => self.parse_sideset(input),
 
             // --- Operatorname ---
             "operatorname" => self.parse_operatorname(input),
@@ -2908,6 +2909,59 @@ impl LatexCompactParser {
             input,
             self.arena.push_node(CompactNode::Styled(style, span)),
         ))
+    }
+
+    /// `\sideset{<left scripts>}{<right scripts>}<op>` — corner scripts on a
+    /// large operator. The left/right groups use bare script syntax (`_a^b`).
+    /// Renders the operator flanked by the left scripts (as prescripts) and the
+    /// right scripts (as postscripts); the operator keeps its own \limits.
+    fn parse_sideset<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Two brace groups whose contents are `_x^y`-style scripts.
+        let parse_side = |this: &mut Self, inp: &'a str| -> IResult<&'a str, (NodeId, NodeId)> {
+            let (inp, _) = ws(inp)?;
+            let (inp, _) = char('{')(inp)?;
+            let (inp, _) = ws(inp)?;
+            let (inp, (sub, sup)) = this.parse_optional_limits(inp)?;
+            let (inp, _) = ws(inp)?;
+            let (inp, _) = char('}')(inp)?;
+            Ok((inp, (sub, sup)))
+        };
+        let (input, (l_sub, l_sup)) = parse_side(self, input)?;
+        let (input, (r_sub, r_sup)) = parse_side(self, input)?;
+        let (input, _) = ws(input)?;
+
+        // The operator (parsed as a full element so it keeps its \limits/body).
+        let (input, op_id) = match self.parse_element(input) {
+            Ok(v) => v,
+            Err(_) => (input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
+        };
+
+        let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
+        if l_sub != NodeId::NONE || l_sup != NodeId::NONE {
+            let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            items.push(self.arena.push_node(CompactNode::PreScripts {
+                base,
+                pre_sub: l_sub,
+                pre_sup: l_sup,
+            }));
+        }
+        items.push(op_id);
+        if r_sub != NodeId::NONE || r_sup != NodeId::NONE {
+            let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            let node = match (r_sub != NodeId::NONE, r_sup != NodeId::NONE) {
+                (true, true) => CompactNode::SubSup {
+                    base,
+                    sub: r_sub,
+                    sup: r_sup,
+                },
+                (true, false) => CompactNode::Subscript { base, sub: r_sub },
+                _ => CompactNode::Superscript { base, sup: r_sup },
+            };
+            items.push(self.arena.push_node(node));
+        }
+
+        let span = self.arena.push_children(&items);
+        Ok((input, self.arena.push_node(CompactNode::Row(span))))
     }
 
     fn parse_overset<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
