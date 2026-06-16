@@ -378,7 +378,7 @@ fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
     (result, seps)
 }
 
-fn parse_row_separator(input: &str) -> IResult<&str, ()> {
+fn parse_row_separator(input: &str) -> IResult<&str, Option<&str>> {
     let (input, _) = ws(input)?;
     // Accept \\ or \cr as row separator
     let input = if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\cr")(input) {
@@ -399,20 +399,21 @@ fn parse_row_separator(input: &str) -> IResult<&str, ()> {
         rest
     };
     let (input, _) = ws(input)?;
-    // Optionally consume [dimension] like [1ex], [3pt]
-    let input = if input.starts_with('[') {
+    // Optionally consume [dimension] like [1ex], [3pt]; capture it so the caller
+    // can apply the extra inter-row space.
+    let (input, extra) = if input.starts_with('[') {
         if let Some(end) = input.find(']') {
-            &input[end + 1..]
+            (&input[end + 1..], Some(&input[1..end]))
         } else {
-            input
+            (input, None)
         }
     } else {
-        input
+        (input, None)
     };
     let (input, _) = ws(input)?;
     // Consume any \hline or \hdashline directives that follow
     let input = skip_table_directives(input);
-    Ok((input, ()))
+    Ok((input, extra))
 }
 
 // ---------------------------------------------------------------------------
@@ -3340,7 +3341,7 @@ impl LatexCompactParser {
         loop {
             let saved = rest;
             match parse_row_separator(rest) {
-                Ok((after_sep, ())) => {
+                Ok((after_sep, _)) => {
                     let (r, cell) = self.parse_table_cell(after_sep)?;
                     cells.push(cell);
                     rest = r;
@@ -4979,7 +4980,25 @@ impl LatexCompactParser {
         loop {
             let saved = rest;
             match parse_row_separator(rest) {
-                Ok((after_sep, ())) => {
+                Ok((after_sep, extra)) => {
+                    // Apply \\[dim] extra inter-row space by adding an invisible
+                    // depth strut to the row just completed.
+                    if let Some(dim_str) = extra
+                        && let Some(row) = rows.last_mut()
+                        && let Some(cell) = row.last_mut()
+                    {
+                        let mut dp = LatexCompactParser::with_capacity(dim_str.len());
+                        if let Ok((_, d)) = dp.parse_dimension(dim_str)
+                            && d.as_f64() > 0.0
+                        {
+                            let strut = self.arena.push_node(CompactNode::Rule {
+                                width: Rational::zero(),
+                                height: d,
+                                lift: Rational::new(-d.num, d.den),
+                            });
+                            cell.push(strut);
+                        }
+                    }
                     let (r, row) = self.parse_table_row(after_sep)?;
                     rows.push(row);
                     rest = r;

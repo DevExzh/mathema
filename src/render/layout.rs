@@ -4894,11 +4894,17 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             let w = width.as_f64() * ctx.size();
             let h = height.as_f64() * ctx.size();
             let lift = lift.as_f64() * ctx.size();
+            // A zero-width rule is an invisible strut (used for \\[dim] row
+            // spacing): keep its vertical extent but draw nothing.
             let rule = LayoutBox {
                 width: w,
                 height: h,
                 depth: 0.0,
-                kind: BoxKind::Rule { thickness: h },
+                kind: if w > 1e-6 {
+                    BoxKind::Rule { thickness: h }
+                } else {
+                    BoxKind::Kern
+                },
             };
             LayoutBox {
                 width: w,
@@ -7886,7 +7892,11 @@ fn layout_node_arena(
                 width: w,
                 height: h,
                 depth: 0.0,
-                kind: ArenaBoxKind::Rule { thickness: h },
+                kind: if w > 1e-6 {
+                    ArenaBoxKind::Rule { thickness: h }
+                } else {
+                    ArenaBoxKind::Kern
+                },
             });
             let start = arena.begin_children();
             arena.push_child(ArenaPositionedBox {
