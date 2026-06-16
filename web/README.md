@@ -20,27 +20,27 @@ compiled to `wasm32-unknown-unknown` and runs client-side.
 - Rust toolchain with the `wasm32-unknown-unknown` target
   (`rustup target add wasm32-unknown-unknown`)
 - [`wasm-pack`](https://rustwasm.github.io/wasm-pack/)
-- Node.js 18+ and a package manager (`pnpm` recommended; `npm`/`yarn` work too)
+- [Bun](https://bun.sh/) 1.3+ (the preferred package manager / runtime)
 
 ## Build & run
 
 ```sh
 cd web
-pnpm install          # install JS deps
+bun install           # install JS deps
 
 # 1. Build the WebAssembly package (outputs to src/lib/wasm/).
 #    Re-run this whenever the Rust crate changes.
-pnpm wasm
+bun run wasm
 
 # 2a. Dev server with hot reload
-pnpm dev
+bun run dev
 
 # 2b. Production build (static site in ./build) + local preview
-pnpm build
-pnpm preview
+bun run build
+bun run preview
 ```
 
-`pnpm wasm` is a convenience wrapper for:
+`bun run wasm` is a convenience wrapper for:
 
 ```sh
 wasm-pack build .. --target web --out-dir web/src/lib/wasm --release \
@@ -48,7 +48,7 @@ wasm-pack build .. --target web --out-dir web/src/lib/wasm --release \
 ```
 
 > The generated `src/lib/wasm/` directory is a build artifact (git-ignored).
-> Run `pnpm wasm` after cloning before `pnpm dev`/`pnpm build`.
+> Run `bun run wasm` after cloning before `bun run dev`/`bun run build`.
 
 ## How it works
 
@@ -63,5 +63,5 @@ other `to*` methods produce the textual conversions. Everything is parsed once
 per input change and re-serialized to every format without re-parsing.
 
 The app is configured as a fully static site (`adapter-static`,
-`ssr = false`), so the output of `pnpm build` can be hosted on any static file
+`ssr = false`), so the output of `bun run build` can be hosted on any static file
 server or CDN.

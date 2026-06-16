@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "description": "SvelteKit web app for the Mathema formula renderer and converter (WebAssembly).",
   "scripts": {
     "wasm": "wasm-pack build .. --target web --out-dir web/src/lib/wasm --release -- --no-default-features --features \"wasm render\"",
