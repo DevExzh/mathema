@@ -27,7 +27,7 @@ fn main() {
                 let path = format!("{}/{}.svg", out_dir, name);
                 fs::write(&path, &svg).unwrap();
                 success += 1;
-            }
+            },
             Err(e) => {
                 let short_tex = if tex.len() > 60 { &tex[..60] } else { tex };
                 failures.push((
@@ -36,11 +36,16 @@ fn main() {
                     format!("{}: {}", short_tex, e),
                 ));
                 fail += 1;
-            }
+            },
         }
     }
 
-    println!("Rendered {}/{} formulas ({} failures)", success, formulas.len(), fail);
+    println!(
+        "Rendered {}/{} formulas ({} failures)",
+        success,
+        formulas.len(),
+        fail
+    );
 
     if !failures.is_empty() {
         println!("\nFailures:");

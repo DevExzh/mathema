@@ -37,6 +37,14 @@ fn skip_ws_bytes(input: &[u8]) -> usize {
         .unwrap_or(input.len())
 }
 
+#[inline]
+fn skip_horizontal_ws_bytes(input: &[u8]) -> usize {
+    input
+        .iter()
+        .position(|&b| !matches!(b, b' ' | b'\t'))
+        .unwrap_or(input.len())
+}
+
 /// Byte table of ASCII characters that are recognized as symbol tokens.
 const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@()[]";
 
@@ -48,6 +56,31 @@ const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@()[]";
 fn ws(input: &str) -> IResult<&str, ()> {
     let skip = skip_ws_bytes(input.as_bytes());
     Ok((&input[skip..], ()))
+}
+
+#[inline]
+fn consume_source_newline(input: &str) -> Option<&str> {
+    input
+        .strip_prefix("\r\n")
+        .or_else(|| input.strip_prefix('\n'))
+        .or_else(|| input.strip_prefix('\r'))
+}
+
+fn source_newline_is_hard_break(full_input: &str, newline_at: &str) -> bool {
+    let consumed_len = full_input.len().saturating_sub(newline_at.len());
+    full_input[..consumed_len]
+        .chars()
+        .rev()
+        .find(|ch| !matches!(ch, ' ' | '\t' | '\n' | '\r'))
+        .is_some_and(|ch| matches!(ch, '=' | '<' | '>' | ':' | ';'))
+}
+
+#[inline]
+fn is_table_boundary(input: &str) -> bool {
+    input.is_empty()
+        || input.starts_with('&')
+        || input.starts_with("\\\\")
+        || input.starts_with("\\end")
 }
 
 fn classify_char(c: char) -> SymbolKind {
@@ -95,73 +128,121 @@ fn clean_text_content(raw: &str) -> String {
     let mut i = 0;
     while i < len {
         match bytes[i] {
-            b'{' | b'}' => { i += 1; } // strip grouping braces
-            b'~' => { out.push('\u{00A0}'); i += 1; } // non-breaking space
+            b'{' | b'}' => {
+                i += 1;
+            }, // strip grouping braces
+            b'~' => {
+                out.push('\u{00A0}');
+                i += 1;
+            }, // non-breaking space
             b'\\' if i + 1 < len => {
                 match bytes[i + 1] {
-                    b' ' => { out.push(' '); i += 2; }
-                    b'&' => { out.push('&'); i += 2; }
-                    b'#' => { out.push('#'); i += 2; }
-                    b'$' => { out.push('$'); i += 2; }
-                    b'%' => { out.push('%'); i += 2; }
-                    b'_' => { out.push('_'); i += 2; }
-                    b'\\' => { out.push(' '); i += 2; } // \\ = line break → space
-                    b',' => { out.push('\u{2009}'); i += 2; } // thin space
-                    b';' => { out.push('\u{2005}'); i += 2; } // medium space
+                    b' ' => {
+                        out.push(' ');
+                        i += 2;
+                    },
+                    b'&' => {
+                        out.push('&');
+                        i += 2;
+                    },
+                    b'#' => {
+                        out.push('#');
+                        i += 2;
+                    },
+                    b'$' => {
+                        out.push('$');
+                        i += 2;
+                    },
+                    b'%' => {
+                        out.push('%');
+                        i += 2;
+                    },
+                    b'_' => {
+                        out.push('_');
+                        i += 2;
+                    },
+                    b'\\' => {
+                        out.push(' ');
+                        i += 2;
+                    }, // \\ = line break → space
+                    b',' => {
+                        out.push('\u{2009}');
+                        i += 2;
+                    }, // thin space
+                    b';' => {
+                        out.push('\u{2005}');
+                        i += 2;
+                    }, // medium space
                     _ => {
                         // Skip unknown commands: consume \word
                         i += 1; // skip backslash
                         let start = i;
-                        while i < len && bytes[i].is_ascii_alphabetic() { i += 1; }
-                        if i == start {
-                            // Single non-alpha char after \, pass through
-                            out.push(bytes[i] as char);
+                        while i < len && bytes[i].is_ascii_alphabetic() {
                             i += 1;
                         }
+                        if i == start && i < len {
+                            // Single non-alpha char after \, pass through
+                            let ch = raw[i..].chars().next().unwrap();
+                            out.push(ch);
+                            i += ch.len_utf8();
+                        }
                         // Otherwise silently drop the command name
-                    }
+                    },
                 }
-            }
+            },
             b'-' if i + 2 < len && bytes[i + 1] == b'-' && bytes[i + 2] == b'-' => {
                 out.push('\u{2014}'); // em-dash
                 i += 3;
-            }
+            },
             b'-' if i + 1 < len && bytes[i + 1] == b'-' => {
                 out.push('\u{2013}'); // en-dash
                 i += 2;
-            }
+            },
             b'`' if i + 1 < len && bytes[i + 1] == b'`' => {
                 out.push('\u{201C}'); // left double quote
                 i += 2;
-            }
+            },
             b'\'' if i + 1 < len && bytes[i + 1] == b'\'' => {
                 out.push('\u{201D}'); // right double quote
                 i += 2;
-            }
+            },
             _ => {
-                out.push(bytes[i] as char);
-                i += 1;
-            }
+                // Use raw str slice to correctly handle multi-byte UTF-8 characters.
+                let ch = raw[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
+            },
         }
     }
     out
 }
 
-fn parse_column_spec(spec: &str) -> SmallVec<[ColumnAlign; 4]> {
+fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
     let mut result = SmallVec::new();
+    let mut seps: u32 = 0;
     let mut chars = spec.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             'l' => result.push(ColumnAlign::Left),
             'c' => result.push(ColumnAlign::Center),
             'r' => result.push(ColumnAlign::Right),
+            '|' => {
+                // Set separator bit at current column boundary.
+                // Position = number of alignment columns seen so far.
+                let pos = result.len();
+                if pos < 32 {
+                    seps |= 1 << pos;
+                }
+            },
             '*' => {
                 // *{n}{pattern} — repeat pattern n times
                 if chars.peek() == Some(&'{') {
                     chars.next(); // consume '{'
                     let mut n_str = String::new();
                     for ch in chars.by_ref() {
-                        if ch == '}' { break; }
+                        if ch == '}' {
+                            break;
+                        }
                         n_str.push(ch);
                     }
                     let n: usize = n_str.trim().parse().unwrap_or(1);
@@ -170,24 +251,28 @@ fn parse_column_spec(spec: &str) -> SmallVec<[ColumnAlign; 4]> {
                         let mut pattern = String::new();
                         let mut depth = 1u32;
                         for ch in chars.by_ref() {
-                            if ch == '{' { depth += 1; }
+                            if ch == '{' {
+                                depth += 1;
+                            }
                             if ch == '}' {
                                 depth -= 1;
-                                if depth == 0 { break; }
+                                if depth == 0 {
+                                    break;
+                                }
                             }
                             pattern.push(ch);
                         }
-                        let sub = parse_column_spec(&pattern);
+                        let (sub, _sub_seps) = parse_column_spec(&pattern);
                         for _ in 0..n {
                             result.extend_from_slice(&sub);
                         }
                     }
                 }
             },
-            _ => {}, // skip |, :, and other decorations
+            _ => {}, // skip :, @{}, and other decorations
         }
     }
-    result
+    (result, seps)
 }
 
 fn parse_row_separator(input: &str) -> IResult<&str, ()> {
@@ -195,7 +280,11 @@ fn parse_row_separator(input: &str) -> IResult<&str, ()> {
     // Accept \\ or \cr as row separator
     let input = if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\cr")(input) {
         // \cr must not be followed by alphabetic (to avoid matching \cross etc.)
-        if rest.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+        if rest
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic())
+        {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Tag,
@@ -229,12 +318,20 @@ fn skip_table_directives(mut input: &str) -> &str {
         let trimmed = input.trim_start();
         if let Some(rest) = trimmed.strip_prefix("\\hline") {
             // Ensure it's not a prefix of a longer command
-            if rest.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+            if rest
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_alphabetic())
+            {
                 break;
             }
             input = rest;
         } else if let Some(rest) = trimmed.strip_prefix("\\hdashline") {
-            if rest.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+            if rest
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_alphabetic())
+            {
                 break;
             }
             input = rest;
@@ -541,7 +638,16 @@ impl LatexCompactParser {
         columns: &[ColumnAlign],
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        self.build_array_with_spacing(columns, rows, 100, false)
+        self.build_array_with_spacing(columns, rows, 100, false, 0)
+    }
+
+    fn build_array_with_seps(
+        &mut self,
+        columns: &[ColumnAlign],
+        col_seps: u32,
+        rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
+    ) -> NodeId {
+        self.build_array_with_spacing(columns, rows, 100, false, col_seps)
     }
 
     /// Build an Array node with explicit spacing parameters.
@@ -551,6 +657,7 @@ impl LatexCompactParser {
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
         arraystretch_pct: u8,
         add_jot: bool,
+        col_seps: u32,
     ) -> NodeId {
         // Compute the actual number of columns as the maximum of the declared
         // column spec and the widest row.  This ensures the flat cell array
@@ -583,6 +690,7 @@ impl LatexCompactParser {
             num_cols,
             arraystretch_pct,
             add_jot,
+            col_seps,
         })
     }
 
@@ -667,8 +775,20 @@ impl LatexCompactParser {
         let mut ids = SmallVec::new();
         let mut rest = input;
         loop {
-            let (r, _) = ws(rest)?;
-            rest = r;
+            if self.depth == 1 {
+                let skip = skip_horizontal_ws_bytes(rest.as_bytes());
+                rest = &rest[skip..];
+                if let Some(after_newline) = consume_source_newline(rest) {
+                    if source_newline_is_hard_break(input, rest) {
+                        ids.push(self.arena.push_node(CompactNode::Newline));
+                    }
+                    rest = after_newline;
+                    continue;
+                }
+            } else {
+                let (r, _) = ws(rest)?;
+                rest = r;
+            }
             match self.parse_element(rest) {
                 Ok((r, id)) => {
                     ids.push(id);
@@ -731,7 +851,7 @@ impl LatexCompactParser {
     #[inline]
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
         // Skip whitespace, then check for ^, _, or ' via byte inspection
-        let skip = skip_ws_bytes(input.as_bytes());
+        let skip = self.skip_script_ws(input.as_bytes());
         let input = &input[skip..];
 
         // --- Prime (') handling -------------------------------------------
@@ -744,13 +864,16 @@ impl LatexCompactParser {
             let mut prime_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
             for _ in 0..prime_count {
                 let sid = self.arena.push_str("\u{2032}");
-                prime_ids.push(self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)));
+                prime_ids.push(
+                    self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+                );
             }
 
             // If an explicit `^` follows the primes, merge its argument into
             // the superscript group so that e.g. `f'^2` becomes `f^{\prime 2}`
             // instead of two separate superscript nodes.
-            let skip_caret = skip_ws_bytes(input.as_bytes());
+            let skip_caret = self.skip_script_ws(input.as_bytes());
             let input = if input.as_bytes().get(skip_caret) == Some(&b'^') {
                 let after_caret = &input[skip_caret + 1..];
                 let (rest, extra_sup) = self.parse_script_arg(after_caret)?;
@@ -763,7 +886,7 @@ impl LatexCompactParser {
             let sup_node = self.flatten_single(&prime_ids);
 
             // Check for a following subscript (_)
-            let skip2 = skip_ws_bytes(input.as_bytes());
+            let skip2 = self.skip_script_ws(input.as_bytes());
             let input2 = &input[skip2..];
             if input2.as_bytes().first() == Some(&b'_') {
                 let input2 = &input2[1..];
@@ -798,7 +921,7 @@ impl LatexCompactParser {
         let (input, first_arg) = self.parse_script_arg(input)?;
 
         // Check for the complementary script
-        let skip2 = skip_ws_bytes(input.as_bytes());
+        let skip2 = self.skip_script_ws(input.as_bytes());
         let input2 = &input[skip2..];
         let second_ch = if first == '^' { b'_' } else { b'^' };
         let has_second = input2.as_bytes().first() == Some(&second_ch);
@@ -813,7 +936,10 @@ impl LatexCompactParser {
                 let mut prime_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
                 for _ in 0..prime_count {
                     let sid = self.arena.push_str("\u{2032}");
-                    prime_ids.push(self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)));
+                    prime_ids.push(
+                        self.arena
+                            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+                    );
                 }
                 let sup_node = self.flatten_single(&prime_ids);
                 return Ok((
@@ -868,6 +994,15 @@ impl LatexCompactParser {
         }
     }
 
+    #[inline]
+    fn skip_script_ws(&self, input: &[u8]) -> usize {
+        if self.depth == 1 {
+            skip_horizontal_ws_bytes(input)
+        } else {
+            skip_ws_bytes(input)
+        }
+    }
+
     /// Parse an n-ary operator with optional limits and a body.
     fn parse_nary_rest<'a>(&mut self, input: &'a str, op_id: NodeId) -> IResult<&'a str, NodeId> {
         let CompactNode::Symbol(_, sid) = *self.arena.node(op_id) else {
@@ -903,12 +1038,17 @@ impl LatexCompactParser {
 
         // The body is the next atom (or empty row if nothing follows).
         // Allow scripts on the body: \int_0^1 x^2 → body is x^2, not just x.
-        let (input, body_id) = match self.parse_atom(input) {
-            Ok((rest, id)) => self.parse_scripts(rest, id)?,
-            Err(_) => {
-                let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-                (input, row_id)
-            },
+        let (input, body_id) = if is_table_boundary(input) {
+            let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            (input, row_id)
+        } else {
+            match self.parse_atom(input) {
+                Ok((rest, id)) => self.parse_scripts(rest, id)?,
+                Err(_) => {
+                    let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                    (input, row_id)
+                },
+            }
         };
 
         Ok((
@@ -933,7 +1073,7 @@ impl LatexCompactParser {
         };
         let input = &input[1..];
         let (input, first_arg) = self.parse_script_arg(input)?;
-        let skip = skip_ws_bytes(input.as_bytes());
+        let skip = self.skip_script_ws(input.as_bytes());
         let input_ws = &input[skip..];
         let second_byte = if first_ch == '_' { b'^' } else { b'_' };
         if input_ws.as_bytes().first() == Some(&second_byte) {
@@ -988,7 +1128,11 @@ impl LatexCompactParser {
             // Backtick ` → ordinary symbol (used in ``quotes'')
             Some(b'`') => {
                 let sid = self.arena.push_str("`");
-                Ok((&input[1..], self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid))))
+                Ok((
+                    &input[1..],
+                    self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+                ))
             },
             // Non-ASCII: Unicode letters → identifiers, other → symbols
             Some(&b) if b > 127 => {
@@ -996,9 +1140,16 @@ impl LatexCompactParser {
                 let len = ch.len_utf8();
                 let sid = self.arena.push_str(&input[..len]);
                 if ch.is_alphabetic() {
-                    Ok((&input[len..], self.arena.push_node(CompactNode::Identifier(sid))))
+                    Ok((
+                        &input[len..],
+                        self.arena.push_node(CompactNode::Identifier(sid)),
+                    ))
                 } else {
-                    Ok((&input[len..], self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid))))
+                    Ok((
+                        &input[len..],
+                        self.arena
+                            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+                    ))
                 }
             },
             _ => Err(nom::Err::Error(nom::error::Error::new(
@@ -1279,43 +1430,64 @@ impl LatexCompactParser {
             "left" => self.parse_left_right(input),
 
             // --- Text and font ---
-            "text" | "textrm" | "textit" | "textbf" | "texttt" | "textsf"
-            | "textnormal" | "textup" | "mbox" | "hbox" => {
-                self.parse_text(input, name)
-            },
+            "text" | "textrm" | "textit" | "textbf" | "texttt" | "textsf" | "textnormal"
+            | "textup" | "mbox" | "hbox" => self.parse_text(input, name),
             "mathrm" | "mathbf" | "mathit" | "mathtt" | "mathsf" | "mathbb" | "mathcal"
             | "mathscr" | "mathfrak" | "boldsymbol" | "bm" | "mathnormal" | "mathup"
-            | "mathsfup" | "mathsfit" | "mathbfup" | "mathbfit" | "mathbfcal"
-            | "mathbffrak" | "mathbfscr" | "mathbfsfit" | "mathbfsfup" => {
-                self.parse_math_font(input, name)
-            },
+            | "mathsfup" | "mathsfit" | "mathbfup" | "mathbfit" | "mathbfcal" | "mathbffrak"
+            | "mathbfscr" | "mathbfsfit" | "mathbfsfup" => self.parse_math_font(input, name),
 
             // --- Decorators ---
             "phantom" | "vphantom" | "hphantom" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
-                Ok((input, self.arena.push_node(CompactNode::Phantom(arg_id))))
+                let kind = match name {
+                    "vphantom" => PhantomKind::Vertical,
+                    "hphantom" => PhantomKind::Horizontal,
+                    _ => PhantomKind::Full,
+                };
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Phantom(arg_id, kind)),
+                ))
             },
             "mathstrut" => {
                 // \mathstrut — zero-width strut; emit as phantom of "("
                 let sid = self.arena.push_str("(");
-                let inner = self.arena.push_node(CompactNode::Symbol(SymbolKind::Open, sid));
-                Ok((input, self.arena.push_node(CompactNode::Phantom(inner))))
+                let inner = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Open, sid));
+                Ok((
+                    input,
+                    self.arena
+                        .push_node(CompactNode::Phantom(inner, PhantomKind::Vertical)),
+                ))
             },
             // \ensuremath{content} — transparent wrapper; content already in math mode
             "ensuremath" => self.parse_required_group(input),
             "smash" => {
-                // \smash[b]{...} or \smash{...} — optional [b]/[t] arg
+                // \smash[b]{...} or \smash[t]{...} or \smash{...}
                 let (input, _) = ws(input)?;
-                let input = if input.starts_with('[') {
-                    if let Some(end) = input.find(']') {
-                        &input[end + 1..]
+                let (input, smash_kind) = if let Some(rest) = input.strip_prefix('[') {
+                    if let Some(end) = rest.find(']') {
+                        let arg = &rest[..end];
+                        let kind = match arg {
+                            "b" => PhantomKind::SmashBottom,
+                            "t" => PhantomKind::SmashTop,
+                            _ => PhantomKind::SmashBoth,
+                        };
+                        (&rest[end + 1..], kind)
                     } else {
-                        input
+                        (input, PhantomKind::SmashBoth)
                     }
                 } else {
-                    input
+                    (input, PhantomKind::SmashBoth)
                 };
-                self.parse_required_group(input)
+                let (input, arg_id) = self.parse_required_group(input)?;
+                Ok((
+                    input,
+                    self.arena
+                        .push_node(CompactNode::Phantom(arg_id, smash_kind)),
+                ))
             },
             "tag" => {
                 // \tag{...} — scan-consume argument (may contain $...$)
@@ -1330,7 +1502,10 @@ impl LatexCompactParser {
                             '{' => depth += 1,
                             '}' => {
                                 depth -= 1;
-                                if depth == 0 { end = i + 1; break; }
+                                if depth == 0 {
+                                    end = i + 1;
+                                    break;
+                                }
                             },
                             _ => {},
                         }
@@ -1339,16 +1514,22 @@ impl LatexCompactParser {
                 } else {
                     input
                 };
-                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                ))
             },
             "boxed" | "fbox" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
                 let empty_sid = self.arena.push_str("");
-                Ok((input, self.arena.push_node(CompactNode::Boxed {
-                    content: arg_id,
-                    bg_color: empty_sid,
-                    border_color: empty_sid,
-                })))
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Boxed {
+                        content: arg_id,
+                        bg_color: empty_sid,
+                        border_color: empty_sid,
+                    }),
+                ))
             },
             "cancel" => self.parse_cancel(input, StrokeKind::Forward),
             "bcancel" => self.parse_cancel(input, StrokeKind::Backward),
@@ -1370,7 +1551,26 @@ impl LatexCompactParser {
 
             // --- Math atom type wrappers ---
             "mathop" | "mathrel" | "mathbin" | "mathord" | "mathpunct" | "mathopen"
-            | "mathclose" | "mathinner" => self.parse_required_group(input),
+            | "mathclose" | "mathinner" => {
+                let (input, arg_id) = self.parse_required_group(input)?;
+                let atom_type = match name {
+                    "mathop" => MathAtomType::Op,
+                    "mathrel" => MathAtomType::Rel,
+                    "mathbin" => MathAtomType::Bin,
+                    "mathpunct" => MathAtomType::Punct,
+                    "mathopen" => MathAtomType::Open,
+                    "mathclose" => MathAtomType::Close,
+                    "mathinner" => MathAtomType::Inner,
+                    _ => MathAtomType::Ord,
+                };
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::MathAtom {
+                        atom_type,
+                        content: arg_id,
+                    }),
+                ))
+            },
 
             // --- Negation ---
             "not" => self.parse_not(input),
@@ -1434,7 +1634,11 @@ impl LatexCompactParser {
             "middle" => {
                 let (input, _) = ws(input)?;
                 let (input, sid) = self.parse_delimiter_into(input)?;
-                Ok((input, self.arena.push_node(CompactNode::Symbol(SymbolKind::Fence, sid))))
+                Ok((
+                    input,
+                    self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::Fence, sid)),
+                ))
             },
 
             // --- Color (consume color arg, return content) ---
@@ -1454,7 +1658,7 @@ impl LatexCompactParser {
             "genfrac" => self.parse_genfrac(input),
 
             // --- Strikethrough / sout ---
-            "sout" => self.parse_cancel(input, StrokeKind::Cross),
+            "sout" => self.parse_cancel(input, StrokeKind::Horizontal),
 
             // --- Poor man's bold (render as bold font) ---
             "pmb" => self.parse_math_font(input, "mathbf"),
@@ -1467,7 +1671,9 @@ impl LatexCompactParser {
                 let (input, arg_id) = self.parse_required_group(input)?;
                 // Overlay a combining solidus on the argument
                 let slash_sid = self.arena.push_str("\u{0338}");
-                let slash_id = self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, slash_sid));
+                let slash_id = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, slash_sid));
                 let children = self.arena.push_children(&[arg_id, slash_id]);
                 Ok((input, self.arena.push_node(CompactNode::Row(children))))
             },
@@ -1489,7 +1695,10 @@ impl LatexCompactParser {
                         '{' => depth += 1,
                         '}' => {
                             depth -= 1;
-                            if depth == 0 { end = i; break; }
+                            if depth == 0 {
+                                end = i;
+                                break;
+                            }
                         },
                         _ => {},
                     }
@@ -1497,7 +1706,11 @@ impl LatexCompactParser {
                 let text = &input[..end];
                 let rest = &input[end + 1..];
                 let sid = self.arena.push_str(text);
-                Ok((rest, self.arena.push_node(CompactNode::Text(TextStyle::Monospace, sid))))
+                Ok((
+                    rest,
+                    self.arena
+                        .push_node(CompactNode::Text(TextStyle::Monospace, sid)),
+                ))
             },
 
             // --- HTML attributes (transparent wrappers) ---
@@ -1508,10 +1721,12 @@ impl LatexCompactParser {
             },
 
             // --- DeclareMathOperator (consume and discard) ---
-            "DeclareMathOperator" | "newcommand" | "renewcommand" | "providecommand"
-            | "newenvironment" | "renewenvironment" => {
-                self.parse_declaration(input)
-            },
+            "DeclareMathOperator"
+            | "newcommand"
+            | "renewcommand"
+            | "providecommand"
+            | "newenvironment"
+            | "renewenvironment" => self.parse_declaration(input),
 
             // --- Includegraphics (consume and skip) ---
             "includegraphics" => {
@@ -1527,31 +1742,52 @@ impl LatexCompactParser {
                     input
                 };
                 let (input, _) = self.parse_required_group(input)?;
-                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                ))
             },
 
             // --- Logo text commands ---
             "TeX" => {
                 let sid = self.arena.push_str("TeX");
-                Ok((input, self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))))
+                Ok((
+                    input,
+                    self.arena
+                        .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                ))
             },
             "LaTeX" => {
                 let sid = self.arena.push_str("LaTeX");
-                Ok((input, self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))))
+                Ok((
+                    input,
+                    self.arena
+                        .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                ))
             },
             "KaTeX" => {
                 let sid = self.arena.push_str("KaTeX");
-                Ok((input, self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid))))
+                Ok((
+                    input,
+                    self.arena
+                        .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                ))
             },
 
             // --- Idotsint (integral with dots) ---
             "idotsint" => {
                 let int_sid = self.push_char_str('\u{222B}');
                 let dots_sid = self.push_char_str('\u{22EF}');
-                let int1 = self.arena.push_node(CompactNode::Symbol(SymbolKind::LargeOp, int_sid));
-                let dots = self.arena.push_node(CompactNode::Symbol(SymbolKind::Ordinary, dots_sid));
+                let int1 = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::LargeOp, int_sid));
+                let dots = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, dots_sid));
                 let int_sid2 = self.push_char_str('\u{222B}');
-                let int2 = self.arena.push_node(CompactNode::Symbol(SymbolKind::LargeOp, int_sid2));
+                let int2 = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::LargeOp, int_sid2));
                 let children = self.arena.push_children(&[int1, dots, int2]);
                 Ok((input, self.arena.push_node(CompactNode::Row(children))))
             },
@@ -1568,9 +1804,7 @@ impl LatexCompactParser {
             "vcenter" => self.parse_required_group(input),
 
             // --- Old-style font switches (TeX two-letter commands) ---
-            "rm" | "it" | "bf" | "sf" | "tt" => {
-                self.parse_old_font_switch(input, name)
-            },
+            "rm" | "it" | "bf" | "sf" | "tt" => self.parse_old_font_switch(input, name),
 
             // --- Above (infix with dimension) ---
             "above" => {
@@ -1587,14 +1821,18 @@ impl LatexCompactParser {
             },
 
             // --- Table directives (when encountered outside table context) ---
-            "hline" | "hdashline" => {
-                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
-            },
+            "hline" | "hdashline" => Ok((
+                input,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            )),
 
             // --- Label (consume and discard) ---
             "label" => {
                 let (input, _) = self.parse_required_group(input)?;
-                Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                ))
             },
 
             // --- Mathchoice: store all 4 branches for style-dependent selection ---
@@ -1604,12 +1842,15 @@ impl LatexCompactParser {
                 let (input, text_id) = self.parse_required_group(input)?;
                 let (input, script_id) = self.parse_required_group(input)?;
                 let (input, sscript_id) = self.parse_required_group(input)?;
-                Ok((input, self.arena.push_node(CompactNode::MathChoice {
-                    display: display_id,
-                    text: text_id,
-                    script: script_id,
-                    script_script: sscript_id,
-                })))
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::MathChoice {
+                        display: display_id,
+                        text: text_id,
+                        script: script_id,
+                        script_script: sscript_id,
+                    }),
+                ))
             },
 
             // --- Intop (integral with limits style) ---
@@ -1635,7 +1876,8 @@ impl LatexCompactParser {
                     let (input, content_id) = self.parse_braced_group(input)?;
                     // Emit content with an overline to approximate the actuarial angle
                     let line_sid = self.arena.push_str("\u{203E}");
-                    let line_id = self.arena
+                    let line_id = self
+                        .arena
                         .push_node(CompactNode::Symbol(SymbolKind::Ordinary, line_sid));
                     Ok((
                         input,
@@ -1647,7 +1889,10 @@ impl LatexCompactParser {
                     ))
                 } else {
                     // No argument — just emit empty
-                    Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+                    Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    ))
                 }
             },
 
@@ -1656,7 +1901,8 @@ impl LatexCompactParser {
                 // \phase{angle} — render as underline with angle content
                 let (input, content_id) = self.parse_required_group(input)?;
                 let angle_sid = self.arena.push_str("\u{2220}");
-                let angle_id = self.arena
+                let angle_id = self
+                    .arena
                     .push_node(CompactNode::Symbol(SymbolKind::Ordinary, angle_sid));
                 let children = self.arena.push_children(&[angle_id, content_id]);
                 Ok((input, self.arena.push_node(CompactNode::Row(children))))
@@ -1695,9 +1941,10 @@ impl LatexCompactParser {
             },
 
             // --- \cr (row separator used outside table context) ---
-            "cr" => {
-                Ok((input, self.arena.push_node(CompactNode::Space(Rational::zero()))))
-            },
+            "cr" => Ok((
+                input,
+                self.arena.push_node(CompactNode::Space(Rational::zero())),
+            )),
 
             // --- Catch-all: symbols, n-ary, operators, Greek letters ---
             //
@@ -1771,11 +2018,11 @@ impl LatexCompactParser {
             "textstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(1))),
             "scriptstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(2))),
             "scriptscriptstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(3))),
-            // Line break / no-op commands consumed silently
-            "newline" | "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak"
-            | "limits" | "nolimits" => {
-                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
-            },
+            // Explicit line break.
+            "newline" => Some(self.arena.push_node(CompactNode::Newline)),
+            // Line-break hints and equation tags are layout no-ops in this renderer.
+            "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak" | "limits"
+            | "nolimits" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
             // Font sizing commands — emit SizeScale nodes for the layout engine
             "Huge" => Some(self.arena.push_node(CompactNode::SizeScale(9))),
             "huge" => Some(self.arena.push_node(CompactNode::SizeScale(8))),
@@ -1820,7 +2067,10 @@ impl LatexCompactParser {
             Some(b'\\') => self.parse_command(input),
             Some(&b) if b.is_ascii_alphabetic() => {
                 let sid = self.arena.push_str(&input[..1]);
-                Ok((&input[1..], self.arena.push_node(CompactNode::Identifier(sid))))
+                Ok((
+                    &input[1..],
+                    self.arena.push_node(CompactNode::Identifier(sid)),
+                ))
             },
             Some(&b) if b.is_ascii_digit() => {
                 let sid = self.arena.push_str(&input[..1]);
@@ -2117,10 +2367,7 @@ impl LatexCompactParser {
             {
                 let (after_mid, _) = ws(after_mid)?;
                 let (after_delim, sid) = self.parse_delimiter_into(after_mid)?;
-                ids.push(
-                    self.arena
-                        .push_node(CompactNode::Symbol(SymbolKind::Fence, sid)),
-                );
+                ids.push(self.arena.push_node(CompactNode::Middle(sid)));
                 rest = after_delim;
                 continue;
             }
@@ -2230,7 +2477,11 @@ impl LatexCompactParser {
             let (input, name) = take_while(|c: char| c != '}')(input)?;
             let (input, _) = char('}')(input)?;
             (input, name)
-        } else if input.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic()) {
+        } else if input
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic())
+        {
             (&input[1..], &input[..1])
         } else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -2268,10 +2519,8 @@ impl LatexCompactParser {
         };
         Ok((
             input,
-            self.arena.push_node(CompactNode::Operator {
-                name: sid,
-                limits,
-            }),
+            self.arena
+                .push_node(CompactNode::Operator { name: sid, limits }),
         ))
     }
 
@@ -2388,7 +2637,10 @@ impl LatexCompactParser {
                 i += 1;
             }
         }
-        if i == digit_start && !(digit_start > 0 && (bytes[digit_start - 1] == b'+' || bytes[digit_start - 1] == b'-')) {
+        if i == digit_start
+            && !(digit_start > 0
+                && (bytes[digit_start - 1] == b'+' || bytes[digit_start - 1] == b'-'))
+        {
             // No number found at all
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -2455,7 +2707,10 @@ impl LatexCompactParser {
                 return Ok((after, self.arena.push_node(CompactNode::Space(r))));
             }
             // Failed to parse dimension; emit thin space
-            return Ok((after, self.arena.push_node(CompactNode::Space(Rational::zero()))));
+            return Ok((
+                after,
+                self.arena.push_node(CompactNode::Space(Rational::zero())),
+            ));
         }
         match self.parse_dimension(input) {
             Ok((rest, r)) => {
@@ -2469,7 +2724,10 @@ impl LatexCompactParser {
             },
             Err(_) => {
                 // Couldn't parse dimension; just emit zero space
-                Ok((input, self.arena.push_node(CompactNode::Space(Rational::zero()))))
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Space(Rational::zero())),
+                ))
             },
         }
     }
@@ -2491,21 +2749,29 @@ impl LatexCompactParser {
         if let Ok((_, r)) = sub_parser.parse_dimension(dim_str) {
             return Ok((rest, self.arena.push_node(CompactNode::Space(r))));
         }
-        Ok((rest, self.arena.push_node(CompactNode::Space(Rational::zero()))))
+        Ok((
+            rest,
+            self.arena.push_node(CompactNode::Space(Rational::zero())),
+        ))
     }
 
     /// `\rule[lift]{width}{height}` — parse dimensions and emit a filled rectangle.
     fn parse_rule<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        // Optional [lift] — consume but ignore
-        let input = if input.starts_with('[') {
-            if let Some(end) = input.find(']') {
-                &input[end + 1..]
-            } else {
-                input
-            }
+        let (input, lift) = if input.starts_with('[') {
+            let end = input.find(']').ok_or_else(|| {
+                nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+            })?;
+            let lift_str = &input[1..end];
+            let rest = &input[end + 1..];
+            let mut lp = LatexCompactParser::with_capacity(lift_str.len());
+            let lift = lp
+                .parse_dimension(lift_str)
+                .map(|(_, r)| r)
+                .unwrap_or(Rational::zero());
+            (rest, lift)
         } else {
-            input
+            (input, Rational::zero())
         };
         // Required {width}
         let (input, _) = ws(input)?;
@@ -2516,7 +2782,10 @@ impl LatexCompactParser {
         let width_str = &input[..width_end];
         let input = &input[width_end + 1..];
         let mut wp = LatexCompactParser::with_capacity(width_str.len());
-        let width = wp.parse_dimension(width_str).map(|(_, r)| r).unwrap_or(Rational::zero());
+        let width = wp
+            .parse_dimension(width_str)
+            .map(|(_, r)| r)
+            .unwrap_or(Rational::zero());
 
         // Required {height}
         let (input, _) = ws(input)?;
@@ -2527,9 +2796,19 @@ impl LatexCompactParser {
         let height_str = &input[..height_end];
         let input = &input[height_end + 1..];
         let mut hp = LatexCompactParser::with_capacity(height_str.len());
-        let height = hp.parse_dimension(height_str).map(|(_, r)| r).unwrap_or(Rational::zero());
+        let height = hp
+            .parse_dimension(height_str)
+            .map(|(_, r)| r)
+            .unwrap_or(Rational::zero());
 
-        Ok((input, self.arena.push_node(CompactNode::Rule { width, height })))
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Rule {
+                width,
+                height,
+                lift,
+            }),
+        ))
     }
 
     fn parse_extensible_arrow<'a>(
@@ -2606,7 +2885,10 @@ impl LatexCompactParser {
 
         let table_rows: Vec<Vec<SmallVec<[NodeId; 8]>>> =
             cells.into_iter().map(|cell| vec![cell]).collect();
-        Ok((input, self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false)))
+        Ok((
+            input,
+            self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false, 0),
+        ))
     }
 
     fn parse_big_delim<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
@@ -2660,8 +2942,10 @@ impl LatexCompactParser {
             let (input, content_id) = self.parse_braced_group(input)?;
             Ok((
                 input,
-                self.arena
-                    .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+                self.arena.push_node(CompactNode::Color {
+                    color: color_sid,
+                    content: content_id,
+                }),
             ))
         } else {
             let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
@@ -2691,8 +2975,10 @@ impl LatexCompactParser {
             let content_id = self.flatten_single(&ids);
             Ok((
                 rest,
-                self.arena
-                    .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+                self.arena.push_node(CompactNode::Color {
+                    color: color_sid,
+                    content: content_id,
+                }),
             ))
         }
     }
@@ -2706,8 +2992,10 @@ impl LatexCompactParser {
         let (input, content_id) = self.parse_required_group(input)?;
         Ok((
             input,
-            self.arena
-                .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+            self.arena.push_node(CompactNode::Color {
+                color: color_sid,
+                content: content_id,
+            }),
         ))
     }
 
@@ -2723,24 +3011,30 @@ impl LatexCompactParser {
             let (input, content_id) = self.parse_braced_group(input)?;
             Ok((
                 input,
-                self.arena
-                    .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+                self.arena.push_node(CompactNode::Color {
+                    color: color_sid,
+                    content: content_id,
+                }),
             ))
         } else {
             // Consume the next single token
             match self.parse_single_token(input) {
                 Ok((rest, content_id)) => Ok((
                     rest,
-                    self.arena
-                        .push_node(CompactNode::Color { color: color_sid, content: content_id }),
+                    self.arena.push_node(CompactNode::Color {
+                        color: color_sid,
+                        content: content_id,
+                    }),
                 )),
                 Err(_) => {
                     // No content follows; just emit an empty node
                     let empty = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
                     Ok((
                         input,
-                        self.arena
-                            .push_node(CompactNode::Color { color: color_sid, content: empty }),
+                        self.arena.push_node(CompactNode::Color {
+                            color: color_sid,
+                            content: empty,
+                        }),
                     ))
                 },
             }
@@ -2756,11 +3050,14 @@ impl LatexCompactParser {
         let (input, content_id) = self.parse_required_group(input)?;
         let bg_sid = self.arena.push_str(color);
         let border_sid = self.arena.push_str("");
-        Ok((input, self.arena.push_node(CompactNode::Boxed {
-            content: content_id,
-            bg_color: bg_sid,
-            border_color: border_sid,
-        })))
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Boxed {
+                content: content_id,
+                bg_color: bg_sid,
+                border_color: border_sid,
+            }),
+        ))
     }
 
     /// `\fcolorbox{framecolor}{bgcolor}{content}` — consume two color args, emit content in a colored box.
@@ -2776,34 +3073,69 @@ impl LatexCompactParser {
         let (input, content_id) = self.parse_required_group(input)?;
         let bg_sid = self.arena.push_str(bg_color);
         let border_sid = self.arena.push_str(frame_color);
-        Ok((input, self.arena.push_node(CompactNode::Boxed {
-            content: content_id,
-            bg_color: bg_sid,
-            border_color: border_sid,
-        })))
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Boxed {
+                content: content_id,
+                bg_color: bg_sid,
+                border_color: border_sid,
+            }),
+        ))
     }
 
-    /// `\raisebox{dimension}{content}` — consume dimension, emit content.
+    /// `\raisebox{dimension}[height][depth]{content}` — shift content vertically.
     fn parse_raisebox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        // Consume {dimension}
         let (input, _) = char('{')(input)?;
         let end = input.find('}').ok_or_else(|| {
             nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
         })?;
+        let dim_str = &input[..end];
+        let mut dp = LatexCompactParser::with_capacity(dim_str.len());
+        let shift = dp
+            .parse_dimension(dim_str)
+            .map(|(_, r)| r)
+            .unwrap_or_else(|_| Rational::zero());
         let rest = &input[end + 1..];
-        // Optional [height][depth] arguments
-        let rest = if rest.starts_with('[') {
-            if let Some(e) = rest.find(']') {
-                let r = &rest[e + 1..];
-                if r.starts_with('[') {
-                    if let Some(e2) = r.find(']') {
-                        &r[e2 + 1..]
-                    } else { r }
-                } else { r }
-            } else { rest }
-        } else { rest };
-        self.parse_required_group(rest)
+
+        let (rest, _) = ws(rest)?;
+        let (rest, height) = if rest.starts_with('[') {
+            self.parse_optional_dimension_bracket(rest)?
+        } else {
+            (rest, None)
+        };
+        let (rest, _) = ws(rest)?;
+        let (rest, depth) = if rest.starts_with('[') {
+            self.parse_optional_dimension_bracket(rest)?
+        } else {
+            (rest, None)
+        };
+        let (rest, content) = self.parse_required_group(rest)?;
+        Ok((
+            rest,
+            self.arena.push_node(CompactNode::RaiseBox {
+                shift,
+                height: height.unwrap_or_else(Rational::zero),
+                depth: depth.unwrap_or_else(Rational::zero),
+                extents: u8::from(height.is_some()) | (u8::from(depth.is_some()) << 1),
+                content,
+            }),
+        ))
+    }
+
+    fn parse_optional_dimension_bracket<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> IResult<&'a str, Option<Rational>> {
+        let (input, _) = char('[')(input)?;
+        let end = input.find(']').ok_or_else(|| {
+            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+        })?;
+        let dim_str = &input[..end];
+        let rest = &input[end + 1..];
+        let mut dp = LatexCompactParser::with_capacity(dim_str.len());
+        let dim = dp.parse_dimension(dim_str).map(|(_, r)| r).ok();
+        Ok((rest, dim))
     }
 
     /// `\verb|...|` or `\verb*|...|` — verbatim text between delimiters.
@@ -2820,17 +3152,29 @@ impl LatexCompactParser {
             let text = &after_delim[..end];
             let rest = &after_delim[end + delim.len_utf8()..];
             let sid = self.arena.push_str(text);
-            Ok((rest, self.arena.push_node(CompactNode::Text(TextStyle::Monospace, sid))))
+            Ok((
+                rest,
+                self.arena
+                    .push_node(CompactNode::Text(TextStyle::Monospace, sid)),
+            ))
         } else {
             // No closing delimiter found; consume to end
             let sid = self.arena.push_str(after_delim);
-            Ok(("", self.arena.push_node(CompactNode::Text(TextStyle::Monospace, sid))))
+            Ok((
+                "",
+                self.arena
+                    .push_node(CompactNode::Text(TextStyle::Monospace, sid)),
+            ))
         }
     }
 
     /// Old-style font switches: `\rm`, `\it`, `\bf`, `\sf`, `\tt`.
     /// These apply to the rest of the current group.
-    fn parse_old_font_switch<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
+    fn parse_old_font_switch<'a>(
+        &mut self,
+        input: &'a str,
+        name: &str,
+    ) -> IResult<&'a str, NodeId> {
         // In math mode, these are typically no-ops or apply a style to following content.
         // We'll parse the next token and apply the style.
         let style = match name {
@@ -2843,10 +3187,16 @@ impl LatexCompactParser {
         };
         let (input, _) = ws(input)?;
         // If there's content to style, consume the next token
-        if input.is_empty() || input.starts_with('}') || input.starts_with('&')
-            || input.starts_with("\\\\") || input.starts_with("\\end")
+        if input.is_empty()
+            || input.starts_with('}')
+            || input.starts_with('&')
+            || input.starts_with("\\\\")
+            || input.starts_with("\\end")
         {
-            return Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ));
         }
         // Parse remaining content in current group
         let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
@@ -2854,8 +3204,11 @@ impl LatexCompactParser {
         loop {
             let (r, _) = ws(rest)?;
             rest = r;
-            if rest.is_empty() || rest.starts_with('}') || rest.starts_with('&')
-                || rest.starts_with("\\\\") || rest.starts_with("\\end")
+            if rest.is_empty()
+                || rest.starts_with('}')
+                || rest.starts_with('&')
+                || rest.starts_with("\\\\")
+                || rest.starts_with("\\end")
             {
                 break;
             }
@@ -2869,10 +3222,17 @@ impl LatexCompactParser {
             }
         }
         if ids.is_empty() {
-            return Ok((rest, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+            return Ok((
+                rest,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ));
         }
         let content_span = self.arena.push_children(&ids);
-        Ok((rest, self.arena.push_node(CompactNode::Styled(style, content_span))))
+        Ok((
+            rest,
+            self.arena
+                .push_node(CompactNode::Styled(style, content_span)),
+        ))
     }
 
     /// Parse \DeclareMathOperator and similar declaration commands — consume all arguments.
@@ -2900,7 +3260,10 @@ impl LatexCompactParser {
                 break;
             }
         }
-        Ok((rest, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+        Ok((
+            rest,
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -2916,8 +3279,8 @@ impl LatexCompactParser {
 
         match env_name {
             "array" => self.parse_array_env(input, env_name),
-            "matrix" | "pmatrix" | "bmatrix" | "vmatrix" | "Bmatrix" | "Vmatrix"
-            | "matrix*" | "pmatrix*" | "bmatrix*" | "vmatrix*" | "Bmatrix*" | "Vmatrix*" => {
+            "matrix" | "pmatrix" | "bmatrix" | "vmatrix" | "Bmatrix" | "Vmatrix" | "matrix*"
+            | "pmatrix*" | "bmatrix*" | "vmatrix*" | "Bmatrix*" | "Vmatrix*" => {
                 self.parse_matrix_env(input, env_name)
             },
             "smallmatrix" => self.parse_smallmatrix_env(input, env_name),
@@ -2946,7 +3309,10 @@ impl LatexCompactParser {
                     match c {
                         '{' => depth += 1,
                         '}' if depth > 0 => depth -= 1,
-                        '}' => { end = Some(i); break; },
+                        '}' => {
+                            end = Some(i);
+                            break;
+                        },
                         _ => {},
                     }
                 }
@@ -2958,7 +3324,7 @@ impl LatexCompactParser {
                     }
                 }
             }
-            (input, SmallVec::new())
+            (input, (SmallVec::new(), 0u32))
         };
 
         let (input, rows) = self.parse_table_body(input)?;
@@ -2969,7 +3335,10 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        Ok((input, self.build_array(&columns, rows)))
+        Ok((
+            input,
+            self.build_array_with_seps(&columns.0, columns.1, rows),
+        ))
     }
 
     fn parse_matrix_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
@@ -3044,7 +3413,13 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        let array_id = self.build_array_with_spacing(&[ColumnAlign::Left, ColumnAlign::Left], rows, 120, false);
+        let array_id = self.build_array_with_spacing(
+            &[ColumnAlign::Left, ColumnAlign::Left],
+            rows,
+            120,
+            false,
+            0,
+        );
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
         let content = self.arena.push_children(&[array_id]);
@@ -3067,7 +3442,13 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        let array_id = self.build_array_with_spacing(&[ColumnAlign::Left, ColumnAlign::Left], rows, 120, false);
+        let array_id = self.build_array_with_spacing(
+            &[ColumnAlign::Left, ColumnAlign::Left],
+            rows,
+            120,
+            false,
+            0,
+        );
         let open = self.arena.push_str("");
         let close = self.arena.push_str("}");
         let content = self.arena.push_children(&[array_id]);
@@ -3081,7 +3462,11 @@ impl LatexCompactParser {
         ))
     }
 
-    fn parse_smallmatrix_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
+    fn parse_smallmatrix_env<'a>(
+        &mut self,
+        input: &'a str,
+        env_name: &str,
+    ) -> IResult<&'a str, NodeId> {
         let (input, rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
@@ -3096,7 +3481,10 @@ impl LatexCompactParser {
             SmallVec::new()
         };
 
-        Ok((input, self.build_array_with_spacing(&columns, rows, 50, false)))
+        Ok((
+            input,
+            self.build_array_with_spacing(&columns, rows, 50, false, 0),
+        ))
     }
 
     fn parse_align_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
@@ -3119,7 +3507,10 @@ impl LatexCompactParser {
             .take(max_row_len.max(base_pattern.len()))
             .collect();
 
-        Ok((input, self.build_array_with_spacing(&columns, rows, 100, true)))
+        Ok((
+            input,
+            self.build_array_with_spacing(&columns, rows, 100, true, 0),
+        ))
     }
 
     fn parse_alignedat_env<'a>(
@@ -3131,14 +3522,12 @@ impl LatexCompactParser {
         // We consume the mandatory argument but derive the actual column
         // count from the rows, same as parse_align_env.
         let (input, _) = ws(input)?;
-        let input = if let Ok((r, _)) =
-            char::<_, nom::error::Error<&str>>('{')(input)
-        {
-            let (r, _) =
-                take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(r)
-                    .unwrap_or((r, ""));
-            let (r, _) = char::<_, nom::error::Error<&str>>('}')(r)
-                .map_err(|_| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char)))?;
+        let input = if let Ok((r, _)) = char::<_, nom::error::Error<&str>>('{')(input) {
+            let (r, _) = take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(r)
+                .unwrap_or((r, ""));
+            let (r, _) = char::<_, nom::error::Error<&str>>('}')(r).map_err(|_| {
+                nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
+            })?;
             r
         } else {
             input
@@ -3156,7 +3545,10 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
-        Ok((input, self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true)))
+        Ok((
+            input,
+            self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true, 0),
+        ))
     }
 
     fn parse_equation_env<'a>(

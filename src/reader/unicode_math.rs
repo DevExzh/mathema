@@ -93,6 +93,10 @@ impl CompactParser {
         let mut ids = SmallVec::new();
         let mut remaining = input;
         loop {
+            // Whitespace separates UnicodeMath operands (it triggers "build up"
+            // of the preceding subexpression); it is not literal text. Skip it
+            // between elements so parsing continues past spaces.
+            remaining = remaining.trim_start();
             if remaining.is_empty() {
                 break;
             }
@@ -449,6 +453,7 @@ impl CompactParser {
             num_cols,
             arraystretch_pct: 100,
             add_jot: false,
+            col_seps: 0,
         });
         Ok((remaining, id))
     }
@@ -694,6 +699,41 @@ mod tests {
             &nodes[1],
             MathNode::Symbol(SymbolKind::BinaryOp, _)
         ));
+    }
+
+    #[test]
+    fn spaced_operators_are_not_text() {
+        // Regression: a space used to send the rest of the input into a
+        // Text node ("a + b" -> [a, Text("+ b")]). Spaces separate operands
+        // in UnicodeMath and must not swallow following math.
+        let nodes = parse("a + b");
+        assert_eq!(nodes.len(), 3, "got {nodes:?}");
+        assert!(matches!(&nodes[0], MathNode::Identifier(s) if s == "a"));
+        assert!(matches!(
+            &nodes[1],
+            MathNode::Symbol(SymbolKind::BinaryOp, _)
+        ));
+        assert!(matches!(&nodes[2], MathNode::Identifier(s) if s == "b"));
+        assert!(
+            !nodes.iter().any(|n| matches!(n, MathNode::Text(_, _))),
+            "no Text node expected: {nodes:?}"
+        );
+    }
+
+    #[test]
+    fn spaced_expression_keeps_fraction() {
+        // "x^2 + 1/2" with spaces should still produce a superscript, an
+        // operator and a fraction (not literal text).
+        let nodes = parse("x^2 + 1/2");
+        assert!(matches!(&nodes[0], MathNode::Superscript { .. }), "{nodes:?}");
+        assert!(
+            nodes.iter().any(|n| matches!(n, MathNode::Fraction { .. })),
+            "fraction expected: {nodes:?}"
+        );
+        assert!(
+            !nodes.iter().any(|n| matches!(n, MathNode::Text(_, _))),
+            "no Text node expected: {nodes:?}"
+        );
     }
 
     #[test]

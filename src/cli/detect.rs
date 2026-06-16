@@ -27,8 +27,10 @@ pub fn detect_from_content(content: &str) -> Option<Format> {
         if trimmed.contains("<m:oMath") || trimmed.contains("<m:r") {
             return Some(Format::Omml);
         }
-        if trimmed.contains("<math") || trimmed.contains("<mi")
-            || trimmed.contains("<mo") || trimmed.contains("<mn")
+        if trimmed.contains("<math")
+            || trimmed.contains("<mi")
+            || trimmed.contains("<mo")
+            || trimmed.contains("<mn")
         {
             return Some(Format::MathML);
         }
@@ -93,27 +95,42 @@ mod tests {
 
     #[test]
     fn ext_tex() {
-        assert_eq!(detect_from_extension(Path::new("file.tex")), Some(Format::LaTeX));
+        assert_eq!(
+            detect_from_extension(Path::new("file.tex")),
+            Some(Format::LaTeX)
+        );
     }
 
     #[test]
     fn ext_latex() {
-        assert_eq!(detect_from_extension(Path::new("file.latex")), Some(Format::LaTeX));
+        assert_eq!(
+            detect_from_extension(Path::new("file.latex")),
+            Some(Format::LaTeX)
+        );
     }
 
     #[test]
     fn ext_mml() {
-        assert_eq!(detect_from_extension(Path::new("file.mml")), Some(Format::MathML));
+        assert_eq!(
+            detect_from_extension(Path::new("file.mml")),
+            Some(Format::MathML)
+        );
     }
 
     #[test]
     fn ext_mathml() {
-        assert_eq!(detect_from_extension(Path::new("dir/file.mathml")), Some(Format::MathML));
+        assert_eq!(
+            detect_from_extension(Path::new("dir/file.mathml")),
+            Some(Format::MathML)
+        );
     }
 
     #[test]
     fn ext_omml() {
-        assert_eq!(detect_from_extension(Path::new("file.omml")), Some(Format::Omml));
+        assert_eq!(
+            detect_from_extension(Path::new("file.omml")),
+            Some(Format::Omml)
+        );
     }
 
     #[test]
@@ -130,12 +147,18 @@ mod tests {
 
     #[test]
     fn content_mathml() {
-        assert_eq!(detect_from_content("<math><mi>x</mi></math>"), Some(Format::MathML));
+        assert_eq!(
+            detect_from_content("<math><mi>x</mi></math>"),
+            Some(Format::MathML)
+        );
     }
 
     #[test]
     fn content_omml() {
-        assert_eq!(detect_from_content("<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>"), Some(Format::Omml));
+        assert_eq!(
+            detect_from_content("<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>"),
+            Some(Format::Omml)
+        );
     }
 
     #[test]
@@ -155,7 +178,10 @@ mod tests {
 
     #[test]
     fn content_unicode_math() {
-        assert_eq!(detect_from_content("\u{2211}_(i=0)^n i"), Some(Format::UnicodeMath));
+        assert_eq!(
+            detect_from_content("\u{2211}_(i=0)^n i"),
+            Some(Format::UnicodeMath)
+        );
     }
 
     #[test]
@@ -175,9 +201,6 @@ mod tests {
 
     #[test]
     fn combined_fallback_to_content() {
-        assert_eq!(
-            detect_format(None, "\\frac{1}{2}"),
-            Some(Format::LaTeX),
-        );
+        assert_eq!(detect_format(None, "\\frac{1}{2}"), Some(Format::LaTeX),);
     }
 }

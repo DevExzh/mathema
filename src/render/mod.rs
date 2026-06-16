@@ -1,22 +1,22 @@
 pub mod arena;
+#[cfg(feature = "raster")]
+pub(crate) mod css_colors;
 pub mod delimiter_paths;
 pub mod emit;
+#[cfg(feature = "render")]
+pub mod font_embed;
 pub(crate) mod glyph_variants;
 pub mod layout;
 pub(crate) mod math_table;
-#[cfg(feature = "raster")]
-pub(crate) mod css_colors;
 pub mod metrics;
 pub mod params;
 #[cfg(feature = "raster")]
 pub mod raster;
 pub mod spacing;
 pub mod style;
-#[cfg(feature = "font-embed")]
-pub mod font_embed;
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 pub mod subset;
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 pub(crate) mod svg_writer;
 
 /// Embedded Latin Modern Math font data, shared between font-embed and raster features.
@@ -111,7 +111,7 @@ pub fn render_to_svg_compact_arena(
 ///
 /// Unlike `render_to_svg`, the output does not require client-side fonts —
 /// glyph outlines from Latin Modern Math are embedded as `<path>` elements.
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Result<String> {
     crate::ast::validate_ast_depth(expr)?;
     let style = if options.is_display(expr) {
@@ -121,13 +121,15 @@ pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Res
     };
     let root = layout::layout_expr(expr, style, options);
     let chars = subset::collect_chars(&root);
-    let glyphs = subset::build_glyph_set(FONT_DATA, &chars)
-        .expect("embedded font data must be valid");
+    let mut glyphs =
+        subset::build_glyph_set(FONT_DATA, &chars).expect("embedded font data must be valid");
+    let variant_ids = subset::collect_variants(&root);
+    subset::add_variants(&mut glyphs, FONT_DATA, &variant_ids);
     Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs))
 }
 
 /// Render a compact expression to a standalone SVG with embedded font glyph paths.
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 pub fn render_to_svg_standalone_compact(
     expr: &CompactExpr,
     options: &RenderOptions,
@@ -143,13 +145,15 @@ pub fn render_to_svg_standalone_compact(
     };
     let root = layout::layout_expr_c(expr, style, options);
     let chars = subset::collect_chars(&root);
-    let glyphs = subset::build_glyph_set(FONT_DATA, &chars)
-        .expect("embedded font data must be valid");
+    let mut glyphs =
+        subset::build_glyph_set(FONT_DATA, &chars).expect("embedded font data must be valid");
+    let variant_ids = subset::collect_variants(&root);
+    subset::add_variants(&mut glyphs, FONT_DATA, &variant_ids);
     Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs))
 }
 
 /// Render a compact expression to standalone SVG using arena-based layout.
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 pub fn render_to_svg_standalone_compact_arena(
     expr: &CompactExpr,
     options: &RenderOptions,
@@ -168,8 +172,10 @@ pub fn render_to_svg_standalone_compact_arena(
     layout_arena.clear();
     let root = builder.layout(layout_arena, expr);
     let chars = subset::collect_chars_arena(layout_arena, root);
-    let glyphs = subset::build_glyph_set(FONT_DATA, &chars)
-        .expect("embedded font data must be valid");
+    let mut glyphs =
+        subset::build_glyph_set(FONT_DATA, &chars).expect("embedded font data must be valid");
+    let variant_ids = subset::collect_variants_arena(layout_arena, root);
+    subset::add_variants(&mut glyphs, FONT_DATA, &variant_ids);
     Ok(svg_writer::emit_svg_with_fonts_arena(
         layout_arena,
         root,
@@ -203,7 +209,7 @@ mod integration_tests {
     }
 }
 
-#[cfg(all(test, feature = "font-embed"))]
+#[cfg(all(test, feature = "render"))]
 mod font_embed_integration {
     use super::*;
     use crate::reader::Reader;
@@ -217,17 +223,18 @@ mod font_embed_integration {
         assert!(svg.contains("<defs>"), "standalone SVG should have defs");
         assert!(svg.contains("<use"), "standalone SVG should use <use>");
         assert!(svg.contains("<path"), "standalone SVG should have paths");
-        assert!(!svg.contains("<text"), "standalone SVG should not have <text>");
+        assert!(
+            !svg.contains("<text"),
+            "standalone SVG should not have <text>"
+        );
     }
 
     #[test]
     fn render_to_svg_standalone_compact_matches_heap() {
         let config = crate::error::Config::default();
-        let result = crate::reader::latex::LatexReader::parse_compact(
-            "\\frac{a}{b} + \\sqrt{c}",
-            &config,
-        )
-        .unwrap();
+        let result =
+            crate::reader::latex::LatexReader::parse_compact("\\frac{a}{b} + \\sqrt{c}", &config)
+                .unwrap();
         let options = RenderOptions::default();
 
         // Heap path via MathExpr

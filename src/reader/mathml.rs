@@ -107,12 +107,23 @@ impl<'a> MathmlCompactParser<'a> {
         std::str::from_utf8(raw).unwrap_or("")
     }
 
+    #[inline]
+    fn local_name(start: &quick_xml::events::BytesStart<'_>) -> String {
+        let qname = start.name();
+        Self::name_str(qname.local_name().as_ref()).to_owned()
+    }
+
+    #[inline]
+    fn local_name_end(end: &quick_xml::events::BytesEnd<'_>) -> String {
+        let qname = end.name();
+        Self::name_str(qname.local_name().as_ref()).to_owned()
+    }
+
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let qname = e.name();
-                    let name = Self::name_str(qname.as_ref());
+                    let name = Self::local_name(&e);
                     if name == "math" {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"display" {
@@ -125,8 +136,7 @@ impl<'a> MathmlCompactParser<'a> {
                         }
                         return self.parse_children("math");
                     } else {
-                        let name_owned = name.to_owned();
-                        let id = self.parse_element_by_name(&name_owned, &e)?;
+                        let id = self.parse_element_by_name(&name, &e)?;
                         let mut nodes: SmallVec<[NodeId; 8]> = smallvec::smallvec![id];
                         nodes.extend(self.collect_remaining()?);
                         return Ok(nodes);
@@ -148,13 +158,11 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let qname = e.name();
-                    let name = Self::name_str(qname.as_ref()).to_owned();
+                    let name = Self::local_name(&e);
                     nodes.push(self.parse_element_by_name(&name, &e)?);
                 },
                 Ok(Event::Empty(e)) => {
-                    let qname = e.name();
-                    let name = Self::name_str(qname.as_ref()).to_owned();
+                    let name = Self::local_name(&e);
                     nodes.push(self.parse_empty_element(&name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
@@ -183,13 +191,11 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let qname = e.name();
-                    let name = Self::name_str(qname.as_ref()).to_owned();
+                    let name = Self::local_name(&e);
                     nodes.push(self.parse_element_by_name(&name, &e)?);
                 },
                 Ok(Event::Empty(e)) => {
-                    let qname = e.name();
-                    let name = Self::name_str(qname.as_ref()).to_owned();
+                    let name = Self::local_name(&e);
                     nodes.push(self.parse_empty_element(&name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
@@ -199,8 +205,7 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 },
                 Ok(Event::End(e)) => {
-                    let qname = e.name();
-                    if Self::name_str(qname.as_ref()) == parent_tag {
+                    if Self::local_name_end(&e) == parent_tag {
                         break;
                     }
                 },
@@ -371,13 +376,24 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "munder" => {
-                let movable = get_attr(start, "accentunder").as_deref() != Some("true");
+                let is_accent = get_attr(start, "accentunder").as_deref() == Some("true");
                 let children = self.parse_children(name)?;
                 let (base, under) = self.two_child_ids(children);
+                if is_accent
+                    && let CompactNode::Symbol(_, sid) = *self.arena.node(under)
+                    && let Some(ch) = single_accent_char(self.arena.str_val(sid))
+                {
+                    return Ok(self.arena.push_node(CompactNode::Accent {
+                        base,
+                        accent: ch,
+                        position: AccentPosition::Below,
+                        wide: false,
+                    }));
+                }
                 Ok(self.arena.push_node(CompactNode::Underscript {
                     base,
                     under,
-                    movable_limits: movable,
+                    movable_limits: !is_accent,
                 }))
             },
             "munderover" => {
@@ -437,11 +453,14 @@ impl<'a> MathmlCompactParser<'a> {
                     num_cols,
                     arraystretch_pct: 100,
                     add_jot: false,
+                    col_seps: 0,
                 }))
             },
             "mphantom" => {
                 let id = self.parse_child_id(name)?;
-                Ok(self.arena.push_node(CompactNode::Phantom(id)))
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Phantom(id, PhantomKind::Full)))
             },
             "menclose" => {
                 let notation = get_attr(start, "notation").unwrap_or_default();
@@ -452,6 +471,13 @@ impl<'a> MathmlCompactParser<'a> {
                         content: id,
                         bg_color: empty,
                         border_color: empty,
+                    }))
+                } else if notation.contains("updiagonalstrike")
+                    && notation.contains("downdiagonalstrike")
+                {
+                    Ok(self.arena.push_node(CompactNode::Cancel {
+                        stroke: StrokeKind::Cross,
+                        content: id,
                     }))
                 } else if notation.contains("updiagonalstrike") {
                     Ok(self.arena.push_node(CompactNode::Cancel {
@@ -466,6 +492,11 @@ impl<'a> MathmlCompactParser<'a> {
                 } else if notation.contains("horizontalstrike") {
                     Ok(self.arena.push_node(CompactNode::Cancel {
                         stroke: StrokeKind::Horizontal,
+                        content: id,
+                    }))
+                } else if notation.contains("verticalstrike") {
+                    Ok(self.arena.push_node(CompactNode::Cancel {
+                        stroke: StrokeKind::Vertical,
                         content: id,
                     }))
                 } else {
@@ -489,10 +520,7 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(self.flatten_ids(&children))
             },
             "mpadded" => self.parse_child_id(name),
-            "mmultiscripts" => {
-                let children = self.parse_children(name)?;
-                self.parse_multiscripts(&children)
-            },
+            "mmultiscripts" => self.parse_multiscripts_element(name),
             "semantics" => {
                 let children = self.parse_children(name)?;
                 if let Some(&first) = children.first() {
@@ -523,12 +551,7 @@ impl<'a> MathmlCompactParser<'a> {
                 let r = parse_em_width(&width);
                 Ok(self.arena.push_node(CompactNode::Space(r)))
             },
-            "mprescripts" => {
-                // Marker for mmultiscripts — sentinel Space(0/1)
-                Ok(self
-                    .arena
-                    .push_node(CompactNode::Space(Rational::new(0, 1))))
-            },
+            "mprescripts" => Ok(self.empty_row()),
             "none" => Ok(self.empty_row()),
             _ => Ok(self.empty_row()),
         }
@@ -542,8 +565,7 @@ impl<'a> MathmlCompactParser<'a> {
                     text.push_str(&e.unescape().unwrap_or_default());
                 },
                 Ok(Event::End(e)) => {
-                    let qname = e.name();
-                    if Self::name_str(qname.as_ref()) == tag_name {
+                    if Self::local_name_end(&e) == tag_name {
                         break;
                     }
                 },
@@ -563,16 +585,13 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let qname = e.name();
-                    let name = Self::name_str(qname.as_ref());
+                    let name = Self::local_name(&e);
                     if name == "mtr" || name == "mlabeledtr" {
-                        let name_owned = name.to_owned();
-                        rows.push(self.parse_table_row(&name_owned)?);
+                        rows.push(self.parse_table_row(&name)?);
                     }
                 },
                 Ok(Event::End(e)) => {
-                    let qname = e.name();
-                    if Self::name_str(qname.as_ref()) == parent_tag {
+                    if Self::local_name_end(&e) == parent_tag {
                         break;
                     }
                 },
@@ -588,15 +607,13 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let qname = e.name();
-                    let name = Self::name_str(qname.as_ref());
+                    let name = Self::local_name(&e);
                     if name == "mtd" {
                         cells.push(self.parse_children("mtd")?);
                     }
                 },
                 Ok(Event::End(e)) => {
-                    let qname = e.name();
-                    if Self::name_str(qname.as_ref()) == parent_tag {
+                    if Self::local_name_end(&e) == parent_tag {
                         break;
                     }
                 },
@@ -607,46 +624,163 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(cells)
     }
 
-    fn parse_multiscripts(&mut self, children: &[NodeId]) -> Result<NodeId> {
-        let base = children
-            .first()
-            .copied()
-            .unwrap_or_else(|| self.empty_row());
+    fn is_empty_row_id(&self, id: NodeId) -> bool {
+        matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
+    }
 
-        // Find prescripts marker (Space(0/1) sentinel)
-        let mut found_pre = false;
-        let mut remaining: SmallVec<[NodeId; 4]> = SmallVec::new();
-        for &id in children.iter().skip(1) {
-            if let CompactNode::Space(r) = *self.arena.node(id)
-                && r.num == 0
-                && r.den == 1
-            {
-                found_pre = true;
-                continue;
+    fn optional_script_id(&self, id: Option<&NodeId>) -> NodeId {
+        id.copied()
+            .filter(|&id| !self.is_empty_row_id(id))
+            .unwrap_or(NodeId::NONE)
+    }
+
+    fn apply_script_pair(&mut self, base: NodeId, pair: &[NodeId]) -> NodeId {
+        let sub = self.optional_script_id(pair.first());
+        let sup = self.optional_script_id(pair.get(1));
+        match (sub == NodeId::NONE, sup == NodeId::NONE) {
+            (false, false) => self.arena.push_node(CompactNode::SubSup { base, sub, sup }),
+            (false, true) => self.arena.push_node(CompactNode::Subscript { base, sub }),
+            (true, false) => self.arena.push_node(CompactNode::Superscript { base, sup }),
+            (true, true) => base,
+        }
+    }
+
+    fn finish_multiscripts(
+        &mut self,
+        base: NodeId,
+        post: &[NodeId],
+        has_pre: bool,
+        pre: &[NodeId],
+    ) -> NodeId {
+        let base = self.apply_script_pair(base, post);
+        if has_pre {
+            let pre_sub = self.optional_script_id(pre.first());
+            let pre_sup = self.optional_script_id(pre.get(1));
+            if pre_sub != NodeId::NONE || pre_sup != NodeId::NONE {
+                return self.arena.push_node(CompactNode::PreScripts {
+                    base,
+                    pre_sub,
+                    pre_sup,
+                });
             }
-            remaining.push(id);
+        }
+        base
+    }
+
+    fn skip_element_body(&mut self, tag_name: &str) -> Result<()> {
+        let mut nested = 0usize;
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    if Self::local_name(&e) == tag_name {
+                        nested += 1;
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if Self::local_name_end(&e) == tag_name {
+                        if nested == 0 {
+                            break;
+                        }
+                        nested -= 1;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(Error::MathmlParse {
+                        message: format!("XML error in <{tag_name}>: {e}"),
+                    });
+                },
+                _ => continue,
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_multiscripts_element(&mut self, parent_tag: &str) -> Result<NodeId> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(Error::MathmlParse {
+                message: format!(
+                    "maximum nesting depth ({MAX_PARSE_DEPTH}) exceeded in <{parent_tag}>"
+                ),
+            });
         }
 
-        if found_pre && remaining.len() >= 2 {
-            let is_empty = |id: NodeId| matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty());
-            let pre_sub = if is_empty(remaining[0]) {
-                NodeId::NONE
-            } else {
-                remaining[0]
-            };
-            let pre_sup = if is_empty(remaining[1]) {
-                NodeId::NONE
-            } else {
-                remaining[1]
-            };
-            Ok(self.arena.push_node(CompactNode::PreScripts {
-                base,
-                pre_sub,
-                pre_sup,
-            }))
-        } else {
-            Ok(base)
+        let mut base = NodeId::NONE;
+        let mut seen_base = false;
+        let mut post: SmallVec<[NodeId; 4]> = SmallVec::new();
+        let mut pre: SmallVec<[NodeId; 4]> = SmallVec::new();
+        let mut in_pre = false;
+
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = Self::local_name(&e);
+                    if name == "mprescripts" {
+                        in_pre = true;
+                        self.skip_element_body("mprescripts")?;
+                    } else {
+                        let id = self.parse_element_by_name(&name, &e)?;
+                        if !seen_base {
+                            base = id;
+                            seen_base = true;
+                        } else if in_pre {
+                            pre.push(id);
+                        } else {
+                            post.push(id);
+                        }
+                    }
+                },
+                Ok(Event::Empty(e)) => {
+                    let name = Self::local_name(&e);
+                    if name == "mprescripts" {
+                        in_pre = true;
+                    } else {
+                        let id = self.parse_empty_element(&name, &e)?;
+                        if !seen_base {
+                            base = id;
+                            seen_base = true;
+                        } else if in_pre {
+                            pre.push(id);
+                        } else {
+                            post.push(id);
+                        }
+                    }
+                },
+                Ok(Event::Text(e)) => {
+                    let text = e.unescape().unwrap_or_default();
+                    if !text.trim().is_empty() {
+                        let id = self.classify_text_compact(&text);
+                        if !seen_base {
+                            base = id;
+                            seen_base = true;
+                        } else if in_pre {
+                            pre.push(id);
+                        } else {
+                            post.push(id);
+                        }
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if Self::local_name_end(&e) == parent_tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => {
+                    return Err(Error::MathmlParse {
+                        message: format!("XML error in <{parent_tag}>: {e}"),
+                    });
+                },
+                _ => continue,
+            }
         }
+
+        self.depth -= 1;
+        if !seen_base {
+            base = self.empty_row();
+        }
+        Ok(self.finish_multiscripts(base, &post, in_pre, &pre))
     }
 }
 
@@ -659,10 +793,7 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key.as_bytes())
-        .map(|a| {
-            // Avoid from_utf8_lossy + to_string; attribute values are valid UTF-8
-            String::from_utf8(a.value.to_vec()).unwrap_or_default()
-        })
+        .and_then(|a| a.unescape_value().ok().map(|value| value.into_owned()))
 }
 
 fn classify_mo(text: &str) -> SymbolKind {
@@ -688,6 +819,16 @@ fn is_combining_accent(ch: char) -> bool {
         ch,
         '\u{0300}'..='\u{036F}' | '\u{20D0}'..='\u{20FF}'
     )
+}
+
+fn single_accent_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    let ch = chars.next()?;
+    if chars.next().is_none() {
+        Some(ch)
+    } else {
+        None
+    }
 }
 
 fn parse_em_width(s: &str) -> Rational {
@@ -808,6 +949,20 @@ mod tests {
     }
 
     #[test]
+    fn mfenced_unescapes_attribute_entities() {
+        let node =
+            parse_one(r#"<math><mfenced open="&lt;" close="&gt;"><mi>x</mi></mfenced></math>"#);
+        assert_eq!(
+            node,
+            MathNode::Fenced {
+                open: "<".into(),
+                close: ">".into(),
+                content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
+            }
+        );
+    }
+
+    #[test]
     fn display_block() {
         let config = Config::default();
         let result =
@@ -837,7 +992,7 @@ mod tests {
     #[test]
     fn phantom() {
         let node = parse_one("<math><mphantom><mi>x</mi></mphantom></math>");
-        assert!(matches!(node, MathNode::Phantom(_)));
+        assert!(matches!(node, MathNode::Phantom(_, _)));
     }
 
     #[test]
@@ -845,5 +1000,147 @@ mod tests {
         let node =
             parse_one("<math><mover accent=\"true\"><mi>x</mi><mo>\u{0302}</mo></mover></math>");
         assert!(matches!(node, MathNode::Accent { .. }));
+    }
+
+    #[test]
+    fn namespaced_presentation_mathml_uses_local_names() {
+        let node = parse_one(
+            r#"<m:math xmlns:m="http://www.w3.org/1998/Math/MathML"><m:mrow><m:mi>x</m:mi><m:mo>+</m:mo><m:mn>1</m:mn></m:mrow></m:math>"#,
+        );
+        assert_eq!(
+            node,
+            MathNode::Row(vec![
+                MathNode::Identifier("x".into()),
+                MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+                MathNode::Number("1".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn munder_accentunder_parses_as_below_accent() {
+        let node =
+            parse_one(r#"<math><munder accentunder="true"><mi>x</mi><mo>_</mo></munder></math>"#);
+        assert_eq!(
+            node,
+            MathNode::Accent {
+                base: Box::new(MathNode::Identifier("x".into())),
+                accent: '_',
+                position: AccentPosition::Below,
+                wide: false,
+            }
+        );
+    }
+
+    #[test]
+    fn munder_accentunder_preserves_multi_character_symbol_as_underscript() {
+        let node =
+            parse_one(r#"<math><munder accentunder="true"><mi>x</mi><mo>__</mo></munder></math>"#);
+        assert_eq!(
+            node,
+            MathNode::Underscript {
+                base: Box::new(MathNode::Identifier("x".into())),
+                under: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "__".into())),
+                movable_limits: false,
+            }
+        );
+    }
+
+    #[test]
+    fn mmultiscripts_post_only_preserves_post_scripts() {
+        let node =
+            parse_one("<math><mmultiscripts><mi>x</mi><mi>i</mi><mn>2</mn></mmultiscripts></math>");
+        assert_eq!(
+            node,
+            MathNode::SubSup {
+                base: Box::new(MathNode::Identifier("x".into())),
+                sub: Box::new(MathNode::Identifier("i".into())),
+                sup: Box::new(MathNode::Number("2".into())),
+            }
+        );
+    }
+
+    #[test]
+    fn mmultiscripts_mixed_preserves_post_and_pre_scripts() {
+        let node = parse_one(
+            "<math><mmultiscripts><mi>x</mi><mi>i</mi><mn>2</mn><mprescripts/><mi>j</mi><mn>3</mn></mmultiscripts></math>",
+        );
+        assert_eq!(
+            node,
+            MathNode::PreScripts {
+                base: Box::new(MathNode::SubSup {
+                    base: Box::new(MathNode::Identifier("x".into())),
+                    sub: Box::new(MathNode::Identifier("i".into())),
+                    sup: Box::new(MathNode::Number("2".into())),
+                }),
+                pre_sub: Some(Box::new(MathNode::Identifier("j".into()))),
+                pre_sup: Some(Box::new(MathNode::Number("3".into()))),
+            }
+        );
+    }
+
+    #[test]
+    fn mmultiscripts_zero_width_mspace_does_not_act_as_mprescripts_marker() {
+        let node = parse_one(
+            r#"<math><mmultiscripts><mi>x</mi><mspace width="0em"/><mn>2</mn><mprescripts/><mi>j</mi><mn>3</mn></mmultiscripts></math>"#,
+        );
+        assert_eq!(
+            node,
+            MathNode::PreScripts {
+                base: Box::new(MathNode::SubSup {
+                    base: Box::new(MathNode::Identifier("x".into())),
+                    sub: Box::new(MathNode::Space(Rational::zero())),
+                    sup: Box::new(MathNode::Number("2".into())),
+                }),
+                pre_sub: Some(Box::new(MathNode::Identifier("j".into()))),
+                pre_sup: Some(Box::new(MathNode::Number("3".into()))),
+            }
+        );
+    }
+
+    #[test]
+    fn mmultiscripts_expanded_mprescripts_preserves_pre_scripts() {
+        let node = parse_one(
+            "<math><mmultiscripts><mi>x</mi><mi>i</mi><mn>2</mn><mprescripts></mprescripts><mi>j</mi><mn>3</mn></mmultiscripts></math>",
+        );
+        assert_eq!(
+            node,
+            MathNode::PreScripts {
+                base: Box::new(MathNode::SubSup {
+                    base: Box::new(MathNode::Identifier("x".into())),
+                    sub: Box::new(MathNode::Identifier("i".into())),
+                    sup: Box::new(MathNode::Number("2".into())),
+                }),
+                pre_sub: Some(Box::new(MathNode::Identifier("j".into()))),
+                pre_sup: Some(Box::new(MathNode::Number("3".into()))),
+            }
+        );
+    }
+
+    #[test]
+    fn menclose_diagonal_pair_parses_as_cross_cancel() {
+        let node = parse_one(
+            r#"<math><menclose notation="updiagonalstrike downdiagonalstrike"><mi>x</mi></menclose></math>"#,
+        );
+        assert_eq!(
+            node,
+            MathNode::Cancel {
+                stroke: StrokeKind::Cross,
+                content: Box::new(MathNode::Identifier("x".into())),
+            }
+        );
+    }
+
+    #[test]
+    fn menclose_verticalstrike_parses_as_vertical_cancel() {
+        let node =
+            parse_one(r#"<math><menclose notation="verticalstrike"><mi>x</mi></menclose></math>"#);
+        assert_eq!(
+            node,
+            MathNode::Cancel {
+                stroke: StrokeKind::Vertical,
+                content: Box::new(MathNode::Identifier("x".into())),
+            }
+        );
     }
 }

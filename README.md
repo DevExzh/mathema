@@ -55,6 +55,8 @@ mathema render --format png -o out/ *.tex
 
 The `--from` / `-f` flag is optional; the format is auto-detected from file extension or content when omitted.
 
+SVG output is **self-contained** by default: glyph outlines from Latin Modern Math are embedded as `<path>`/`<use>` elements, so the SVG renders identically everywhere (no fonts to install) and **looks the same as the PNG/JPEG output**, which is rasterized from the same outlines.
+
 Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (`um`), `svg`, `png`, `jpeg` (`jpg`).
 
 ## Features

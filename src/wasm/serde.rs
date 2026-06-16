@@ -43,10 +43,7 @@ mod tests {
 
     #[test]
     fn serialize_simple_expr() {
-        let expr = MathExpr::new(
-            vec![MathNode::Identifier("x".into())],
-            DisplayStyle::Inline,
-        );
+        let expr = MathExpr::new(vec![MathNode::Identifier("x".into())], DisplayStyle::Inline);
         let json = serde_json::to_string(&expr).unwrap();
         assert!(json.contains("Identifier"));
         assert!(json.contains("Inline"));
@@ -68,10 +65,7 @@ mod tests {
 
     #[test]
     fn roundtrip_via_json() {
-        let expr = MathExpr::new(
-            vec![MathNode::Number("42".into())],
-            DisplayStyle::Inline,
-        );
+        let expr = MathExpr::new(vec![MathNode::Number("42".into())], DisplayStyle::Inline);
         let json = serde_json::to_string(&expr).unwrap();
         assert!(json.contains("\"Number\""));
         assert!(json.contains("42"));

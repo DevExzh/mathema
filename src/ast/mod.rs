@@ -141,8 +141,14 @@ pub enum MathNode {
     },
 
     // === Decorators ===
-    /// Invisible but occupies space
-    Phantom(Box<MathNode>),
+    /// Invisible but occupies space (kind controls which dimensions to keep)
+    Phantom(Box<MathNode>, PhantomKind),
+    /// Visible filled rectangle: `\rule[lift]{width}{height}`.
+    Rule {
+        width: Rational,
+        height: Rational,
+        lift: Rational,
+    },
     /// Bordered box around content (with optional background/border colors for \colorbox/\fcolorbox)
     Boxed {
         content: Box<MathNode>,
@@ -159,6 +165,13 @@ pub enum MathNode {
         factor: Rational,
         content: Box<MathNode>,
     },
+    /// Vertically shifted box: `\raisebox{shift}[height][depth]{content}`.
+    RaiseBox {
+        shift: Rational,
+        height: Option<Rational>,
+        depth: Option<Rational>,
+        content: Box<MathNode>,
+    },
     /// Applies a text/font style to children
     Styled(TextStyle, Vec<MathNode>),
     /// Style-dependent content: \mathchoice{D}{T}{S}{SS}
@@ -167,6 +180,11 @@ pub enum MathNode {
         text: Box<MathNode>,
         script: Box<MathNode>,
         script_script: Box<MathNode>,
+    },
+    /// Explicit atom-type override: \mathop, \mathrel, \mathbin, etc.
+    MathAtom {
+        atom_type: MathAtomType,
+        content: Box<MathNode>,
     },
 }
 
@@ -236,6 +254,39 @@ pub enum StrokeKind {
     Cross,
     Horizontal,
     Vertical,
+}
+
+/// Distinguishes `\phantom` from `\vphantom`, `\hphantom`, and `\smash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum PhantomKind {
+    /// `\phantom`: keep all dimensions (width, height, depth).
+    #[default]
+    Full,
+    /// `\vphantom`: zero width, keep height and depth.
+    Vertical,
+    /// `\hphantom`: zero height and depth, keep width.
+    Horizontal,
+    /// `\smash` or `\smash[bt]`: render content, zero height AND depth.
+    SmashBoth,
+    /// `\smash[b]`: render content, zero depth only.
+    SmashBottom,
+    /// `\smash[t]`: render content, zero height only.
+    SmashTop,
+}
+
+/// TeX atom type for spacing classification (\mathord, \mathop, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MathAtomType {
+    Ord,
+    Op,
+    Bin,
+    Rel,
+    Open,
+    Close,
+    Punct,
+    Inner,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -389,7 +440,8 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         | MathNode::Operator(_)
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
-        | MathNode::Space(_) => Ok(()),
+        | MathNode::Space(_)
+        | MathNode::Rule { .. } => Ok(()),
 
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {
@@ -476,18 +528,24 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             }
             Ok(())
         },
-        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
+        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
             check_node_depth(inner, d)
         },
-        MathNode::Cancel { content, .. } | MathNode::Scaled { content, .. } => {
-            check_node_depth(content, d)
-        },
-        MathNode::MathChoice { display, text, script, script_script } => {
+        MathNode::Cancel { content, .. }
+        | MathNode::Scaled { content, .. }
+        | MathNode::RaiseBox { content, .. } => check_node_depth(content, d),
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             check_node_depth(display, d)?;
             check_node_depth(text, d)?;
             check_node_depth(script, d)?;
             check_node_depth(script_script, d)
         },
+        MathNode::MathAtom { content, .. } => check_node_depth(content, d),
     }
 }
 
@@ -606,19 +664,25 @@ fn check_compact_depth(
             Ok(())
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
+        CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => {
             check_compact_depth(arena, inner, d)
         },
-        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
-            check_compact_depth(arena, content, d)
-        },
+        CompactNode::Cancel { content, .. }
+        | CompactNode::Scaled { content, .. }
+        | CompactNode::RaiseBox { content, .. } => check_compact_depth(arena, content, d),
         CompactNode::Color { content, .. } => check_compact_depth(arena, content, d),
-        CompactNode::MathChoice { display, text, script, script_script } => {
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             check_compact_depth(arena, display, d)?;
             check_compact_depth(arena, text, d)?;
             check_compact_depth(arena, script, d)?;
             check_compact_depth(arena, script_script, d)
         },
+        CompactNode::MathAtom { content, .. } => check_compact_depth(arena, content, d),
     }
 }
 
@@ -739,7 +803,7 @@ mod tests {
                 arraystretch: None,
                 add_jot: false,
             },
-            MathNode::Phantom(Box::new(MathNode::Number("0".into()))),
+            MathNode::Phantom(Box::new(MathNode::Number("0".into())), PhantomKind::Full),
             MathNode::Boxed {
                 content: Box::new(MathNode::Number("1".into())),
                 bg_color: None,

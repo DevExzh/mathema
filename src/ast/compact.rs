@@ -2,8 +2,8 @@ use smallvec::SmallVec;
 
 use super::arena::AstArena;
 use super::{
-    AccentPosition, ColumnAlign, DisplayStyle, FencedItem, FractionKind, LimitStyle, MathExpr,
-    MathNode, OperatorAttr, Rational, StrokeKind, SymbolKind, TextStyle,
+    AccentPosition, ColumnAlign, DisplayStyle, FencedItem, FractionKind, LimitStyle, MathAtomType,
+    MathExpr, MathNode, OperatorAttr, PhantomKind, Rational, StrokeKind, SymbolKind, TextStyle,
 };
 
 // ── Index types ────────────────────────────────────────────────────────
@@ -203,10 +203,14 @@ pub enum CompactNode {
         num_cols: u16,
         arraystretch_pct: u8,
         add_jot: bool,
+        /// Bitmask of vertical separator positions.
+        /// Bit i means "draw a vertical rule before column i" (i=0 is left edge).
+        /// Bit num_cols means "draw a vertical rule at the right edge".
+        col_seps: u32,
     },
 
     // ── Decorators ─────────────────────────────────────────────────
-    Phantom(NodeId),
+    Phantom(NodeId, PhantomKind),
     Boxed {
         content: NodeId,
         bg_color: StrId,
@@ -218,6 +222,13 @@ pub enum CompactNode {
     },
     Scaled {
         factor: Rational,
+        content: NodeId,
+    },
+    RaiseBox {
+        shift: Rational,
+        height: Rational,
+        depth: Rational,
+        extents: u8,
         content: NodeId,
     },
     Styled(TextStyle, NodeSpan),
@@ -233,7 +244,16 @@ pub enum CompactNode {
 
     // ── Color ───────────────────────────────────────────────────────
     /// Color wrapper: applies a named color to its content.
-    Color { color: StrId, content: NodeId },
+    Color {
+        color: StrId,
+        content: NodeId,
+    },
+
+    /// Explicit atom-type override: \mathop, \mathrel, \mathbin, etc.
+    MathAtom {
+        atom_type: MathAtomType,
+        content: NodeId,
+    },
 
     // ── Helpers (not in original MathNode) ──────────────────────────
     /// `FencedItem::Middle` replacement. Fenced content spans mix regular nodes and middles.
@@ -242,7 +262,11 @@ pub enum CompactNode {
     ColAlign(ColumnAlign),
 
     /// `\rule[lift]{width}{height}` — visible filled rectangle.
-    Rule { width: Rational, height: Rational },
+    Rule {
+        width: Rational,
+        height: Rational,
+        lift: Rational,
+    },
 
     /// Math style switch: 0=Display, 1=Text, 2=Script, 3=ScriptScript.
     StyleSwitch(u8),
@@ -335,6 +359,15 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             arena.push_node(CompactNode::Text(*style, sid))
         },
         MathNode::Space(r) => arena.push_node(CompactNode::Space(*r)),
+        MathNode::Rule {
+            width,
+            height,
+            lift,
+        } => arena.push_node(CompactNode::Rule {
+            width: *width,
+            height: *height,
+            lift: *lift,
+        }),
 
         MathNode::Row(children) => {
             let span = push_children(arena, children);
@@ -505,7 +538,12 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             })
         },
 
-        MathNode::Array { columns, rows, arraystretch, add_jot } => {
+        MathNode::Array {
+            columns,
+            rows,
+            arraystretch,
+            add_jot,
+        } => {
             // Push column alignments as ColAlign nodes
             let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
             for col in columns {
@@ -540,14 +578,19 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 num_cols,
                 arraystretch_pct,
                 add_jot: *add_jot,
+                col_seps: 0,
             })
         },
 
-        MathNode::Phantom(inner) => {
+        MathNode::Phantom(inner, kind) => {
             let inner_id = push_math_node(arena, inner);
-            arena.push_node(CompactNode::Phantom(inner_id))
+            arena.push_node(CompactNode::Phantom(inner_id, *kind))
         },
-        MathNode::Boxed { content, bg_color, border_color } => {
+        MathNode::Boxed {
+            content,
+            bg_color,
+            border_color,
+        } => {
             let inner_id = push_math_node(arena, content);
             let bg_sid = arena.push_str(bg_color.as_deref().unwrap_or(""));
             let border_sid = arena.push_str(border_color.as_deref().unwrap_or(""));
@@ -571,11 +614,31 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 content: content_id,
             })
         },
+        MathNode::RaiseBox {
+            shift,
+            height,
+            depth,
+            content,
+        } => {
+            let content_id = push_math_node(arena, content);
+            arena.push_node(CompactNode::RaiseBox {
+                shift: *shift,
+                height: height.unwrap_or_else(Rational::zero),
+                depth: depth.unwrap_or_else(Rational::zero),
+                extents: u8::from(height.is_some()) | (u8::from(depth.is_some()) << 1),
+                content: content_id,
+            })
+        },
         MathNode::Styled(style, children) => {
             let span = push_children(arena, children);
             arena.push_node(CompactNode::Styled(*style, span))
         },
-        MathNode::MathChoice { display, text, script, script_script } => {
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             let display_id = push_math_node(arena, display);
             let text_id = push_math_node(arena, text);
             let script_id = push_math_node(arena, script);
@@ -585,6 +648,13 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 text: text_id,
                 script: script_id,
                 script_script: ss_id,
+            })
+        },
+        MathNode::MathAtom { atom_type, content } => {
+            let inner = push_math_node(arena, content);
+            arena.push_node(CompactNode::MathAtom {
+                atom_type: *atom_type,
+                content: inner,
             })
         },
     }
@@ -741,6 +811,7 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             num_cols,
             arraystretch_pct,
             add_jot,
+            col_seps: _,
         } => {
             // Reconstruct column alignments
             let columns: Vec<ColumnAlign> = arena
@@ -779,18 +850,37 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 Some(arraystretch_pct as f64 / 100.0)
             };
 
-            MathNode::Array { columns, rows, arraystretch, add_jot }
+            MathNode::Array {
+                columns,
+                rows,
+                arraystretch,
+                add_jot,
+            }
         },
 
-        CompactNode::Phantom(inner) => MathNode::Phantom(Box::new(reconstruct_node(arena, inner))),
-        CompactNode::Boxed { content, bg_color, border_color } => {
+        CompactNode::Phantom(inner, kind) => {
+            MathNode::Phantom(Box::new(reconstruct_node(arena, inner)), kind)
+        },
+        CompactNode::Boxed {
+            content,
+            bg_color,
+            border_color,
+        } => {
             let bg = {
                 let s = arena.str_val(bg_color);
-                if s.is_empty() { None } else { Some(s.to_owned()) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_owned())
+                }
             };
             let border = {
                 let s = arena.str_val(border_color);
-                if s.is_empty() { None } else { Some(s.to_owned()) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_owned())
+                }
             };
             MathNode::Boxed {
                 content: Box::new(reconstruct_node(arena, content)),
@@ -806,31 +896,56 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             factor,
             content: Box::new(reconstruct_node(arena, content)),
         },
+        CompactNode::RaiseBox {
+            shift,
+            height,
+            depth,
+            extents,
+            content,
+        } => MathNode::RaiseBox {
+            shift,
+            height: (extents & 1 != 0).then_some(height),
+            depth: (extents & 2 != 0).then_some(depth),
+            content: Box::new(reconstruct_node(arena, content)),
+        },
         CompactNode::Styled(style, span) => {
             MathNode::Styled(style, reconstruct_children(arena, span))
         },
 
-        CompactNode::MathChoice { display, text, script, script_script } => {
-            MathNode::MathChoice {
-                display: Box::new(reconstruct_node(arena, display)),
-                text: Box::new(reconstruct_node(arena, text)),
-                script: Box::new(reconstruct_node(arena, script)),
-                script_script: Box::new(reconstruct_node(arena, script_script)),
-            }
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => MathNode::MathChoice {
+            display: Box::new(reconstruct_node(arena, display)),
+            text: Box::new(reconstruct_node(arena, text)),
+            script: Box::new(reconstruct_node(arena, script)),
+            script_script: Box::new(reconstruct_node(arena, script_script)),
         },
 
         // Color wrapper — no MathNode::Color exists, so reconstruct content only.
         // Color is handled directly in the compact/arena layout paths.
         CompactNode::Color { content, .. } => reconstruct_node(arena, content),
 
+        CompactNode::MathAtom { atom_type, content } => MathNode::MathAtom {
+            atom_type,
+            content: Box::new(reconstruct_node(arena, content)),
+        },
+
         // Helper nodes — should not appear as standalone roots, but handle gracefully
         CompactNode::Middle(sid) => {
             MathNode::Symbol(SymbolKind::Fence, arena.str_val(sid).to_owned())
         },
         CompactNode::ColAlign(_) => MathNode::Space(Rational::zero()),
-        CompactNode::Rule { width, height: _ } => {
-            // Reconstruct as a Space with the width dimension (best approximation)
-            MathNode::Space(width)
+        CompactNode::Rule {
+            width,
+            height,
+            lift,
+        } => MathNode::Rule {
+            width,
+            height,
+            lift,
         },
         CompactNode::StyleSwitch(_) => {
             // Style switches are layout-only directives; reconstruct as empty row
@@ -1005,9 +1120,14 @@ mod tests {
                 num_cols: 1,
                 arraystretch_pct: 100,
                 add_jot: false,
+                col_seps: 0,
             },
-            CompactNode::Phantom(id),
-            CompactNode::Boxed { content: id, bg_color: s, border_color: s },
+            CompactNode::Phantom(id, PhantomKind::Full),
+            CompactNode::Boxed {
+                content: id,
+                bg_color: s,
+                border_color: s,
+            },
             CompactNode::Cancel {
                 stroke: StrokeKind::Forward,
                 content: id,
@@ -1017,7 +1137,10 @@ mod tests {
                 content: id,
             },
             CompactNode::Styled(TextStyle::Bold, span),
-            CompactNode::Color { color: s, content: id },
+            CompactNode::Color {
+                color: s,
+                content: id,
+            },
             CompactNode::Middle(s),
             CompactNode::ColAlign(ColumnAlign::Center),
         ];
@@ -1195,7 +1318,7 @@ mod tests {
     #[test]
     fn roundtrip_decorators() {
         assert_roundtrip(&MathExpr::inline(vec![
-            MathNode::Phantom(Box::new(MathNode::Number("0".into()))),
+            MathNode::Phantom(Box::new(MathNode::Number("0".into())), PhantomKind::Full),
             MathNode::Boxed {
                 content: Box::new(MathNode::Number("1".into())),
                 bg_color: None,

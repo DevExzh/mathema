@@ -3,7 +3,7 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::io::Cursor;
 
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId, StrId};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::writer::Writer as MathWriter;
@@ -63,7 +63,7 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             }
         },
         MathNode::Text(_, s) => write_run(w, s, Some("p")),
-        MathNode::Space(_) => {
+        MathNode::Space(_) | MathNode::Rule { .. } => {
             // OMML doesn't have explicit space elements; use a text run
             write_run(w, "\u{00A0}", None)
         },
@@ -85,6 +85,9 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             start(w, "m:dPr")?;
             write_val_elem(w, "m:begChr", open)?;
             write_val_elem(w, "m:endChr", close)?;
+            if let Some(separator) = fenced_separator(content) {
+                write_val_elem(w, "m:sepChr", separator)?;
+            }
             end(w, "m:dPr")?;
             // Content elements
             for item in content {
@@ -318,11 +321,7 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             end(w, "m:nary")
         },
 
-        MathNode::Accent {
-            base,
-            accent,
-            ..
-        } => {
+        MathNode::Accent { base, accent, .. } => {
             start(w, "m:acc")?;
             start(w, "m:accPr")?;
             write_val_elem(w, "m:chr", &accent.to_string())?;
@@ -331,8 +330,9 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             end(w, "m:acc")
         },
 
-        MathNode::Array { rows, .. } => {
+        MathNode::Array { columns, rows, .. } => {
             start(w, "m:m")?;
+            write_matrix_props(w, columns)?;
             for row in rows {
                 start(w, "m:mr")?;
                 for cell in row {
@@ -347,7 +347,7 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             end(w, "m:m")
         },
 
-        MathNode::Phantom(inner) => {
+        MathNode::Phantom(inner, _) => {
             start(w, "m:phant")?;
             write_e(w, inner)?;
             end(w, "m:phant")
@@ -359,17 +359,19 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             end(w, "m:borderBox")
         },
 
-        MathNode::Cancel { content, .. } => {
-            // OMML doesn't have a direct cancel element; use borderBox with strikethrough
+        MathNode::Cancel { stroke, content } => {
+            // OMML represents cancellation as borderBox strike properties.
             start(w, "m:borderBox")?;
             start(w, "m:borderBoxPr")?;
-            write_val_elem(w, "m:strikeBLTR", "1")?;
+            write_cancel_strike_props(w, *stroke)?;
             end(w, "m:borderBoxPr")?;
             write_e(w, content)?;
             end(w, "m:borderBox")
         },
 
-        MathNode::Scaled { content, .. } => write_node(w, content),
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
+            write_node(w, content)
+        },
 
         MathNode::Styled(style, children) => {
             let (sty, scr) = decompose_style(*style);
@@ -390,6 +392,7 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             // OMML doesn't have mathchoice; output the display branch
             write_node(w, display)
         },
+        MathNode::MathAtom { content, .. } => write_node(w, content),
     }
 }
 
@@ -409,6 +412,52 @@ fn write_val_elem(w: &mut XmlW, tag: &str, val: &str) -> Result<()> {
     let mut elem = BytesStart::new(tag);
     elem.push_attribute(("m:val", val));
     w.write_event(Event::Empty(elem)).map_err(io_err)
+}
+
+fn fenced_separator(content: &[FencedItem]) -> Option<&str> {
+    content.iter().find_map(|item| match item {
+        FencedItem::Middle(separator) => Some(separator.as_str()),
+        FencedItem::Element(_) => None,
+    })
+}
+
+fn write_matrix_props(w: &mut XmlW, columns: &[ColumnAlign]) -> Result<()> {
+    if columns.is_empty() {
+        return Ok(());
+    }
+    start(w, "m:mPr")?;
+    start(w, "m:mcs")?;
+    for column in columns {
+        start(w, "m:mc")?;
+        start(w, "m:mcPr")?;
+        write_val_elem(w, "m:count", "1")?;
+        write_val_elem(w, "m:mcJc", column_align_val(*column))?;
+        end(w, "m:mcPr")?;
+        end(w, "m:mc")?;
+    }
+    end(w, "m:mcs")?;
+    end(w, "m:mPr")
+}
+
+fn write_cancel_strike_props(w: &mut XmlW, stroke: StrokeKind) -> Result<()> {
+    match stroke {
+        StrokeKind::Forward => write_val_elem(w, "m:strikeBLTR", "1"),
+        StrokeKind::Backward => write_val_elem(w, "m:strikeTLBR", "1"),
+        StrokeKind::Cross => {
+            write_val_elem(w, "m:strikeBLTR", "1")?;
+            write_val_elem(w, "m:strikeTLBR", "1")
+        },
+        StrokeKind::Horizontal => write_val_elem(w, "m:strikeH", "1"),
+        StrokeKind::Vertical => write_val_elem(w, "m:strikeV", "1"),
+    }
+}
+
+fn column_align_val(align: ColumnAlign) -> &'static str {
+    match align {
+        ColumnAlign::Left => "left",
+        ColumnAlign::Center => "center",
+        ColumnAlign::Right => "right",
+    }
 }
 
 fn write_run(w: &mut XmlW, text: &str, style: Option<&str>) -> Result<()> {
@@ -516,6 +565,9 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
             start(w, "m:dPr")?;
             write_val_elem(w, "m:begChr", arena.str_val(open))?;
             write_val_elem(w, "m:endChr", arena.str_val(close))?;
+            if let Some(separator) = compact_fenced_separator(arena, content) {
+                write_val_elem(w, "m:sepChr", separator)?;
+            }
             end(w, "m:dPr")?;
             for &child_id in arena.children(content) {
                 match *arena.node(child_id) {
@@ -746,11 +798,7 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
             end(w, "m:nary")
         },
 
-        CompactNode::Accent {
-            base,
-            accent,
-            ..
-        } => {
+        CompactNode::Accent { base, accent, .. } => {
             start(w, "m:acc")?;
             start(w, "m:accPr")?;
             write_val_elem(w, "m:chr", &accent.to_string())?;
@@ -760,9 +808,13 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
         },
 
         CompactNode::Array {
-            cells, num_cols, ..
+            col_aligns,
+            cells,
+            num_cols,
+            ..
         } => {
             start(w, "m:m")?;
+            write_matrix_props_c(w, arena, col_aligns)?;
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
             for chunk in cell_ids.chunks(nc.max(1)) {
@@ -787,7 +839,7 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
             end(w, "m:m")
         },
 
-        CompactNode::Phantom(inner) => {
+        CompactNode::Phantom(inner, _) => {
             start(w, "m:phant")?;
             write_e_c(w, arena, inner)?;
             end(w, "m:phant")
@@ -799,16 +851,18 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
             end(w, "m:borderBox")
         },
 
-        CompactNode::Cancel { content, .. } => {
+        CompactNode::Cancel { stroke, content } => {
             start(w, "m:borderBox")?;
             start(w, "m:borderBoxPr")?;
-            write_val_elem(w, "m:strikeBLTR", "1")?;
+            write_cancel_strike_props(w, stroke)?;
             end(w, "m:borderBoxPr")?;
             write_e_c(w, arena, content)?;
             end(w, "m:borderBox")
         },
 
-        CompactNode::Scaled { content, .. } => write_node_c(w, arena, content),
+        CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
+            write_node_c(w, arena, content)
+        },
 
         CompactNode::Styled(style, span) => {
             let (sty, scr) = decompose_style(style);
@@ -831,8 +885,16 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
 
         CompactNode::MathChoice { display, .. } => write_node_c(w, arena, display),
 
+        CompactNode::MathAtom { content, .. } => write_node_c(w, arena, content),
+
+        CompactNode::Rule { .. } => write_run(w, "\u{00A0}", None),
+
         // Helper nodes that should not normally appear at the top level
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => Ok(()),
+        CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_)
+        | CompactNode::Newline => Ok(()),
     }
 }
 
@@ -857,6 +919,28 @@ fn write_e_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
     start(w, "m:e")?;
     write_node_c(w, arena, id)?;
     end(w, "m:e")
+}
+
+#[allow(dead_code)]
+fn write_matrix_props_c(w: &mut XmlW, arena: &AstArena, col_aligns: NodeSpan) -> Result<()> {
+    let ids = arena.children(col_aligns);
+    if ids.is_empty() {
+        return Ok(());
+    }
+    start(w, "m:mPr")?;
+    start(w, "m:mcs")?;
+    for &id in ids {
+        if let CompactNode::ColAlign(column) = *arena.node(id) {
+            start(w, "m:mc")?;
+            start(w, "m:mcPr")?;
+            write_val_elem(w, "m:count", "1")?;
+            write_val_elem(w, "m:mcJc", column_align_val(column))?;
+            end(w, "m:mcPr")?;
+            end(w, "m:mc")?;
+        }
+    }
+    end(w, "m:mcs")?;
+    end(w, "m:mPr")
 }
 
 #[allow(dead_code)]
@@ -886,7 +970,10 @@ fn extract_symbol_text_c(arena: &AstArena, id: NodeId) -> String {
 /// Escape XML special characters in text content.
 #[inline]
 fn xml_esc(buf: &mut String, s: &str) {
-    if !s.bytes().any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'')) {
+    if !s
+        .bytes()
+        .any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\''))
+    {
         buf.push_str(s);
         return;
     }
@@ -923,6 +1010,50 @@ fn f_val_elem(buf: &mut String, tag: &str, val: &str) {
     buf.push_str(" m:val=\"");
     xml_esc(buf, val);
     buf.push_str("\"/>");
+}
+
+fn compact_fenced_separator<'a>(arena: &'a AstArena, content: NodeSpan) -> Option<&'a str> {
+    arena
+        .children(content)
+        .iter()
+        .find_map(|&child_id| match *arena.node(child_id) {
+            CompactNode::Middle(sid) => Some(arena.str_val(sid)),
+            _ => None,
+        })
+}
+
+fn f_matrix_props(buf: &mut String, arena: &AstArena, col_aligns: NodeSpan) {
+    let ids = arena.children(col_aligns);
+    if ids.is_empty() {
+        return;
+    }
+    f_start(buf, "m:mPr");
+    f_start(buf, "m:mcs");
+    for &id in ids {
+        if let CompactNode::ColAlign(column) = *arena.node(id) {
+            f_start(buf, "m:mc");
+            f_start(buf, "m:mcPr");
+            f_val_elem(buf, "m:count", "1");
+            f_val_elem(buf, "m:mcJc", column_align_val(column));
+            f_end(buf, "m:mcPr");
+            f_end(buf, "m:mc");
+        }
+    }
+    f_end(buf, "m:mcs");
+    f_end(buf, "m:mPr");
+}
+
+fn f_cancel_strike_props(buf: &mut String, stroke: StrokeKind) {
+    match stroke {
+        StrokeKind::Forward => f_val_elem(buf, "m:strikeBLTR", "1"),
+        StrokeKind::Backward => f_val_elem(buf, "m:strikeTLBR", "1"),
+        StrokeKind::Cross => {
+            f_val_elem(buf, "m:strikeBLTR", "1");
+            f_val_elem(buf, "m:strikeTLBR", "1");
+        },
+        StrokeKind::Horizontal => f_val_elem(buf, "m:strikeH", "1"),
+        StrokeKind::Vertical => f_val_elem(buf, "m:strikeV", "1"),
+    }
 }
 
 #[inline]
@@ -993,6 +1124,9 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_start(buf, "m:dPr");
             f_val_elem(buf, "m:begChr", arena.str_val(open));
             f_val_elem(buf, "m:endChr", arena.str_val(close));
+            if let Some(separator) = compact_fenced_separator(arena, content) {
+                f_val_elem(buf, "m:sepChr", separator);
+            }
             f_end(buf, "m:dPr");
             for &child_id in arena.children(content) {
                 if matches!(*arena.node(child_id), CompactNode::Middle(_)) {
@@ -1218,11 +1352,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_end(buf, "m:nary");
         },
 
-        CompactNode::Accent {
-            base,
-            accent,
-            ..
-        } => {
+        CompactNode::Accent { base, accent, .. } => {
             f_start(buf, "m:acc");
             f_start(buf, "m:accPr");
             let mut char_buf = [0u8; 4];
@@ -1234,11 +1364,15 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Array {
-            cells, num_cols, ..
+            col_aligns,
+            cells,
+            num_cols,
+            ..
         } => {
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
             f_start(buf, "m:m");
+            f_matrix_props(buf, arena, col_aligns);
             for chunk in cell_ids.chunks(nc.max(1)) {
                 f_start(buf, "m:mr");
                 for &cell_id in chunk {
@@ -1258,7 +1392,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_end(buf, "m:m");
         },
 
-        CompactNode::Phantom(inner) => {
+        CompactNode::Phantom(inner, _) => {
             f_start(buf, "m:phant");
             f_e(buf, arena, inner);
             f_end(buf, "m:phant");
@@ -1270,16 +1404,18 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_end(buf, "m:borderBox");
         },
 
-        CompactNode::Cancel { content, .. } => {
+        CompactNode::Cancel { stroke, content } => {
             f_start(buf, "m:borderBox");
             f_start(buf, "m:borderBoxPr");
-            f_val_elem(buf, "m:strikeBLTR", "1");
+            f_cancel_strike_props(buf, stroke);
             f_end(buf, "m:borderBoxPr");
             f_e(buf, arena, content);
             f_end(buf, "m:borderBox");
         },
 
-        CompactNode::Scaled { content, .. } => write_node_cf(buf, arena, content),
+        CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
+            write_node_cf(buf, arena, content)
+        },
 
         CompactNode::Styled(style, span) => {
             let (sty, scr) = decompose_style(style);
@@ -1300,7 +1436,15 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::MathChoice { display, .. } => write_node_cf(buf, arena, display),
 
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},
+        CompactNode::MathAtom { content, .. } => write_node_cf(buf, arena, content),
+
+        CompactNode::Rule { .. } => f_run(buf, "\u{00A0}", None),
+
+        CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_)
+        | CompactNode::Newline => {},
     }
 }
 
@@ -1312,6 +1456,13 @@ mod tests {
         let expr = MathExpr::inline(vec![node]);
         let config = Config::default();
         OmmlWriter::write(&expr, &config).unwrap()
+    }
+
+    fn write_compact(node: MathNode) -> String {
+        let expr = MathExpr::inline(vec![node]);
+        let compact = CompactExpr::from_math_expr(&expr);
+        let config = Config::default();
+        OmmlWriter::write_compact(&compact, &config).unwrap()
     }
 
     #[test]
@@ -1379,6 +1530,98 @@ mod tests {
     }
 
     #[test]
+    fn fenced_middle_writes_separator_property() {
+        let output = write_compact(MathNode::Fenced {
+            open: "[".into(),
+            close: "]".into(),
+            content: vec![
+                FencedItem::Element(MathNode::Identifier("a".into())),
+                FencedItem::Middle(";".into()),
+                FencedItem::Element(MathNode::Identifier("b".into())),
+            ],
+        });
+        assert!(output.contains("<m:sepChr m:val=\";\"/>"), "{output}");
+        assert_eq!(output.matches("<m:e>").count(), 2, "{output}");
+    }
+
+    #[test]
+    fn special_delimiter_attributes_are_escaped_in_both_writers() {
+        let node = MathNode::Fenced {
+            open: "<&".into(),
+            close: "\"&".into(),
+            content: vec![
+                FencedItem::Element(MathNode::Identifier("a".into())),
+                FencedItem::Middle("&\"<".into()),
+                FencedItem::Element(MathNode::Identifier("b".into())),
+            ],
+        };
+        for output in [write(node.clone()), write_compact(node)] {
+            assert!(
+                output.contains("<m:begChr m:val=\"&lt;&amp;\"/>"),
+                "{output}"
+            );
+            assert!(
+                output.contains("<m:endChr m:val=\"&quot;&amp;\"/>"),
+                "{output}"
+            );
+            assert!(
+                output.contains("<m:sepChr m:val=\"&amp;&quot;&lt;\"/>"),
+                "{output}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_rule_matches_noncompact_placeholder_output() {
+        let node = MathNode::Rule {
+            width: Rational::new(1, 1),
+            height: Rational::new(1, 1),
+            lift: Rational::zero(),
+        };
+        let noncompact = write(node.clone());
+        let compact = write_compact(node);
+        assert!(noncompact.contains("<m:t>\u{00A0}</m:t>"), "{noncompact}");
+        assert_eq!(compact, noncompact);
+    }
+
+    #[test]
+    fn array_columns_write_mcs_alignment() {
+        let output = write_compact(MathNode::Array {
+            columns: vec![ColumnAlign::Left, ColumnAlign::Right],
+            rows: vec![vec![
+                vec![MathNode::Identifier("a".into())],
+                vec![MathNode::Identifier("b".into())],
+            ]],
+            arraystretch: None,
+            add_jot: false,
+        });
+        assert!(output.contains("<m:mPr>"), "{output}");
+        assert!(output.contains("<m:mcs>"), "{output}");
+        assert!(output.contains("<m:mcJc m:val=\"left\"/>"), "{output}");
+        assert!(output.contains("<m:mcJc m:val=\"right\"/>"), "{output}");
+    }
+
+    #[test]
+    fn cancel_stroke_variants_write_matching_strikes() {
+        let cases = [
+            (StrokeKind::Forward, vec!["m:strikeBLTR"]),
+            (StrokeKind::Backward, vec!["m:strikeTLBR"]),
+            (StrokeKind::Cross, vec!["m:strikeBLTR", "m:strikeTLBR"]),
+            (StrokeKind::Horizontal, vec!["m:strikeH"]),
+            (StrokeKind::Vertical, vec!["m:strikeV"]),
+        ];
+        for (stroke, expected_props) in cases {
+            let output = write_compact(MathNode::Cancel {
+                stroke,
+                content: Box::new(MathNode::Identifier("x".into())),
+            });
+            for prop in expected_props {
+                assert!(output.contains(prop), "{stroke:?} missing {prop}: {output}");
+            }
+        }
+    }
+
+    #[test]
     fn accent() {
         let output = write(MathNode::Accent {
             base: Box::new(MathNode::Identifier("x".into())),
@@ -1391,9 +1634,10 @@ mod tests {
 
     #[test]
     fn phantom() {
-        let output = write(MathNode::Phantom(Box::new(MathNode::Identifier(
-            "x".into(),
-        ))));
+        let output = write(MathNode::Phantom(
+            Box::new(MathNode::Identifier("x".into())),
+            PhantomKind::Full,
+        ));
         assert!(output.contains("<m:phant>"));
     }
 

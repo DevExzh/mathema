@@ -4,6 +4,7 @@
 //! Coordinates are in font units with y-axis negated (font y-up → SVG y-down).
 
 use std::fmt::Write;
+use std::sync::LazyLock;
 
 /// Extracted glyph outline ready for SVG embedding.
 #[derive(Debug, Clone)]
@@ -21,10 +22,24 @@ pub struct FontInfo {
     pub units_per_em: f64,
 }
 
+/// Cached parsed face for the embedded font, avoiding re-parsing per glyph.
+static CACHED_FACE: LazyLock<ttf_parser::Face<'static>> = LazyLock::new(|| {
+    ttf_parser::Face::parse(super::FONT_DATA, 0).expect("embedded font data must be valid")
+});
+
+/// Cached font info for the embedded font.
+static CACHED_FONT_INFO: LazyLock<FontInfo> = LazyLock::new(|| FontInfo {
+    units_per_em: f64::from(CACHED_FACE.units_per_em()),
+});
+
 /// Parse font-level metrics from raw font data.
 ///
 /// Returns `None` if the font data is malformed.
 pub fn parse_font_info(font_data: &[u8]) -> Option<FontInfo> {
+    // Fast path for the embedded font.
+    if std::ptr::eq(font_data, super::FONT_DATA) {
+        return Some(*CACHED_FONT_INFO);
+    }
     let face = ttf_parser::Face::parse(font_data, 0).ok()?;
     Some(FontInfo {
         units_per_em: f64::from(face.units_per_em()),
@@ -35,12 +50,57 @@ pub fn parse_font_info(font_data: &[u8]) -> Option<FontInfo> {
 ///
 /// Returns `None` if the character has no glyph or no outline (e.g., space).
 pub fn extract_glyph(font_data: &[u8], ch: char) -> Option<GlyphOutline> {
+    // Fast path for the embedded font: use cached Face.
+    if std::ptr::eq(font_data, super::FONT_DATA) {
+        return extract_glyph_from_face(&CACHED_FACE, ch);
+    }
     let face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    extract_glyph_from_face(&face, ch)
+}
+
+fn extract_glyph_from_face(face: &ttf_parser::Face<'_>, ch: char) -> Option<GlyphOutline> {
     let glyph_id = face.glyph_index(ch)?;
     let advance = face.glyph_hor_advance(glyph_id)?;
 
     let mut builder = SvgPathBuilder::new();
     face.outline_glyph(glyph_id, &mut builder)?;
+
+    let path_data = builder.finish();
+    if path_data.is_empty() {
+        return None;
+    }
+
+    Some(GlyphOutline {
+        path_data,
+        advance_width: f64::from(advance),
+    })
+}
+
+/// Extract a glyph outline directly by its font glyph index.
+///
+/// Used for OpenType MATH-table size variants (large operators, stretchy
+/// delimiters) whose glyph IDs are not reachable through the cmap. The path
+/// data uses the same y-negated font-unit coordinate space as [`extract_glyph`],
+/// so it can be placed with the same positive-scale transform.
+///
+/// Returns `None` if the glyph has no outline.
+pub fn extract_glyph_by_id(font_data: &[u8], glyph_id: u16) -> Option<GlyphOutline> {
+    if std::ptr::eq(font_data, super::FONT_DATA) {
+        return extract_glyph_by_id_from_face(&CACHED_FACE, glyph_id);
+    }
+    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
+    extract_glyph_by_id_from_face(&face, glyph_id)
+}
+
+fn extract_glyph_by_id_from_face(
+    face: &ttf_parser::Face<'_>,
+    glyph_id: u16,
+) -> Option<GlyphOutline> {
+    let gid = ttf_parser::GlyphId(glyph_id);
+    let advance = face.glyph_hor_advance(gid).unwrap_or(0);
+
+    let mut builder = SvgPathBuilder::new();
+    face.outline_glyph(gid, &mut builder)?;
 
     let path_data = builder.finish();
     if path_data.is_empty() {
@@ -154,10 +214,19 @@ mod tests {
     #[test]
     fn extract_glyph_for_letter_x() {
         let outline = extract_glyph(FONT_DATA, 'x').expect("x should have outline");
-        assert!(!outline.path_data.is_empty(), "path data should not be empty");
-        assert!(outline.path_data.starts_with('M'), "path should start with M command");
+        assert!(
+            !outline.path_data.is_empty(),
+            "path data should not be empty"
+        );
+        assert!(
+            outline.path_data.starts_with('M'),
+            "path should start with M command"
+        );
         assert!(outline.path_data.contains('Z'), "path should be closed");
-        assert!(outline.advance_width > 0.0, "advance width should be positive");
+        assert!(
+            outline.advance_width > 0.0,
+            "advance width should be positive"
+        );
     }
 
     #[test]
@@ -191,12 +260,13 @@ mod tests {
         // 'A' extends above baseline, so at least some y-coordinates must be negative
         // after negation (font y-up → SVG y-down). The first point may be at y=0
         // (baseline), so we check that negative y values exist anywhere in the path.
-        let has_negative_y = parts.iter().any(|s| {
-            s.parse::<f64>()
-                .map(|v| v < -1.0)
-                .unwrap_or(false)
-        });
-        assert!(has_negative_y, "path should contain negated y values for glyph above baseline");
+        let has_negative_y = parts
+            .iter()
+            .any(|s| s.parse::<f64>().map(|v| v < -1.0).unwrap_or(false));
+        assert!(
+            has_negative_y,
+            "path should contain negated y values for glyph above baseline"
+        );
     }
 
     #[test]

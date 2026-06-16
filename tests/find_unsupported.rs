@@ -32,72 +32,89 @@ fn collect_suspicious_identifiers(node: &MathNode, found: &mut Vec<String>) {
             // Multi-character identifiers that are all-ASCII-alphabetic
             // and appear in the TeX source preceded by backslash
             // are likely unhandled commands rendered as literal text.
-            if s.len() > 1 && s.chars().all(|c| c.is_ascii_alphabetic()) && !is_known_math_function(s) {
+            if s.len() > 1
+                && s.chars().all(|c| c.is_ascii_alphabetic())
+                && !is_known_math_function(s)
+            {
                 found.push(s.clone());
             }
-        }
+        },
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {
                 collect_suspicious_identifiers(child, found);
             }
-        }
+        },
         MathNode::Fenced { content, .. } => {
             for item in content {
                 if let mathema::ast::FencedItem::Element(n) = item {
                     collect_suspicious_identifiers(n, found);
                 }
             }
-        }
+        },
         MathNode::Subscript { base, sub } => {
             collect_suspicious_identifiers(base, found);
             collect_suspicious_identifiers(sub, found);
-        }
+        },
         MathNode::Superscript { base, sup } => {
             collect_suspicious_identifiers(base, found);
             collect_suspicious_identifiers(sup, found);
-        }
+        },
         MathNode::SubSup { base, sub, sup } => {
             collect_suspicious_identifiers(base, found);
             collect_suspicious_identifiers(sub, found);
             collect_suspicious_identifiers(sup, found);
-        }
-        MathNode::PreScripts { base, pre_sub, pre_sup } => {
+        },
+        MathNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
             collect_suspicious_identifiers(base, found);
-            if let Some(s) = pre_sub { collect_suspicious_identifiers(s, found); }
-            if let Some(s) = pre_sup { collect_suspicious_identifiers(s, found); }
-        }
+            if let Some(s) = pre_sub {
+                collect_suspicious_identifiers(s, found);
+            }
+            if let Some(s) = pre_sup {
+                collect_suspicious_identifiers(s, found);
+            }
+        },
         MathNode::Overscript { base, over, .. } => {
             collect_suspicious_identifiers(base, found);
             collect_suspicious_identifiers(over, found);
-        }
+        },
         MathNode::Underscript { base, under, .. } => {
             collect_suspicious_identifiers(base, found);
             collect_suspicious_identifiers(under, found);
-        }
-        MathNode::UnderOver { base, under, over, .. } => {
+        },
+        MathNode::UnderOver {
+            base, under, over, ..
+        } => {
             collect_suspicious_identifiers(base, found);
             collect_suspicious_identifiers(under, found);
             collect_suspicious_identifiers(over, found);
-        }
+        },
         MathNode::Fraction { num, den, .. } => {
             collect_suspicious_identifiers(num, found);
             collect_suspicious_identifiers(den, found);
-        }
+        },
         MathNode::Sqrt(inner) => {
             collect_suspicious_identifiers(inner, found);
-        }
+        },
         MathNode::Root { index, radicand } => {
             collect_suspicious_identifiers(index, found);
             collect_suspicious_identifiers(radicand, found);
-        }
+        },
         MathNode::Nary { sub, sup, body, .. } => {
-            if let Some(s) = sub { collect_suspicious_identifiers(s, found); }
-            if let Some(s) = sup { collect_suspicious_identifiers(s, found); }
+            if let Some(s) = sub {
+                collect_suspicious_identifiers(s, found);
+            }
+            if let Some(s) = sup {
+                collect_suspicious_identifiers(s, found);
+            }
             collect_suspicious_identifiers(body, found);
-        }
+        },
         MathNode::Accent { base, .. } => {
             collect_suspicious_identifiers(base, found);
-        }
+        },
         MathNode::Array { rows, .. } => {
             for row in rows {
                 for cell in row {
@@ -106,22 +123,36 @@ fn collect_suspicious_identifiers(node: &MathNode, found: &mut Vec<String>) {
                     }
                 }
             }
-        }
-        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
+        },
+        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
             collect_suspicious_identifiers(inner, found);
-        }
-        MathNode::Cancel { content, .. } | MathNode::Scaled { content, .. } => {
+        },
+        MathNode::Cancel { content, .. }
+        | MathNode::Scaled { content, .. }
+        | MathNode::RaiseBox { content, .. } => {
             collect_suspicious_identifiers(content, found);
-        }
-        MathNode::MathChoice { display, text, script, script_script } => {
+        },
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             collect_suspicious_identifiers(display, found);
             collect_suspicious_identifiers(text, found);
             collect_suspicious_identifiers(script, found);
             collect_suspicious_identifiers(script_script, found);
-        }
+        },
+        MathNode::MathAtom { content, .. } => {
+            collect_suspicious_identifiers(content, found);
+        },
         // Leaves that don't contain sub-nodes
-        MathNode::Number(_) | MathNode::Operator(_) | MathNode::Symbol(_, _)
-        | MathNode::Text(_, _) | MathNode::Space(_) => {}
+        MathNode::Number(_)
+        | MathNode::Operator(_)
+        | MathNode::Symbol(_, _)
+        | MathNode::Text(_, _)
+        | MathNode::Space(_)
+        | MathNode::Rule { .. } => {},
     }
 }
 
@@ -201,8 +232,8 @@ fn extract_svg_text_content(svg: &str) -> Vec<String> {
 
 #[test]
 fn find_unsupported_commands() {
-    let data = std::fs::read_to_string("tests/data/formulas.json")
-        .expect("Failed to read formulas.json");
+    let data =
+        std::fs::read_to_string("tests/data/formulas.json").expect("Failed to read formulas.json");
     let formulas = parse_formulas(&data);
 
     let total = formulas.len();
@@ -231,7 +262,7 @@ fn find_unsupported_commands() {
             Err(e) => {
                 parse_failures.push((formula.name.clone(), format!("{e}")));
                 continue;
-            }
+            },
             Ok(convert_result) => {
                 // First check: AST inspection for multi-char Identifier nodes
                 let expr = convert_result.expr();
@@ -260,12 +291,12 @@ fn find_unsupported_commands() {
                 match convert_result.to_svg() {
                     Err(e) => {
                         render_failures.push((formula.name.clone(), format!("{e}")));
-                    }
+                    },
                     Ok(_svg) => {
                         success_count += 1;
-                    }
+                    },
                 }
-            }
+            },
         }
     }
 
@@ -289,7 +320,8 @@ fn find_unsupported_commands() {
     );
 
     // Sort by number of affected formulas (descending) for the most impactful issues first
-    let mut sorted_commands: Vec<(String, Vec<(String, String)>)> = literal_commands.into_iter().collect();
+    let mut sorted_commands: Vec<(String, Vec<(String, String)>)> =
+        literal_commands.into_iter().collect();
     sorted_commands.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
     for (cmd, entries) in &sorted_commands {
@@ -302,11 +334,23 @@ fn find_unsupported_commands() {
     // Final summary
     println!("\n\n========== SUMMARY ==========");
     println!("Total formulas tested:                 {total}");
-    println!("Parse failures:                        {}", parse_failures.len());
-    println!("Render failures:                       {}", render_failures.len());
+    println!(
+        "Parse failures:                        {}",
+        parse_failures.len()
+    );
+    println!(
+        "Render failures:                       {}",
+        render_failures.len()
+    );
     println!("Successfully rendered to SVG:          {success_count}");
-    println!("Formulas with literal command text:     {}", formulas_with_issues.len());
-    println!("Unique unsupported commands found:      {}", sorted_commands.len());
+    println!(
+        "Formulas with literal command text:     {}",
+        formulas_with_issues.len()
+    );
+    println!(
+        "Unique unsupported commands found:      {}",
+        sorted_commands.len()
+    );
     println!("================================");
 }
 
@@ -383,7 +427,7 @@ fn verify_specific_commands() {
         match from_latex_with(tex, &config) {
             Err(e) => {
                 parse_error.push((*label, format!("{e}")));
-            }
+            },
             Ok(result) => {
                 let expr = result.expr();
                 let mut suspicious = Vec::new();
@@ -392,16 +436,16 @@ fn verify_specific_commands() {
                 }
 
                 // Check if any of the suspicious identifiers correspond to commands in the input
-                let has_literal = suspicious.iter().any(|name| {
-                    is_backslash_command_in_tex(tex, name)
-                });
+                let has_literal = suspicious
+                    .iter()
+                    .any(|name| is_backslash_command_in_tex(tex, name));
 
                 if has_literal {
                     unsupported.push((*label, *tex, suspicious));
                 } else {
                     supported.push((*label, *tex));
                 }
-            }
+            },
         }
     }
 
@@ -410,7 +454,10 @@ fn verify_specific_commands() {
         println!("  [OK] {label}: {tex}");
     }
 
-    println!("\nUnsupported (rendered as literal text) ({}):", unsupported.len());
+    println!(
+        "\nUnsupported (rendered as literal text) ({}):",
+        unsupported.len()
+    );
     for (label, tex, ids) in &unsupported {
         println!("  [FAIL] {label}: {tex}  => identifiers: {:?}", ids);
     }

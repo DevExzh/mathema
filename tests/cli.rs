@@ -131,9 +131,12 @@ fn convert_file_output() {
     mathema()
         .args([
             "convert",
-            "--from", "latex",
-            "--to", "mathml",
-            "--output", output.to_str().unwrap(),
+            "--from",
+            "latex",
+            "--to",
+            "mathml",
+            "--output",
+            output.to_str().unwrap(),
             "x^2",
         ])
         .assert()
@@ -166,7 +169,14 @@ fn exit_code_success() {
 #[test]
 fn exit_code_data_error() {
     mathema()
-        .args(["convert", "--from", "mathml", "--to", "latex", "not xml <<<"])
+        .args([
+            "convert",
+            "--from",
+            "mathml",
+            "--to",
+            "latex",
+            "not xml <<<",
+        ])
         .assert()
         .code(65); // EX_DATAERR
 }

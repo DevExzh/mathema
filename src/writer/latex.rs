@@ -159,6 +159,10 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 // Single-child Row: emit without braces to keep output canonical.
                 // This avoids `{11}` vs `11` round-trip divergence.
                 write_node(buf, arena, children[0]);
+            } else if row_produces_only_digits(arena, span) {
+                // Row produces only digit characters — braces would cause
+                // re-parse divergence since digits merge into one Number token.
+                write_nodes(buf, arena, span);
             } else {
                 buf.push('{');
                 write_nodes(buf, arena, span);
@@ -363,8 +367,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push('^');
                 write_braced(buf, arena, sup);
             }
-            buf.push(' ');
-            write_braced(buf, arena, body);
+            // Only write the body if it's non-empty — avoids \prod vs \prod {} divergence
+            if !is_empty_body(arena, body) {
+                buf.push(' ');
+                write_braced(buf, arena, body);
+            }
         },
 
         CompactNode::Accent {
@@ -438,13 +445,24 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str(" \\end{array}");
         },
 
-        CompactNode::Phantom(inner) => {
-            buf.push_str("\\phantom{");
+        CompactNode::Phantom(inner, kind) => {
+            match kind {
+                PhantomKind::Full => buf.push_str("\\phantom{"),
+                PhantomKind::Vertical => buf.push_str("\\vphantom{"),
+                PhantomKind::Horizontal => buf.push_str("\\hphantom{"),
+                PhantomKind::SmashBoth => buf.push_str("\\smash{"),
+                PhantomKind::SmashBottom => buf.push_str("\\smash[b]{"),
+                PhantomKind::SmashTop => buf.push_str("\\smash[t]{"),
+            }
             write_node(buf, arena, inner);
             buf.push('}');
         },
 
-        CompactNode::Boxed { content: inner, bg_color, border_color } => {
+        CompactNode::Boxed {
+            content: inner,
+            bg_color,
+            border_color,
+        } => {
             let bg = arena.str_val(bg_color);
             let border = arena.str_val(border_color);
             if !bg.is_empty() && !border.is_empty() {
@@ -496,6 +514,31 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             }
             write_node(buf, arena, content);
         },
+        CompactNode::RaiseBox {
+            shift,
+            height,
+            depth,
+            extents,
+            content,
+        } => {
+            use std::fmt::Write as _;
+            buf.push_str("\\raisebox{");
+            let _ = write!(buf, "{}em", shift.as_f64());
+            buf.push('}');
+            if extents & 1 != 0 {
+                buf.push('[');
+                let _ = write!(buf, "{}em", height.as_f64());
+                buf.push(']');
+            }
+            if extents & 2 != 0 {
+                buf.push('[');
+                let _ = write!(buf, "{}em", depth.as_f64());
+                buf.push(']');
+            }
+            buf.push('{');
+            write_node(buf, arena, content);
+            buf.push('}');
+        },
 
         CompactNode::Styled(style, span) => {
             let cmd = style_to_latex_font(style);
@@ -519,21 +562,29 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str(arena.str_val(sid));
         },
         CompactNode::ColAlign(_) => {},
-        CompactNode::Rule { width, height } => {
+        CompactNode::Rule {
+            width,
+            height,
+            lift,
+        } => {
             use std::fmt::Write as _;
-            buf.push_str("\\rule{");
+            buf.push_str("\\rule");
+            if lift.as_f64() != 0.0 {
+                buf.push('[');
+                let _ = write!(buf, "{}em", lift.as_f64());
+                buf.push(']');
+            }
+            buf.push('{');
             let _ = write!(buf, "{}em", width.as_f64());
             buf.push_str("}{");
             let _ = write!(buf, "{}em", height.as_f64());
             buf.push('}');
         },
-        CompactNode::StyleSwitch(s) => {
-            match s {
-                0 => buf.push_str("\\displaystyle "),
-                1 => buf.push_str("\\textstyle "),
-                2 => buf.push_str("\\scriptstyle "),
-                _ => buf.push_str("\\scriptscriptstyle "),
-            }
+        CompactNode::StyleSwitch(s) => match s {
+            0 => buf.push_str("\\displaystyle "),
+            1 => buf.push_str("\\textstyle "),
+            2 => buf.push_str("\\scriptstyle "),
+            _ => buf.push_str("\\scriptscriptstyle "),
         },
         CompactNode::SizeScale(idx) => {
             let cmd = match idx {
@@ -551,7 +602,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str(cmd);
         },
         CompactNode::Newline => buf.push_str("\\\\ "),
-        CompactNode::MathChoice { display, text, script, script_script } => {
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             buf.push_str("\\mathchoice{");
             write_node(buf, arena, display);
             buf.push_str("}{");
@@ -560,6 +616,22 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             write_node(buf, arena, script);
             buf.push_str("}{");
             write_node(buf, arena, script_script);
+            buf.push('}');
+        },
+        CompactNode::MathAtom { atom_type, content } => {
+            let cmd = match atom_type {
+                MathAtomType::Ord => "\\mathord",
+                MathAtomType::Op => "\\mathop",
+                MathAtomType::Bin => "\\mathbin",
+                MathAtomType::Rel => "\\mathrel",
+                MathAtomType::Open => "\\mathopen",
+                MathAtomType::Close => "\\mathclose",
+                MathAtomType::Punct => "\\mathpunct",
+                MathAtomType::Inner => "\\mathinner",
+            };
+            buf.push_str(cmd);
+            buf.push('{');
+            write_node(buf, arena, content);
             buf.push('}');
         },
     }
@@ -663,6 +735,14 @@ fn write_braced(buf: &mut String, arena: &AstArena, id: NodeId) {
     }
 }
 
+/// Check if a Nary body is effectively empty (empty Row or NONE node).
+fn is_empty_body(arena: &AstArena, id: NodeId) -> bool {
+    if !id.is_some() {
+        return true;
+    }
+    matches!(*arena.node(id), CompactNode::Row(span) if arena.children(span).is_empty())
+}
+
 fn is_simple_token(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Number(sid) => arena.str_val(sid).len() == 1,
@@ -671,6 +751,26 @@ fn is_simple_token(arena: &AstArena, id: NodeId) -> bool {
             let s = arena.str_val(sid);
             s.chars().count() == 1 && s.chars().next().is_some_and(|c| c.is_ascii())
         },
+        _ => false,
+    }
+}
+
+/// Check if a Row span would produce only ASCII digit characters when written.
+/// Used to detect Rows that should be emitted without braces to avoid
+/// re-parse divergence (digits merge into a single Number token).
+fn row_produces_only_digits(arena: &AstArena, span: NodeSpan) -> bool {
+    for &id in arena.children(span) {
+        if !node_produces_only_digits(arena, id) {
+            return false;
+        }
+    }
+    true
+}
+
+fn node_produces_only_digits(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Number(sid) => arena.str_val(sid).bytes().all(|b| b.is_ascii_digit()),
+        CompactNode::Row(span) => row_produces_only_digits(arena, span),
         _ => false,
     }
 }

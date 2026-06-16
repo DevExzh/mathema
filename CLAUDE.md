@@ -47,10 +47,12 @@ Input string ──Reader──▶ MathExpr (AST) ──Writer──▶ Output s
 - `layout.rs` — recursive layout producing a `LayoutBox` tree (TeXBook Rules 11-18)
 - `spacing.rs` — inter-atom spacing per Knuth's spacing table
 - `emit.rs` — SVG serialization from positioned layout boxes
-- `font_embed.rs` — glyph outline extraction via `ttf-parser` (feature `font-embed`)
-- `subset.rs` — font subsetting (only embed used glyphs)
-- `svg_writer.rs` — standalone SVG with embedded `<path>` glyph outlines (feature `font-embed`)
+- `glyph_variants.rs` — OpenType MATH-table size variants (stretchy delimiters, display large operators); shared by the raster and embedded-SVG emitters so both draw the same glyphs
+- `font_embed.rs` / `subset.rs` — glyph outline extraction via `ttf-parser` (now under the `render` feature)
+- `svg_writer.rs` — standalone SVG with embedded `<path>` glyph outlines (under `render`)
 - `raster.rs` — PNG/JPEG rasterization via `fontdue` + `tiny-skia` (feature `raster`)
+
+**SVG output modes:** `ConvertResult::to_svg()` produces a **standalone, embedded-outline SVG** (Latin Modern Math glyph outlines as `<path>`/`<use>`), so it renders identically everywhere and **visually matches the PNG/JPEG output** (the shared layout pass + identical outlines + identical MATH-table variant glyphs). `ConvertResult::to_svg_text()` produces the older `<text>`-based SVG that depends on client-side fonts. SVG↔PNG parity is guarded by `tests/svg_png_parity.rs` (rasterizes the SVG with `resvg` and pixel-compares against the PNG).
 
 **Unicode tables** (`src/unicode/`): `symbols.rs` and `operators.rs` are `phf` perfect-hash maps for symbol/operator lookup. `fonts.rs` has embedded font metrics.
 
@@ -62,9 +64,9 @@ Input string ──Reader──▶ MathExpr (AST) ──Writer──▶ Output s
 
 | Feature  | Gate                | Deps added                            |
 |----------|---------------------|---------------------------------------|
-| `render` | SVG output          | none                                  |
+| `render` | SVG output                            | `ttf-parser` (embedded-outline SVG)   |
 | `raster` | PNG/JPEG output     | `fontdue`, `tiny-skia`, `jpeg-encoder` (implies `render`) |
-| `font-embed` | Standalone SVG | `ttf-parser` (implies `render`)           |
+| `font-embed` | Standalone SVG (alias of `render`; outline embedding now lives under `render`) | — |
 | `serde`  | AST serialization   | `serde`                               |
 | `wasm`   | WASM bindings       | `wasm-bindgen`                        |
 

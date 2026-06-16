@@ -321,10 +321,14 @@ pub fn lookup_operator(ch: char, form: OperatorForm) -> Option<&'static Operator
 #[inline]
 pub fn lookup_operator_any(ch: char, preferred: OperatorForm) -> Option<&'static OperatorEntry> {
     lookup_operator(ch, preferred).or_else(|| {
-        [OperatorForm::Infix, OperatorForm::Prefix, OperatorForm::Postfix]
-            .iter()
-            .filter(|&&f| f != preferred)
-            .find_map(|&f| lookup_operator(ch, f))
+        [
+            OperatorForm::Infix,
+            OperatorForm::Prefix,
+            OperatorForm::Postfix,
+        ]
+        .iter()
+        .filter(|&&f| f != preferred)
+        .find_map(|&f| lookup_operator(ch, f))
     })
 }
 
@@ -425,8 +429,16 @@ mod tests {
                 "stretchy mismatch for {:?} {:?}",
                 ch, form
             );
-            assert_eq!(entry.lspace, lspace, "lspace mismatch for {:?} {:?}", ch, form);
-            assert_eq!(entry.rspace, rspace, "rspace mismatch for {:?} {:?}", ch, form);
+            assert_eq!(
+                entry.lspace, lspace,
+                "lspace mismatch for {:?} {:?}",
+                ch, form
+            );
+            assert_eq!(
+                entry.rspace, rspace,
+                "rspace mismatch for {:?} {:?}",
+                ch, form
+            );
         }
     }
 
@@ -439,6 +451,10 @@ mod tests {
         assert_eq!(prefix, 30, "prefix count");
         assert_eq!(infix, 76, "infix count");
         assert_eq!(postfix, 9, "postfix count");
-        assert_eq!(prefix + infix + postfix, 115, "total operator count changed");
+        assert_eq!(
+            prefix + infix + postfix,
+            115,
+            "total operator count changed"
+        );
     }
 }

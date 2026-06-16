@@ -136,6 +136,17 @@ fn hex_val_byte(b: u8) -> Result<u8> {
     }
 }
 
+fn combine_template_variation_bytes(first: u8, second: Option<u8>) -> Result<u16> {
+    if first & 0x80 != 0 {
+        let second = second.ok_or_else(|| {
+            Error::Unsupported("two-byte MTEF template variation missing high byte".into())
+        })?;
+        Ok(((first & 0x7F) as u16) | ((second as u16) << 8))
+    } else {
+        Ok(first as u16)
+    }
+}
+
 // --- Record type constants ---
 const END: u8 = 0;
 const LINE: u8 = 1;
@@ -549,10 +560,10 @@ impl<'a> MtefCompactParser<'a> {
         let selector = self.read_byte()?;
         let var_byte = self.read_byte()?;
         let variation = if self.version >= 5 && (var_byte & 0x80) != 0 {
-            let hi = self.read_byte()? as u16;
-            ((var_byte & 0x7F) as u16) | (hi << 7)
+            let hi = self.read_byte()?;
+            combine_template_variation_bytes(var_byte, Some(hi))?
         } else {
-            var_byte as u16
+            combine_template_variation_bytes(var_byte, None)?
         };
         let _tmpl_options = self.read_byte()?;
 
@@ -636,6 +647,7 @@ impl<'a> MtefCompactParser<'a> {
             num_cols,
             arraystretch_pct: 100,
             add_jot: false,
+            col_seps: 0,
         }))
     }
 
@@ -690,6 +702,7 @@ impl<'a> MtefCompactParser<'a> {
             num_cols,
             arraystretch_pct: 100,
             add_jot: false,
+            col_seps: 0,
         }))
     }
 
@@ -786,8 +799,8 @@ impl<'a> MtefCompactParser<'a> {
         mut slots: Vec<SmallVec<[NodeId; 8]>>,
     ) -> Result<NodeId> {
         match selector {
-            // Fences (selectors 0-12)
-            0..=12 => {
+            // Fences (records5 selectors 0-8)
+            0..=8 => {
                 let (open, close) = fence_delimiters(selector, variation);
                 let content_id = if !slots.is_empty() {
                     self.get_slot(&mut slots, 0)
@@ -803,9 +816,9 @@ impl<'a> MtefCompactParser<'a> {
                     content,
                 }))
             },
-            // Root (selector 13)
-            13 => {
-                if variation == 0 {
+            // Root (records5 selector 10)
+            10 => {
+                if variation & 0x0001 == 0 {
                     let content = self.get_slot(&mut slots, 0);
                     Ok(self.arena.push_node(CompactNode::Sqrt(content)))
                 } else {
@@ -814,227 +827,53 @@ impl<'a> MtefCompactParser<'a> {
                     Ok(self.arena.push_node(CompactNode::Root { index, radicand }))
                 }
             },
-            // Fraction (selector 14)
-            14 => {
+            // Fraction (records5 selector 11)
+            11 => {
                 let num = self.get_slot(&mut slots, 0);
                 let den = self.get_slot(&mut slots, 1);
-                Ok(self.arena.push_node(CompactNode::Fraction {
-                    kind: FractionKind::Normal,
-                    num,
-                    den,
-                }))
-            },
-            // Scripts (selector 15)
-            15 => match variation & 0x0F {
-                0 => {
-                    let base = self.get_slot(&mut slots, 0);
-                    let sup = self.get_slot(&mut slots, 1);
-                    Ok(self.arena.push_node(CompactNode::Superscript { base, sup }))
-                },
-                1 => {
-                    let base = self.get_slot(&mut slots, 0);
-                    let sub = self.get_slot(&mut slots, 1);
-                    Ok(self.arena.push_node(CompactNode::Subscript { base, sub }))
-                },
-                2 => {
-                    let base = self.get_slot(&mut slots, 0);
-                    let sub = self.get_slot(&mut slots, 1);
-                    let sup = self.get_slot(&mut slots, 2);
-                    Ok(self.arena.push_node(CompactNode::SubSup { base, sub, sup }))
-                },
-                _ => Ok(self.get_slot(&mut slots, 0)),
-            },
-            // Underbar (selector 16)
-            16 => {
-                let base = self.get_slot(&mut slots, 0);
-                let sid = self.arena.push_str("\u{0332}");
-                let under = self
-                    .arena
-                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
-                Ok(self.arena.push_node(CompactNode::Underscript {
-                    base,
-                    under,
-                    movable_limits: false,
-                }))
-            },
-            // Overbar (selector 17)
-            17 => {
-                let base = self.get_slot(&mut slots, 0);
-                let sid = self.arena.push_str("\u{203E}");
-                let over = self
-                    .arena
-                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
-                Ok(self.arena.push_node(CompactNode::Overscript {
-                    base,
-                    over,
-                    movable_limits: false,
-                }))
-            },
-            // Arrows with labels (selectors 18-20)
-            18..=20 => {
-                let arrow_char = match selector {
-                    18 => "\u{2190}",
-                    19 => "\u{2192}",
-                    _ => "\u{2194}",
+                let kind = if variation & 0x0002 != 0 {
+                    FractionKind::Skewed
+                } else {
+                    FractionKind::Normal
                 };
-                let label = self.get_slot(&mut slots, 0);
-                let sid = self.arena.push_str(arrow_char);
-                let arrow = self
+                Ok(self
                     .arena
-                    .push_node(CompactNode::Symbol(SymbolKind::Relation, sid));
-                if variation == 0 {
-                    Ok(self.arena.push_node(CompactNode::Overscript {
-                        base: arrow,
-                        over: label,
+                    .push_node(CompactNode::Fraction { kind, num, den }))
+            },
+            // Underbar / overbar (records5 selectors 12/13)
+            12 | 13 => {
+                let base = self.get_slot(&mut slots, 0);
+                let sid = self.arena.push_str(if selector == 12 {
+                    "\u{0332}"
+                } else {
+                    "\u{203E}"
+                });
+                let line = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+                if selector == 12 {
+                    Ok(self.arena.push_node(CompactNode::Underscript {
+                        base,
+                        under: line,
                         movable_limits: false,
                     }))
                 } else {
-                    Ok(self.arena.push_node(CompactNode::Underscript {
-                        base: arrow,
-                        under: label,
+                    Ok(self.arena.push_node(CompactNode::Overscript {
+                        base,
+                        over: line,
                         movable_limits: false,
                     }))
                 }
             },
-            // Integrals (selectors 21-26)
-            21..=26 => {
-                let op = match selector {
-                    21 | 24 => '\u{222B}',
-                    22 | 25 => '\u{222C}',
-                    _ => '\u{222D}',
-                };
-                let limits = if selector >= 24 {
-                    LimitStyle::AboveBelow
-                } else {
-                    LimitStyle::SubSup
-                };
-                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
-                Ok(self.arena.push_node(CompactNode::Nary {
-                    op,
-                    sub,
-                    sup,
-                    body,
-                    limits,
-                }))
-            },
-            // Horizontal braces (selectors 27-28)
-            27 => {
-                let base = self.get_slot(&mut slots, 0);
-                let label = self.get_slot(&mut slots, 1);
-                let sid = self.arena.push_str("\u{23DF}");
-                let brace = self
-                    .arena
-                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
-                let inner = self.arena.push_node(CompactNode::Underscript {
-                    base,
-                    under: brace,
-                    movable_limits: false,
-                });
-                Ok(self.arena.push_node(CompactNode::Overscript {
-                    base: inner,
-                    over: label,
-                    movable_limits: false,
-                }))
-            },
-            28 => {
-                let base = self.get_slot(&mut slots, 0);
-                let label = self.get_slot(&mut slots, 1);
-                let sid = self.arena.push_str("\u{23DE}");
-                let brace = self
-                    .arena
-                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
-                let inner = self.arena.push_node(CompactNode::Overscript {
-                    base,
-                    over: brace,
-                    movable_limits: false,
-                });
-                Ok(self.arena.push_node(CompactNode::Underscript {
-                    base: inner,
-                    under: label,
-                    movable_limits: false,
-                }))
-            },
-            // Sums (29-30)
-            29 | 30 => {
-                let limits = if selector == 29 {
-                    LimitStyle::AboveBelow
-                } else {
-                    LimitStyle::SubSup
-                };
-                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
-                Ok(self.arena.push_node(CompactNode::Nary {
-                    op: '\u{2211}',
-                    sub,
-                    sup,
-                    body,
-                    limits,
-                }))
-            },
-            // Products (31-32)
-            31 | 32 => {
-                let limits = if selector == 31 {
-                    LimitStyle::AboveBelow
-                } else {
-                    LimitStyle::SubSup
-                };
-                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
-                Ok(self.arena.push_node(CompactNode::Nary {
-                    op: '\u{220F}',
-                    sub,
-                    sup,
-                    body,
-                    limits,
-                }))
-            },
-            // Coproducts (33-34)
-            33 | 34 => {
-                let limits = if selector == 33 {
-                    LimitStyle::AboveBelow
-                } else {
-                    LimitStyle::SubSup
-                };
-                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
-                Ok(self.arena.push_node(CompactNode::Nary {
-                    op: '\u{2210}',
-                    sub,
-                    sup,
-                    body,
-                    limits,
-                }))
-            },
-            // Unions (35-36)
-            35 | 36 => {
-                let limits = if selector == 35 {
-                    LimitStyle::AboveBelow
-                } else {
-                    LimitStyle::SubSup
-                };
-                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
-                Ok(self.arena.push_node(CompactNode::Nary {
-                    op: '\u{22C3}',
-                    sub,
-                    sup,
-                    body,
-                    limits,
-                }))
-            },
-            // Intersections (37-38)
-            37 | 38 => {
-                let limits = if selector == 37 {
-                    LimitStyle::AboveBelow
-                } else {
-                    LimitStyle::SubSup
-                };
-                let (sub, sup, body) = self.parse_nary_slots(&mut slots, variation);
-                Ok(self.arena.push_node(CompactNode::Nary {
-                    op: '\u{22C2}',
-                    sub,
-                    sup,
-                    body,
-                    limits,
-                }))
-            },
-            // Slash fraction (40)
+            // Arrow (records5 selector 14)
+            14 => self.arrow_template_to_compact(variation, slots),
+            // Integrals, sums, products, coproducts, unions, intersections.
+            15..=22 => self.bigop_template_to_compact(selector, variation, slots),
+            // Horizontal braces/brackets (records5 selectors 24/25)
+            24 | 25 => self.horizontal_brace_template_to_compact(selector, variation, slots),
+            // Scripts (records5 selectors 27-29)
+            27..=29 => self.script_template_to_compact(selector, slots),
+            // Legacy slash fraction from earlier in-tree writer builds.
             40 => {
                 let num = self.get_slot(&mut slots, 0);
                 let den = self.get_slot(&mut slots, 1);
@@ -1055,80 +894,185 @@ impl<'a> MtefCompactParser<'a> {
         }
     }
 
-    /// Parse n-ary slots based on variation, returns (sub, sup, body).
-    /// sub/sup are NodeId::NONE if absent.
-    fn parse_nary_slots(
+    fn script_template_to_compact(
+        &mut self,
+        selector: u8,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> Result<NodeId> {
+        let base = self.get_slot(&mut slots, 0);
+        Ok(match selector {
+            27 => {
+                let sub = self.get_slot(&mut slots, 1);
+                self.arena.push_node(CompactNode::Subscript { base, sub })
+            },
+            28 => {
+                let sup = self.get_slot(&mut slots, 1);
+                self.arena.push_node(CompactNode::Superscript { base, sup })
+            },
+            _ => {
+                let sub = self.get_slot(&mut slots, 1);
+                let sup = self.get_slot(&mut slots, 2);
+                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
+            },
+        })
+    }
+
+    fn arrow_template_to_compact(
+        &mut self,
+        variation: u16,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> Result<NodeId> {
+        let arrow_char = if variation & 0x0010 != 0 {
+            "\u{2190}"
+        } else if variation & 0x0020 != 0 {
+            "\u{2192}"
+        } else {
+            "\u{2194}"
+        };
+        let sid = self.arena.push_str(arrow_char);
+        let arrow = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Relation, sid));
+
+        let has_top = variation & 0x0004 != 0;
+        let has_bottom = variation & 0x0008 != 0;
+        let mut next_slot = 0;
+        let top = if has_top {
+            let id = self.get_slot(&mut slots, next_slot);
+            next_slot += 1;
+            Some(id)
+        } else {
+            None
+        };
+        let bottom = if has_bottom {
+            Some(self.get_slot(&mut slots, next_slot))
+        } else {
+            None
+        };
+
+        Ok(match (top, bottom) {
+            (Some(over), Some(under)) => self.arena.push_node(CompactNode::UnderOver {
+                base: arrow,
+                under,
+                over,
+                movable_limits: false,
+            }),
+            (Some(over), None) => self.arena.push_node(CompactNode::Overscript {
+                base: arrow,
+                over,
+                movable_limits: false,
+            }),
+            (None, Some(under)) => self.arena.push_node(CompactNode::Underscript {
+                base: arrow,
+                under,
+                movable_limits: false,
+            }),
+            (None, None) => arrow,
+        })
+    }
+
+    fn bigop_template_to_compact(
+        &mut self,
+        selector: u8,
+        variation: u16,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> Result<NodeId> {
+        let op = match selector {
+            15 => match variation & 0x000F {
+                2 => '\u{222C}',
+                3 => '\u{222D}',
+                _ => '\u{222B}',
+            },
+            16 | 22 => '\u{2211}',
+            17 => '\u{220F}',
+            18 => '\u{2210}',
+            19 => '\u{22C3}',
+            20 => '\u{22C2}',
+            21 => '\u{222B}',
+            _ => '\u{2211}',
+        };
+        let (sub, sup, body) = self.parse_bigop_slots(&mut slots, variation);
+        let limits = if variation & 0x0040 != 0 {
+            LimitStyle::AboveBelow
+        } else {
+            LimitStyle::SubSup
+        };
+        Ok(self.arena.push_node(CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        }))
+    }
+
+    fn horizontal_brace_template_to_compact(
+        &mut self,
+        selector: u8,
+        variation: u16,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> Result<NodeId> {
+        let base = self.get_slot(&mut slots, 0);
+        let label = self.get_slot(&mut slots, 1);
+        let sid = self.arena.push_str(if selector == 24 {
+            "\u{23DF}"
+        } else {
+            "\u{23B5}"
+        });
+        let fence = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+        if variation & 0x0001 != 0 {
+            let inner = self.arena.push_node(CompactNode::Overscript {
+                base,
+                over: fence,
+                movable_limits: false,
+            });
+            Ok(self.arena.push_node(CompactNode::Underscript {
+                base: inner,
+                under: label,
+                movable_limits: false,
+            }))
+        } else {
+            let inner = self.arena.push_node(CompactNode::Underscript {
+                base,
+                under: fence,
+                movable_limits: false,
+            });
+            Ok(self.arena.push_node(CompactNode::Overscript {
+                base: inner,
+                over: label,
+                movable_limits: false,
+            }))
+        }
+    }
+
+    fn parse_bigop_slots(
         &mut self,
         slots: &mut [SmallVec<[NodeId; 8]>],
         variation: u16,
     ) -> (NodeId, NodeId, NodeId) {
-        let v = variation & 0x0F;
-        match v {
-            0 => {
-                // lower only
-                let sub = if !slots.is_empty() {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
-                    self.wrap_ids(&ids)
-                } else {
-                    NodeId::NONE
-                };
-                let body = if slots.len() > 1 {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[1]);
-                    self.wrap_ids(&ids)
-                } else {
-                    self.empty_row()
-                };
-                (sub, NodeId::NONE, body)
-            },
-            1 => {
-                // both
-                let sub = if !slots.is_empty() {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
-                    self.wrap_ids(&ids)
-                } else {
-                    NodeId::NONE
-                };
-                let sup = if slots.len() > 1 {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[1]);
-                    self.wrap_ids(&ids)
-                } else {
-                    NodeId::NONE
-                };
-                let body = if slots.len() > 2 {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[2]);
-                    self.wrap_ids(&ids)
-                } else {
-                    self.empty_row()
-                };
-                (sub, sup, body)
-            },
-            2 => {
-                // no limits
-                let body = if !slots.is_empty() {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
-                    self.wrap_ids(&ids)
-                } else {
-                    self.empty_row()
-                };
-                (NodeId::NONE, NodeId::NONE, body)
-            },
-            _ => {
-                // Fallback: lower only
-                let sub = if !slots.is_empty() {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[0]);
-                    self.wrap_ids(&ids)
-                } else {
-                    NodeId::NONE
-                };
-                let body = if slots.len() > 1 {
-                    let ids: SmallVec<[NodeId; 8]> = std::mem::take(&mut slots[1]);
-                    self.wrap_ids(&ids)
-                } else {
-                    self.empty_row()
-                };
-                (sub, NodeId::NONE, body)
-            },
-        }
+        let mut idx = 0;
+        let sub = if variation & 0x0010 != 0 {
+            let id = self.get_slot(slots, idx);
+            idx += 1;
+            id
+        } else {
+            NodeId::NONE
+        };
+        let sup = if variation & 0x0020 != 0 {
+            let id = self.get_slot(slots, idx);
+            idx += 1;
+            id
+        } else {
+            NodeId::NONE
+        };
+        let body = if idx < slots.len() {
+            self.get_slot(slots, idx)
+        } else {
+            self.empty_row()
+        };
+        (sub, sup, body)
     }
 
     fn apply_embellishment(&mut self, base: NodeId, emb: u8) -> NodeId {
@@ -1405,11 +1349,23 @@ mod tests {
     }
 
     #[test]
+    fn template_variation_two_byte_uses_high_byte_shift_8() {
+        assert_eq!(
+            combine_template_variation_bytes(0x80, Some(0x01)).unwrap(),
+            0x0100
+        );
+        assert_eq!(
+            combine_template_variation_bytes(0x81, Some(0x01)).unwrap(),
+            0x0101
+        );
+    }
+
+    #[test]
     fn fraction_template() {
         let data = make_mtef_v5(&[
             TMPL,
             0x00,
-            14,
+            11,
             0x00,
             0x00,
             LINE,
@@ -1445,7 +1401,7 @@ mod tests {
         let data = make_mtef_v5(&[
             TMPL,
             0x00,
-            13,
+            10,
             0x00,
             0x00,
             LINE,
@@ -1467,8 +1423,8 @@ mod tests {
         let data = make_mtef_v5(&[
             TMPL,
             0x00,
-            15,
-            0x01,
+            27,
+            0x00,
             0x00,
             LINE,
             0x00,
@@ -1490,6 +1446,123 @@ mod tests {
         ]);
         let expr = parse_bytes(&data);
         assert!(matches!(&expr.nodes[0], MathNode::Subscript { .. }));
+    }
+
+    #[test]
+    fn mathtype_arrow_template_without_labels() {
+        for variation in [0x00, 0x01, 0x02] {
+            let data = make_mtef_v5(&[TMPL, 0x00, 14, variation, 0x00, END]);
+            let expr = parse_bytes(&data);
+            assert!(
+                matches!(&expr.nodes[0], MathNode::Symbol(_, _)),
+                "selector-14 no-label variation {variation:#x} should parse as arrow, got {:?}",
+                expr.nodes
+            );
+        }
+
+        let data = make_mtef_v5(&[TMPL, 0x00, 14, 0x20, 0x00, END]);
+        let expr = parse_bytes(&data);
+        assert!(matches!(&expr.nodes[0], MathNode::Symbol(_, s) if s == "\u{2192}"));
+    }
+
+    #[test]
+    fn mathtype_arrow_template_with_top_label() {
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            14,
+            0x24, // tmARROW: top + right arrow
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x66,
+            0x00,
+            END,
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        assert!(
+            matches!(&expr.nodes[0], MathNode::Overscript { over, .. } if matches!(over.as_ref(), MathNode::Identifier(s) if s == "f"))
+        );
+    }
+
+    #[test]
+    fn mathtype_arrow_template_with_bottom_label() {
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            14,
+            0x28, // tmARROW: bottom + right arrow
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x67,
+            0x00,
+            END,
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        assert!(
+            matches!(&expr.nodes[0], MathNode::Underscript { under, .. } if matches!(under.as_ref(), MathNode::Identifier(s) if s == "g"))
+        );
+    }
+
+    #[test]
+    fn mathtype_arrow_template_with_top_and_bottom_labels() {
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            14,
+            0x2c, // tmARROW: top + bottom + right arrow
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x66, // f
+            0x00,
+            END,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x67, // g
+            0x00,
+            END,
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        match &expr.nodes[0] {
+            MathNode::UnderOver {
+                base, under, over, ..
+            } => {
+                assert!(matches!(base.as_ref(), MathNode::Symbol(_, s) if s == "\u{2192}"));
+                assert!(matches!(over.as_ref(), MathNode::Identifier(s) if s == "f"));
+                assert!(matches!(under.as_ref(), MathNode::Identifier(s) if s == "g"));
+            },
+            other => panic!("expected real tmARROW UnderOver, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn integral_template_with_two_byte_expand_variation() {
+        let data = make_mtef_v5(&[
+            TMPL, 0x00, 15, 0x81, // variation 0x0101: single integral + expand bit
+            0x01, 0x00, END,
+        ]);
+        let expr = parse_bytes(&data);
+        assert!(matches!(
+            &expr.nodes[0],
+            MathNode::Nary { op: '\u{222B}', .. }
+        ));
     }
 
     #[test]

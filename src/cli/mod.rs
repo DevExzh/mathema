@@ -1,9 +1,9 @@
 pub mod detect;
 pub mod error;
 
-use std::io::{self, Read as _};
 #[cfg(feature = "raster")]
 use std::io::Write as _;
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand};
@@ -116,8 +116,16 @@ fn parse_format(s: &str) -> Result<Format, String> {
         "jpeg" | "jpg" => Ok(Format::Jpeg),
         _ => Err(format!(
             "unknown format '{s}'. Expected: latex, mathml, omml, mtef, unicodemath{}{}",
-            if cfg!(feature = "render") { ", svg" } else { "" },
-            if cfg!(feature = "raster") { ", png, jpeg" } else { "" },
+            if cfg!(feature = "render") {
+                ", svg"
+            } else {
+                ""
+            },
+            if cfg!(feature = "raster") {
+                ", png, jpeg"
+            } else {
+                ""
+            },
         )),
     }
 }
@@ -132,7 +140,11 @@ fn parse_render_format(s: &str) -> Result<Format, String> {
         "jpeg" | "jpg" => Ok(Format::Jpeg),
         _ => Err(format!(
             "unknown render format '{s}'. Expected: svg{}",
-            if cfg!(feature = "raster") { ", png, jpeg" } else { "" },
+            if cfg!(feature = "raster") {
+                ", png, jpeg"
+            } else {
+                ""
+            },
         )),
     }
 }
@@ -165,7 +177,7 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
         Input::File(p) => {
             let c = read_file(p)?;
             (c, p.display().to_string(), Some(p.as_path()))
-        }
+        },
     };
 
     let from = resolve_format(args.from, path, &content)?;
@@ -176,10 +188,10 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
         Some(out_path) => {
             std::fs::write(out_path, &result)
                 .map_err(|e| CliError::Io(format!("{}: {e}", out_path.display())))?;
-        }
+        },
         None => {
             println!("{result}");
-        }
+        },
     }
 
     Ok(())
@@ -222,9 +234,9 @@ fn run_convert_batch(
                         failures.push((p.display().to_string(), e));
                         pb.inc(1);
                         continue;
-                    }
+                    },
                 }
-            }
+            },
             _ => unreachable!("batch mode only has File inputs"),
         };
 
@@ -234,7 +246,7 @@ fn run_convert_batch(
                 failures.push((source_name, e));
                 pb.inc(1);
                 continue;
-            }
+            },
         };
 
         match mathema::convert_with(content.trim(), fmt, to, config) {
@@ -247,12 +259,12 @@ fn run_convert_batch(
                             .unwrap_or_default()
                             .to_string_lossy();
                         dir.join(format!("{stem}.{}", format_extension(to)))
-                    }
+                    },
                     None => {
                         // Write next to input file with new extension
                         let p = path.unwrap();
                         p.with_extension(format_extension(to))
-                    }
+                    },
                 };
                 if let Err(e) = std::fs::write(&out_path, &result) {
                     failures.push((
@@ -262,11 +274,11 @@ fn run_convert_batch(
                 } else {
                     success_count += 1;
                 }
-            }
+            },
             Err(e) => {
                 let cli_err = CliError::from_mathema(e, &content, &source_name);
                 failures.push((source_name, cli_err));
-            }
+            },
         }
         pb.inc(1);
     }
@@ -327,9 +339,9 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
                             bar.inc(1);
                         }
                         continue;
-                    }
+                    },
                 }
-            }
+            },
         };
 
         let from = match resolve_format(args.from, path, &content) {
@@ -340,7 +352,7 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
                     bar.inc(1);
                 }
                 continue;
-            }
+            },
         };
 
         // Parse to validate — convert to same format to exercise the parser
@@ -350,14 +362,14 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
                     println!("{source_name}: valid ({from:?})");
                 }
                 success_count += 1;
-            }
+            },
             Err(e) => {
                 let cli_err = CliError::from_mathema(e, &content, &source_name);
                 if !is_batch {
                     return Err(cli_err);
                 }
                 failures.push((source_name, cli_err));
-            }
+            },
         }
         if let Some(ref bar) = pb {
             bar.inc(1);
@@ -400,7 +412,14 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
     };
 
     if is_batch {
-        return run_render_batch(inputs, args.from, args.format, args.output, &config, &render_opts);
+        return run_render_batch(
+            inputs,
+            args.from,
+            args.format,
+            args.output,
+            &config,
+            &render_opts,
+        );
     }
 
     // Single input
@@ -411,7 +430,7 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
         Input::File(p) => {
             let c = read_file(p)?;
             (c, p.display().to_string(), Some(p.as_path()))
-        }
+        },
     };
 
     let from = resolve_format(args.from, path, &content)?;
@@ -427,7 +446,7 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
                     .map_err(|e| CliError::Io(format!("{}: {e}", p.display())))?,
                 None => print!("{svg}"),
             }
-        }
+        },
         #[cfg(feature = "raster")]
         Format::Png => {
             let raster_opts = mathema::RasterOptions {
@@ -439,7 +458,7 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
                 .to_png_with(&raster_opts)
                 .map_err(|e| CliError::Render(e.to_string()))?;
             write_binary(&bytes, args.output.as_deref())?;
-        }
+        },
         #[cfg(feature = "raster")]
         Format::Jpeg => {
             let raster_opts = mathema::RasterOptions {
@@ -451,8 +470,13 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
                 .to_jpeg_with(&raster_opts)
                 .map_err(|e| CliError::Render(e.to_string()))?;
             write_binary(&bytes, args.output.as_deref())?;
-        }
-        _ => return Err(CliError::Unsupported(format!("render format: {:?}", args.format))),
+        },
+        _ => {
+            return Err(CliError::Unsupported(format!(
+                "render format: {:?}",
+                args.format
+            )));
+        },
     }
 
     Ok(())
@@ -472,7 +496,11 @@ fn parse_input(
         Format::Omml => mathema::from_omml_with(input, config),
         Format::Mtef => mathema::from_mtef_with(input, config),
         Format::UnicodeMath => mathema::from_unicode_math_with(input, config),
-        _ => return Err(CliError::Unsupported(format!("{from:?} is not a parseable format"))),
+        _ => {
+            return Err(CliError::Unsupported(format!(
+                "{from:?} is not a parseable format"
+            )));
+        },
     };
     result.map_err(|e| CliError::from_mathema(e, input, source_name))
 }
@@ -481,14 +509,13 @@ fn parse_input(
 fn write_binary(bytes: &[u8], output: Option<&Path>) -> Result<(), CliError> {
     match output {
         Some(p) => {
-            std::fs::write(p, bytes)
-                .map_err(|e| CliError::Io(format!("{}: {e}", p.display())))?;
-        }
+            std::fs::write(p, bytes).map_err(|e| CliError::Io(format!("{}: {e}", p.display())))?;
+        },
         None => {
             io::stdout()
                 .write_all(bytes)
                 .map_err(|e| CliError::Io(e.to_string()))?;
-        }
+        },
     }
     Ok(())
 }
@@ -532,9 +559,9 @@ fn run_render_batch(
                         failures.push((p.display().to_string(), e));
                         pb.inc(1);
                         continue;
-                    }
+                    },
                 }
-            }
+            },
             _ => unreachable!("batch mode only has File inputs"),
         };
 
@@ -544,7 +571,7 @@ fn run_render_batch(
                 failures.push((source_name, e));
                 pb.inc(1);
                 continue;
-            }
+            },
         };
 
         let conv = match parse_input(content.trim(), fmt, config, &source_name) {
@@ -553,14 +580,14 @@ fn run_render_batch(
                 failures.push((source_name, e));
                 pb.inc(1);
                 continue;
-            }
+            },
         };
 
         let out_path = match &output {
             Some(dir) => {
                 let stem = path.file_stem().unwrap_or_default().to_string_lossy();
                 dir.join(format!("{stem}.{ext}"))
-            }
+            },
             None => path.with_extension(ext),
         };
 
@@ -593,7 +620,7 @@ fn run_render_batch(
                         std::fs::write(&out_path, &bytes)
                             .map_err(|e| CliError::Io(format!("{}: {e}", out_path.display())))
                     })
-            }
+            },
             #[cfg(not(feature = "raster"))]
             _ => Err(CliError::Unsupported(format!(
                 "{render_format:?} requires the 'raster' feature"

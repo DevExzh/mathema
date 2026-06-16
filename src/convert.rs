@@ -122,14 +122,34 @@ impl ConvertResult {
         UnicodeMathWriter::write_compact(&self.compact.expr, config)
     }
 
+    /// Render to a standalone SVG with embedded glyph outlines.
+    ///
+    /// This is the default for [`to_svg`](Self::to_svg): the output embeds
+    /// Latin Modern Math glyph outlines as `<path>`/`<use>` elements, so it
+    /// renders identically everywhere (no client-side fonts required) and
+    /// visually matches the PNG/JPEG raster output.
     #[cfg(feature = "render")]
     pub fn to_svg(&self) -> Result<String> {
+        let options = crate::render::RenderOptions::default();
+        crate::render::render_to_svg_standalone_compact(&self.compact.expr, &options)
+    }
+
+    #[cfg(feature = "render")]
+    pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
+        crate::render::render_to_svg_standalone_compact(&self.compact.expr, options)
+    }
+
+    /// Render to a text-based SVG that relies on client-side fonts (`<text>`
+    /// elements). Smaller output, but appearance depends on the fonts the
+    /// viewer has installed and will not match the raster output.
+    #[cfg(feature = "render")]
+    pub fn to_svg_text(&self) -> Result<String> {
         let options = crate::render::RenderOptions::default();
         crate::render::render_to_svg_compact(&self.compact.expr, &options)
     }
 
     #[cfg(feature = "render")]
-    pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
+    pub fn to_svg_text_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
         crate::render::render_to_svg_compact(&self.compact.expr, options)
     }
 
@@ -408,7 +428,10 @@ mod tests {
     fn colorbox_renders_with_fill() {
         let result = from_latex(r"\colorbox{teal}{B}").unwrap();
         let svg = result.to_svg().unwrap();
-        assert!(svg.contains(r#"fill="teal""#), "colorbox SVG should contain fill=teal, got: {svg}");
+        assert!(
+            svg.contains(r#"fill="teal""#),
+            "colorbox SVG should contain fill=teal, got: {svg}"
+        );
     }
 
     #[cfg(feature = "render")]
@@ -416,7 +439,13 @@ mod tests {
     fn fcolorbox_renders_with_fill_and_border() {
         let result = from_latex(r"\fcolorbox{blue}{red}{C}").unwrap();
         let svg = result.to_svg().unwrap();
-        assert!(svg.contains(r#"fill="red""#), "fcolorbox SVG should contain fill=red, got: {svg}");
-        assert!(svg.contains(r#"stroke="blue""#), "fcolorbox SVG should contain stroke=blue, got: {svg}");
+        assert!(
+            svg.contains(r#"fill="red""#),
+            "fcolorbox SVG should contain fill=red, got: {svg}"
+        );
+        assert!(
+            svg.contains(r#"stroke="blue""#),
+            "fcolorbox SVG should contain stroke=blue, got: {svg}"
+        );
     }
 }

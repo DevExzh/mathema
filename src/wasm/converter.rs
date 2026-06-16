@@ -116,7 +116,7 @@ impl MathemaConverter {
             Format::Mtef => MtefReader::parse_compact(input, &self.config).map_err(to_js_err),
             Format::UnicodeMath => {
                 UnicodeMathReader::parse_compact(input, &self.config).map_err(to_js_err)
-            }
+            },
             #[cfg(feature = "render")]
             Format::Svg => Err(JsValue::from_str("SVG is output-only")),
             #[cfg(feature = "raster")]
@@ -190,7 +190,8 @@ impl ParsedMath {
             .diagnostics
             .iter()
             .map(|d| {
-                let escaped = d.message
+                let escaped = d
+                    .message
                     .replace('\\', "\\\\")
                     .replace('"', "\\\"")
                     .replace('\n', "\\n")

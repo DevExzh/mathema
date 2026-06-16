@@ -2,7 +2,7 @@ use super::style::MathStyle;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId};
 /// Inter-atom spacing based on the TeXBook 8×8 spacing table (p. 170).
-use crate::ast::{MathNode, SymbolKind};
+use crate::ast::{MathAtomType, MathNode, SymbolKind};
 
 /// TeX atom types for spacing classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +43,7 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
             SymbolKind::Fence => AtomType::Ord,
         },
         MathNode::Text(..) => AtomType::Ord,
-        MathNode::Space(_) => AtomType::Ord,
+        MathNode::Space(_) | MathNode::Rule { .. } => AtomType::Ord,
         MathNode::Row(_) => AtomType::Inner,
         MathNode::Fenced { .. } => AtomType::Inner,
         MathNode::Fraction { .. } => AtomType::Inner,
@@ -58,10 +58,12 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
         | MathNode::UnderOver { base, .. } => classify_node_depth(base, depth + 1),
         MathNode::Accent { base, .. } => classify_node_depth(base, depth + 1),
         MathNode::Array { .. } => AtomType::Inner,
-        MathNode::Phantom(_) => AtomType::Ord,
+        MathNode::Phantom(_, _) => AtomType::Ord,
         MathNode::Boxed { .. } => AtomType::Inner,
         MathNode::Cancel { content, .. } => classify_node_depth(content, depth + 1),
-        MathNode::Scaled { content, .. } => classify_node_depth(content, depth + 1),
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
+            classify_node_depth(content, depth + 1)
+        },
         MathNode::Styled(_, children) => {
             if let Some(first) = children.first() {
                 classify_node_depth(first, depth + 1)
@@ -70,6 +72,16 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
             }
         },
         MathNode::MathChoice { display, .. } => classify_node_depth(display, depth + 1),
+        MathNode::MathAtom { atom_type, .. } => match atom_type {
+            MathAtomType::Ord => AtomType::Ord,
+            MathAtomType::Op => AtomType::Op,
+            MathAtomType::Bin => AtomType::Bin,
+            MathAtomType::Rel => AtomType::Rel,
+            MathAtomType::Open => AtomType::Open,
+            MathAtomType::Close => AtomType::Close,
+            MathAtomType::Punct => AtomType::Punct,
+            MathAtomType::Inner => AtomType::Inner,
+        },
     }
 }
 
@@ -112,10 +124,11 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
         | CompactNode::UnderOver { base, .. } => classify_node_c_depth(arena, base, depth + 1),
         CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, depth + 1),
         CompactNode::Array { .. } => AtomType::Inner,
-        CompactNode::Phantom(_) => AtomType::Ord,
+        CompactNode::Phantom(..) => AtomType::Ord,
         CompactNode::Boxed { .. } => AtomType::Inner,
         CompactNode::Cancel { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Scaled { content, .. } => classify_node_c_depth(arena, content, depth + 1),
+        CompactNode::RaiseBox { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Color { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Styled(_, span) => {
             let children = arena.children(span);
@@ -126,7 +139,22 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
             }
         },
         CompactNode::MathChoice { display, .. } => classify_node_c_depth(arena, display, depth + 1),
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => AtomType::Ord,
+        CompactNode::MathAtom { atom_type, .. } => match atom_type {
+            MathAtomType::Ord => AtomType::Ord,
+            MathAtomType::Op => AtomType::Op,
+            MathAtomType::Bin => AtomType::Bin,
+            MathAtomType::Rel => AtomType::Rel,
+            MathAtomType::Open => AtomType::Open,
+            MathAtomType::Close => AtomType::Close,
+            MathAtomType::Punct => AtomType::Punct,
+            MathAtomType::Inner => AtomType::Inner,
+        },
+        CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::Rule { .. }
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_)
+        | CompactNode::Newline => AtomType::Ord,
     }
 }
 
@@ -180,21 +208,18 @@ pub fn adjust_bin_context(
             | Some(AtomType::Open)
             | Some(AtomType::Punct) => {
                 r = Some(AtomType::Ord);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 
     // Left atom is Bin and context says it should be Ord
     if l == Some(AtomType::Bin) {
         match r {
-            None
-            | Some(AtomType::Rel)
-            | Some(AtomType::Close)
-            | Some(AtomType::Punct) => {
+            None | Some(AtomType::Rel) | Some(AtomType::Close) | Some(AtomType::Punct) => {
                 l = Some(AtomType::Ord);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 

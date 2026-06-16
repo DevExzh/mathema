@@ -99,7 +99,10 @@ const LINE: u8 = 1;
 const CHAR: u8 = 2;
 const TMPL: u8 = 3;
 const MATRIX: u8 = 5;
+const EMBELL: u8 = 6;
 const SIZE: u8 = 9;
+
+const CHAR_EMBELL: u8 = 0x01;
 
 const TF_TEXT: u8 = 1;
 const TF_FUNCTION: u8 = 2;
@@ -137,7 +140,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
                 write_char(buf, TF_TEXT, ch)?;
             }
         },
-        MathNode::Space(_) => {
+        MathNode::Space(_) | MathNode::Rule { .. } => {
             write_char(buf, TF_TEXT, ' ')?;
         },
         MathNode::Row(children) => {
@@ -168,8 +171,8 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         },
         MathNode::Subscript { base, sub } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(15); // scripts
-            buf.push(1); // subscript variation
+            buf.push(27); // tmSUB
+            buf.push(0);
             buf.push(0);
             write_line_slot(buf, base)?;
             write_line_slot(buf, sub)?;
@@ -177,8 +180,8 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         },
         MathNode::Superscript { base, sup } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(15); // scripts
-            buf.push(0); // superscript variation
+            buf.push(28); // tmSUP
+            buf.push(0);
             buf.push(0);
             write_line_slot(buf, base)?;
             write_line_slot(buf, sup)?;
@@ -186,8 +189,8 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         },
         MathNode::SubSup { base, sub, sup } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(15); // scripts
-            buf.push(2); // subsup variation
+            buf.push(29); // tmSUBSUP
+            buf.push(0);
             buf.push(0);
             write_line_slot(buf, base)?;
             write_line_slot(buf, sub)?;
@@ -196,15 +199,11 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         },
         MathNode::Fraction { num, den, kind } => {
             let variation = match kind {
-                FractionKind::Skewed => 0, // map to slash fraction selector 40 later
+                FractionKind::Skewed => 0x02,
                 _ => 0,
             };
-            let selector = match kind {
-                FractionKind::Skewed => 40,
-                _ => 14,
-            };
             write_tag_options(buf, TMPL, 0);
-            buf.push(selector);
+            buf.push(11); // tmFRACT
             buf.push(variation);
             buf.push(0);
             write_line_slot(buf, num)?;
@@ -213,7 +212,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         },
         MathNode::Sqrt(inner) => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(13); // root
+            buf.push(10); // tmROOT
             buf.push(0); // square root
             buf.push(0);
             write_line_slot(buf, inner)?;
@@ -221,7 +220,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         },
         MathNode::Root { index, radicand } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(13); // root
+            buf.push(10); // tmROOT
             buf.push(1); // nth root
             buf.push(0);
             write_line_slot(buf, index)?;
@@ -235,18 +234,15 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             body,
             limits,
         } => {
-            let (selector_base, _) = nary_op_to_selector(*op);
-            let selector = if *limits == LimitStyle::AboveBelow {
-                selector_base
-            } else {
-                selector_base + 1
-            };
-            let variation = match (sub, sup) {
-                (Some(_), Some(_)) => 1,
-                (Some(_), None) => 0,
-                (None, Some(_)) => 0,
-                (None, None) => 2,
-            };
+            let (selector, base_variation) = nary_op_to_selector(*op);
+            let variation = base_variation
+                | sub.as_ref().map_or(0, |_| 0x10)
+                | sup.as_ref().map_or(0, |_| 0x20)
+                | if *limits == LimitStyle::AboveBelow {
+                    0x40
+                } else {
+                    0
+                };
             write_tag_options(buf, TMPL, 0);
             buf.push(selector);
             buf.push(variation);
@@ -261,17 +257,10 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             buf.push(END);
         },
         MathNode::Accent { base, accent, .. } => {
-            // Write base char with embellishment
             let emb = accent_to_embell(*accent);
-            write_tag_options(buf, LINE, 0);
-            // Write the base
-            write_node(buf, base)?;
-            // Write embellishment record
-            if emb != 0 {
-                write_tag_options(buf, 6, 0); // EMBELL
-                buf.push(emb);
+            if emb == 0 || !write_accented_char(buf, base, emb)? {
+                write_node(buf, base)?;
             }
-            buf.push(END);
         },
         MathNode::Overscript {
             base,
@@ -281,16 +270,14 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             if *movable_limits {
                 // Use sum-like template
                 write_node(buf, base)?;
-            } else {
+            } else if !write_arrow_label_template(buf, base, Some(over), None)? {
                 write_tag_options(buf, TMPL, 0);
-                buf.push(17); // overbar
+                buf.push(13); // tmOBAR
                 buf.push(0);
                 buf.push(0);
                 write_line_slot(buf, base)?;
                 buf.push(END);
             }
-            // MTEF limitation: overscript content not representable in template structure
-            let _ = over;
         },
         MathNode::Underscript {
             base,
@@ -299,24 +286,21 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         } => {
             if *movable_limits {
                 write_node(buf, base)?;
-            } else {
+            } else if !write_arrow_label_template(buf, base, None, Some(under))? {
                 write_tag_options(buf, TMPL, 0);
-                buf.push(16); // underbar
+                buf.push(12); // tmUBAR
                 buf.push(0);
                 buf.push(0);
                 write_line_slot(buf, base)?;
                 buf.push(END);
             }
-            // MTEF limitation: underscript content not representable in template structure
-            let _ = under;
         },
         MathNode::UnderOver {
             base, under, over, ..
         } => {
-            // Nest as overscript containing underscript
-            write_node(buf, base)?;
-            // MTEF limitation: under/over content not representable in template structure
-            let _ = (under, over);
+            if !write_arrow_label_template(buf, base, Some(over), Some(under))? {
+                write_node(buf, base)?;
+            }
         },
         MathNode::PreScripts {
             base,
@@ -365,7 +349,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             }
             buf.push(END);
         },
-        MathNode::Phantom(inner) => {
+        MathNode::Phantom(inner, _) => {
             // No MTEF phantom; just write content
             write_node(buf, inner)?;
         },
@@ -375,7 +359,7 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         MathNode::Cancel { content, .. } => {
             write_node(buf, content)?;
         },
-        MathNode::Scaled { content, .. } => {
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
             write_node(buf, content)?;
         },
         MathNode::Styled(_, children) => {
@@ -386,6 +370,9 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
         MathNode::MathChoice { display, .. } => {
             // MTEF doesn't have mathchoice; output the display branch
             write_node(buf, display)?;
+        },
+        MathNode::MathAtom { content, .. } => {
+            write_node(buf, content)?;
         },
     }
     Ok(())
@@ -399,17 +386,102 @@ fn write_line_slot(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
 }
 
 fn write_char(buf: &mut Vec<u8>, typeface: u8, ch: char) -> Result<()> {
+    write_char_with_embell(buf, typeface, ch, None)
+}
+
+fn write_char_with_embell(
+    buf: &mut Vec<u8>,
+    typeface: u8,
+    ch: char,
+    embell: Option<u8>,
+) -> Result<()> {
     let code = u16::try_from(u32::from(ch)).map_err(|_| {
         crate::error::Error::Unsupported(format!(
             "character U+{:04X} exceeds MTEF 16-bit encoding limit",
             u32::from(ch)
         ))
     })?;
-    write_tag_options(buf, CHAR, 0);
+    write_tag_options(buf, CHAR, embell.map_or(0, |_| CHAR_EMBELL));
     buf.push(128 + typeface);
     buf.push((code & 0xFF) as u8);
     buf.push(((code >> 8) & 0xFF) as u8);
+    if let Some(embell) = embell {
+        write_tag_options(buf, EMBELL, 0);
+        buf.push(embell);
+        buf.push(END);
+    }
     Ok(())
+}
+
+fn write_accented_char(buf: &mut Vec<u8>, base: &MathNode, embell: u8) -> Result<bool> {
+    match base {
+        MathNode::Number(s) if s.chars().count() == 1 => {
+            write_char_with_embell(buf, TF_NUMBER, s.chars().next().unwrap(), Some(embell))?;
+            Ok(true)
+        },
+        MathNode::Identifier(s) if s.chars().count() == 1 => {
+            let (tf, ch) = resolve_to_mtef(s.chars().next().unwrap());
+            write_char_with_embell(buf, tf, ch, Some(embell))?;
+            Ok(true)
+        },
+        MathNode::Operator(attr) if attr.name.chars().count() == 1 => {
+            write_char_with_embell(
+                buf,
+                TF_FUNCTION,
+                attr.name.chars().next().unwrap(),
+                Some(embell),
+            )?;
+            Ok(true)
+        },
+        MathNode::Symbol(_, s) if s.chars().count() == 1 => {
+            write_char_with_embell(buf, TF_SYMBOL, s.chars().next().unwrap(), Some(embell))?;
+            Ok(true)
+        },
+        MathNode::Text(_, s) if s.chars().count() == 1 => {
+            write_char_with_embell(buf, TF_TEXT, s.chars().next().unwrap(), Some(embell))?;
+            Ok(true)
+        },
+        _ => Ok(false),
+    }
+}
+
+fn write_arrow_label_template(
+    buf: &mut Vec<u8>,
+    base: &MathNode,
+    top: Option<&MathNode>,
+    bottom: Option<&MathNode>,
+) -> Result<bool> {
+    let direction = match base {
+        MathNode::Symbol(_, s) if s.chars().count() == 1 => {
+            arrow_direction_bits(s.chars().next().unwrap())
+        },
+        _ => None,
+    };
+    let Some(direction) = direction else {
+        return Ok(false);
+    };
+
+    write_tag_options(buf, TMPL, 0);
+    buf.push(14); // tmARROW
+    buf.push(direction | top.map_or(0, |_| 0x04) | bottom.map_or(0, |_| 0x08));
+    buf.push(0);
+    if let Some(top) = top {
+        write_line_slot(buf, top)?;
+    }
+    if let Some(bottom) = bottom {
+        write_line_slot(buf, bottom)?;
+    }
+    buf.push(END);
+    Ok(true)
+}
+
+fn arrow_direction_bits(ch: char) -> Option<u8> {
+    match ch {
+        '\u{2190}' => Some(0x10),
+        '\u{2192}' => Some(0x20),
+        '\u{2194}' => Some(0x00),
+        _ => None,
+    }
 }
 
 fn resolve_to_mtef(ch: char) -> (u8, char) {
@@ -446,15 +518,15 @@ fn fence_to_template(open: &str, close: &str) -> (u8, u8) {
 
 fn nary_op_to_selector(op: char) -> (u8, u8) {
     match op {
-        '\u{2211}' => (29, 0), // sum: display=29, inline=30
-        '\u{220F}' => (31, 0), // product
-        '\u{2210}' => (33, 0), // coproduct
-        '\u{222B}' => (21, 0), // integral
-        '\u{222C}' => (22, 0), // double integral
-        '\u{222D}' => (23, 0), // triple integral
-        '\u{22C3}' => (35, 0), // union
-        '\u{22C2}' => (37, 0), // intersection
-        _ => (29, 0),          // default to sum
+        '\u{2211}' => (16, 0), // tmSUM
+        '\u{220F}' => (17, 0), // tmPROD
+        '\u{2210}' => (18, 0), // tmCOPROD
+        '\u{22C3}' => (19, 0), // tmUNION
+        '\u{22C2}' => (20, 0), // tmINTER
+        '\u{222B}' => (15, 1), // tmINTEG, single integral
+        '\u{222C}' => (15, 2), // tmINTEG, double integral
+        '\u{222D}' => (15, 3), // tmINTEG, triple integral
+        _ => (16, 0),          // default to sum
     }
 }
 
@@ -537,8 +609,8 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::Subscript { base, sub } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(15); // scripts
-            buf.push(1); // subscript variation
+            buf.push(27); // tmSUB
+            buf.push(0);
             buf.push(0);
             write_line_slot_c(buf, arena, base)?;
             write_line_slot_c(buf, arena, sub)?;
@@ -546,8 +618,8 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::Superscript { base, sup } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(15); // scripts
-            buf.push(0); // superscript variation
+            buf.push(28); // tmSUP
+            buf.push(0);
             buf.push(0);
             write_line_slot_c(buf, arena, base)?;
             write_line_slot_c(buf, arena, sup)?;
@@ -555,8 +627,8 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::SubSup { base, sub, sup } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(15); // scripts
-            buf.push(2); // subsup variation
+            buf.push(29); // tmSUBSUP
+            buf.push(0);
             buf.push(0);
             write_line_slot_c(buf, arena, base)?;
             write_line_slot_c(buf, arena, sub)?;
@@ -565,17 +637,12 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::Fraction { kind, num, den } => {
             let variation = match kind {
-                FractionKind::Skewed => 0,
+                FractionKind::Skewed => 0x02,
                 _ => 0,
             };
-            let selector = match kind {
-                FractionKind::Skewed => 40,
-                _ => 14,
-            };
-            let _ = variation; // suppress unused warning; variation is always 0
             write_tag_options(buf, TMPL, 0);
-            buf.push(selector);
-            buf.push(0); // variation
+            buf.push(11); // tmFRACT
+            buf.push(variation);
             buf.push(0);
             write_line_slot_c(buf, arena, num)?;
             write_line_slot_c(buf, arena, den)?;
@@ -583,7 +650,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::Sqrt(inner) => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(13); // root
+            buf.push(10); // tmROOT
             buf.push(0); // square root
             buf.push(0);
             write_line_slot_c(buf, arena, inner)?;
@@ -591,7 +658,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::Root { index, radicand } => {
             write_tag_options(buf, TMPL, 0);
-            buf.push(13); // root
+            buf.push(10); // tmROOT
             buf.push(1); // nth root
             buf.push(0);
             write_line_slot_c(buf, arena, index)?;
@@ -605,18 +672,15 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             body,
             limits,
         } => {
-            let (selector_base, _) = nary_op_to_selector(op);
-            let selector = if limits == LimitStyle::AboveBelow {
-                selector_base
-            } else {
-                selector_base + 1
-            };
-            let variation = match (sub.is_some(), sup.is_some()) {
-                (true, true) => 1,
-                (true, false) => 0,
-                (false, true) => 0,
-                (false, false) => 2,
-            };
+            let (selector, base_variation) = nary_op_to_selector(op);
+            let variation = base_variation
+                | sub.is_some().then_some(0x10).unwrap_or(0)
+                | sup.is_some().then_some(0x20).unwrap_or(0)
+                | if limits == LimitStyle::AboveBelow {
+                    0x40
+                } else {
+                    0
+                };
             write_tag_options(buf, TMPL, 0);
             buf.push(selector);
             buf.push(variation);
@@ -632,13 +696,9 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         },
         CompactNode::Accent { base, accent, .. } => {
             let emb = accent_to_embell(accent);
-            write_tag_options(buf, LINE, 0);
-            write_node_c(buf, arena, base)?;
-            if emb != 0 {
-                write_tag_options(buf, 6, 0); // EMBELL
-                buf.push(emb);
+            if emb == 0 || !write_accented_char_c(buf, arena, base, emb)? {
+                write_node_c(buf, arena, base)?;
             }
-            buf.push(END);
         },
         CompactNode::Overscript {
             base,
@@ -647,15 +707,14 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         } => {
             if movable_limits {
                 write_node_c(buf, arena, base)?;
-            } else {
+            } else if !write_arrow_label_template_c(buf, arena, base, Some(over), None)? {
                 write_tag_options(buf, TMPL, 0);
-                buf.push(17); // overbar
+                buf.push(13); // tmOBAR
                 buf.push(0);
                 buf.push(0);
                 write_line_slot_c(buf, arena, base)?;
                 buf.push(END);
             }
-            let _ = over;
         },
         CompactNode::Underscript {
             base,
@@ -664,21 +723,21 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         } => {
             if movable_limits {
                 write_node_c(buf, arena, base)?;
-            } else {
+            } else if !write_arrow_label_template_c(buf, arena, base, None, Some(under))? {
                 write_tag_options(buf, TMPL, 0);
-                buf.push(16); // underbar
+                buf.push(12); // tmUBAR
                 buf.push(0);
                 buf.push(0);
                 write_line_slot_c(buf, arena, base)?;
                 buf.push(END);
             }
-            let _ = under;
         },
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
-            write_node_c(buf, arena, base)?;
-            let _ = (under, over);
+            if !write_arrow_label_template_c(buf, arena, base, Some(over), Some(under))? {
+                write_node_c(buf, arena, base)?;
+            }
         },
         CompactNode::PreScripts {
             base,
@@ -737,7 +796,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             }
             buf.push(END);
         },
-        CompactNode::Phantom(inner) => {
+        CompactNode::Phantom(inner, _) => {
             write_node_c(buf, arena, inner)?;
         },
         CompactNode::Boxed { content: inner, .. } => {
@@ -747,6 +806,9 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_node_c(buf, arena, content)?;
         },
         CompactNode::Scaled { content, .. } => {
+            write_node_c(buf, arena, content)?;
+        },
+        CompactNode::RaiseBox { content, .. } => {
             write_node_c(buf, arena, content)?;
         },
         CompactNode::Styled(_, span) => {
@@ -761,8 +823,16 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             // MTEF doesn't have mathchoice; output the display branch
             write_node_c(buf, arena, display)?;
         },
+        CompactNode::MathAtom { content, .. } => {
+            write_node_c(buf, arena, content)?;
+        },
         // Helper nodes that shouldn't appear as standalone roots
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},
+        CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::Rule { .. }
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_)
+        | CompactNode::Newline => {},
     }
     Ok(())
 }
@@ -772,6 +842,89 @@ fn write_line_slot_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<
     write_node_c(buf, arena, id)?;
     buf.push(END);
     Ok(())
+}
+
+fn write_accented_char_c(
+    buf: &mut Vec<u8>,
+    arena: &AstArena,
+    base: NodeId,
+    embell: u8,
+) -> Result<bool> {
+    match *arena.node(base) {
+        CompactNode::Number(sid) if arena.str_val(sid).chars().count() == 1 => {
+            write_char_with_embell(
+                buf,
+                TF_NUMBER,
+                arena.str_val(sid).chars().next().unwrap(),
+                Some(embell),
+            )?;
+            Ok(true)
+        },
+        CompactNode::Identifier(sid) if arena.str_val(sid).chars().count() == 1 => {
+            let (tf, ch) = resolve_to_mtef(arena.str_val(sid).chars().next().unwrap());
+            write_char_with_embell(buf, tf, ch, Some(embell))?;
+            Ok(true)
+        },
+        CompactNode::Operator { name, .. } if arena.str_val(name).chars().count() == 1 => {
+            write_char_with_embell(
+                buf,
+                TF_FUNCTION,
+                arena.str_val(name).chars().next().unwrap(),
+                Some(embell),
+            )?;
+            Ok(true)
+        },
+        CompactNode::Symbol(_, sid) if arena.str_val(sid).chars().count() == 1 => {
+            write_char_with_embell(
+                buf,
+                TF_SYMBOL,
+                arena.str_val(sid).chars().next().unwrap(),
+                Some(embell),
+            )?;
+            Ok(true)
+        },
+        CompactNode::Text(_, sid) if arena.str_val(sid).chars().count() == 1 => {
+            write_char_with_embell(
+                buf,
+                TF_TEXT,
+                arena.str_val(sid).chars().next().unwrap(),
+                Some(embell),
+            )?;
+            Ok(true)
+        },
+        _ => Ok(false),
+    }
+}
+
+fn write_arrow_label_template_c(
+    buf: &mut Vec<u8>,
+    arena: &AstArena,
+    base: NodeId,
+    top: Option<NodeId>,
+    bottom: Option<NodeId>,
+) -> Result<bool> {
+    let direction = match *arena.node(base) {
+        CompactNode::Symbol(_, sid) if arena.str_val(sid).chars().count() == 1 => {
+            arrow_direction_bits(arena.str_val(sid).chars().next().unwrap())
+        },
+        _ => None,
+    };
+    let Some(direction) = direction else {
+        return Ok(false);
+    };
+
+    write_tag_options(buf, TMPL, 0);
+    buf.push(14); // tmARROW
+    buf.push(direction | top.map_or(0, |_| 0x04) | bottom.map_or(0, |_| 0x08));
+    buf.push(0);
+    if let Some(top) = top {
+        write_line_slot_c(buf, arena, top)?;
+    }
+    if let Some(bottom) = bottom {
+        write_line_slot_c(buf, arena, bottom)?;
+    }
+    buf.push(END);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -785,6 +938,93 @@ mod tests {
         let config = Config::default();
         let hex = MtefWriter::write(&expr, &config).unwrap();
         MtefReader::parse(&hex, &config).unwrap().expr
+    }
+
+    fn write_hex(node: MathNode) -> String {
+        let expr = MathExpr::inline(vec![node]);
+        MtefWriter::write(&expr, &Config::default()).unwrap()
+    }
+
+    #[test]
+    fn records5_core_template_selectors_are_written() {
+        assert!(
+            write_hex(MathNode::Fraction {
+                kind: FractionKind::Normal,
+                num: Box::new(MathNode::Number("1".into())),
+                den: Box::new(MathNode::Number("2".into())),
+            })
+            .contains("03000b00")
+        );
+
+        assert!(
+            write_hex(MathNode::Sqrt(Box::new(MathNode::Identifier("x".into()))))
+                .contains("03000a00")
+        );
+
+        assert!(
+            write_hex(MathNode::Subscript {
+                base: Box::new(MathNode::Identifier("x".into())),
+                sub: Box::new(MathNode::Number("2".into())),
+            })
+            .contains("03001b00")
+        );
+
+        assert!(
+            write_hex(MathNode::Superscript {
+                base: Box::new(MathNode::Identifier("x".into())),
+                sup: Box::new(MathNode::Number("2".into())),
+            })
+            .contains("03001c00")
+        );
+
+        assert!(
+            write_hex(MathNode::SubSup {
+                base: Box::new(MathNode::Identifier("x".into())),
+                sub: Box::new(MathNode::Identifier("i".into())),
+                sup: Box::new(MathNode::Number("2".into())),
+            })
+            .contains("03001d00")
+        );
+
+        let line = MathNode::Symbol(SymbolKind::Ordinary, "\u{203E}".into());
+        assert!(
+            write_hex(MathNode::Overscript {
+                base: Box::new(MathNode::Identifier("x".into())),
+                over: Box::new(line.clone()),
+                movable_limits: false,
+            })
+            .contains("03000d00")
+        );
+        assert!(
+            write_hex(MathNode::Underscript {
+                base: Box::new(MathNode::Identifier("x".into())),
+                under: Box::new(line),
+                movable_limits: false,
+            })
+            .contains("03000c00")
+        );
+
+        assert!(
+            write_hex(MathNode::Nary {
+                op: '\u{2211}',
+                sub: Some(Box::new(MathNode::Identifier("i".into()))),
+                sup: Some(Box::new(MathNode::Identifier("n".into()))),
+                body: Box::new(MathNode::Identifier("x".into())),
+                limits: LimitStyle::AboveBelow,
+            })
+            .contains("03001070")
+        );
+
+        assert!(
+            write_hex(MathNode::Nary {
+                op: '\u{222B}',
+                sub: Some(Box::new(MathNode::Number("0".into()))),
+                sup: Some(Box::new(MathNode::Number("1".into()))),
+                body: Box::new(MathNode::Identifier("f".into())),
+                limits: LimitStyle::SubSup,
+            })
+            .contains("03000f31")
+        );
     }
 
     #[test]
@@ -814,6 +1054,27 @@ mod tests {
     fn sqrt_roundtrip() {
         let expr = roundtrip(MathNode::Sqrt(Box::new(MathNode::Identifier("x".into()))));
         assert!(matches!(&expr.nodes[0], MathNode::Sqrt(_)));
+    }
+
+    #[test]
+    fn accent_roundtrip_preserves_embellishment() {
+        let expr = roundtrip(MathNode::Accent {
+            base: Box::new(MathNode::Identifier("x".into())),
+            accent: '\u{0302}',
+            position: AccentPosition::Above,
+            wide: false,
+        });
+        assert!(
+            matches!(
+                &expr.nodes[0],
+                MathNode::Accent {
+                    accent: '\u{0302}',
+                    ..
+                }
+            ),
+            "MTEF writer should attach embellishment to the character, got {:?}",
+            expr.nodes
+        );
     }
 
     #[test]

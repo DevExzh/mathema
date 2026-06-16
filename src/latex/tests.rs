@@ -232,10 +232,10 @@ fn horizontal_braces_parse() {
 
     // Overbrace/underbrace/bracket commands should parse into Overscript/Underscript nodes
     let brace_cases = [
-        ("\\overbrace{x+y}", true),        // Overscript
-        ("\\underbrace{x+y}", false),       // Underscript
-        ("\\overbracket{x+y}", true),       // Overscript
-        ("\\underbracket{x+y}", false),     // Underscript
+        ("\\overbrace{x+y}", true),     // Overscript
+        ("\\underbrace{x+y}", false),   // Underscript
+        ("\\overbracket{x+y}", true),   // Overscript
+        ("\\underbracket{x+y}", false), // Underscript
     ];
     for (input, is_over) in &brace_cases {
         let result = LatexReader::parse_compact(input, &config);
@@ -268,6 +268,7 @@ fn horizontal_braces_parse() {
 }
 
 #[test]
+#[cfg(feature = "render")]
 fn stretchy_accents_render_svg() {
     use crate::convert::from_latex;
 

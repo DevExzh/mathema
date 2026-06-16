@@ -31,7 +31,8 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
         | MathNode::Operator(_)
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
-        | MathNode::Space(_) => {},
+        | MathNode::Space(_)
+        | MathNode::Rule { .. } => {},
 
         MathNode::Row(children) => {
             for child in children {
@@ -125,13 +126,13 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
             }
         },
 
-        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
+        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
             v.visit_node(inner);
         },
         MathNode::Cancel { content, .. } => {
             v.visit_node(content);
         },
-        MathNode::Scaled { content, .. } => {
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
             v.visit_node(content);
         },
         MathNode::Styled(_, children) => {
@@ -139,11 +140,19 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
                 v.visit_node(child);
             }
         },
-        MathNode::MathChoice { display, text, script, script_script } => {
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             v.visit_node(display);
             v.visit_node(text);
             v.visit_node(script);
             v.visit_node(script_script);
+        },
+        MathNode::MathAtom { content, .. } => {
+            v.visit_node(content);
         },
     }
 }
@@ -176,7 +185,8 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
         | MathNode::Operator(_)
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
-        | MathNode::Space(_) => {},
+        | MathNode::Space(_)
+        | MathNode::Rule { .. } => {},
 
         MathNode::Row(children) => {
             for child in children {
@@ -270,13 +280,13 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
             }
         },
 
-        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
+        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
             v.visit_node_mut(inner);
         },
         MathNode::Cancel { content, .. } => {
             v.visit_node_mut(content);
         },
-        MathNode::Scaled { content, .. } => {
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
             v.visit_node_mut(content);
         },
         MathNode::Styled(_, children) => {
@@ -284,11 +294,19 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
                 v.visit_node_mut(child);
             }
         },
-        MathNode::MathChoice { display, text, script, script_script } => {
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             v.visit_node_mut(display);
             v.visit_node_mut(text);
             v.visit_node_mut(script);
             v.visit_node_mut(script_script);
+        },
+        MathNode::MathAtom { content, .. } => {
+            v.visit_node_mut(content);
         },
     }
 }
@@ -415,20 +433,30 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
             }
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
+        CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => {
             v.visit_node(arena, inner);
         },
-        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+        CompactNode::Cancel { content, .. }
+        | CompactNode::Scaled { content, .. }
+        | CompactNode::RaiseBox { content, .. } => {
             v.visit_node(arena, content);
         },
         CompactNode::Color { content, .. } => {
             v.visit_node(arena, content);
         },
-        CompactNode::MathChoice { display, text, script, script_script } => {
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             v.visit_node(arena, display);
             v.visit_node(arena, text);
             v.visit_node(arena, script);
             v.visit_node(arena, script_script);
+        },
+        CompactNode::MathAtom { content, .. } => {
+            v.visit_node(arena, content);
         },
     }
 }
@@ -554,20 +582,30 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
             }
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
+        CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => {
             v.visit_node_mut(arena, inner);
         },
-        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+        CompactNode::Cancel { content, .. }
+        | CompactNode::Scaled { content, .. }
+        | CompactNode::RaiseBox { content, .. } => {
             v.visit_node_mut(arena, content);
         },
         CompactNode::Color { content, .. } => {
             v.visit_node_mut(arena, content);
         },
-        CompactNode::MathChoice { display, text, script, script_script } => {
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             v.visit_node_mut(arena, display);
             v.visit_node_mut(arena, text);
             v.visit_node_mut(arena, script);
             v.visit_node_mut(arena, script_script);
+        },
+        CompactNode::MathAtom { content, .. } => {
+            v.visit_node_mut(arena, content);
         },
     }
 }

@@ -99,7 +99,7 @@ pub fn font_glyph_metrics_upright(ch: char) -> Option<GlyphMetrics> {
 
 /// Math constants extracted from the OpenType MATH table.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Fields are incrementally wired into the layout engine
 pub struct MathConstants {
     pub axis_height: f64,
     pub fraction_rule_thickness: f64,
@@ -117,21 +117,26 @@ pub struct MathConstants {
     pub accent_base_height: f64,
     pub delimiter_factor: i16,
     pub delimiter_shortfall: f64,
+    /// Extra space above the radical rule (em units).
+    pub radical_extra_ascender: f64,
+    /// Kern before the degree index of a radical (em units).
+    pub radical_kern_before_degree: f64,
+    /// Kern after the degree index of a radical (em units, typically negative).
+    pub radical_kern_after_degree: f64,
+    /// Percentage of the radical height to raise the degree bottom.
+    pub radical_degree_bottom_raise_percent: i16,
 }
 
-#[allow(dead_code)]
 static MATH_CONSTANTS: LazyLock<Option<MathConstants>> = LazyLock::new(|| {
     let face = ttf_parser::Face::parse(super::FONT_DATA, 0).ok()?;
     extract_math_constants(&face)
 });
 
 /// Get the MATH table constants from the embedded font.
-#[allow(dead_code)]
 pub fn math_constants() -> Option<&'static MathConstants> {
     MATH_CONSTANTS.as_ref()
 }
 
-#[allow(dead_code)]
 fn extract_math_constants(face: &ttf_parser::Face) -> Option<MathConstants> {
     let math = face.tables().math.as_ref()?;
     let consts = math.constants.as_ref()?;
@@ -154,8 +159,12 @@ fn extract_math_constants(face: &ttf_parser::Face) -> Option<MathConstants> {
         radical_display_vertical_gap: consts.radical_display_style_vertical_gap().value as f64
             / upem,
         accent_base_height: consts.accent_base_height().value as f64 / upem,
-        delimiter_factor: 901, // Not in MATH table, kept from TeX tradition
+        delimiter_factor: 901,    // Not in MATH table, kept from TeX tradition
         delimiter_shortfall: 0.5, // Not in MATH table; TeX default of 5pt ≈ 0.5em
+        radical_extra_ascender: consts.radical_extra_ascender().value as f64 / upem,
+        radical_kern_before_degree: consts.radical_kern_before_degree().value as f64 / upem,
+        radical_kern_after_degree: consts.radical_kern_after_degree().value as f64 / upem,
+        radical_degree_bottom_raise_percent: consts.radical_degree_bottom_raise_percent(),
     })
 }
 
@@ -251,13 +260,19 @@ mod tests {
         let _normal_alpha = '\u{03B1}';
         let m_bold = font_glyph_metrics(bold_alpha);
         let _m_normal = font_glyph_metrics(_normal_alpha);
-        assert!(m_bold.is_some(), "Bold alpha (U+1D6C2) should have font metrics");
+        assert!(
+            m_bold.is_some(),
+            "Bold alpha (U+1D6C2) should have font metrics"
+        );
     }
 
     #[test]
     fn math_constants_are_extracted() {
         let consts = math_constants();
-        assert!(consts.is_some(), "MATH table constants should be extractable");
+        assert!(
+            consts.is_some(),
+            "MATH table constants should be extractable"
+        );
         let c = consts.unwrap();
         assert!(
             (c.axis_height - 0.25).abs() < 0.05,
@@ -265,6 +280,44 @@ mod tests {
             c.axis_height
         );
         assert!(c.fraction_rule_thickness > 0.01 && c.fraction_rule_thickness < 0.1);
+    }
+
+    #[test]
+    fn radical_constants_are_reasonable() {
+        let c = math_constants().unwrap();
+        eprintln!("radical_extra_ascender: {}", c.radical_extra_ascender);
+        eprintln!(
+            "radical_kern_before_degree: {}",
+            c.radical_kern_before_degree
+        );
+        eprintln!("radical_kern_after_degree: {}", c.radical_kern_after_degree);
+        eprintln!(
+            "radical_degree_bottom_raise_percent: {}",
+            c.radical_degree_bottom_raise_percent
+        );
+        eprintln!("radical_vertical_gap: {}", c.radical_vertical_gap);
+        eprintln!(
+            "radical_display_vertical_gap: {}",
+            c.radical_display_vertical_gap
+        );
+        eprintln!("radical_rule_thickness: {}", c.radical_rule_thickness);
+        // Sanity checks
+        assert!(
+            c.radical_extra_ascender > 0.0 && c.radical_extra_ascender < 0.2,
+            "radical_extra_ascender={}",
+            c.radical_extra_ascender
+        );
+        assert!(
+            c.radical_kern_after_degree < 0.0,
+            "radical_kern_after_degree should be negative, got {}",
+            c.radical_kern_after_degree
+        );
+        assert!(
+            c.radical_degree_bottom_raise_percent > 0
+                && c.radical_degree_bottom_raise_percent <= 100,
+            "radical_degree_bottom_raise_percent={}",
+            c.radical_degree_bottom_raise_percent
+        );
     }
 
     #[test]

@@ -4,13 +4,17 @@
 use std::collections::{HashMap, HashSet};
 
 use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
-use super::font_embed::{FontInfo, GlyphOutline, extract_glyph, parse_font_info};
+use super::font_embed::{FontInfo, GlyphOutline, extract_glyph, extract_glyph_by_id, parse_font_info};
 use super::layout::{BoxKind, LayoutBox};
 
 /// Set of extracted glyph outlines keyed by character, plus font metrics.
 #[derive(Debug)]
 pub struct GlyphSet {
     pub glyphs: HashMap<char, GlyphOutline>,
+    /// MATH-table size-variant outlines keyed by font glyph id (large operators,
+    /// stretchy delimiters). Mirrors what the raster backend draws so the
+    /// standalone SVG matches the PNG.
+    pub variants: HashMap<u16, GlyphOutline>,
     pub font_info: FontInfo,
 }
 
@@ -25,34 +29,36 @@ pub fn collect_chars(root: &LayoutBox) -> HashSet<char> {
 fn collect_chars_inner(node: &LayoutBox, chars: &mut HashSet<char>) {
     match &node.kind {
         BoxKind::Glyph { ch, italic, .. } => {
-            chars.insert(*ch);
-            if *italic {
-                if let Some(italic_ch) = super::layout::math_italic_codepoint(*ch) {
-                    chars.insert(italic_ch);
-                }
-            }
-        }
+            collect_char(*ch, *italic, chars);
+        },
         BoxKind::Delimiter { ch, target_height } => {
             // Only collect the char if it won't be rendered as an SVG path
             // (i.e. we need the font glyph as a fallback)
             if super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0).is_none() {
                 chars.insert(*ch);
             }
-        }
+        },
         BoxKind::HBox { children } | BoxKind::VBox { children } => {
             for child in children {
                 collect_chars_inner(&child.layout, chars);
             }
-        }
+        },
         BoxKind::Color { child, .. } | BoxKind::Boxed { child, .. } => {
             collect_chars_inner(&child.layout, chars);
-        }
-        BoxKind::Rule { .. } | BoxKind::Kern | BoxKind::SvgPath(_) | BoxKind::Phantom => {}
-        BoxKind::TextRun { text, .. } => {
+        },
+        BoxKind::Rule { .. } | BoxKind::Kern | BoxKind::SvgPath(_) | BoxKind::Phantom => {},
+        BoxKind::TextRun { text, italic, .. } => {
             for ch in text.chars() {
-                chars.insert(ch);
+                collect_char(ch, *italic, chars);
             }
-        }
+        },
+    }
+}
+
+fn collect_char(ch: char, italic: bool, chars: &mut HashSet<char>) {
+    chars.insert(ch);
+    if italic && let Some(italic_ch) = super::layout::math_italic_codepoint(ch) {
+        chars.insert(italic_ch);
     }
 }
 
@@ -67,39 +73,34 @@ fn collect_chars_arena_inner(arena: &LayoutArena, id: LayoutBoxId, chars: &mut H
     let node = arena.get(id);
     match &node.kind {
         ArenaBoxKind::Glyph { ch, italic, .. } => {
-            chars.insert(*ch);
-            if *italic {
-                if let Some(italic_ch) = super::layout::math_italic_codepoint(*ch) {
-                    chars.insert(italic_ch);
-                }
-            }
-        }
+            collect_char(*ch, *italic, chars);
+        },
         ArenaBoxKind::Delimiter { ch, target_height } => {
             // Only collect the char if it won't be rendered as an SVG path
             if super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0).is_none() {
                 chars.insert(*ch);
             }
-        }
+        },
         ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
             for child in arena.children(*children) {
                 collect_chars_arena_inner(arena, child.id, chars);
             }
-        }
+        },
         ArenaBoxKind::Color { child, .. } => {
             collect_chars_arena_inner(arena, *child, chars);
-        }
+        },
         ArenaBoxKind::Boxed { child, .. } => {
             collect_chars_arena_inner(arena, *child, chars);
-        }
+        },
         ArenaBoxKind::Rule { .. }
         | ArenaBoxKind::Kern
         | ArenaBoxKind::SvgPath(_)
-        | ArenaBoxKind::Phantom => {}
-        ArenaBoxKind::TextRun { text, .. } => {
+        | ArenaBoxKind::Phantom => {},
+        ArenaBoxKind::TextRun { text, italic, .. } => {
             for ch in text.chars() {
-                chars.insert(ch);
+                collect_char(ch, *italic, chars);
             }
-        }
+        },
     }
 }
 
@@ -115,16 +116,120 @@ pub fn build_glyph_set(font_data: &[u8], chars: &HashSet<char>) -> Option<GlyphS
             glyphs.insert(ch, outline);
         }
     }
-    Some(GlyphSet { glyphs, font_info })
+    Some(GlyphSet {
+        glyphs,
+        variants: HashMap::new(),
+        font_info,
+    })
+}
+
+/// Add MATH-table variant glyph outlines (by font glyph id) to an existing set.
+///
+/// The standalone SVG emitter uses these for stretchy delimiters and display
+/// large operators so its output matches the raster backend, which draws the
+/// same variant glyphs.
+pub fn add_variants(set: &mut GlyphSet, font_data: &[u8], ids: &HashSet<u16>) {
+    for &id in ids {
+        if set.variants.contains_key(&id) {
+            continue;
+        }
+        if let Some(outline) = extract_glyph_by_id(font_data, id) {
+            set.variants.insert(id, outline);
+        }
+    }
+}
+
+/// Collect MATH-table variant glyph ids needed by a heap layout tree, mirroring
+/// the selection logic the raster backend uses (so both pick the same glyph).
+pub fn collect_variants(root: &LayoutBox) -> HashSet<u16> {
+    let mut ids = HashSet::new();
+    collect_variants_inner(root, &mut ids);
+    ids
+}
+
+fn collect_variants_inner(node: &LayoutBox, ids: &mut HashSet<u16>) {
+    use super::glyph_variants::{
+        display_operator_variant, is_large_op_char, select_vertical_variant,
+    };
+    match &node.kind {
+        BoxKind::Glyph { ch, size, .. } => {
+            if *size > 1.2
+                && is_large_op_char(*ch)
+                && let Some(v) = display_operator_variant(*ch)
+            {
+                ids.insert(v.glyph_id);
+            }
+        },
+        BoxKind::Delimiter { ch, target_height } => {
+            if let Some(v) = select_vertical_variant(*ch, *target_height) {
+                ids.insert(v.glyph_id);
+            }
+        },
+        BoxKind::HBox { children } | BoxKind::VBox { children } => {
+            for child in children {
+                collect_variants_inner(&child.layout, ids);
+            }
+        },
+        BoxKind::Color { child, .. } | BoxKind::Boxed { child, .. } => {
+            collect_variants_inner(&child.layout, ids);
+        },
+        BoxKind::Rule { .. }
+        | BoxKind::Kern
+        | BoxKind::SvgPath(_)
+        | BoxKind::Phantom
+        | BoxKind::TextRun { .. } => {},
+    }
+}
+
+/// Collect MATH-table variant glyph ids needed by an arena layout tree.
+pub fn collect_variants_arena(arena: &LayoutArena, root: LayoutBoxId) -> HashSet<u16> {
+    let mut ids = HashSet::new();
+    collect_variants_arena_inner(arena, root, &mut ids);
+    ids
+}
+
+fn collect_variants_arena_inner(arena: &LayoutArena, id: LayoutBoxId, ids: &mut HashSet<u16>) {
+    use super::glyph_variants::{
+        display_operator_variant, is_large_op_char, select_vertical_variant,
+    };
+    let node = arena.get(id);
+    match &node.kind {
+        ArenaBoxKind::Glyph { ch, size, .. } => {
+            if *size > 1.2
+                && is_large_op_char(*ch)
+                && let Some(v) = display_operator_variant(*ch)
+            {
+                ids.insert(v.glyph_id);
+            }
+        },
+        ArenaBoxKind::Delimiter { ch, target_height } => {
+            if let Some(v) = select_vertical_variant(*ch, *target_height) {
+                ids.insert(v.glyph_id);
+            }
+        },
+        ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
+            for child in arena.children(*children) {
+                collect_variants_arena_inner(arena, child.id, ids);
+            }
+        },
+        ArenaBoxKind::Color { child, .. } | ArenaBoxKind::Boxed { child, .. } => {
+            collect_variants_arena_inner(arena, *child, ids);
+        },
+        ArenaBoxKind::Rule { .. }
+        | ArenaBoxKind::Kern
+        | ArenaBoxKind::SvgPath(_)
+        | ArenaBoxKind::Phantom
+        | ArenaBoxKind::TextRun { .. } => {},
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::RenderOptions;
-    use crate::render::layout::{layout_expr, PositionedBox};
-    use crate::render::style::MathStyle;
     use crate::ast::*;
+    use crate::render::RenderOptions;
+    use crate::render::layout::{PositionedBox, layout_expr};
+    use crate::render::style::MathStyle;
 
     static FONT_DATA: &[u8] = include_bytes!("fonts/LatinModernMath-Regular.otf");
 
@@ -151,20 +256,30 @@ mod tests {
             width: 0.5,
             height: 0.43,
             depth: 0.0,
-            kind: BoxKind::Glyph { ch: 'x', size: 1.0, italic: false },
+            kind: BoxKind::Glyph {
+                ch: 'x',
+                size: 1.0,
+                italic: false,
+            },
         };
         // Use a small target_height so SVG path threshold is NOT met
         let delim_open = LayoutBox {
             width: 0.3,
             height: 0.43,
             depth: 0.0,
-            kind: BoxKind::Delimiter { ch: '(', target_height: 0.3 },
+            kind: BoxKind::Delimiter {
+                ch: '(',
+                target_height: 0.3,
+            },
         };
         let delim_close = LayoutBox {
             width: 0.3,
             height: 0.43,
             depth: 0.0,
-            kind: BoxKind::Delimiter { ch: ')', target_height: 0.3 },
+            kind: BoxKind::Delimiter {
+                ch: ')',
+                target_height: 0.3,
+            },
         };
         let root = LayoutBox {
             width: 1.1,
@@ -193,7 +308,10 @@ mod tests {
             width: 0.3,
             height: 1.0,
             depth: 0.5,
-            kind: BoxKind::Delimiter { ch: '(', target_height: 1.5 },
+            kind: BoxKind::Delimiter {
+                ch: '(',
+                target_height: 1.5,
+            },
         };
         let root = LayoutBox {
             width: 0.3,
@@ -271,10 +389,9 @@ mod tests {
         use crate::render::layout::{LayoutBuilder, layout_expr_c};
 
         let config = crate::error::Config::default();
-        let result = crate::reader::latex::LatexReader::parse_compact(
-            "x^2 + y = \\frac{1}{2}",
-            &config,
-        ).unwrap();
+        let result =
+            crate::reader::latex::LatexReader::parse_compact("x^2 + y = \\frac{1}{2}", &config)
+                .unwrap();
         let options = RenderOptions::default();
 
         // Heap path

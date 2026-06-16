@@ -20,7 +20,8 @@ use crate::error::Result;
 // ---------------------------------------------------------------------------
 
 static MATH_FONT: LazyLock<Font> = LazyLock::new(|| {
-    Font::from_bytes(super::FONT_DATA, FontSettings::default()).expect("embedded font must be valid")
+    Font::from_bytes(super::FONT_DATA, FontSettings::default())
+        .expect("embedded font must be valid")
 });
 
 /// Lazily-parsed ttf-parser face for glyph outline extraction (MATH variants).
@@ -101,6 +102,7 @@ pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> R
 /// Recursively compute the horizontal extent of all visible content in a layout
 /// tree.  Returns `(min_x, max_x)` in **em units** relative to the tree root's
 /// origin.  Invisible nodes (`Kern`, `Phantom`) are skipped.
+#[cfg(test)]
 fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
     match &layout.kind {
         // Visible leaf nodes: occupy [x, x + width].
@@ -129,19 +131,17 @@ fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
             } else {
                 (lo, hi)
             }
-        }
+        },
 
         // Color wrapper: recurse into the single child.
-        BoxKind::Color { child, .. } => {
-            compute_x_bounds(&child.layout, x + child.dx)
-        }
+        BoxKind::Color { child, .. } => compute_x_bounds(&child.layout, x + child.dx),
 
         // Boxed wrapper: recurse into the single child but also account for the
         // box border itself.
         BoxKind::Boxed { child, .. } => {
             let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
             (cmin.min(x), cmax.max(x + layout.width))
-        }
+        },
 
         // Invisible nodes contribute no visible content.
         BoxKind::Kern | BoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
@@ -155,19 +155,12 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
     // Guard against excessive dimensions that could cause OOM
     const MAX_PIXMAP_DIMENSION: u32 = 8192;
 
-    // Compute actual horizontal extent of visible content so that negative
-    // kerns (e.g. `\!\!\!x`) do not clip glyphs that sit left of x = 0.
-    let (min_x, max_x) = compute_x_bounds(root, 0.0);
-    let x_shift = if min_x < 0.0 { -min_x } else { 0.0 };
-    let content_width = if min_x < 0.0 {
-        max_x - min_x
-    } else {
-        // When there is no negative overshoot, still respect max_x in case it
-        // exceeds root.width (shouldn't normally happen, but be safe).
-        root.width.max(max_x)
-    };
+    // Use the same horizontal bounds policy as SVG so leading negative space
+    // does not clip content and trailing layout width remains represented.
+    let (view_x_px, content_width_px) = super::emit::svg_x_bounds_px(root, em);
+    let x_shift_px = if view_x_px < 0.0 { -view_x_px } else { 0.0 };
 
-    let width = (content_width * em + padding * 2.0).ceil().max(1.0) as u32;
+    let width = (content_width_px + padding * 2.0).ceil().max(1.0) as u32;
     let height = ((root.height + root.depth) * em + padding * 2.0)
         .ceil()
         .max(1.0) as u32;
@@ -205,10 +198,15 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
         glyph_rgba_buf: Vec::new(),
     };
 
-    // Shift content right by |min_x| so that negatively-positioned glyphs
-    // are inside the pixmap.
+    // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
     let baseline_y = root.height * em + padding;
-    emit_raster_box(&mut pixmap, &mut ctx, root, padding + x_shift * em, baseline_y);
+    emit_raster_box(
+        &mut pixmap,
+        &mut ctx,
+        root,
+        padding + x_shift_px,
+        baseline_y,
+    );
 
     encode_image(&pixmap, options)
 }
@@ -261,7 +259,9 @@ fn emit_raster_box(
             }
         },
 
-        BoxKind::TextRun { text, size, italic, .. } => {
+        BoxKind::TextRun {
+            text, size, italic, ..
+        } => {
             let font_size_px = (em * size).max(1.0) as f32;
             let mut cx = x;
             for ch in text.chars() {
@@ -288,12 +288,16 @@ fn emit_raster_box(
         BoxKind::Rule { thickness } => {
             let th_px = (thickness * em) as f32;
             let w_px = (layout.width * em) as f32;
-            let ry = (y - thickness * em / 2.0) as f32;
+            let ry = (y - layout.height * em) as f32;
             // Guard against degenerate rects.
             let rw = w_px.max(0.5);
             let rh = th_px.max(0.5);
-            if rw.is_finite() && rh.is_finite() && ry.is_finite() && (x as f32).is_finite()
-                && rw > 0.0 && rh > 0.0
+            if rw.is_finite()
+                && rh.is_finite()
+                && ry.is_finite()
+                && (x as f32).is_finite()
+                && rw > 0.0
+                && rh > 0.0
             {
                 // Use fill_path instead of fill_rect to get proper anti-aliasing
                 // without triggering tiny-skia's hairline_aa assertion on thin rects.
@@ -308,7 +312,13 @@ fn emit_raster_box(
                     let mut paint = Paint::default();
                     paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                     paint.anti_alias = true;
-                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Transform::identity(), None);
+                    pixmap.fill_path(
+                        &path,
+                        &paint,
+                        tiny_skia::FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
         },
@@ -350,7 +360,13 @@ fn emit_raster_box(
 
                         let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
                         if is_fill {
-                            pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
+                            pixmap.fill_path(
+                                &path,
+                                &paint,
+                                tiny_skia::FillRule::Winding,
+                                transform,
+                                None,
+                            );
                         } else if dp.stroke_width > 0.0 {
                             let stroke = Stroke {
                                 width: dp.stroke_width as f32,
@@ -402,7 +418,12 @@ fn emit_raster_box(
             ctx.fg = old_fg;
         },
 
-        BoxKind::Boxed { child, padding: _, bg_color, border_color } => {
+        BoxKind::Boxed {
+            child,
+            padding: _,
+            bg_color,
+            border_color,
+        } => {
             // Background fill
             if let Some(bg) = bg_color {
                 let w_px = (layout.width * em) as f32;
@@ -460,11 +481,7 @@ fn emit_raster_box(
 /// Check whether a character is a large (n-ary) operator that may have display variants.
 #[inline]
 fn is_large_op_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '∑' | '∏' | '∐' | '∫' | '∬' | '∭' | '∮' | '∯' | '∰'
-            | '⋂' | '⋃' | '⋁' | '⋀' | '⨀' | '⨁' | '⨂' | '⨄' | '⨆'
-    )
+    super::glyph_variants::is_large_op_char(ch)
 }
 
 fn draw_glyph(
@@ -535,19 +552,17 @@ fn draw_glyph(
     }
     if let Some(glyph_ref) = tiny_skia::PixmapRef::from_bytes(buf, gw, gh) {
         // Apply synthetic italic shear (≈12° slant) only when real italic glyph unavailable.
+        // Pivot the shear about the baseline (not the glyph-bitmap top) so it matches the
+        // embedded-SVG emitter, which applies `skewX(-12)` about the baseline. Without this
+        // the two paths slant identically but offset horizontally, diverging in PNG vs SVG.
         let transform = if use_shear {
-            Transform::from_row(1.0, 0.0, -0.21, 1.0, gx, gy)
+            let skew = -0.21_f32;
+            let tx = gx - skew * (baseline_y as f32 - gy);
+            Transform::from_row(1.0, 0.0, skew, 1.0, tx, gy)
         } else {
             Transform::from_translate(gx, gy)
         };
-        pixmap.draw_pixmap(
-            0,
-            0,
-            glyph_ref,
-            &PixmapPaint::default(),
-            transform,
-            None,
-        );
+        pixmap.draw_pixmap(0, 0, glyph_ref, &PixmapPaint::default(), transform, None);
     }
 }
 
@@ -599,13 +614,7 @@ fn draw_glyph_variant(
     paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
     paint.anti_alias = true;
 
-    pixmap.fill_path(
-        &path,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        transform,
-        None,
-    );
+    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
 }
 
 /// OutlineBuilder that converts ttf-parser glyph outlines to tiny-skia Paths.
@@ -674,11 +683,11 @@ fn parse_flag(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<bool> 
         Some('0') => {
             chars.next();
             Some(false)
-        }
+        },
         Some('1') => {
             chars.next();
             Some(true)
-        }
+        },
         _ => None,
     }
 }
@@ -884,19 +893,19 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     other => other,
                 });
                 c
-            }
+            },
             Some(c) if c == '-' || c == '+' || c == '.' || c.is_ascii_digit() => {
                 // Implicit repetition of last command
                 match last_cmd {
                     Some(cmd) => cmd,
                     None => break, // no previous command — malformed
                 }
-            }
+            },
             None => break,
             _ => {
                 chars.next(); // skip unknown character
                 continue;
-            }
+            },
         };
 
         match cmd {
@@ -913,7 +922,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x;
                     prev_qy = y;
                 }
-            }
+            },
             'L' => {
                 if let Some((x, y)) = parse_coord_pair(&mut chars) {
                     pb.line_to(x, y);
@@ -924,7 +933,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x;
                     prev_qy = y;
                 }
-            }
+            },
             'H' => {
                 skip_separators(&mut chars);
                 if let Some(x) = parse_number(&mut chars) {
@@ -935,7 +944,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x;
                     prev_qy = cur_y;
                 }
-            }
+            },
             'V' => {
                 skip_separators(&mut chars);
                 if let Some(y) = parse_number(&mut chars) {
@@ -946,7 +955,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = cur_x;
                     prev_qy = y;
                 }
-            }
+            },
             'C' => {
                 if let Some((x1, y1)) = parse_coord_pair(&mut chars)
                     && let Some((x2, y2)) = parse_coord_pair(&mut chars)
@@ -960,7 +969,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x3;
                     prev_qy = y3;
                 }
-            }
+            },
             'S' => {
                 if let Some((x2, y2)) = parse_coord_pair(&mut chars)
                     && let Some((x3, y3)) = parse_coord_pair(&mut chars)
@@ -975,7 +984,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x3;
                     prev_qy = y3;
                 }
-            }
+            },
             'Q' => {
                 if let Some((x1, y1)) = parse_coord_pair(&mut chars)
                     && let Some((x2, y2)) = parse_coord_pair(&mut chars)
@@ -988,7 +997,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x1;
                     prev_qy = y1;
                 }
-            }
+            },
             'T' => {
                 if let Some((x2, y2)) = parse_coord_pair(&mut chars) {
                     let rx = 2.0 * cur_x - prev_qx;
@@ -1001,7 +1010,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = rx;
                     prev_qy = ry;
                 }
-            }
+            },
             // -------------------------------------------------------
             // Relative (lowercase) commands
             // -------------------------------------------------------
@@ -1020,7 +1029,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x;
                     prev_qy = y;
                 }
-            }
+            },
             'l' => {
                 if let Some((dx, dy)) = parse_coord_pair(&mut chars) {
                     let x = cur_x + dx;
@@ -1033,7 +1042,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x;
                     prev_qy = y;
                 }
-            }
+            },
             'h' => {
                 skip_separators(&mut chars);
                 if let Some(dx) = parse_number(&mut chars) {
@@ -1045,7 +1054,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = x;
                     prev_qy = cur_y;
                 }
-            }
+            },
             'v' => {
                 skip_separators(&mut chars);
                 if let Some(dy) = parse_number(&mut chars) {
@@ -1057,7 +1066,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = cur_x;
                     prev_qy = y;
                 }
-            }
+            },
             'c' => {
                 if let Some((dx1, dy1)) = parse_coord_pair(&mut chars)
                     && let Some((dx2, dy2)) = parse_coord_pair(&mut chars)
@@ -1077,7 +1086,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     cur_x = x3;
                     cur_y = y3;
                 }
-            }
+            },
             's' => {
                 if let Some((dx2, dy2)) = parse_coord_pair(&mut chars)
                     && let Some((dx3, dy3)) = parse_coord_pair(&mut chars)
@@ -1096,7 +1105,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     cur_x = x3;
                     cur_y = y3;
                 }
-            }
+            },
             'q' => {
                 if let Some((dx1, dy1)) = parse_coord_pair(&mut chars)
                     && let Some((dx2, dy2)) = parse_coord_pair(&mut chars)
@@ -1113,7 +1122,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     cur_x = x2;
                     cur_y = y2;
                 }
-            }
+            },
             't' => {
                 if let Some((dx, dy)) = parse_coord_pair(&mut chars) {
                     let x2 = cur_x + dx;
@@ -1128,20 +1137,28 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     cur_x = x2;
                     cur_y = y2;
                 }
-            }
+            },
             // -------------------------------------------------------
             // Arc commands
             // -------------------------------------------------------
             'A' => {
                 skip_separators(&mut chars);
                 if let Some(rx) = parse_number(&mut chars)
-                    && let Some(ry) = { skip_separators(&mut chars); parse_number(&mut chars) }
-                    && let Some(x_rot) = { skip_separators(&mut chars); parse_number(&mut chars) }
+                    && let Some(ry) = {
+                        skip_separators(&mut chars);
+                        parse_number(&mut chars)
+                    }
+                    && let Some(x_rot) = {
+                        skip_separators(&mut chars);
+                        parse_number(&mut chars)
+                    }
                     && let Some(large_arc) = parse_flag(&mut chars)
                     && let Some(sweep) = parse_flag(&mut chars)
                     && let Some((ex, ey)) = parse_coord_pair(&mut chars)
                 {
-                    arc_to_cubics(&mut pb, cur_x, cur_y, rx, ry, x_rot, large_arc, sweep, ex, ey);
+                    arc_to_cubics(
+                        &mut pb, cur_x, cur_y, rx, ry, x_rot, large_arc, sweep, ex, ey,
+                    );
                     cur_x = ex;
                     cur_y = ey;
                     prev_cx = ex;
@@ -1149,19 +1166,27 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = ex;
                     prev_qy = ey;
                 }
-            }
+            },
             'a' => {
                 skip_separators(&mut chars);
                 if let Some(rx) = parse_number(&mut chars)
-                    && let Some(ry) = { skip_separators(&mut chars); parse_number(&mut chars) }
-                    && let Some(x_rot) = { skip_separators(&mut chars); parse_number(&mut chars) }
+                    && let Some(ry) = {
+                        skip_separators(&mut chars);
+                        parse_number(&mut chars)
+                    }
+                    && let Some(x_rot) = {
+                        skip_separators(&mut chars);
+                        parse_number(&mut chars)
+                    }
                     && let Some(large_arc) = parse_flag(&mut chars)
                     && let Some(sweep) = parse_flag(&mut chars)
                     && let Some((dx, dy)) = parse_coord_pair(&mut chars)
                 {
                     let ex = cur_x + dx;
                     let ey = cur_y + dy;
-                    arc_to_cubics(&mut pb, cur_x, cur_y, rx, ry, x_rot, large_arc, sweep, ex, ey);
+                    arc_to_cubics(
+                        &mut pb, cur_x, cur_y, rx, ry, x_rot, large_arc, sweep, ex, ey,
+                    );
                     cur_x = ex;
                     cur_y = ey;
                     prev_cx = ex;
@@ -1169,7 +1194,7 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                     prev_qx = ex;
                     prev_qy = ey;
                 }
-            }
+            },
             'Z' | 'z' => {
                 pb.close();
                 cur_x = subpath_x;
@@ -1179,10 +1204,10 @@ fn parse_svg_path(d: &str) -> Option<tiny_skia::Path> {
                 prev_qx = cur_x;
                 prev_qy = cur_y;
                 last_cmd = None; // Z resets implicit repeat
-            }
+            },
             _ => {
                 // Unknown command — skip
-            }
+            },
         }
     }
 
@@ -1208,9 +1233,7 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f32>
     let mut buf = [0u8; 32];
     let mut len = 0usize;
     // Optional sign
-    if chars.peek().is_some_and(|c| *c == '-' || *c == '+')
-        && len < buf.len()
-    {
+    if chars.peek().is_some_and(|c| *c == '-' || *c == '+') && len < buf.len() {
         buf[len] = chars.next().unwrap() as u8;
         len += 1;
     }
@@ -1249,11 +1272,48 @@ pub(crate) fn parse_color(s: &str) -> [u8; 3] {
     if s.eq_ignore_ascii_case("currentcolor") {
         return [0, 0, 0];
     }
+    if let Some(rgb) = parse_rgb_function(s) {
+        return rgb;
+    }
     // Full CSS named colors (148 colors)
     if let Some(rgb) = super::css_colors::lookup_css_color(s) {
         return rgb;
     }
     [0, 0, 0] // fallback to black
+}
+
+fn parse_rgb_function(s: &str) -> Option<[u8; 3]> {
+    let (name, inner) = css_function(s)?;
+    if !name.eq_ignore_ascii_case("rgb") {
+        return None;
+    }
+
+    let mut parts = inner.split(',').map(str::trim);
+    let r = parse_rgb_component(parts.next()?)?;
+    let g = parse_rgb_component(parts.next()?)?;
+    let b = parse_rgb_component(parts.next()?)?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some([r, g, b])
+}
+
+fn css_function(s: &str) -> Option<(&str, &str)> {
+    let open = s.find('(')?;
+    let close = s.rfind(')')?;
+    if close <= open || !s[close + 1..].trim().is_empty() {
+        return None;
+    }
+    Some((s[..open].trim(), &s[open + 1..close]))
+}
+
+fn parse_rgb_component(s: &str) -> Option<u8> {
+    let s = s.trim();
+    if let Some(percent) = s.strip_suffix('%') {
+        let pct = percent.trim().parse::<f64>().ok()?.clamp(0.0, 100.0);
+        return Some((pct * 255.0 / 100.0).round() as u8);
+    }
+    Some(s.parse::<f64>().ok()?.clamp(0.0, 255.0).round() as u8)
 }
 
 fn parse_hex_color(hex: &str) -> [u8; 3] {
@@ -1446,6 +1506,18 @@ mod tests {
         assert_eq!(parse_color("currentColor"), [0, 0, 0]);
     }
 
+    #[test]
+    fn color_parse_rgb_comma_syntax() {
+        assert_eq!(parse_color("rgb(255, 0, 0)"), [255, 0, 0]);
+        assert_eq!(parse_color("rgb(100%, 50%, 0%)"), [255, 128, 0]);
+    }
+
+    #[test]
+    fn color_parse_rgba_is_unsupported_without_alpha_pipeline() {
+        assert_eq!(parse_rgb_function("rgba(255, 0, 0, 0.5)"), None);
+        assert_eq!(parse_color("rgba(255, 0, 0, 0.5)"), [0, 0, 0]);
+    }
+
     // --- SVG path parser ---
 
     #[test]
@@ -1550,8 +1622,7 @@ mod tests {
     #[test]
     fn parse_svg_path_relative_cubic() {
         // Mixed case commands as seen in widehat paths
-        let path =
-            parse_svg_path("M529 0h5l519 115c5 1 9 5 9 10 0 1-1 2-1 3l-4 22z");
+        let path = parse_svg_path("M529 0h5l519 115c5 1 9 5 9 10 0 1-1 2-1 3l-4 22z");
         assert!(path.is_some(), "mixed case commands should work");
     }
 
@@ -1577,8 +1648,7 @@ mod tests {
 
     #[test]
     fn parse_svg_path_arc() {
-        let path =
-            parse_svg_path("M0.14,0.07 a0.07,0.07 0 1 1 -0.14,0 a0.07,0.07 0 1 1 0.14,0 Z");
+        let path = parse_svg_path("M0.14,0.07 a0.07,0.07 0 1 1 -0.14,0 a0.07,0.07 0 1 1 0.14,0 Z");
         assert!(path.is_some(), "arc command should work");
     }
 
@@ -1619,7 +1689,10 @@ mod tests {
             MathNode::Identifier("x".into()),
         ];
         let png = render_png(nodes);
-        assert!(png.len() > 100, "negative-space expression should produce a non-trivial image");
+        assert!(
+            png.len() > 100,
+            "negative-space expression should produce a non-trivial image"
+        );
         assert_eq!(&png[..4], b"\x89PNG");
     }
 
@@ -1633,21 +1706,34 @@ mod tests {
             depth: 0.0,
             kind: BoxKind::Kern,
         });
-        let glyph = PositionedBox::new(-0.5, 0.0, LayoutBox {
-            width: 0.6,
-            height: 0.7,
-            depth: 0.1,
-            kind: BoxKind::Glyph { ch: 'x', size: 1.0, italic: false },
-        });
+        let glyph = PositionedBox::new(
+            -0.5,
+            0.0,
+            LayoutBox {
+                width: 0.6,
+                height: 0.7,
+                depth: 0.1,
+                kind: BoxKind::Glyph {
+                    ch: 'x',
+                    size: 1.0,
+                    italic: false,
+                },
+            },
+        );
         let root = LayoutBox {
             width: 0.1, // artificially narrow
             height: 0.7,
             depth: 0.1,
-            kind: BoxKind::HBox { children: vec![kern, glyph] },
+            kind: BoxKind::HBox {
+                children: vec![kern, glyph],
+            },
         };
         let (min_x, max_x) = compute_x_bounds(&root, 0.0);
         assert!(min_x < 0.0, "min_x should be negative: got {min_x}");
-        assert!((max_x - 0.1).abs() < 1e-9, "max_x should be 0.1: got {max_x}");
+        assert!(
+            (max_x - 0.1).abs() < 1e-9,
+            "max_x should be 0.1: got {max_x}"
+        );
     }
 
     #[test]
@@ -1655,7 +1741,10 @@ mod tests {
         // After Z, the current position should be the subpath start (M coords).
         // Then a relative lineto should be relative to that start, not the last point before Z.
         let path = parse_svg_path("M10,10 L20,20 Z l5,0");
-        assert!(path.is_some(), "path with Z followed by relative command should parse");
+        assert!(
+            path.is_some(),
+            "path with Z followed by relative command should parse"
+        );
     }
 
     #[test]
@@ -1712,9 +1801,12 @@ mod tests {
     fn parse_svg_path_widetilde_full() {
         // Full widetilde tier-0 path from KaTeX with implicit c repetitions.
         let path = parse_svg_path(
-            "M200 55.538c-77 0-168 73.953-177 73.953-3 0-7-2.175-9-5.437L2 97c-1-2-2-4-2-6 0-4 2-7 5-9l20-12C116 12 171 0 207 0c86 0 114 68 191 68 78 0 168-68 177-68 4 0 7 2 9 5l12 19c1 2.175 2 4.35 2 6.525 0 4.35-2 7.613-5 9.788l-19 13.05c-92 63.077-116.937 75.308-183 76.128-68.267.847-113-73.952-191-73.952z"
+            "M200 55.538c-77 0-168 73.953-177 73.953-3 0-7-2.175-9-5.437L2 97c-1-2-2-4-2-6 0-4 2-7 5-9l20-12C116 12 171 0 207 0c86 0 114 68 191 68 78 0 168-68 177-68 4 0 7 2 9 5l12 19c1 2.175 2 4.35 2 6.525 0 4.35-2 7.613-5 9.788l-19 13.05c-92 63.077-116.937 75.308-183 76.128-68.267.847-113-73.952-191-73.952z",
         );
-        assert!(path.is_some(), "full widetilde path with implicit repeats should parse");
+        assert!(
+            path.is_some(),
+            "full widetilde path with implicit repeats should parse"
+        );
     }
 
     #[test]
@@ -1735,7 +1827,7 @@ mod tests {
     fn parse_svg_path_widehat_full() {
         // Full widehat path from KaTeX with implicit command repeats.
         let path = parse_svg_path(
-            "M1181 0h2l1171 176c6 0 10 5 10 11l-2 23c-1 6-5 10-11 10h-1L1182 67 15 220h-1c-6 0-10-4-11-10l-2-23c-1-6 4-11 10-11z"
+            "M1181 0h2l1171 176c6 0 10 5 10 11l-2 23c-1 6-5 10-11 10h-1L1182 67 15 220h-1c-6 0-10-4-11-10l-2-23c-1-6 4-11 10-11z",
         );
         assert!(path.is_some(), "full widehat path should parse");
     }

@@ -1,11 +1,12 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use mathema::unicode::{
-    latex_to_unicode, unicode_to_latex, symbol_kind, lookup_command,
-    nary_op_to_latex, is_nary_command, is_operator_command, operator_has_limits,
-    fonts::{styled_char, unstyled_char},
-    operators::{lookup_operator, lookup_operator_any, is_stretchy, OperatorForm},
-};
 use mathema::ast::TextStyle;
+use mathema::unicode::{
+    fonts::{styled_char, unstyled_char},
+    is_nary_command, is_operator_command, latex_to_unicode, lookup_command, nary_op_to_latex,
+    operator_has_limits,
+    operators::{OperatorForm, is_stretchy, lookup_operator, lookup_operator_any},
+    symbol_kind, unicode_to_latex,
+};
 
 fn bench_symbols(c: &mut Criterion) {
     let mut group = c.benchmark_group("symbols");

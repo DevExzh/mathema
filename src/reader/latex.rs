@@ -16,6 +16,7 @@ impl Reader for LatexReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::compact::CompactNode;
     use crate::ast::*;
     use crate::error::Config;
 
@@ -159,7 +160,7 @@ mod tests {
     #[test]
     fn phantom() {
         let node = parse_one("\\phantom{x}");
-        assert!(matches!(node, MathNode::Phantom(_)));
+        assert!(matches!(node, MathNode::Phantom(_, _)));
     }
 
     #[test]
@@ -195,6 +196,21 @@ mod tests {
     fn matrix_pmatrix() {
         let node = parse_one("\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}");
         assert!(matches!(node, MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn array_row_separator_after_nary_operator_is_preserved() {
+        let node = parse_one(r"\begin{array}{l}\int\\x\end{array}");
+        match node {
+            MathNode::Array { rows, .. } => {
+                assert_eq!(
+                    rows.len(),
+                    2,
+                    "row separator after n-ary operator should create a second row"
+                );
+            },
+            other => panic!("expected Array node, got {other:?}"),
+        }
     }
 
     #[test]
@@ -460,20 +476,32 @@ mod tests {
     fn font_sizing_noop() {
         // Font sizing commands should not appear as literal text
         for cmd in &[
-            "\\Huge", "\\huge", "\\LARGE", "\\Large", "\\large",
-            "\\normalsize", "\\small", "\\footnotesize", "\\scriptsize", "\\tiny",
+            "\\Huge",
+            "\\huge",
+            "\\LARGE",
+            "\\Large",
+            "\\large",
+            "\\normalsize",
+            "\\small",
+            "\\footnotesize",
+            "\\scriptsize",
+            "\\tiny",
         ] {
             let input = format!("{} x", cmd);
             let nodes = parse(&input);
             // Should have exactly one identifier "x" (sizing is no-op)
             assert!(
-                nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == "x")),
+                nodes
+                    .iter()
+                    .any(|n| matches!(n, MathNode::Identifier(s) if s == "x")),
                 "font sizing command {cmd} did not parse as no-op: {nodes:?}"
             );
             // Should NOT have an identifier with the command name
             let cmd_name = &cmd[1..]; // strip backslash
             assert!(
-                !nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == cmd_name)),
+                !nodes
+                    .iter()
+                    .any(|n| matches!(n, MathNode::Identifier(s) if s == cmd_name)),
                 "font sizing command {cmd} appeared as literal text"
             );
         }
@@ -483,7 +511,11 @@ mod tests {
     fn mathop_wrapper() {
         let nodes = parse("\\mathop{\\text{li}}");
         assert_eq!(nodes.len(), 1);
-        assert!(matches!(nodes[0], MathNode::Text(TextStyle::Normal, _)));
+        assert!(matches!(
+            &nodes[0],
+            MathNode::MathAtom { atom_type: MathAtomType::Op, content }
+            if matches!(content.as_ref(), MathNode::Text(TextStyle::Normal, _))
+        ));
     }
 
     #[test]
@@ -502,7 +534,11 @@ mod tests {
     fn mathord_wrapper() {
         let nodes = parse("\\mathord{x}");
         assert_eq!(nodes.len(), 1);
-        assert!(matches!(nodes[0], MathNode::Identifier(_)));
+        assert!(matches!(
+            &nodes[0],
+            MathNode::MathAtom { atom_type: MathAtomType::Ord, content }
+            if matches!(content.as_ref(), MathNode::Identifier(_))
+        ));
     }
 
     #[test]
@@ -518,7 +554,9 @@ mod tests {
     fn kern_with_em() {
         let nodes = parse("a\\kern1em b");
         assert!(
-            nodes.iter().any(|n| matches!(n, MathNode::Space(r) if r.as_f64() > 0.0)),
+            nodes
+                .iter()
+                .any(|n| matches!(n, MathNode::Space(r) if r.as_f64() > 0.0)),
             "\\kern 1em should produce positive space"
         );
     }
@@ -555,7 +593,9 @@ mod tests {
         let nodes = parse("a\\rule{1cm}{2cm}b");
         // \rule should be consumed, not produce literal "rule"
         assert!(
-            !nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == "rule")),
+            !nodes
+                .iter()
+                .any(|n| matches!(n, MathNode::Identifier(s) if s == "rule")),
             "\\rule should not appear as literal text"
         );
     }
@@ -564,9 +604,95 @@ mod tests {
     fn rule_with_depth() {
         let nodes = parse("a\\rule[1pt]{1cm}{2cm}b");
         assert!(
-            !nodes.iter().any(|n| matches!(n, MathNode::Identifier(s) if s == "rule")),
+            !nodes
+                .iter()
+                .any(|n| matches!(n, MathNode::Identifier(s) if s == "rule")),
             "\\rule with optional depth should not appear as literal text"
         );
+    }
+
+    #[test]
+    fn rule_retains_dimensions_in_heap_ast() {
+        let nodes = parse(r"\rule[1em]{2em}{3em}");
+        assert_eq!(nodes.len(), 1);
+        match &nodes[0] {
+            MathNode::Rule {
+                width,
+                height,
+                lift,
+            } => {
+                assert_eq!(*width, Rational::new(2, 1));
+                assert_eq!(*height, Rational::new(3, 1));
+                assert_eq!(*lift, Rational::new(1, 1));
+            },
+            other => panic!("expected Rule node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn top_level_newline_parse_compact() {
+        let result = LatexReader::parse_compact(r"a\\b", &Config::default()).unwrap();
+        let roots = result.expr.arena.children(result.expr.roots);
+        assert_eq!(roots.len(), 3, "expected a, newline, b roots");
+        assert!(
+            roots
+                .iter()
+                .any(|&id| matches!(result.expr.arena.node(id), CompactNode::Newline)),
+            "top-level line break should be retained in compact roots"
+        );
+    }
+
+    #[test]
+    fn top_level_source_newline_parse_compact() {
+        let result = LatexReader::parse_compact("a+b=\nc+d", &Config::default()).unwrap();
+        let roots = result.expr.arena.children(result.expr.roots);
+        assert!(
+            roots
+                .iter()
+                .any(|&id| matches!(result.expr.arena.node(id), CompactNode::Newline)),
+            "top-level source newline should be retained in compact roots"
+        );
+    }
+
+    #[test]
+    fn raisebox_retains_shift_in_heap_ast() {
+        let nodes = parse(r"a\raisebox{1em}{b}");
+        assert_eq!(nodes.len(), 2);
+        assert!(matches!(nodes[0], MathNode::Identifier(ref s) if s == "a"));
+        match &nodes[1] {
+            MathNode::RaiseBox {
+                shift,
+                height,
+                depth,
+                content,
+            } => {
+                assert_eq!(*shift, Rational::new(1, 1));
+                assert_eq!(*height, None);
+                assert_eq!(*depth, None);
+                assert!(matches!(content.as_ref(), MathNode::Identifier(s) if s == "b"));
+            },
+            other => panic!("expected RaiseBox node, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn raisebox_optional_extents_do_not_leak_into_content() {
+        let nodes = parse(r"\raisebox{1em}[2em][3em]{b}");
+        assert_eq!(nodes.len(), 1);
+        match &nodes[0] {
+            MathNode::RaiseBox {
+                shift,
+                height,
+                depth,
+                content,
+            } => {
+                assert_eq!(*shift, Rational::new(1, 1));
+                assert_eq!(*height, Some(Rational::new(2, 1)));
+                assert_eq!(*depth, Some(Rational::new(3, 1)));
+                assert!(matches!(content.as_ref(), MathNode::Identifier(s) if s == "b"));
+            },
+            other => panic!("expected RaiseBox node, got {other:?}"),
+        }
     }
 
     #[test]

@@ -115,8 +115,9 @@ impl MathStyle {
     #[inline]
     pub fn min_text_level(self) -> Self {
         match self {
-            Self::Script | Self::ScriptCramped
-            | Self::ScriptScript | Self::ScriptScriptCramped => Self::TextCramped,
+            Self::Script | Self::ScriptCramped | Self::ScriptScript | Self::ScriptScriptCramped => {
+                Self::TextCramped
+            },
             other => other,
         }
     }
@@ -184,13 +185,28 @@ mod tests {
     fn min_text_level_clamps_script() {
         // Display/Text pass through unchanged
         assert_eq!(MathStyle::Display.min_text_level(), MathStyle::Display);
-        assert_eq!(MathStyle::DisplayCramped.min_text_level(), MathStyle::DisplayCramped);
+        assert_eq!(
+            MathStyle::DisplayCramped.min_text_level(),
+            MathStyle::DisplayCramped
+        );
         assert_eq!(MathStyle::Text.min_text_level(), MathStyle::Text);
-        assert_eq!(MathStyle::TextCramped.min_text_level(), MathStyle::TextCramped);
+        assert_eq!(
+            MathStyle::TextCramped.min_text_level(),
+            MathStyle::TextCramped
+        );
         // Script/ScriptScript are clamped to TextCramped
         assert_eq!(MathStyle::Script.min_text_level(), MathStyle::TextCramped);
-        assert_eq!(MathStyle::ScriptCramped.min_text_level(), MathStyle::TextCramped);
-        assert_eq!(MathStyle::ScriptScript.min_text_level(), MathStyle::TextCramped);
-        assert_eq!(MathStyle::ScriptScriptCramped.min_text_level(), MathStyle::TextCramped);
+        assert_eq!(
+            MathStyle::ScriptCramped.min_text_level(),
+            MathStyle::TextCramped
+        );
+        assert_eq!(
+            MathStyle::ScriptScript.min_text_level(),
+            MathStyle::TextCramped
+        );
+        assert_eq!(
+            MathStyle::ScriptScriptCramped.min_text_level(),
+            MathStyle::TextCramped
+        );
     }
 }

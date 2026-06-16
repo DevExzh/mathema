@@ -40,9 +40,22 @@ pub fn should_use_path(ch: char, target_height: f64, size: f64) -> bool {
 fn has_path(ch: char) -> bool {
     matches!(
         ch,
-        '(' | ')' | '[' | ']' | '{' | '}' | '|' | '‖' | '∥'
-            | '⌊' | '⌋' | '⌈' | '⌉'
-            | '⟨' | '⟩' | '〈' | '〉'
+        '(' | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '|'
+            | '‖'
+            | '∥'
+            | '⌊'
+            | '⌋'
+            | '⌈'
+            | '⌉'
+            | '⟨'
+            | '⟩'
+            | '〈'
+            | '〉'
     )
 }
 
@@ -153,12 +166,7 @@ fn left_paren(h: f64, _sw: f64) -> DelimiterPath {
         h = h,
     );
     // Line to inner bottom endpoint (slightly inset)
-    let _ = write!(
-        d,
-        " L{ix:.4},{iy:.4}",
-        ix = w - tip,
-        iy = h - tip,
-    );
+    let _ = write!(d, " L{ix:.4},{iy:.4}", ix = w - tip, iy = h - tip,);
     // Inner curve: bottom → top, curving left but less deeply (reverse direction)
     let _ = write!(
         d,
@@ -197,12 +205,7 @@ fn right_paren(h: f64, _sw: f64) -> DelimiterPath {
         bot = h,
     );
     // Line to inner bottom endpoint (slightly inset)
-    let _ = write!(
-        d,
-        " L{ix:.4},{iy:.4}",
-        ix = tip,
-        iy = h - tip,
-    );
+    let _ = write!(d, " L{ix:.4},{iy:.4}", ix = tip, iy = h - tip,);
     // Inner curve: bottom → top, curving right but less deeply (reverse direction)
     let _ = write!(
         d,
@@ -224,12 +227,7 @@ fn left_bracket(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
     let mut d = String::with_capacity(80);
     // ┌ shape: horizontal top, vertical left, horizontal bottom
-    let _ = write!(
-        d,
-        "M{w:.4},0 L0,0 L0,{h:.4} L{w:.4},{h:.4}",
-        w = w,
-        h = h,
-    );
+    let _ = write!(d, "M{w:.4},0 L0,0 L0,{h:.4} L{w:.4},{h:.4}", w = w, h = h,);
     DelimiterPath {
         path_data: d,
         width: w,
@@ -241,12 +239,7 @@ fn right_bracket(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
     let mut d = String::with_capacity(80);
     // ┐ shape: horizontal top, vertical right, horizontal bottom
-    let _ = write!(
-        d,
-        "M0,0 L{w:.4},0 L{w:.4},{h:.4} L0,{h:.4}",
-        w = w,
-        h = h,
-    );
+    let _ = write!(d, "M0,0 L{w:.4},0 L{w:.4},{h:.4} L0,{h:.4}", w = w, h = h,);
     DelimiterPath {
         path_data: d,
         width: w,
@@ -285,31 +278,39 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     // === Outer contour (clockwise) ===
     // Segment 1: top hook — (w, 0) → (arm, hk)
     //   c1x = w*0.45 keeps entry nearly horizontal, c2y = hk*0.08 makes sharp turn
-    let _ = write!(d,
+    let _ = write!(
+        d,
         "F:M{w:.4},0 C{c1x:.4},0 {arm:.4},{c2y:.4} {arm:.4},{hk:.4}",
-        c1x = w * 0.45, c2y = hk * 0.08,
+        c1x = w * 0.45,
+        c2y = hk * 0.08,
     );
     // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
     //   Arm stays relatively straight; last control point is above-right of tip
     //   to create angled V approach
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{arm:.4},{c3y:.4} {c4x:.4},{c4y:.4} {tip:.4},{mid:.4}",
         c3y = mid * 0.40,
-        c4x = tip + tip_dx, c4y = mid - tip_dy,
+        c4x = tip + tip_dx,
+        c4y = mid - tip_dy,
     );
     // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
     //   First control point is below-right of tip for angled V departure
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{c5x:.4},{c5y:.4} {arm:.4},{c6y:.4} {arm:.4},{lk:.4}",
-        c5x = tip + tip_dx, c5y = mid + tip_dy,
+        c5x = tip + tip_dx,
+        c5y = mid + tip_dy,
         c6y = mid + (h - mid) * 0.60,
         lk = h - hk,
     );
     // Segment 4: bottom hook — (arm, h - hk) → (w, h)
     //   c2y near h-hk*0.08 for sharp turn, c1x = w*0.45 for horizontal exit
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{arm:.4},{c7y:.4} {c8x:.4},{h:.4} {w:.4},{h:.4}",
-        c7y = h - hk * 0.08, c8x = w * 0.45,
+        c7y = h - hk * 0.08,
+        c8x = w * 0.45,
     );
 
     // === Inner contour (counter-clockwise) — offset inward by `thick` ===
@@ -320,28 +321,36 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     let itip_dx = tip_dx.max(thick * 0.5); // ensure inner V control offset is meaningful
 
     // Segment 4i: bottom hook inner — (wi, h-eg) → (iarm, h-hk)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " L{wi:.4},{hi:.4} C{c8xi:.4},{hi:.4} {iarm:.4},{c7yi:.4} {iarm:.4},{lki:.4}",
         hi = h - eg,
-        c8xi = w * 0.50, c7yi = h - hk * 0.12,
+        c8xi = w * 0.50,
+        c7yi = h - hk * 0.12,
         lki = h - hk,
     );
     // Segment 3i: lower arm → tip inner — (iarm, h-hk) → (itip, mid)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{iarm:.4},{c6yi:.4} {c5xi:.4},{c5yi:.4} {itip:.4},{mid:.4}",
         c6yi = mid + (h - mid) * 0.60,
-        c5xi = itip + itip_dx, c5yi = mid + tip_dy,
+        c5xi = itip + itip_dx,
+        c5yi = mid + tip_dy,
     );
     // Segment 2i: tip → upper arm inner — (itip, mid) → (iarm, hk)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{c4xi:.4},{c4yi:.4} {iarm:.4},{c3yi:.4} {iarm:.4},{hk:.4}",
-        c4xi = itip + itip_dx, c4yi = mid - tip_dy,
+        c4xi = itip + itip_dx,
+        c4yi = mid - tip_dy,
         c3yi = mid * 0.40,
     );
     // Segment 1i: top hook inner — (iarm, hk) → (wi, eg)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{iarm:.4},{c2yi:.4} {c1xi:.4},{eg:.4} {wi:.4},{eg:.4} Z",
-        c2yi = hk * 0.12, c1xi = w * 0.50,
+        c2yi = hk * 0.12,
+        c1xi = w * 0.50,
     );
 
     DelimiterPath {
@@ -377,27 +386,35 @@ fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
 
     // === Outer contour (clockwise) ===
     // Segment 1: top hook — (0, 0) → (arm, hk)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         "F:M0,0 C{c1x:.4},0 {arm:.4},{c2y:.4} {arm:.4},{hk:.4}",
-        c1x = w * 0.55, c2y = hk * 0.08,
+        c1x = w * 0.55,
+        c2y = hk * 0.08,
     );
     // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{arm:.4},{c3y:.4} {c4x:.4},{c4y:.4} {tip:.4},{mid:.4}",
         c3y = mid * 0.40,
-        c4x = tip - tip_dx, c4y = mid - tip_dy,
+        c4x = tip - tip_dx,
+        c4y = mid - tip_dy,
     );
     // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{c5x:.4},{c5y:.4} {arm:.4},{c6y:.4} {arm:.4},{lk:.4}",
-        c5x = tip - tip_dx, c5y = mid + tip_dy,
+        c5x = tip - tip_dx,
+        c5y = mid + tip_dy,
         c6y = mid + (h - mid) * 0.60,
         lk = h - hk,
     );
     // Segment 4: bottom hook — (arm, h - hk) → (0, h)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{arm:.4},{c7y:.4} {c8x:.4},{h:.4} 0,{h:.4}",
-        c7y = h - hk * 0.08, c8x = w * 0.55,
+        c7y = h - hk * 0.08,
+        c8x = w * 0.55,
     );
 
     // === Inner contour (counter-clockwise) ===
@@ -407,28 +424,36 @@ fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
     let itip_dx = tip_dx.max(thick * 0.5);
 
     // Segment 4i: bottom hook inner — (eg, h-eg) → (iarm, h-hk)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " L{eg:.4},{hi:.4} C{c8xi:.4},{hi:.4} {iarm:.4},{c7yi:.4} {iarm:.4},{lki:.4}",
         hi = h - eg,
-        c8xi = w * 0.50, c7yi = h - hk * 0.12,
+        c8xi = w * 0.50,
+        c7yi = h - hk * 0.12,
         lki = h - hk,
     );
     // Segment 3i: lower arm → tip inner — (iarm, h-hk) → (itip, mid)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{iarm:.4},{c6yi:.4} {c5xi:.4},{c5yi:.4} {itip:.4},{mid:.4}",
         c6yi = mid + (h - mid) * 0.60,
-        c5xi = itip - itip_dx, c5yi = mid + tip_dy,
+        c5xi = itip - itip_dx,
+        c5yi = mid + tip_dy,
     );
     // Segment 2i: tip → upper arm inner — (itip, mid) → (iarm, hk)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{c4xi:.4},{c4yi:.4} {iarm:.4},{c3yi:.4} {iarm:.4},{hk:.4}",
-        c4xi = itip - itip_dx, c4yi = mid - tip_dy,
+        c4xi = itip - itip_dx,
+        c4yi = mid - tip_dy,
         c3yi = mid * 0.40,
     );
     // Segment 1i: top hook inner — (iarm, hk) → (eg, eg)
-    let _ = write!(d,
+    let _ = write!(
+        d,
         " C{iarm:.4},{c2yi:.4} {c1xi:.4},{eg:.4} {eg:.4},{eg:.4} Z",
-        c2yi = hk * 0.12, c1xi = w * 0.50,
+        c2yi = hk * 0.12,
+        c1xi = w * 0.50,
     );
 
     DelimiterPath {
@@ -485,12 +510,7 @@ fn right_floor(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
     let mut d = String::with_capacity(60);
     // ┘ shape: vertical right side + horizontal bottom
-    let _ = write!(
-        d,
-        "M{w:.4},0 L{w:.4},{h:.4} L0,{h:.4}",
-        w = w,
-        h = h,
-    );
+    let _ = write!(d, "M{w:.4},0 L{w:.4},{h:.4} L0,{h:.4}", w = w, h = h,);
     DelimiterPath {
         path_data: d,
         width: w,
@@ -583,7 +603,9 @@ mod tests {
 
     #[test]
     fn known_chars_return_some() {
-        for ch in ['(', ')', '[', ']', '{', '}', '|', '⟨', '⟩', '⌊', '⌋', '⌈', '⌉'] {
+        for ch in [
+            '(', ')', '[', ']', '{', '}', '|', '⟨', '⟩', '⌊', '⌋', '⌈', '⌉',
+        ] {
             let result = delimiter_path(ch, 2.0, 1.0);
             assert!(result.is_some(), "expected path for '{ch}'");
             let dp = result.unwrap();
@@ -607,7 +629,10 @@ mod tests {
         let w_small = paren_width(1.0);
         let w_large = paren_width(10.0);
         assert!(w_large <= 0.40, "paren width should be capped");
-        assert!(w_large > w_small, "taller paren should be wider (up to cap)");
+        assert!(
+            w_large > w_small,
+            "taller paren should be wider (up to cap)"
+        );
     }
 
     #[test]
@@ -615,8 +640,7 @@ mod tests {
         for ch in ['(', ')', '[', ']', '{', '}', '|'] {
             let dp = delimiter_path(ch, 2.0, 1.0).unwrap();
             // Filled paths start with "F:M", stroked paths start with "M"
-            let starts_ok =
-                dp.path_data.starts_with('M') || dp.path_data.starts_with("F:M");
+            let starts_ok = dp.path_data.starts_with('M') || dp.path_data.starts_with("F:M");
             assert!(
                 starts_ok,
                 "path for '{ch}' should start with M or F:M, got: {}",

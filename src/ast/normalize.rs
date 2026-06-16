@@ -49,7 +49,19 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
         merged.push(node);
     }
 
-    *nodes = merged;
+    // Phase 3b: merge adjacent Number nodes
+    let mut final_nodes = Vec::with_capacity(merged.len());
+    for node in merged {
+        if let MathNode::Number(ref num) = node
+            && let Some(MathNode::Number(prev_num)) = final_nodes.last_mut()
+        {
+            prev_num.push_str(num);
+            continue;
+        }
+        final_nodes.push(node);
+    }
+
+    *nodes = final_nodes;
 }
 
 fn normalize_node_depth(node: &mut MathNode, depth: usize) {
@@ -154,23 +166,31 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
             }
         },
 
-        MathNode::Phantom(inner) | MathNode::Boxed { content: inner, .. } => {
+        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
             normalize_node_depth(inner, d);
         },
         MathNode::Cancel { content, .. } => {
             normalize_node_depth(content, d);
         },
-        MathNode::Scaled { content, .. } => {
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
             normalize_node_depth(content, d);
         },
         MathNode::Styled(_, children) => {
             normalize_nodes_depth(children, d);
         },
-        MathNode::MathChoice { display, text, script, script_script } => {
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             normalize_node_depth(display, d);
             normalize_node_depth(text, d);
             normalize_node_depth(script, d);
             normalize_node_depth(script_script, d);
+        },
+        MathNode::MathAtom { content, .. } => {
+            normalize_node_depth(content, d);
         },
 
         // Leaf nodes: nothing to normalize
@@ -179,7 +199,8 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         | MathNode::Operator(_)
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
-        | MathNode::Space(_) => {},
+        | MathNode::Space(_)
+        | MathNode::Rule { .. } => {},
     }
 }
 
@@ -245,7 +266,25 @@ fn normalize_compact_span(arena: &mut AstArena, span: NodeSpan, depth: usize) ->
         merged.push(id);
     }
 
-    arena.push_children(&merged)
+    // Phase 3b: merge adjacent Number nodes.
+    let mut final_nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
+    for &id in &merged {
+        let node = *arena.node(id);
+        if let CompactNode::Number(sid) = node
+            && let Some(&prev_id) = final_nodes.last()
+            && let CompactNode::Number(prev_sid) = *arena.node(prev_id)
+        {
+            let prev_s = arena.str_val(prev_sid).to_owned();
+            let cur_s = arena.str_val(sid);
+            let combined = format!("{prev_s}{cur_s}");
+            let new_sid = arena.push_str(&combined);
+            *arena.node_mut(prev_id) = CompactNode::Number(new_sid);
+            continue;
+        }
+        final_nodes.push(id);
+    }
+
+    arena.push_children(&final_nodes)
 }
 
 /// Normalize a single compact node. May replace it in-place via `arena.node_mut`.
@@ -367,20 +406,30 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             }
         },
 
-        CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
+        CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => {
             normalize_compact_node(arena, inner, d);
         },
-        CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
+        CompactNode::Cancel { content, .. }
+        | CompactNode::Scaled { content, .. }
+        | CompactNode::RaiseBox { content, .. } => {
             normalize_compact_node(arena, content, d);
         },
         CompactNode::Color { content, .. } => {
             normalize_compact_node(arena, content, d);
         },
-        CompactNode::MathChoice { display, text, script, script_script } => {
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
             normalize_compact_node(arena, display, d);
             normalize_compact_node(arena, text, d);
             normalize_compact_node(arena, script, d);
             normalize_compact_node(arena, script_script, d);
+        },
+        CompactNode::MathAtom { content, .. } => {
+            normalize_compact_node(arena, content, d);
         },
 
         // Leaf nodes: nothing to normalize

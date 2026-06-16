@@ -52,6 +52,7 @@ fn write_node(out: &mut String, node: &MathNode) {
                 out.push('\u{2009}'); // thin space
             }
         },
+        MathNode::Rule { .. } => {},
 
         MathNode::Row(children) => {
             for (i, child) in children.iter().enumerate() {
@@ -216,7 +217,7 @@ fn write_node(out: &mut String, node: &MathNode) {
             out.push(')');
         },
 
-        MathNode::Phantom(inner) => {
+        MathNode::Phantom(inner, _) => {
             out.push('\u{27E1}'); // phantom operator
             write_paren_if_complex(out, inner);
         },
@@ -230,7 +231,7 @@ fn write_node(out: &mut String, node: &MathNode) {
             write_node(out, content);
         },
 
-        MathNode::Scaled { content, .. } => {
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
             write_node(out, content);
         },
 
@@ -253,6 +254,7 @@ fn write_node(out: &mut String, node: &MathNode) {
             // UnicodeMath doesn't have mathchoice; output the display branch
             write_node(out, display);
         },
+        MathNode::MathAtom { content, .. } => write_node(out, content),
     }
 }
 
@@ -513,7 +515,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             out.push(')');
         },
 
-        CompactNode::Phantom(inner) => {
+        CompactNode::Phantom(inner, _) => {
             out.push('\u{27E1}');
             write_paren_if_complex_c(out, arena, inner);
         },
@@ -528,6 +530,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Scaled { content, .. } => {
+            write_node_c(out, arena, content);
+        },
+        CompactNode::RaiseBox { content, .. } => {
             write_node_c(out, arena, content);
         },
 
@@ -557,7 +562,16 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             write_node_c(out, arena, display);
         },
 
-        CompactNode::Middle(_) | CompactNode::ColAlign(_) | CompactNode::Rule { .. } | CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) | CompactNode::Newline => {},
+        CompactNode::MathAtom { content, .. } => {
+            write_node_c(out, arena, content);
+        },
+
+        CompactNode::Middle(_)
+        | CompactNode::ColAlign(_)
+        | CompactNode::Rule { .. }
+        | CompactNode::StyleSwitch(_)
+        | CompactNode::SizeScale(_)
+        | CompactNode::Newline => {},
     }
 }
 

@@ -118,6 +118,21 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             w.write_event(Event::Empty(elem)).map_err(to_err)?;
             Ok(())
         },
+        MathNode::Rule {
+            width,
+            height,
+            lift,
+        } => {
+            let mut elem = BytesStart::new("mspace");
+            let width_attr = format!("{}em", width.as_f64());
+            let height_attr = format!("{}em", (lift.as_f64() + height.as_f64()).max(0.0));
+            let depth_attr = format!("{}em", (-lift.as_f64()).max(0.0));
+            elem.push_attribute(("width", width_attr.as_str()));
+            elem.push_attribute(("height", height_attr.as_str()));
+            elem.push_attribute(("depth", depth_attr.as_str()));
+            w.write_event(Event::Empty(elem)).map_err(to_err)?;
+            Ok(())
+        },
 
         MathNode::Row(children) => {
             w.write_event(Event::Start(BytesStart::new("mrow")))
@@ -385,7 +400,10 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 AccentPosition::Below => "munder",
             };
             let mut elem = BytesStart::new(tag);
-            elem.push_attribute(("accent", "true"));
+            match position {
+                AccentPosition::Above => elem.push_attribute(("accent", "true")),
+                AccentPosition::Below => elem.push_attribute(("accentunder", "true")),
+            }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_node(w, base)?;
             write_mo_char(w, *accent)?;
@@ -425,7 +443,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             Ok(())
         },
 
-        MathNode::Phantom(inner) => {
+        MathNode::Phantom(inner, _) => {
             w.write_event(Event::Start(BytesStart::new("mphantom")))
                 .map_err(to_err)?;
             write_node(w, inner)?;
@@ -434,7 +452,11 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             Ok(())
         },
 
-        MathNode::Boxed { content: inner, bg_color, border_color } => {
+        MathNode::Boxed {
+            content: inner,
+            bg_color,
+            border_color,
+        } => {
             let mut elem = BytesStart::new("menclose");
             elem.push_attribute(("notation", "box"));
             if let Some(bg) = bg_color {
@@ -475,7 +497,9 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             Ok(())
         },
 
-        MathNode::Scaled { content, .. } => write_node(w, content),
+        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
+            write_node(w, content)
+        },
 
         MathNode::Styled(style, children) => {
             let variant = style_to_mathvariant(*style);
@@ -493,6 +517,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             // MathML doesn't have mathchoice; output the display branch
             write_node(w, display)
         },
+        MathNode::MathAtom { content, .. } => write_node(w, content),
     }
 }
 
@@ -580,7 +605,10 @@ fn style_to_mathvariant(style: TextStyle) -> &'static str {
 #[inline]
 fn xml_escape_into(buf: &mut String, s: &str) {
     // Fast path: if no special chars, push the whole string at once
-    if !s.bytes().any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'')) {
+    if !s
+        .bytes()
+        .any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\''))
+    {
         buf.push_str(s);
         return;
     }
@@ -837,8 +865,9 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
                     };
                     open_tag(buf, tag);
                     // Write mo with movablelimits
+                    let mut op_buf = [0u8; 4];
                     buf.push_str("<mo movablelimits=\"true\">");
-                    buf.push(op);
+                    xml_escape_into(buf, op.encode_utf8(&mut op_buf));
                     buf.push_str("</mo>");
                     if has_sub {
                         write_node_fast(buf, arena, sub);
@@ -864,7 +893,10 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             };
             buf.push('<');
             buf.push_str(tag);
-            buf.push_str(" accent=\"true\">");
+            match position {
+                AccentPosition::Above => buf.push_str(" accent=\"true\">"),
+                AccentPosition::Below => buf.push_str(" accentunder=\"true\">"),
+            }
             write_node_fast(buf, arena, base);
             write_mo_char_fast(buf, accent);
             close_tag(buf, tag);
@@ -919,25 +951,29 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("</mtable>");
         },
 
-        CompactNode::Phantom(inner) => {
+        CompactNode::Phantom(inner, _) => {
             buf.push_str("<mphantom>");
             write_node_fast(buf, arena, inner);
             buf.push_str("</mphantom>");
         },
 
-        CompactNode::Boxed { content: inner, bg_color, border_color } => {
+        CompactNode::Boxed {
+            content: inner,
+            bg_color,
+            border_color,
+        } => {
             let bg = arena.str_val(bg_color);
             let border = arena.str_val(border_color);
             if !bg.is_empty() || !border.is_empty() {
                 buf.push_str("<menclose notation=\"box\" style=\"");
                 if !border.is_empty() {
                     buf.push_str("border-color: ");
-                    buf.push_str(border);
+                    xml_escape_into(buf, border);
                     buf.push_str("; ");
                 }
                 if !bg.is_empty() {
                     buf.push_str("background-color: ");
-                    buf.push_str(bg);
+                    xml_escape_into(buf, bg);
                 }
                 buf.push_str("\">");
             } else {
@@ -962,7 +998,9 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("</menclose>");
         },
 
-        CompactNode::Scaled { content, .. } => write_node_fast(buf, arena, content),
+        CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
+            write_node_fast(buf, arena, content)
+        },
 
         CompactNode::Styled(style, span) => {
             let variant = style_to_mathvariant(style);
@@ -977,7 +1015,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Color { color, content } => {
             buf.push_str("<mstyle mathcolor=\"");
-            buf.push_str(arena.str_val(color));
+            xml_escape_into(buf, arena.str_val(color));
             buf.push_str("\">");
             write_node_fast(buf, arena, content);
             buf.push_str("</mstyle>");
@@ -986,11 +1024,20 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
         // Helper nodes
         CompactNode::Middle(sid) => write_mo_fence_fast(buf, arena.str_val(sid)),
         CompactNode::ColAlign(_) => {},
-        CompactNode::Rule { width, height } => {
+        CompactNode::Rule {
+            width,
+            height,
+            lift,
+        } => {
             use std::fmt::Write as _;
             buf.push_str("<mspace");
             let _ = write!(buf, " width=\"{}em\"", width.as_f64());
-            let _ = write!(buf, " height=\"{}em\"", height.as_f64());
+            let _ = write!(
+                buf,
+                " height=\"{}em\"",
+                (lift.as_f64() + height.as_f64()).max(0.0)
+            );
+            let _ = write!(buf, " depth=\"{}em\"", (-lift.as_f64()).max(0.0));
             buf.push_str("/>");
         },
         CompactNode::StyleSwitch(_) => {},
@@ -999,6 +1046,9 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::MathChoice { display, .. } => {
             // MathML doesn't have mathchoice; output the display branch
             write_node_fast(buf, arena, display);
+        },
+        CompactNode::MathAtom { content, .. } => {
+            write_node_fast(buf, arena, content);
         },
     }
 }
@@ -1016,8 +1066,9 @@ fn write_mi_fast(buf: &mut String, s: &str) {
 
 #[inline]
 fn write_mo_char_fast(buf: &mut String, ch: char) {
+    let mut char_buf = [0u8; 4];
     buf.push_str("<mo>");
-    buf.push(ch);
+    xml_escape_into(buf, ch.encode_utf8(&mut char_buf));
     buf.push_str("</mo>");
 }
 
@@ -1112,9 +1163,10 @@ mod tests {
 
     #[test]
     fn phantom() {
-        let output = write(MathNode::Phantom(Box::new(MathNode::Identifier(
-            "x".into(),
-        ))));
+        let output = write(MathNode::Phantom(
+            Box::new(MathNode::Identifier("x".into())),
+            PhantomKind::Full,
+        ));
         assert!(output.contains("<mphantom>"));
     }
 
@@ -1127,5 +1179,145 @@ mod tests {
         });
         assert!(output.contains("<menclose"));
         assert!(output.contains("notation=\"box\""));
+    }
+
+    #[test]
+    fn below_accent_uses_accentunder_attribute() {
+        let node = MathNode::Accent {
+            base: Box::new(MathNode::Identifier("x".into())),
+            accent: '_',
+            position: AccentPosition::Below,
+            wide: false,
+        };
+        let output = write(node.clone());
+        assert!(output.contains("<munder accentunder=\"true\">"));
+        assert!(!output.contains("<munder accent=\"true\">"));
+
+        let expr = MathExpr::inline(vec![node]);
+        let compact = CompactExpr::from_math_expr(&expr);
+        let config = Config::default();
+        let output = MathmlWriter::write_compact(&compact, &config).unwrap();
+        assert!(output.contains("<munder accentunder=\"true\">"));
+        assert!(!output.contains("<munder accent=\"true\">"));
+    }
+
+    fn assert_rule_outputs_match(
+        width: Rational,
+        height: Rational,
+        lift: Rational,
+        expected: &str,
+    ) {
+        let node = MathNode::Rule {
+            width,
+            height,
+            lift,
+        };
+        let expr = MathExpr::inline(vec![node]);
+        let config = Config::default();
+        let output = MathmlWriter::write(&expr, &config).unwrap();
+        assert!(output.contains(expected), "non-compact output: {output}");
+
+        let compact = CompactExpr::from_math_expr(&expr);
+        let output = MathmlWriter::write_compact(&compact, &config).unwrap();
+        assert!(output.contains(expected), "compact output: {output}");
+    }
+
+    #[test]
+    fn rule_positive_lift_writes_height_and_depth_on_both_paths() {
+        assert_rule_outputs_match(
+            Rational::new(2, 1),
+            Rational::new(3, 1),
+            Rational::new(1, 1),
+            "<mspace width=\"2em\" height=\"4em\" depth=\"0em\"/>",
+        );
+    }
+
+    #[test]
+    fn rule_negative_lift_writes_height_and_depth_on_both_paths() {
+        assert_rule_outputs_match(
+            Rational::new(2, 1),
+            Rational::new(3, 1),
+            Rational::new(-1, 1),
+            "<mspace width=\"2em\" height=\"2em\" depth=\"1em\"/>",
+        );
+    }
+
+    #[test]
+    fn compact_accent_escapes_xml_special_operator_chars() {
+        let expr = MathExpr::inline(vec![MathNode::Accent {
+            base: Box::new(MathNode::Identifier("x".into())),
+            accent: '<',
+            position: AccentPosition::Below,
+            wide: false,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr);
+        let config = Config::default();
+        let output = MathmlWriter::write_compact(&compact, &config).unwrap();
+        assert!(output.contains("<mo>&lt;</mo>"), "compact output: {output}");
+        assert!(!output.contains("<mo><</mo>"), "compact output: {output}");
+    }
+
+    #[test]
+    fn compact_nary_escapes_xml_special_operator_chars() {
+        let expr = MathExpr::inline(vec![MathNode::Nary {
+            op: '<',
+            sub: Some(Box::new(MathNode::Number("0".into()))),
+            sup: None,
+            body: Box::new(MathNode::Identifier("x".into())),
+            limits: LimitStyle::SubSup,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr);
+        let config = Config::default();
+        let output = MathmlWriter::write_compact(&compact, &config).unwrap();
+        assert!(
+            output.contains("<mo movablelimits=\"true\">&lt;</mo>"),
+            "compact output: {output}"
+        );
+        assert!(!output.contains("><<"), "compact output: {output}");
+    }
+
+    #[test]
+    fn compact_boxed_style_escapes_attribute_values() {
+        let expr = MathExpr::inline(vec![MathNode::Boxed {
+            content: Box::new(MathNode::Identifier("x".into())),
+            bg_color: Some("red&blue\"".into()),
+            border_color: Some("black&white\"".into()),
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr);
+        let config = Config::default();
+        let output = MathmlWriter::write_compact(&compact, &config).unwrap();
+        assert!(
+            output.contains("black&amp;white&quot;"),
+            "compact output: {output}"
+        );
+        assert!(
+            output.contains("red&amp;blue&quot;"),
+            "compact output: {output}"
+        );
+        assert!(
+            !output.contains("black&white\""),
+            "compact output: {output}"
+        );
+    }
+
+    #[test]
+    fn compact_mathcolor_escapes_attribute_values() {
+        let mut arena = AstArena::new();
+        let color = arena.push_str("red&blue\"");
+        let x = arena.push_str("x");
+        let content = arena.push_node(CompactNode::Identifier(x));
+        let root = arena.push_node(CompactNode::Color { color, content });
+        let roots = arena.push_children(&[root]);
+        let compact = CompactExpr::new(arena, roots, DisplayStyle::Inline);
+        let config = Config::default();
+        let output = MathmlWriter::write_compact(&compact, &config).unwrap();
+        assert!(
+            output.contains("mathcolor=\"red&amp;blue&quot;\""),
+            "compact output: {output}"
+        );
+        assert!(
+            !output.contains("mathcolor=\"red&blue\"\""),
+            "compact output: {output}"
+        );
     }
 }

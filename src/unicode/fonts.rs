@@ -413,12 +413,24 @@ mod tests {
     #[test]
     fn bold_italic_greek() {
         // α (U+03B1) → bold italic alpha U+1D736
-        assert_eq!(styled_char('\u{03B1}', TextStyle::BoldItalic), Some('\u{1D736}'));
+        assert_eq!(
+            styled_char('\u{03B1}', TextStyle::BoldItalic),
+            Some('\u{1D736}')
+        );
         // Α (U+0391) → bold italic Alpha U+1D71C
-        assert_eq!(styled_char('\u{0391}', TextStyle::BoldItalic), Some('\u{1D71C}'));
+        assert_eq!(
+            styled_char('\u{0391}', TextStyle::BoldItalic),
+            Some('\u{1D71C}')
+        );
         // Σ (U+03A3) → bold italic Sigma U+1D72E
-        assert_eq!(styled_char('\u{03A3}', TextStyle::BoldItalic), Some('\u{1D72E}'));
+        assert_eq!(
+            styled_char('\u{03A3}', TextStyle::BoldItalic),
+            Some('\u{1D72E}')
+        );
         // ω (U+03C9) → bold italic omega U+1D74E
-        assert_eq!(styled_char('\u{03C9}', TextStyle::BoldItalic), Some('\u{1D74E}'));
+        assert_eq!(
+            styled_char('\u{03C9}', TextStyle::BoldItalic),
+            Some('\u{1D74E}')
+        );
     }
 }

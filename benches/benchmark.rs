@@ -303,7 +303,7 @@ fn count_arena_nodes(expr: &CompactExpr) -> usize {
             } => {
                 n += count_span(arena, col_aligns) + count_span(arena, cells);
             },
-            CompactNode::Phantom(inner) | CompactNode::Boxed { content: inner, .. } => {
+            CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => {
                 n += count_node(arena, inner);
             },
             CompactNode::Cancel { content, .. } | CompactNode::Scaled { content, .. } => {
@@ -348,5 +348,32 @@ criterion_group!(
     bench_write_compact_vs_legacy,
     bench_ast_traversal,
     bench_arena_memory,
+    bench_render_svg,
 );
 criterion_main!(benches);
+
+#[cfg(feature = "render")]
+fn bench_render_svg(c: &mut Criterion) {
+    let config = Config::default();
+    let options = mathema::render::RenderOptions::default();
+    let simple_ast = LatexReader::parse(SIMPLE, &config).unwrap().expr;
+    let quad_ast = LatexReader::parse(QUADRATIC, &config).unwrap().expr;
+    let sum_ast = LatexReader::parse(SUM, &config).unwrap().expr;
+
+    let mut group = c.benchmark_group("render_svg");
+    group.bench_function("simple", |b| {
+        b.iter(|| mathema::render::render_to_svg(black_box(&simple_ast), &options))
+    });
+    group.bench_function("quadratic", |b| {
+        b.iter(|| mathema::render::render_to_svg(black_box(&quad_ast), &options))
+    });
+    group.bench_function("sum", |b| {
+        b.iter(|| mathema::render::render_to_svg(black_box(&sum_ast), &options))
+    });
+    group.finish();
+}
+
+#[cfg(not(feature = "render"))]
+fn bench_render_svg(_c: &mut Criterion) {
+    // no-op without render feature
+}

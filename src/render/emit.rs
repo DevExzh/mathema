@@ -1,5 +1,5 @@
 /// SVG emission: converts a LayoutBox tree into an SVG string.
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 use std::fmt::Write;
 
 use super::RenderOptions;
@@ -8,10 +8,10 @@ use super::layout::{BoxKind, LayoutBox};
 /// Wrapper that escapes a string for safe use in XML/SVG attributes.
 /// Prevents attribute injection via `"`, `<`, `>`, `&`, `'` in user-controlled values.
 /// Used by `svg_writer.rs` (font-embed feature).
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 pub(crate) struct XmlAttrEscape<'a>(pub(crate) &'a str);
 
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 impl std::fmt::Display for XmlAttrEscape<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for ch in self.0.chars() {
@@ -34,7 +34,10 @@ impl std::fmt::Display for XmlAttrEscape<'_> {
 #[inline]
 fn push_xml_escaped(out: &mut String, s: &str) {
     // Fast path: if the string contains no special chars, push it directly
-    if !s.bytes().any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\'')) {
+    if !s
+        .bytes()
+        .any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\''))
+    {
         out.push_str(s);
         return;
     }
@@ -60,15 +63,17 @@ fn push_f3(out: &mut String, v: f64) {
         return;
     }
 
-    // Handle negative
-    if v < 0.0 {
+    // Handle negative inline (no recursion)
+    let v = if v < 0.0 {
         out.push('-');
-        push_f3(out, -v);
-        return;
-    }
+        -v
+    } else {
+        v
+    };
 
-    // Multiply by 1000, round, then split into integer and fractional parts
-    let scaled = (v * 1000.0).round() as u64;
+    // Multiply by 1000, round, then split into integer and fractional parts.
+    // Clamp to prevent overflow when casting to u64 (v > ~1.8e16 would overflow).
+    let scaled = (v * 1000.0).round().min(u64::MAX as f64) as u64;
     let integer_part = scaled / 1000;
     let frac_part = (scaled % 1000) as u32;
 
@@ -112,45 +117,171 @@ fn push_u32(out: &mut String, n: u32) {
 
 /// Pre-escaped SVG attribute strings cached from RenderOptions.
 /// Avoids re-escaping on every element emission.
-struct EscapedAttrs {
-    font_family: String,
+struct EscapedAttrs<'a> {
+    font_family: &'a str,
     fg_color: String,
 }
 
-impl EscapedAttrs {
-    fn new(options: &RenderOptions) -> Self {
-        let mut font_family = String::with_capacity(options.font_family.len() + 4);
-        push_xml_escaped(&mut font_family, &options.font_family);
-        let mut fg_color = String::with_capacity(options.fg_color.len() + 4);
-        push_xml_escaped(&mut fg_color, &options.fg_color);
-        Self {
-            font_family,
-            fg_color,
-        }
+#[inline]
+fn svg_italic_char(ch: char, italic: bool) -> (char, bool) {
+    if !italic {
+        return (ch, false);
+    }
+    if let Some(mapped) = super::layout::math_italic_codepoint(ch) {
+        (mapped, false)
+    } else {
+        (ch, true)
+    }
+}
+
+fn svg_text_run(text: &str, italic: bool) -> (String, bool) {
+    if !italic {
+        return (text.to_string(), false);
+    }
+
+    let mut mapped = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let Some(mapped_ch) = super::layout::math_italic_codepoint(ch) else {
+            return (text.to_string(), true);
+        };
+        mapped.push(mapped_ch);
+    }
+    (mapped, false)
+}
+
+/// Return `(view_box_left_px, content_width_px)` for visible horizontal SVG content.
+pub(crate) fn svg_x_bounds_px(root: &LayoutBox, em: f64) -> (f64, f64) {
+    let (min_x, max_x) = compute_x_bounds(root, 0.0);
+    x_bounds_to_px(root.width, min_x, max_x, em)
+}
+
+/// Return `(view_box_left_px, content_width_px)` for visible arena SVG content.
+pub(crate) fn svg_x_bounds_px_arena(arena: &LayoutArena, root: LayoutBoxId, em: f64) -> (f64, f64) {
+    let root_box = arena.get(root);
+    let (min_x, max_x) = compute_x_bounds_arena(arena, root, 0.0);
+    x_bounds_to_px(root_box.width, min_x, max_x, em)
+}
+
+fn x_bounds_to_px(declared_width: f64, min_x: f64, max_x: f64, em: f64) -> (f64, f64) {
+    let left = if min_x.is_finite() {
+        min_x.min(0.0)
+    } else {
+        0.0
+    };
+    let right = if max_x.is_finite() {
+        declared_width.max(max_x)
+    } else {
+        declared_width
+    };
+    let width = (right - left).max(0.0);
+    (left * em, width * em)
+}
+
+fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
+    match &layout.kind {
+        BoxKind::Glyph { .. }
+        | BoxKind::TextRun { .. }
+        | BoxKind::Rule { .. }
+        | BoxKind::Delimiter { .. }
+        | BoxKind::SvgPath(_) => (x, x + layout.width),
+
+        BoxKind::HBox { children } | BoxKind::VBox { children } => {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for child in children {
+                let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
+                lo = lo.min(cmin);
+                hi = hi.max(cmax);
+            }
+            if lo > hi {
+                (x, x + layout.width)
+            } else {
+                (lo, hi)
+            }
+        },
+
+        BoxKind::Color { child, .. } => compute_x_bounds(&child.layout, x + child.dx),
+
+        BoxKind::Boxed { child, .. } => {
+            let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
+            (cmin.min(x), cmax.max(x + layout.width))
+        },
+
+        BoxKind::Kern | BoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
+    }
+}
+
+fn compute_x_bounds_arena(arena: &LayoutArena, id: LayoutBoxId, x: f64) -> (f64, f64) {
+    let layout = arena.get(id);
+    match &layout.kind {
+        ArenaBoxKind::Glyph { .. }
+        | ArenaBoxKind::TextRun { .. }
+        | ArenaBoxKind::Rule { .. }
+        | ArenaBoxKind::Delimiter { .. }
+        | ArenaBoxKind::SvgPath(_) => (x, x + layout.width),
+
+        ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for child in arena.children(*children) {
+                let (cmin, cmax) = compute_x_bounds_arena(arena, child.id, x + child.dx);
+                lo = lo.min(cmin);
+                hi = hi.max(cmax);
+            }
+            if lo > hi {
+                (x, x + layout.width)
+            } else {
+                (lo, hi)
+            }
+        },
+
+        ArenaBoxKind::Color { child, .. } => compute_x_bounds_arena(arena, *child, x),
+
+        ArenaBoxKind::Boxed { child, padding, .. } => {
+            let (cmin, cmax) = compute_x_bounds_arena(arena, *child, x + padding);
+            (cmin.min(x), cmax.max(x + layout.width))
+        },
+
+        ArenaBoxKind::Kern | ArenaBoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
     }
 }
 
 /// Emit the final SVG string from a laid-out box tree.
 pub fn emit_svg(root: &LayoutBox, options: &RenderOptions) -> String {
     let em = options.font_size_px;
-    let width_px = root.width * em;
+    let (view_x_px, width_px) = svg_x_bounds_px(root, em);
     let height_px = (root.height + root.depth) * em;
     let depth_px = root.depth * em;
 
+    // Small padding around the viewBox so that paths (radical signs, accent
+    // strokes, delimiter curves) are not clipped at the exact bounding box edge.
+    let pad = 0.08 * em;
+
     let mut svg = String::with_capacity(4096);
-    let attrs = EscapedAttrs::new(options);
+    let mut font_family_escaped = String::with_capacity(options.font_family.len() + 4);
+    push_xml_escaped(&mut font_family_escaped, &options.font_family);
+    let mut fg_color_escaped = String::with_capacity(options.fg_color.len() + 4);
+    push_xml_escaped(&mut fg_color_escaped, &options.fg_color);
+    let attrs = EscapedAttrs {
+        font_family: &font_family_escaped,
+        fg_color: fg_color_escaped,
+    };
 
     // SVG header — use fast float formatter
     svg.push_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width=""#);
-    push_f3(&mut svg, width_px);
+    push_f3(&mut svg, width_px + 2.0 * pad);
     svg.push_str(r#"" height=""#);
-    push_f3(&mut svg, height_px);
-    svg.push_str(r#"" viewBox="0 0 "#);
-    push_f3(&mut svg, width_px);
+    push_f3(&mut svg, height_px + 2.0 * pad);
+    svg.push_str(r#"" viewBox=""#);
+    push_f3(&mut svg, view_x_px - pad);
     svg.push(' ');
-    push_f3(&mut svg, height_px);
+    push_f3(&mut svg, -pad);
+    svg.push(' ');
+    push_f3(&mut svg, width_px + 2.0 * pad);
+    svg.push(' ');
+    push_f3(&mut svg, height_px + 2.0 * pad);
     svg.push_str(r#"" style="vertical-align: "#);
-    push_f3(&mut svg, -depth_px);
+    push_f3(&mut svg, -(depth_px + pad));
     svg.push_str(r#"px">"#);
 
     // Render content
@@ -168,10 +299,11 @@ fn emit_box(
     x: f64,
     y: f64,
     em: f64,
-    attrs: &EscapedAttrs,
+    attrs: &EscapedAttrs<'_>,
 ) {
     match &layout.kind {
         BoxKind::Glyph { ch, size, italic } => {
+            let (render_ch, emit_italic_style) = svg_italic_char(*ch, *italic);
             let font_size = em * size;
             // Build <text> element with fast formatting and pre-escaped attributes
             svg.push_str(r#"<text x=""#);
@@ -181,18 +313,24 @@ fn emit_box(
             svg.push_str(r#"" font-size=""#);
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
-            svg.push_str(&attrs.font_family);
-            if *italic {
+            svg.push_str(attrs.font_family);
+            if emit_italic_style {
                 svg.push_str(r#"" font-style="italic"#);
             }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
             svg.push_str(r#"">"#);
-            write_escaped_char(svg, *ch);
+            write_escaped_char(svg, render_ch);
             svg.push_str("</text>");
         },
 
-        BoxKind::TextRun { text, size, italic, text_style } => {
+        BoxKind::TextRun {
+            text,
+            size,
+            italic,
+            text_style,
+        } => {
+            let (render_text, emit_italic_style) = svg_text_run(text, *italic);
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -202,26 +340,41 @@ fn emit_box(
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
             match text_style {
-                Some(crate::ast::TextStyle::SansSerif | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifItalic | crate::ast::TextStyle::SansSerifBoldItalic) => {
+                Some(
+                    crate::ast::TextStyle::SansSerif
+                    | crate::ast::TextStyle::SansSerifBold
+                    | crate::ast::TextStyle::SansSerifItalic
+                    | crate::ast::TextStyle::SansSerifBoldItalic,
+                ) => {
                     svg.push_str("sans-serif");
-                }
+                },
                 Some(crate::ast::TextStyle::Monospace) => {
                     svg.push_str("monospace");
-                }
+                },
                 _ => {
-                    svg.push_str(&attrs.font_family);
-                }
+                    svg.push_str(attrs.font_family);
+                },
             }
-            if *italic {
+            if emit_italic_style {
                 svg.push_str(r#"" font-style="italic"#);
             }
-            if matches!(text_style, Some(crate::ast::TextStyle::Bold | crate::ast::TextStyle::BoldItalic | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifBoldItalic | crate::ast::TextStyle::BoldScript | crate::ast::TextStyle::BoldFraktur)) {
-                    svg.push_str(r#"" font-weight="bold"#);
+            if matches!(
+                text_style,
+                Some(
+                    crate::ast::TextStyle::Bold
+                        | crate::ast::TextStyle::BoldItalic
+                        | crate::ast::TextStyle::SansSerifBold
+                        | crate::ast::TextStyle::SansSerifBoldItalic
+                        | crate::ast::TextStyle::BoldScript
+                        | crate::ast::TextStyle::BoldFraktur
+                )
+            ) {
+                svg.push_str(r#"" font-weight="bold"#);
             }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
             svg.push_str(r#"">"#);
-            push_xml_escaped(svg, text);
+            push_xml_escaped(svg, &render_text);
             svg.push_str("</text>");
         },
 
@@ -245,8 +398,7 @@ fn emit_box(
         BoxKind::Rule { thickness } => {
             let th_px = thickness * em;
             let w_px = layout.width * em;
-            // Center the rule vertically at the given y
-            let ry = y - th_px / 2.0;
+            let ry = y - layout.height * em;
             svg.push_str(r#"<rect x=""#);
             push_f3(svg, x);
             svg.push_str(r#"" y=""#);
@@ -289,7 +441,9 @@ fn emit_box(
                     svg.push_str(&attrs.fg_color);
                     svg.push_str(r#"" stroke-width=""#);
                     push_f3(svg, dp.stroke_width);
-                    svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+                    svg.push_str(
+                        r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
+                    );
                 }
             } else {
                 // Fallback: text element with font-size scaling
@@ -301,7 +455,7 @@ fn emit_box(
                 svg.push_str(r#"" font-size=""#);
                 push_f3(svg, font_size);
                 svg.push_str(r#"" font-family=""#);
-                svg.push_str(&attrs.font_family);
+                svg.push_str(attrs.font_family);
                 svg.push_str(r#"" fill=""#);
                 svg.push_str(&attrs.fg_color);
                 svg.push_str(r#"">"#);
@@ -344,7 +498,7 @@ fn emit_box(
             // modified attrs (so elements that emit explicit fill= use the
             // correct color instead of "currentColor").
             let color_attrs = EscapedAttrs {
-                font_family: attrs.font_family.clone(),
+                font_family: attrs.font_family,
                 fg_color: {
                     let mut c = String::new();
                     push_xml_escaped(&mut c, color);
@@ -366,7 +520,12 @@ fn emit_box(
             // Invisible — takes space but doesn't render
         },
 
-        BoxKind::Boxed { child, padding: _, bg_color, border_color } => {
+        BoxKind::Boxed {
+            child,
+            padding: _,
+            bg_color,
+            border_color,
+        } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
@@ -392,7 +551,10 @@ fn emit_box(
             } else {
                 svg.push_str("none");
             }
-            svg.push_str(r#"" stroke-width="1"/>"#);
+            svg.push_str(r#"" stroke-width=""#);
+            // Proportional to font size (≈rule_thickness ≈ 0.04em)
+            push_f3(svg, 0.04 * em);
+            svg.push_str(r#""/>"#);
 
             // Content
             let cx = x + child.dx * em;
@@ -408,31 +570,39 @@ use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
 
 /// Emit the final SVG string from an arena-based layout.
 /// Produces byte-identical output to `emit_svg` for the same expression.
-pub fn emit_svg_arena(
-    arena: &LayoutArena,
-    root: LayoutBoxId,
-    options: &RenderOptions,
-) -> String {
+pub fn emit_svg_arena(arena: &LayoutArena, root: LayoutBoxId, options: &RenderOptions) -> String {
     let root_box = arena.get(root);
     let em = options.font_size_px;
-    let width_px = root_box.width * em;
+    let (view_x_px, width_px) = svg_x_bounds_px_arena(arena, root, em);
     let height_px = (root_box.height + root_box.depth) * em;
     let depth_px = root_box.depth * em;
 
     let mut svg = String::with_capacity(4096);
-    let attrs = EscapedAttrs::new(options);
+    let mut font_family_escaped = String::with_capacity(options.font_family.len() + 4);
+    push_xml_escaped(&mut font_family_escaped, &options.font_family);
+    let mut fg_color_escaped = String::with_capacity(options.fg_color.len() + 4);
+    push_xml_escaped(&mut fg_color_escaped, &options.fg_color);
+    let attrs = EscapedAttrs {
+        font_family: &font_family_escaped,
+        fg_color: fg_color_escaped,
+    };
 
     // SVG header — identical format to emit_svg
+    let pad = 0.08 * em;
     svg.push_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width=""#);
-    push_f3(&mut svg, width_px);
+    push_f3(&mut svg, width_px + 2.0 * pad);
     svg.push_str(r#"" height=""#);
-    push_f3(&mut svg, height_px);
-    svg.push_str(r#"" viewBox="0 0 "#);
-    push_f3(&mut svg, width_px);
+    push_f3(&mut svg, height_px + 2.0 * pad);
+    svg.push_str(r#"" viewBox=""#);
+    push_f3(&mut svg, view_x_px - pad);
     svg.push(' ');
-    push_f3(&mut svg, height_px);
+    push_f3(&mut svg, -pad);
+    svg.push(' ');
+    push_f3(&mut svg, width_px + 2.0 * pad);
+    svg.push(' ');
+    push_f3(&mut svg, height_px + 2.0 * pad);
     svg.push_str(r#"" style="vertical-align: "#);
-    push_f3(&mut svg, -depth_px);
+    push_f3(&mut svg, -(depth_px + pad));
     svg.push_str(r#"px">"#);
 
     // Render content
@@ -450,11 +620,12 @@ fn emit_box_arena(
     x: f64,
     y: f64,
     em: f64,
-    attrs: &EscapedAttrs,
+    attrs: &EscapedAttrs<'_>,
 ) {
     let layout = arena.get(id);
     match &layout.kind {
         ArenaBoxKind::Glyph { ch, size, italic } => {
+            let (render_ch, emit_italic_style) = svg_italic_char(*ch, *italic);
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -463,18 +634,24 @@ fn emit_box_arena(
             svg.push_str(r#"" font-size=""#);
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
-            svg.push_str(&attrs.font_family);
-            if *italic {
+            svg.push_str(attrs.font_family);
+            if emit_italic_style {
                 svg.push_str(r#"" font-style="italic"#);
             }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
             svg.push_str(r#"">"#);
-            write_escaped_char(svg, *ch);
+            write_escaped_char(svg, render_ch);
             svg.push_str("</text>");
         },
 
-        ArenaBoxKind::TextRun { text, size, italic, text_style } => {
+        ArenaBoxKind::TextRun {
+            text,
+            size,
+            italic,
+            text_style,
+        } => {
+            let (render_text, emit_italic_style) = svg_text_run(text, *italic);
             let font_size = em * size;
             svg.push_str(r#"<text x=""#);
             push_f3(svg, x);
@@ -484,26 +661,41 @@ fn emit_box_arena(
             push_f3(svg, font_size);
             svg.push_str(r#"" font-family=""#);
             match text_style {
-                Some(crate::ast::TextStyle::SansSerif | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifItalic | crate::ast::TextStyle::SansSerifBoldItalic) => {
+                Some(
+                    crate::ast::TextStyle::SansSerif
+                    | crate::ast::TextStyle::SansSerifBold
+                    | crate::ast::TextStyle::SansSerifItalic
+                    | crate::ast::TextStyle::SansSerifBoldItalic,
+                ) => {
                     svg.push_str("sans-serif");
-                }
+                },
                 Some(crate::ast::TextStyle::Monospace) => {
                     svg.push_str("monospace");
-                }
+                },
                 _ => {
-                    svg.push_str(&attrs.font_family);
-                }
+                    svg.push_str(attrs.font_family);
+                },
             }
-            if *italic {
+            if emit_italic_style {
                 svg.push_str(r#"" font-style="italic"#);
             }
-            if matches!(text_style, Some(crate::ast::TextStyle::Bold | crate::ast::TextStyle::BoldItalic | crate::ast::TextStyle::SansSerifBold | crate::ast::TextStyle::SansSerifBoldItalic | crate::ast::TextStyle::BoldScript | crate::ast::TextStyle::BoldFraktur)) {
-                    svg.push_str(r#"" font-weight="bold"#);
+            if matches!(
+                text_style,
+                Some(
+                    crate::ast::TextStyle::Bold
+                        | crate::ast::TextStyle::BoldItalic
+                        | crate::ast::TextStyle::SansSerifBold
+                        | crate::ast::TextStyle::SansSerifBoldItalic
+                        | crate::ast::TextStyle::BoldScript
+                        | crate::ast::TextStyle::BoldFraktur
+                )
+            ) {
+                svg.push_str(r#"" font-weight="bold"#);
             }
             svg.push_str(r#"" fill=""#);
             svg.push_str(&attrs.fg_color);
             svg.push_str(r#"">"#);
-            push_xml_escaped(svg, text);
+            push_xml_escaped(svg, &render_text);
             svg.push_str("</text>");
         },
 
@@ -526,7 +718,7 @@ fn emit_box_arena(
         ArenaBoxKind::Rule { thickness } => {
             let th_px = thickness * em;
             let w_px = layout.width * em;
-            let ry = y - th_px / 2.0;
+            let ry = y - layout.height * em;
             svg.push_str(r#"<rect x=""#);
             push_f3(svg, x);
             svg.push_str(r#"" y=""#);
@@ -569,7 +761,9 @@ fn emit_box_arena(
                     svg.push_str(&attrs.fg_color);
                     svg.push_str(r#"" stroke-width=""#);
                     push_f3(svg, dp.stroke_width);
-                    svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+                    svg.push_str(
+                        r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
+                    );
                 }
             } else {
                 // Fallback: text element with font-size scaling
@@ -581,7 +775,7 @@ fn emit_box_arena(
                 svg.push_str(r#"" font-size=""#);
                 push_f3(svg, font_size);
                 svg.push_str(r#"" font-family=""#);
-                svg.push_str(&attrs.font_family);
+                svg.push_str(attrs.font_family);
                 svg.push_str(r#"" fill=""#);
                 svg.push_str(&attrs.fg_color);
                 svg.push_str(r#"">"#);
@@ -617,7 +811,7 @@ fn emit_box_arena(
 
         ArenaBoxKind::Color { color, child } => {
             let color_attrs = EscapedAttrs {
-                font_family: attrs.font_family.clone(),
+                font_family: attrs.font_family,
                 fg_color: {
                     let mut c = String::new();
                     push_xml_escaped(&mut c, color);
@@ -638,7 +832,12 @@ fn emit_box_arena(
             // Invisible — takes space but doesn't render
         },
 
-        ArenaBoxKind::Boxed { child, padding, bg_color, border_color } => {
+        ArenaBoxKind::Boxed {
+            child,
+            padding,
+            bg_color,
+            border_color,
+        } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
@@ -664,7 +863,9 @@ fn emit_box_arena(
             } else {
                 svg.push_str("none");
             }
-            svg.push_str(r#"" stroke-width="1"/>"#);
+            svg.push_str(r#"" stroke-width=""#);
+            push_f3(svg, 0.04 * em);
+            svg.push_str(r#""/>"#);
 
             // Content — arena version stores child without position offset,
             // so we must apply padding here (heap version stored dx=padding in PositionedBox)
@@ -805,7 +1006,10 @@ mod tests {
             bg_color: Some("teal".into()),
             border_color: None,
         }]);
-        assert!(svg.contains("<rect"), "colorbox should contain rect element");
+        assert!(
+            svg.contains("<rect"),
+            "colorbox should contain rect element"
+        );
         assert!(
             svg.contains(r#"fill="teal""#),
             "colorbox should have fill=teal, got: {svg}"
@@ -819,7 +1023,10 @@ mod tests {
             bg_color: Some("red".into()),
             border_color: Some("blue".into()),
         }]);
-        assert!(svg.contains("<rect"), "fcolorbox should contain rect element");
+        assert!(
+            svg.contains("<rect"),
+            "fcolorbox should contain rect element"
+        );
         assert!(
             svg.contains(r#"fill="red""#),
             "fcolorbox should have fill=red, got: {svg}"
@@ -832,9 +1039,10 @@ mod tests {
 
     #[test]
     fn phantom_svg_no_visible_content() {
-        let svg = render(vec![MathNode::Phantom(Box::new(MathNode::Identifier(
-            "x".into(),
-        )))]);
+        let svg = render(vec![MathNode::Phantom(
+            Box::new(MathNode::Identifier("x".into())),
+            PhantomKind::Full,
+        )]);
         // Phantom should NOT contain any text elements for its content
         assert!(
             !svg.contains("<text"),
@@ -1063,7 +1271,8 @@ mod tests {
         let result = crate::reader::latex::LatexReader::parse_compact(
             "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}",
             &config,
-        ).unwrap();
+        )
+        .unwrap();
         let options = RenderOptions::default();
 
         let heap_root = layout_expr_c(&result.expr, MathStyle::Display, &options);
@@ -1111,5 +1320,20 @@ mod tests {
         buf.clear();
         push_f3(&mut buf, 0.0);
         assert_eq!(buf, "0.000");
+    }
+
+    #[test]
+    fn push_f3_large_values_no_overflow() {
+        // Values large enough to overflow u64 when multiplied by 1000
+        let mut buf = String::new();
+        push_f3(&mut buf, 1e16);
+        // Should produce a valid number, not corrupt output
+        let parsed: f64 = buf.parse().expect("should be a valid number");
+        assert!(parsed > 0.0, "should be positive");
+
+        buf.clear();
+        push_f3(&mut buf, 1e18);
+        let parsed: f64 = buf.parse().expect("should be a valid number");
+        assert!(parsed > 0.0, "should be positive");
     }
 }

@@ -228,19 +228,13 @@ impl<'a> OmmlCompactParser<'a> {
 
             "box" | "boxedFormula" => self.parse_child_id(name),
 
-            "borderBox" => {
-                let id = self.parse_child_id(name)?;
-                let empty = self.arena.push_str("");
-                Ok(self.arena.push_node(CompactNode::Boxed {
-                    content: id,
-                    bg_color: empty,
-                    border_color: empty,
-                }))
-            },
+            "borderBox" => self.parse_border_box(),
 
             "phant" => {
                 let id = self.parse_child_id(name)?;
-                Ok(self.arena.push_node(CompactNode::Phantom(id)))
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Phantom(id, PhantomKind::Full)))
             },
 
             "oMath" | "oMathPara" => {
@@ -800,9 +794,94 @@ impl<'a> OmmlCompactParser<'a> {
         Ok(top)
     }
 
+    fn parse_border_box(&mut self) -> Result<NodeId> {
+        let mut stroke = None;
+        let mut content = NodeId::NONE;
+        let tag = "borderBox";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = local_name(&e);
+                    match name.as_str() {
+                        "borderBoxPr" => stroke = self.parse_border_box_props()?,
+                        "e" => content = self.parse_child_id("e")?,
+                        _ => self.skip_element(&name)?,
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        if content == NodeId::NONE {
+            content = self.empty_row();
+        }
+        if let Some(stroke) = stroke {
+            Ok(self
+                .arena
+                .push_node(CompactNode::Cancel { stroke, content }))
+        } else {
+            let empty = self.arena.push_str("");
+            Ok(self.arena.push_node(CompactNode::Boxed {
+                content,
+                bg_color: empty,
+                border_color: empty,
+            }))
+        }
+    }
+
+    fn parse_border_box_props(&mut self) -> Result<Option<StrokeKind>> {
+        let mut bltr = false;
+        let mut tlbr = false;
+        let mut horizontal = false;
+        let mut vertical = false;
+        let tag = "borderBoxPr";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let name = local_name(&e);
+                    let enabled = omml_bool_attr(&e);
+                    match name.as_str() {
+                        "strikeBLTR" => bltr |= enabled,
+                        "strikeTLBR" => tlbr |= enabled,
+                        "strikeH" => horizontal |= enabled,
+                        "strikeV" => vertical |= enabled,
+                        _ => {},
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        let stroke = if bltr && tlbr {
+            Some(StrokeKind::Cross)
+        } else if bltr {
+            Some(StrokeKind::Forward)
+        } else if tlbr {
+            Some(StrokeKind::Backward)
+        } else if horizontal {
+            Some(StrokeKind::Horizontal)
+        } else if vertical {
+            Some(StrokeKind::Vertical)
+        } else {
+            None
+        };
+        Ok(stroke)
+    }
+
     fn parse_delimiter(&mut self) -> Result<NodeId> {
         let mut open = "(".to_string();
         let mut close = ")".to_string();
+        let mut separator = None;
         let mut elements: SmallVec<[NodeId; 8]> = SmallVec::new();
         let tag = "d";
         loop {
@@ -811,9 +890,10 @@ impl<'a> OmmlCompactParser<'a> {
                     let name = local_name(&e);
                     match name.as_str() {
                         "dPr" => {
-                            let (o, c) = self.parse_delimiter_props()?;
+                            let (o, c, sep) = self.parse_delimiter_props()?;
                             open = o;
                             close = c;
+                            separator = sep;
                         },
                         "e" => {
                             let id = self.parse_child_id("e")?;
@@ -831,7 +911,18 @@ impl<'a> OmmlCompactParser<'a> {
                 _ => continue,
             }
         }
-        let content = self.arena.push_children(&elements);
+
+        let mut content_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let sep_sid = separator.as_deref().map(|sep| self.arena.push_str(sep));
+        for (idx, &id) in elements.iter().enumerate() {
+            if idx > 0
+                && let Some(sid) = sep_sid
+            {
+                content_ids.push(self.arena.push_node(CompactNode::Middle(sid)));
+            }
+            content_ids.push(id);
+        }
+        let content = self.arena.push_children(&content_ids);
         let open_sid = self.arena.push_str(&open);
         let close_sid = self.arena.push_str(&close);
         Ok(self.arena.push_node(CompactNode::Fenced {
@@ -841,9 +932,10 @@ impl<'a> OmmlCompactParser<'a> {
         }))
     }
 
-    fn parse_delimiter_props(&mut self) -> Result<(String, String)> {
+    fn parse_delimiter_props(&mut self) -> Result<(String, String, Option<String>)> {
         let mut open = "(".to_string();
         let mut close = ")".to_string();
+        let mut separator = None;
         let tag = "dPr";
         loop {
             match self.reader.read_event() {
@@ -860,6 +952,11 @@ impl<'a> OmmlCompactParser<'a> {
                                 close = val;
                             }
                         },
+                        "sepChr" => {
+                            if let Some(val) = get_val_attr(&e) {
+                                separator = Some(val);
+                            }
+                        },
                         _ => {},
                     }
                 },
@@ -872,11 +969,12 @@ impl<'a> OmmlCompactParser<'a> {
                 _ => continue,
             }
         }
-        Ok((open, close))
+        Ok((open, close, separator))
     }
 
     fn parse_matrix(&mut self) -> Result<NodeId> {
         let mut rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::new();
+        let mut column_aligns = Vec::new();
         let tag = "m";
         loop {
             match self.reader.read_event() {
@@ -884,7 +982,7 @@ impl<'a> OmmlCompactParser<'a> {
                     let name = local_name(&e);
                     match name.as_str() {
                         "mr" => rows.push(self.parse_matrix_row()?),
-                        "mPr" => self.skip_element("mPr")?,
+                        "mPr" => column_aligns = self.parse_matrix_props()?,
                         _ => self.skip_element(&name)?,
                     }
                 },
@@ -897,15 +995,21 @@ impl<'a> OmmlCompactParser<'a> {
                 _ => continue,
             }
         }
-        let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
+        let ncols = rows
+            .iter()
+            .map(|row| row.len())
+            .max()
+            .unwrap_or(0)
+            .max(column_aligns.len());
         let num_cols = ncols.max(1) as u16;
 
         let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-        for _ in 0..ncols {
-            align_ids.push(
-                self.arena
-                    .push_node(CompactNode::ColAlign(ColumnAlign::Center)),
-            );
+        for idx in 0..ncols {
+            let align = column_aligns
+                .get(idx)
+                .copied()
+                .unwrap_or(ColumnAlign::Center);
+            align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
         }
         let col_aligns = self.arena.push_children(&align_ids);
 
@@ -927,7 +1031,124 @@ impl<'a> OmmlCompactParser<'a> {
             num_cols,
             arraystretch_pct: 100,
             add_jot: false,
+            col_seps: 0,
         }))
+    }
+
+    fn parse_matrix_props(&mut self) -> Result<Vec<ColumnAlign>> {
+        let mut columns = Vec::new();
+        let tag = "mPr";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = local_name(&e);
+                    match name.as_str() {
+                        "mcs" => columns = self.parse_matrix_columns()?,
+                        _ => self.skip_element(&name)?,
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        Ok(columns)
+    }
+
+    fn parse_matrix_columns(&mut self) -> Result<Vec<ColumnAlign>> {
+        let mut columns = Vec::new();
+        let tag = "mcs";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = local_name(&e);
+                    match name.as_str() {
+                        "mc" => {
+                            let (count, align) = self.parse_matrix_column()?;
+                            columns.extend(std::iter::repeat_n(align, count.max(1)));
+                        },
+                        _ => self.skip_element(&name)?,
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        Ok(columns)
+    }
+
+    fn parse_matrix_column(&mut self) -> Result<(usize, ColumnAlign)> {
+        let mut count = 1;
+        let mut align = ColumnAlign::Center;
+        let tag = "mc";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = local_name(&e);
+                    match name.as_str() {
+                        "mcPr" => {
+                            let props = self.parse_matrix_column_props()?;
+                            count = props.0;
+                            align = props.1;
+                        },
+                        _ => self.skip_element(&name)?,
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        Ok((count, align))
+    }
+
+    fn parse_matrix_column_props(&mut self) -> Result<(usize, ColumnAlign)> {
+        let mut count = 1;
+        let mut align = ColumnAlign::Center;
+        let tag = "mcPr";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let name = local_name(&e);
+                    match name.as_str() {
+                        "count" => {
+                            if let Some(val) = get_val_attr(&e)
+                                && let Ok(parsed) = val.parse::<usize>()
+                            {
+                                count = parsed;
+                            }
+                        },
+                        "mcJc" => {
+                            if let Some(val) = get_val_attr(&e) {
+                                align = parse_column_align(&val);
+                            }
+                        },
+                        _ => {},
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        Ok((count, align))
     }
 
     fn parse_matrix_row(&mut self) -> Result<Vec<SmallVec<[NodeId; 8]>>> {
@@ -1002,6 +1223,7 @@ impl<'a> OmmlCompactParser<'a> {
             num_cols,
             arraystretch_pct: 100,
             add_jot: false,
+            col_seps: 0,
         }))
     }
 
@@ -1308,7 +1530,15 @@ impl<'a> OmmlCompactParser<'a> {
             });
         }
         let sid = self.arena.push_str(text);
-        if style != TextStyle::Normal {
+        if text.chars().all(char::is_alphabetic) && style != TextStyle::Normal {
+            let inner = self.arena.push_node(CompactNode::Identifier(sid));
+            if style == TextStyle::Italic {
+                inner
+            } else {
+                let span = self.arena.push_children(&[inner]);
+                self.arena.push_node(CompactNode::Styled(style, span))
+            }
+        } else if style != TextStyle::Normal {
             let inner = self
                 .arena
                 .push_node(CompactNode::Text(TextStyle::Normal, sid));
@@ -1360,13 +1590,28 @@ fn local_name_end(e: &quick_xml::events::BytesEnd<'_>) -> String {
 }
 
 fn get_val_attr(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
-    e.attributes()
-        .flatten()
-        .find(|a| {
-            let key = a.key.as_ref();
-            key == b"m:val" || key == b"val" || key == b"w:val"
-        })
-        .map(|a| String::from_utf8_lossy(&a.value).to_string())
+    e.attributes().flatten().find_map(|a| {
+        if a.key.local_name().as_ref() == b"val" {
+            a.unescape_value().ok().map(|value| value.into_owned())
+        } else {
+            None
+        }
+    })
+}
+
+fn omml_bool_attr(e: &quick_xml::events::BytesStart<'_>) -> bool {
+    match get_val_attr(e).as_deref() {
+        Some("0" | "off" | "false") => false,
+        _ => true,
+    }
+}
+
+fn parse_column_align(value: &str) -> ColumnAlign {
+    match value {
+        "left" | "l" => ColumnAlign::Left,
+        "right" | "r" => ColumnAlign::Right,
+        _ => ColumnAlign::Center,
+    }
 }
 
 enum CharClass {
@@ -1499,6 +1744,104 @@ mod tests {
     }
 
     #[test]
+    fn delimiter_sep_chr_becomes_middle_item() {
+        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val="]"/><m:sepChr m:val=";"/></m:dPr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:d></m:oMath>"#;
+        let node = parse_one(input);
+        assert_eq!(
+            node,
+            MathNode::Fenced {
+                open: "[".into(),
+                close: "]".into(),
+                content: vec![
+                    FencedItem::Element(MathNode::Identifier("a".into())),
+                    FencedItem::Middle(";".into()),
+                    FencedItem::Element(MathNode::Identifier("b".into())),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn delimiter_props_accept_alternate_prefix_and_unescape_values() {
+        let input = r#"<q:oMath xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/math"><q:d><q:dPr><q:begChr q:val="&lt;"/><q:endChr q:val="&gt;"/><q:sepChr q:val="&amp;"/></q:dPr><q:e><q:r><q:t>a</q:t></q:r></q:e><q:e><q:r><q:t>b</q:t></q:r></q:e></q:d></q:oMath>"#;
+        let node = parse_one(input);
+        assert_eq!(
+            node,
+            MathNode::Fenced {
+                open: "<".into(),
+                close: ">".into(),
+                content: vec![
+                    FencedItem::Element(MathNode::Identifier("a".into())),
+                    FencedItem::Middle("&".into()),
+                    FencedItem::Element(MathNode::Identifier("b".into())),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn matrix_props_accept_alternate_value_prefix() {
+        let input = r#"<q:oMath xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/math"><q:m><q:mPr><q:mcs><q:mc><q:mcPr><q:count q:val="2"/><q:mcJc q:val="left"/></q:mcPr></q:mc></q:mcs></q:mPr><q:mr><q:e><q:r><q:t>a</q:t></q:r></q:e><q:e><q:r><q:t>b</q:t></q:r></q:e></q:mr></q:m></q:oMath>"#;
+        let node = parse_one(input);
+        match node {
+            MathNode::Array { columns, .. } => {
+                assert_eq!(columns, vec![ColumnAlign::Left, ColumnAlign::Left]);
+            },
+            other => panic!("expected matrix array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn disabled_strike_with_alternate_value_prefix_stays_boxed() {
+        let input = r#"<q:oMath xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/math"><q:borderBox><q:borderBoxPr><q:strikeBLTR q:val="0"/></q:borderBoxPr><q:e><q:r><q:t>x</q:t></q:r></q:e></q:borderBox></q:oMath>"#;
+        let node = parse_one(input);
+        assert!(matches!(node, MathNode::Boxed { .. }), "{node:?}");
+    }
+
+    #[test]
+    fn matrix_mcs_column_alignment_is_preserved() {
+        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:m><m:mPr><m:mcs><m:mc><m:mcPr><m:count m:val="1"/><m:mcJc m:val="left"/></m:mcPr></m:mc><m:mc><m:mcPr><m:count m:val="1"/><m:mcJc m:val="right"/></m:mcPr></m:mc></m:mcs></m:mPr><m:mr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:mr></m:m></m:oMath>"#;
+        let node = parse_one(input);
+        match node {
+            MathNode::Array { columns, .. } => {
+                assert_eq!(columns, vec![ColumnAlign::Left, ColumnAlign::Right]);
+            },
+            other => panic!("expected matrix array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn italic_multi_character_run_is_identifier() {
+        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:rPr><m:sty m:val="i"/></m:rPr><m:t>abc</m:t></m:r></m:oMath>"#;
+        let node = parse_one(input);
+        assert_eq!(node, MathNode::Identifier("abc".into()));
+    }
+
+    #[test]
+    fn border_box_strikes_become_cancel_strokes() {
+        let cases = [
+            ("strikeBLTR", StrokeKind::Forward),
+            ("strikeTLBR", StrokeKind::Backward),
+            ("strikeH", StrokeKind::Horizontal),
+            ("strikeV", StrokeKind::Vertical),
+        ];
+        for (strike, stroke) in cases {
+            let input = format!(
+                r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:borderBox><m:borderBoxPr><m:{strike} m:val="1"/></m:borderBoxPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:borderBox></m:oMath>"#
+            );
+            let node = parse_one(&input);
+            assert_eq!(
+                node,
+                MathNode::Cancel {
+                    stroke,
+                    content: Box::new(MathNode::Identifier("x".into())),
+                },
+                "{strike} should parse as {stroke:?} cancel"
+            );
+        }
+    }
+
+    #[test]
     fn accent() {
         let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:acc><m:accPr><m:chr m:val="̂"/></m:accPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:acc></m:oMath>"#;
         let node = parse_one(input);
@@ -1523,6 +1866,6 @@ mod tests {
     fn phantom() {
         let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:phant><m:e><m:r><m:t>x</m:t></m:r></m:e></m:phant></m:oMath>"#;
         let node = parse_one(input);
-        assert!(matches!(node, MathNode::Phantom(_)));
+        assert!(matches!(node, MathNode::Phantom(_, _)));
     }
 }

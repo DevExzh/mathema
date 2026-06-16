@@ -5,11 +5,11 @@ use thiserror::Error;
 pub mod exit {
     #[allow(dead_code)]
     pub const OK: i32 = 0;
-    pub const USAGE: i32 = 64;    // EX_USAGE
-    pub const DATAERR: i32 = 65;  // EX_DATAERR
-    pub const NOINPUT: i32 = 66;  // EX_NOINPUT
+    pub const USAGE: i32 = 64; // EX_USAGE
+    pub const DATAERR: i32 = 65; // EX_DATAERR
+    pub const NOINPUT: i32 = 66; // EX_NOINPUT
     pub const SOFTWARE: i32 = 70; // EX_SOFTWARE
-    pub const IOERR: i32 = 74;    // EX_IOERR
+    pub const IOERR: i32 = 74; // EX_IOERR
 }
 
 /// CLI-facing error type with rich diagnostics via `miette`.
@@ -115,7 +115,10 @@ mod tests {
 
     #[test]
     fn exit_code_file_not_found() {
-        assert_eq!(CliError::FileNotFound("f".into()).exit_code(), exit::NOINPUT);
+        assert_eq!(
+            CliError::FileNotFound("f".into()).exit_code(),
+            exit::NOINPUT
+        );
     }
 
     #[test]
@@ -143,7 +146,7 @@ mod tests {
         match cli_err {
             CliError::ParseWithSource { message, .. } => {
                 assert_eq!(message, "unexpected token");
-            }
+            },
             other => panic!("expected ParseWithSource, got {other:?}"),
         }
     }

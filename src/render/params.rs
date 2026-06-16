@@ -85,10 +85,12 @@ impl TexParams {
     #[must_use]
     pub fn for_size_class(idx: usize) -> Self {
         let i = idx.min(2);
+        // Prefer MATH table values over hardcoded CM fallbacks.
+        let mc = super::math_table::math_constants();
         Self {
-            axis_height: 0.250,
+            axis_height: mc.map_or(0.250, |c| c.axis_height),
             rule_thickness: XI_RULE[i],
-            x_height: 0.431,
+            x_height: mc.map_or(0.431, |c| c.accent_base_height),
             quad: SIGMA_QUAD[i],
             sup1: SIGMA_SUP1[i],
             sup2: SIGMA_SUP2[i],

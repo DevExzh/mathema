@@ -106,6 +106,34 @@ fn rt_subsup() {
 }
 
 #[test]
+fn latex_raisebox_roundtrip_preserves_command() {
+    let config = Config::default();
+    let parsed = LatexReader::parse(r"a\raisebox{1em}{b}", &config).unwrap();
+    let output = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert!(
+        output.contains(r"\raisebox{1em}{b}"),
+        "LaTeX writer should preserve raisebox shift, got: {output}"
+    );
+    assert_ne!(output, "ab", "raisebox must not serialize as plain content");
+}
+
+#[test]
+fn latex_raisebox_optional_extents_are_consumed() {
+    let config = Config::default();
+    let parsed = LatexReader::parse(r"\raisebox{1em}[2em][3em]{b}", &config).unwrap();
+    let output = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert_eq!(output, r"\raisebox{1em}[2em][3em]{b}");
+}
+
+#[test]
+fn latex_rule_roundtrip_preserves_dimensions() {
+    let config = Config::default();
+    let parsed = LatexReader::parse(r"\rule[1em]{2em}{3em}", &config).unwrap();
+    let output = LatexWriter::write(&parsed.expr, &config).unwrap();
+    assert_eq!(output, r"\rule[1em]{2em}{3em}");
+}
+
+#[test]
 fn rt_prime_as_superscript() {
     // f' should parse as f^{\prime}, which round-trips as f^{\prime}
     let config = Config::default();
@@ -655,6 +683,10 @@ fn latex_to_mtef_and_back() {
     let mtef = convert("\\frac{1}{2}", Format::LaTeX, Format::Mtef).unwrap();
     // MTEF output is hex-encoded
     assert!(mtef.chars().all(|c| c.is_ascii_hexdigit()));
+    assert!(
+        mtef.contains("03000b00"),
+        "MTEF fraction should use records5 tmFRACT selector 11, got: {mtef}"
+    );
     // Convert back
     let latex = convert(&mtef, Format::Mtef, Format::LaTeX).unwrap();
     assert!(latex.contains("\\frac"));
@@ -663,6 +695,10 @@ fn latex_to_mtef_and_back() {
 #[test]
 fn latex_to_mtef_sqrt() {
     let mtef = convert("\\sqrt{x}", Format::LaTeX, Format::Mtef).unwrap();
+    assert!(
+        mtef.contains("03000a00"),
+        "MTEF sqrt should use records5 tmROOT selector 10, got: {mtef}"
+    );
     let latex = convert(&mtef, Format::Mtef, Format::LaTeX).unwrap();
     assert!(latex.contains("\\sqrt"));
 }
@@ -670,8 +706,41 @@ fn latex_to_mtef_sqrt() {
 #[test]
 fn latex_to_mtef_superscript() {
     let mtef = convert("x^2", Format::LaTeX, Format::Mtef).unwrap();
+    assert!(
+        mtef.contains("03001c00"),
+        "MTEF superscript should use records5 tmSUP selector 28, got: {mtef}"
+    );
     let mathml = convert(&mtef, Format::Mtef, Format::MathML).unwrap();
     assert!(mathml.contains("<msup>"));
+}
+
+#[test]
+fn latex_to_mtef_xrightarrow_preserves_labels_and_uses_real_arrow_template() {
+    let top_only = convert("\\xrightarrow{f}", Format::LaTeX, Format::Mtef).unwrap();
+    assert!(
+        top_only.contains("03000e24"),
+        "MTEF xrightarrow should use tmARROW selector 14 with top/right variation, got: {top_only}"
+    );
+    assert!(
+        !top_only.contains("030013"),
+        "MTEF xrightarrow must not use invented selector 19 bytes, got: {top_only}"
+    );
+    let latex = convert(&top_only, Format::Mtef, Format::LaTeX).unwrap();
+    assert!(
+        latex.contains('f'),
+        "MTEF arrow template should preserve overscript label, got: {latex}"
+    );
+
+    let top_bottom = convert("\\xrightarrow[g]{f}", Format::LaTeX, Format::Mtef).unwrap();
+    assert!(
+        top_bottom.contains("03000e2c"),
+        "MTEF xrightarrow with labels should use tmARROW selector 14 with top/bottom/right variation, got: {top_bottom}"
+    );
+    let latex = convert(&top_bottom, Format::Mtef, Format::LaTeX).unwrap();
+    assert!(
+        latex.contains('f') && latex.contains('g'),
+        "MTEF arrow template should preserve both labels, got: {latex}"
+    );
 }
 
 #[test]

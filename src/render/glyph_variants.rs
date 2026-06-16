@@ -10,14 +10,11 @@
 //!
 //! This module currently implements (1) — pre-designed variant selection.
 
-// Functions and types in this module are infrastructure for upcoming glyph-variant
-// integration in the layout engine; suppress dead-code warnings until wired in.
-#![allow(dead_code)]
-
 use std::sync::LazyLock;
 
 /// A pre-designed glyph variant from the MATH table.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // fields used only when `raster` feature is enabled
 pub struct VariantGlyph {
     /// The glyph ID in the font (for use with fontdue's `rasterize_indexed`).
     pub glyph_id: u16,
@@ -25,15 +22,20 @@ pub struct VariantGlyph {
     pub advance_em: f64,
 }
 
-/// Parsed vertical glyph variants for all covered glyphs.
+/// Parsed vertical and horizontal glyph variants for all covered glyphs.
+#[allow(dead_code)] // used only when `raster` feature is enabled
 struct VariantTable {
     /// Map from base character to its sorted list of vertical variants
     /// (sorted by ascending advance_em).
     vertical: Vec<(char, Vec<VariantGlyph>)>,
+    /// Map from base character to its sorted list of horizontal variants
+    /// (sorted by ascending advance_em).
+    horizontal: Vec<(char, Vec<VariantGlyph>)>,
     /// The display_operator_min_height from the MATH constants, in em units.
     display_op_min_height: f64,
 }
 
+#[allow(dead_code)] // used by pub functions that are feature-gated consumers
 static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
     let font_bytes = super::FONT_DATA;
     let face = ttf_parser::Face::parse(font_bytes, 0).expect("embedded font data must be valid");
@@ -44,9 +46,10 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
         None => {
             return VariantTable {
                 vertical: Vec::new(),
+                horizontal: Vec::new(),
                 display_op_min_height: 0.0,
             };
-        }
+        },
     };
 
     let display_op_min_height = math
@@ -56,9 +59,10 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
         .unwrap_or(0.0);
 
     let mut vertical = Vec::new();
+    let mut horizontal = Vec::new();
 
     if let Some(ref variants) = math.variants {
-        // Iterate all cmap entries to find characters with vertical variants.
+        // Iterate all cmap entries to find characters with vertical/horizontal variants.
         if let Some(cmap) = face.tables().cmap.as_ref() {
             for subtable in cmap.subtables.into_iter() {
                 if !subtable.is_unicode() {
@@ -72,12 +76,12 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
                         return;
                     };
                     // Check if this glyph has vertical variants.
-                    if let Some(construction) =
-                        variants.vertical_constructions.get(gid)
-                    {
+                    if let Some(construction) = variants.vertical_constructions.get(gid) {
                         let mut glyph_variants = Vec::new();
                         for i in 0..construction.variants.len() {
-                            let v = construction.variants.get(i).unwrap();
+                            let Some(v) = construction.variants.get(i) else {
+                                continue;
+                            };
                             glyph_variants.push(VariantGlyph {
                                 glyph_id: v.variant_glyph.0,
                                 advance_em: v.advance_measurement as f64 / upem,
@@ -85,9 +89,25 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
                         }
                         if !glyph_variants.is_empty() {
                             // Sort by advance (should already be sorted per spec, but be safe).
-                            glyph_variants
-                                .sort_by(|a, b| a.advance_em.total_cmp(&b.advance_em));
+                            glyph_variants.sort_by(|a, b| a.advance_em.total_cmp(&b.advance_em));
                             vertical.push((ch, glyph_variants));
+                        }
+                    }
+                    // Check if this glyph has horizontal variants.
+                    if let Some(construction) = variants.horizontal_constructions.get(gid) {
+                        let mut glyph_variants = Vec::new();
+                        for i in 0..construction.variants.len() {
+                            let Some(v) = construction.variants.get(i) else {
+                                continue;
+                            };
+                            glyph_variants.push(VariantGlyph {
+                                glyph_id: v.variant_glyph.0,
+                                advance_em: v.advance_measurement as f64 / upem,
+                            });
+                        }
+                        if !glyph_variants.is_empty() {
+                            glyph_variants.sort_by(|a, b| a.advance_em.total_cmp(&b.advance_em));
+                            horizontal.push((ch, glyph_variants));
                         }
                     }
                 });
@@ -100,8 +120,12 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
     // Deduplicate (multiple cmap subtables may list the same character).
     vertical.dedup_by_key(|(ch, _)| *ch);
 
+    horizontal.sort_by_key(|(ch, _)| *ch);
+    horizontal.dedup_by_key(|(ch, _)| *ch);
+
     VariantTable {
         vertical,
+        horizontal,
         display_op_min_height,
     }
 });
@@ -112,6 +136,7 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
 /// available variant if none is large enough.
 ///
 /// Returns `None` if no variants exist for this character.
+#[allow(dead_code)] // called from raster.rs (feature-gated)
 pub fn select_vertical_variant(ch: char, target_height_em: f64) -> Option<VariantGlyph> {
     let table = &*VARIANT_TABLE;
     let idx = table.vertical.binary_search_by_key(&ch, |(c, _)| *c).ok()?;
@@ -136,6 +161,7 @@ pub fn select_vertical_variant(ch: char, target_height_em: f64) -> Option<Varian
 /// that meets the minimum height for display-mode operators.
 ///
 /// Returns `None` if no display variant exists.
+#[allow(dead_code)] // called from raster.rs (feature-gated)
 pub fn display_operator_variant(ch: char) -> Option<VariantGlyph> {
     let table = &*VARIANT_TABLE;
     if table.display_op_min_height <= 0.0 {
@@ -144,10 +170,66 @@ pub fn display_operator_variant(ch: char) -> Option<VariantGlyph> {
     select_vertical_variant(ch, table.display_op_min_height)
 }
 
+/// Select the best horizontal glyph variant for a character at the given target width.
+///
+/// Returns the smallest variant whose advance is >= `target_width_em`, or the largest
+/// available variant if none is wide enough.
+///
+/// Returns `None` if no horizontal variants exist for this character.
+#[allow(dead_code)]
+pub fn select_horizontal_variant(ch: char, target_width_em: f64) -> Option<VariantGlyph> {
+    let table = &*VARIANT_TABLE;
+    let idx = table
+        .horizontal
+        .binary_search_by_key(&ch, |(c, _)| *c)
+        .ok()?;
+    let variants = &table.horizontal[idx].1;
+    if variants.is_empty() {
+        return None;
+    }
+
+    // Find the smallest variant that meets the target width.
+    for v in variants {
+        if v.advance_em >= target_width_em {
+            return Some(*v);
+        }
+    }
+    // If no variant is wide enough, return the widest one.
+    variants.last().copied()
+}
+
 /// Get the display_operator_min_height from the MATH table, in em units.
 #[allow(dead_code)]
 pub fn display_operator_min_height() -> f64 {
     VARIANT_TABLE.display_op_min_height
+}
+
+/// Whether a character is a large (n-ary) operator that may have display-size
+/// MATH-table variants (∑, ∫, ∏, …). Shared by the raster and SVG emitters so
+/// both pick the same variant glyph for display-mode operators.
+#[inline]
+#[allow(dead_code)]
+pub fn is_large_op_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '∑' | '∏'
+            | '∐'
+            | '∫'
+            | '∬'
+            | '∭'
+            | '∮'
+            | '∯'
+            | '∰'
+            | '⋂'
+            | '⋃'
+            | '⋁'
+            | '⋀'
+            | '⨀'
+            | '⨁'
+            | '⨂'
+            | '⨄'
+            | '⨆'
+    )
 }
 
 /// Get all vertical variants for a character (for debugging/testing).
@@ -156,6 +238,17 @@ pub fn vertical_variants(ch: char) -> Option<Vec<VariantGlyph>> {
     let table = &*VARIANT_TABLE;
     let idx = table.vertical.binary_search_by_key(&ch, |(c, _)| *c).ok()?;
     Some(table.vertical[idx].1.clone())
+}
+
+/// Get all horizontal variants for a character (for debugging/testing).
+#[cfg(test)]
+pub fn horizontal_variants(ch: char) -> Option<Vec<VariantGlyph>> {
+    let table = &*VARIANT_TABLE;
+    let idx = table
+        .horizontal
+        .binary_search_by_key(&ch, |(c, _)| *c)
+        .ok()?;
+    Some(table.horizontal[idx].1.clone())
 }
 
 #[cfg(test)]
@@ -271,6 +364,47 @@ mod tests {
         assert!(
             vertical_variants('x').is_none(),
             "regular letters should not have vertical variants"
+        );
+    }
+
+    #[test]
+    fn horizontal_table_is_populated() {
+        let table = &*VARIANT_TABLE;
+        // Latin Modern Math should have horizontal variants for some glyphs
+        // (e.g., overbrace, underbrace, horizontal arrows).
+        eprintln!("horizontal variant entries: {}", table.horizontal.len());
+        // Dump which characters have horizontal variants for debugging.
+        for (ch, variants) in &table.horizontal {
+            eprintln!(
+                "  U+{:04X} '{}': {} variants",
+                *ch as u32,
+                ch,
+                variants.len()
+            );
+            // Also test the public lookup function
+            let _ = horizontal_variants(*ch);
+        }
+    }
+
+    #[test]
+    fn horizontal_variants_sorted() {
+        let table = &*VARIANT_TABLE;
+        for (ch, variants) in &table.horizontal {
+            for w in variants.windows(2) {
+                assert!(
+                    w[0].advance_em <= w[1].advance_em,
+                    "horizontal variants for U+{:04X} should be sorted by advance",
+                    *ch as u32
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn select_horizontal_variant_returns_none_for_missing() {
+        assert!(
+            select_horizontal_variant('x', 1.0).is_none(),
+            "regular letter x should have no horizontal variants"
         );
     }
 }

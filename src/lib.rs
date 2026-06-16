@@ -24,7 +24,7 @@ pub use error::{Config, Error, Format, ParseResult, Result, Strictness};
 pub use render::raster::{ImageFormat, RasterOptions, render_to_image};
 #[cfg(feature = "render")]
 pub use render::{RenderOptions, render_to_svg};
-#[cfg(feature = "font-embed")]
+#[cfg(feature = "render")]
 pub use render::{
     render_to_svg_standalone, render_to_svg_standalone_compact,
     render_to_svg_standalone_compact_arena,

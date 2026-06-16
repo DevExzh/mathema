@@ -7,20 +7,16 @@ use std::fmt::Write;
 
 use super::RenderOptions;
 use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
-use super::emit::{XmlAttrEscape, write_escaped_char};
+use super::emit::{XmlAttrEscape, svg_x_bounds_px, svg_x_bounds_px_arena, write_escaped_char};
 use super::layout::{BoxKind, LayoutBox};
 use super::subset::GlyphSet;
 
 // ── Heap-based emission ──────────────────────────────────────────────
 
 /// Emit SVG with embedded font paths from a heap-based layout tree.
-pub fn emit_svg_with_fonts(
-    root: &LayoutBox,
-    options: &RenderOptions,
-    glyphs: &GlyphSet,
-) -> String {
+pub fn emit_svg_with_fonts(root: &LayoutBox, options: &RenderOptions, glyphs: &GlyphSet) -> String {
     let em = options.font_size_px;
-    let width_px = root.width * em;
+    let (view_x_px, width_px) = svg_x_bounds_px(root, em);
     let height_px = (root.height + root.depth) * em;
     let depth_px = root.depth * em;
 
@@ -35,7 +31,7 @@ pub fn emit_svg_with_fonts(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3}" height="{h:.3}" viewBox="{vx:.3} {vy:.3} {w:.3} {h:.3}" style="vertical-align: -{d:.3}px">"#,
         w = width_px + 2.0 * pad,
         h = height_px + 2.0 * pad,
-        vx = -pad,
+        vx = view_x_px - pad,
         vy = -pad,
         d = depth_px + pad,
     );
@@ -69,7 +65,45 @@ fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
         );
     }
 
+    // MATH-table size variants (delimiters / large operators), keyed by glyph id.
+    let mut var_entries: Vec<_> = glyphs.variants.iter().collect();
+    var_entries.sort_by_key(|(id, _)| **id);
+    for (id, outline) in var_entries {
+        let _ = write!(
+            svg,
+            r#"<path id="vg{}" d="{}"/>"#,
+            *id,
+            XmlAttrEscape(&outline.path_data),
+        );
+    }
+
     svg.push_str("</defs>");
+}
+
+/// Emit a `<use>` referencing an embedded MATH-table variant glyph outline.
+///
+/// Matches `raster::draw_glyph_variant`: the variant outline (y-negated font
+/// units) is scaled by `font_size_px / units_per_em` and placed at the baseline
+/// `(x, y)`, so the standalone SVG and the PNG draw the identical glyph.
+fn emit_variant_glyph(
+    svg: &mut String,
+    glyph_id: u16,
+    font_size_px: f64,
+    x: f64,
+    y: f64,
+    upem: f64,
+    color: &str,
+) {
+    let scale = font_size_px / upem;
+    let _ = write!(
+        svg,
+        r##"<use href="#vg{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
+        id = glyph_id,
+        x = x,
+        y = y,
+        s = scale,
+        color = XmlAttrEscape(color),
+    );
 }
 
 fn emit_box_embedded(
@@ -83,10 +117,36 @@ fn emit_box_embedded(
 ) {
     match &layout.kind {
         BoxKind::Glyph { ch, size, italic } => {
+            // Display-size large operators (∑, ∫, …) use a designed MATH-table
+            // variant glyph when available, matching the raster backend.
+            if *size > 1.2
+                && super::glyph_variants::is_large_op_char(*ch)
+                && let Some(v) = super::glyph_variants::display_operator_variant(*ch)
+                && glyphs.variants.contains_key(&v.glyph_id)
+            {
+                let target_px = em * size;
+                let fs = if v.advance_em > 0.01 {
+                    target_px / v.advance_em
+                } else {
+                    target_px
+                };
+                emit_variant_glyph(
+                    svg,
+                    v.glyph_id,
+                    fs,
+                    x,
+                    y,
+                    glyphs.font_info.units_per_em,
+                    &options.fg_color,
+                );
+                return;
+            }
             emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
-        }
+        },
 
-        BoxKind::TextRun { text, size, italic, .. } => {
+        BoxKind::TextRun {
+            text, size, italic, ..
+        } => {
             // For font-embed, we still need per-character glyph paths
             let mut cx = x;
             for ch in text.chars() {
@@ -100,7 +160,7 @@ fn emit_box_embedded(
                 };
                 cx += m.width * size * em;
             }
-        }
+        },
 
         BoxKind::HBox { children } => {
             for child in children {
@@ -108,7 +168,7 @@ fn emit_box_embedded(
                 let cy = y - child.dy * em;
                 emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
             }
-        }
+        },
 
         BoxKind::VBox { children } => {
             for child in children {
@@ -116,12 +176,12 @@ fn emit_box_embedded(
                 let cy = y - child.dy * em;
                 emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
             }
-        }
+        },
 
         BoxKind::Rule { thickness } => {
             let th_px = thickness * em;
             let w_px = layout.width * em;
-            let ry = y - th_px / 2.0;
+            let ry = y - layout.height * em;
             let _ = write!(
                 svg,
                 r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
@@ -131,11 +191,32 @@ fn emit_box_embedded(
                 h = th_px,
                 color = XmlAttrEscape(&options.fg_color),
             );
-        }
+        },
 
-        BoxKind::Kern => {}
+        BoxKind::Kern => {},
 
         BoxKind::Delimiter { ch, target_height } => {
+            // Prefer a MATH-table variant glyph (matches the raster backend).
+            if let Some(v) = super::glyph_variants::select_vertical_variant(*ch, *target_height)
+                && glyphs.variants.contains_key(&v.glyph_id)
+            {
+                let target_px = target_height * em;
+                let fs = if v.advance_em > 0.01 {
+                    target_px / v.advance_em
+                } else {
+                    em
+                };
+                emit_variant_glyph(
+                    svg,
+                    v.glyph_id,
+                    fs,
+                    x,
+                    y,
+                    glyphs.font_info.units_per_em,
+                    &options.fg_color,
+                );
+                return;
+            }
             // Use SVG path for tall delimiters
             if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
                 let tx = x;
@@ -167,7 +248,7 @@ fn emit_box_embedded(
                 // Fallback to glyph rendering
                 emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
             }
-        }
+        },
 
         BoxKind::SvgPath(path) => {
             let tx = x;
@@ -194,7 +275,7 @@ fn emit_box_embedded(
                     color = XmlAttrEscape(&options.fg_color),
                 );
             }
-        }
+        },
 
         BoxKind::Color { color, child } => {
             let mut color_opts = options.clone();
@@ -202,11 +283,16 @@ fn emit_box_embedded(
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box_embedded(svg, &child.layout, cx, cy, em, &color_opts, glyphs);
-        }
+        },
 
-        BoxKind::Phantom => {}
+        BoxKind::Phantom => {},
 
-        BoxKind::Boxed { child, padding: _, bg_color, border_color } => {
+        BoxKind::Boxed {
+            child,
+            padding: _,
+            bg_color,
+            border_color,
+        } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
@@ -227,7 +313,7 @@ fn emit_box_embedded(
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
-        }
+        },
     }
 }
 
@@ -326,7 +412,7 @@ pub fn emit_svg_with_fonts_arena(
 ) -> String {
     let root_box = arena.get(root);
     let em = options.font_size_px;
-    let width_px = root_box.width * em;
+    let (view_x_px, width_px) = svg_x_bounds_px_arena(arena, root, em);
     let height_px = (root_box.height + root_box.depth) * em;
     let depth_px = root_box.depth * em;
 
@@ -341,7 +427,7 @@ pub fn emit_svg_with_fonts_arena(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3}" height="{h:.3}" viewBox="{vx:.3} {vy:.3} {w:.3} {h:.3}" style="vertical-align: -{d:.3}px">"#,
         w = width_px + 2.0 * pad,
         h = height_px + 2.0 * pad,
-        vx = -pad,
+        vx = view_x_px - pad,
         vy = -pad,
         d = depth_px + pad,
     );
@@ -369,10 +455,34 @@ fn emit_box_arena_embedded(
     let layout = arena.get(id);
     match &layout.kind {
         ArenaBoxKind::Glyph { ch, size, italic } => {
+            if *size > 1.2
+                && super::glyph_variants::is_large_op_char(*ch)
+                && let Some(v) = super::glyph_variants::display_operator_variant(*ch)
+                && glyphs.variants.contains_key(&v.glyph_id)
+            {
+                let target_px = em * size;
+                let fs = if v.advance_em > 0.01 {
+                    target_px / v.advance_em
+                } else {
+                    target_px
+                };
+                emit_variant_glyph(
+                    svg,
+                    v.glyph_id,
+                    fs,
+                    x,
+                    y,
+                    glyphs.font_info.units_per_em,
+                    &options.fg_color,
+                );
+                return;
+            }
             emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
-        }
+        },
 
-        ArenaBoxKind::TextRun { text, size, italic, .. } => {
+        ArenaBoxKind::TextRun {
+            text, size, italic, ..
+        } => {
             // For font-embed, we still need per-character glyph paths
             let mut cx = x;
             for ch in text.chars() {
@@ -386,7 +496,7 @@ fn emit_box_arena_embedded(
                 };
                 cx += m.width * size * em;
             }
-        }
+        },
 
         ArenaBoxKind::HBox { children } => {
             for child in arena.children(*children) {
@@ -394,7 +504,7 @@ fn emit_box_arena_embedded(
                 let cy = y - child.dy * em;
                 emit_box_arena_embedded(svg, arena, child.id, cx, cy, em, options, glyphs);
             }
-        }
+        },
 
         ArenaBoxKind::VBox { children } => {
             for child in arena.children(*children) {
@@ -402,12 +512,12 @@ fn emit_box_arena_embedded(
                 let cy = y - child.dy * em;
                 emit_box_arena_embedded(svg, arena, child.id, cx, cy, em, options, glyphs);
             }
-        }
+        },
 
         ArenaBoxKind::Rule { thickness } => {
             let th_px = thickness * em;
             let w_px = layout.width * em;
-            let ry = y - th_px / 2.0;
+            let ry = y - layout.height * em;
             let _ = write!(
                 svg,
                 r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
@@ -417,11 +527,32 @@ fn emit_box_arena_embedded(
                 h = th_px,
                 color = XmlAttrEscape(&options.fg_color),
             );
-        }
+        },
 
-        ArenaBoxKind::Kern => {}
+        ArenaBoxKind::Kern => {},
 
         ArenaBoxKind::Delimiter { ch, target_height } => {
+            // Prefer a MATH-table variant glyph (matches the raster backend).
+            if let Some(v) = super::glyph_variants::select_vertical_variant(*ch, *target_height)
+                && glyphs.variants.contains_key(&v.glyph_id)
+            {
+                let target_px = target_height * em;
+                let fs = if v.advance_em > 0.01 {
+                    target_px / v.advance_em
+                } else {
+                    em
+                };
+                emit_variant_glyph(
+                    svg,
+                    v.glyph_id,
+                    fs,
+                    x,
+                    y,
+                    glyphs.font_info.units_per_em,
+                    &options.fg_color,
+                );
+                return;
+            }
             // Use SVG path for tall delimiters
             if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
                 let tx = x;
@@ -453,7 +584,7 @@ fn emit_box_arena_embedded(
                 // Fallback to glyph rendering
                 emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
             }
-        }
+        },
 
         ArenaBoxKind::SvgPath(path) => {
             let tx = x;
@@ -480,17 +611,22 @@ fn emit_box_arena_embedded(
                     color = XmlAttrEscape(&options.fg_color),
                 );
             }
-        }
+        },
 
         ArenaBoxKind::Color { color, child } => {
             let mut color_opts = options.clone();
             color_opts.fg_color = color.clone();
             emit_box_arena_embedded(svg, arena, *child, x, y, em, &color_opts, glyphs);
-        }
+        },
 
-        ArenaBoxKind::Phantom => {}
+        ArenaBoxKind::Phantom => {},
 
-        ArenaBoxKind::Boxed { child, padding, bg_color, border_color } => {
+        ArenaBoxKind::Boxed {
+            child,
+            padding,
+            bg_color,
+            border_color,
+        } => {
             let w_px = layout.width * em;
             let h_px = (layout.height + layout.depth) * em;
             let ry = y - layout.height * em;
@@ -509,7 +645,7 @@ fn emit_box_arena_embedded(
                 sw = sw,
             );
             emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
-        }
+        },
     }
 }
 
@@ -553,10 +689,7 @@ mod tests {
     #[test]
     fn svg_uses_use_elements_for_glyphs() {
         let svg = render_embedded(vec![MathNode::Identifier("x".into())]);
-        assert!(
-            svg.contains("<use"),
-            "should use <use> to reference glyph"
-        );
+        assert!(svg.contains("<use"), "should use <use> to reference glyph");
         // 'x' is italic in math mode, so it uses Math Italic U+1D465 (119909)
         assert!(
             svg.contains("href=\"#g119909\""),
@@ -589,7 +722,10 @@ mod tests {
             num: Box::new(MathNode::Number("1".into())),
             den: Box::new(MathNode::Number("2".into())),
         }]);
-        assert!(svg.contains("<rect"), "fraction bar should still use <rect>");
+        assert!(
+            svg.contains("<rect"),
+            "fraction bar should still use <rect>"
+        );
     }
 
     #[test]
@@ -633,10 +769,7 @@ mod tests {
     #[test]
     fn svg_use_has_transform_with_scale() {
         let svg = render_embedded(vec![MathNode::Identifier("x".into())]);
-        assert!(
-            svg.contains("scale("),
-            "<use> should have scale transform"
-        );
+        assert!(svg.contains("scale("), "<use> should have scale transform");
         assert!(
             svg.contains("translate("),
             "<use> should have translate transform"
@@ -665,10 +798,7 @@ mod tests {
         use crate::render::subset::collect_chars_arena;
 
         let config = crate::error::Config::default();
-        let result = crate::reader::latex::LatexReader::parse_compact(
-            "x^2 + 1",
-            &config,
-        ).unwrap();
+        let result = crate::reader::latex::LatexReader::parse_compact("x^2 + 1", &config).unwrap();
         let options = RenderOptions::default();
 
         // Heap path

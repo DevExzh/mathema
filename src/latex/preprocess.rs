@@ -128,8 +128,8 @@ fn scan_bracket(s: &str) -> Option<(&str, &str)> {
                 let inner = &after_open[..end_byte];
                 let rest = &after_open[end_byte + 1..]; // ']' is 1 byte
                 return Some((rest, inner));
-            }
-            _ => {}
+            },
+            _ => {},
         }
         end_byte += ch.len_utf8();
     }
@@ -179,8 +179,7 @@ impl Preprocessor {
             if s.starts_with("\\def") {
                 // Guard: \def must be followed by \ or whitespace (not \define, etc.)
                 let after = &s[4..];
-                if (after.starts_with('\\')
-                    || after.starts_with(|c: char| c.is_whitespace()))
+                if (after.starts_with('\\') || after.starts_with(|c: char| c.is_whitespace()))
                     && let Some(rest) = self.parse_def_cmd(s)
                 {
                     s = rest;
@@ -745,32 +744,26 @@ mod tests {
 
     #[test]
     fn expand_renewcommand() {
-        let result =
-            preprocess("\\newcommand{\\foo}{old}\\renewcommand{\\foo}{new}\\foo");
+        let result = preprocess("\\newcommand{\\foo}{old}\\renewcommand{\\foo}{new}\\foo");
         assert_eq!(result, "new");
     }
 
     #[test]
     fn expand_environment() {
-        let result = preprocess(
-            "\\newenvironment{ary}{BEGIN}{END}\\begin{ary}body\\end{ary}",
-        );
+        let result = preprocess("\\newenvironment{ary}{BEGIN}{END}\\begin{ary}body\\end{ary}");
         assert_eq!(result, "BEGINbodyEND");
     }
 
     #[test]
     fn expand_recursive() {
-        let result = preprocess(
-            "\\newcommand{\\inner}{I}\\newcommand{\\outer}{[\\inner]}\\outer",
-        );
+        let result = preprocess("\\newcommand{\\inner}{I}\\newcommand{\\outer}{[\\inner]}\\outer");
         assert_eq!(result, "[I]");
     }
 
     #[test]
     fn expand_chain_three_deep() {
-        let result = preprocess(
-            "\\newcommand{\\a}{X}\\newcommand{\\b}{\\a Y}\\newcommand{\\c}{\\b Z}\\c",
-        );
+        let result =
+            preprocess("\\newcommand{\\a}{X}\\newcommand{\\b}{\\a Y}\\newcommand{\\c}{\\b Z}\\c");
         assert_eq!(result, "X Y Z");
     }
 

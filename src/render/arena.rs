@@ -1,7 +1,7 @@
 // src/render/arena.rs
 
-use std::num::NonZeroU32;
 use crate::ast::TextStyle;
+use std::num::NonZeroU32;
 
 // ── Index types ────────────────────────────────────────────────────────
 
@@ -102,7 +102,12 @@ pub enum ArenaBoxKind {
         border_color: Option<String>,
     },
     /// A run of text characters rendered as a single `<text>` element.
-    TextRun { text: String, size: f64, italic: bool, text_style: Option<TextStyle> },
+    TextRun {
+        text: String,
+        size: f64,
+        italic: bool,
+        text_style: Option<TextStyle>,
+    },
 }
 
 /// Positioned child reference stored in `LayoutArena::children`.
@@ -180,6 +185,64 @@ impl LayoutArena {
         &self.children[start..end]
     }
 
+    /// Mutably access children of a span.
+    #[inline]
+    pub fn children_mut(&mut self, span: LayoutSpan) -> &mut [ArenaPositionedBox] {
+        let start = span.start as usize;
+        let end = start + span.len as usize;
+        &mut self.children[start..end]
+    }
+
+    /// Recursively scale all positions and dimensions in a subtree rooted at `id`.
+    /// Used by `layout_scaled_arena` to properly scale `\scalebox` content.
+    pub fn scale_subtree(&mut self, id: LayoutBoxId, f: f64) {
+        let bx = &mut self.boxes[id.index()];
+        bx.width *= f;
+        bx.height *= f;
+        bx.depth *= f;
+        match &mut bx.kind {
+            ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
+                let span = *children;
+                let child_ids: Vec<LayoutBoxId> =
+                    self.children(span).iter().map(|c| c.id).collect();
+                // Scale child positions
+                for c in self.children_mut(span) {
+                    c.dx *= f;
+                    c.dy *= f;
+                }
+                // Recurse into children
+                for child_id in child_ids {
+                    self.scale_subtree(child_id, f);
+                }
+            },
+            ArenaBoxKind::Color { child, .. } => {
+                let child_id = *child;
+                self.scale_subtree(child_id, f);
+            },
+            ArenaBoxKind::Boxed { child, padding, .. } => {
+                *padding *= f;
+                let child_id = *child;
+                self.scale_subtree(child_id, f);
+            },
+            ArenaBoxKind::Glyph { size, .. } => {
+                *size *= f;
+            },
+            ArenaBoxKind::TextRun { size, .. } => {
+                *size *= f;
+            },
+            ArenaBoxKind::Rule { thickness } => {
+                *thickness *= f;
+            },
+            ArenaBoxKind::Delimiter { target_height, .. } => {
+                *target_height *= f;
+            },
+            ArenaBoxKind::Kern | ArenaBoxKind::Phantom => {},
+            ArenaBoxKind::SvgPath(path) => {
+                *path = super::layout::scale_svg_path_data(path, f);
+            },
+        }
+    }
+
     /// Reset for reuse. O(1) — clears without deallocating backing memory.
     pub fn clear(&mut self) {
         self.boxes.clear();
@@ -225,8 +288,16 @@ mod tests {
         let b = arena.alloc(ArenaLayoutBox::kern(2.0));
 
         let start = arena.begin_children();
-        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: a });
-        arena.push_child(ArenaPositionedBox { dx: 1.0, dy: 0.0, id: b });
+        arena.push_child(ArenaPositionedBox {
+            dx: 0.0,
+            dy: 0.0,
+            id: a,
+        });
+        arena.push_child(ArenaPositionedBox {
+            dx: 1.0,
+            dy: 0.0,
+            id: b,
+        });
         let span = arena.finish_children(start);
 
         assert_eq!(span.len, 2);
@@ -271,13 +342,25 @@ mod tests {
 
         // First span: [a, b]
         let s1_start = arena.begin_children();
-        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: a });
-        arena.push_child(ArenaPositionedBox { dx: 1.0, dy: 0.0, id: b });
+        arena.push_child(ArenaPositionedBox {
+            dx: 0.0,
+            dy: 0.0,
+            id: a,
+        });
+        arena.push_child(ArenaPositionedBox {
+            dx: 1.0,
+            dy: 0.0,
+            id: b,
+        });
         let span1 = arena.finish_children(s1_start);
 
         // Second span: [c]
         let s2_start = arena.begin_children();
-        arena.push_child(ArenaPositionedBox { dx: 0.0, dy: 0.0, id: c });
+        arena.push_child(ArenaPositionedBox {
+            dx: 0.0,
+            dy: 0.0,
+            id: c,
+        });
         let span2 = arena.finish_children(s2_start);
 
         assert_eq!(arena.children(span1).len(), 2);
@@ -302,7 +385,11 @@ mod tests {
             width: 0.5,
             height: 0.683,
             depth: 0.0,
-            kind: ArenaBoxKind::Glyph { ch: 'x', size: 1.0, italic: false },
+            kind: ArenaBoxKind::Glyph {
+                ch: 'x',
+                size: 1.0,
+                italic: false,
+            },
         });
         let b = arena.get(id);
         assert!(matches!(b.kind, ArenaBoxKind::Glyph { ch: 'x', .. }));
