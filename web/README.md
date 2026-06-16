@@ -55,7 +55,7 @@ wasm-pack build .. --target web --out-dir web/src/lib/wasm --release \
 | Layer | File |
 |-------|------|
 | WASM bindings | `../src/wasm/converter.rs` (`MathemaConverter`, `ParsedMath`) |
-| WASM loader   | `src/lib/mathema.js` — loads the module once and exposes `process()` / `convert()` |
+| WASM loader   | `src/lib/mathema.ts` — loads the module once and exposes typed `process()` / `convert()` |
 | UI            | `src/routes/+page.svelte` |
 
 `ParsedMath.toSvg(fontSizePx, display)` produces the embedded-outline SVG; the

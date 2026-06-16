@@ -1,14 +1,15 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import {
     loadMathema,
     process,
     stringifyErr,
     INPUT_FORMATS,
-    OUTPUT_FORMATS
-  } from '$lib/mathema.js';
+    OUTPUT_FORMATS,
+    type Diagnostic
+  } from '$lib/mathema';
 
-  const EXAMPLES = /** @type {Record<string, string[]>} */ ({
+  const EXAMPLES: Record<string, string[]> = {
     latex: [
       '\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}',
       '\\int_0^\\infty e^{-x^2}\\,dx = \\frac{\\sqrt{\\pi}}{2}',
@@ -22,7 +23,7 @@
     omml: [],
     unicodemath: ['x^2 + y^2 = z^2', '√(a+b)/2'],
     mtef: []
-  });
+  };
 
   let ready = $state(false);
   let loadError = $state('');
@@ -34,9 +35,9 @@
   let fontSize = $state(30);
 
   let svg = $state('');
-  let outputs = $state(/** @type {Record<string,string>} */ ({}));
+  let outputs = $state<Record<string, string>>({});
   let nodeCount = $state(0);
-  let diagnostics = $state(/** @type {Array<{kind:string,message:string}>} */ ([]));
+  let diagnostics = $state<Diagnostic[]>([]);
   let error = $state('');
   let copied = $state('');
 
@@ -74,13 +75,13 @@
     }
   });
 
-  function pickFormat(/** @type {string} */ f) {
+  function pickFormat(f: string) {
     format = f;
     const ex = EXAMPLES[f];
     if (ex && ex.length) input = ex[0];
   }
 
-  async function copy(/** @type {string} */ key, /** @type {string} */ text) {
+  async function copy(key: string, text: string) {
     try {
       await navigator.clipboard.writeText(text);
       copied = key;
