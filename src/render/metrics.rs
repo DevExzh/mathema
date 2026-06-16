@@ -95,7 +95,7 @@ fn lookup_metrics(ch: char) -> Option<GlyphMetrics> {
 #[inline]
 pub fn display_op_scale(ch: char) -> f64 {
     match ch {
-        '∫' | '∬' | '∭' | '∮' | '∯' | '∰' => 2.0,
+        '∫' | '∬' | '∭' | '⨌' | '∮' | '∯' | '∰' => 2.0,
         _ => 1.6, // ∑, ∏, ∐, ⋂, ⋃, ⋁, ⋀, ⨀, ⨁, ⨂, etc.
     }
 }
@@ -115,6 +115,7 @@ pub fn glyph_metrics_display(ch: char) -> GlyphMetrics {
         '∫' | '∮' | '∯' | '∰' => GlyphMetrics::new(0.680, 0.431, 0.278, 0.222),
         '∬' => GlyphMetrics::new(0.680, 0.431, 0.472, 0.222),
         '∭' => GlyphMetrics::new(0.680, 0.431, 0.667, 0.222),
+        '⨌' => GlyphMetrics::new(0.680, 0.431, 0.862, 0.222),
         // Sum-like: Size2 h=1.050, d=0.550, total=1.600, scale=1.6
         // Normalized: h=0.656, d=0.344, w=Size2_w/1.6, i=0
         '∑' => GlyphMetrics::new(0.656, 0.344, 0.903, 0.0),

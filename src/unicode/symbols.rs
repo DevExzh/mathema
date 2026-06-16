@@ -141,6 +141,7 @@ static LATEX_TO_UNICODE: phf::Map<&'static str, (char, SymbolKind)> = phf_map! {
     "hookleftarrow" => ('\u{21A9}', Relation),
     "hookrightarrow" => ('\u{21AA}', Relation),
     "iff" => ('\u{27FA}', Relation),
+    "iiiint" => ('\u{2A0C}', LargeOp),
     "iiint" => ('\u{222D}', LargeOp),
     "iint" => ('\u{222C}', LargeOp),
     "imath" => ('\u{0131}', Ordinary),
@@ -293,6 +294,9 @@ static LATEX_TO_UNICODE: phf::Map<&'static str, (char, SymbolKind)> = phf_map! {
     "subseteq" => ('\u{2286}', Relation),
     "subseteqq" => ('\u{2AC5}', Relation),
     "subsetneq" => ('\u{228A}', Relation),
+    // The font lacks the double-bar variant U+2ACB; use the available ⊊ (U+228A),
+    // which is the conventional rendering.
+    "subsetneqq" => ('\u{228A}', Relation),
     "succ" => ('\u{227B}', Relation),
     "succcurlyeq" => ('\u{227D}', Relation),
     "succeq" => ('\u{2AB0}', Relation),
@@ -304,6 +308,8 @@ static LATEX_TO_UNICODE: phf::Map<&'static str, (char, SymbolKind)> = phf_map! {
     "supseteq" => ('\u{2287}', Relation),
     "supseteqq" => ('\u{2AC6}', Relation),
     "supsetneq" => ('\u{228B}', Relation),
+    // The font lacks the double-bar variant U+2ACC; use the available ⊋ (U+228B).
+    "supsetneqq" => ('\u{228B}', Relation),
     "surd" => ('\u{221A}', Ordinary),
     "swarrow" => ('\u{2199}', Relation),
     "tau" => ('\u{03C4}', Alphabetic),
@@ -485,6 +491,7 @@ static UNICODE_TO_LATEX: phf::Map<char, (&'static str, SymbolKind)> = phf_map! {
     '\u{222B}' => ("int", LargeOp),
     '\u{222C}' => ("iint", LargeOp),
     '\u{222D}' => ("iiint", LargeOp),
+    '\u{2A0C}' => ("iiiint", LargeOp),
     '\u{222E}' => ("oint", LargeOp),
     '\u{2234}' => ("therefore", Relation),
     '\u{2235}' => ("because", Relation),
@@ -586,6 +593,7 @@ static NARY_OP_LATEX: phf::Map<char, &'static str> = phf_map! {
     '\u{222B}' => "int",
     '\u{222C}' => "iint",
     '\u{222D}' => "iiint",
+    '\u{2A0C}' => "iiiint",
     '\u{222E}' => "oint",
     '\u{222F}' => "oiint",
     '\u{2230}' => "oiiint",
@@ -607,7 +615,7 @@ static NARY_OP_LATEX: phf::Map<char, &'static str> = phf_map! {
 // ---------------------------------------------------------------------------
 
 static NARY_COMMANDS: phf::Set<&'static str> = phf_set! {
-    "sum", "prod", "coprod", "int", "iint", "iiint", "oint",
+    "sum", "prod", "coprod", "int", "iint", "iiint", "iiiint", "oint",
     "oiint", "oiiint", "ointctrclockwise", "varointclockwise",
     "bigcap", "bigcup", "bigwedge", "bigvee",
     "bigodot", "bigoplus", "bigotimes", "biguplus", "bigsqcup",

@@ -242,6 +242,7 @@ pub fn is_large_op_char(ch: char) -> bool {
             | '∫'
             | '∬'
             | '∭'
+            | '⨌'
             | '∮'
             | '∯'
             | '∰'
