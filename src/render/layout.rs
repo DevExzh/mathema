@@ -3175,8 +3175,8 @@ fn layout_subscript_from_box_heap(
     }
     let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height * size / 5.0));
 
-    let ic = base_ic;
-    let sub_dx = (base_box.width - ic).max(0.0);
+    let _ = base_ic;
+    let sub_dx = base_box.width;
 
     let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
     let total_height = base_box.height;
@@ -3260,7 +3260,7 @@ fn layout_subsup_from_box_heap(
         base_ic
     };
     let sup_dx = base_box.width + ic;
-    let sub_dx = (base_box.width - ic / 2.0).max(0.0);
+    let sub_dx = base_box.width;
 
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
@@ -6028,8 +6028,8 @@ fn layout_subscript_from_box(
     }
     let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height * size / 5.0));
 
-    let ic = base_ic;
-    let sub_dx = (base_box.width - ic).max(0.0);
+    let _ = base_ic;
+    let sub_dx = base_box.width;
 
     let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
     let total_height = base_box.height;
@@ -6114,7 +6114,7 @@ fn layout_subsup_from_box(
         base_ic
     };
     let sup_dx = base_box.width + ic;
-    let sub_dx = (base_box.width - ic / 2.0).max(0.0);
+    let sub_dx = base_box.width;
 
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
@@ -9402,8 +9402,8 @@ fn layout_subscript_from_box_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let ic = base_ic;
-    let sub_dx = (base_w - ic).max(0.0);
+    let _ = base_ic;
+    let sub_dx = base_w;
 
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
@@ -9524,7 +9524,7 @@ fn layout_subsup_from_box_arena(
     }
 
     let sup_dx = base_w + ic;
-    let sub_dx = (base_w - ic / 2.0).max(0.0);
+    let sub_dx = base_w;
 
     let script_width = (sup_dx - base_w + sup_w)
         .max(sub_dx - base_w + sub_w)
