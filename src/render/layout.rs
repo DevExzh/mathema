@@ -1057,10 +1057,7 @@ fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
                     result.push(' ');
                 }
                 // Format with up to 4 decimal places, trimming trailing zeros
-                let formatted = format!("{:.4}", scaled);
-                let formatted = formatted.trim_end_matches('0');
-                let formatted = formatted.trim_end_matches('.');
-                result.push_str(formatted);
+                fmt_fixed4_trim(&mut result, scaled);
             } else {
                 // Fallback: push the raw string
                 result.push_str(num_str);
@@ -2222,6 +2219,99 @@ fn layout_fraction(
     }
 }
 
+/// Append `v` to `out` as fixed 4-decimal text, e.g. `12.3400`.
+///
+/// This avoids `core::fmt`'s float path (`{:.4}`), which costs ~300 ns per
+/// value; integer formatting is roughly an order of magnitude cheaper. Used by
+/// the SVG-path builders, which run during layout and were a measured hotspot
+/// (a single `\sqrt` was spending ~7 µs formatting ~20 radical coordinates).
+#[inline]
+pub(crate) fn fmt_fixed4(out: &mut String, v: f64) {
+    let mut x = v;
+    if x.is_sign_negative() {
+        out.push('-');
+        x = -x;
+    }
+    if !x.is_finite() {
+        out.push('0');
+        return;
+    }
+    let scaled = (x * 10_000.0 + 0.5) as u64; // round half up; matches {:.4} visually
+    let int = scaled / 10_000;
+    let frac = (scaled % 10_000) as u32;
+    push_u64(out, int);
+    out.push('.');
+    // 4-digit zero-padded fractional part, emitted directly (no core::fmt).
+    out.push((b'0' + (frac / 1000) as u8) as char);
+    out.push((b'0' + ((frac / 100) % 10) as u8) as char);
+    out.push((b'0' + ((frac / 10) % 10) as u8) as char);
+    out.push((b'0' + (frac % 10) as u8) as char);
+}
+
+/// Append a `u64` in base-10 directly to `out` without going through `core::fmt`.
+#[inline]
+fn push_u64(out: &mut String, mut n: u64) {
+    if n == 0 {
+        out.push('0');
+        return;
+    }
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    while n > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    // SAFETY: buf[i..] contains only ASCII digits written above.
+    out.push_str(unsafe { std::str::from_utf8_unchecked(&buf[i..]) });
+}
+
+/// Append `v` to `out` with up to 4 decimals, trailing zeros (and a bare
+/// decimal point) trimmed — e.g. `12`, `12.5`, `0.3125`→`0.3125`.
+///
+/// Equivalent to `format!("{:.4}", v)` then trimming, but ~10× cheaper.
+/// Used by `scale_svg_path`, which reformats every coordinate of long
+/// KaTeX accent paths (a single `\widetilde` was ~20 µs of float formatting).
+#[inline]
+pub(crate) fn fmt_fixed4_trim(out: &mut String, v: f64) {
+    let mut x = v;
+    let neg = x.is_sign_negative();
+    if neg {
+        x = -x;
+    }
+    if !x.is_finite() {
+        out.push('0');
+        return;
+    }
+    let scaled = (x * 10_000.0 + 0.5) as u64; // round half up
+    if scaled == 0 {
+        out.push('0');
+        return;
+    }
+    if neg {
+        out.push('-');
+    }
+    let int = scaled / 10_000;
+    let frac = (scaled % 10_000) as u32;
+    push_u64(out, int);
+    if frac != 0 {
+        let digits = [
+            (frac / 1000) as u8,
+            ((frac / 100) % 10) as u8,
+            ((frac / 10) % 10) as u8,
+            (frac % 10) as u8,
+        ];
+        let mut last = 3usize;
+        while digits[last] == 0 {
+            last -= 1;
+        }
+        out.push('.');
+        for &d in &digits[..=last] {
+            out.push((b'0' + d) as char);
+        }
+    }
+}
+
 /// Generate a **filled** SVG path string for a radical sign (square root
 /// symbol), closely matching the proportions of KaTeX's sqrtMain glyph.
 ///
@@ -2312,15 +2402,52 @@ fn radical_path(w: f64, h: f64, t: f64) -> String {
     let cp_iup_x = ix1 + (ix2 - ix1) * 0.3;
     let cp_iup_y = iy1 - (iy1 - iy2) * 0.1;
 
-    format!(
-        "F:M{ox0:.4},{oy0:.4} L{ox1:.4},{oy1:.4} \
-         C{cp_down_x:.4},{cp_down_y:.4} {ox2:.4},{oy2:.4} {ox2:.4},{oy2:.4} \
-         C{cp_up_x:.4},{cp_up_y:.4} {ox3:.4},{oy3:.4} {ox3:.4},{oy3:.4} \
-         L{vx0:.4},{vy0:.4} L{vx1:.4},{vy1:.4} L{ix0:.4},{iy0:.4} \
-         C{cp_idown_x:.4},{cp_idown_y:.4} {ix1:.4},{iy1:.4} {ix1:.4},{iy1:.4} \
-         C{cp_iup_x:.4},{cp_iup_y:.4} {ix2:.4},{iy2:.4} {ix2:.4},{iy2:.4} \
-         L{ix3:.4},{iy3:.4} Z",
-    )
+    // Build the path with the fast fixed-point formatter (avoids ~20 slow
+    // `{:.4}` float formats per radical — the dominant cost of \sqrt layout).
+    let mut s = String::with_capacity(320);
+    s.push_str("F:M");
+    let pt = |s: &mut String, a: f64, b: f64| {
+        fmt_fixed4(s, a);
+        s.push(',');
+        fmt_fixed4(s, b);
+    };
+    pt(&mut s, ox0, oy0);
+    s.push_str(" L");
+    pt(&mut s, ox1, oy1);
+    s.push_str(" C");
+    pt(&mut s, cp_down_x, cp_down_y);
+    s.push(' ');
+    pt(&mut s, ox2, oy2);
+    s.push(' ');
+    pt(&mut s, ox2, oy2);
+    s.push_str(" C");
+    pt(&mut s, cp_up_x, cp_up_y);
+    s.push(' ');
+    pt(&mut s, ox3, oy3);
+    s.push(' ');
+    pt(&mut s, ox3, oy3);
+    s.push_str(" L");
+    pt(&mut s, vx0, vy0);
+    s.push_str(" L");
+    pt(&mut s, vx1, vy1);
+    s.push_str(" L");
+    pt(&mut s, ix0, iy0);
+    s.push_str(" C");
+    pt(&mut s, cp_idown_x, cp_idown_y);
+    s.push(' ');
+    pt(&mut s, ix1, iy1);
+    s.push(' ');
+    pt(&mut s, ix1, iy1);
+    s.push_str(" C");
+    pt(&mut s, cp_iup_x, cp_iup_y);
+    s.push(' ');
+    pt(&mut s, ix2, iy2);
+    s.push(' ');
+    pt(&mut s, ix2, iy2);
+    s.push_str(" L");
+    pt(&mut s, ix3, iy3);
+    s.push_str(" Z");
+    s
 }
 
 /// TeXBook Rule 11: square root.

@@ -54,6 +54,11 @@ Input string ──Reader──▶ MathExpr (AST) ──Writer──▶ Output s
 
 **SVG output modes:** `ConvertResult::to_svg()` produces a **standalone, embedded-outline SVG** (Latin Modern Math glyph outlines as `<path>`/`<use>`), so it renders identically everywhere and **visually matches the PNG/JPEG output** (the shared layout pass + identical outlines + identical MATH-table variant glyphs). `ConvertResult::to_svg_text()` produces the older `<text>`-based SVG that depends on client-side fonts. SVG↔PNG parity is guarded by `tests/svg_png_parity.rs` (rasterizes the SVG with `resvg` and pixel-compares against the PNG).
 
+**Render performance notes:**
+- SVG path strings (radical, scaled KaTeX accents) are built during layout with `layout::fmt_fixed4` / `fmt_fixed4_trim` — manual fixed-point formatters that avoid `core::fmt`'s `{:.4}` float path (~300 ns/value). This cut `\sqrt` layout ~12× and wide accents (`\widehat`/`\widetilde`) ~6×.
+- The embedded font's glyph outlines are cached in `font_embed.rs` (`GLYPH_CACHE` / `VARIANT_CACHE`, keyed by char / glyph id), so repeated renders reuse extracted `<path>` data instead of re-interpreting CFF charstrings each time (`to_svg()` ~2.7× faster). The cache only applies to the embedded `FONT_DATA` (gated on `ptr::eq`).
+- The LaTeX parser pre-sizes its arena from the input length and borrows the input on the common no-macro path (`preprocess_cow`).
+
 **Unicode tables** (`src/unicode/`): `symbols.rs` and `operators.rs` are `phf` perfect-hash maps for symbol/operator lookup. `fonts.rs` has embedded font metrics.
 
 **Config** (`src/error.rs`): `Strictness::Strict` (default) rejects malformed input; `Strictness::Lenient` recovers and collects diagnostics.

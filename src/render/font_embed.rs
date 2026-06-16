@@ -3,8 +3,9 @@
 //! Converts font glyph outlines into SVG `<path>` `d` attribute strings.
 //! Coordinates are in font units with y-axis negated (font y-up → SVG y-down).
 
+use std::collections::HashMap;
 use std::fmt::Write;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, RwLock};
 
 /// Extracted glyph outline ready for SVG embedding.
 #[derive(Debug, Clone)]
@@ -26,6 +27,19 @@ pub struct FontInfo {
 static CACHED_FACE: LazyLock<ttf_parser::Face<'static>> = LazyLock::new(|| {
     ttf_parser::Face::parse(super::FONT_DATA, 0).expect("embedded font data must be valid")
 });
+
+/// Cache of extracted outlines for the embedded font, keyed by character.
+///
+/// Outline extraction (CFF charstring interpretation + path-string building)
+/// dominates the embedded-SVG render path (~7 µs/glyph) and the embedded font
+/// is static, so caching turns repeated renders into cheap clones.
+static GLYPH_CACHE: LazyLock<RwLock<HashMap<char, Option<GlyphOutline>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Cache of extracted outlines for the embedded font, keyed by glyph id
+/// (MATH-table size variants for delimiters / large operators).
+static VARIANT_CACHE: LazyLock<RwLock<HashMap<u16, Option<GlyphOutline>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Cached font info for the embedded font.
 static CACHED_FONT_INFO: LazyLock<FontInfo> = LazyLock::new(|| FontInfo {
@@ -50,9 +64,14 @@ pub fn parse_font_info(font_data: &[u8]) -> Option<FontInfo> {
 ///
 /// Returns `None` if the character has no glyph or no outline (e.g., space).
 pub fn extract_glyph(font_data: &[u8], ch: char) -> Option<GlyphOutline> {
-    // Fast path for the embedded font: use cached Face.
+    // Fast path for the embedded font: use cached Face + outline cache.
     if std::ptr::eq(font_data, super::FONT_DATA) {
-        return extract_glyph_from_face(&CACHED_FACE, ch);
+        if let Some(hit) = GLYPH_CACHE.read().unwrap().get(&ch) {
+            return hit.clone();
+        }
+        let outline = extract_glyph_from_face(&CACHED_FACE, ch);
+        GLYPH_CACHE.write().unwrap().insert(ch, outline.clone());
+        return outline;
     }
     let face = ttf_parser::Face::parse(font_data, 0).ok()?;
     extract_glyph_from_face(&face, ch)
@@ -86,7 +105,12 @@ fn extract_glyph_from_face(face: &ttf_parser::Face<'_>, ch: char) -> Option<Glyp
 /// Returns `None` if the glyph has no outline.
 pub fn extract_glyph_by_id(font_data: &[u8], glyph_id: u16) -> Option<GlyphOutline> {
     if std::ptr::eq(font_data, super::FONT_DATA) {
-        return extract_glyph_by_id_from_face(&CACHED_FACE, glyph_id);
+        if let Some(hit) = VARIANT_CACHE.read().unwrap().get(&glyph_id) {
+            return hit.clone();
+        }
+        let outline = extract_glyph_by_id_from_face(&CACHED_FACE, glyph_id);
+        VARIANT_CACHE.write().unwrap().insert(glyph_id, outline.clone());
+        return outline;
     }
     let face = ttf_parser::Face::parse(font_data, 0).ok()?;
     extract_glyph_by_id_from_face(&face, glyph_id)

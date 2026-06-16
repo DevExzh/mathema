@@ -29,13 +29,19 @@ struct Preprocessor {
 
 /// Main entry point: strip comments, extract definitions, expand macros.
 pub fn preprocess(input: &str) -> String {
+    preprocess_cow(input).into_owned()
+}
+
+/// Like [`preprocess`] but borrows the input on the common fast path (no macros
+/// or comments), avoiding an allocation + full-string copy per parse.
+pub fn preprocess_cow(input: &str) -> std::borrow::Cow<'_, str> {
     if !needs_preprocessing(input) {
-        return input.to_owned();
+        return std::borrow::Cow::Borrowed(input);
     }
     let stripped = strip_comments(input);
     let mut pp = Preprocessor::default();
     let after_defs = pp.extract_definitions(&stripped);
-    pp.expand_all(&after_defs)
+    std::borrow::Cow::Owned(pp.expand_all(&after_defs))
 }
 
 /// Fast-path check: does the input contain any syntax we need to process?

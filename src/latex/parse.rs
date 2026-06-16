@@ -16,7 +16,7 @@ use crate::unicode::symbols::{
 };
 
 use super::error::LatexParseError;
-use super::preprocess::preprocess;
+use super::preprocess::preprocess_cow;
 
 pub(crate) const MAX_PARSE_DEPTH: u32 = 128;
 
@@ -402,7 +402,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let processed = preprocess(trimmed);
+    let processed = preprocess_cow(trimmed);
     let mut parser = LatexCompactParser::with_capacity(processed.len());
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {

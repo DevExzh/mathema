@@ -182,5 +182,3 @@ wasm-opt = false
 [[example]]
 name = "render_rate"
 required-features = ["render"]
-
-
