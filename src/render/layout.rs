@@ -2589,9 +2589,7 @@ fn radical_geometry(
     // The vinculum / surd top.
     let shift_up = inner_height + clearance + thickness;
 
-    if let Some(v) = glyph_variants::select_vertical_variant('\u{221A}', min_height)
-        && v.advance_em > 0.01
-    {
+    if let Some(v) = glyph_variants::delimiter_variant('\u{221A}', min_height) {
         // The emitters render the chosen variant scaled so its vertical advance
         // equals `target_height`; replicate that scale here for placement.
         let scale = min_height / v.advance_em;
@@ -2695,7 +2693,9 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
         let raise_pct = math_table::math_constants()
             .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
             .unwrap_or(0.6);
-        let idx_shift = total_height * raise_pct; // raise index
+        let idx_shift = (raise_pct * (total_height - total_depth)
+            - (idx_box.height - idx_box.depth) / 2.0)
+            .max(0.0); // raise index, KaTeX \r@@t center-based
         let idx_width = idx_box.width;
 
         // Use MATH table kern values for degree positioning (OpenType MATH spec)
@@ -5544,11 +5544,16 @@ fn layout_sqrt_c(
     if let Some(idx_id) = index {
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box = layout_node_c(arena, idx_id, &idx_ctx);
-        // Use MATH table radical_degree_bottom_raise_percent (default 60%)
+        // KaTeX `\r@@t`: raise the index so its vertical center sits at
+        // 0.6*(height-depth) of the whole radical, then convert to a baseline
+        // offset. This keeps the index tucked into the surd's crook at every
+        // size instead of drifting to the top of tall radicals.
         let raise_pct = math_table::math_constants()
             .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
             .unwrap_or(0.6);
-        let idx_shift = total_height * raise_pct;
+        let idx_shift = (raise_pct * (total_height - total_depth)
+            - (idx_box.height - idx_box.depth) / 2.0)
+            .max(0.0);
         let idx_width = idx_box.width;
 
         // Use MATH table kern values for degree positioning (OpenType MATH spec)
@@ -8763,11 +8768,14 @@ fn layout_sqrt_arena(
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box_id = layout_node_arena(ast, idx_id_node, arena, &idx_ctx);
         let idx_w = arena.get(idx_box_id).width;
+        let idx_h = arena.get(idx_box_id).height;
+        let idx_d = arena.get(idx_box_id).depth;
         // Use MATH table radical_degree_bottom_raise_percent (default 60%)
         let raise_pct = math_table::math_constants()
             .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
             .unwrap_or(0.6);
-        let idx_shift = total_height * raise_pct;
+        let idx_shift =
+            (raise_pct * (total_height - total_depth) - (idx_h - idx_d) / 2.0).max(0.0);
 
         // Use MATH table kern values for degree positioning (OpenType MATH spec)
         let kern_before = math_table::math_constants()
