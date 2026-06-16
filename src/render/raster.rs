@@ -9,6 +9,7 @@ use fontdue::{Font, FontSettings};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
 
 use super::RenderOptions;
+use super::fonts_registry::{self, FontId};
 use super::layout::{BoxKind, LayoutBox};
 use super::style::MathStyle;
 use crate::ast::MathExpr;
@@ -24,7 +25,23 @@ static MATH_FONT: LazyLock<Font> = LazyLock::new(|| {
         .expect("embedded font must be valid")
 });
 
-/// Lazily-parsed ttf-parser face for glyph outline extraction (MATH variants).
+/// Per-id lazily-initialized `fontdue` fonts for the registered text faces.
+/// `FontId::Math` is served by [`MATH_FONT`]; text faces are parsed on first use.
+static FONTDUE_CELLS: [std::sync::OnceLock<Font>; 13] =
+    [const { std::sync::OnceLock::new() }; 13];
+
+/// `fontdue` font for a font identity (used to rasterize text-face glyphs).
+fn fontdue_font(id: FontId) -> &'static Font {
+    if id.is_math() {
+        return &MATH_FONT;
+    }
+    FONTDUE_CELLS[id.index()].get_or_init(|| {
+        Font::from_bytes(fonts_registry::font_bytes(id), FontSettings::default())
+            .expect("embedded font must be valid")
+    })
+}
+
+/// Lazily-parsed ttf-parser face for MATH-table variant outline extraction.
 static TTF_FACE: LazyLock<ttf_parser::Face<'static>> = LazyLock::new(|| {
     ttf_parser::Face::parse(super::FONT_DATA, 0).expect("embedded font data must be valid")
 });
@@ -188,10 +205,8 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
     pixmap.fill(bg);
 
     let fg = parse_color(&options.render.fg_color);
-    let font = &*MATH_FONT;
 
     let mut ctx = RasterCtx {
-        font,
         em,
         fg,
         cache: HashMap::new(),
@@ -215,11 +230,10 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
 // Recursive tree walker
 // ---------------------------------------------------------------------------
 
-struct RasterCtx<'a> {
-    font: &'a Font,
+struct RasterCtx {
     em: f64,
     fg: [u8; 3],
-    cache: HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>,
+    cache: HashMap<(FontId, char, u32), (fontdue::Metrics, Vec<u8>)>,
     /// Reusable RGBA buffer for glyph compositing (avoids per-glyph Pixmap allocation).
     glyph_rgba_buf: Vec<u8>,
 }
@@ -234,7 +248,12 @@ fn emit_raster_box(
     let em = ctx.em;
     let fg = ctx.fg;
     match &layout.kind {
-        BoxKind::Glyph { ch, size, italic } => {
+        BoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => {
             // For large operators at display size, use MATH table variant glyphs
             // for better quality (properly designed display glyphs vs scaled base).
             let used_variant = if *size > 1.2 && is_large_op_char(*ch) {
@@ -255,24 +274,24 @@ fn emit_raster_box(
             };
             if !used_variant {
                 let font_size_px = (em * size).max(1.0) as f32;
-                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic);
+                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic, *font);
             }
         },
 
         BoxKind::TextRun {
-            text, size, italic, ..
+            text,
+            size,
+            italic,
+            text_style,
         } => {
+            let font = fonts_registry::font_for_text_run(*text_style);
             let font_size_px = (em * size).max(1.0) as f32;
             let mut cx = x;
             for ch in text.chars() {
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
-                let m = if *italic {
-                    super::metrics::glyph_metrics(ch)
-                } else {
-                    super::metrics::glyph_metrics_upright(ch)
-                };
-                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic);
+                let m = fonts_registry::text_metrics(ch, *italic, font);
+                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font);
                 cx += m.width * size * em;
             }
         },
@@ -380,7 +399,7 @@ fn emit_raster_box(
                 } else {
                     // Final fallback: render as text glyph
                     let font_size_px = (target_height * em).max(1.0) as f32;
-                    draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false);
+                    draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false, FontId::Math);
                 }
             }
         },
@@ -484,6 +503,7 @@ fn is_large_op_char(ch: char) -> bool {
     super::glyph_variants::is_large_op_char(ch)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     pixmap: &mut Pixmap,
     ctx: &mut RasterCtx,
@@ -492,37 +512,56 @@ fn draw_glyph(
     x: f64,
     baseline_y: f64,
     italic: bool,
+    font: FontId,
 ) {
     if font_size_px < 0.5 {
         return;
     }
 
-    // Try actual Math Italic glyph first when italic
-    let (render_ch, use_shear) = if italic {
-        if let Some(italic_ch) = super::layout::math_italic_codepoint(ch) {
-            let key = (italic_ch, font_size_px.to_bits());
-            let (m, bm) = &*ctx
-                .cache
-                .entry(key)
-                .or_insert_with(|| ctx.font.rasterize(italic_ch, font_size_px));
-            if m.width > 0 && m.height > 0 && !bm.is_empty() {
-                (italic_ch, false)
+    let bits = font_size_px.to_bits();
+
+    // Resolve which face + codepoint to actually rasterize, and whether to apply
+    // a synthetic italic shear. Text faces carry their slant in the outline, so
+    // they draw the base codepoint with no shear; a glyph missing from the text
+    // face falls back to the Math font (mirroring the embedded-SVG fallback).
+    let (used_font, render_ch, use_shear) = if font.is_math() {
+        if italic {
+            if let Some(italic_ch) = super::layout::math_italic_codepoint(ch) {
+                let key = (FontId::Math, italic_ch, bits);
+                let (m, bm) = &*ctx
+                    .cache
+                    .entry(key)
+                    .or_insert_with(|| MATH_FONT.rasterize(italic_ch, font_size_px));
+                if m.width > 0 && m.height > 0 && !bm.is_empty() {
+                    (FontId::Math, italic_ch, false)
+                } else {
+                    (FontId::Math, ch, true)
+                }
             } else {
-                (ch, true)
+                (FontId::Math, ch, true)
             }
         } else {
-            (ch, true)
+            (FontId::Math, ch, false)
         }
     } else {
-        (ch, false)
+        let key = (font, ch, bits);
+        let (m, bm) = &*ctx
+            .cache
+            .entry(key)
+            .or_insert_with(|| fontdue_font(font).rasterize(ch, font_size_px));
+        if m.width > 0 && m.height > 0 && !bm.is_empty() {
+            (font, ch, false)
+        } else {
+            (FontId::Math, ch, false)
+        }
     };
 
-    let key = (render_ch, font_size_px.to_bits());
+    let key = (used_font, render_ch, bits);
     let fg = ctx.fg;
     let (metrics, bitmap) = &*ctx
         .cache
         .entry(key)
-        .or_insert_with(|| ctx.font.rasterize(render_ch, font_size_px));
+        .or_insert_with(|| fontdue_font(used_font).rasterize(render_ch, font_size_px));
     if metrics.width == 0 || metrics.height == 0 || bitmap.is_empty() {
         return;
     }
@@ -1276,7 +1315,7 @@ pub(crate) fn parse_color(s: &str) -> [u8; 3] {
         return rgb;
     }
     // Full CSS named colors (148 colors)
-    if let Some(rgb) = super::css_colors::lookup_css_color(s) {
+    if let Some(rgb) = crate::css_colors::lookup_css_color(s) {
         return rgb;
     }
     [0, 0, 0] // fallback to black
@@ -1717,6 +1756,7 @@ mod tests {
                     ch: 'x',
                     size: 1.0,
                     italic: false,
+                    font: FontId::Math,
                 },
             },
         );

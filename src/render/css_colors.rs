@@ -18,6 +18,145 @@ pub fn lookup_css_color(name: &str) -> Option<[u8; 3]> {
     CSS_COLORS.get(key).copied()
 }
 
+/// Format RGB bytes as a lowercase `#rrggbb` hex string.
+pub fn rgb_to_hex(rgb: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+}
+
+/// Resolve a bare color reference (named CSS color, `#rgb`/`#rrggbb` hex, or
+/// `rgb(r,g,b)` function) into RGB bytes. Returns `None` if it is not a
+/// recognizable color reference.
+pub fn resolve_named_or_hex(s: &str) -> Option<[u8; 3]> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        return parse_hex(hex);
+    }
+    if let Some(rgb) = parse_rgb_func(s) {
+        return Some(rgb);
+    }
+    lookup_css_color(s)
+}
+
+/// Resolve a color model + spec (as in `\definecolor`/`\color[model]{spec}`)
+/// into RGB bytes. Supported models: `rgb` (0..1), `RGB` (0..255),
+/// `HTML` (`RRGGBB` hex), `gray`/`Gray` (0..1), and `cmyk` (0..1 each).
+/// Returns `None` on malformed input.
+pub fn resolve_color_model(model: &str, spec: &str) -> Option<[u8; 3]> {
+    let spec = spec.trim();
+    match model {
+        "rgb" => {
+            let v = parse_floats::<3>(spec)?;
+            Some([f01(v[0]), f01(v[1]), f01(v[2])])
+        },
+        "RGB" => {
+            let v = parse_floats::<3>(spec)?;
+            Some([clamp255(v[0]), clamp255(v[1]), clamp255(v[2])])
+        },
+        "HTML" => {
+            let h = spec.strip_prefix('#').unwrap_or(spec);
+            if h.len() != 6 {
+                return None;
+            }
+            parse_hex(h)
+        },
+        "gray" | "Gray" => {
+            let v = parse_floats::<1>(spec)?;
+            let g = f01(v[0]);
+            Some([g, g, g])
+        },
+        "cmyk" => {
+            let v = parse_floats::<4>(spec)?;
+            let k = v[3].clamp(0.0, 1.0);
+            let conv = |x: f64| (255.0 * (1.0 - x.clamp(0.0, 1.0)) * (1.0 - k)).round() as u8;
+            Some([conv(v[0]), conv(v[1]), conv(v[2])])
+        },
+        _ => None,
+    }
+}
+
+/// Blend two colors: `pct_a`% of `a` mixed with `(100 - pct_a)`% of `b`
+/// (xcolor `a!pct_a!b` semantics).
+pub fn mix_rgb(a: [u8; 3], b: [u8; 3], pct_a: f64) -> [u8; 3] {
+    let t = pct_a.clamp(0.0, 100.0) / 100.0;
+    let blend = |x: u8, y: u8| (f64::from(x) * t + f64::from(y) * (1.0 - t)).round() as u8;
+    [
+        blend(a[0], b[0]),
+        blend(a[1], b[1]),
+        blend(a[2], b[2]),
+    ]
+}
+
+/// Parse exactly `N` comma-separated floats from `spec`.
+fn parse_floats<const N: usize>(spec: &str) -> Option<[f64; N]> {
+    let mut out = [0.0f64; N];
+    let mut parts = spec.split(',');
+    for slot in out.iter_mut() {
+        *slot = parts.next()?.trim().parse::<f64>().ok()?;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(out)
+}
+
+/// Map a 0.0..=1.0 float to a 0..=255 byte.
+fn f01(v: f64) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Clamp a 0..=255 float to a byte.
+fn clamp255(v: f64) -> u8 {
+    v.clamp(0.0, 255.0).round() as u8
+}
+
+/// Parse a 3- or 6-digit hex color body (no leading `#`).
+fn parse_hex(hex: &str) -> Option<[u8; 3]> {
+    let hex = hex.trim();
+    match hex.len() {
+        6 => Some([
+            u8::from_str_radix(&hex[0..2], 16).ok()?,
+            u8::from_str_radix(&hex[2..4], 16).ok()?,
+            u8::from_str_radix(&hex[4..6], 16).ok()?,
+        ]),
+        3 => {
+            let nib = |i: usize| u8::from_str_radix(&hex[i..=i], 16).ok();
+            let r = nib(0)?;
+            let g = nib(1)?;
+            let b = nib(2)?;
+            Some([r * 17, g * 17, b * 17])
+        },
+        _ => None,
+    }
+}
+
+/// Parse `rgb(r,g,b)` (0..255 or percentages). Returns `None` if not such a
+/// function form.
+fn parse_rgb_func(s: &str) -> Option<[u8; 3]> {
+    let open = s.find('(')?;
+    let close = s.rfind(')')?;
+    if close <= open || !s[..open].trim().eq_ignore_ascii_case("rgb") {
+        return None;
+    }
+    let inner = &s[open + 1..close];
+    let mut parts = inner.split(',');
+    let mut comp = || -> Option<u8> {
+        let p = parts.next()?.trim();
+        if let Some(pc) = p.strip_suffix('%') {
+            let pct = pc.trim().parse::<f64>().ok()?.clamp(0.0, 100.0);
+            Some((pct * 255.0 / 100.0).round() as u8)
+        } else {
+            Some(clamp255(p.parse::<f64>().ok()?))
+        }
+    };
+    let r = comp()?;
+    let g = comp()?;
+    let b = comp()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some([r, g, b])
+}
+
 static CSS_COLORS: phf::Map<&'static str, [u8; 3]> = phf_map! {
     "aliceblue" => [240, 248, 255],
     "antiquewhite" => [250, 235, 215],
@@ -204,5 +343,41 @@ mod tests {
     fn grey_variants() {
         assert_eq!(lookup_css_color("gray"), lookup_css_color("grey"));
         assert_eq!(lookup_css_color("darkgray"), lookup_css_color("darkgrey"));
+    }
+
+    #[test]
+    fn hex_formatting() {
+        assert_eq!(rgb_to_hex([255, 0, 0]), "#ff0000");
+        assert_eq!(rgb_to_hex([0, 128, 255]), "#0080ff");
+    }
+
+    #[test]
+    fn color_models() {
+        assert_eq!(resolve_color_model("rgb", "1,0,0"), Some([255, 0, 0]));
+        assert_eq!(resolve_color_model("RGB", "0,255,0"), Some([0, 255, 0]));
+        assert_eq!(resolve_color_model("HTML", "0000FF"), Some([0, 0, 255]));
+        assert_eq!(resolve_color_model("gray", "0.5"), Some([128, 128, 128]));
+        assert_eq!(resolve_color_model("cmyk", "0,1,1,0"), Some([255, 0, 0]));
+        // Malformed specs recover to None.
+        assert_eq!(resolve_color_model("rgb", "1,0"), None);
+        assert_eq!(resolve_color_model("HTML", "ZZZ"), None);
+        assert_eq!(resolve_color_model("unknown", "1,0,0"), None);
+    }
+
+    #[test]
+    fn named_or_hex_resolution() {
+        assert_eq!(resolve_named_or_hex("red"), Some([255, 0, 0]));
+        assert_eq!(resolve_named_or_hex("#00ff00"), Some([0, 255, 0]));
+        assert_eq!(resolve_named_or_hex("#0f0"), Some([0, 255, 0]));
+        assert_eq!(resolve_named_or_hex("rgb(255,0,0)"), Some([255, 0, 0]));
+        assert_eq!(resolve_named_or_hex("nope"), None);
+    }
+
+    #[test]
+    fn mixing() {
+        // red!50!blue → halfway between red and blue.
+        assert_eq!(mix_rgb([255, 0, 0], [0, 0, 255], 50.0), [128, 0, 128]);
+        // red!100!blue → all red.
+        assert_eq!(mix_rgb([255, 0, 0], [0, 0, 255], 100.0), [255, 0, 0]);
     }
 }

@@ -3,6 +3,7 @@
 use std::fmt::Write;
 
 use super::RenderOptions;
+use super::fonts_registry::FontId;
 use super::layout::{BoxKind, LayoutBox};
 
 /// Wrapper that escapes a string for safe use in XML/SVG attributes.
@@ -132,6 +133,29 @@ fn svg_italic_char(ch: char, italic: bool) -> (char, bool) {
     } else {
         (ch, true)
     }
+}
+
+/// CSS hints for drawing a glyph from a Latin Modern text face in the
+/// client-font (`<text>`) SVG path: `(font-family override, bold, italic)`.
+///
+/// Returns `None` for the Math font, which keeps the Unicode-remap rendering.
+#[inline]
+fn font_css(font: FontId) -> Option<(Option<&'static str>, bool, bool)> {
+    Some(match font {
+        FontId::Math => return None,
+        FontId::RomanRegular => (None, false, false),
+        FontId::RomanBold => (None, true, false),
+        FontId::RomanItalic => (None, false, true),
+        FontId::RomanBoldItalic => (None, true, true),
+        FontId::SansRegular => (Some("sans-serif"), false, false),
+        FontId::SansBold => (Some("sans-serif"), true, false),
+        FontId::SansItalic => (Some("sans-serif"), false, true),
+        FontId::SansBoldItalic => (Some("sans-serif"), true, true),
+        FontId::MonoRegular => (Some("monospace"), false, false),
+        FontId::MonoItalic => (Some("monospace"), false, true),
+        FontId::MonoBold => (Some("monospace"), true, false),
+        FontId::MonoBoldItalic => (Some("monospace"), true, true),
+    })
 }
 
 fn svg_text_run(text: &str, italic: bool) -> (String, bool) {
@@ -302,26 +326,54 @@ fn emit_box(
     attrs: &EscapedAttrs<'_>,
 ) {
     match &layout.kind {
-        BoxKind::Glyph { ch, size, italic } => {
-            let (render_ch, emit_italic_style) = svg_italic_char(*ch, *italic);
+        BoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => {
             let font_size = em * size;
-            // Build <text> element with fast formatting and pre-escaped attributes
-            svg.push_str(r#"<text x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, y);
-            svg.push_str(r#"" font-size=""#);
-            push_f3(svg, font_size);
-            svg.push_str(r#"" font-family=""#);
-            svg.push_str(attrs.font_family);
-            if emit_italic_style {
-                svg.push_str(r#"" font-style="italic"#);
+            if let Some((family, bold, ital_style)) = font_css(*font) {
+                // Text-face glyph: draw the base codepoint with CSS style hints.
+                svg.push_str(r#"<text x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, y);
+                svg.push_str(r#"" font-size=""#);
+                push_f3(svg, font_size);
+                svg.push_str(r#"" font-family=""#);
+                svg.push_str(family.unwrap_or(attrs.font_family));
+                if ital_style {
+                    svg.push_str(r#"" font-style="italic"#);
+                }
+                if bold {
+                    svg.push_str(r#"" font-weight="bold"#);
+                }
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"">"#);
+                write_escaped_char(svg, *ch);
+                svg.push_str("</text>");
+            } else {
+                let (render_ch, emit_italic_style) = svg_italic_char(*ch, *italic);
+                // Build <text> element with fast formatting and pre-escaped attributes
+                svg.push_str(r#"<text x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, y);
+                svg.push_str(r#"" font-size=""#);
+                push_f3(svg, font_size);
+                svg.push_str(r#"" font-family=""#);
+                svg.push_str(attrs.font_family);
+                if emit_italic_style {
+                    svg.push_str(r#"" font-style="italic"#);
+                }
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"">"#);
+                write_escaped_char(svg, render_ch);
+                svg.push_str("</text>");
             }
-            svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"">"#);
-            write_escaped_char(svg, render_ch);
-            svg.push_str("</text>");
         },
 
         BoxKind::TextRun {
@@ -624,25 +676,52 @@ fn emit_box_arena(
 ) {
     let layout = arena.get(id);
     match &layout.kind {
-        ArenaBoxKind::Glyph { ch, size, italic } => {
-            let (render_ch, emit_italic_style) = svg_italic_char(*ch, *italic);
+        ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => {
             let font_size = em * size;
-            svg.push_str(r#"<text x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, y);
-            svg.push_str(r#"" font-size=""#);
-            push_f3(svg, font_size);
-            svg.push_str(r#"" font-family=""#);
-            svg.push_str(attrs.font_family);
-            if emit_italic_style {
-                svg.push_str(r#"" font-style="italic"#);
+            if let Some((family, bold, ital_style)) = font_css(*font) {
+                svg.push_str(r#"<text x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, y);
+                svg.push_str(r#"" font-size=""#);
+                push_f3(svg, font_size);
+                svg.push_str(r#"" font-family=""#);
+                svg.push_str(family.unwrap_or(attrs.font_family));
+                if ital_style {
+                    svg.push_str(r#"" font-style="italic"#);
+                }
+                if bold {
+                    svg.push_str(r#"" font-weight="bold"#);
+                }
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"">"#);
+                write_escaped_char(svg, *ch);
+                svg.push_str("</text>");
+            } else {
+                let (render_ch, emit_italic_style) = svg_italic_char(*ch, *italic);
+                svg.push_str(r#"<text x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, y);
+                svg.push_str(r#"" font-size=""#);
+                push_f3(svg, font_size);
+                svg.push_str(r#"" font-family=""#);
+                svg.push_str(attrs.font_family);
+                if emit_italic_style {
+                    svg.push_str(r#"" font-style="italic"#);
+                }
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#"">"#);
+                write_escaped_char(svg, render_ch);
+                svg.push_str("</text>");
             }
-            svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#"">"#);
-            write_escaped_char(svg, render_ch);
-            svg.push_str("</text>");
         },
 
         ArenaBoxKind::TextRun {

@@ -448,4 +448,57 @@ mod tests {
             "fcolorbox SVG should contain stroke=blue, got: {svg}"
         );
     }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn color_switch_colors_rest_of_group() {
+        // \color is a switch: it should colorize the following content.
+        let result = from_latex(r"\color{red} x + y").unwrap();
+        let svg = result.to_svg().unwrap();
+        assert!(
+            svg.contains(r#"fill="red""#),
+            "\\color should colorize following content, got: {svg}"
+        );
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn definecolor_resolves_to_hex() {
+        let result = from_latex(r"\definecolor{myc}{rgb}{1,0,0}\color{myc}A").unwrap();
+        let svg = result.to_svg().unwrap();
+        assert!(
+            svg.contains(r##"fill="#ff0000""##),
+            "\\definecolor rgb 1,0,0 should resolve to #ff0000, got: {svg}"
+        );
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn color_model_html_arg() {
+        let result = from_latex(r"\color[HTML]{00FF00}B").unwrap();
+        let svg = result.to_svg().unwrap();
+        assert!(
+            svg.contains(r##"fill="#00ff00""##),
+            "\\color[HTML]{{00FF00}} should resolve to #00ff00, got: {svg}"
+        );
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn xcolor_mixing_expression() {
+        let result = from_latex(r"\textcolor{red!50!blue}{M}").unwrap();
+        let svg = result.to_svg().unwrap();
+        assert!(
+            svg.contains(r##"fill="#800080""##),
+            "red!50!blue should resolve to #800080, got: {svg}"
+        );
+        let mml = from_latex(r"\textcolor{red!50!blue}{M}")
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(
+            mml.contains(r##"mathcolor="#800080""##),
+            "MathML should carry resolved mathcolor, got: {mml}"
+        );
+    }
 }

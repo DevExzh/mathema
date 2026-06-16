@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::sync::{LazyLock, RwLock};
 
+use super::fonts_registry::{self, FontId};
+
 /// Extracted glyph outline ready for SVG embedding.
 #[derive(Debug, Clone)]
 pub struct GlyphOutline {
@@ -23,58 +25,51 @@ pub struct FontInfo {
     pub units_per_em: f64,
 }
 
-/// Cached parsed face for the embedded font, avoiding re-parsing per glyph.
-static CACHED_FACE: LazyLock<ttf_parser::Face<'static>> = LazyLock::new(|| {
-    ttf_parser::Face::parse(super::FONT_DATA, 0).expect("embedded font data must be valid")
-});
-
-/// Cache of extracted outlines for the embedded font, keyed by character.
+/// Cache of extracted outlines keyed by `(font, char)`.
 ///
 /// Outline extraction (CFF charstring interpretation + path-string building)
-/// dominates the embedded-SVG render path (~7 µs/glyph) and the embedded font
-/// is static, so caching turns repeated renders into cheap clones.
-static GLYPH_CACHE: LazyLock<RwLock<HashMap<char, Option<GlyphOutline>>>> =
+/// dominates the embedded-SVG render path (~7 µs/glyph) and the embedded fonts
+/// are static, so caching turns repeated renders into cheap clones.
+type OutlineCache<K> = RwLock<HashMap<K, Option<GlyphOutline>>>;
+
+static GLYPH_CACHE: LazyLock<OutlineCache<(FontId, char)>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Cache of extracted outlines for the embedded font, keyed by glyph id
-/// (MATH-table size variants for delimiters / large operators).
-static VARIANT_CACHE: LazyLock<RwLock<HashMap<u16, Option<GlyphOutline>>>> =
+/// Cache of extracted outlines keyed by `(font, glyph id)` for MATH-table size
+/// variants (delimiters / large operators) that are not reachable via cmap.
+static VARIANT_CACHE: LazyLock<OutlineCache<(FontId, u16)>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Cached font info for the embedded font.
-static CACHED_FONT_INFO: LazyLock<FontInfo> = LazyLock::new(|| FontInfo {
-    units_per_em: f64::from(CACHED_FACE.units_per_em()),
-});
+/// Font-level metrics (units per em) for a font identity.
+#[inline]
+pub fn font_info(font: FontId) -> FontInfo {
+    fonts_registry::font_info(font)
+}
 
 /// Parse font-level metrics from raw font data.
 ///
-/// Returns `None` if the font data is malformed.
+/// Returns `None` if the font data is malformed. Retained for callers that have
+/// raw bytes rather than a [`FontId`].
 pub fn parse_font_info(font_data: &[u8]) -> Option<FontInfo> {
-    // Fast path for the embedded font.
-    if std::ptr::eq(font_data, super::FONT_DATA) {
-        return Some(*CACHED_FONT_INFO);
-    }
     let face = ttf_parser::Face::parse(font_data, 0).ok()?;
     Some(FontInfo {
         units_per_em: f64::from(face.units_per_em()),
     })
 }
 
-/// Extract a single glyph's outline from the font.
+/// Extract a single glyph's outline from a registered font.
 ///
 /// Returns `None` if the character has no glyph or no outline (e.g., space).
-pub fn extract_glyph(font_data: &[u8], ch: char) -> Option<GlyphOutline> {
-    // Fast path for the embedded font: use cached Face + outline cache.
-    if std::ptr::eq(font_data, super::FONT_DATA) {
-        if let Some(hit) = GLYPH_CACHE.read().unwrap().get(&ch) {
-            return hit.clone();
-        }
-        let outline = extract_glyph_from_face(&CACHED_FACE, ch);
-        GLYPH_CACHE.write().unwrap().insert(ch, outline.clone());
-        return outline;
+pub fn extract_glyph(font: FontId, ch: char) -> Option<GlyphOutline> {
+    if let Some(hit) = GLYPH_CACHE.read().expect("glyph cache").get(&(font, ch)) {
+        return hit.clone();
     }
-    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
-    extract_glyph_from_face(&face, ch)
+    let outline = extract_glyph_from_face(fonts_registry::face(font), ch);
+    GLYPH_CACHE
+        .write()
+        .expect("glyph cache")
+        .insert((font, ch), outline.clone());
+    outline
 }
 
 fn extract_glyph_from_face(face: &ttf_parser::Face<'_>, ch: char) -> Option<GlyphOutline> {
@@ -103,17 +98,20 @@ fn extract_glyph_from_face(face: &ttf_parser::Face<'_>, ch: char) -> Option<Glyp
 /// so it can be placed with the same positive-scale transform.
 ///
 /// Returns `None` if the glyph has no outline.
-pub fn extract_glyph_by_id(font_data: &[u8], glyph_id: u16) -> Option<GlyphOutline> {
-    if std::ptr::eq(font_data, super::FONT_DATA) {
-        if let Some(hit) = VARIANT_CACHE.read().unwrap().get(&glyph_id) {
-            return hit.clone();
-        }
-        let outline = extract_glyph_by_id_from_face(&CACHED_FACE, glyph_id);
-        VARIANT_CACHE.write().unwrap().insert(glyph_id, outline.clone());
-        return outline;
+pub fn extract_glyph_by_id(font: FontId, glyph_id: u16) -> Option<GlyphOutline> {
+    if let Some(hit) = VARIANT_CACHE
+        .read()
+        .expect("variant cache")
+        .get(&(font, glyph_id))
+    {
+        return hit.clone();
     }
-    let face = ttf_parser::Face::parse(font_data, 0).ok()?;
-    extract_glyph_by_id_from_face(&face, glyph_id)
+    let outline = extract_glyph_by_id_from_face(fonts_registry::face(font), glyph_id);
+    VARIANT_CACHE
+        .write()
+        .expect("variant cache")
+        .insert((font, glyph_id), outline.clone());
+    outline
 }
 
 fn extract_glyph_by_id_from_face(
@@ -237,7 +235,7 @@ mod tests {
 
     #[test]
     fn extract_glyph_for_letter_x() {
-        let outline = extract_glyph(FONT_DATA, 'x').expect("x should have outline");
+        let outline = extract_glyph(FontId::Math, 'x').expect("x should have outline");
         assert!(
             !outline.path_data.is_empty(),
             "path data should not be empty"
@@ -255,30 +253,30 @@ mod tests {
 
     #[test]
     fn extract_glyph_for_digit_2() {
-        let outline = extract_glyph(FONT_DATA, '2').expect("2 should have outline");
+        let outline = extract_glyph(FontId::Math, '2').expect("2 should have outline");
         assert!(outline.path_data.starts_with('M'));
         assert!(outline.advance_width > 0.0);
     }
 
     #[test]
     fn extract_glyph_for_plus() {
-        let outline = extract_glyph(FONT_DATA, '+').expect("+ should have outline");
+        let outline = extract_glyph(FontId::Math, '+').expect("+ should have outline");
         assert!(outline.path_data.starts_with('M'));
     }
 
     #[test]
     fn extract_glyph_for_space_returns_none() {
-        assert!(extract_glyph(FONT_DATA, ' ').is_none());
+        assert!(extract_glyph(FontId::Math, ' ').is_none());
     }
 
     #[test]
     fn extract_glyph_for_nonexistent_char_returns_none() {
-        assert!(extract_glyph(FONT_DATA, '\u{F8FF}').is_none());
+        assert!(extract_glyph(FontId::Math, '\u{F8FF}').is_none());
     }
 
     #[test]
     fn path_data_has_negated_y() {
-        let outline = extract_glyph(FONT_DATA, 'A').expect("A should have outline");
+        let outline = extract_glyph(FontId::Math, 'A').expect("A should have outline");
         let parts: Vec<&str> = outline.path_data.split_whitespace().collect();
         assert_eq!(parts[0], "M");
         // 'A' extends above baseline, so at least some y-coordinates must be negative
@@ -295,7 +293,7 @@ mod tests {
 
     #[test]
     fn path_data_coordinates_are_compact() {
-        let outline = extract_glyph(FONT_DATA, 'x').expect("x should have outline");
+        let outline = extract_glyph(FontId::Math, 'x').expect("x should have outline");
         assert!(
             !outline.path_data.contains(".0 "),
             "integer coords should not have .0 suffix"
@@ -308,13 +306,13 @@ mod tests {
 
     #[test]
     fn extract_glyph_for_greek_alpha() {
-        let outline = extract_glyph(FONT_DATA, 'α');
+        let outline = extract_glyph(FontId::Math, 'α');
         assert!(outline.is_some(), "α should have outline in LM Math");
     }
 
     #[test]
     fn extract_glyph_for_integral() {
-        let outline = extract_glyph(FONT_DATA, '∫');
+        let outline = extract_glyph(FontId::Math, '∫');
         assert!(outline.is_some(), "∫ should have outline in LM Math");
     }
 }

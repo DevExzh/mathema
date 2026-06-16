@@ -45,7 +45,8 @@ The MathML reader handles **both Presentation and Content MathML**. Content form
 **Render pipeline** (`src/render/`, feature-gated):
 - `style.rs` — TeX math styles (Display/Text/Script/ScriptScript)
 - `params.rs` — TeX typesetting constants from the TeXBook
-- `metrics.rs` — glyph metrics from embedded Latin Modern Math font data
+- `metrics.rs` — glyph metrics from embedded Latin Modern Math font data (font-aware via the font registry)
+- `fonts_registry.rs` — **multi-font registry**: a `FontId` enum (Math + Latin Modern text faces — roman/sans/mono in regular/bold/italic/oblique, extracted from `fonts/lm.zip` into `fonts/lm*10-*.otf`) with lazily-parsed `ttf_parser::Face`s, per-`(FontId,char)` metrics cache, and `TextStyle -> FontId` selection. `\text`/`\mathrm`→roman, `\mathbf`→roman-bold, `\mathsf`→sans, `\mathtt`→mono; `\mathbb`/`\mathcal`/`\mathfrak` (DoubleStruck/Script/Fraktur) keep using the Math font's Unicode math-alphanumeric glyphs. MATH-table features (constants, stretchy delimiters, big-operator variants, italic corrections) always come from the Math font.
 - `layout.rs` — recursive layout producing a `LayoutBox` tree (TeXBook Rules 11-18)
 - `spacing.rs` — inter-atom spacing per Knuth's spacing table
 - `emit.rs` — SVG serialization from positioned layout boxes
@@ -62,6 +63,11 @@ The MathML reader handles **both Presentation and Content MathML**. Content form
 - The LaTeX parser pre-sizes its arena from the input length and borrows the input on the common no-macro path (`preprocess_cow`).
 
 **Unicode tables** (`src/unicode/`): `symbols.rs` and `operators.rs` are `phf` perfect-hash maps for symbol/operator lookup. `fonts.rs` has embedded font metrics.
+
+**LaTeX package support** (`src/latex/`): ~26 LaTeX packages (MathJax-style) are supported via three seams:
+- `packages/` — a per-package registry (`mod.rs` aggregates one file per package). Each file exports `MACROS: &[(name, nargs, body)]` (builtin macros seeded into the preprocessor before parsing; user `\newcommand` overrides them) and `SYMBOLS: &[(name, unicode, SymbolClass)]` (consulted by the parser's unknown-command fallback after the core PHF tables miss). Macro/symbol packages live entirely here: amsbsy, amsfonts, amssymb, bbm, bboldx, braket, centernot, dsfont, extpfeil, gensymb, mathtools, physics, textcomp, units, upgreek. Add a package by filling one stub file.
+- `mhchem.rs` / `siunitx.rs` — mini-language translators (`\ce`/`\pu`, `\SI`/`\num`/`\si`/`\ang`/`\qty`/`\unit`) that rewrite their argument into standard LaTeX and re-parse it. One dispatch arm each in `parse.rs`.
+- New environments/commands in `parse.rs` that **compose existing `CompactNode` variants** (no new variant): amscd `CD`, cases `numcases`/`subnumcases`, `empheq`, colortbl (`\cellcolor`/`\rowcolor`/`\columncolor` → `Boxed` cell backgrounds), bussproofs `prooftree` (→ `Array`+`Rule`), xypic `\xymatrix`, and real `color`/`xcolor` (`\color` switch, `\definecolor`, `red!50!blue` mixing → resolved into the existing `Color`/`Boxed` nodes; resolution helpers in `render/css_colors.rs`).
 
 **Config** (`src/error.rs`): `Strictness::Strict` (default) rejects malformed input; `Strictness::Lenient` recovers and collects diagnostics.
 

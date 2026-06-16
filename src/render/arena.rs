@@ -3,6 +3,8 @@
 use crate::ast::TextStyle;
 use std::num::NonZeroU32;
 
+use super::fonts_registry::FontId;
+
 // ── Index types ────────────────────────────────────────────────────────
 
 /// Index into `LayoutArena::boxes`. Uses NonZeroU32 so `Option<LayoutBoxId>` is 4 bytes.
@@ -76,8 +78,13 @@ impl ArenaLayoutBox {
 /// BoxKind variants using arena indices instead of Vec/Box.
 #[derive(Clone, Debug)]
 pub enum ArenaBoxKind {
-    /// A single glyph character.
-    Glyph { ch: char, size: f64, italic: bool },
+    /// A single glyph character drawn from the embedded face `font`.
+    Glyph {
+        ch: char,
+        size: f64,
+        italic: bool,
+        font: FontId,
+    },
     /// Horizontal box: children laid out left to right.
     HBox { children: LayoutSpan },
     /// Vertical box: children stacked top to bottom.
@@ -389,6 +396,7 @@ mod tests {
                 ch: 'x',
                 size: 1.0,
                 italic: false,
+                font: FontId::Math,
             },
         });
         let b = arena.get(id);

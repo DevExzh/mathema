@@ -1,10 +1,10 @@
 pub mod arena;
-#[cfg(feature = "raster")]
-pub(crate) mod css_colors;
 pub mod delimiter_paths;
 pub mod emit;
 #[cfg(feature = "render")]
 pub mod font_embed;
+#[cfg(feature = "render")]
+pub mod fonts_registry;
 pub(crate) mod glyph_variants;
 pub mod layout;
 pub(crate) mod math_table;
@@ -121,10 +121,9 @@ pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Res
     };
     let root = layout::layout_expr(expr, style, options);
     let chars = subset::collect_chars(&root);
-    let mut glyphs =
-        subset::build_glyph_set(FONT_DATA, &chars).expect("embedded font data must be valid");
+    let mut glyphs = subset::build_glyph_set(&chars);
     let variant_ids = subset::collect_variants(&root);
-    subset::add_variants(&mut glyphs, FONT_DATA, &variant_ids);
+    subset::add_variants(&mut glyphs, &variant_ids);
     Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs))
 }
 
@@ -145,10 +144,9 @@ pub fn render_to_svg_standalone_compact(
     };
     let root = layout::layout_expr_c(expr, style, options);
     let chars = subset::collect_chars(&root);
-    let mut glyphs =
-        subset::build_glyph_set(FONT_DATA, &chars).expect("embedded font data must be valid");
+    let mut glyphs = subset::build_glyph_set(&chars);
     let variant_ids = subset::collect_variants(&root);
-    subset::add_variants(&mut glyphs, FONT_DATA, &variant_ids);
+    subset::add_variants(&mut glyphs, &variant_ids);
     Ok(svg_writer::emit_svg_with_fonts(&root, options, &glyphs))
 }
 
@@ -172,10 +170,9 @@ pub fn render_to_svg_standalone_compact_arena(
     layout_arena.clear();
     let root = builder.layout(layout_arena, expr);
     let chars = subset::collect_chars_arena(layout_arena, root);
-    let mut glyphs =
-        subset::build_glyph_set(FONT_DATA, &chars).expect("embedded font data must be valid");
+    let mut glyphs = subset::build_glyph_set(&chars);
     let variant_ids = subset::collect_variants_arena(layout_arena, root);
-    subset::add_variants(&mut glyphs, FONT_DATA, &variant_ids);
+    subset::add_variants(&mut glyphs, &variant_ids);
     Ok(svg_writer::emit_svg_with_fonts_arena(
         layout_arena,
         root,

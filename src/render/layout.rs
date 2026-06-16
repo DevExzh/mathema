@@ -1,4 +1,5 @@
 use super::RenderOptions;
+use super::fonts_registry::{self, FontId};
 use super::math_table;
 use super::metrics::{self, GlyphMetrics};
 use super::params::TexParams;
@@ -23,8 +24,15 @@ pub struct LayoutBox {
 /// The content of a layout box.
 #[derive(Debug, Clone)]
 pub enum BoxKind {
-    /// A single glyph character.
-    Glyph { ch: char, size: f64, italic: bool },
+    /// A single glyph character. `font` selects the embedded face it is drawn
+    /// from (`FontId::Math` for ordinary math; a Latin Modern text face for
+    /// `\mathrm`/`\mathbf`/`\mathsf`/`\mathtt` style glyphs).
+    Glyph {
+        ch: char,
+        size: f64,
+        italic: bool,
+        font: FontId,
+    },
     /// Horizontal box: children laid out left to right.
     HBox { children: Vec<PositionedBox> },
     /// Vertical box: children stacked top to bottom.
@@ -107,6 +115,16 @@ impl LayoutBox {
 
     #[inline]
     fn glyph(ch: char, size: f64, italic: bool) -> Self {
+        Self::glyph_font(ch, size, italic, FontId::Math)
+    }
+
+    /// Build a glyph box drawn from a specific embedded face.
+    ///
+    /// For `FontId::Math` this matches [`LayoutBox::glyph`]; for a Latin Modern
+    /// text face the advance/bbox metrics come from that face so layout
+    /// positions line up with the drawn outlines.
+    #[inline]
+    fn glyph_font(ch: char, size: f64, italic: bool, font: FontId) -> Self {
         if is_invisible_char(ch) {
             return Self {
                 width: 0.0,
@@ -115,16 +133,25 @@ impl LayoutBox {
                 kind: BoxKind::Kern,
             };
         }
-        let m = if italic {
-            metrics::glyph_metrics(ch)
+        let m = if font.is_math() {
+            if italic {
+                metrics::glyph_metrics(ch)
+            } else {
+                metrics::glyph_metrics_upright(ch)
+            }
         } else {
-            metrics::glyph_metrics_upright(ch)
+            fonts_registry::text_metrics(ch, italic, font)
         };
         Self {
             width: m.width * size,
             height: m.height * size,
             depth: m.depth * size,
-            kind: BoxKind::Glyph { ch, size, italic },
+            kind: BoxKind::Glyph {
+                ch,
+                size,
+                italic,
+                font,
+            },
         }
     }
 
@@ -134,7 +161,12 @@ impl LayoutBox {
             width: m.width * size,
             height: m.height * size,
             depth: m.depth * size,
-            kind: BoxKind::Glyph { ch, size, italic },
+            kind: BoxKind::Glyph {
+                ch,
+                size,
+                italic,
+                font: FontId::Math,
+            },
         }
     }
 }
@@ -1447,7 +1479,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     }
     let ctx = &ctx.deeper();
     match node {
-        MathNode::Number(s) => layout_text_run(s, ctx, false),
+        MathNode::Number(s) => layout_text_run(s, ctx, false, None),
         MathNode::Identifier(s) => {
             if s.chars().count() == 1 {
                 // Single-char identifiers are italic; chars().next() is safe
@@ -1455,7 +1487,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 let ch = s.chars().next().expect("non-empty checked");
                 LayoutBox::glyph(ch, ctx.size(), is_math_italic_char(ch))
             } else {
-                layout_text_run(s, ctx, false)
+                layout_text_run(s, ctx, false, None)
             }
         },
         MathNode::Operator(op) => layout_operator(op, ctx),
@@ -1485,15 +1517,12 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                     | TextStyle::SansSerifItalic
                     | TextStyle::SansSerifBoldItalic
             );
-            let mut lb = layout_text_run(s, ctx, italic);
-            if !matches!(style, TextStyle::Normal)
-                && let BoxKind::TextRun {
-                    ref mut text_style, ..
-                } = lb.kind
-            {
-                *text_style = Some(*style);
-            }
-            lb
+            let ts = if matches!(style, TextStyle::Normal) {
+                None
+            } else {
+                Some(*style)
+            };
+            layout_text_run(s, ctx, italic, ts)
         },
         MathNode::Space(r) => LayoutBox::kern(r.as_f64() * ctx.size()),
         MathNode::Rule {
@@ -1594,8 +1623,14 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
 
 // === Leaf node layouts ===
 
-fn layout_text_run(text: &str, ctx: &LayoutCtx, italic: bool) -> LayoutBox {
+fn layout_text_run(
+    text: &str,
+    ctx: &LayoutCtx,
+    italic: bool,
+    text_style: Option<TextStyle>,
+) -> LayoutBox {
     let size = ctx.size();
+    let font = fonts_registry::font_for_text_run(text_style);
     let mut total_width = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
@@ -1604,11 +1639,9 @@ fn layout_text_run(text: &str, ctx: &LayoutCtx, italic: bool) -> LayoutBox {
         // Use upright metrics for non-italic text (operator names, numbers, \text{}).
         // Italic and upright fonts have significantly different character widths
         // (e.g. 'i' is 0.278em upright vs 0.345em italic — 24% wider in italic).
-        let m = if italic {
-            metrics::glyph_metrics(ch)
-        } else {
-            metrics::glyph_metrics_upright(ch)
-        };
+        // For text faces the advance is read straight from the selected face so
+        // layout positions line up with the drawn outlines.
+        let m = fonts_registry::text_metrics(ch, italic, font);
         let h = m.height * size;
         let d = m.depth * size;
         max_height = max_height.max(h);
@@ -1624,13 +1657,13 @@ fn layout_text_run(text: &str, ctx: &LayoutCtx, italic: bool) -> LayoutBox {
             text: text.to_string(),
             size,
             italic,
-            text_style: None,
+            text_style,
         },
     }
 }
 
 fn layout_operator(op: &OperatorAttr, ctx: &LayoutCtx) -> LayoutBox {
-    layout_text_run(&op.name, ctx, false)
+    layout_text_run(&op.name, ctx, false, None)
 }
 
 // === Structure node layouts ===
@@ -4242,10 +4275,16 @@ fn scale_box_kind(kind: BoxKind, f: f64) -> BoxKind {
             bg_color,
             border_color,
         },
-        BoxKind::Glyph { ch, size, italic } => BoxKind::Glyph {
+        BoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => BoxKind::Glyph {
             ch,
             size: size * f,
             italic,
+            font,
         },
         BoxKind::TextRun {
             text,
@@ -4330,20 +4369,39 @@ fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> La
             }
         }
 
+        let lm_font = fonts_registry::text_font_for_style(style);
         let layout = match node {
             MathNode::Identifier(s) => {
-                let mapped: String = s
-                    .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
-                    .collect();
-                layout_node(&MathNode::Identifier(mapped), ctx)
+                if let Some(font) = lm_font {
+                    // Mappable style: draw the base codepoints from the matching
+                    // Latin Modern text face (slant/weight baked into the face).
+                    if s.chars().count() == 1 {
+                        let ch = s.chars().next().expect("non-empty checked");
+                        LayoutBox::glyph_font(ch, ctx.size(), false, font)
+                    } else {
+                        layout_text_run(s, ctx, false, Some(style))
+                    }
+                } else {
+                    // Non-mappable style (italic letters, double-struck, script,
+                    // fraktur): keep the Math-font Unicode-remap path.
+                    let mapped: String = s
+                        .chars()
+                        .map(|c| styled_char(c, style).unwrap_or(c))
+                        .collect();
+                    layout_node(&MathNode::Identifier(mapped), ctx)
+                }
             },
             MathNode::Number(s) => {
-                let mapped: String = s
-                    .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
-                    .collect();
-                layout_node(&MathNode::Number(mapped), ctx)
+                if let Some(font) = lm_font {
+                    let _ = font;
+                    layout_text_run(s, ctx, false, Some(style))
+                } else {
+                    let mapped: String = s
+                        .chars()
+                        .map(|c| styled_char(c, style).unwrap_or(c))
+                        .collect();
+                    layout_node(&MathNode::Number(mapped), ctx)
+                }
             },
             other => layout_node(other, ctx),
         };
@@ -4523,17 +4581,17 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
     }
     let ctx = &ctx.deeper();
     match *arena.node(id) {
-        CompactNode::Number(sid) => layout_text_run(arena.str_val(sid), ctx, false),
+        CompactNode::Number(sid) => layout_text_run(arena.str_val(sid), ctx, false, None),
         CompactNode::Identifier(sid) => {
             let s = arena.str_val(sid);
             if s.chars().count() == 1 {
                 let ch = s.chars().next().expect("non-empty checked");
                 LayoutBox::glyph(ch, ctx.size(), is_math_italic_char(ch))
             } else {
-                layout_text_run(s, ctx, false)
+                layout_text_run(s, ctx, false, None)
             }
         },
-        CompactNode::Operator { name, .. } => layout_text_run(arena.str_val(name), ctx, false),
+        CompactNode::Operator { name, .. } => layout_text_run(arena.str_val(name), ctx, false, None),
         CompactNode::Symbol(kind, sid) => {
             let s = arena.str_val(sid);
             if let Some(ch) = s.chars().next() {
@@ -4561,15 +4619,12 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
                     | TextStyle::SansSerifItalic
                     | TextStyle::SansSerifBoldItalic
             );
-            let mut lb = layout_text_run(arena.str_val(sid), ctx, italic);
-            if !matches!(style, TextStyle::Normal)
-                && let BoxKind::TextRun {
-                    ref mut text_style, ..
-                } = lb.kind
-            {
-                *text_style = Some(style);
-            }
-            lb
+            let ts = if matches!(style, TextStyle::Normal) {
+                None
+            } else {
+                Some(style)
+            };
+            layout_text_run(arena.str_val(sid), ctx, italic, ts)
         },
         CompactNode::Space(r) => LayoutBox::kern(r.as_f64() * ctx.size()),
         CompactNode::Row(span) => layout_row_c(arena, span, ctx),
@@ -7007,34 +7062,48 @@ fn layout_styled_c(
         }
         prev_atom = Some(cur_atom);
 
+        let lm_font = fonts_registry::text_font_for_style(style);
         let layout = match *arena.node(id) {
             CompactNode::Identifier(sid) => {
                 let s = arena.str_val(sid);
-                let mapped: String = s
-                    .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
-                    .collect();
-                let styled_italic = matches!(
-                    style,
-                    TextStyle::Italic
-                        | TextStyle::BoldItalic
-                        | TextStyle::SansSerifItalic
-                        | TextStyle::SansSerifBoldItalic
-                );
-                if mapped.chars().count() == 1 {
-                    let ch = mapped.chars().next().expect("non-empty checked");
-                    LayoutBox::glyph(ch, ctx.size(), styled_italic)
+                if let Some(font) = lm_font {
+                    if s.chars().count() == 1 {
+                        let ch = s.chars().next().expect("non-empty checked");
+                        LayoutBox::glyph_font(ch, ctx.size(), false, font)
+                    } else {
+                        layout_text_run(s, ctx, false, Some(style))
+                    }
                 } else {
-                    layout_text_run(&mapped, ctx, styled_italic)
+                    let mapped: String = s
+                        .chars()
+                        .map(|c| styled_char(c, style).unwrap_or(c))
+                        .collect();
+                    let styled_italic = matches!(
+                        style,
+                        TextStyle::Italic
+                            | TextStyle::BoldItalic
+                            | TextStyle::SansSerifItalic
+                            | TextStyle::SansSerifBoldItalic
+                    );
+                    if mapped.chars().count() == 1 {
+                        let ch = mapped.chars().next().expect("non-empty checked");
+                        LayoutBox::glyph(ch, ctx.size(), styled_italic)
+                    } else {
+                        layout_text_run(&mapped, ctx, styled_italic, None)
+                    }
                 }
             },
             CompactNode::Number(sid) => {
                 let s = arena.str_val(sid);
-                let mapped: String = s
-                    .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
-                    .collect();
-                layout_text_run(&mapped, ctx, false)
+                if lm_font.is_some() {
+                    layout_text_run(s, ctx, false, Some(style))
+                } else {
+                    let mapped: String = s
+                        .chars()
+                        .map(|c| styled_char(c, style).unwrap_or(c))
+                        .collect();
+                    layout_text_run(&mapped, ctx, false, None)
+                }
             },
             _ => layout_node_c(arena, id, ctx),
         };
@@ -7143,6 +7212,17 @@ impl<'a> ArenaLayoutCtx<'a> {
 // ── Leaf helpers ──────────────────────────────────────────────────────
 
 fn alloc_glyph(arena: &mut LayoutArena, ch: char, size: f64, italic: bool) -> LayoutBoxId {
+    alloc_glyph_font(arena, ch, size, italic, FontId::Math)
+}
+
+/// Allocate a glyph box drawn from a specific embedded face (arena variant).
+fn alloc_glyph_font(
+    arena: &mut LayoutArena,
+    ch: char,
+    size: f64,
+    italic: bool,
+    font: FontId,
+) -> LayoutBoxId {
     if is_invisible_char(ch) {
         return arena.alloc(ArenaLayoutBox {
             width: 0.0,
@@ -7151,16 +7231,25 @@ fn alloc_glyph(arena: &mut LayoutArena, ch: char, size: f64, italic: bool) -> La
             kind: ArenaBoxKind::Kern,
         });
     }
-    let m = if italic {
-        metrics::glyph_metrics(ch)
+    let m = if font.is_math() {
+        if italic {
+            metrics::glyph_metrics(ch)
+        } else {
+            metrics::glyph_metrics_upright(ch)
+        }
     } else {
-        metrics::glyph_metrics_upright(ch)
+        fonts_registry::text_metrics(ch, italic, font)
     };
     arena.alloc(ArenaLayoutBox {
         width: m.width * size,
         height: m.height * size,
         depth: m.depth * size,
-        kind: ArenaBoxKind::Glyph { ch, size, italic },
+        kind: ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        },
     })
 }
 
@@ -7183,7 +7272,12 @@ fn alloc_glyph_with_metrics(
         width: m.width * size,
         height: m.height * size,
         depth: m.depth * size,
-        kind: ArenaBoxKind::Glyph { ch, size, italic },
+        kind: ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font: FontId::Math,
+        },
     })
 }
 
@@ -7225,18 +7319,16 @@ fn layout_text_run_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
     italic: bool,
+    text_style: Option<TextStyle>,
 ) -> LayoutBoxId {
     let size = ctx.size();
+    let font = fonts_registry::font_for_text_run(text_style);
     let mut total_width = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
 
     for ch in text.chars() {
-        let m = if italic {
-            metrics::glyph_metrics(ch)
-        } else {
-            metrics::glyph_metrics_upright(ch)
-        };
+        let m = fonts_registry::text_metrics(ch, italic, font);
         let h = m.height * size;
         let d = m.depth * size;
         max_height = max_height.max(h);
@@ -7252,7 +7344,7 @@ fn layout_text_run_arena(
             text: text.to_string(),
             size,
             italic,
-            text_style: None,
+            text_style,
         },
     })
 }
@@ -7432,18 +7524,20 @@ fn layout_node_arena(
     }
     let ctx = &ctx.deeper();
     match *ast.node(id) {
-        CompactNode::Number(sid) => layout_text_run_arena(ast.str_val(sid), arena, ctx, false),
+        CompactNode::Number(sid) => {
+            layout_text_run_arena(ast.str_val(sid), arena, ctx, false, None)
+        },
         CompactNode::Identifier(sid) => {
             let s = ast.str_val(sid);
             if s.chars().count() == 1 {
                 let ch = s.chars().next().expect("non-empty checked");
                 alloc_glyph(arena, ch, ctx.size(), is_math_italic_char(ch))
             } else {
-                layout_text_run_arena(s, arena, ctx, false)
+                layout_text_run_arena(s, arena, ctx, false, None)
             }
         },
         CompactNode::Operator { name, .. } => {
-            layout_text_run_arena(ast.str_val(name), arena, ctx, false)
+            layout_text_run_arena(ast.str_val(name), arena, ctx, false, None)
         },
         CompactNode::Symbol(kind, sid) => {
             let s = ast.str_val(sid);
@@ -7472,17 +7566,12 @@ fn layout_node_arena(
                     | TextStyle::SansSerifItalic
                     | TextStyle::SansSerifBoldItalic
             );
-            let lb_arena = layout_text_run_arena(ast.str_val(sid), arena, ctx, italic);
-            if !matches!(style, TextStyle::Normal) {
-                let lb = arena.get_mut(lb_arena);
-                if let ArenaBoxKind::TextRun {
-                    ref mut text_style, ..
-                } = lb.kind
-                {
-                    *text_style = Some(style);
-                }
-            }
-            lb_arena
+            let ts = if matches!(style, TextStyle::Normal) {
+                None
+            } else {
+                Some(style)
+            };
+            layout_text_run_arena(ast.str_val(sid), arena, ctx, italic, ts)
         },
         CompactNode::Space(r) => arena.alloc(ArenaLayoutBox::kern(r.as_f64() * ctx.size())),
         CompactNode::Row(span) => layout_row_arena(ast, span, arena, ctx),
@@ -10578,34 +10667,48 @@ fn layout_styled_arena(
     let mut max_depth: f64 = 0.0;
 
     for &id in ids {
+        let lm_font = fonts_registry::text_font_for_style(style);
         let layout_id = match *ast.node(id) {
             CompactNode::Identifier(sid) => {
                 let s = ast.str_val(sid);
-                let mapped: String = s
-                    .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
-                    .collect();
-                let styled_italic = matches!(
-                    style,
-                    TextStyle::Italic
-                        | TextStyle::BoldItalic
-                        | TextStyle::SansSerifItalic
-                        | TextStyle::SansSerifBoldItalic
-                );
-                if mapped.chars().count() == 1 {
-                    let ch = mapped.chars().next().expect("non-empty checked");
-                    alloc_glyph(arena, ch, ctx.size(), styled_italic)
+                if let Some(font) = lm_font {
+                    if s.chars().count() == 1 {
+                        let ch = s.chars().next().expect("non-empty checked");
+                        alloc_glyph_font(arena, ch, ctx.size(), false, font)
+                    } else {
+                        layout_text_run_arena(s, arena, ctx, false, Some(style))
+                    }
                 } else {
-                    layout_text_run_arena(&mapped, arena, ctx, styled_italic)
+                    let mapped: String = s
+                        .chars()
+                        .map(|c| styled_char(c, style).unwrap_or(c))
+                        .collect();
+                    let styled_italic = matches!(
+                        style,
+                        TextStyle::Italic
+                            | TextStyle::BoldItalic
+                            | TextStyle::SansSerifItalic
+                            | TextStyle::SansSerifBoldItalic
+                    );
+                    if mapped.chars().count() == 1 {
+                        let ch = mapped.chars().next().expect("non-empty checked");
+                        alloc_glyph(arena, ch, ctx.size(), styled_italic)
+                    } else {
+                        layout_text_run_arena(&mapped, arena, ctx, styled_italic, None)
+                    }
                 }
             },
             CompactNode::Number(sid) => {
                 let s = ast.str_val(sid);
-                let mapped: String = s
-                    .chars()
-                    .map(|c| styled_char(c, style).unwrap_or(c))
-                    .collect();
-                layout_text_run_arena(&mapped, arena, ctx, false)
+                if lm_font.is_some() {
+                    layout_text_run_arena(s, arena, ctx, false, Some(style))
+                } else {
+                    let mapped: String = s
+                        .chars()
+                        .map(|c| styled_char(c, style).unwrap_or(c))
+                        .collect();
+                    layout_text_run_arena(&mapped, arena, ctx, false, None)
+                }
             },
             _ => layout_node_arena(ast, id, arena, ctx),
         };

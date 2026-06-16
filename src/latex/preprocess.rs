@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use super::packages;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -40,6 +42,9 @@ pub fn preprocess_cow(input: &str) -> std::borrow::Cow<'_, str> {
     }
     let stripped = strip_comments(input);
     let mut pp = Preprocessor::default();
+    // Seed builtin (package) macros first so that user `\newcommand`/`\def`
+    // definitions extracted next override them (user definitions win).
+    pp.seed_builtins();
     let after_defs = pp.extract_definitions(&stripped);
     std::borrow::Cow::Owned(pp.expand_all(&after_defs))
 }
@@ -51,6 +56,37 @@ fn needs_preprocessing(input: &str) -> bool {
         || input.contains("\\renewcommand")
         || input.contains("\\def")
         || input.contains("\\newenvironment")
+        || uses_builtin_macro(input)
+}
+
+/// Scan `input` for any `\command` that is a registered builtin (package)
+/// macro. Returns on the first hit. Plain formulas — even those that use core
+/// commands like `\frac` or `\alpha` — return `false` and stay zero-copy.
+fn uses_builtin_macro(input: &str) -> bool {
+    let mut s = input;
+    while let Some(pos) = s.find('\\') {
+        let after = &s[pos + 1..];
+        let name_len: usize = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .map(|c| c.len_utf8())
+            .sum();
+        if name_len > 0 && packages::is_builtin_macro_name(&after[..name_len]) {
+            return true;
+        }
+        // Advance past this backslash (and any command/escaped char) to avoid
+        // re-finding the same `\`.
+        let skip = if name_len > 0 {
+            name_len
+        } else {
+            after.chars().next().map_or(0, char::len_utf8)
+        };
+        if skip == 0 {
+            break;
+        }
+        s = &after[skip..];
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +204,25 @@ fn scan_command(s: &str) -> Option<(&str, &str)> {
 // ---------------------------------------------------------------------------
 
 impl Preprocessor {
+    /// Seed the static builtin (package) macro table into this preprocessor.
+    ///
+    /// Called before [`Self::extract_definitions`], so any user `\newcommand` /
+    /// `\def` of the same name later overrides the builtin (user definitions
+    /// win). Builtin bodies may reference other builtins or primitives; the
+    /// existing 64-iteration cap in [`Self::expand_all`] guards against cycles.
+    fn seed_builtins(&mut self) {
+        for (name, param_count, body) in packages::builtin_macros() {
+            self.macros.insert(
+                name.to_owned(),
+                MacroDef {
+                    param_count,
+                    optional_default: None,
+                    body: body.to_owned(),
+                },
+            );
+        }
+    }
+
     /// Scan input, recognize definition commands, store them, and return the
     /// remaining (non-definition) text.
     fn extract_definitions(&mut self, input: &str) -> String {

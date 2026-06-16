@@ -8,8 +8,22 @@ use std::fmt::Write;
 use super::RenderOptions;
 use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
 use super::emit::{XmlAttrEscape, svg_x_bounds_px, svg_x_bounds_px_arena, write_escaped_char};
+use super::fonts_registry::{self, FontId};
 use super::layout::{BoxKind, LayoutBox};
 use super::subset::GlyphSet;
+
+/// Build the `<defs>` id for an embedded glyph.
+///
+/// The Math font keeps the historical `g{cp}` ids (so embedded references stay
+/// stable); other faces are namespaced as `gf{font}_{cp}` to avoid collisions
+/// when the same base codepoint is drawn from multiple faces.
+fn glyph_id(font: FontId, cp: u32) -> String {
+    if font.is_math() {
+        format!("g{cp}")
+    } else {
+        format!("gf{}_{}", font.index(), cp)
+    }
+}
 
 // ── Heap-based emission ──────────────────────────────────────────────
 
@@ -45,24 +59,29 @@ pub fn emit_svg_with_fonts(root: &LayoutBox, options: &RenderOptions, glyphs: &G
     svg
 }
 
-/// Write `<defs>` block with glyph path definitions, sorted by codepoint for determinism.
+/// Write `<defs>` block with glyph path definitions, sorted for determinism.
 fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
-    if glyphs.glyphs.is_empty() {
+    let has_glyphs = glyphs.fonts.values().any(|f| !f.glyphs.is_empty());
+    if !has_glyphs && glyphs.variants.is_empty() {
         return;
     }
 
     svg.push_str("<defs>");
 
-    let mut entries: Vec<_> = glyphs.glyphs.iter().collect();
-    entries.sort_by_key(|(ch, _)| **ch as u32);
-
-    for (ch, outline) in entries {
-        let _ = write!(
-            svg,
-            r#"<path id="g{}" d="{}"/>"#,
-            *ch as u32,
-            XmlAttrEscape(&outline.path_data),
-        );
+    // Per-font glyph outlines, ordered by font index then codepoint.
+    let mut font_entries: Vec<_> = glyphs.fonts.iter().collect();
+    font_entries.sort_by_key(|(font, _)| font.index());
+    for (font, fg) in font_entries {
+        let mut entries: Vec<_> = fg.glyphs.iter().collect();
+        entries.sort_by_key(|(ch, _)| **ch as u32);
+        for (ch, outline) in entries {
+            let _ = write!(
+                svg,
+                r#"<path id="{}" d="{}"/>"#,
+                glyph_id(*font, *ch as u32),
+                XmlAttrEscape(&outline.path_data),
+            );
+        }
     }
 
     // MATH-table size variants (delimiters / large operators), keyed by glyph id.
@@ -116,7 +135,12 @@ fn emit_box_embedded(
     glyphs: &GlyphSet,
 ) {
     match &layout.kind {
-        BoxKind::Glyph { ch, size, italic } => {
+        BoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => {
             // Display-size large operators (∑, ∫, …) use a designed MATH-table
             // variant glyph when available, matching the raster backend.
             if *size > 1.2
@@ -141,23 +165,23 @@ fn emit_box_embedded(
                 );
                 return;
             }
-            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
+            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic, *font);
         },
 
         BoxKind::TextRun {
-            text, size, italic, ..
+            text,
+            size,
+            italic,
+            text_style,
         } => {
             // For font-embed, we still need per-character glyph paths
+            let font = fonts_registry::font_for_text_run(*text_style);
             let mut cx = x;
             for ch in text.chars() {
-                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic);
+                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic, font);
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
-                let m = if *italic {
-                    super::metrics::glyph_metrics(ch)
-                } else {
-                    super::metrics::glyph_metrics_upright(ch)
-                };
+                let m = fonts_registry::text_metrics(ch, *italic, font);
                 cx += m.width * size * em;
             }
         },
@@ -246,7 +270,7 @@ fn emit_box_embedded(
                 }
             } else {
                 // Fallback to glyph rendering
-                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
+                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false, FontId::Math);
             }
         },
 
@@ -329,33 +353,56 @@ fn emit_glyph(
     options: &RenderOptions,
     glyphs: &GlyphSet,
     italic: bool,
+    font: FontId,
 ) {
-    // Try actual Math Italic glyph first when italic
-    if italic {
-        if let Some(italic_ch) = super::layout::math_italic_codepoint(ch) {
-            if glyphs.glyphs.contains_key(&italic_ch) {
-                let scale = size * em / glyphs.font_info.units_per_em;
-                let _ = write!(
-                    svg,
-                    r##"<use href="#g{cp}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
-                    cp = italic_ch as u32,
-                    x = x,
-                    y = y,
-                    s = scale,
-                    color = XmlAttrEscape(&options.fg_color),
-                );
-                return;
-            }
+    // Text-face glyphs (e.g. \mathbf, \mathsf, \mathtt) carry their slant/weight
+    // in the outline itself: draw the base codepoint with no remap or skew.
+    // Falls back to the Math font (handled by `GlyphSet::outline`) when absent.
+    if !font.is_math() {
+        if let Some((outline, used_font, info)) = glyphs.outline(font, ch) {
+            let _ = outline;
+            let scale = size * em / info.units_per_em;
+            let _ = write!(
+                svg,
+                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
+                id = glyph_id(used_font, ch as u32),
+                x = x,
+                y = y,
+                s = scale,
+                color = XmlAttrEscape(&options.fg_color),
+            );
+            return;
         }
+        // No outline in the text face nor the Math fallback → <text>.
+        emit_text_fallback(svg, ch, size, x, y, em, options, italic);
+        return;
     }
-    if glyphs.glyphs.contains_key(&ch) {
-        let scale = size * em / glyphs.font_info.units_per_em;
+
+    // Math font: try the actual Math Italic glyph first when italic.
+    if italic
+        && let Some(italic_ch) = super::layout::math_italic_codepoint(ch)
+        && let Some((_, used_font, info)) = glyphs.outline(FontId::Math, italic_ch)
+    {
+        let scale = size * em / info.units_per_em;
+        let _ = write!(
+            svg,
+            r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
+            id = glyph_id(used_font, italic_ch as u32),
+            x = x,
+            y = y,
+            s = scale,
+            color = XmlAttrEscape(&options.fg_color),
+        );
+        return;
+    }
+    if let Some((_, used_font, info)) = glyphs.outline(FontId::Math, ch) {
+        let scale = size * em / info.units_per_em;
         if italic {
             // Apply synthetic italic via skewX(-12) to the glyph outline
             let _ = write!(
                 svg,
-                r##"<use href="#g{cp}" transform="translate({x:.3},{y:.3}) scale({s:.6}) skewX(-12)" fill="{color}"/>"##,
-                cp = ch as u32,
+                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6}) skewX(-12)" fill="{color}"/>"##,
+                id = glyph_id(used_font, ch as u32),
                 x = x,
                 y = y,
                 s = scale,
@@ -364,8 +411,8 @@ fn emit_glyph(
         } else {
             let _ = write!(
                 svg,
-                r##"<use href="#g{cp}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
-                cp = ch as u32,
+                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
+                id = glyph_id(used_font, ch as u32),
                 x = x,
                 y = y,
                 s = scale,
@@ -373,32 +420,46 @@ fn emit_glyph(
             );
         }
     } else {
-        // Fallback: <text> element (same as emit.rs)
-        let font_size = em * size;
-        if italic {
-            let _ = write!(
-                svg,
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" font-style="italic" fill="{color}">"#,
-                x = x,
-                y = y,
-                fs = font_size,
-                ff = XmlAttrEscape(&options.font_family),
-                color = XmlAttrEscape(&options.fg_color),
-            );
-        } else {
-            let _ = write!(
-                svg,
-                r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
-                x = x,
-                y = y,
-                fs = font_size,
-                ff = XmlAttrEscape(&options.font_family),
-                color = XmlAttrEscape(&options.fg_color),
-            );
-        }
-        write_escaped_char(svg, ch);
-        svg.push_str("</text>");
+        emit_text_fallback(svg, ch, size, x, y, em, options, italic);
     }
+}
+
+/// `<text>` fallback when no embedded outline is available.
+#[allow(clippy::too_many_arguments)]
+fn emit_text_fallback(
+    svg: &mut String,
+    ch: char,
+    size: f64,
+    x: f64,
+    y: f64,
+    em: f64,
+    options: &RenderOptions,
+    italic: bool,
+) {
+    let font_size = em * size;
+    if italic {
+        let _ = write!(
+            svg,
+            r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" font-style="italic" fill="{color}">"#,
+            x = x,
+            y = y,
+            fs = font_size,
+            ff = XmlAttrEscape(&options.font_family),
+            color = XmlAttrEscape(&options.fg_color),
+        );
+    } else {
+        let _ = write!(
+            svg,
+            r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
+            x = x,
+            y = y,
+            fs = font_size,
+            ff = XmlAttrEscape(&options.font_family),
+            color = XmlAttrEscape(&options.fg_color),
+        );
+    }
+    write_escaped_char(svg, ch);
+    svg.push_str("</text>");
 }
 
 // ── Arena-based emission ─────────────────────────────────────────────
@@ -454,7 +515,12 @@ fn emit_box_arena_embedded(
 ) {
     let layout = arena.get(id);
     match &layout.kind {
-        ArenaBoxKind::Glyph { ch, size, italic } => {
+        ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => {
             if *size > 1.2
                 && super::glyph_variants::is_large_op_char(*ch)
                 && let Some(v) = super::glyph_variants::display_operator_variant(*ch)
@@ -477,23 +543,23 @@ fn emit_box_arena_embedded(
                 );
                 return;
             }
-            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic);
+            emit_glyph(svg, *ch, *size, x, y, em, options, glyphs, *italic, *font);
         },
 
         ArenaBoxKind::TextRun {
-            text, size, italic, ..
+            text,
+            size,
+            italic,
+            text_style,
         } => {
             // For font-embed, we still need per-character glyph paths
+            let font = fonts_registry::font_for_text_run(*text_style);
             let mut cx = x;
             for ch in text.chars() {
-                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic);
+                emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic, font);
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
-                let m = if *italic {
-                    super::metrics::glyph_metrics(ch)
-                } else {
-                    super::metrics::glyph_metrics_upright(ch)
-                };
+                let m = fonts_registry::text_metrics(ch, *italic, font);
                 cx += m.width * size * em;
             }
         },
@@ -582,7 +648,7 @@ fn emit_box_arena_embedded(
                 }
             } else {
                 // Fallback to glyph rendering
-                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false);
+                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false, FontId::Math);
             }
         },
 
@@ -658,14 +724,12 @@ mod tests {
     use crate::render::subset::{build_glyph_set, collect_chars};
     use std::collections::HashSet;
 
-    static FONT_DATA: &[u8] = include_bytes!("fonts/LatinModernMath-Regular.otf");
-
     fn render_embedded(latex_nodes: Vec<MathNode>) -> String {
         let expr = MathExpr::inline(latex_nodes);
         let options = RenderOptions::default();
         let root = layout_expr(&expr, MathStyle::Text, &options);
         let chars = collect_chars(&root);
-        let glyphs = build_glyph_set(FONT_DATA, &chars).unwrap();
+        let glyphs = build_glyph_set(&chars);
         emit_svg_with_fonts(&root, &options, &glyphs)
     }
 
@@ -761,7 +825,7 @@ mod tests {
         };
         let root = layout_expr(&expr, MathStyle::Text, &options);
         let chars = collect_chars(&root);
-        let glyphs = build_glyph_set(FONT_DATA, &chars).unwrap();
+        let glyphs = build_glyph_set(&chars);
         let svg = emit_svg_with_fonts(&root, &options, &glyphs);
         assert!(svg.contains("fill=\"#ff0000\""));
     }
@@ -782,7 +846,7 @@ mod tests {
         let options = RenderOptions::default();
         let root = layout_expr(&expr, MathStyle::Text, &options);
         let empty_chars = HashSet::new();
-        let glyphs = build_glyph_set(FONT_DATA, &empty_chars).unwrap();
+        let glyphs = build_glyph_set(&empty_chars);
         let svg = emit_svg_with_fonts(&root, &options, &glyphs);
         assert!(
             svg.contains("<text"),
@@ -804,7 +868,7 @@ mod tests {
         // Heap path
         let heap_root = layout_expr_c(&result.expr, MathStyle::Text, &options);
         let heap_chars = collect_chars(&heap_root);
-        let heap_glyphs = build_glyph_set(FONT_DATA, &heap_chars).unwrap();
+        let heap_glyphs = build_glyph_set(&heap_chars);
         let heap_svg = emit_svg_with_fonts(&heap_root, &options, &heap_glyphs);
 
         // Arena path
@@ -812,7 +876,7 @@ mod tests {
         let builder = LayoutBuilder::new(MathStyle::Text, &options);
         let arena_root = builder.layout(&mut arena, &result.expr);
         let arena_chars = collect_chars_arena(&arena, arena_root);
-        let arena_glyphs = build_glyph_set(FONT_DATA, &arena_chars).unwrap();
+        let arena_glyphs = build_glyph_set(&arena_chars);
         let arena_svg = emit_svg_with_fonts_arena(&arena, arena_root, &options, &arena_glyphs);
 
         assert_eq!(heap_svg, arena_svg, "arena must match heap");

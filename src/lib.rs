@@ -1,5 +1,7 @@
 pub mod ast;
 pub mod convert;
+#[path = "render/css_colors.rs"]
+pub(crate) mod css_colors;
 pub mod error;
 pub mod latex;
 pub mod reader;

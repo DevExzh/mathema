@@ -2,6 +2,7 @@ use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::char;
 use smallvec::SmallVec;
+use std::collections::HashMap;
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
@@ -217,6 +218,108 @@ fn clean_text_content(raw: &str) -> String {
     out
 }
 
+/// Parse empheq option list (`box=…,left=…,right=…`), returning the raw value
+/// strings for the `box`, `left`, and `right` keys. Splitting respects brace
+/// depth so values like `\colorbox{a,b}` are not mis-split. Unknown keys are
+/// ignored.
+fn parse_empheq_options(opts: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let (mut box_spec, mut left_spec, mut right_spec) = (None, None, None);
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut bytes_end = opts.len();
+    let mut parts: SmallVec<[&str; 4]> = SmallVec::new();
+    for (i, c) in opts.char_indices() {
+        match c {
+            '{' | '[' => depth += 1,
+            '}' | ']' if depth > 0 => depth -= 1,
+            ',' if depth <= 0 => {
+                parts.push(&opts[start..i]);
+                start = i + 1;
+            },
+            _ => {},
+        }
+        bytes_end = i + c.len_utf8();
+    }
+    if start <= bytes_end {
+        parts.push(&opts[start..]);
+    }
+    for part in parts {
+        let part = part.trim();
+        if let Some((key, val)) = part.split_once('=') {
+            let val = val.trim().to_string();
+            match key.trim() {
+                "box" => box_spec = Some(val),
+                "left" => left_spec = Some(val),
+                "right" => right_spec = Some(val),
+                _ => {},
+            }
+        }
+    }
+    (box_spec, left_spec, right_spec)
+}
+
+/// Extract the `n`-th `{…}` group from a slice that begins after a command
+/// name (e.g. the `{yellow}` of `\colorbox{yellow}`). Returns `""` when the
+/// requested group is absent.
+fn empheq_brace_arg(mut s: &str, n: usize) -> &str {
+    let mut idx = 0;
+    loop {
+        let open = match s.find('{') {
+            Some(p) => p,
+            None => return "",
+        };
+        let after = &s[open + 1..];
+        let mut depth = 1i32;
+        let mut close = None;
+        for (i, c) in after.char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(i);
+                        break;
+                    }
+                },
+                _ => {},
+            }
+        }
+        let close = match close {
+            Some(p) => p,
+            None => return "",
+        };
+        if idx == n {
+            return &after[..close];
+        }
+        idx += 1;
+        s = &after[close + 1..];
+    }
+}
+
+/// Per-cell colortbl background directives gathered while scanning the leading
+/// tokens of a table cell. Used to wrap cell content in a [`CompactNode::Boxed`]
+/// with a background color.
+#[derive(Default)]
+struct ColortblCell {
+    /// Background from `\cellcolor` (or an inline `\columncolor`); takes
+    /// precedence over a row background for this cell.
+    cell_bg: Option<String>,
+    /// Background from `\rowcolor`; applies to every cell of the row.
+    row_bg: Option<String>,
+}
+
+/// If `input` begins with the control sequence `\<name>` (and the following
+/// byte is not alphabetic, so `\rowcolors` is not mistaken for `\rowcolor`),
+/// return the slice immediately after the command name.
+fn strip_control_word<'a>(input: &'a str, name: &str) -> Option<&'a str> {
+    let after = input.strip_prefix('\\')?.strip_prefix(name)?;
+    if after.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) {
+        None
+    } else {
+        Some(after)
+    }
+}
+
 fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
     let mut result = SmallVec::new();
     let mut seps: u32 = 0;
@@ -310,6 +413,322 @@ fn parse_row_separator(input: &str) -> IResult<&str, ()> {
     // Consume any \hline or \hdashline directives that follow
     let input = skip_table_directives(input);
     Ok((input, ()))
+}
+
+// ---------------------------------------------------------------------------
+// amscd `CD` environment helpers (commutative diagrams)
+// ---------------------------------------------------------------------------
+
+/// One lexical token inside a `CD` row.
+struct CdToken<'a> {
+    /// Whether this token belongs in an *object* column (objects and vertical
+    /// connectors `@V`/`@A`/`@|`) as opposed to a *connector* column
+    /// (horizontal connectors `@>`/`@<`/`@=`).
+    is_object: bool,
+    /// Raw text of the token (object text, or the full `@...` command).
+    text: &'a str,
+}
+
+/// Length (in bytes) of the `CD` body, i.e. the offset of the matching
+/// top-level `\end`. Brace-nested `\end` (inside labels) is ignored.
+fn cd_body_len(input: &str) -> usize {
+    let bytes = input.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' if depth > 0 => depth -= 1,
+            b'\\' if depth == 0 && input[i..].starts_with("\\end") => return i,
+            _ => {},
+        }
+        i += 1;
+    }
+    input.len()
+}
+
+/// Split a `CD` body into rows on top-level `\\` (or `\cr`).
+fn cd_split_rows(body: &str) -> SmallVec<[&str; 4]> {
+    let bytes = body.as_bytes();
+    let mut rows: SmallVec<[&str; 4]> = SmallVec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' if depth > 0 => depth -= 1,
+            b'\\' if depth == 0 && bytes.get(i + 1) == Some(&b'\\') => {
+                rows.push(&body[start..i]);
+                i += 2;
+                start = i;
+                continue;
+            },
+            _ => {},
+        }
+        i += 1;
+    }
+    rows.push(&body[start..]);
+    rows
+}
+
+/// Tokenize a single `CD` row into objects and `@`-connectors. Whitespace and
+/// `&` act as separators; an object run extends until the next `@`/`&` at brace
+/// depth 0. Empty object runs are dropped.
+fn cd_tokenize_row(row: &str) -> SmallVec<[CdToken<'_>; 8]> {
+    let bytes = row.as_bytes();
+    let mut tokens: SmallVec<[CdToken<'_>; 8]> = SmallVec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' || b == b'&' {
+            i += 1;
+            continue;
+        }
+        if b == b'@' {
+            let end = cd_connector_end(row, i);
+            let text = &row[i..end];
+            // Classify by the char following '@'.
+            let kind = text.as_bytes().get(1).copied().unwrap_or(b'.');
+            let is_object = matches!(kind, b'V' | b'A' | b'|' | b'\\');
+            tokens.push(CdToken { is_object, text });
+            i = end;
+        } else {
+            // Object run until next '@'/'&' at depth 0.
+            let start = i;
+            let mut depth = 0i32;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'{' => depth += 1,
+                    b'}' if depth > 0 => depth -= 1,
+                    b'@' | b'&' if depth == 0 => break,
+                    _ => {},
+                }
+                i += 1;
+            }
+            let text = row[start..i].trim();
+            if !text.is_empty() {
+                tokens.push(CdToken {
+                    is_object: true,
+                    text,
+                });
+            }
+        }
+    }
+    tokens
+}
+
+/// Given the byte offset of an `@` in `row`, return the end offset of the
+/// connector command. Delimiter forms (`@>..>..>`) consume three delimiter
+/// characters at brace depth 0; `@.`/`@=`/`@|` consume two bytes; `@\vert`
+/// consumes the backslash command.
+fn cd_connector_end(row: &str, at: usize) -> usize {
+    let bytes = row.as_bytes();
+    let Some(&kind) = bytes.get(at + 1) else {
+        return row.len();
+    };
+    match kind {
+        b'>' | b'<' | b'V' | b'A' => {
+            let mut depth = 0i32;
+            let mut count = 0;
+            let mut i = at + 1;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'{' => depth += 1,
+                    b'}' if depth > 0 => depth -= 1,
+                    _ if depth == 0 && bytes[i] == kind => {
+                        count += 1;
+                        if count == 3 {
+                            return i + 1;
+                        }
+                    },
+                    _ => {},
+                }
+                i += 1;
+            }
+            row.len()
+        },
+        b'\\' => {
+            let mut i = at + 2;
+            while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            i
+        },
+        // `@.`, `@=`, `@|`
+        _ => at + 2,
+    }
+}
+
+/// Split `s` on `delim` (an ASCII char) at brace depth 0.
+fn cd_split_delim(s: &str, delim: u8) -> SmallVec<[&str; 4]> {
+    let bytes = s.as_bytes();
+    let mut parts: SmallVec<[&str; 4]> = SmallVec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' if depth > 0 => depth -= 1,
+            _ if depth == 0 && bytes[i] == delim => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            },
+            _ => {},
+        }
+        i += 1;
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+// ── bussproofs / xypic helpers ─────────────────────────────────────────
+
+/// Build a `Rational` (in em) from a floating-point value with hundredths
+/// precision, clamped to a sane positive range.
+fn rat_em(em: f64) -> Rational {
+    let h = (em * 100.0).round().clamp(1.0, 1_000_000.0) as i32;
+    Rational::new(h, 100)
+}
+
+/// If the next non-whitespace char is `{`, consume a brace-balanced group and
+/// return `(rest_after, Some(inner))`; otherwise `(input, None)`.
+fn bussproofs_take_arg(input: &str) -> (&str, Option<&str>) {
+    match super::mhchem::capture_braced(input) {
+        Some((rest, inner)) => (rest, Some(inner)),
+        None => (input, None),
+    }
+}
+
+/// Return the byte offset just past the first top-level `\DisplayProof` (or
+/// `\DP`) command in `input`, or `input.len()` when none is present.
+fn bussproofs_inline_end(input: &str) -> usize {
+    let bytes = input.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' if depth > 0 => depth -= 1,
+            b'\\' if depth == 0 => {
+                let rest = &input[i + 1..];
+                for cmd in ["DisplayProof", "DP"] {
+                    if let Some(after) = rest.strip_prefix(cmd)
+                        && !after.starts_with(|c: char| c.is_ascii_alphabetic())
+                    {
+                        return i + 1 + cmd.len();
+                    }
+                }
+            },
+            _ => {},
+        }
+        i += 1;
+    }
+    input.len()
+}
+
+/// Map an xypic direction string (`r`/`l`/`u`/`d` combinations) to an arrow
+/// glyph approximating that direction.
+fn xy_arrow_glyph(dir: &str) -> char {
+    let u = dir.contains('u');
+    let d = dir.contains('d');
+    let l = dir.contains('l');
+    let r = dir.contains('r');
+    match (u, d, l, r) {
+        (true, _, true, _) => '\u{2196}', // ↖
+        (true, _, _, true) => '\u{2197}', // ↗
+        (_, true, true, _) => '\u{2199}', // ↙
+        (_, true, _, true) => '\u{2198}', // ↘
+        (true, _, _, _) => '\u{2191}',    // ↑
+        (_, true, _, _) => '\u{2193}',    // ↓
+        (_, _, true, _) => '\u{2190}',    // ←
+        _ => '\u{2192}',                  // → (default / `r`)
+    }
+}
+
+/// Split an xypic row into cells on top-level `&` (ignoring `{}` and `[]`).
+fn xy_split_cells(row: &str) -> SmallVec<[&str; 8]> {
+    let bytes = row.as_bytes();
+    let mut out: SmallVec<[&str; 8]> = SmallVec::new();
+    let mut bdepth = 0i32;
+    let mut sdepth = 0i32;
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => bdepth += 1,
+            b'}' if bdepth > 0 => bdepth -= 1,
+            b'[' => sdepth += 1,
+            b']' if sdepth > 0 => sdepth -= 1,
+            b'&' if bdepth == 0 && sdepth == 0 => {
+                out.push(&row[start..i]);
+                start = i + 1;
+            },
+            _ => {},
+        }
+        i += 1;
+    }
+    out.push(&row[start..]);
+    out
+}
+
+/// Find the byte offset of the next top-level `\ar` command in `s`, or
+/// `s.len()` when none remains.
+fn xy_find_ar(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' if depth > 0 => depth -= 1,
+            b'\\' if depth == 0
+                && s[i..].starts_with("\\ar")
+                && !bytes.get(i + 3).is_some_and(|b| b.is_ascii_alphabetic()) =>
+            {
+                return i;
+            },
+            _ => {},
+        }
+        i += 1;
+    }
+    s.len()
+}
+
+/// Consume a `[dir]` bracket group, returning `(rest_after, dir)`. Any
+/// modifiers before the bracket (e.g. `@/^/`) are skipped.
+fn xy_take_bracket(input: &str) -> (&str, &str) {
+    if let Some(open) = input.find('[')
+        && let Some(close_rel) = input[open + 1..].find(']')
+    {
+        let dir = &input[open + 1..open + 1 + close_rel];
+        let rest = &input[open + 1 + close_rel + 1..];
+        return (rest, dir);
+    }
+    (input, "")
+}
+
+/// Consume a script argument following `^`/`_`: a braced group or a single
+/// token (one command or one character). Returns `(rest_after, content)`.
+fn xy_take_script(input: &str) -> (&str, &str) {
+    let t = input.trim_start();
+    if let Some((rest, inner)) = super::mhchem::capture_braced(t) {
+        return (rest, inner);
+    }
+    if let Some(after_bs) = t.strip_prefix('\\') {
+        let nlen = after_bs
+            .as_bytes()
+            .iter()
+            .take_while(|b| b.is_ascii_alphabetic())
+            .count()
+            .max(1);
+        let end = 1 + nlen;
+        let end = end.min(t.len());
+        return (&t[end..], &t[..end]);
+    }
+    let ch_len = t.chars().next().map_or(0, char::len_utf8);
+    (&t[ch_len..], &t[..ch_len])
 }
 
 /// Skip `\hline` and `\hdashline` table directives (silently consumed).
@@ -487,6 +906,9 @@ pub(crate) struct LatexCompactParser {
     depth: u32,
     /// Set to `true` when `\displaystyle` is encountered at the top level.
     pub(crate) display_override: bool,
+    /// User-defined colors registered via `\definecolor`/`\colorlet`,
+    /// keyed by exact name, resolved to RGB bytes.
+    colors: HashMap<String, [u8; 3]>,
 }
 
 impl LatexCompactParser {
@@ -502,6 +924,7 @@ impl LatexCompactParser {
             arena: AstArena::with_capacity(est_nodes, est_children, est_strings),
             depth: 0,
             display_override: false,
+            colors: HashMap::new(),
         }
     }
 
@@ -1464,6 +1887,36 @@ impl LatexCompactParser {
             },
             // \ensuremath{content} — transparent wrapper; content already in math mode
             "ensuremath" => self.parse_required_group(input),
+
+            // --- mhchem: \ce{...} chemical equations, \pu{...} physical units ---
+            "ce" | "pu" => {
+                let Some((after, body)) = super::mhchem::capture_braced(input) else {
+                    return Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+                };
+                let latex = if name == "ce" {
+                    super::mhchem::ce_to_latex(body)
+                } else {
+                    super::mhchem::pu_to_latex(body)
+                };
+                let processed = preprocess_cow(&latex);
+                let id = match self.parse_node_list(&processed) {
+                    Ok((_, ids)) => self.flatten_single(&ids),
+                    Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                };
+                Ok((after, id))
+            },
+
+            // --- siunitx (+ units `\unit`): numbers, units, quantities ---
+            "num" | "si" | "SI" | "qty" | "unit" | "ang" | "numrange" | "SIrange"
+            | "qtyrange" | "numlist" | "SIlist" | "qtylist" | "sisetup" => {
+                let (after, latex) = super::siunitx::translate(name, input);
+                let processed = preprocess_cow(&latex);
+                let id = match self.parse_node_list(&processed) {
+                    Ok((_, ids)) => self.flatten_single(&ids),
+                    Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                };
+                Ok((after, id))
+            },
             "smash" => {
                 // \smash[b]{...} or \smash[t]{...} or \smash{...}
                 let (input, _) = ws(input)?;
@@ -1537,6 +1990,12 @@ impl LatexCompactParser {
 
             // --- Environments ---
             "begin" => self.parse_environment(input),
+
+            // --- xypic: \xymatrix{...} diagram (arrow-glyph approximation) ---
+            "xymatrix" => self.parse_xymatrix_cmd(input),
+
+            // --- bussproofs: bare proof ended by \DisplayProof (best-effort) ---
+            "AxiomC" | "AXC" => self.parse_bussproofs_inline(input, name),
 
             // --- Overset / Underset ---
             "overset" | "stackrel" => self.parse_overset(input),
@@ -1644,6 +2103,8 @@ impl LatexCompactParser {
             // --- Color (consume color arg, return content) ---
             "color" => self.parse_color_discard(input),
             "textcolor" => self.parse_textcolor(input),
+            "definecolor" | "providecolor" => self.parse_definecolor(input),
+            "colorlet" => self.parse_colorlet(input),
 
             // --- Colored boxes (consume color, return content) ---
             "colorbox" => self.parse_colorbox(input),
@@ -1984,6 +2445,16 @@ impl LatexCompactParser {
                             limits: limit_style,
                         }),
                     ))
+                } else if let Some((unicode, kind)) = crate::latex::packages::lookup_package_symbol(name)
+                {
+                    // Package-contributed symbol (consulted only after the core
+                    // PHF tables miss, so it cannot shadow a core symbol).
+                    let sid = self.arena.push_str(unicode);
+                    if kind == SymbolKind::Alphabetic {
+                        Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+                    } else {
+                        Ok((input, self.arena.push_node(CompactNode::Symbol(kind, sid))))
+                    }
                 } else {
                     // Unknown command: emit as identifier
                     let sid = self.arena.push_str(name);
@@ -2929,11 +3400,8 @@ impl LatexCompactParser {
     }
 
     fn parse_color_discard<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, color) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
-        let color_sid = self.arena.push_str(color);
+        let (input, color_str) = self.parse_color_arg(input)?;
+        let color_sid = self.arena.push_str(&color_str);
         // \color{X}{content} — if followed by braced group, parse just that group.
         // Otherwise, parse remaining elements but stop at cell/row/env boundaries
         // to avoid consuming past table structure (e.g., \\, &, \end).
@@ -2984,11 +3452,8 @@ impl LatexCompactParser {
     }
 
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, color) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
-        let color_sid = self.arena.push_str(color);
+        let (input, color_str) = self.parse_color_arg(input)?;
+        let color_sid = self.arena.push_str(&color_str);
         let (input, content_id) = self.parse_required_group(input)?;
         Ok((
             input,
@@ -2997,6 +3462,140 @@ impl LatexCompactParser {
                 content: content_id,
             }),
         ))
+    }
+
+    /// Parse a color argument for `\color`/`\textcolor`: either an optional
+    /// model `[model]{spec}` or a plain `{name}` (which may be an xcolor
+    /// mixing expression or user-defined color). Returns the resolved color
+    /// string ready for the renderer (named CSS colors are kept verbatim;
+    /// anything computed becomes `#rrggbb`).
+    fn parse_color_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, String> {
+        let (input, _) = ws(input)?;
+        if input.starts_with('[') {
+            let (input, _) = char('[')(input)?;
+            let (input, model) = take_while(|c: char| c != ']')(input)?;
+            let (input, _) = char(']')(input)?;
+            let (input, _) = ws(input)?;
+            let (input, _) = char('{')(input)?;
+            let (input, spec) = take_while(|c: char| c != '}')(input)?;
+            let (input, _) = char('}')(input)?;
+            let resolved = crate::css_colors::resolve_color_model(model.trim(), spec.trim())
+                .map(crate::css_colors::rgb_to_hex)
+                .unwrap_or_else(|| spec.trim().to_string());
+            Ok((input, resolved))
+        } else {
+            let (input, _) = char('{')(input)?;
+            let (input, name) = take_while(|c: char| c != '}')(input)?;
+            let (input, _) = char('}')(input)?;
+            Ok((input, self.resolve_color(name)))
+        }
+    }
+
+    /// Parse a colortbl color argument: an optional `[model]{spec}` or plain
+    /// `{name}`, followed by up to two optional `[overhang]` arguments (used by
+    /// `\rowcolor`/`\cellcolor`/`\columncolor`), which are parsed and ignored.
+    /// Returns the resolved, renderer-ready color string.
+    fn parse_colortbl_color<'a>(&mut self, input: &'a str) -> IResult<&'a str, String> {
+        let (mut rest, color) = self.parse_color_arg(input)?;
+        // Discard up to two trailing optional overhang args, e.g. `[2pt][3pt]`.
+        for _ in 0..2 {
+            let (r, _) = ws(rest)?;
+            match r.strip_prefix('[').and_then(|s| s.find(']').map(|e| &s[e + 1..])) {
+                Some(after) => rest = after,
+                None => break,
+            }
+        }
+        Ok((rest, color))
+    }
+
+    /// `\definecolor{name}{model}{spec}` / `\providecolor{...}` — register a
+    /// user-defined named color. Produces no visible output.
+    fn parse_definecolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, name) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, model) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, spec) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        if let Some(rgb) = crate::css_colors::resolve_color_model(model.trim(), spec.trim()) {
+            self.colors.insert(name.trim().to_string(), rgb);
+        }
+        Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+    }
+
+    /// `\colorlet{name}{colorexpr}` — define `name` as the (possibly mixed)
+    /// color expression. Produces no visible output.
+    fn parse_colorlet<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, name) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, expr) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        if let Some(rgb) = self.resolve_color_rgb(expr.trim()) {
+            self.colors.insert(name.trim().to_string(), rgb);
+        }
+        Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+    }
+
+    /// Resolve a color token into a renderer-ready string. Plain named CSS
+    /// colors are kept verbatim (for round-trip stability); user-defined
+    /// colors and xcolor mixing expressions resolve to `#rrggbb`.
+    fn resolve_color(&self, token: &str) -> String {
+        let token = token.trim();
+        if token.contains('!') {
+            return self
+                .resolve_color_rgb(token)
+                .map(crate::css_colors::rgb_to_hex)
+                .unwrap_or_else(|| token.to_string());
+        }
+        if let Some(rgb) = self.colors.get(token) {
+            return crate::css_colors::rgb_to_hex(*rgb);
+        }
+        token.to_string()
+    }
+
+    /// Resolve a color token (xcolor expression, user color, named CSS color,
+    /// hex, or `rgb(...)`) into RGB bytes.
+    fn resolve_color_rgb(&self, token: &str) -> Option<[u8; 3]> {
+        let token = token.trim();
+        if token.contains('!') {
+            return self.resolve_color_expr(token);
+        }
+        self.resolve_color_base(token)
+    }
+
+    /// Resolve a single (non-mixed) color reference to RGB bytes.
+    fn resolve_color_base(&self, token: &str) -> Option<[u8; 3]> {
+        let token = token.trim();
+        if let Some(rgb) = self.colors.get(token) {
+            return Some(*rgb);
+        }
+        crate::css_colors::resolve_named_or_hex(token)
+    }
+
+    /// Resolve an xcolor mixing expression: `a!p!b!q!c...` (left-associative).
+    /// `a!p` is shorthand for `a!p!white`.
+    fn resolve_color_expr(&self, expr: &str) -> Option<[u8; 3]> {
+        let mut parts = expr.split('!');
+        let mut cur = self.resolve_color_base(parts.next()?.trim())?;
+        while let Some(pct_s) = parts.next() {
+            let pct: f64 = pct_s.trim().parse().ok()?;
+            let other = match parts.next() {
+                Some(name) => self.resolve_color_base(name.trim())?,
+                None => [255, 255, 255], // mix toward white
+            };
+            cur = crate::css_colors::mix_rgb(cur, other, pct);
+        }
+        Some(cur)
     }
 
     /// Color shorthand: `\blue{...}` or `\blue x` wraps following content in a Color node.
@@ -3048,7 +3647,8 @@ impl LatexCompactParser {
         let (input, color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
-        let bg_sid = self.arena.push_str(color);
+        let bg_color = self.resolve_color(color);
+        let bg_sid = self.arena.push_str(&bg_color);
         let border_sid = self.arena.push_str("");
         Ok((
             input,
@@ -3071,8 +3671,10 @@ impl LatexCompactParser {
         let (input, bg_color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
-        let bg_sid = self.arena.push_str(bg_color);
-        let border_sid = self.arena.push_str(frame_color);
+        let bg = self.resolve_color(bg_color);
+        let frame = self.resolve_color(frame_color);
+        let bg_sid = self.arena.push_str(&bg);
+        let border_sid = self.arena.push_str(&frame);
         Ok((
             input,
             self.arena.push_node(CompactNode::Boxed {
@@ -3284,8 +3886,13 @@ impl LatexCompactParser {
                 self.parse_matrix_env(input, env_name)
             },
             "smallmatrix" => self.parse_smallmatrix_env(input, env_name),
+            "CD" => self.parse_cd_env(input, env_name),
+            "prooftree" => self.parse_prooftree_env(input, env_name),
+            "xy" => self.parse_xy_env(input, env_name),
             "cases" | "dcases" => self.parse_cases_env(input, env_name),
             "rcases" | "drcases" => self.parse_rcases_env(input, env_name),
+            "numcases" | "subnumcases" => self.parse_numcases_env(input, env_name),
+            "empheq" => self.parse_empheq_env(input),
             "aligned" | "align" | "align*" => self.parse_align_env(input, env_name),
             "alignedat" => self.parse_alignedat_env(input, env_name),
             "gathered" => self.parse_gather_env(input, env_name),
@@ -3404,6 +4011,582 @@ impl LatexCompactParser {
         }
     }
 
+    /// Parse the amscd `\begin{CD} ... \end{CD}` environment for simple
+    /// commutative diagrams (horizontal and vertical arrows; no diagonals).
+    ///
+    /// The body is laid out as a centered [`CompactNode::Array`] grid in which
+    /// object columns (even, 0-indexed) alternate with connector columns (odd).
+    /// Objects and vertical connectors occupy object columns; horizontal arrows
+    /// occupy connector columns. Malformed bodies recover leniently.
+    fn parse_cd_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
+        let body_len = cd_body_len(input);
+        let body = &input[..body_len];
+        let rest = &input[body_len..];
+        let (rest, _) = ws(rest)?;
+        let (rest, _) = tag("\\end")(rest)?;
+        let (rest, _) = ws(rest)?;
+        let (rest, _) = char('{')(rest)?;
+        let (rest, _) = tag(env_name)(rest)?;
+        let (rest, _) = char('}')(rest)?;
+
+        let mut rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::new();
+        let mut num_cols = 0usize;
+        for row_str in cd_split_rows(body) {
+            let tokens = cd_tokenize_row(row_str);
+            if tokens.is_empty() {
+                continue;
+            }
+            // Place tokens into alternating object/connector columns.
+            let mut placed: Vec<(usize, SmallVec<[NodeId; 8]>)> = Vec::with_capacity(tokens.len());
+            let mut col = 0usize;
+            for tok in &tokens {
+                if tok.is_object {
+                    if !col.is_multiple_of(2) {
+                        col += 1; // skip an empty connector slot
+                    }
+                } else if col.is_multiple_of(2) {
+                    col += 1; // skip an empty object slot
+                }
+                let cell = self.parse_cd_cell(tok);
+                placed.push((col, cell));
+                col += 1;
+            }
+            let width = placed.iter().map(|(c, _)| c + 1).max().unwrap_or(0);
+            let mut row: Vec<SmallVec<[NodeId; 8]>> = (0..width).map(|_| SmallVec::new()).collect();
+            for (c, cell) in placed {
+                row[c] = cell;
+            }
+            num_cols = num_cols.max(width);
+            rows.push(row);
+        }
+
+        let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![ColumnAlign::Center; num_cols];
+        let array = self.build_array_with_spacing(&columns, rows, 150, false, 0);
+        Ok((rest, array))
+    }
+
+    /// Parse one `CD` token (object text or `@`-connector) into a cell.
+    fn parse_cd_cell(&mut self, tok: &CdToken<'_>) -> SmallVec<[NodeId; 8]> {
+        if let Some(conn) = tok.text.strip_prefix('@') {
+            self.parse_cd_connector(conn)
+        } else {
+            match self.parse_node_list(tok.text) {
+                Ok((_, ids)) => ids,
+                Err(_) => SmallVec::new(),
+            }
+        }
+    }
+
+    /// Parse the part of a connector following `@` into cell contents.
+    fn parse_cd_connector(&mut self, conn: &str) -> SmallVec<[NodeId; 8]> {
+        let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+        match conn.as_bytes().first() {
+            // `@.` placeholder / empty cell (also empty `@`).
+            None | Some(b'.') => {},
+            // `@=` long equals (approximated by a plain `=`).
+            Some(b'=') => {
+                let sid = self.arena.push_str("=");
+                out.push(
+                    self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::Relation, sid)),
+                );
+            },
+            // `@|` / `@\vert` / `@\Vert` vertical double line.
+            Some(b'|') | Some(b'\\') => {
+                let sid = self.push_char_str('\u{2016}'); // ‖
+                out.push(
+                    self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::Relation, sid)),
+                );
+            },
+            // Horizontal arrows `@>top>bot>` / `@<top<bot<`.
+            Some(d @ (b'>' | b'<')) => {
+                let arrow = if *d == b'>' { '\u{2192}' } else { '\u{2190}' };
+                let parts = cd_split_delim(conn, *d);
+                let above = self.parse_cd_label(parts.get(1).copied().unwrap_or(""));
+                let below = self.parse_cd_label(parts.get(2).copied().unwrap_or(""));
+                out.push(self.cd_horizontal_arrow(arrow, above, below));
+            },
+            // Vertical arrows `@VleftVrightV` / `@AleftArightA`.
+            Some(d @ (b'V' | b'A')) => {
+                let arrow = if *d == b'V' { '\u{2193}' } else { '\u{2191}' };
+                let parts = cd_split_delim(conn, *d);
+                let left = self.parse_cd_label(parts.get(1).copied().unwrap_or(""));
+                let right = self.parse_cd_label(parts.get(2).copied().unwrap_or(""));
+                let sid = self.push_char_str(arrow);
+                let glyph = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Relation, sid));
+                if let Some(l) = left {
+                    out.push(l);
+                }
+                out.push(glyph);
+                if let Some(r) = right {
+                    out.push(r);
+                }
+            },
+            // Unknown connector: recover as an empty cell.
+            _ => {},
+        }
+        out
+    }
+
+    /// Parse a horizontal-arrow label segment into a single node, or `None`
+    /// when empty.
+    fn parse_cd_label(&mut self, seg: &str) -> Option<NodeId> {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            return None;
+        }
+        match self.parse_node_list(seg) {
+            Ok((_, ids)) if !ids.is_empty() => Some(self.flatten_single(&ids)),
+            _ => None,
+        }
+    }
+
+    /// Build a stretchy horizontal arrow with optional over/under labels,
+    /// reusing the extensible-arrow mechanism.
+    fn cd_horizontal_arrow(
+        &mut self,
+        arrow: char,
+        above: Option<NodeId>,
+        below: Option<NodeId>,
+    ) -> NodeId {
+        let sid = self.push_char_str(arrow);
+        let base = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Relation, sid));
+        match (above, below) {
+            (Some(over), Some(under)) => self.arena.push_node(CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits: false,
+            }),
+            (Some(over), None) => self.arena.push_node(CompactNode::Overscript {
+                base,
+                over,
+                movable_limits: false,
+            }),
+            (None, Some(under)) => self.arena.push_node(CompactNode::Underscript {
+                base,
+                under,
+                movable_limits: false,
+            }),
+            (None, None) => base,
+        }
+    }
+
+    // ── bussproofs (proof trees) ───────────────────────────────────────
+
+    /// Parse a `\begin{prooftree} ... \end{prooftree}` environment into a
+    /// vertically-stacked proof tree built from [`CompactNode::Array`]
+    /// (centered single column) and [`CompactNode::Rule`] inference lines.
+    /// Malformed bodies recover leniently (see [`Self::build_bussproofs`]).
+    fn parse_prooftree_env<'a>(
+        &mut self,
+        input: &'a str,
+        env_name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let body_len = cd_body_len(input);
+        let body = &input[..body_len];
+        let rest = &input[body_len..];
+        let (rest, _) = ws(rest)?;
+        let (rest, _) = tag("\\end")(rest)?;
+        let (rest, _) = ws(rest)?;
+        let (rest, _) = char('{')(rest)?;
+        let (rest, _) = tag(env_name)(rest)?;
+        let (rest, _) = char('}')(rest)?;
+        let node = self.build_bussproofs(body);
+        Ok((rest, node))
+    }
+
+    /// Best-effort bare bussproofs form: `\AxiomC{...} ... \DisplayProof`.
+    /// `input` is positioned just after the leading command name `name`.
+    fn parse_bussproofs_inline<'a>(
+        &mut self,
+        input: &'a str,
+        name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let end = bussproofs_inline_end(input);
+        let mut body = String::with_capacity(end + name.len() + 1);
+        body.push('\\');
+        body.push_str(name);
+        body.push_str(&input[..end]);
+        let node = self.build_bussproofs(&body);
+        Ok((&input[end..], node))
+    }
+
+    /// Tokenize a bussproofs body into commands and run the proof-construction
+    /// stack. Stack underflow and leftover entries never panic: missing
+    /// premises are padded with empty rows and leftover stack entries are
+    /// wrapped in a `Row`.
+    fn build_bussproofs(&mut self, body: &str) -> NodeId {
+        let mut stack: Vec<NodeId> = Vec::new();
+        let mut right_label: Option<NodeId> = None;
+        let mut left_label: Option<NodeId> = None;
+        let mut rest = body;
+
+        while let Some(bs) = rest.find('\\') {
+            rest = &rest[bs + 1..];
+            let nlen = rest
+                .as_bytes()
+                .iter()
+                .take_while(|b| b.is_ascii_alphabetic())
+                .count();
+            let name = &rest[..nlen];
+            rest = &rest[nlen..];
+
+            match name {
+                "AxiomC" | "AXC" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    let leaf = self.buss_content(arg.unwrap_or(""));
+                    stack.push(leaf);
+                    rest = after;
+                },
+                "UnaryInfC" | "UIC" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    self.buss_infer(&mut stack, 1, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    rest = after;
+                },
+                "BinaryInfC" | "BIC" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    self.buss_infer(&mut stack, 2, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    rest = after;
+                },
+                "TrinaryInfC" | "TIC" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    self.buss_infer(&mut stack, 3, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    rest = after;
+                },
+                "QuaternaryInfC" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    self.buss_infer(&mut stack, 4, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    rest = after;
+                },
+                "QuinaryInfC" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    self.buss_infer(&mut stack, 5, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    rest = after;
+                },
+                "RightLabel" | "RL" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    right_label = Some(self.buss_content(arg.unwrap_or("")));
+                    rest = after;
+                },
+                "LeftLabel" | "LL" => {
+                    let (after, arg) = bussproofs_take_arg(rest);
+                    left_label = Some(self.buss_content(arg.unwrap_or("")));
+                    rest = after;
+                },
+                // \DisplayProof / \DP take no argument; everything else is
+                // skipped along with any braced argument it might carry.
+                "DisplayProof" | "DP" => {},
+                _ => {
+                    let (after, _) = bussproofs_take_arg(rest);
+                    rest = after;
+                },
+            }
+        }
+
+        match stack.len() {
+            1 => stack[0],
+            0 => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            _ => {
+                let span = self.arena.push_children(&stack);
+                self.arena.push_node(CompactNode::Row(span))
+            },
+        }
+    }
+
+    /// Pop `arity` premises (lenient), build an inference node with the given
+    /// conclusion source and pending labels, and push it back on the stack.
+    fn buss_infer(
+        &mut self,
+        stack: &mut Vec<NodeId>,
+        arity: usize,
+        concl_src: &str,
+        left: &mut Option<NodeId>,
+        right: &mut Option<NodeId>,
+    ) {
+        let avail = stack.len().min(arity);
+        let split = stack.len() - avail;
+        let mut premises: SmallVec<[NodeId; 4]> = stack.drain(split..).collect();
+        while premises.len() < arity {
+            let empty = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            premises.insert(0, empty);
+        }
+        let concl = self.buss_content(concl_src);
+        let node = self.buss_make_node(&premises, concl, left.take(), right.take());
+        stack.push(node);
+    }
+
+    /// Assemble a single proof node: premises stacked horizontally above a
+    /// [`CompactNode::Rule`] inference line (optionally flanked by labels),
+    /// above the centered conclusion.
+    fn buss_make_node(
+        &mut self,
+        premises: &[NodeId],
+        concl: NodeId,
+        left: Option<NodeId>,
+        right: Option<NodeId>,
+    ) -> NodeId {
+        let prem_row = self.buss_hstack(premises);
+        let width = self
+            .buss_width(prem_row)
+            .max(self.buss_width(concl))
+            .max(0.6)
+            + 0.3;
+        let rule = self.arena.push_node(CompactNode::Rule {
+            width: rat_em(width),
+            height: Rational::new(4, 100),
+            lift: Rational::new(6, 100),
+        });
+        let rule_row = if left.is_some() || right.is_some() {
+            let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
+            if let Some(l) = left {
+                items.push(l);
+                items.push(self.buss_space());
+            }
+            items.push(rule);
+            if let Some(r) = right {
+                items.push(self.buss_space());
+                items.push(r);
+            }
+            self.flatten_single(&items)
+        } else {
+            rule
+        };
+
+        let columns = [ColumnAlign::Center];
+        let rows = vec![
+            vec![smallvec::smallvec![prem_row]],
+            vec![smallvec::smallvec![rule_row]],
+            vec![smallvec::smallvec![concl]],
+        ];
+        self.build_array(&columns, rows)
+    }
+
+    /// Lay premises out horizontally, separated by gaps.
+    fn buss_hstack(&mut self, premises: &[NodeId]) -> NodeId {
+        if premises.len() == 1 {
+            return premises[0];
+        }
+        let mut items: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for (i, &p) in premises.iter().enumerate() {
+            if i > 0 {
+                items.push(self.buss_space());
+            }
+            items.push(p);
+        }
+        self.flatten_single(&items)
+    }
+
+    /// A horizontal gap used between premises and around inference lines.
+    fn buss_space(&mut self) -> NodeId {
+        self.arena.push_node(CompactNode::Space(Rational::new(3, 2)))
+    }
+
+    /// Parse the content of an axiom/conclusion/label, stripping surrounding
+    /// inline-math delimiters (`$...$` or `\(...\)`).
+    fn buss_content(&mut self, src: &str) -> NodeId {
+        let mut s = src.trim();
+        if let Some(inner) = s.strip_prefix('$').and_then(|x| x.strip_suffix('$')) {
+            s = inner.trim();
+        } else if let Some(inner) = s.strip_prefix("\\(").and_then(|x| x.strip_suffix("\\)")) {
+            s = inner.trim();
+        }
+        if s.is_empty() {
+            return self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        }
+        match self.parse_node_list(s) {
+            Ok((_, ids)) if !ids.is_empty() => self.flatten_single(&ids),
+            _ => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+        }
+    }
+
+    /// Estimate the rendered em-width of a node (used to size inference lines).
+    fn buss_width(&self, id: NodeId) -> f64 {
+        match *self.arena.node(id) {
+            CompactNode::Number(s)
+            | CompactNode::Identifier(s)
+            | CompactNode::Text(_, s)
+            | CompactNode::Symbol(_, s)
+            | CompactNode::Middle(s) => self.arena.str_val(s).chars().count() as f64 * 0.55,
+            CompactNode::Operator { name, .. } => {
+                self.arena.str_val(name).chars().count() as f64 * 0.6
+            },
+            CompactNode::Space(r) => r.as_f64(),
+            CompactNode::Rule { width, .. } => width.as_f64(),
+            CompactNode::Row(span) | CompactNode::Styled(_, span) => self
+                .arena
+                .children(span)
+                .iter()
+                .map(|&c| self.buss_width(c))
+                .sum(),
+            CompactNode::Array {
+                cells, num_cols, ..
+            } => {
+                let nc = (num_cols as usize).max(1);
+                let ids = self.arena.children(cells);
+                let mut max_w = 0.0_f64;
+                for chunk in ids.chunks(nc) {
+                    let row_w: f64 = chunk.iter().map(|&c| self.buss_width(c)).sum();
+                    max_w = max_w.max(row_w);
+                }
+                max_w
+            },
+            _ => 0.8,
+        }
+    }
+
+    // ── xypic (xymatrix) ───────────────────────────────────────────────
+
+    /// Parse the `\xymatrix{...}` command into an arrow-glyph approximation
+    /// grid. Inline options (e.g. `@C=1pc`) before the body are skipped.
+    fn parse_xymatrix_cmd<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let start = input.find('{').unwrap_or(input.len());
+        let Some((rest, body)) = super::mhchem::capture_braced(&input[start..]) else {
+            return Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+        };
+        let node = self.build_xymatrix(body);
+        Ok((rest, node))
+    }
+
+    /// Parse `\begin{xy} ... \end{xy}`. Only an embedded `\xymatrix{...}` is
+    /// rendered (arrow-glyph approximation); the full XY coordinate/path
+    /// language is deferred and recovered as an empty node.
+    fn parse_xy_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
+        let body_len = cd_body_len(input);
+        let body = &input[..body_len];
+        let rest = &input[body_len..];
+        let (rest, _) = ws(rest)?;
+        let (rest, _) = tag("\\end")(rest)?;
+        let (rest, _) = ws(rest)?;
+        let (rest, _) = char('{')(rest)?;
+        let (rest, _) = tag(env_name)(rest)?;
+        let (rest, _) = char('}')(rest)?;
+
+        let node = if let Some(pos) = body.find("\\xymatrix") {
+            let after = &body[pos + "\\xymatrix".len()..];
+            let start = after.find('{').unwrap_or(after.len());
+            match super::mhchem::capture_braced(&after[start..]) {
+                Some((_, inner)) => self.build_xymatrix(inner),
+                None => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            }
+        } else {
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+        };
+        Ok((rest, node))
+    }
+
+    /// Build a centered [`CompactNode::Array`] grid from an xymatrix body,
+    /// rendering `\ar[dir]` commands as directional arrow glyphs.
+    fn build_xymatrix(&mut self, body: &str) -> NodeId {
+        let mut rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::new();
+        let mut num_cols = 0usize;
+        for row_src in cd_split_rows(body) {
+            let cells_src = xy_split_cells(row_src);
+            let mut row: Vec<SmallVec<[NodeId; 8]>> = Vec::with_capacity(cells_src.len());
+            for cell_src in &cells_src {
+                row.push(self.parse_xy_cell(cell_src));
+            }
+            num_cols = num_cols.max(row.len());
+            rows.push(row);
+        }
+        // Drop a trailing all-empty row produced by a dangling `\\`.
+        if rows.len() > 1 && rows.last().is_some_and(|r| r.iter().all(SmallVec::is_empty)) {
+            rows.pop();
+        }
+        let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![ColumnAlign::Center; num_cols];
+        self.build_array_with_spacing(&columns, rows, 130, false, 0)
+    }
+
+    /// Parse one xymatrix cell: leading object content followed by any
+    /// `\ar[dir]^{..}_{..}` arrows rendered as glyphs.
+    fn parse_xy_cell(&mut self, cell: &str) -> SmallVec<[NodeId; 8]> {
+        let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let head_end = xy_find_ar(cell);
+        let head = cell[..head_end].trim();
+        if !head.is_empty()
+            && let Ok((_, ids)) = self.parse_node_list(head)
+        {
+            out.extend(ids);
+        }
+        let mut rest = &cell[head_end..];
+        while rest.starts_with("\\ar") {
+            rest = &rest[3..];
+            let (after_dir, dir) = xy_take_bracket(rest);
+            rest = after_dir;
+            let mut over = None;
+            let mut under = None;
+            loop {
+                let t = rest.trim_start();
+                if let Some(r) = t.strip_prefix('^') {
+                    let (after, lab) = xy_take_script(r);
+                    over = self.xy_label(lab);
+                    rest = after;
+                } else if let Some(r) = t.strip_prefix('_') {
+                    let (after, lab) = xy_take_script(r);
+                    under = self.xy_label(lab);
+                    rest = after;
+                } else {
+                    rest = t;
+                    break;
+                }
+            }
+            out.push(self.xy_arrow(dir, over, under));
+            let next = xy_find_ar(rest);
+            let between = rest[..next].trim();
+            if !between.is_empty()
+                && let Ok((_, ids)) = self.parse_node_list(between)
+            {
+                out.extend(ids);
+            }
+            rest = &rest[next..];
+        }
+        out
+    }
+
+    /// Parse an arrow label into a single node, or `None` when empty.
+    fn xy_label(&mut self, src: &str) -> Option<NodeId> {
+        let s = src.trim();
+        if s.is_empty() {
+            return None;
+        }
+        match self.parse_node_list(s) {
+            Ok((_, ids)) if !ids.is_empty() => Some(self.flatten_single(&ids)),
+            _ => None,
+        }
+    }
+
+    /// Build an arrow glyph for `dir` with optional over/under labels.
+    fn xy_arrow(&mut self, dir: &str, over: Option<NodeId>, under: Option<NodeId>) -> NodeId {
+        let sid = self.push_char_str(xy_arrow_glyph(dir));
+        let base = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Relation, sid));
+        match (over, under) {
+            (Some(over), Some(under)) => self.arena.push_node(CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits: false,
+            }),
+            (Some(over), None) => self.arena.push_node(CompactNode::Overscript {
+                base,
+                over,
+                movable_limits: false,
+            }),
+            (None, Some(under)) => self.arena.push_node(CompactNode::Underscript {
+                base,
+                under,
+                movable_limits: false,
+            }),
+            (None, None) => base,
+        }
+    }
+
     fn parse_cases_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
         let (input, rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
@@ -3460,6 +4643,181 @@ impl LatexCompactParser {
                 content,
             }),
         ))
+    }
+
+    /// `cases` package: `numcases`/`subnumcases`.
+    ///
+    /// Syntax: `\begin{numcases}{<left-expr>} <val> & <cond> \\ ... \end{...}`.
+    /// Builds `<left-expr> = { <cases-rows> }` and appends a right-aligned
+    /// equation-number column whose cells are `(1a)`, `(1b)`, … Since this is a
+    /// single-formula converter with no document-wide counter, the master
+    /// number is fixed at `1`; the sub-letters `a, b, c, …` increment per row.
+    /// `subnumcases` is handled identically (its first argument is treated as
+    /// the shared left expression, best-effort).
+    fn parse_numcases_env<'a>(
+        &mut self,
+        input: &'a str,
+        env_name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        // Mandatory first argument: the shared left-hand expression.
+        let (input, left_id) = self.parse_required_group(input)?;
+        let (input, rows) = self.parse_table_body(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = tag("\\end")(input)?;
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, _) = tag(env_name)(input)?;
+        let (input, _) = char('}')(input)?;
+
+        // Append an upright parenthesized equation-number cell to each row.
+        let mut numbered_rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::with_capacity(rows.len());
+        for (i, mut row) in rows.into_iter().enumerate() {
+            let letter = char::from(b'a' + (i % 26) as u8);
+            let label = format!("(1{letter})");
+            let sid = self.arena.push_str(&label);
+            let num_id = self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid));
+            let mut cell: SmallVec<[NodeId; 8]> = SmallVec::new();
+            cell.push(num_id);
+            row.push(cell);
+            numbered_rows.push(row);
+        }
+
+        // value | condition | (number) — number right-aligned far from cases.
+        let array_id = self.build_array_with_spacing(
+            &[ColumnAlign::Left, ColumnAlign::Left, ColumnAlign::Right],
+            numbered_rows,
+            120,
+            false,
+            0,
+        );
+        // Big left brace, no right delimiter (cases style).
+        let open = self.arena.push_str("{");
+        let close = self.arena.push_str("");
+        let content = self.arena.push_children(&[array_id]);
+        let fenced = self.arena.push_node(CompactNode::Fenced {
+            open,
+            close,
+            content,
+        });
+
+        // <left-expr> = { cases }
+        let eq_sid = self.arena.push_str("=");
+        let eq_id = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Relation, eq_sid));
+        let row_span = self.arena.push_children(&[left_id, eq_id, fenced]);
+        Ok((input, self.arena.push_node(CompactNode::Row(row_span))))
+    }
+
+    /// `empheq` package: boxed/delimited equation displays.
+    ///
+    /// Syntax: `\begin{empheq}[<options>]{<inner-env>} <body> \end{empheq}`.
+    /// The body is parsed *as* the inner environment (`align`, `gather`, …) by
+    /// dispatching to the matching parser with `\end{empheq}` as terminator.
+    /// Recognized options (best-effort): `box=…` wraps in `Boxed`; `left=…` and
+    /// `right=…` wrap in a `Fenced` with the given delimiters. Unknown options
+    /// are ignored gracefully.
+    fn parse_empheq_env<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Optional `[options]`.
+        let (input, _) = ws(input)?;
+        let (input, opts) = if let Some(after) = input.strip_prefix('[') {
+            // Scan to the top-level closing `]` (brace-depth aware).
+            let mut depth = 0i32;
+            let mut end = None;
+            for (i, c) in after.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' if depth > 0 => depth -= 1,
+                    ']' if depth == 0 => {
+                        end = Some(i);
+                        break;
+                    },
+                    _ => {},
+                }
+            }
+            match end {
+                Some(e) => (&after[e + 1..], &after[..e]),
+                None => (after, after),
+            }
+        } else {
+            (input, "")
+        };
+
+        // Mandatory `{inner-env-name}`.
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, inner) = take_while1(|c: char| c.is_ascii_alphanumeric() || c == '*')(input)?;
+        let (input, _) = char('}')(input)?;
+
+        // Parse the body as the inner environment, terminated by `\end{empheq}`.
+        let (input, inner_id) = match inner {
+            "gather" | "gather*" | "gathered" => self.parse_gather_env(input, "empheq")?,
+            "equation" | "equation*" => self.parse_equation_env(input, "empheq")?,
+            "multline" | "multline*" => self.parse_multline_env(input, "empheq")?,
+            "alignat" | "alignat*" | "alignedat" => self.parse_alignedat_env(input, "empheq")?,
+            // align / align* / aligned / split / flalign / unknown → aligned grid.
+            _ => self.parse_align_env(input, "empheq")?,
+        };
+
+        // Apply recognized options.
+        let (box_spec, left_spec, right_spec) = parse_empheq_options(opts);
+        let mut node = inner_id;
+        if let Some(spec) = box_spec {
+            node = self.apply_empheq_box(node, &spec);
+        }
+        if left_spec.is_some() || right_spec.is_some() {
+            let open = self.resolve_empheq_delim(left_spec.as_deref());
+            let close = self.resolve_empheq_delim(right_spec.as_deref());
+            let content = self.arena.push_children(&[node]);
+            node = self.arena.push_node(CompactNode::Fenced {
+                open,
+                close,
+                content,
+            });
+        }
+        Ok((input, node))
+    }
+
+    /// Wrap a node in `Boxed` according to an empheq `box=` spec.
+    /// `\fbox`/`\boxed` → plain border; `\colorbox{c}` → background; and
+    /// `\fcolorbox{frame}{bg}` → both. Unknown specs fall back to a plain box.
+    fn apply_empheq_box(&mut self, content: NodeId, spec: &str) -> NodeId {
+        let spec = spec.trim();
+        let (bg, border) = if let Some(rest) = spec.strip_prefix("\\colorbox") {
+            (self.resolve_color(empheq_brace_arg(rest, 0)), String::new())
+        } else if let Some(rest) = spec.strip_prefix("\\fcolorbox") {
+            (
+                self.resolve_color(empheq_brace_arg(rest, 1)),
+                self.resolve_color(empheq_brace_arg(rest, 0)),
+            )
+        } else {
+            // \fbox, \boxed, \widefbox, or unknown → plain box.
+            (String::new(), String::new())
+        };
+        let bg_color = self.arena.push_str(&bg);
+        let border_color = self.arena.push_str(&border);
+        self.arena.push_node(CompactNode::Boxed {
+            content,
+            bg_color,
+            border_color,
+        })
+    }
+
+    /// Resolve an empheq delimiter spec (e.g. `\Rightarrow`, `[`, `.`) to a
+    /// `StrId`. `None`/`.`/empty yield an empty (invisible) delimiter.
+    fn resolve_empheq_delim(&mut self, spec: Option<&str>) -> StrId {
+        let tok = spec.unwrap_or("").trim();
+        if tok.is_empty() || tok == "." {
+            return self.arena.push_str("");
+        }
+        if let Some(name) = tok.strip_prefix('\\') {
+            let name = name.trim();
+            if let Some(ch) = latex_to_unicode(name) {
+                return self.push_char_str(ch);
+            }
+            return self.arena.push_str(name);
+        }
+        self.arena.push_str(tok)
     }
 
     fn parse_smallmatrix_env<'a>(
@@ -3638,17 +4996,17 @@ impl LatexCompactParser {
         &mut self,
         input: &'a str,
     ) -> IResult<&'a str, Vec<SmallVec<[NodeId; 8]>>> {
-        let mut cells = Vec::with_capacity(4);
+        let mut raw: Vec<(SmallVec<[NodeId; 8]>, ColortblCell)> = Vec::with_capacity(4);
         let mut rest = input;
-        let (r, first) = self.parse_table_cell(rest)?;
-        cells.push(first);
+        let (r, first) = self.parse_table_cell_colortbl(rest)?;
+        raw.push(first);
         rest = r;
         loop {
             let saved = rest;
             match parse_cell_separator(rest) {
                 Ok((after_sep, ())) => {
-                    let (r, cell) = self.parse_table_cell(after_sep)?;
-                    cells.push(cell);
+                    let (r, cell) = self.parse_table_cell_colortbl(after_sep)?;
+                    raw.push(cell);
                     rest = r;
                 },
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
@@ -3658,7 +5016,83 @@ impl LatexCompactParser {
                 },
             }
         }
+        // A `\rowcolor` on any cell (conventionally the first) colors the row.
+        let row_bg = raw.iter().find_map(|(_, cc)| cc.row_bg.clone());
+        let mut cells = Vec::with_capacity(raw.len());
+        for (ids, cc) in raw {
+            // Cell precedence: `\cellcolor` overrides the row background.
+            match cc.cell_bg.or_else(|| row_bg.clone()) {
+                Some(color) if !color.is_empty() => cells.push(self.wrap_cell_bg(ids, &color)),
+                _ => cells.push(ids),
+            }
+        }
         Ok((rest, cells))
+    }
+
+    /// Wrap a cell's content nodes in a [`CompactNode::Boxed`] with the given
+    /// background color (no border), producing a single-element cell.
+    fn wrap_cell_bg(&mut self, ids: SmallVec<[NodeId; 8]>, color: &str) -> SmallVec<[NodeId; 8]> {
+        let span = self.arena.push_children(&ids);
+        let content = self.arena.push_node(CompactNode::Row(span));
+        let bg_color = self.arena.push_str(color);
+        let border_color = self.arena.push_str("");
+        let boxed = self.arena.push_node(CompactNode::Boxed {
+            content,
+            bg_color,
+            border_color,
+        });
+        smallvec::smallvec![boxed]
+    }
+
+    /// Parse one table cell, first consuming any leading colortbl directives
+    /// (`\cellcolor`, `\rowcolor`, `\columncolor`, `\arrayrulecolor`) and
+    /// returning their resolved backgrounds alongside the cell body.
+    fn parse_table_cell_colortbl<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> IResult<&'a str, (SmallVec<[NodeId; 8]>, ColortblCell)> {
+        let mut rest = input;
+        let mut cc = ColortblCell::default();
+        loop {
+            let (r, _) = ws(rest)?;
+            rest = r;
+            if let Some(after) = strip_control_word(rest, "cellcolor")
+                && let Ok((r2, color)) = self.parse_colortbl_color(after)
+            {
+                cc.cell_bg = Some(color);
+                rest = r2;
+                continue;
+            }
+            // Inline `\columncolor` (best-effort): color the cell it appears in.
+            // Full `>{\columncolor{..}}` column-spec support is deferred.
+            if let Some(after) = strip_control_word(rest, "columncolor")
+                && let Ok((r2, color)) = self.parse_colortbl_color(after)
+            {
+                if cc.cell_bg.is_none() {
+                    cc.cell_bg = Some(color);
+                }
+                rest = r2;
+                continue;
+            }
+            if let Some(after) = strip_control_word(rest, "rowcolor")
+                && let Ok((r2, color)) = self.parse_colortbl_color(after)
+            {
+                cc.row_bg = Some(color);
+                rest = r2;
+                continue;
+            }
+            // `\arrayrulecolor` is deferred: rule colors are not representable
+            // on the Array node, so accept and ignore the argument gracefully.
+            if let Some(after) = strip_control_word(rest, "arrayrulecolor")
+                && let Ok((r2, _)) = self.parse_colortbl_color(after)
+            {
+                rest = r2;
+                continue;
+            }
+            break;
+        }
+        let (rest, ids) = self.parse_table_cell(rest)?;
+        Ok((rest, (ids, cc)))
     }
 
     fn parse_table_cell<'a>(&mut self, input: &'a str) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
