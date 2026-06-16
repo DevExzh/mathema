@@ -67,6 +67,10 @@ The MathML reader handles **both Presentation and Content MathML**. Content form
 
 **Public API** (`src/convert.rs`): `convert()` one-liner and `from_latex()` / `from_mathml()` / etc. builder pattern returning `ConvertResult` for multi-format output.
 
+**WASM bindings** (`src/wasm/`, feature `wasm`): `MathemaConverter`/`ParsedMath` expose `toLatex`/`toMathml`/`toOmml`/`toUnicodeMath`/`toMtef` plus, under `wasm,render`, `toSvg(fontSizePx, display)` (standalone embedded-outline SVG) and `toSvgText(...)`. Build with `wasm-pack build --target web -- --no-default-features --features "wasm render"`.
+
+**Web app** (`web/`): a static SvelteKit single-page app (`adapter-static`, `ssr=false`) that serves the renderer + converter entirely client-side via the WASM package. `web/src/lib/mathema.js` loads the module once; `web/src/routes/+page.svelte` is the UI. See `web/README.md` for build/run steps (`pnpm wasm && pnpm dev`). The generated `web/src/lib/wasm/` is a build artifact (git-ignored).
+
 ## Feature Flags
 
 | Feature  | Gate                | Deps added                            |

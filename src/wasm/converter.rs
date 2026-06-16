@@ -165,6 +165,48 @@ impl ParsedMath {
         UnicodeMathWriter::write_compact(&self.compact.expr, &self.config).map_err(to_js_err)
     }
 
+    /// Render as a standalone SVG with embedded Latin Modern Math glyph
+    /// outlines (no client-side fonts required — renders identically
+    /// everywhere). `font_size_px` defaults to 16 when `<= 0`; `display`
+    /// overrides display/inline style (pass `None`/undefined to use the
+    /// parsed expression's own style).
+    #[cfg(feature = "render")]
+    #[wasm_bindgen(js_name = "toSvg")]
+    pub fn to_svg(
+        &self,
+        font_size_px: Option<f64>,
+        display: Option<bool>,
+    ) -> Result<String, JsValue> {
+        let mut opts = crate::render::RenderOptions::default();
+        if let Some(px) = font_size_px
+            && px > 0.0
+        {
+            opts.font_size_px = px;
+        }
+        opts.display_mode = display;
+        crate::render::render_to_svg_standalone_compact(&self.compact.expr, &opts)
+            .map_err(to_js_err)
+    }
+
+    /// Render as a `<text>`-based SVG that relies on client-side math fonts.
+    /// Smaller output, but appearance depends on installed fonts.
+    #[cfg(feature = "render")]
+    #[wasm_bindgen(js_name = "toSvgText")]
+    pub fn to_svg_text(
+        &self,
+        font_size_px: Option<f64>,
+        display: Option<bool>,
+    ) -> Result<String, JsValue> {
+        let mut opts = crate::render::RenderOptions::default();
+        if let Some(px) = font_size_px
+            && px > 0.0
+        {
+            opts.font_size_px = px;
+        }
+        opts.display_mode = display;
+        crate::render::render_to_svg_compact(&self.compact.expr, &opts).map_err(to_js_err)
+    }
+
     /// Get the AST as a JavaScript object (via serde-wasm-bindgen).
     #[wasm_bindgen(js_name = "toAst")]
     pub fn to_ast(&self) -> Result<JsValue, JsValue> {
@@ -263,6 +305,28 @@ mod tests {
         let converter = MathemaConverter::new("latex").expect("create");
         let result = converter.parse("x").expect("parse");
         assert_eq!(result.diagnostics(), "[]");
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn converter_renders_svg() {
+        let converter = MathemaConverter::new("latex").expect("create");
+        let result = converter.parse("\\frac{1}{2}").expect("parse");
+        let svg = result.to_svg(Some(28.0), Some(true)).expect("svg");
+        assert!(svg.contains("<svg"), "expected an <svg> root: {svg}");
+        // Embedded-outline SVG contains drawn glyph geometry.
+        assert!(svg.contains("<path") || svg.contains("<use"));
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn converter_renders_content_mathml_svg() {
+        let converter = MathemaConverter::new("mathml").expect("create");
+        let result = converter
+            .parse("<math><apply><ln/><ci>a</ci></apply></math>")
+            .expect("parse");
+        let svg = result.to_svg(None, None).expect("svg");
+        assert!(svg.contains("<path") || svg.contains("<use"));
     }
 
     #[test]
