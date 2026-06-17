@@ -419,6 +419,20 @@ fn emit_glyph(
                 s = scale,
                 color = XmlAttrEscape(&options.fg_color),
             );
+        } else if ch == '\u{2202}' {
+            // De-slant the cursive Latin Modern Math `∂` toward MathJax's more
+            // upright glyph. Mirrors the raster backend's counter-shear so the
+            // SVG and PNG outputs stay in parity.
+            let _ = write!(
+                svg,
+                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6}) skewX({deg})" fill="{color}"/>"##,
+                id = glyph_id(used_font, ch as u32),
+                x = x,
+                y = y,
+                s = scale,
+                deg = super::layout::PARTIAL_DESLANT_DEG,
+                color = XmlAttrEscape(&options.fg_color),
+            );
         } else {
             let _ = write!(
                 svg,

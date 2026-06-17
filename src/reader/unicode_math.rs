@@ -455,6 +455,7 @@ impl CompactParser {
             arraystretch_pct: 100,
             add_jot: false,
             col_seps: 0,
+            row_seps: 0,
         });
         Ok((remaining, id))
     }

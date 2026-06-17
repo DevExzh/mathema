@@ -259,7 +259,10 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     //   lower arm: nearly vertical ascent from middle tip
     //   bottom hook: sharp serif-like turn outward to (w, h)
     let mid = h * 0.5;
-    let thick = (0.065_f64).min(w * 0.22); // stroke thickness
+    // Stroke thickness. Scale modestly with height so tall braces (e.g. the
+    // `cases` brace) carry the heavier weight MathJax uses, while small inline
+    // braces keep their original 0.065em weight.
+    let thick = (h * 0.045).clamp(0.065, 0.12).min(w * 0.30); // stroke thickness
 
     // Where the vertical arm runs
     let arm = w * 0.40;
@@ -372,7 +375,7 @@ fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
     //   lower arm: nearly vertical ascent from middle tip
     //   bottom hook: sharp serif-like turn outward to (0, h)
     let mid = h * 0.5;
-    let thick = (0.065_f64).min(w * 0.22);
+    let thick = (h * 0.045).clamp(0.065, 0.12).min(w * 0.30);
 
     let arm = w * 0.60; // arm x position (mirrored from left brace's 0.40)
     let hk = (h * 0.18).clamp(0.10, 0.35);

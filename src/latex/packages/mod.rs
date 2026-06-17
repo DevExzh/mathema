@@ -56,6 +56,7 @@ use std::sync::OnceLock;
 // --- Registered package files (each owns its own file) ---------------------
 pub mod amsbsy;
 pub mod amsfonts;
+pub mod amsmath;
 pub mod amssymb;
 pub mod bbm;
 pub mod bboldx;
@@ -74,6 +75,7 @@ pub mod upgreek;
 const PACKAGE_MACROS: &[&[(&str, u8, &str)]] = &[
     amsbsy::MACROS,
     amsfonts::MACROS,
+    amsmath::MACROS,
     amssymb::MACROS,
     bbm::MACROS,
     bboldx::MACROS,
@@ -93,6 +95,7 @@ const PACKAGE_MACROS: &[&[(&str, u8, &str)]] = &[
 const PACKAGE_SYMBOLS: &[&[(&str, &str, SymbolClass)]] = &[
     amsbsy::SYMBOLS,
     amsfonts::SYMBOLS,
+    amsmath::SYMBOLS,
     amssymb::SYMBOLS,
     bbm::SYMBOLS,
     bboldx::SYMBOLS,

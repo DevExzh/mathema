@@ -704,6 +704,7 @@ impl<'a> MathmlCompactParser<'a> {
             arraystretch_pct: 100,
             add_jot: false,
             col_seps: 0,
+            row_seps: 0,
         });
         Ok(self.c_fenced("(", ")", &[inner]))
     }
@@ -772,6 +773,7 @@ impl<'a> MathmlCompactParser<'a> {
             arraystretch_pct: 100,
             add_jot: false,
             col_seps: 0,
+            row_seps: 0,
         });
         // Left brace, no right.
         let open = self.arena.push_str("{");

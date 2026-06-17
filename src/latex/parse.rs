@@ -381,7 +381,7 @@ fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
     (result, seps)
 }
 
-fn parse_row_separator(input: &str) -> IResult<&str, Option<&str>> {
+fn parse_row_separator(input: &str) -> IResult<&str, (Option<&str>, bool)> {
     let (input, _) = ws(input)?;
     // Accept \\ or \cr as row separator
     let input = if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\cr")(input) {
@@ -414,9 +414,10 @@ fn parse_row_separator(input: &str) -> IResult<&str, Option<&str>> {
         (input, None)
     };
     let (input, _) = ws(input)?;
-    // Consume any \hline or \hdashline directives that follow
-    let input = skip_table_directives(input);
-    Ok((input, extra))
+    // Consume any \hline or \hdashline directives that follow; report whether a
+    // solid \hline was present so the caller can record a horizontal rule.
+    let (input, hline) = take_table_directives(input);
+    Ok((input, (extra, hline)))
 }
 
 // ---------------------------------------------------------------------------
@@ -736,10 +737,14 @@ fn xy_take_script(input: &str) -> (&str, &str) {
     (&t[ch_len..], &t[..ch_len])
 }
 
-/// Skip `\hline` and `\hdashline` table directives (silently consumed).
-fn skip_table_directives(mut input: &str) -> &str {
+/// Consume leading `\hline`/`\hdashline` directives, reporting whether at least
+/// one solid `\hline` (not merely `\hdashline`) was seen. Used to record
+/// horizontal-rule positions for array rendering.
+fn take_table_directives(input: &str) -> (&str, bool) {
+    let mut had_hline = false;
+    let mut cur = input;
     loop {
-        let trimmed = input.trim_start();
+        let trimmed = cur.trim_start();
         if let Some(rest) = trimmed.strip_prefix("\\hline") {
             // Ensure it's not a prefix of a longer command
             if rest
@@ -749,7 +754,8 @@ fn skip_table_directives(mut input: &str) -> &str {
             {
                 break;
             }
-            input = rest;
+            had_hline = true;
+            cur = rest;
         } else if let Some(rest) = trimmed.strip_prefix("\\hdashline") {
             if rest
                 .as_bytes()
@@ -758,12 +764,12 @@ fn skip_table_directives(mut input: &str) -> &str {
             {
                 break;
             }
-            input = rest;
+            cur = rest;
         } else {
             break;
         }
     }
-    input
+    (cur, had_hline)
 }
 
 fn parse_cell_separator(input: &str) -> IResult<&str, ()> {
@@ -1067,16 +1073,17 @@ impl LatexCompactParser {
         columns: &[ColumnAlign],
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        self.build_array_with_spacing(columns, rows, 100, false, 0)
+        self.build_array_with_spacing(columns, rows, 100, false, 0, 0)
     }
 
-    fn build_array_with_seps(
+    fn build_array_with_seps_rows(
         &mut self,
         columns: &[ColumnAlign],
         col_seps: u32,
+        row_seps: u32,
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        self.build_array_with_spacing(columns, rows, 100, false, col_seps)
+        self.build_array_with_spacing(columns, rows, 100, false, col_seps, row_seps)
     }
 
     /// Build an Array node with explicit spacing parameters.
@@ -1087,6 +1094,7 @@ impl LatexCompactParser {
         arraystretch_pct: u8,
         add_jot: bool,
         col_seps: u32,
+        row_seps: u32,
     ) -> NodeId {
         // Compute the actual number of columns as the maximum of the declared
         // column spec and the widest row.  This ensures the flat cell array
@@ -1120,6 +1128,7 @@ impl LatexCompactParser {
             arraystretch_pct,
             add_jot,
             col_seps,
+            row_seps,
         })
     }
 
@@ -2964,28 +2973,87 @@ impl LatexCompactParser {
             ),
         };
 
-        let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
-        if l_sub != NodeId::NONE || l_sup != NodeId::NONE {
-            let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-            items.push(self.arena.push_node(CompactNode::PreScripts {
-                base,
+        // Decompose the parsed operator so the four corner scripts hug the bare
+        // operator glyph (like amsmath / MathJax) rather than scattering around
+        // a pre-stacked limit box. For the common n-ary case (`\sum`, `\int`, …)
+        // we lift the glyph out, attach the left group as prescripts and the
+        // right group as corner postscripts, then re-apply the operator's own
+        // limits above/below. The operator body (e.g. `a_n`) follows after.
+        let (op_glyph, op_sub, op_sup, op_body, op_limits) = match *self.arena.node(op_id) {
+            CompactNode::Nary {
+                op,
+                sub,
+                sup,
+                body,
+                limits,
+            } => {
+                let mut buf = [0u8; 4];
+                let sid = self.arena.push_str(op.encode_utf8(&mut buf));
+                let glyph = self
+                    .arena
+                    .push_node(CompactNode::Symbol(SymbolKind::LargeOp, sid));
+                (glyph, sub, sup, body, limits)
+            },
+            // Non-n-ary operator: hug it directly, no above/below limits to lift.
+            _ => (op_id, NodeId::NONE, NodeId::NONE, NodeId::NONE, LimitStyle::Default),
+        };
+
+        // Left group → prescripts on the glyph.
+        let with_pre = if l_sub != NodeId::NONE || l_sup != NodeId::NONE {
+            self.arena.push_node(CompactNode::PreScripts {
+                base: op_glyph,
                 pre_sub: l_sub,
                 pre_sup: l_sup,
-            }));
-        }
-        items.push(op_id);
-        if r_sub != NodeId::NONE || r_sup != NodeId::NONE {
-            let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-            let node = match (r_sub != NodeId::NONE, r_sup != NodeId::NONE) {
-                (true, true) => CompactNode::SubSup {
-                    base,
-                    sub: r_sub,
-                    sup: r_sup,
-                },
-                (true, false) => CompactNode::Subscript { base, sub: r_sub },
-                _ => CompactNode::Superscript { base, sup: r_sup },
-            };
-            items.push(self.arena.push_node(node));
+            })
+        } else {
+            op_glyph
+        };
+
+        // Right group → corner postscripts. Because `with_pre` is not itself an
+        // operator node, these stay as side (corner) scripts.
+        let with_post = match (r_sub != NodeId::NONE, r_sup != NodeId::NONE) {
+            (true, true) => self.arena.push_node(CompactNode::SubSup {
+                base: with_pre,
+                sub: r_sub,
+                sup: r_sup,
+            }),
+            (true, false) => self
+                .arena
+                .push_node(CompactNode::Subscript { base: with_pre, sub: r_sub }),
+            (false, true) => self
+                .arena
+                .push_node(CompactNode::Superscript { base: with_pre, sup: r_sup }),
+            (false, false) => with_pre,
+        };
+
+        // Re-apply the operator's own limits above/below the corner-scripted op.
+        // `_ = op_limits;` keeps the field available for future inline tuning;
+        // over/under placement matches the display-mode amsmath rendering.
+        let _ = op_limits;
+        let stacked = match (op_sub != NodeId::NONE, op_sup != NodeId::NONE) {
+            (true, true) => self.arena.push_node(CompactNode::UnderOver {
+                base: with_post,
+                under: op_sub,
+                over: op_sup,
+                movable_limits: true,
+            }),
+            (true, false) => self.arena.push_node(CompactNode::Underscript {
+                base: with_post,
+                under: op_sub,
+                movable_limits: true,
+            }),
+            (false, true) => self.arena.push_node(CompactNode::Overscript {
+                base: with_post,
+                over: op_sup,
+                movable_limits: true,
+            }),
+            (false, false) => with_post,
+        };
+
+        let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
+        items.push(stacked);
+        if op_body != NodeId::NONE {
+            items.push(op_body);
         }
 
         let span = self.arena.push_children(&items);
@@ -3443,7 +3511,7 @@ impl LatexCompactParser {
             cells.into_iter().map(|cell| vec![cell]).collect();
         Ok((
             input,
-            self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false, 0),
+            self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false, 0, 0),
         ))
     }
 
@@ -4028,7 +4096,7 @@ impl LatexCompactParser {
             (input, (SmallVec::new(), 0u32))
         };
 
-        let (input, rows) = self.parse_table_body(input)?;
+        let (input, (rows, row_seps)) = self.parse_table_body_with_seps(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
@@ -4038,7 +4106,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_seps(&columns.0, columns.1, rows),
+            self.build_array_with_seps_rows(&columns.0, columns.1, row_seps, rows),
         ))
     }
 
@@ -4156,7 +4224,7 @@ impl LatexCompactParser {
 
         let columns: SmallVec<[ColumnAlign; 4]> =
             smallvec::smallvec![ColumnAlign::Center; num_cols];
-        let array = self.build_array_with_spacing(&columns, rows, 150, false, 0);
+        let array = self.build_array_with_spacing(&columns, rows, 150, false, 0, 0);
         Ok((rest, array))
     }
 
@@ -4633,7 +4701,7 @@ impl LatexCompactParser {
         }
         let columns: SmallVec<[ColumnAlign; 4]> =
             smallvec::smallvec![ColumnAlign::Center; num_cols];
-        self.build_array_with_spacing(&columns, rows, 130, false, 0)
+        self.build_array_with_spacing(&columns, rows, 130, false, 0, 0)
     }
 
     /// Parse one xymatrix cell: leading object content followed by any
@@ -4736,6 +4804,7 @@ impl LatexCompactParser {
             120,
             false,
             0,
+            0,
         );
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
@@ -4764,6 +4833,7 @@ impl LatexCompactParser {
             rows,
             120,
             false,
+            0,
             0,
         );
         let open = self.arena.push_str("");
@@ -4824,6 +4894,7 @@ impl LatexCompactParser {
             numbered_rows,
             120,
             false,
+            0,
             0,
         );
         // Big left brace, no right delimiter (cases style).
@@ -4977,7 +5048,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_spacing(&columns, rows, 50, false, 0),
+            self.build_array_with_spacing(&columns, rows, 50, false, 0, 0),
         ))
     }
 
@@ -5003,7 +5074,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_spacing(&columns, rows, 100, true, 0),
+            self.build_array_with_spacing(&columns, rows, 100, true, 0, 0),
         ))
     }
 
@@ -5041,7 +5112,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true, 0),
+            self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true, 0, 0),
         ))
     }
 
@@ -5104,16 +5175,32 @@ impl LatexCompactParser {
         &mut self,
         input: &'a str,
     ) -> IResult<&'a str, Vec<Vec<SmallVec<[NodeId; 8]>>>> {
+        let (rest, (rows, _row_seps)) = self.parse_table_body_with_seps(input)?;
+        Ok((rest, rows))
+    }
+
+    /// Like [`parse_table_body`], but also returns the horizontal-rule bitmask:
+    /// bit `i` set means a solid `\hline` precedes row `i` (bit `num_rows`
+    /// means a rule at the bottom edge).
+    #[allow(clippy::type_complexity)]
+    fn parse_table_body_with_seps<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> IResult<&'a str, (Vec<Vec<SmallVec<[NodeId; 8]>>>, u32)> {
         let mut rows = Vec::with_capacity(4);
-        // Skip leading \hline / \hdashline before first row
-        let mut rest = skip_table_directives(input);
+        let mut row_seps: u32 = 0;
+        // Skip leading \hline / \hdashline before first row (top edge = bit 0)
+        let (mut rest, top_hline) = take_table_directives(input);
+        if top_hline {
+            row_seps |= 1;
+        }
         let (r, first) = self.parse_table_row(rest)?;
         rows.push(first);
         rest = r;
         loop {
             let saved = rest;
             match parse_row_separator(rest) {
-                Ok((after_sep, extra)) => {
+                Ok((after_sep, (extra, hline))) => {
                     // Apply \\[dim] extra inter-row space by adding an invisible
                     // depth strut to the row just completed.
                     if let Some(dim_str) = extra
@@ -5132,6 +5219,10 @@ impl LatexCompactParser {
                             cell.push(strut);
                         }
                     }
+                    // A `\hline` after this separator precedes the next row.
+                    if hline && rows.len() < 32 {
+                        row_seps |= 1 << rows.len();
+                    }
                     let (r, row) = self.parse_table_row(after_sep)?;
                     rows.push(row);
                     rest = r;
@@ -5143,7 +5234,23 @@ impl LatexCompactParser {
                 },
             }
         }
-        Ok((rest, rows))
+        // Drop a trailing rule recorded against a phantom empty row: if the last
+        // row is entirely empty it was produced by a trailing `\\`; move its rule
+        // bit down to the true bottom edge and discard the empty row.
+        if rows.len() > 1
+            && rows
+                .last()
+                .is_some_and(|r| r.iter().all(|c| c.is_empty()))
+        {
+            let last = rows.len();
+            if row_seps & (1 << last) != 0 {
+                row_seps &= !(1 << last);
+                row_seps |= 1 << (last - 1);
+            }
+            // keep the empty row only if it carries no rule semantics; existing
+            // behavior preserved otherwise (do not change row count here).
+        }
+        Ok((rest, (rows, row_seps)))
     }
 
     fn parse_table_row<'a>(

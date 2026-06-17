@@ -288,6 +288,13 @@ const ALIGN_PAIR_GAP_EM: f64 = 1.0;
 /// Added after super/subscripts per TeXBook Rule 18.
 const SCRIPT_SPACE: f64 = 0.05;
 
+/// De-slant angle (degrees) applied to the Latin Modern Math `∂` (U+2202) glyph.
+/// LMMath draws `∂` with a pronounced forward (cursive) lean; MathJax renders a
+/// more upright glyph, so a small backward (positive `skewX`) counter-shear is
+/// applied in every raster/SVG backend. Centralized here so all backends agree
+/// (important for SVG↔PNG parity).
+pub(crate) const PARTIAL_DESLANT_DEG: f32 = 12.0;
+
 /// Detect whether columns follow an aligned `[R, L, R, L, ...]` pattern and
 /// return `true` if so.  Used to switch from a uniform column gap to the
 /// tighter per-pair gaps that KaTeX applies.
@@ -344,6 +351,12 @@ fn wants_limits_above_below(node: &MathNode, style: MathStyle) -> bool {
             LimitStyle::Default => style.is_display(),
             LimitStyle::SubSup => false,
         },
+        // A limit operator decorated with an over/under line or arrow still
+        // behaves as a limit operator (see compact-path note above).
+        MathNode::Overscript { base, .. }
+        | MathNode::Underscript { base, .. }
+        | MathNode::UnderOver { base, .. }
+        | MathNode::Accent { base, .. } => wants_limits_above_below(base, style),
         _ => false,
     }
 }
@@ -387,6 +400,14 @@ fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: MathStyle) ->
             LimitStyle::Default => style.is_display(),
             LimitStyle::SubSup => false,
         },
+        // A limit operator decorated with an over/under line or arrow (e.g.
+        // `\varlimsup` → `\overline{\lim}`, `\varprojlim` → `\underleftarrow{\lim}`)
+        // still behaves as a limit operator: scripts attach above/below the
+        // whole decorated stack rather than to its side.
+        CompactNode::Overscript { base, .. }
+        | CompactNode::Underscript { base, .. }
+        | CompactNode::UnderOver { base, .. }
+        | CompactNode::Accent { base, .. } => wants_limits_above_below_c(arena, base, style),
         _ => false,
     }
 }
@@ -2414,9 +2435,11 @@ pub(crate) fn radical_path(w: f64, h: f64, t: f64) -> String {
     // How far the tail slopes downward from start to end
     let tail_drop = 0.08 * h;
 
-    // Upstroke half-width: thinner than the general stroke for a more
-    // vertical, KaTeX-like appearance
-    let up_hw = t * 0.40;
+    // Upstroke half-width: the extended vertical stroke of a tall surd must read
+    // as a solid stroke, so keep it close to (slightly above) the vinculum
+    // thickness rather than a hairline. Thin upstrokes make tall radicals look
+    // spindly and fail to visually enclose the radicand.
+    let up_hw = t * 0.75;
 
     // === Outer edge (clockwise) ===
     // P0: tail start (left edge, upper edge of tail)
@@ -2706,9 +2729,15 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
             .map(|c| c.radical_kern_after_degree * size)
             .unwrap_or(0.0);
 
-        // Degree placed at kern_before; radical at kern_before + idx_width + kern_after
-        let degree_x = kern_before;
-        let radical_start = (degree_x + idx_width + kern_after).max(0.0);
+        // Degree placed at kern_before; radical at kern_before + idx_width + kern_after.
+        // Our synthetic surd lacks the deep notch of a font radical glyph, so the
+        // font's aggressive negative `kern_after` would visually overlap the index.
+        // Keep a comfortable margin: never let the surd start closer than a small
+        // positive gap to the right of the index.
+        let degree_x = kern_before.max(0.05 * size);
+        let min_gap = 0.06 * size;
+        let radical_start =
+            (degree_x + idx_width + kern_after).max(degree_x + idx_width + min_gap);
 
         // Place degree
         children.push(PositionedBox::new(degree_x, idx_shift, idx_box));
@@ -4795,6 +4824,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             arraystretch_pct,
             add_jot,
             col_seps,
+            row_seps,
         } => layout_array_c(
             arena,
             col_aligns,
@@ -4803,6 +4833,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             arraystretch_pct,
             add_jot,
             col_seps,
+            row_seps,
             ctx,
         ),
         CompactNode::Phantom(inner, kind) => layout_phantom_c(arena, inner, kind, ctx),
@@ -5564,8 +5595,10 @@ fn layout_sqrt_c(
             .map(|c| c.radical_kern_after_degree * size)
             .unwrap_or(0.0);
 
-        let degree_x = kern_before;
-        let radical_start = (degree_x + idx_width + kern_after).max(0.0);
+        let degree_x = kern_before.max(0.05 * size);
+        let min_gap = 0.06 * size;
+        let radical_start =
+            (degree_x + idx_width + kern_after).max(degree_x + idx_width + min_gap);
 
         children.push(PositionedBox::new(degree_x, idx_shift, idx_box));
 
@@ -6765,6 +6798,7 @@ fn layout_array_c(
     arraystretch_pct: u8,
     add_jot: bool,
     col_seps: u32,
+    row_seps: u32,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
@@ -6834,8 +6868,12 @@ fn layout_array_c(
     // Position cells
     let mut children = Vec::new();
     let mut cursor_y = 0.0;
+    // Top-down y of each row boundary (length n_rows + 1): boundary_y[i] is the
+    // top of row i; boundary_y[n_rows] is the bottom edge. Used for \hline.
+    let mut row_boundary_y: Vec<f64> = Vec::with_capacity(n_rows + 1);
 
     for i in 0..n_rows {
+        row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
         let mut cursor_x = 0.0;
 
@@ -6863,6 +6901,7 @@ fn layout_array_c(
 
         cursor_y += row_depths[i];
     }
+    row_boundary_y.push(cursor_y); // bottom edge
 
     let total_gap: f64 = (0..n_cols.saturating_sub(1))
         .map(|j| col_gap_after(j, aligned, size))
@@ -6910,6 +6949,31 @@ fn layout_array_c(
                     kind: BoxKind::SvgPath(path),
                 };
                 children.push(PositionedBox::new(bx - rule_w / 2.0, 0.0, rule_box));
+            }
+        }
+    }
+
+    // Add horizontal rules (\hline) if row_seps is non-zero. Each rule spans the
+    // full table width and is centered on its row boundary, so it meets any
+    // vertical separators cleanly at their intersections.
+    if row_seps != 0 {
+        let rule_t = 0.04 * size;
+        for (pos, &by) in row_boundary_y.iter().enumerate() {
+            if pos < 32 && (row_seps >> pos) & 1 != 0 {
+                // Convert top-down boundary y to baseline-relative dy and center
+                // the rule (thickness rule_t) on the boundary line.
+                let line_dy = box_height - by;
+                let path = format!(
+                    "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                    total_width, total_width, rule_t, rule_t
+                );
+                let rule_box = LayoutBox {
+                    width: total_width,
+                    height: rule_t,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(path),
+                };
+                children.push(PositionedBox::new(0.0, line_dy - rule_t / 2.0, rule_box));
             }
         }
     }
@@ -7775,6 +7839,7 @@ fn layout_node_arena(
             arraystretch_pct,
             add_jot,
             col_seps,
+            row_seps,
         } => layout_array_arena(
             ast,
             col_aligns,
@@ -7783,6 +7848,7 @@ fn layout_node_arena(
             arraystretch_pct,
             add_jot,
             col_seps,
+            row_seps,
             arena,
             ctx,
         ),
@@ -8787,8 +8853,9 @@ fn layout_sqrt_arena(
             .map(|c| c.radical_kern_after_degree * size)
             .unwrap_or(0.0);
 
-        let degree_x = kern_before;
-        let radical_start = (degree_x + idx_w + kern_after).max(0.0);
+        let degree_x = kern_before.max(0.05 * size);
+        let min_gap = 0.06 * size;
+        let radical_start = (degree_x + idx_w + kern_after).max(degree_x + idx_w + min_gap);
 
         radical_dx += radical_start;
         vinculum_dx += radical_start;
@@ -10358,6 +10425,7 @@ fn layout_array_arena(
     arraystretch_pct: u8,
     add_jot: bool,
     col_seps: u32,
+    row_seps: u32,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -10436,8 +10504,10 @@ fn layout_array_arena(
     // Position cells
     let children_start = arena.begin_children();
     let mut cursor_y = 0.0;
+    let mut row_boundary_y: Vec<f64> = Vec::with_capacity(n_rows + 1);
 
     for i in 0..n_rows {
+        row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
         let mut cursor_x = 0.0;
 
@@ -10468,6 +10538,12 @@ fn layout_array_arena(
 
         cursor_y += row_depths[i];
     }
+    row_boundary_y.push(cursor_y); // bottom edge
+
+    let total_gap: f64 = (0..n_cols.saturating_sub(1))
+        .map(|j| col_gap_after(j, aligned, size))
+        .sum();
+    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
 
     // Add vertical separator rules if col_seps is non-zero
     if col_seps != 0 {
@@ -10507,11 +10583,32 @@ fn layout_array_arena(
         }
     }
 
+    // Add horizontal rules (\hline) if row_seps is non-zero.
+    if row_seps != 0 {
+        let rule_t = 0.04 * size;
+        for (pos, &by) in row_boundary_y.iter().enumerate() {
+            if pos < 32 && (row_seps >> pos) & 1 != 0 {
+                let line_dy = box_height - by;
+                let path = format!(
+                    "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                    total_width, total_width, rule_t, rule_t
+                );
+                let rule_id = arena.alloc(ArenaLayoutBox {
+                    width: total_width,
+                    height: rule_t,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::SvgPath(path),
+                });
+                arena.push_child(ArenaPositionedBox {
+                    dx: 0.0,
+                    dy: line_dy - rule_t / 2.0,
+                    id: rule_id,
+                });
+            }
+        }
+    }
+
     let children = arena.finish_children(children_start);
-    let total_gap: f64 = (0..n_cols.saturating_sub(1))
-        .map(|j| col_gap_after(j, aligned, size))
-        .sum();
-    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
 
     arena.alloc(ArenaLayoutBox {
         width: total_width,

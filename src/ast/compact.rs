@@ -207,6 +207,10 @@ pub enum CompactNode {
         /// Bit i means "draw a vertical rule before column i" (i=0 is left edge).
         /// Bit num_cols means "draw a vertical rule at the right edge".
         col_seps: u32,
+        /// Bitmask of horizontal rule (`\hline`) positions.
+        /// Bit i means "draw a horizontal rule before row i" (i=0 is top edge).
+        /// Bit num_rows means "draw a horizontal rule at the bottom edge".
+        row_seps: u32,
     },
 
     // ── Decorators ─────────────────────────────────────────────────
@@ -579,6 +583,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 arraystretch_pct,
                 add_jot: *add_jot,
                 col_seps: 0,
+                row_seps: 0,
             })
         },
 
@@ -812,6 +817,7 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             arraystretch_pct,
             add_jot,
             col_seps: _,
+            row_seps: _,
         } => {
             // Reconstruct column alignments
             let columns: Vec<ColumnAlign> = arena
@@ -1121,6 +1127,7 @@ mod tests {
                 arraystretch_pct: 100,
                 add_jot: false,
                 col_seps: 0,
+                row_seps: 0,
             },
             CompactNode::Phantom(id, PhantomKind::Full),
             CompactNode::Boxed {
