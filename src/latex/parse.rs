@@ -1073,7 +1073,7 @@ impl LatexCompactParser {
         columns: &[ColumnAlign],
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        self.build_array_with_spacing(columns, rows, 100, false, 0, 0)
+        self.build_array_with_spacing(columns, rows, 100, false, 0, 0, false)
     }
 
     fn build_array_with_seps_rows(
@@ -1081,12 +1081,14 @@ impl LatexCompactParser {
         columns: &[ColumnAlign],
         col_seps: u32,
         row_seps: u32,
+        array_style: bool,
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        self.build_array_with_spacing(columns, rows, 100, false, col_seps, row_seps)
+        self.build_array_with_spacing(columns, rows, 100, false, col_seps, row_seps, array_style)
     }
 
     /// Build an Array node with explicit spacing parameters.
+    #[allow(clippy::too_many_arguments)]
     fn build_array_with_spacing(
         &mut self,
         columns: &[ColumnAlign],
@@ -1095,6 +1097,7 @@ impl LatexCompactParser {
         add_jot: bool,
         col_seps: u32,
         row_seps: u32,
+        array_style: bool,
     ) -> NodeId {
         // Compute the actual number of columns as the maximum of the declared
         // column spec and the widest row.  This ensures the flat cell array
@@ -1129,6 +1132,7 @@ impl LatexCompactParser {
             add_jot,
             col_seps,
             row_seps,
+            array_style,
         })
     }
 
@@ -3511,7 +3515,7 @@ impl LatexCompactParser {
             cells.into_iter().map(|cell| vec![cell]).collect();
         Ok((
             input,
-            self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false, 0, 0),
+            self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false, 0, 0, false),
         ))
     }
 
@@ -4089,11 +4093,16 @@ impl LatexCompactParser {
                     let spec = &inner[..end];
                     let rest = &inner[end + 1..];
                     if !spec.is_empty() {
-                        break 'col (rest, parse_column_spec(spec));
+                        let (aligns, col_seps) = parse_column_spec(spec);
+                        // LaTeX `array` adds `\arraycolsep` on both outer edges
+                        // unless the preamble suppresses it with a leading `@{}`
+                        // (as in `@{}cc@{}`).
+                        let array_style = !spec.trim_start().starts_with('@');
+                        break 'col (rest, (aligns, col_seps, array_style));
                     }
                 }
             }
-            (input, (SmallVec::new(), 0u32))
+            (input, (SmallVec::new(), 0u32, true))
         };
 
         let (input, (rows, row_seps)) = self.parse_table_body_with_seps(input)?;
@@ -4106,7 +4115,9 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_seps_rows(&columns.0, columns.1, row_seps, rows),
+            self.build_array_with_seps_rows(
+                &columns.0, columns.1, row_seps, columns.2, rows,
+            ),
         ))
     }
 
@@ -4224,7 +4235,7 @@ impl LatexCompactParser {
 
         let columns: SmallVec<[ColumnAlign; 4]> =
             smallvec::smallvec![ColumnAlign::Center; num_cols];
-        let array = self.build_array_with_spacing(&columns, rows, 150, false, 0, 0);
+        let array = self.build_array_with_spacing(&columns, rows, 150, false, 0, 0, false);
         Ok((rest, array))
     }
 
@@ -4701,7 +4712,7 @@ impl LatexCompactParser {
         }
         let columns: SmallVec<[ColumnAlign; 4]> =
             smallvec::smallvec![ColumnAlign::Center; num_cols];
-        self.build_array_with_spacing(&columns, rows, 130, false, 0, 0)
+        self.build_array_with_spacing(&columns, rows, 130, false, 0, 0, false)
     }
 
     /// Parse one xymatrix cell: leading object content followed by any
@@ -4805,6 +4816,7 @@ impl LatexCompactParser {
             false,
             0,
             0,
+            false,
         );
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
@@ -4835,6 +4847,7 @@ impl LatexCompactParser {
             false,
             0,
             0,
+            false,
         );
         let open = self.arena.push_str("");
         let close = self.arena.push_str("}");
@@ -4896,6 +4909,7 @@ impl LatexCompactParser {
             false,
             0,
             0,
+            false,
         );
         // Big left brace, no right delimiter (cases style).
         let open = self.arena.push_str("{");
@@ -5048,7 +5062,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_spacing(&columns, rows, 50, false, 0, 0),
+            self.build_array_with_spacing(&columns, rows, 50, false, 0, 0, false),
         ))
     }
 
@@ -5074,7 +5088,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_spacing(&columns, rows, 100, true, 0, 0),
+            self.build_array_with_spacing(&columns, rows, 100, true, 0, 0, false),
         ))
     }
 
@@ -5112,7 +5126,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true, 0, 0),
+            self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true, 0, 0, false),
         ))
     }
 

@@ -203,6 +203,10 @@ pub enum CompactNode {
         num_cols: u16,
         arraystretch_pct: u8,
         add_jot: bool,
+        /// `true` for LaTeX `array`/`cases`-style tables that add `\arraycolsep`
+        /// padding on both sides of every column (including the outer edges);
+        /// `false` for `matrix`-style tables with no outer padding.
+        array_style: bool,
         /// Bitmask of vertical separator positions.
         /// Bit i means "draw a vertical rule before column i" (i=0 is left edge).
         /// Bit num_cols means "draw a vertical rule at the right edge".
@@ -582,6 +586,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 num_cols,
                 arraystretch_pct,
                 add_jot: *add_jot,
+                array_style: false,
                 col_seps: 0,
                 row_seps: 0,
             })
@@ -816,6 +821,7 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             num_cols,
             arraystretch_pct,
             add_jot,
+            array_style: _,
             col_seps: _,
             row_seps: _,
         } => {
@@ -1126,6 +1132,7 @@ mod tests {
                 num_cols: 1,
                 arraystretch_pct: 100,
                 add_jot: false,
+                array_style: false,
                 col_seps: 0,
                 row_seps: 0,
             },

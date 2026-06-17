@@ -275,6 +275,10 @@ const MAX_LAYOUT_DEPTH: u32 = 128;
 /// especially for compact matrix environments with single-character cells.
 const MATRIX_COL_GAP_EM: f64 = 0.8;
 
+/// LaTeX `\arraycolsep` (≈ 5pt at a 10pt size). Added on both sides of every
+/// column in `array`-style tables, and used as half the inter-column gap.
+const ARRAY_COLSEP_EM: f64 = 0.5;
+
 /// Column gap within an rl-pair at alignment points in aligned environments.
 /// KaTeX uses 0 for this gap (R→L boundary); we use a tiny value so content
 /// doesn't collide.
@@ -4841,6 +4845,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             add_jot,
             col_seps,
             row_seps,
+            array_style,
         } => layout_array_c(
             arena,
             col_aligns,
@@ -4850,6 +4855,7 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
             add_jot,
             col_seps,
             row_seps,
+            array_style,
             ctx,
         ),
         CompactNode::Phantom(inner, kind) => layout_phantom_c(arena, inner, kind, ctx),
@@ -6812,6 +6818,7 @@ fn layout_array_c(
     add_jot: bool,
     col_seps: u32,
     row_seps: u32,
+    array_style: bool,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
@@ -6885,10 +6892,25 @@ fn layout_array_c(
     // top of row i; boundary_y[n_rows] is the bottom edge. Used for \hline.
     let mut row_boundary_y: Vec<f64> = Vec::with_capacity(n_rows + 1);
 
+    // Column spacing. `array`-style tables (LaTeX `\begin{array}{...}`) pad both
+    // outer edges with `\arraycolsep` and use 2·arraycolsep between columns, so
+    // a `|` separator sits centered in the gap with clearance on each side.
+    // `matrix`-style tables have no outer padding and a tighter inter-column gap.
+    let colsep = ARRAY_COLSEP_EM * size;
+    let lead_pad = if array_style { colsep } else { 0.0 };
+    let trail_pad = if array_style { colsep } else { 0.0 };
+    let gap_after = |j: usize| -> f64 {
+        if array_style {
+            2.0 * colsep
+        } else {
+            col_gap_after(j, aligned, size)
+        }
+    };
+
     for i in 0..n_rows {
         row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
-        let mut cursor_x = 0.0;
+        let mut cursor_x = lead_pad;
 
         for j in 0..nc.min(n_cols) {
             let idx = i * nc + j;
@@ -6908,7 +6930,7 @@ fn layout_array_c(
                 cursor_x += col_widths.get(j).copied().unwrap_or(0.0);
             }
             if j < n_cols - 1 {
-                cursor_x += col_gap_after(j, aligned, size);
+                cursor_x += gap_after(j);
             }
         }
 
@@ -6916,10 +6938,8 @@ fn layout_array_c(
     }
     row_boundary_y.push(cursor_y); // bottom edge
 
-    let total_gap: f64 = (0..n_cols.saturating_sub(1))
-        .map(|j| col_gap_after(j, aligned, size))
-        .sum();
-    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
+    let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
+    let total_width: f64 = lead_pad + col_widths.iter().sum::<f64>() + total_gap + trail_pad;
     let total_extent = cursor_y;
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
@@ -6931,26 +6951,39 @@ fn layout_array_c(
         child.dy = box_height - child.dy;
     }
 
-    // Add vertical separator rules if col_seps is non-zero
+    // Column boundary x positions (left edge of each column), including the
+    // leading pad and inter-column gaps. `boundary_x[n_cols]` is the right edge
+    // of the last column (before the trailing pad).
+    let mut boundary_x = Vec::with_capacity(n_cols + 1);
+    {
+        let mut x_acc = lead_pad;
+        for j in 0..n_cols {
+            boundary_x.push(x_acc);
+            x_acc += col_widths.get(j).copied().unwrap_or(0.0);
+            if j < n_cols - 1 {
+                x_acc += gap_after(j);
+            }
+        }
+        boundary_x.push(x_acc); // right edge of last column
+    }
+
+    // Add vertical separator rules if col_seps is non-zero. Interior separators
+    // are centered in the inter-column gap; edge separators sit on the table
+    // border.
     if col_seps != 0 {
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + (half - axis);
         let box_depth = half - axis;
 
-        // Compute column boundary x positions
-        let mut boundary_x = Vec::with_capacity(n_cols + 1);
-        let mut x_acc = 0.0;
-        for j in 0..n_cols {
-            boundary_x.push(x_acc);
-            x_acc += col_widths[j];
-            if j < n_cols - 1 {
-                x_acc += col_gap_after(j, aligned, size);
-            }
-        }
-        boundary_x.push(x_acc); // right edge
-
-        for (pos, &bx) in boundary_x.iter().enumerate() {
+        for pos in 0..=n_cols {
             if pos < 32 && (col_seps >> pos) & 1 != 0 {
+                let bx = if pos == 0 {
+                    0.0
+                } else if pos == n_cols {
+                    total_width
+                } else {
+                    boundary_x[pos] - gap_after(pos - 1) / 2.0
+                };
                 let path = format!(
                     "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                     rule_w, rule_w, rule_total_h, rule_total_h
@@ -7853,6 +7886,7 @@ fn layout_node_arena(
             add_jot,
             col_seps,
             row_seps,
+            array_style,
         } => layout_array_arena(
             ast,
             col_aligns,
@@ -7862,6 +7896,7 @@ fn layout_node_arena(
             add_jot,
             col_seps,
             row_seps,
+            array_style,
             arena,
             ctx,
         ),
@@ -10444,6 +10479,7 @@ fn layout_array_arena(
     add_jot: bool,
     col_seps: u32,
     row_seps: u32,
+    array_style: bool,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -10524,10 +10560,23 @@ fn layout_array_arena(
     let mut cursor_y = 0.0;
     let mut row_boundary_y: Vec<f64> = Vec::with_capacity(n_rows + 1);
 
+    // See `layout_array_c`: `array`-style tables pad outer edges with
+    // `\arraycolsep` and use 2·arraycolsep between columns.
+    let colsep = ARRAY_COLSEP_EM * size;
+    let lead_pad = if array_style { colsep } else { 0.0 };
+    let trail_pad = if array_style { colsep } else { 0.0 };
+    let gap_after = |j: usize| -> f64 {
+        if array_style {
+            2.0 * colsep
+        } else {
+            col_gap_after(j, aligned, size)
+        }
+    };
+
     for i in 0..n_rows {
         row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
-        let mut cursor_x = 0.0;
+        let mut cursor_x = lead_pad;
 
         for j in 0..nc.min(n_cols) {
             let idx = i * nc + j;
@@ -10550,7 +10599,7 @@ fn layout_array_arena(
                 cursor_x += col_widths.get(j).copied().unwrap_or(0.0);
             }
             if j < n_cols - 1 {
-                cursor_x += col_gap_after(j, aligned, size);
+                cursor_x += gap_after(j);
             }
         }
 
@@ -10558,10 +10607,22 @@ fn layout_array_arena(
     }
     row_boundary_y.push(cursor_y); // bottom edge
 
-    let total_gap: f64 = (0..n_cols.saturating_sub(1))
-        .map(|j| col_gap_after(j, aligned, size))
-        .sum();
-    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
+    let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
+    let total_width: f64 = lead_pad + col_widths.iter().sum::<f64>() + total_gap + trail_pad;
+
+    // Column boundary x positions (left edge of each column), incl. lead pad.
+    let mut boundary_x = Vec::with_capacity(n_cols + 1);
+    {
+        let mut x_acc = lead_pad;
+        for j in 0..n_cols {
+            boundary_x.push(x_acc);
+            x_acc += col_widths.get(j).copied().unwrap_or(0.0);
+            if j < n_cols - 1 {
+                x_acc += gap_after(j);
+            }
+        }
+        boundary_x.push(x_acc);
+    }
 
     // Add vertical separator rules if col_seps is non-zero
     if col_seps != 0 {
@@ -10569,19 +10630,15 @@ fn layout_array_arena(
         let rule_total_h = box_height + (half - axis);
         let box_depth = half - axis;
 
-        let mut boundary_x = Vec::with_capacity(n_cols + 1);
-        let mut x_acc = 0.0;
-        for j in 0..n_cols {
-            boundary_x.push(x_acc);
-            x_acc += col_widths[j];
-            if j < n_cols - 1 {
-                x_acc += col_gap_after(j, aligned, size);
-            }
-        }
-        boundary_x.push(x_acc);
-
-        for (pos, &bx) in boundary_x.iter().enumerate() {
+        for pos in 0..=n_cols {
             if pos < 32 && (col_seps >> pos) & 1 != 0 {
+                let bx = if pos == 0 {
+                    0.0
+                } else if pos == n_cols {
+                    total_width
+                } else {
+                    boundary_x[pos] - gap_after(pos - 1) / 2.0
+                };
                 let path = format!(
                     "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                     rule_w, rule_w, rule_total_h, rule_total_h
