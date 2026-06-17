@@ -2734,39 +2734,35 @@ fn layout_sqrt(radicand: &MathNode, index: Option<&MathNode>, ctx: &LayoutCtx) -
         let raise_pct = math_table::math_constants()
             .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
             .unwrap_or(0.6);
-        let idx_shift = (raise_pct * (total_height - total_depth)
-            - (idx_box.height - idx_box.depth) / 2.0)
-            .max(0.0); // raise index, KaTeX \r@@t center-based
+        // TeX `\r@@t`: raise the index's *baseline* by 0.6·(height − depth) of
+        // the radical body, so it rides high in the surd's crook.
+        let idx_shift = (raise_pct * (total_height - total_depth)).max(0.0);
         let idx_width = idx_box.width;
 
-        // Use MATH table kern values for degree positioning (OpenType MATH spec)
+        // Use MATH table kern values for degree positioning (OpenType MATH spec):
+        // `\mkern5mu` before, `\mkern-10mu` after. The negative `kern_after`
+        // tucks the index into the surd glyph's notch — correct now that the
+        // surd is a real font glyph (variant or assembly) rather than a
+        // synthetic path.
         let kern_before = math_table::math_constants()
             .map(|c| c.radical_kern_before_degree * size)
-            .unwrap_or(0.0);
+            .unwrap_or(0.2778 * size);
         let kern_after = math_table::math_constants()
             .map(|c| c.radical_kern_after_degree * size)
-            .unwrap_or(0.0);
+            .unwrap_or(-0.5556 * size);
 
-        // Degree placed at kern_before; radical at kern_before + idx_width + kern_after.
-        // Our synthetic surd lacks the deep notch of a font radical glyph, so the
-        // font's aggressive negative `kern_after` would visually overlap the index.
-        // Keep a comfortable margin: never let the surd start closer than a small
-        // positive gap to the right of the index.
-        let degree_x = kern_before.max(0.05 * size);
-        let min_gap = 0.06 * size;
-        let radical_start =
-            (degree_x + idx_width + kern_after).max(degree_x + idx_width + min_gap);
+        let degree_x = kern_before;
+        let radical_start = (degree_x + idx_width + kern_after).max(0.0);
 
         // Place degree
         children.push(PositionedBox::new(degree_x, idx_shift, idx_box));
 
-        // If radical needs to shift right, adjust existing children
-        if radical_start > 0.0 {
-            for child in &mut children[..3] {
-                child.dx += radical_start;
-            }
-            total_width = radical_start + radical_width + inner_width;
+        // Shift the radical (surd, vinculum, radicand) right to make room.
+        for child in &mut children[..3] {
+            child.dx += radical_start;
         }
+        total_width =
+            (radical_start + radical_width + inner_width).max(degree_x + idx_width);
     }
 
     LayoutBox {
@@ -5595,39 +5591,34 @@ fn layout_sqrt_c(
     if let Some(idx_id) = index {
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box = layout_node_c(arena, idx_id, &idx_ctx);
-        // KaTeX `\r@@t`: raise the index so its vertical center sits at
-        // 0.6*(height-depth) of the whole radical, then convert to a baseline
-        // offset. This keeps the index tucked into the surd's crook at every
-        // size instead of drifting to the top of tall radicals.
+        // TeX `\r@@t`: raise the index's baseline by 0.6·(height − depth) of the
+        // radical body so it rides high in the surd's crook.
         let raise_pct = math_table::math_constants()
             .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
             .unwrap_or(0.6);
-        let idx_shift = (raise_pct * (total_height - total_depth)
-            - (idx_box.height - idx_box.depth) / 2.0)
-            .max(0.0);
+        let idx_shift = (raise_pct * (total_height - total_depth)).max(0.0);
         let idx_width = idx_box.width;
 
-        // Use MATH table kern values for degree positioning (OpenType MATH spec)
+        // OpenType MATH kerns (`\mkern5mu` / `\mkern-10mu`): the negative
+        // `kern_after` tucks the index into the surd glyph's notch — correct now
+        // that the surd is always a real font glyph (variant or assembly).
         let kern_before = math_table::math_constants()
             .map(|c| c.radical_kern_before_degree * size)
-            .unwrap_or(0.0);
+            .unwrap_or(0.2778 * size);
         let kern_after = math_table::math_constants()
             .map(|c| c.radical_kern_after_degree * size)
-            .unwrap_or(0.0);
+            .unwrap_or(-0.5556 * size);
 
-        let degree_x = kern_before.max(0.05 * size);
-        let min_gap = 0.06 * size;
-        let radical_start =
-            (degree_x + idx_width + kern_after).max(degree_x + idx_width + min_gap);
+        let degree_x = kern_before;
+        let radical_start = (degree_x + idx_width + kern_after).max(0.0);
 
         children.push(PositionedBox::new(degree_x, idx_shift, idx_box));
 
-        if radical_start > 0.0 {
-            for child in &mut children[..3] {
-                child.dx += radical_start;
-            }
-            total_width = radical_start + radical_width + inner_width;
+        for child in &mut children[..3] {
+            child.dx += radical_start;
         }
+        total_width =
+            (radical_start + radical_width + inner_width).max(degree_x + idx_width);
     }
 
     LayoutBox {
@@ -8859,30 +8850,29 @@ fn layout_sqrt_arena(
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
         let idx_box_id = layout_node_arena(ast, idx_id_node, arena, &idx_ctx);
         let idx_w = arena.get(idx_box_id).width;
-        let idx_h = arena.get(idx_box_id).height;
-        let idx_d = arena.get(idx_box_id).depth;
         // Use MATH table radical_degree_bottom_raise_percent (default 60%)
         let raise_pct = math_table::math_constants()
             .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
             .unwrap_or(0.6);
-        let idx_shift = (raise_pct * (total_height - total_depth) - (idx_h - idx_d) / 2.0).max(0.0);
+        // TeX `\r@@t`: raise the index's baseline by 0.6·(height − depth).
+        let idx_shift = (raise_pct * (total_height - total_depth)).max(0.0);
 
-        // Use MATH table kern values for degree positioning (OpenType MATH spec)
+        // OpenType MATH kerns (`\mkern5mu` / `\mkern-10mu`): the negative
+        // `kern_after` tucks the index into the surd glyph's notch.
         let kern_before = math_table::math_constants()
             .map(|c| c.radical_kern_before_degree * size)
-            .unwrap_or(0.0);
+            .unwrap_or(0.2778 * size);
         let kern_after = math_table::math_constants()
             .map(|c| c.radical_kern_after_degree * size)
-            .unwrap_or(0.0);
+            .unwrap_or(-0.5556 * size);
 
-        let degree_x = kern_before.max(0.05 * size);
-        let min_gap = 0.06 * size;
-        let radical_start = (degree_x + idx_w + kern_after).max(degree_x + idx_w + min_gap);
+        let degree_x = kern_before;
+        let radical_start = (degree_x + idx_w + kern_after).max(0.0);
 
         radical_dx += radical_start;
         vinculum_dx += radical_start;
         inner_dx += radical_start;
-        total_width = radical_start + radical_width + inner_w;
+        total_width = (radical_start + radical_width + inner_w).max(degree_x + idx_w);
 
         let children_start = arena.begin_children();
         arena.push_child(ArenaPositionedBox {
