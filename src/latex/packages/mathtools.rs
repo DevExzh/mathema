@@ -45,11 +45,11 @@ pub const MACROS: &[(&str, u8, &str)] = &[
 /// The colon-relation shorthands render as their dedicated Unicode glyphs and
 /// are classified as relations so spacing matches `:=`-style operators.
 pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
-    ("coloneqq", "\u{2254}", SymbolClass::Relation),   // ≔  ( := )
-    ("eqqcolon", "\u{2255}", SymbolClass::Relation),   // ≕  ( =: )
-    ("Coloneqq", "\u{2A74}", SymbolClass::Relation),   // ⩴  ( ::= )
+    ("coloneqq", "\u{2254}", SymbolClass::Relation), // ≔  ( := )
+    ("eqqcolon", "\u{2255}", SymbolClass::Relation), // ≕  ( =: )
+    ("Coloneqq", "\u{2A74}", SymbolClass::Relation), // ⩴  ( ::= )
     ("vcentcolon", "\u{2236}", SymbolClass::Relation), // ∶  ( centered colon )
-    ("dblcolon", "\u{2237}", SymbolClass::Relation),   // ∷  ( double colon )
+    ("dblcolon", "\u{2237}", SymbolClass::Relation), // ∷  ( double colon )
 ];
 
 #[cfg(test)]

@@ -5,10 +5,12 @@ pub struct LatexReader;
 
 impl Reader for LatexReader {
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
+        config.check_input_size(input)?;
         crate::latex::parse::parse(input, config)
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        config.check_input_size(input)?;
         crate::latex::parse::parse_compact(input, config)
     }
 }

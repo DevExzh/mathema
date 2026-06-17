@@ -307,13 +307,41 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             pre_sub,
             pre_sup,
         } => {
-            // MTEF doesn't have a direct prescripts template.
-            // Write as subsup with the prescripts before the base.
-            if let Some(sub) = pre_sub {
-                write_node(buf, sub)?;
-            }
-            if let Some(sup) = pre_sup {
-                write_node(buf, sup)?;
+            // MTEF has no dedicated prescripts template. Emit the pre-scripts
+            // through a sub/sup template anchored on an *empty* base so their
+            // subscript/superscript positioning is preserved, then write the
+            // real base after it. This keeps the script structure instead of
+            // flattening the pre-scripts into full-size inline nodes.
+            match (pre_sub, pre_sup) {
+                (Some(sub), Some(sup)) => {
+                    write_tag_options(buf, TMPL, 0);
+                    buf.push(29); // tmSUBSUP
+                    buf.push(0);
+                    buf.push(0);
+                    write_empty_line_slot(buf);
+                    write_line_slot(buf, sub)?;
+                    write_line_slot(buf, sup)?;
+                    buf.push(END);
+                },
+                (Some(sub), None) => {
+                    write_tag_options(buf, TMPL, 0);
+                    buf.push(27); // tmSUB
+                    buf.push(0);
+                    buf.push(0);
+                    write_empty_line_slot(buf);
+                    write_line_slot(buf, sub)?;
+                    buf.push(END);
+                },
+                (None, Some(sup)) => {
+                    write_tag_options(buf, TMPL, 0);
+                    buf.push(28); // tmSUP
+                    buf.push(0);
+                    buf.push(0);
+                    write_empty_line_slot(buf);
+                    write_line_slot(buf, sup)?;
+                    buf.push(END);
+                },
+                (None, None) => {},
             }
             write_node(buf, base)?;
         },
@@ -383,6 +411,13 @@ fn write_line_slot(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
     write_node(buf, node)?;
     buf.push(END);
     Ok(())
+}
+
+/// Write an empty MTEF `LINE` slot (used as a placeholder base when a template
+/// slot has no content, e.g. the base of an empty-base prescript template).
+fn write_empty_line_slot(buf: &mut Vec<u8>) {
+    write_tag_options(buf, LINE, 0);
+    buf.push(END);
 }
 
 fn write_char(buf: &mut Vec<u8>, typeface: u8, ch: char) -> Result<()> {
@@ -674,8 +709,8 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         } => {
             let (selector, base_variation) = nary_op_to_selector(op);
             let variation = base_variation
-                | sub.is_some().then_some(0x10).unwrap_or(0)
-                | sup.is_some().then_some(0x20).unwrap_or(0)
+                | if sub.is_some() { 0x10 } else { 0 }
+                | if sup.is_some() { 0x20 } else { 0 }
                 | if limits == LimitStyle::AboveBelow {
                     0x40
                 } else {
@@ -744,11 +779,39 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             pre_sub,
             pre_sup,
         } => {
-            if pre_sub.is_some() {
-                write_node_c(buf, arena, pre_sub)?;
-            }
-            if pre_sup.is_some() {
-                write_node_c(buf, arena, pre_sup)?;
+            // See the legacy `MathNode::PreScripts` arm: emit pre-scripts via a
+            // sub/sup template on an empty base to preserve their positioning,
+            // then write the real base.
+            match (pre_sub.is_some(), pre_sup.is_some()) {
+                (true, true) => {
+                    write_tag_options(buf, TMPL, 0);
+                    buf.push(29); // tmSUBSUP
+                    buf.push(0);
+                    buf.push(0);
+                    write_empty_line_slot(buf);
+                    write_line_slot_c(buf, arena, pre_sub)?;
+                    write_line_slot_c(buf, arena, pre_sup)?;
+                    buf.push(END);
+                },
+                (true, false) => {
+                    write_tag_options(buf, TMPL, 0);
+                    buf.push(27); // tmSUB
+                    buf.push(0);
+                    buf.push(0);
+                    write_empty_line_slot(buf);
+                    write_line_slot_c(buf, arena, pre_sub)?;
+                    buf.push(END);
+                },
+                (false, true) => {
+                    write_tag_options(buf, TMPL, 0);
+                    buf.push(28); // tmSUP
+                    buf.push(0);
+                    buf.push(0);
+                    write_empty_line_slot(buf);
+                    write_line_slot_c(buf, arena, pre_sup)?;
+                    buf.push(END);
+                },
+                (false, false) => {},
             }
             write_node_c(buf, arena, base)?;
         },
@@ -757,7 +820,7 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
         } => {
             let nc = num_cols as usize;
             let cell_ids = arena.children(cells);
-            let num_rows = if nc > 0 { cell_ids.len() / nc } else { 0 };
+            let num_rows = cell_ids.len().checked_div(nc).unwrap_or(0);
             let num_rows_u8 = u8::try_from(num_rows).map_err(|_| {
                 crate::error::Error::Unsupported(format!(
                     "MTEF matrix rows ({num_rows}) exceeds maximum of 255"
@@ -797,6 +860,8 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             buf.push(END);
         },
         CompactNode::Phantom(inner, _) => {
+            // MTEF has no phantom template; preserve the content (its spatial
+            // extent) rather than dropping the node entirely.
             write_node_c(buf, arena, inner)?;
         },
         CompactNode::Boxed { content: inner, .. } => {
@@ -1085,5 +1150,46 @@ mod tests {
             content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
         });
         assert!(matches!(&expr.nodes[0], MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn prescripts_emit_script_template() {
+        // Pre-sub + pre-sup should be emitted via the tmSUBSUP template
+        // (03001d00) on an empty base, preserving script positioning, rather
+        // than as flattened inline nodes.
+        let hex = write_hex(MathNode::PreScripts {
+            base: Box::new(MathNode::Identifier("X".into())),
+            pre_sub: Some(Box::new(MathNode::Number("1".into()))),
+            pre_sup: Some(Box::new(MathNode::Number("2".into()))),
+        });
+        assert!(hex.contains("03001d00"), "missing tmSUBSUP template: {hex}");
+
+        // Pre-sub only -> tmSUB (03001b00); pre-sup only -> tmSUP (03001c00).
+        let sub_only = write_hex(MathNode::PreScripts {
+            base: Box::new(MathNode::Identifier("X".into())),
+            pre_sub: Some(Box::new(MathNode::Number("1".into()))),
+            pre_sup: None,
+        });
+        assert!(sub_only.contains("03001b00"), "missing tmSUB: {sub_only}");
+        let sup_only = write_hex(MathNode::PreScripts {
+            base: Box::new(MathNode::Identifier("X".into())),
+            pre_sub: None,
+            pre_sup: Some(Box::new(MathNode::Number("2".into()))),
+        });
+        assert!(sup_only.contains("03001c00"), "missing tmSUP: {sup_only}");
+    }
+
+    #[test]
+    fn prescripts_roundtrip_preserves_content() {
+        // The base and both scripts must survive a write→read round-trip.
+        let expr = roundtrip(MathNode::PreScripts {
+            base: Box::new(MathNode::Identifier("X".into())),
+            pre_sub: Some(Box::new(MathNode::Number("1".into()))),
+            pre_sup: Some(Box::new(MathNode::Number("2".into()))),
+        });
+        let flat = format!("{:?}", expr.nodes);
+        assert!(flat.contains("\"X\""), "lost base: {flat}");
+        assert!(flat.contains("\"1\""), "lost pre-sub: {flat}");
+        assert!(flat.contains("\"2\""), "lost pre-sup: {flat}");
     }
 }

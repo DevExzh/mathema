@@ -48,7 +48,6 @@ pub const MACROS: &[(&str, u8, &str)] = &[
     ("norm", 1, r"\left\|#1\right\|"),
     // \eval{x} → .x|  (evaluation bar; auto-sizes the right bar)
     ("eval", 1, r"\left.#1\right|"),
-
     // --- Differential / derivative operators ------------------------------
     // \dd → d (upright differential)
     ("dd", 0, r"\mathrm{d}"),
@@ -56,7 +55,6 @@ pub const MACROS: &[(&str, u8, &str)] = &[
     ("dv", 2, r"\frac{\mathrm{d}#1}{\mathrm{d}#2}"),
     // \pdv{f}{x} → ∂f/∂x (partial derivative, two-argument form)
     ("pdv", 2, r"\frac{\partial #1}{\partial #2}"),
-
     // --- Dirac bra-ket notation -------------------------------------------
     // \bra{x} → ⟨x|
     ("bra", 1, r"\left\langle #1\right|"),
@@ -64,13 +62,11 @@ pub const MACROS: &[(&str, u8, &str)] = &[
     ("ket", 1, r"\left|#1\right\rangle"),
     // \dyad{a}{b} → |a⟩⟨b|
     ("dyad", 2, r"\left|#1\right\rangle\!\left\langle #2\right|"),
-
     // --- Vector calculus operators ----------------------------------------
     // \grad → ∇
     ("grad", 0, r"\nabla"),
     // \curl → ∇×
     ("curl", 0, r"\nabla\times"),
-
     // --- Named operators --------------------------------------------------
     // \Tr → Tr (trace)
     ("Tr", 0, r"\operatorname{Tr}"),

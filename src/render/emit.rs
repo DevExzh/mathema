@@ -488,7 +488,8 @@ fn emit_box(
                 svg.push_str(r#"" fill=""#);
                 svg.push_str(&attrs.fg_color);
                 svg.push_str(r#"" stroke="none"/></g>"#);
-            } else if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+            } else if let Some(dp) =
+                super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
             {
                 let tx = x;
                 let ty = y - layout.height * em;
@@ -852,7 +853,8 @@ fn emit_box_arena(
                 svg.push_str(r#"" fill=""#);
                 svg.push_str(&attrs.fg_color);
                 svg.push_str(r#"" stroke="none"/></g>"#);
-            } else if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+            } else if let Some(dp) =
+                super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
             {
                 let tx = x;
                 let ty = y - layout.height * em;

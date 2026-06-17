@@ -63,10 +63,7 @@ mod tests {
     fn centernot_equals_parses_and_overlays_solidus() {
         // Unbraced single-token argument form: `\centernot=`.
         let mathml = to_mathml(r"\centernot=");
-        assert!(
-            mathml.contains('='),
-            "expected equals sign, got: {mathml}"
-        );
+        assert!(mathml.contains('='), "expected equals sign, got: {mathml}");
         assert!(
             mathml.contains(COMBINING_SOLIDUS),
             "expected combining solidus overlay (U+0338), got: {mathml}"
@@ -103,7 +100,10 @@ mod tests {
             .expect("parse should succeed")
             .to_svg()
             .expect("svg render should succeed");
-        assert!(svg.contains("<svg"), "expected an <svg> document, got: {svg}");
+        assert!(
+            svg.contains("<svg"),
+            "expected an <svg> document, got: {svg}"
+        );
     }
 
     #[test]

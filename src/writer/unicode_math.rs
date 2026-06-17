@@ -493,7 +493,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             out.push('(');
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
-            let num_rows = if nc > 0 { cell_ids.len() / nc } else { 0 };
+            let num_rows = cell_ids.len().checked_div(nc).unwrap_or(0);
             for i in 0..num_rows {
                 if i > 0 {
                     out.push('@');

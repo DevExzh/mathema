@@ -39,10 +39,7 @@ mod tests {
     use crate::convert;
 
     fn mathml(latex: &str) -> String {
-        convert::from_latex(latex)
-            .unwrap()
-            .to_mathml()
-            .unwrap()
+        convert::from_latex(latex).unwrap().to_mathml().unwrap()
     }
 
     const LANGLE: char = '\u{27E8}'; // ⟨

@@ -78,6 +78,7 @@ impl MathemaConverter {
             config: Config {
                 strictness,
                 display: display_style,
+                ..Config::default()
             },
         })
     }

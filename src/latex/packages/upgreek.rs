@@ -25,41 +25,41 @@ pub const MACROS: &[(&str, u8, &str)] = &[];
 /// all classified as [`Alphabetic`](SymbolClass::Alphabetic).
 pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
     // --- lowercase: \upalpha .. \upomega -------------------------------------
-    ("upalpha", "\u{03B1}", SymbolClass::Alphabetic),   // α
-    ("upbeta", "\u{03B2}", SymbolClass::Alphabetic),    // β
-    ("upgamma", "\u{03B3}", SymbolClass::Alphabetic),   // γ
-    ("updelta", "\u{03B4}", SymbolClass::Alphabetic),   // δ
+    ("upalpha", "\u{03B1}", SymbolClass::Alphabetic), // α
+    ("upbeta", "\u{03B2}", SymbolClass::Alphabetic),  // β
+    ("upgamma", "\u{03B3}", SymbolClass::Alphabetic), // γ
+    ("updelta", "\u{03B4}", SymbolClass::Alphabetic), // δ
     ("upepsilon", "\u{03B5}", SymbolClass::Alphabetic), // ε
-    ("upzeta", "\u{03B6}", SymbolClass::Alphabetic),    // ζ
-    ("upeta", "\u{03B7}", SymbolClass::Alphabetic),     // η
-    ("uptheta", "\u{03B8}", SymbolClass::Alphabetic),   // θ
-    ("upiota", "\u{03B9}", SymbolClass::Alphabetic),    // ι
-    ("upkappa", "\u{03BA}", SymbolClass::Alphabetic),   // κ
-    ("uplambda", "\u{03BB}", SymbolClass::Alphabetic),  // λ
-    ("upmu", "\u{03BC}", SymbolClass::Alphabetic),      // μ
-    ("upnu", "\u{03BD}", SymbolClass::Alphabetic),      // ν
-    ("upxi", "\u{03BE}", SymbolClass::Alphabetic),      // ξ
-    ("uppi", "\u{03C0}", SymbolClass::Alphabetic),      // π
-    ("uprho", "\u{03C1}", SymbolClass::Alphabetic),     // ρ
-    ("upsigma", "\u{03C3}", SymbolClass::Alphabetic),   // σ
-    ("uptau", "\u{03C4}", SymbolClass::Alphabetic),     // τ
+    ("upzeta", "\u{03B6}", SymbolClass::Alphabetic),  // ζ
+    ("upeta", "\u{03B7}", SymbolClass::Alphabetic),   // η
+    ("uptheta", "\u{03B8}", SymbolClass::Alphabetic), // θ
+    ("upiota", "\u{03B9}", SymbolClass::Alphabetic),  // ι
+    ("upkappa", "\u{03BA}", SymbolClass::Alphabetic), // κ
+    ("uplambda", "\u{03BB}", SymbolClass::Alphabetic), // λ
+    ("upmu", "\u{03BC}", SymbolClass::Alphabetic),    // μ
+    ("upnu", "\u{03BD}", SymbolClass::Alphabetic),    // ν
+    ("upxi", "\u{03BE}", SymbolClass::Alphabetic),    // ξ
+    ("uppi", "\u{03C0}", SymbolClass::Alphabetic),    // π
+    ("uprho", "\u{03C1}", SymbolClass::Alphabetic),   // ρ
+    ("upsigma", "\u{03C3}", SymbolClass::Alphabetic), // σ
+    ("uptau", "\u{03C4}", SymbolClass::Alphabetic),   // τ
     ("upupsilon", "\u{03C5}", SymbolClass::Alphabetic), // υ
-    ("upphi", "\u{03C6}", SymbolClass::Alphabetic),     // φ
-    ("upchi", "\u{03C7}", SymbolClass::Alphabetic),     // χ
-    ("uppsi", "\u{03C8}", SymbolClass::Alphabetic),     // ψ
-    ("upomega", "\u{03C9}", SymbolClass::Alphabetic),   // ω
+    ("upphi", "\u{03C6}", SymbolClass::Alphabetic),   // φ
+    ("upchi", "\u{03C7}", SymbolClass::Alphabetic),   // χ
+    ("uppsi", "\u{03C8}", SymbolClass::Alphabetic),   // ψ
+    ("upomega", "\u{03C9}", SymbolClass::Alphabetic), // ω
     // --- uppercase -----------------------------------------------------------
-    ("upGamma", "\u{0393}", SymbolClass::Alphabetic),   // Γ
-    ("upDelta", "\u{0394}", SymbolClass::Alphabetic),   // Δ
-    ("upTheta", "\u{0398}", SymbolClass::Alphabetic),   // Θ
-    ("upLambda", "\u{039B}", SymbolClass::Alphabetic),  // Λ
-    ("upXi", "\u{039E}", SymbolClass::Alphabetic),      // Ξ
-    ("upPi", "\u{03A0}", SymbolClass::Alphabetic),      // Π
-    ("upSigma", "\u{03A3}", SymbolClass::Alphabetic),   // Σ
+    ("upGamma", "\u{0393}", SymbolClass::Alphabetic), // Γ
+    ("upDelta", "\u{0394}", SymbolClass::Alphabetic), // Δ
+    ("upTheta", "\u{0398}", SymbolClass::Alphabetic), // Θ
+    ("upLambda", "\u{039B}", SymbolClass::Alphabetic), // Λ
+    ("upXi", "\u{039E}", SymbolClass::Alphabetic),    // Ξ
+    ("upPi", "\u{03A0}", SymbolClass::Alphabetic),    // Π
+    ("upSigma", "\u{03A3}", SymbolClass::Alphabetic), // Σ
     ("upUpsilon", "\u{03A5}", SymbolClass::Alphabetic), // Υ
-    ("upPhi", "\u{03A6}", SymbolClass::Alphabetic),     // Φ
-    ("upPsi", "\u{03A8}", SymbolClass::Alphabetic),     // Ψ
-    ("upOmega", "\u{03A9}", SymbolClass::Alphabetic),   // Ω
+    ("upPhi", "\u{03A6}", SymbolClass::Alphabetic),   // Φ
+    ("upPsi", "\u{03A8}", SymbolClass::Alphabetic),   // Ψ
+    ("upOmega", "\u{03A9}", SymbolClass::Alphabetic), // Ω
 ];
 
 #[cfg(test)]
@@ -90,7 +90,10 @@ mod tests {
             (r"\uppi", '\u{03C0}'),
             (r"\upomega", '\u{03C9}'),
         ] {
-            let out = crate::convert::from_latex(cmd).unwrap().to_mathml().unwrap();
+            let out = crate::convert::from_latex(cmd)
+                .unwrap()
+                .to_mathml()
+                .unwrap();
             assert!(out.contains(ch), "{cmd}: expected {ch}, got: {out}");
         }
     }
@@ -103,7 +106,10 @@ mod tests {
             (r"\upOmega", '\u{03A9}'),
             (r"\upPhi", '\u{03A6}'),
         ] {
-            let out = crate::convert::from_latex(cmd).unwrap().to_mathml().unwrap();
+            let out = crate::convert::from_latex(cmd)
+                .unwrap()
+                .to_mathml()
+                .unwrap();
             assert!(out.contains(ch), "{cmd}: expected {ch}, got: {out}");
         }
     }

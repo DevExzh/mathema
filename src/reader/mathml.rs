@@ -20,6 +20,7 @@ impl MathReader for MathmlReader {
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        config.check_input_size(input)?;
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return Ok(CompactParseResult::new(CompactExpr::new(

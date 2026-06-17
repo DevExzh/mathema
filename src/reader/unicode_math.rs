@@ -21,6 +21,7 @@ impl Reader for UnicodeMathReader {
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        config.check_input_size(input)?;
         let input = input.trim();
         if input.is_empty() {
             return Ok(CompactParseResult::new(CompactExpr::new(
@@ -725,7 +726,10 @@ mod tests {
         // "x^2 + 1/2" with spaces should still produce a superscript, an
         // operator and a fraction (not literal text).
         let nodes = parse("x^2 + 1/2");
-        assert!(matches!(&nodes[0], MathNode::Superscript { .. }), "{nodes:?}");
+        assert!(
+            matches!(&nodes[0], MathNode::Superscript { .. }),
+            "{nodes:?}"
+        );
         assert!(
             nodes.iter().any(|n| matches!(n, MathNode::Fraction { .. })),
             "fraction expected: {nodes:?}"

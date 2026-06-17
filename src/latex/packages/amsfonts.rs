@@ -28,9 +28,9 @@ pub const MACROS: &[(&str, u8, &str)] = &[];
 /// `\maltese` (U+2720) are already covered by core and deliberately omitted.
 pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
     // Corner delimiters (used as open/close fences, e.g. Gödel quotes).
-    ("ulcorner", "\u{231C}", SymbolClass::Open),  // ⌜ upper-left
+    ("ulcorner", "\u{231C}", SymbolClass::Open), // ⌜ upper-left
     ("urcorner", "\u{231D}", SymbolClass::Close), // ⌝ upper-right
-    ("llcorner", "\u{231E}", SymbolClass::Open),  // ⌞ lower-left
+    ("llcorner", "\u{231E}", SymbolClass::Open), // ⌞ lower-left
     ("lrcorner", "\u{231F}", SymbolClass::Close), // ⌟ lower-right
     // Geometric / miscellaneous shapes.
     ("lozenge", "\u{25CA}", SymbolClass::Ordinary), // ◊
@@ -123,7 +123,10 @@ mod tests {
     fn corners_in_unicode_math_path() {
         // Exercise a second writer to confirm the glyph survives end-to-end.
         let out = unicode_math(r"\ulcorner a \urcorner");
-        assert!(out.contains('\u{231C}'), "expected ⌜ in unicode-math, got: {out}");
+        assert!(
+            out.contains('\u{231C}'),
+            "expected ⌜ in unicode-math, got: {out}"
+        );
     }
 
     // --- Already-in-core symbols still resolve (not double-defined here) ----

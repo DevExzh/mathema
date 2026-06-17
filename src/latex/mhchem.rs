@@ -246,7 +246,9 @@ impl Translator {
     }
 
     fn open_delim(&mut self, c: char) {
-        if c == '(' && let Some(state) = self.match_state() {
+        if c == '('
+            && let Some(state) = self.match_state()
+        {
             self.value_space();
             self.out.push_str("(\\mathrm{");
             self.out.push_str(state);
@@ -349,9 +351,7 @@ impl Translator {
             self.copy_braced();
         } else {
             let start = self.i;
-            while self.i < self.chars.len()
-                && matches!(self.chars[self.i], '0'..='9' | '+' | '-')
-            {
+            while self.i < self.chars.len() && matches!(self.chars[self.i], '0'..='9' | '+' | '-') {
                 self.i += 1;
             }
             if self.i == start && self.i < self.chars.len() {
@@ -621,9 +621,15 @@ mod tests {
     #[test]
     fn sulfate_charge_superscript() {
         let ml = mathml(r"\ce{SO4^2-}");
-        assert!(ml.contains("<msubsup>") || ml.contains("<msup>"), "expected superscript in {ml}");
+        assert!(
+            ml.contains("<msubsup>") || ml.contains("<msup>"),
+            "expected superscript in {ml}"
+        );
         // Charge sign renders as a Unicode minus (U+2212).
-        assert!(ml.contains('-') || ml.contains('\u{2212}'), "expected charge sign in {ml}");
+        assert!(
+            ml.contains('-') || ml.contains('\u{2212}'),
+            "expected charge sign in {ml}"
+        );
     }
 
     #[test]
@@ -643,7 +649,10 @@ mod tests {
         let ml = mathml(r"\ce{CaCO3 ->[\Delta] CaO + CO2 ^}");
         assert!(ml.contains('\u{2192}'), "expected → in {ml}");
         // Delta label above the arrow.
-        assert!(ml.contains('\u{0394}') || ml.contains("Delta"), "expected Δ in {ml}");
+        assert!(
+            ml.contains('\u{0394}') || ml.contains("Delta"),
+            "expected Δ in {ml}"
+        );
         // Gas up-arrow marker.
         assert!(ml.contains('\u{2191}'), "expected ↑ in {ml}");
     }
@@ -680,8 +689,14 @@ mod tests {
         let ml = mathml(r"\pu{123 kg m/s}");
         assert!(ml.contains("<mn>123</mn>"), "expected number in {ml}");
         // Units render upright; `kg` becomes separate upright identifiers.
-        assert!(ml.contains("mathvariant=\"normal\""), "expected upright units in {ml}");
-        assert!(ml.contains(">k</mi>") && ml.contains(">g</mi>"), "expected unit kg in {ml}");
+        assert!(
+            ml.contains("mathvariant=\"normal\""),
+            "expected upright units in {ml}"
+        );
+        assert!(
+            ml.contains(">k</mi>") && ml.contains(">g</mi>"),
+            "expected unit kg in {ml}"
+        );
     }
 
     #[test]

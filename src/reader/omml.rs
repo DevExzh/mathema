@@ -18,6 +18,7 @@ impl MathReader for OmmlReader {
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        config.check_input_size(input)?;
         let trimmed = input.trim();
         if trimmed.is_empty() {
             return Ok(CompactParseResult::new(CompactExpr::new(
@@ -230,12 +231,7 @@ impl<'a> OmmlCompactParser<'a> {
 
             "borderBox" => self.parse_border_box(),
 
-            "phant" => {
-                let id = self.parse_child_id(name)?;
-                Ok(self
-                    .arena
-                    .push_node(CompactNode::Phantom(id, PhantomKind::Full)))
-            },
+            "phant" => self.parse_phantom(),
 
             "oMath" | "oMathPara" => {
                 let children = self.parse_children(name)?;
@@ -876,6 +872,85 @@ impl<'a> OmmlCompactParser<'a> {
             None
         };
         Ok(stroke)
+    }
+
+    /// Parse `<m:phant>`, honoring `<m:phantPr>` so the phantom subtype
+    /// (`\phantom`/`\vphantom`/`\hphantom`/`\smash[...]`) round-trips instead
+    /// of collapsing to `PhantomKind::Full`.
+    fn parse_phantom(&mut self) -> Result<NodeId> {
+        // Defaults for a bare `<m:phant>` with no phantPr: invisible content
+        // with all dimensions kept, i.e. `\phantom` (PhantomKind::Full). This
+        // preserves the historical behavior for inputs that omit phantPr.
+        let mut show = false;
+        let mut zero_wid = false;
+        let mut zero_asc = false;
+        let mut zero_desc = false;
+        let mut content = NodeId::NONE;
+        let tag = "phant";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) => {
+                    let name = local_name(&e);
+                    match name.as_str() {
+                        "phantPr" => {
+                            let (s, zw, za, zd) = self.parse_phantom_props()?;
+                            show = s;
+                            zero_wid = zw;
+                            zero_asc = za;
+                            zero_desc = zd;
+                        },
+                        "e" => content = self.parse_child_id("e")?,
+                        _ => self.skip_element(&name)?,
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        if content == NodeId::NONE {
+            content = self.empty_row();
+        }
+        let kind = phantom_kind_from_flags(show, zero_wid, zero_asc, zero_desc);
+        Ok(self.arena.push_node(CompactNode::Phantom(content, kind)))
+    }
+
+    /// Read the `(show, zero_wid, zero_asc, zero_desc)` flags from a
+    /// `<m:phantPr>` element. `show` defaults to `false` (invisible) when the
+    /// `<m:show>` child is absent, matching the bare-`<m:phant>` convention.
+    fn parse_phantom_props(&mut self) -> Result<(bool, bool, bool, bool)> {
+        let mut show = false;
+        let mut zero_wid = false;
+        let mut zero_asc = false;
+        let mut zero_desc = false;
+        let tag = "phantPr";
+        loop {
+            match self.reader.read_event() {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    let name = local_name(&e);
+                    let enabled = omml_bool_attr(&e);
+                    match name.as_str() {
+                        "show" => show = enabled,
+                        "zeroWid" => zero_wid = enabled,
+                        "zeroAsc" => zero_asc = enabled,
+                        "zeroDesc" => zero_desc = enabled,
+                        _ => {},
+                    }
+                },
+                Ok(Event::End(e)) => {
+                    if local_name_end(&e) == tag {
+                        break;
+                    }
+                },
+                Ok(Event::Eof) => break,
+                _ => continue,
+            }
+        }
+        Ok((show, zero_wid, zero_asc, zero_desc))
     }
 
     fn parse_delimiter(&mut self) -> Result<NodeId> {
@@ -1600,9 +1675,31 @@ fn get_val_attr(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
 }
 
 fn omml_bool_attr(e: &quick_xml::events::BytesStart<'_>) -> bool {
-    match get_val_attr(e).as_deref() {
-        Some("0" | "off" | "false") => false,
-        _ => true,
+    !matches!(get_val_attr(e).as_deref(), Some("0" | "off" | "false"))
+}
+
+/// Map OMML `phantPr` flags to a [`PhantomKind`]. Inverse of the writer's
+/// `phantom_pr_flags`.
+fn phantom_kind_from_flags(
+    show: bool,
+    zero_wid: bool,
+    zero_asc: bool,
+    zero_desc: bool,
+) -> PhantomKind {
+    if show {
+        // Content visible → \smash family.
+        match (zero_asc, zero_desc) {
+            (true, false) => PhantomKind::SmashTop,
+            (false, true) => PhantomKind::SmashBottom,
+            // Both zeroed, or (degenerate) nothing zeroed: smash both.
+            _ => PhantomKind::SmashBoth,
+        }
+    } else if zero_wid && !zero_asc && !zero_desc {
+        PhantomKind::Vertical
+    } else if !zero_wid && zero_asc && zero_desc {
+        PhantomKind::Horizontal
+    } else {
+        PhantomKind::Full
     }
 }
 
@@ -1866,6 +1963,75 @@ mod tests {
     fn phantom() {
         let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:phant><m:e><m:r><m:t>x</m:t></m:r></m:e></m:phant></m:oMath>"#;
         let node = parse_one(input);
-        assert!(matches!(node, MathNode::Phantom(_, _)));
+        assert!(matches!(node, MathNode::Phantom(_, PhantomKind::Full)));
+    }
+
+    #[test]
+    fn phantom_subtypes_from_phant_pr() {
+        let wrap = |inner: &str| {
+            format!(
+                r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:phant><m:phantPr>{inner}</m:phantPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:phant></m:oMath>"#
+            )
+        };
+        let cases = [
+            (
+                r#"<m:show m:val="0"/><m:zeroWid m:val="1"/>"#,
+                PhantomKind::Vertical,
+            ),
+            (
+                r#"<m:show m:val="0"/><m:zeroAsc m:val="1"/><m:zeroDesc m:val="1"/>"#,
+                PhantomKind::Horizontal,
+            ),
+            (
+                r#"<m:show m:val="1"/><m:zeroAsc m:val="1"/><m:zeroDesc m:val="1"/>"#,
+                PhantomKind::SmashBoth,
+            ),
+            (
+                r#"<m:show m:val="1"/><m:zeroAsc m:val="1"/>"#,
+                PhantomKind::SmashTop,
+            ),
+            (
+                r#"<m:show m:val="1"/><m:zeroDesc m:val="1"/>"#,
+                PhantomKind::SmashBottom,
+            ),
+        ];
+        for (inner, expected) in cases {
+            let node = parse_one(&wrap(inner));
+            match node {
+                MathNode::Phantom(_, kind) => {
+                    assert_eq!(kind, expected, "phantPr {inner} -> {kind:?}")
+                },
+                other => panic!("expected Phantom, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn phantom_subtype_omml_round_trips() {
+        // Build each phantom kind, write to OMML, read it back, and confirm the
+        // subtype is preserved end-to-end.
+        use crate::writer::Writer as _;
+        for kind in [
+            PhantomKind::Full,
+            PhantomKind::Vertical,
+            PhantomKind::Horizontal,
+            PhantomKind::SmashBoth,
+            PhantomKind::SmashTop,
+            PhantomKind::SmashBottom,
+        ] {
+            let expr = crate::ast::MathExpr {
+                nodes: vec![MathNode::Phantom(
+                    Box::new(MathNode::Identifier("x".into())),
+                    kind,
+                )],
+                display: crate::ast::DisplayStyle::Inline,
+            };
+            let omml = crate::writer::omml::OmmlWriter::write(&expr, &Config::default()).unwrap();
+            let node = parse_one(&omml);
+            match node {
+                MathNode::Phantom(_, got) => assert_eq!(got, kind, "round-trip {kind:?}\n{omml}"),
+                other => panic!("expected Phantom for {kind:?}, got {other:?}"),
+            }
+        }
     }
 }

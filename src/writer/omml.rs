@@ -347,8 +347,9 @@ fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
             end(w, "m:m")
         },
 
-        MathNode::Phantom(inner, _) => {
+        MathNode::Phantom(inner, kind) => {
             start(w, "m:phant")?;
+            write_phantom_pr(w, *kind)?;
             write_e(w, inner)?;
             end(w, "m:phant")
         },
@@ -412,6 +413,44 @@ fn write_val_elem(w: &mut XmlW, tag: &str, val: &str) -> Result<()> {
     let mut elem = BytesStart::new(tag);
     elem.push_attribute(("m:val", val));
     w.write_event(Event::Empty(elem)).map_err(io_err)
+}
+
+/// Map a [`PhantomKind`] to OMML `phantPr` flags
+/// `(show, zero_wid, zero_asc, zero_desc)`, where `show` is whether the
+/// content is visible (`\smash` family) versus invisible (`\phantom` family).
+fn phantom_pr_flags(kind: PhantomKind) -> (bool, bool, bool, bool) {
+    match kind {
+        // Invisible, all dimensions kept.
+        PhantomKind::Full => (false, false, false, false),
+        // \vphantom: invisible, zero width, keep height/depth.
+        PhantomKind::Vertical => (false, true, false, false),
+        // \hphantom: invisible, keep width, zero height/depth.
+        PhantomKind::Horizontal => (false, false, true, true),
+        // \smash: visible, zero height and depth.
+        PhantomKind::SmashBoth => (true, false, true, true),
+        // \smash[t]: visible, zero height (ascent) only.
+        PhantomKind::SmashTop => (true, false, true, false),
+        // \smash[b]: visible, zero depth (descent) only.
+        PhantomKind::SmashBottom => (true, false, false, true),
+    }
+}
+
+/// Emit an OMML `<m:phantPr>` element describing `kind`. `show` is written
+/// explicitly so the subtype round-trips regardless of reader defaults.
+fn write_phantom_pr(w: &mut XmlW, kind: PhantomKind) -> Result<()> {
+    let (show, zero_wid, zero_asc, zero_desc) = phantom_pr_flags(kind);
+    start(w, "m:phantPr")?;
+    write_val_elem(w, "m:show", if show { "1" } else { "0" })?;
+    if zero_wid {
+        write_val_elem(w, "m:zeroWid", "1")?;
+    }
+    if zero_asc {
+        write_val_elem(w, "m:zeroAsc", "1")?;
+    }
+    if zero_desc {
+        write_val_elem(w, "m:zeroDesc", "1")?;
+    }
+    end(w, "m:phantPr")
 }
 
 fn fenced_separator(content: &[FencedItem]) -> Option<&str> {
@@ -839,8 +878,9 @@ fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
             end(w, "m:m")
         },
 
-        CompactNode::Phantom(inner, _) => {
+        CompactNode::Phantom(inner, kind) => {
             start(w, "m:phant")?;
+            write_phantom_pr(w, kind)?;
             write_e_c(w, arena, inner)?;
             end(w, "m:phant")
         },
@@ -1012,7 +1052,24 @@ fn f_val_elem(buf: &mut String, tag: &str, val: &str) {
     buf.push_str("\"/>");
 }
 
-fn compact_fenced_separator<'a>(arena: &'a AstArena, content: NodeSpan) -> Option<&'a str> {
+/// Buffered-writer equivalent of [`write_phantom_pr`].
+fn f_write_phantom_pr(buf: &mut String, kind: PhantomKind) {
+    let (show, zero_wid, zero_asc, zero_desc) = phantom_pr_flags(kind);
+    f_start(buf, "m:phantPr");
+    f_val_elem(buf, "m:show", if show { "1" } else { "0" });
+    if zero_wid {
+        f_val_elem(buf, "m:zeroWid", "1");
+    }
+    if zero_asc {
+        f_val_elem(buf, "m:zeroAsc", "1");
+    }
+    if zero_desc {
+        f_val_elem(buf, "m:zeroDesc", "1");
+    }
+    f_end(buf, "m:phantPr");
+}
+
+fn compact_fenced_separator(arena: &AstArena, content: NodeSpan) -> Option<&str> {
     arena
         .children(content)
         .iter()
@@ -1392,8 +1449,9 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_end(buf, "m:m");
         },
 
-        CompactNode::Phantom(inner, _) => {
+        CompactNode::Phantom(inner, kind) => {
             f_start(buf, "m:phant");
+            f_write_phantom_pr(buf, kind);
             f_e(buf, arena, inner);
             f_end(buf, "m:phant");
         },
@@ -1639,6 +1697,33 @@ mod tests {
             PhantomKind::Full,
         ));
         assert!(output.contains("<m:phant>"));
+        // Full phantom: invisible (show off), no dimensions zeroed.
+        assert!(output.contains("<m:phantPr>"), "{output}");
+        assert!(output.contains(r#"<m:show m:val="0"/>"#), "{output}");
+        assert!(!output.contains("zeroWid"), "{output}");
+    }
+
+    #[test]
+    fn phantom_subtypes_emit_phant_pr() {
+        let cases = [
+            (PhantomKind::Vertical, r#"<m:show m:val="0"/>"#, "zeroWid"),
+            (PhantomKind::Horizontal, r#"<m:show m:val="0"/>"#, "zeroAsc"),
+            (PhantomKind::SmashBoth, r#"<m:show m:val="1"/>"#, "zeroDesc"),
+            (PhantomKind::SmashTop, r#"<m:show m:val="1"/>"#, "zeroAsc"),
+            (
+                PhantomKind::SmashBottom,
+                r#"<m:show m:val="1"/>"#,
+                "zeroDesc",
+            ),
+        ];
+        for (kind, show, flag) in cases {
+            let output = write(MathNode::Phantom(
+                Box::new(MathNode::Identifier("x".into())),
+                kind,
+            ));
+            assert!(output.contains(show), "{kind:?} missing {show}: {output}");
+            assert!(output.contains(flag), "{kind:?} missing {flag}: {output}");
+        }
     }
 
     #[test]

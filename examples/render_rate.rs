@@ -20,7 +20,10 @@ fn main() {
             },
         }
     }
-    println!("=== render rate: {ok}/{total} ({:.1}%) ===", 100.0 * ok as f64 / total as f64);
+    println!(
+        "=== render rate: {ok}/{total} ({:.1}%) ===",
+        100.0 * ok as f64 / total as f64
+    );
     println!("\n--- parse failures ({}) ---", parse_fail.len());
     for (n, e) in &parse_fail {
         println!("  {n}: {}", e.lines().next().unwrap_or(""));

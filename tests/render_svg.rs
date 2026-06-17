@@ -1939,7 +1939,6 @@ fn svg_integral_side_limits_render() {
     );
 }
 
-
 #[test]
 fn svg_sqrt_tiny_content() {
     // Very small content like a single dot — tests the radical_path v-bottom clamp

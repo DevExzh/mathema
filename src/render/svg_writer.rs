@@ -270,7 +270,18 @@ fn emit_box_embedded(
                 }
             } else {
                 // Fallback to glyph rendering
-                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false, FontId::Math);
+                emit_glyph(
+                    svg,
+                    *ch,
+                    *target_height,
+                    x,
+                    y,
+                    em,
+                    options,
+                    glyphs,
+                    false,
+                    FontId::Math,
+                );
             }
         },
 
@@ -648,7 +659,18 @@ fn emit_box_arena_embedded(
                 }
             } else {
                 // Fallback to glyph rendering
-                emit_glyph(svg, *ch, *target_height, x, y, em, options, glyphs, false, FontId::Math);
+                emit_glyph(
+                    svg,
+                    *ch,
+                    *target_height,
+                    x,
+                    y,
+                    em,
+                    options,
+                    glyphs,
+                    false,
+                    FontId::Math,
+                );
             }
         },
 

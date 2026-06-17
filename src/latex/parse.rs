@@ -313,7 +313,11 @@ struct ColortblCell {
 /// return the slice immediately after the command name.
 fn strip_control_word<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     let after = input.strip_prefix('\\')?.strip_prefix(name)?;
-    if after.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) {
+    if after
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphabetic)
+    {
         None
     } else {
         Some(after)
@@ -337,9 +341,9 @@ fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
                     seps |= 1 << pos;
                 }
             },
-            '*' => {
+            '*'
                 // *{n}{pattern} — repeat pattern n times
-                if chars.peek() == Some(&'{') {
+                if chars.peek() == Some(&'{') => {
                     chars.next(); // consume '{'
                     let mut n_str = String::new();
                     for ch in chars.by_ref() {
@@ -370,8 +374,7 @@ fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
                             result.extend_from_slice(&sub);
                         }
                     }
-                }
-            },
+                },
             _ => {}, // skip :, @{}, and other decorations
         }
     }
@@ -684,9 +687,10 @@ fn xy_find_ar(s: &str) -> usize {
         match bytes[i] {
             b'{' => depth += 1,
             b'}' if depth > 0 => depth -= 1,
-            b'\\' if depth == 0
-                && s[i..].starts_with("\\ar")
-                && !bytes.get(i + 3).is_some_and(|b| b.is_ascii_alphabetic()) =>
+            b'\\'
+                if depth == 0
+                    && s[i..].starts_with("\\ar")
+                    && !bytes.get(i + 3).is_some_and(|b| b.is_ascii_alphabetic()) =>
             {
                 return i;
             },
@@ -822,7 +826,8 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let processed = preprocess_cow(trimmed);
+    let processed = preprocess_cow(trimmed)
+        .map_err(|limit| Error::from(LatexParseError::ExpansionLimit { limit }))?;
     let mut parser = LatexCompactParser::with_capacity(processed.len());
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
@@ -1894,14 +1899,25 @@ impl LatexCompactParser {
             // --- mhchem: \ce{...} chemical equations, \pu{...} physical units ---
             "ce" | "pu" => {
                 let Some((after, body)) = super::mhchem::capture_braced(input) else {
-                    return Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+                    return Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    ));
                 };
                 let latex = if name == "ce" {
                     super::mhchem::ce_to_latex(body)
                 } else {
                     super::mhchem::pu_to_latex(body)
                 };
-                let processed = preprocess_cow(&latex);
+                let processed = match preprocess_cow(&latex) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return Ok((
+                            after,
+                            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                        ));
+                    },
+                };
                 let id = match self.parse_node_list(&processed) {
                     Ok((_, ids)) => self.flatten_single(&ids),
                     Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -1910,10 +1926,18 @@ impl LatexCompactParser {
             },
 
             // --- siunitx (+ units `\unit`): numbers, units, quantities ---
-            "num" | "si" | "SI" | "qty" | "unit" | "ang" | "numrange" | "SIrange"
-            | "qtyrange" | "numlist" | "SIlist" | "qtylist" | "sisetup" => {
+            "num" | "si" | "SI" | "qty" | "unit" | "ang" | "numrange" | "SIrange" | "qtyrange"
+            | "numlist" | "SIlist" | "qtylist" | "sisetup" => {
                 let (after, latex) = super::siunitx::translate(name, input);
-                let processed = preprocess_cow(&latex);
+                let processed = match preprocess_cow(&latex) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return Ok((
+                            after,
+                            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                        ));
+                    },
+                };
                 let id = match self.parse_node_list(&processed) {
                     Ok((_, ids)) => self.flatten_single(&ids),
                     Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -2449,7 +2473,8 @@ impl LatexCompactParser {
                             limits: limit_style,
                         }),
                     ))
-                } else if let Some((unicode, kind)) = crate::latex::packages::lookup_package_symbol(name)
+                } else if let Some((unicode, kind)) =
+                    crate::latex::packages::lookup_package_symbol(name)
                 {
                     // Package-contributed symbol (consulted only after the core
                     // PHF tables miss, so it cannot shadow a core symbol).
@@ -2933,7 +2958,10 @@ impl LatexCompactParser {
         // The operator (parsed as a full element so it keeps its \limits/body).
         let (input, op_id) = match self.parse_element(input) {
             Ok(v) => v,
-            Err(_) => (input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
+            Err(_) => (
+                input,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ),
         };
 
         let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
@@ -3557,7 +3585,10 @@ impl LatexCompactParser {
         // Discard up to two trailing optional overhang args, e.g. `[2pt][3pt]`.
         for _ in 0..2 {
             let (r, _) = ws(rest)?;
-            match r.strip_prefix('[').and_then(|s| s.find(']').map(|e| &s[e + 1..])) {
+            match r
+                .strip_prefix('[')
+                .and_then(|s| s.find(']').map(|e| &s[e + 1..]))
+            {
                 Some(after) => rest = after,
                 None => break,
             }
@@ -3583,7 +3614,10 @@ impl LatexCompactParser {
         if let Some(rgb) = crate::css_colors::resolve_color_model(model.trim(), spec.trim()) {
             self.colors.insert(name.trim().to_string(), rgb);
         }
-        Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+        ))
     }
 
     /// `\colorlet{name}{colorexpr}` — define `name` as the (possibly mixed)
@@ -3600,7 +3634,10 @@ impl LatexCompactParser {
         if let Some(rgb) = self.resolve_color_rgb(expr.trim()) {
             self.colors.insert(name.trim().to_string(), rgb);
         }
-        Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+        ))
     }
 
     /// Resolve a color token into a renderer-ready string. Plain named CSS
@@ -4117,7 +4154,8 @@ impl LatexCompactParser {
             rows.push(row);
         }
 
-        let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![ColumnAlign::Center; num_cols];
+        let columns: SmallVec<[ColumnAlign; 4]> =
+            smallvec::smallvec![ColumnAlign::Center; num_cols];
         let array = self.build_array_with_spacing(&columns, rows, 150, false, 0);
         Ok((rest, array))
     }
@@ -4303,27 +4341,57 @@ impl LatexCompactParser {
                 },
                 "UnaryInfC" | "UIC" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    self.buss_infer(&mut stack, 1, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    self.buss_infer(
+                        &mut stack,
+                        1,
+                        arg.unwrap_or(""),
+                        &mut left_label,
+                        &mut right_label,
+                    );
                     rest = after;
                 },
                 "BinaryInfC" | "BIC" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    self.buss_infer(&mut stack, 2, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    self.buss_infer(
+                        &mut stack,
+                        2,
+                        arg.unwrap_or(""),
+                        &mut left_label,
+                        &mut right_label,
+                    );
                     rest = after;
                 },
                 "TrinaryInfC" | "TIC" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    self.buss_infer(&mut stack, 3, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    self.buss_infer(
+                        &mut stack,
+                        3,
+                        arg.unwrap_or(""),
+                        &mut left_label,
+                        &mut right_label,
+                    );
                     rest = after;
                 },
                 "QuaternaryInfC" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    self.buss_infer(&mut stack, 4, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    self.buss_infer(
+                        &mut stack,
+                        4,
+                        arg.unwrap_or(""),
+                        &mut left_label,
+                        &mut right_label,
+                    );
                     rest = after;
                 },
                 "QuinaryInfC" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    self.buss_infer(&mut stack, 5, arg.unwrap_or(""), &mut left_label, &mut right_label);
+                    self.buss_infer(
+                        &mut stack,
+                        5,
+                        arg.unwrap_or(""),
+                        &mut left_label,
+                        &mut right_label,
+                    );
                     rest = after;
                 },
                 "RightLabel" | "RL" => {
@@ -4441,7 +4509,8 @@ impl LatexCompactParser {
 
     /// A horizontal gap used between premises and around inference lines.
     fn buss_space(&mut self) -> NodeId {
-        self.arena.push_node(CompactNode::Space(Rational::new(3, 2)))
+        self.arena
+            .push_node(CompactNode::Space(Rational::new(3, 2)))
     }
 
     /// Parse the content of an axiom/conclusion/label, stripping surrounding
@@ -4504,7 +4573,10 @@ impl LatexCompactParser {
     fn parse_xymatrix_cmd<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let start = input.find('{').unwrap_or(input.len());
         let Some((rest, body)) = super::mhchem::capture_braced(&input[start..]) else {
-            return Ok((input, self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ));
         };
         let node = self.build_xymatrix(body);
         Ok((rest, node))
@@ -4552,10 +4624,15 @@ impl LatexCompactParser {
             rows.push(row);
         }
         // Drop a trailing all-empty row produced by a dangling `\\`.
-        if rows.len() > 1 && rows.last().is_some_and(|r| r.iter().all(SmallVec::is_empty)) {
+        if rows.len() > 1
+            && rows
+                .last()
+                .is_some_and(|r| r.iter().all(SmallVec::is_empty))
+        {
             rows.pop();
         }
-        let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![ColumnAlign::Center; num_cols];
+        let columns: SmallVec<[ColumnAlign; 4]> =
+            smallvec::smallvec![ColumnAlign::Center; num_cols];
         self.build_array_with_spacing(&columns, rows, 130, false, 0)
     }
 
@@ -4732,7 +4809,9 @@ impl LatexCompactParser {
             let letter = char::from(b'a' + (i % 26) as u8);
             let label = format!("(1{letter})");
             let sid = self.arena.push_str(&label);
-            let num_id = self.arena.push_node(CompactNode::Text(TextStyle::Normal, sid));
+            let num_id = self
+                .arena
+                .push_node(CompactNode::Text(TextStyle::Normal, sid));
             let mut cell: SmallVec<[NodeId; 8]> = SmallVec::new();
             cell.push(num_id);
             row.push(cell);

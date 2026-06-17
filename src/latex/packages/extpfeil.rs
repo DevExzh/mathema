@@ -120,6 +120,9 @@ mod tests {
     #[test]
     fn user_macro_overrides_xlongrightarrow() {
         let mathml = to_mathml(r"\newcommand{\xLongrightarrow}[1]{Q}\xLongrightarrow{f}");
-        assert!(mathml.contains('Q'), "user redefinition must win, got: {mathml}");
+        assert!(
+            mathml.contains('Q'),
+            "user redefinition must win, got: {mathml}"
+        );
     }
 }

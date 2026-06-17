@@ -37,6 +37,9 @@ pub enum Error {
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("input size {size} bytes exceeds configured limit of {limit} bytes")]
+    InputTooLarge { size: usize, limit: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -134,6 +137,11 @@ pub enum Strictness {
     Lenient,
 }
 
+/// Default upper bound on reader input size (4 MiB). Math formulas are
+/// kilobytes at most; this guards against adversarial multi-megabyte inputs
+/// that would otherwise be fully tokenized and parsed.
+pub const DEFAULT_MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
+
 /// Configuration for readers and writers.
 // Both fields are `Copy`, so deriving `Copy` avoids unnecessary `.clone()` calls
 // across all `from_*_with` conversion functions.
@@ -141,6 +149,9 @@ pub enum Strictness {
 pub struct Config {
     pub strictness: Strictness,
     pub display: DisplayStyle,
+    /// Maximum accepted input size in bytes. `None` disables the limit.
+    /// Defaults to [`DEFAULT_MAX_INPUT_BYTES`].
+    pub max_input_bytes: Option<usize>,
 }
 
 impl Default for Config {
@@ -148,7 +159,26 @@ impl Default for Config {
         Self {
             strictness: Strictness::Strict,
             display: DisplayStyle::Block,
+            max_input_bytes: Some(DEFAULT_MAX_INPUT_BYTES),
         }
+    }
+}
+
+impl Config {
+    /// Return an error if `input` exceeds the configured `max_input_bytes`.
+    ///
+    /// Called at reader entry points so oversized inputs are rejected before
+    /// any tokenization or parsing work is done.
+    pub fn check_input_size(&self, input: &str) -> Result<()> {
+        if let Some(limit) = self.max_input_bytes
+            && input.len() > limit
+        {
+            return Err(Error::InputTooLarge {
+                size: input.len(),
+                limit,
+            });
+        }
+        Ok(())
     }
 }
 

@@ -79,11 +79,7 @@ pub fn resolve_color_model(model: &str, spec: &str) -> Option<[u8; 3]> {
 pub fn mix_rgb(a: [u8; 3], b: [u8; 3], pct_a: f64) -> [u8; 3] {
     let t = pct_a.clamp(0.0, 100.0) / 100.0;
     let blend = |x: u8, y: u8| (f64::from(x) * t + f64::from(y) * (1.0 - t)).round() as u8;
-    [
-        blend(a[0], b[0]),
-        blend(a[1], b[1]),
-        blend(a[2], b[2]),
-    ]
+    [blend(a[0], b[0]), blend(a[1], b[1]), blend(a[2], b[2])]
 }
 
 /// Parse exactly `N` comma-separated floats from `spec`.

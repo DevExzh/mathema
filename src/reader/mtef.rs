@@ -16,6 +16,7 @@ impl Reader for MtefReader {
     }
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
+        config.check_input_size(input)?;
         let bytes = match hex_decode(input) {
             Ok(b) => b,
             Err(e) => {

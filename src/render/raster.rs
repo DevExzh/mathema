@@ -27,8 +27,7 @@ static MATH_FONT: LazyLock<Font> = LazyLock::new(|| {
 
 /// Per-id lazily-initialized `fontdue` fonts for the registered text faces.
 /// `FontId::Math` is served by [`MATH_FONT`]; text faces are parsed on first use.
-static FONTDUE_CELLS: [std::sync::OnceLock<Font>; 13] =
-    [const { std::sync::OnceLock::new() }; 13];
+static FONTDUE_CELLS: [std::sync::OnceLock<Font>; 13] = [const { std::sync::OnceLock::new() }; 13];
 
 /// `fontdue` font for a font identity (used to rasterize text-face glyphs).
 fn fontdue_font(id: FontId) -> &'static Font {

@@ -255,6 +255,7 @@ fn find_unsupported_commands() {
             } else {
                 DisplayStyle::Inline
             },
+            ..Config::default()
         };
 
         let result = from_latex_with(&formula.tex, &config);
@@ -322,7 +323,7 @@ fn find_unsupported_commands() {
     // Sort by number of affected formulas (descending) for the most impactful issues first
     let mut sorted_commands: Vec<(String, Vec<(String, String)>)> =
         literal_commands.into_iter().collect();
-    sorted_commands.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    sorted_commands.sort_by_key(|c| std::cmp::Reverse(c.1.len()));
 
     for (cmd, entries) in &sorted_commands {
         println!("\n  \\{cmd} ({} formulas):", entries.len());
@@ -417,6 +418,7 @@ fn verify_specific_commands() {
     let config = Config {
         strictness: Strictness::Lenient,
         display: DisplayStyle::Inline,
+        ..Config::default()
     };
 
     let mut unsupported = Vec::new();

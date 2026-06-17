@@ -41,6 +41,7 @@ fn main() {
     let cfg = Config {
         strictness: Strictness::Lenient,
         display: DisplayStyle::Block,
+        ..Config::default()
     };
 
     let (mut parse_fail, mut render_fail, mut empty, mut ok) = (0, 0, 0, 0);

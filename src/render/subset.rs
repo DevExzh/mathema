@@ -432,7 +432,10 @@ mod tests {
         let mut chars = HashSet::new();
         chars.insert((FontId::RomanBold, 'A'));
         let set = build_glyph_set(&chars);
-        let bold = set.fonts.get(&FontId::RomanBold).expect("roman bold glyphs");
+        let bold = set
+            .fonts
+            .get(&FontId::RomanBold)
+            .expect("roman bold glyphs");
         assert!(bold.glyphs.contains_key(&'A'));
     }
 

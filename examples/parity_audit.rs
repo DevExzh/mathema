@@ -7,8 +7,8 @@
 use std::fs;
 use std::path::Path;
 
-use mathema::render::raster::{ImageFormat, RasterOptions};
 use mathema::render::RenderOptions;
+use mathema::render::raster::{ImageFormat, RasterOptions};
 
 fn main() {
     let corpus = std::env::args()
@@ -46,9 +46,8 @@ fn main() {
 
         // (a) standalone SVG -> rasterize with resvg. Use the compact path so the
         // comparison matches the compact path that to_png()/to_svg() use.
-        let svg =
-            mathema::render::render_to_svg_standalone_compact(parsed.compact_expr(), &render)
-                .unwrap();
+        let svg = mathema::render::render_to_svg_standalone_compact(parsed.compact_expr(), &render)
+            .unwrap();
         fs::write(out.join(format!("{name}.svg")), &svg).unwrap();
         let svg_png = rasterize_svg(&svg, scale);
 
@@ -65,7 +64,11 @@ fn main() {
         let png_pix = decode_png(&png_bytes);
 
         if let (Some((sw, sh, sbuf)), Some((pw, ph, pbuf))) = (&svg_png, &png_pix) {
-            fs::write(out.join(format!("{name}_svg.png")), encode_png(*sw, *sh, sbuf)).unwrap();
+            fs::write(
+                out.join(format!("{name}_svg.png")),
+                encode_png(*sw, *sh, sbuf),
+            )
+            .unwrap();
             let diff = compare(*sw, *sh, sbuf, *pw, *ph, pbuf);
             worst.push((name.to_string(), diff));
             let cls = if diff > 5.0 { "err" } else { "ok" };
@@ -159,6 +162,7 @@ fn compare(aw: u32, ah: u32, a: &[u8], bw: u32, bh: u32, b: &[u8]) -> f64 {
     best * 100.0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diff_at(aw: u32, ah: u32, a: &[u8], bw: u32, bh: u32, b: &[u8], dx: i32, dy: i32) -> f64 {
     let w = aw.min(bw) as i32;
     let h = ah.min(bh) as i32;

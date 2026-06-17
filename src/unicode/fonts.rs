@@ -27,61 +27,41 @@ pub fn styled_char(ch: char, style: TextStyle) -> Option<char> {
 
 /// Attempt to detect the style of a Unicode mathematical alphanumeric character
 /// and return (base_char, style).
+///
+/// This is the inverse of [`styled_char`] and recognizes all 13 styled forms,
+/// including the BMP "hole" codepoints (e.g. script `ℬ` U+212C, fraktur `ℭ`
+/// U+212D) that the Mathematical Alphanumeric Symbols block leaves to legacy
+/// Letterlike Symbols. Without these, styles such as BoldItalic, Script,
+/// Fraktur and the SansSerif family would be silently lost on round-trips.
 #[inline]
 pub fn unstyled_char(ch: char) -> Option<(char, TextStyle)> {
     let cp = ch as u32;
 
-    // Bold uppercase A-Z: U+1D400–U+1D419
-    if (0x1D400..=0x1D419).contains(&cp) {
-        return Some((char::from_u32(cp - 0x1D400 + b'A' as u32)?, TextStyle::Bold));
-    }
-    // Bold lowercase a-z: U+1D41A–U+1D433
-    if (0x1D41A..=0x1D433).contains(&cp) {
-        return Some((char::from_u32(cp - 0x1D41A + b'a' as u32)?, TextStyle::Bold));
-    }
-
-    // Italic uppercase A-Z: U+1D434–U+1D44D (with hole at h=U+210E)
-    if (0x1D434..=0x1D44D).contains(&cp) {
-        return Some((
-            char::from_u32(cp - 0x1D434 + b'A' as u32)?,
-            TextStyle::Italic,
-        ));
-    }
-    // Italic lowercase a-z: U+1D44E–U+1D467 (with hole at h=U+210E)
-    if cp == 0x210E {
-        return Some(('h', TextStyle::Italic));
-    }
-    if (0x1D44E..=0x1D467).contains(&cp) {
-        return Some((
-            char::from_u32(cp - 0x1D44E + b'a' as u32)?,
-            TextStyle::Italic,
-        ));
-    }
-
-    // Monospace uppercase A-Z: U+1D670–U+1D689
-    if (0x1D670..=0x1D689).contains(&cp) {
-        return Some((
-            char::from_u32(cp - 0x1D670 + b'A' as u32)?,
-            TextStyle::Monospace,
-        ));
-    }
-    // Monospace lowercase a-z: U+1D68A–U+1D6A3
-    if (0x1D68A..=0x1D6A3).contains(&cp) {
-        return Some((
-            char::from_u32(cp - 0x1D68A + b'a' as u32)?,
-            TextStyle::Monospace,
-        ));
-    }
-
-    // Double-struck uppercase: U+1D538–U+1D551 (with exceptions C,H,N,P,Q,R,Z)
-    if (0x1D538..=0x1D551).contains(&cp) {
-        return Some((
-            char::from_u32(cp - 0x1D538 + b'A' as u32)?,
-            TextStyle::DoubleStruck,
-        ));
-    }
-    // Common double-struck exceptions
+    // BMP "hole" codepoints: letters whose Mathematical Alphanumeric SMP slot is
+    // reserved because a legacy Letterlike Symbols codepoint is used instead.
+    // These must be checked before the contiguous SMP ranges below.
     match cp {
+        0x210E => return Some(('h', TextStyle::Italic)),
+        // Script uppercase
+        0x212C => return Some(('B', TextStyle::Script)),
+        0x2130 => return Some(('E', TextStyle::Script)),
+        0x2131 => return Some(('F', TextStyle::Script)),
+        0x210B => return Some(('H', TextStyle::Script)),
+        0x2110 => return Some(('I', TextStyle::Script)),
+        0x2112 => return Some(('L', TextStyle::Script)),
+        0x2133 => return Some(('M', TextStyle::Script)),
+        0x211B => return Some(('R', TextStyle::Script)),
+        // Script lowercase
+        0x212F => return Some(('e', TextStyle::Script)),
+        0x210A => return Some(('g', TextStyle::Script)),
+        0x2134 => return Some(('o', TextStyle::Script)),
+        // Fraktur
+        0x212D => return Some(('C', TextStyle::Fraktur)),
+        0x210C => return Some(('H', TextStyle::Fraktur)),
+        0x2111 => return Some(('I', TextStyle::Fraktur)),
+        0x211C => return Some(('R', TextStyle::Fraktur)),
+        0x2128 => return Some(('Z', TextStyle::Fraktur)),
+        // Double-struck
         0x2102 => return Some(('C', TextStyle::DoubleStruck)),
         0x210D => return Some(('H', TextStyle::DoubleStruck)),
         0x2115 => return Some(('N', TextStyle::DoubleStruck)),
@@ -90,6 +70,49 @@ pub fn unstyled_char(ch: char) -> Option<(char, TextStyle)> {
         0x211D => return Some(('R', TextStyle::DoubleStruck)),
         0x2124 => return Some(('Z', TextStyle::DoubleStruck)),
         _ => {},
+    }
+
+    // Contiguous SMP ranges: (start, end_inclusive, ascii_base, style).
+    const RANGES: &[(u32, u32, u8, TextStyle)] = &[
+        // Letters
+        (0x1D400, 0x1D419, b'A', TextStyle::Bold),
+        (0x1D41A, 0x1D433, b'a', TextStyle::Bold),
+        (0x1D434, 0x1D44D, b'A', TextStyle::Italic),
+        (0x1D44E, 0x1D467, b'a', TextStyle::Italic),
+        (0x1D468, 0x1D481, b'A', TextStyle::BoldItalic),
+        (0x1D482, 0x1D49B, b'a', TextStyle::BoldItalic),
+        (0x1D49C, 0x1D4B5, b'A', TextStyle::Script),
+        (0x1D4B6, 0x1D4CF, b'a', TextStyle::Script),
+        (0x1D4D0, 0x1D4E9, b'A', TextStyle::BoldScript),
+        (0x1D4EA, 0x1D503, b'a', TextStyle::BoldScript),
+        (0x1D504, 0x1D51D, b'A', TextStyle::Fraktur),
+        (0x1D51E, 0x1D537, b'a', TextStyle::Fraktur),
+        (0x1D538, 0x1D551, b'A', TextStyle::DoubleStruck),
+        (0x1D552, 0x1D56B, b'a', TextStyle::DoubleStruck),
+        (0x1D56C, 0x1D585, b'A', TextStyle::BoldFraktur),
+        (0x1D586, 0x1D59F, b'a', TextStyle::BoldFraktur),
+        (0x1D5A0, 0x1D5B9, b'A', TextStyle::SansSerif),
+        (0x1D5BA, 0x1D5D3, b'a', TextStyle::SansSerif),
+        (0x1D5D4, 0x1D5ED, b'A', TextStyle::SansSerifBold),
+        (0x1D5EE, 0x1D607, b'a', TextStyle::SansSerifBold),
+        (0x1D608, 0x1D621, b'A', TextStyle::SansSerifItalic),
+        (0x1D622, 0x1D63B, b'a', TextStyle::SansSerifItalic),
+        (0x1D63C, 0x1D655, b'A', TextStyle::SansSerifBoldItalic),
+        (0x1D656, 0x1D66F, b'a', TextStyle::SansSerifBoldItalic),
+        (0x1D670, 0x1D689, b'A', TextStyle::Monospace),
+        (0x1D68A, 0x1D6A3, b'a', TextStyle::Monospace),
+        // Digits
+        (0x1D7CE, 0x1D7D7, b'0', TextStyle::Bold),
+        (0x1D7D8, 0x1D7E1, b'0', TextStyle::DoubleStruck),
+        (0x1D7E2, 0x1D7EB, b'0', TextStyle::SansSerif),
+        (0x1D7EC, 0x1D7F5, b'0', TextStyle::SansSerifBold),
+        (0x1D7F6, 0x1D7FF, b'0', TextStyle::Monospace),
+    ];
+
+    for &(start, end, base, style) in RANGES {
+        if (start..=end).contains(&cp) {
+            return Some((char::from_u32(cp - start + base as u32)?, style));
+        }
     }
 
     None
@@ -363,6 +386,71 @@ mod tests {
             assert_eq!(base, ch);
             assert_eq!(style, TextStyle::Bold);
         }
+    }
+
+    #[test]
+    fn round_trip_all_styles_letters() {
+        // Every styled letter must reverse back to its base char and style for
+        // all 13 styles (the original `unstyled_char` only reversed 4).
+        let styles = [
+            TextStyle::Bold,
+            TextStyle::Italic,
+            TextStyle::BoldItalic,
+            TextStyle::Script,
+            TextStyle::BoldScript,
+            TextStyle::Fraktur,
+            TextStyle::BoldFraktur,
+            TextStyle::DoubleStruck,
+            TextStyle::SansSerif,
+            TextStyle::SansSerifBold,
+            TextStyle::SansSerifItalic,
+            TextStyle::SansSerifBoldItalic,
+            TextStyle::Monospace,
+        ];
+        for style in styles {
+            for ch in ('A'..='Z').chain('a'..='z') {
+                let styled = styled_char(ch, style)
+                    .unwrap_or_else(|| panic!("no styled form for {ch} {style:?}"));
+                let (base, got) = unstyled_char(styled)
+                    .unwrap_or_else(|| panic!("could not unstyle {styled:?} ({ch} {style:?})"));
+                assert_eq!(base, ch, "base mismatch for {ch} {style:?}");
+                assert_eq!(got, style, "style mismatch for {ch} {style:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn round_trip_styled_digits() {
+        for style in [
+            TextStyle::Bold,
+            TextStyle::DoubleStruck,
+            TextStyle::SansSerif,
+            TextStyle::SansSerifBold,
+            TextStyle::Monospace,
+        ] {
+            for ch in '0'..='9' {
+                let styled = styled_char(ch, style).unwrap();
+                let (base, got) = unstyled_char(styled).unwrap();
+                assert_eq!(base, ch, "digit base mismatch for {ch} {style:?}");
+                assert_eq!(got, style, "digit style mismatch for {ch} {style:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unstyle_bmp_hole_codepoints() {
+        // Letterlike Symbols codepoints used as Mathematical Alphanumeric holes.
+        assert_eq!(unstyled_char('\u{212C}'), Some(('B', TextStyle::Script)));
+        assert_eq!(unstyled_char('\u{2110}'), Some(('I', TextStyle::Script)));
+        assert_eq!(unstyled_char('\u{212D}'), Some(('C', TextStyle::Fraktur)));
+        assert_eq!(unstyled_char('\u{2128}'), Some(('Z', TextStyle::Fraktur)));
+        assert_eq!(unstyled_char('\u{210E}'), Some(('h', TextStyle::Italic)));
+    }
+
+    #[test]
+    fn unstyle_plain_ascii_is_none() {
+        assert_eq!(unstyled_char('x'), None);
+        assert_eq!(unstyled_char('5'), None);
     }
 
     #[test]

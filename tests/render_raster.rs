@@ -174,6 +174,7 @@ fn png_display_integral() {
         &mathema::error::Config {
             strictness: mathema::error::Strictness::Lenient,
             display: mathema::ast::DisplayStyle::Block,
+            ..Default::default()
         },
     )
     .unwrap();

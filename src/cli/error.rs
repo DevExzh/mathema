@@ -83,6 +83,9 @@ impl CliError {
             mathema::Error::Xml(e) => CliError::Conversion(e.to_string()),
             mathema::Error::Render { message } => CliError::Render(message),
             mathema::Error::Unsupported(msg) => CliError::Unsupported(msg),
+            mathema::Error::InputTooLarge { size, limit } => CliError::Conversion(format!(
+                "input size {size} bytes exceeds configured limit of {limit} bytes"
+            )),
             mathema::Error::Io(e) => CliError::Io(e.to_string()),
         }
     }

@@ -132,8 +132,7 @@ pub fn font_bytes(id: FontId) -> &'static [u8] {
 
 /// Per-id lazily-parsed faces. Parsing is deferred until a face is first used,
 /// so a math-only render never pays to parse the 12 text faces.
-static FACE_CELLS: [OnceLock<ttf_parser::Face<'static>>; 13] =
-    [const { OnceLock::new() }; 13];
+static FACE_CELLS: [OnceLock<ttf_parser::Face<'static>>; 13] = [const { OnceLock::new() }; 13];
 
 /// Parsed `ttf_parser::Face` for a font identity.
 ///
@@ -224,7 +223,11 @@ pub fn text_metrics(ch: char, italic: bool, font: FontId) -> GlyphMetrics {
             glyph_metrics_upright(ch)
         };
     }
-    if let Some(hit) = TEXT_METRICS_CACHE.read().expect("metrics cache").get(&(font, ch)) {
+    if let Some(hit) = TEXT_METRICS_CACHE
+        .read()
+        .expect("metrics cache")
+        .get(&(font, ch))
+    {
         return hit.unwrap_or_else(|| glyph_metrics_upright(ch));
     }
     let computed = face_glyph_metrics(font, ch);
@@ -267,7 +270,10 @@ mod tests {
 
     #[test]
     fn math_aliases_shared_font_data() {
-        assert!(std::ptr::eq(font_bytes(FontId::Math), super::super::FONT_DATA));
+        assert!(std::ptr::eq(
+            font_bytes(FontId::Math),
+            super::super::FONT_DATA
+        ));
     }
 
     #[test]
@@ -297,12 +303,21 @@ mod tests {
 
     #[test]
     fn style_mapping_keeps_specials_on_math() {
-        assert_eq!(text_font_for_style(TextStyle::Bold), Some(FontId::RomanBold));
-        assert_eq!(text_font_for_style(TextStyle::Monospace), Some(FontId::MonoRegular));
+        assert_eq!(
+            text_font_for_style(TextStyle::Bold),
+            Some(FontId::RomanBold)
+        );
+        assert_eq!(
+            text_font_for_style(TextStyle::Monospace),
+            Some(FontId::MonoRegular)
+        );
         assert_eq!(text_font_for_style(TextStyle::Italic), None);
         assert_eq!(text_font_for_style(TextStyle::DoubleStruck), None);
         assert_eq!(text_font_for_style(TextStyle::Fraktur), None);
         assert_eq!(font_for_text_run(None), FontId::RomanRegular);
-        assert_eq!(font_for_text_run(Some(TextStyle::DoubleStruck)), FontId::Math);
+        assert_eq!(
+            font_for_text_run(Some(TextStyle::DoubleStruck)),
+            FontId::Math
+        );
     }
 }

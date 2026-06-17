@@ -3145,11 +3145,7 @@ fn layout_superscript_from_box_heap(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    let ic = if is_prime_sup(sup) {
-        0.0
-    } else {
-        base_ic
-    };
+    let ic = if is_prime_sup(sup) { 0.0 } else { base_ic };
 
     let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
@@ -3273,11 +3269,7 @@ fn layout_subsup_from_box_heap(
         shift_down = shift_down.max(0.0);
     }
 
-    let ic = if is_prime_sup(sup) {
-        0.0
-    } else {
-        base_ic
-    };
+    let ic = if is_prime_sup(sup) { 0.0 } else { base_ic };
     let sup_dx = base_box.width + ic;
     let sub_dx = base_box.width;
 
@@ -4721,7 +4713,9 @@ fn layout_node_c(arena: &AstArena, id: NodeId, ctx: &LayoutCtx) -> LayoutBox {
                 layout_text_run(s, ctx, false, None)
             }
         },
-        CompactNode::Operator { name, .. } => layout_text_run(arena.str_val(name), ctx, false, None),
+        CompactNode::Operator { name, .. } => {
+            layout_text_run(arena.str_val(name), ctx, false, None)
+        },
         CompactNode::Symbol(kind, sid) => {
             let s = arena.str_val(sid);
             if let Some(ch) = s.chars().next() {
@@ -6797,7 +6791,7 @@ fn layout_array_c(
     // Layout all cells (flat storage, row-major, stride = num_cols)
     let cell_ids = arena.children(cells);
     let nc = num_cols as usize;
-    let n_rows = if nc > 0 { cell_ids.len() / nc } else { 0 };
+    let n_rows = cell_ids.len().checked_div(nc).unwrap_or(0);
 
     let mut cell_layouts: Vec<LayoutBox> = Vec::with_capacity(cell_ids.len());
     for &cell_id in cell_ids {
@@ -8772,7 +8766,6 @@ fn layout_sqrt_arena(
     let radical_dy = g.surd_dy;
     let total_depth = inner_d.max(g.box_depth - g.surd_dy);
 
-
     // Optional root index
     if let Some(idx_id_node) = index {
         let idx_ctx = ctx.with_style(MathStyle::ScriptScript);
@@ -8784,8 +8777,7 @@ fn layout_sqrt_arena(
         let raise_pct = math_table::math_constants()
             .map(|c| c.radical_degree_bottom_raise_percent as f64 / 100.0)
             .unwrap_or(0.6);
-        let idx_shift =
-            (raise_pct * (total_height - total_depth) - (idx_h - idx_d) / 2.0).max(0.0);
+        let idx_shift = (raise_pct * (total_height - total_depth) - (idx_h - idx_d) / 2.0).max(0.0);
 
         // Use MATH table kern values for degree positioning (OpenType MATH spec)
         let kern_before = math_table::math_constants()
@@ -8990,21 +8982,20 @@ fn layout_fenced_arena(
                             cursor_x += space * ctx.size();
                         }
                     }
-                    let delim_width = if let Some(v) =
-                        glyph_variants::delimiter_variant(ch, target_h)
-                    {
-                        v.h_adv_em * (target_h / v.advance_em)
-                    } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-                        delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-                    } else {
-                        let base_delim_width = 0.389 * ctx.size();
-                        let standard_height = 0.9 * ctx.size();
-                        if target_h > standard_height {
-                            base_delim_width * (target_h / standard_height)
+                    let delim_width =
+                        if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
+                            v.h_adv_em * (target_h / v.advance_em)
+                        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
+                            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
                         } else {
-                            base_delim_width
-                        }
-                    };
+                            let base_delim_width = 0.389 * ctx.size();
+                            let standard_height = 0.9 * ctx.size();
+                            if target_h > standard_height {
+                                base_delim_width * (target_h / standard_height)
+                            } else {
+                                base_delim_width
+                            }
+                        };
                     let delim_id = arena.alloc(ArenaLayoutBox {
                         width: delim_width,
                         height: delim_h,
@@ -10394,7 +10385,7 @@ fn layout_array_arena(
     // Layout all cells (flat storage, row-major, stride = num_cols)
     let cell_ids_ast = ast.children(cells);
     let nc = num_cols as usize;
-    let n_rows = if nc > 0 { cell_ids_ast.len() / nc } else { 0 };
+    let n_rows = cell_ids_ast.len().checked_div(nc).unwrap_or(0);
 
     // Layout each cell and store the layout box IDs
     let mut cell_layout_ids: Vec<LayoutBoxId> = Vec::with_capacity(cell_ids_ast.len());

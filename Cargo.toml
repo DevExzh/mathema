@@ -2,6 +2,7 @@
 name = "mathema"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and UnicodeMath via a shared AST"
 license = "MIT"
 
@@ -181,6 +182,15 @@ harness = false
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
+
+# Lint gates. CI runs `cargo clippy --all-features -- -D warnings`, which
+# promotes every `warn` below to a hard error. Kept at `warn` here so local
+# development and older toolchains are not blocked by a single new lint.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+manual_checked_ops = "warn"
 
 
 [[example]]

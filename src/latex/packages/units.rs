@@ -73,8 +73,14 @@ mod tests {
     #[test]
     fn nicefrac_has_super_and_subscript() {
         let mathml = to_mathml(r"\nicefrac{1}{2}");
-        assert!(mathml.contains("<msup"), "expected superscript, got: {mathml}");
-        assert!(mathml.contains("<msub"), "expected subscript, got: {mathml}");
+        assert!(
+            mathml.contains("<msup"),
+            "expected superscript, got: {mathml}"
+        );
+        assert!(
+            mathml.contains("<msub"),
+            "expected subscript, got: {mathml}"
+        );
         assert!(mathml.contains('1') && mathml.contains('2'));
         assert!(mathml.contains('/'), "expected slash, got: {mathml}");
     }

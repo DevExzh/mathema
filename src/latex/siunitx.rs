@@ -179,7 +179,11 @@ pub fn num_to_latex(body: &str) -> String {
     }
     // Uncertainty: `1.2 +- 0.1` or `1.2\pm0.1`.
     if let Some((a, b)) = split_pm(body) {
-        return format!("{} \\pm {}", format_number(a.trim()), format_number(b.trim()));
+        return format!(
+            "{} \\pm {}",
+            format_number(a.trim()),
+            format_number(b.trim())
+        );
     }
     // Concise uncertainty: `1.2(3)`.
     if let Some(open) = body.find('(')
@@ -710,8 +714,14 @@ mod tests {
     #[test]
     fn num_short_integer_not_grouped() {
         let ml = mathml(r"\num{1234}");
-        assert!(ml.contains("<mn>1234</mn>"), "expected ungrouped number in {ml}");
-        assert!(!ml.contains("<mspace"), "did not expect a thin space in {ml}");
+        assert!(
+            ml.contains("<mn>1234</mn>"),
+            "expected ungrouped number in {ml}"
+        );
+        assert!(
+            !ml.contains("<mspace"),
+            "did not expect a thin space in {ml}"
+        );
     }
 
     #[test]
@@ -719,7 +729,10 @@ mod tests {
         let ml = mathml(r"\num{1.23e4}");
         assert!(ml.contains("<mn>1.23</mn>"), "expected mantissa in {ml}");
         assert!(ml.contains('\u{00D7}'), "expected × in {ml}");
-        assert!(ml.contains("<msup>"), "expected exponent superscript in {ml}");
+        assert!(
+            ml.contains("<msup>"),
+            "expected exponent superscript in {ml}"
+        );
         assert!(ml.contains("<mn>10</mn>") && ml.contains("<mn>4</mn>"));
     }
 
@@ -727,7 +740,10 @@ mod tests {
     fn num_decimal_and_sign() {
         let ml = mathml(r"\num{-3.14}");
         assert!(ml.contains("<mn>3.14</mn>"), "expected decimal in {ml}");
-        assert!(ml.contains('\u{2212}') || ml.contains('-'), "expected minus in {ml}");
+        assert!(
+            ml.contains('\u{2212}') || ml.contains('-'),
+            "expected minus in {ml}"
+        );
     }
 
     #[test]
@@ -750,8 +766,14 @@ mod tests {
     fn si_quantity_with_unit_macros() {
         let ml = mathml(r"\SI{9.81}{\metre\per\second\squared}");
         assert!(ml.contains("<mn>9.81</mn>"), "expected number in {ml}");
-        assert!(ml.contains("mathvariant=\"normal\""), "expected upright units in {ml}");
-        assert!(ml.contains(">m</mi>") && ml.contains(">s</mi>"), "expected m and s in {ml}");
+        assert!(
+            ml.contains("mathvariant=\"normal\""),
+            "expected upright units in {ml}"
+        );
+        assert!(
+            ml.contains(">m</mi>") && ml.contains(">s</mi>"),
+            "expected m and s in {ml}"
+        );
         assert!(ml.contains('/'), "expected division slash in {ml}");
         assert!(ml.contains("<msup>"), "expected squared exponent in {ml}");
     }
@@ -760,7 +782,10 @@ mod tests {
     fn si_quantity_with_literal_unit() {
         let ml = mathml(r"\SI{5}{kg.m/s^2}");
         assert!(ml.contains("<mn>5</mn>"));
-        assert!(ml.contains("mathvariant=\"normal\""), "expected upright units in {ml}");
+        assert!(
+            ml.contains("mathvariant=\"normal\""),
+            "expected upright units in {ml}"
+        );
         assert!(ml.contains('/'), "expected slash in {ml}");
         assert!(ml.contains("<msup>"));
     }
@@ -769,14 +794,20 @@ mod tests {
     fn si_unit_thin_space_between_factors() {
         let ml = mathml(r"\si{kg m s^{-1}}");
         assert!(ml.contains("mathvariant=\"normal\""));
-        assert!(ml.contains("<mspace"), "expected thin space between units in {ml}");
+        assert!(
+            ml.contains("<mspace"),
+            "expected thin space between units in {ml}"
+        );
     }
 
     #[test]
     fn si_prefixed_unit() {
         let ml = mathml(r"\si{\kilo\gram}");
         assert!(ml.contains("mathvariant=\"normal\""));
-        assert!(ml.contains(">k</mi>") || ml.contains("kg"), "expected kg in {ml}");
+        assert!(
+            ml.contains(">k</mi>") || ml.contains("kg"),
+            "expected kg in {ml}"
+        );
         assert!(ml.contains(">g</mi>") || ml.contains("kg"));
     }
 
@@ -792,7 +823,10 @@ mod tests {
     fn qty_single_arg_keeps_physics_parens() {
         // Arity-based coexistence: `\qty{x}` keeps physics' auto-sized parens.
         let ml = mathml(r"\qty{a+b}");
-        assert!(ml.contains('(') && ml.contains(')'), "expected parens in {ml}");
+        assert!(
+            ml.contains('(') && ml.contains(')'),
+            "expected parens in {ml}"
+        );
     }
 
     #[test]
@@ -836,14 +870,19 @@ mod tests {
     #[test]
     fn numlist_best_effort() {
         let ml = mathml(r"\numlist{1;2;3}");
-        assert!(ml.contains("<mn>1</mn>") && ml.contains("<mn>2</mn>") && ml.contains("<mn>3</mn>"));
+        assert!(
+            ml.contains("<mn>1</mn>") && ml.contains("<mn>2</mn>") && ml.contains("<mn>3</mn>")
+        );
         assert!(ml.contains("and"), "expected 'and' in list {ml}");
     }
 
     #[test]
     fn options_are_ignored() {
         let ml = mathml(r"\num[round-mode=places]{3.14159}");
-        assert!(ml.contains("<mn>3.14159</mn>"), "expected number despite options in {ml}");
+        assert!(
+            ml.contains("<mn>3.14159</mn>"),
+            "expected number despite options in {ml}"
+        );
     }
 
     #[test]

@@ -8,7 +8,6 @@
 
 #![cfg(feature = "raster")]
 
-
 use mathema::render::RenderOptions;
 use mathema::render::raster::{ImageFormat, RasterOptions};
 
@@ -35,7 +34,10 @@ fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => buf.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        png::ColorType::Rgb => buf
+            .chunks(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255])
+            .collect(),
         _ => return None,
     };
     Some((info.width, info.height, rgba))
@@ -49,6 +51,7 @@ fn luma(p: &[u8]) -> f64 {
     0.299 * r + 0.587 * g + 0.114 * b
 }
 
+#[allow(clippy::too_many_arguments)]
 fn diff_at(aw: u32, ah: u32, a: &[u8], bw: u32, bh: u32, b: &[u8], dx: i32, dy: i32) -> f64 {
     let w = aw.min(bw) as i32;
     let h = ah.min(bh) as i32;
@@ -94,10 +97,22 @@ fn svg_matches_png_on_corpus() {
     let formulas: &[(&str, &str, bool)] = &[
         ("ident_ops", "x + y = z - w", false),
         ("frac_nested", r"\frac{a + \frac{b}{c}}{d - e}", true),
-        ("sqrt_index", r"\sqrt{x} + \sqrt[3]{y} + \sqrt[n]{1+x^2}", true),
+        (
+            "sqrt_index",
+            r"\sqrt{x} + \sqrt[3]{y} + \sqrt[n]{1+x^2}",
+            true,
+        ),
         ("supersub", "x^{2} + y_{i}^{2} + z_{i+1}^{2k}", false),
-        ("sum_int_display", r"\sum_{i=1}^{n} i^2 + \int_{0}^{\infty} e^{-x} dx", true),
-        ("matrix_p", r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}", true),
+        (
+            "sum_int_display",
+            r"\sum_{i=1}^{n} i^2 + \int_{0}^{\infty} e^{-x} dx",
+            true,
+        ),
+        (
+            "matrix_p",
+            r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}",
+            true,
+        ),
         (
             "matrix_b",
             r"\begin{bmatrix} 1 & 0 & 0 \\ 0 & 1 & 0 \\ 0 & 0 & 1 \end{bmatrix}",
@@ -113,7 +128,11 @@ fn svg_matches_png_on_corpus() {
             r"\hat{x} + \widehat{xyz} + \vec{v} + \tilde{a} + \widetilde{abc} + \bar{y}",
             false,
         ),
-        ("braces", r"\overbrace{a+b+c}^{n} + \underbrace{x+y}_{m}", true),
+        (
+            "braces",
+            r"\overbrace{a+b+c}^{n} + \underbrace{x+y}_{m}",
+            true,
+        ),
         (
             "delims_big",
             r"\left( \frac{1}{1 + \frac{1}{1 + x}} \right) \left[ \sum_k a_k \right]",
@@ -129,7 +148,11 @@ fn svg_matches_png_on_corpus() {
             r"\iiint_V f \, dV + \oint_C \vec{F} \cdot d\vec{r}",
             true,
         ),
-        ("tall_frac_paren", r"\left( \frac{\frac{a}{b}}{\frac{c}{d}} \right)", true),
+        (
+            "tall_frac_paren",
+            r"\left( \frac{\frac{a}{b}}{\frac{c}{d}} \right)",
+            true,
+        ),
     ];
 
     let scale = 2.0f32;
@@ -143,9 +166,8 @@ fn svg_matches_png_on_corpus() {
         };
         let parsed = mathema::from_latex(tex).unwrap_or_else(|e| panic!("{name}: parse: {e}"));
 
-        let svg =
-            mathema::render::render_to_svg_standalone_compact(parsed.compact_expr(), &render)
-                .unwrap();
+        let svg = mathema::render::render_to_svg_standalone_compact(parsed.compact_expr(), &render)
+            .unwrap();
         let svg_img = rasterize_svg(&svg, scale).expect("resvg should rasterize");
 
         let ropts = RasterOptions {
@@ -172,7 +194,10 @@ fn svg_matches_png_on_corpus() {
     }
 
     let avg = diffs.iter().sum::<f64>() / diffs.len() as f64;
-    println!("SVG/PNG parity: avg {avg:.2}%, worst {} {:.2}%", worst.0, worst.1);
+    println!(
+        "SVG/PNG parity: avg {avg:.2}%, worst {} {:.2}%",
+        worst.0, worst.1
+    );
     assert!(
         avg < 5.0,
         "average SVG/PNG diff {avg:.2}% exceeds 5% — parity regression"

@@ -423,6 +423,63 @@ mod tests {
         assert!(result.contains("<math"));
     }
 
+    #[test]
+    fn oversized_input_is_rejected() {
+        let config = Config {
+            max_input_bytes: Some(1024),
+            ..Config::default()
+        };
+        let big = "x".repeat(2048);
+        let result = convert_with(&big, Format::LaTeX, Format::MathML, &config);
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::InputTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn input_limit_can_be_disabled() {
+        // The same input that a small explicit limit rejects is accepted when
+        // the limit is disabled (None).
+        let input = "x + y + z".repeat(64); // ~576 bytes
+        let rejected = convert_with(
+            &input,
+            Format::LaTeX,
+            Format::MathML,
+            &Config {
+                max_input_bytes: Some(64),
+                ..Config::default()
+            },
+        );
+        assert!(matches!(
+            rejected,
+            Err(crate::error::Error::InputTooLarge { .. })
+        ));
+        let accepted = convert_with(
+            &input,
+            Format::LaTeX,
+            Format::MathML,
+            &Config {
+                max_input_bytes: None,
+                ..Config::default()
+            },
+        );
+        assert!(accepted.is_ok(), "None limit should accept the same input");
+    }
+
+    #[test]
+    fn from_latex_respects_input_limit() {
+        let config = Config {
+            max_input_bytes: Some(8),
+            ..Config::default()
+        };
+        let result = from_latex_with("x + y + z + w", &config);
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::InputTooLarge { .. })
+        ));
+    }
+
     #[cfg(feature = "render")]
     #[test]
     fn colorbox_renders_with_fill() {

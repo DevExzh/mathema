@@ -20,6 +20,11 @@ pub enum LatexParseError {
 
     #[error("maximum nesting depth ({depth}) exceeded")]
     DepthExceeded { depth: u32, span: Option<Span> },
+
+    #[error(
+        "macro expansion exceeded size limit ({limit} bytes); possible runaway recursive macro"
+    )]
+    ExpansionLimit { limit: usize },
 }
 
 impl LatexParseError {
@@ -30,6 +35,7 @@ impl LatexParseError {
             | Self::UnmatchedDelimiter { span, .. }
             | Self::InvalidCommand { span, .. }
             | Self::DepthExceeded { span, .. } => *span,
+            Self::ExpansionLimit { .. } => None,
         }
     }
 }

@@ -12,6 +12,7 @@ fn render(mml: &str) -> String {
     let cfg = Config {
         strictness: Strictness::Lenient,
         display: DisplayStyle::Block,
+        ..Config::default()
     };
     from_mathml_with(mml, &cfg).unwrap().to_svg().unwrap()
 }
@@ -20,6 +21,7 @@ fn latex(mml: &str) -> String {
     let cfg = Config {
         strictness: Strictness::Lenient,
         display: DisplayStyle::Block,
+        ..Config::default()
     };
     from_mathml_with(mml, &cfg).unwrap().to_latex().unwrap()
 }

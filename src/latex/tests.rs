@@ -313,7 +313,10 @@ fn cd_basic_square_parses_to_array() {
     let src = r"\begin{CD} A @>f>> B \\ @VVV @VVV \\ C @>>g> D \end{CD}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     // Laid out as an <mtable> grid.
-    assert!(mathml.contains("<mtable>"), "expected mtable, got:\n{mathml}");
+    assert!(
+        mathml.contains("<mtable>"),
+        "expected mtable, got:\n{mathml}"
+    );
     // Object letters present.
     for obj in ["A", "B", "C", "D"] {
         assert!(mathml.contains(obj), "missing object {obj} in:\n{mathml}");
@@ -322,8 +325,14 @@ fn cd_basic_square_parses_to_array() {
     assert!(mathml.contains('\u{2192}'), "missing → arrow in:\n{mathml}");
     assert!(mathml.contains('\u{2193}'), "missing ↓ arrow in:\n{mathml}");
     // Labels appear above/below the horizontal arrows.
-    assert!(mathml.contains("<mover"), "expected over-label for f in:\n{mathml}");
-    assert!(mathml.contains("<munder"), "expected under-label for g in:\n{mathml}");
+    assert!(
+        mathml.contains("<mover"),
+        "expected over-label for f in:\n{mathml}"
+    );
+    assert!(
+        mathml.contains("<munder"),
+        "expected under-label for g in:\n{mathml}"
+    );
     assert!(mathml.contains(">f<"), "missing label f in:\n{mathml}");
     assert!(mathml.contains(">g<"), "missing label g in:\n{mathml}");
 }
@@ -338,7 +347,11 @@ fn cd_horizontal_chain_parses() {
         assert!(mathml.contains(obj), "missing object {obj}");
     }
     // Two right arrows in a single row.
-    assert_eq!(mathml.matches('\u{2192}').count(), 2, "expected two → in:\n{mathml}");
+    assert_eq!(
+        mathml.matches('\u{2192}').count(),
+        2,
+        "expected two → in:\n{mathml}"
+    );
 }
 
 #[test]
@@ -350,7 +363,10 @@ fn cd_equals_and_double_line_parse() {
     // Horizontal equals (`@=`).
     assert!(mathml.contains(">=<"), "missing = for @= in:\n{mathml}");
     // Vertical double line (`@|`).
-    assert!(mathml.contains('\u{2016}'), "missing ‖ for @| in:\n{mathml}");
+    assert!(
+        mathml.contains('\u{2016}'),
+        "missing ‖ for @| in:\n{mathml}"
+    );
     // Down arrow and right arrow.
     assert!(mathml.contains('\u{2193}'));
     assert!(mathml.contains('\u{2192}'));
@@ -363,7 +379,10 @@ fn cd_vertical_labels_and_left_arrow() {
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     assert!(mathml.contains('\u{2193}'), "missing ↓ in:\n{mathml}");
     assert!(mathml.contains('\u{2190}'), "missing ← in:\n{mathml}");
-    assert!(mathml.contains(">g<") && mathml.contains(">h<"), "missing v-labels in:\n{mathml}");
+    assert!(
+        mathml.contains(">g<") && mathml.contains(">h<"),
+        "missing v-labels in:\n{mathml}"
+    );
 }
 
 #[test]
@@ -383,7 +402,10 @@ fn cd_renders_svg() {
     let src = r"\begin{CD} A @>f>> B \\ @VVV @VVV \\ C @>>g> D \end{CD}";
     let svg = from_latex(src).unwrap().to_svg().unwrap();
     assert!(!svg.is_empty(), "SVG output empty for CD");
-    assert!(svg.contains("<path") || svg.contains("<text"), "no rendered elements:\n{svg}");
+    assert!(
+        svg.contains("<path") || svg.contains("<text"),
+        "no rendered elements:\n{svg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -396,8 +418,14 @@ fn numcases_builds_braced_grid_with_number_labels() {
     let src = r"\begin{numcases}{|x|} x, & x\ge0\\ -x, & x<0 \end{numcases}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     // Cases rows live in an <mtable> grid wrapped in a big left brace fence.
-    assert!(mathml.contains("<mtable>"), "expected mtable, got:\n{mathml}");
-    assert!(mathml.contains('{'), "expected big left brace, got:\n{mathml}");
+    assert!(
+        mathml.contains("<mtable>"),
+        "expected mtable, got:\n{mathml}"
+    );
+    assert!(
+        mathml.contains('{'),
+        "expected big left brace, got:\n{mathml}"
+    );
     // Shared left expression and the `=`.
     assert!(mathml.contains(">x<"), "missing x in:\n{mathml}");
     assert!(mathml.contains(">=<"), "missing = in:\n{mathml}");
@@ -413,7 +441,10 @@ fn subnumcases_uses_sub_letter_labels() {
     use crate::convert::from_latex;
     let src = r"\begin{subnumcases}{f} a & p\\ b & q \end{subnumcases}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
-    assert!(mathml.contains("<mtable>"), "expected mtable, got:\n{mathml}");
+    assert!(
+        mathml.contains("<mtable>"),
+        "expected mtable, got:\n{mathml}"
+    );
     assert!(mathml.contains("(1a)"), "missing (1a) label in:\n{mathml}");
     assert!(mathml.contains("(1b)"), "missing (1b) label in:\n{mathml}");
     // Shared left expression `f`.
@@ -444,8 +475,14 @@ fn empheq_box_wraps_inner_align_in_boxed() {
         "expected boxed menclose, got:\n{mathml}"
     );
     // Inner aligned grid is preserved.
-    assert!(mathml.contains("<mtable>"), "expected mtable, got:\n{mathml}");
-    assert!(mathml.contains(">a<") && mathml.contains(">d<"), "missing cells in:\n{mathml}");
+    assert!(
+        mathml.contains("<mtable>"),
+        "expected mtable, got:\n{mathml}"
+    );
+    assert!(
+        mathml.contains(">a<") && mathml.contains(">d<"),
+        "missing cells in:\n{mathml}"
+    );
 }
 
 #[test]
@@ -474,7 +511,10 @@ fn empheq_without_options_renders_inner_unchanged() {
         "did not expect a box, got:\n{mathml}"
     );
     // Inner gather grid present.
-    assert!(mathml.contains("<mtable>"), "expected mtable, got:\n{mathml}");
+    assert!(
+        mathml.contains("<mtable>"),
+        "expected mtable, got:\n{mathml}"
+    );
     assert!(mathml.contains(">x<"), "missing x in:\n{mathml}");
 }
 
@@ -484,8 +524,14 @@ fn empheq_left_delimiter_wraps_in_fence() {
     let src = r"\begin{empheq}[left=\Rightarrow]{align*} a &= b \end{empheq}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     // Left delimiter ⇒ should appear as a fence operator.
-    assert!(mathml.contains('\u{21D2}'), "missing ⇒ delimiter in:\n{mathml}");
-    assert!(mathml.contains("<mtable>"), "expected mtable, got:\n{mathml}");
+    assert!(
+        mathml.contains('\u{21D2}'),
+        "missing ⇒ delimiter in:\n{mathml}"
+    );
+    assert!(
+        mathml.contains("<mtable>"),
+        "expected mtable, got:\n{mathml}"
+    );
 }
 
 #[test]
@@ -519,7 +565,10 @@ fn colortbl_rowcolor_and_cellcolor_set_backgrounds() {
         "expected boxed menclose, got:\n{mathml}"
     );
     // Cell contents survive the Boxed wrapping.
-    assert!(mathml.contains(">a<") && mathml.contains(">d<"), "missing cells in:\n{mathml}");
+    assert!(
+        mathml.contains(">a<") && mathml.contains(">d<"),
+        "missing cells in:\n{mathml}"
+    );
 }
 
 #[cfg(feature = "render")]
@@ -565,7 +614,10 @@ fn colortbl_arrayrulecolor_is_accepted_but_ignored() {
         !mathml.contains("background-color"),
         "arrayrulecolor should not produce a cell background, got:\n{mathml}"
     );
-    assert!(mathml.contains(">a<") && mathml.contains(">b<"), "missing cells in:\n{mathml}");
+    assert!(
+        mathml.contains(">a<") && mathml.contains(">b<"),
+        "missing cells in:\n{mathml}"
+    );
 }
 
 #[test]
@@ -595,8 +647,8 @@ fn colortbl_malformed_color_does_not_panic() {
 #[test]
 fn bussproofs_binary_inference() {
     use crate::convert::from_latex;
-    let r = from_latex(r"\begin{prooftree}\AxiomC{A}\AxiomC{B}\BinaryInfC{C}\end{prooftree}")
-        .unwrap();
+    let r =
+        from_latex(r"\begin{prooftree}\AxiomC{A}\AxiomC{B}\BinaryInfC{C}\end{prooftree}").unwrap();
     let ml = r.to_mathml().unwrap();
     // Leaves and conclusion present.
     assert!(ml.contains("<mi>A</mi>"), "missing A:\n{ml}");
@@ -608,6 +660,7 @@ fn bussproofs_binary_inference() {
     // Composed from an Array → <mtable>.
     assert!(ml.contains("<mtable>"), "not an Array:\n{ml}");
     // SVG must render without panic.
+    #[cfg(feature = "render")]
     assert!(r.to_svg().is_ok());
 }
 
@@ -631,7 +684,10 @@ fn bussproofs_inline_display_proof() {
     use crate::convert::from_latex;
     let r = from_latex(r"\AxiomC{A}\UnaryInfC{B}\DisplayProof").unwrap();
     let ml = r.to_mathml().unwrap();
-    assert!(ml.contains("<mi>A</mi>") && ml.contains("<mi>B</mi>"), "{ml}");
+    assert!(
+        ml.contains("<mi>A</mi>") && ml.contains("<mi>B</mi>"),
+        "{ml}"
+    );
     assert!(ml.contains("<mtable>"), "{ml}");
 }
 
@@ -656,7 +712,10 @@ fn xymatrix_grid_with_arrows() {
     assert!(ml.contains("<mtable>"), "not an Array:\n{ml}");
     // Objects present.
     for obj in ["A", "B", "C", "D"] {
-        assert!(ml.contains(&format!("<mi>{obj}</mi>")), "missing {obj}:\n{ml}");
+        assert!(
+            ml.contains(&format!("<mi>{obj}</mi>")),
+            "missing {obj}:\n{ml}"
+        );
     }
     // Arrow glyphs for each direction.
     assert!(ml.contains('\u{2192}'), "missing → :\n{ml}"); // r
@@ -664,6 +723,7 @@ fn xymatrix_grid_with_arrows() {
     assert!(ml.contains('\u{2190}'), "missing ← :\n{ml}"); // l
     // Arrow label.
     assert!(ml.contains("<mi>f</mi>"), "missing label f:\n{ml}");
+    #[cfg(feature = "render")]
     assert!(r.to_svg().is_ok());
 }
 

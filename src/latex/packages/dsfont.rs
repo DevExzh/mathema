@@ -51,9 +51,7 @@ mod tests {
     fn mathds_letter_mathml() {
         let out = mathml(r"\mathds{R}");
         assert!(
-            out.contains('\u{211D}')
-                || out.contains('\u{1D54D}')
-                || out.contains("double-struck"),
+            out.contains('\u{211D}') || out.contains('\u{1D54D}') || out.contains("double-struck"),
             "expected double-struck R, got: {out}"
         );
     }

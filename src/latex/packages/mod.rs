@@ -111,7 +111,9 @@ const PACKAGE_SYMBOLS: &[&[(&str, &str, SymbolClass)]] = &[
 /// Iterator over every builtin macro `(name, param_count, body)` contributed by
 /// all registered packages. Used to seed the preprocessor.
 pub fn builtin_macros() -> impl Iterator<Item = (&'static str, u8, &'static str)> {
-    PACKAGE_MACROS.iter().flat_map(|table| table.iter().copied())
+    PACKAGE_MACROS
+        .iter()
+        .flat_map(|table| table.iter().copied())
 }
 
 /// Cached set of all builtin macro names for cheap membership checks.

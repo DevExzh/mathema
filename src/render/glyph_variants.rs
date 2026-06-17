@@ -249,7 +249,6 @@ pub fn display_operator_min_height() -> f64 {
     VARIANT_TABLE.display_op_min_height
 }
 
-
 /// Whether a character is a large (n-ary) operator that may have display-size
 /// MATH-table variants (∑, ∫, ∏, …). Shared by the raster and SVG emitters so
 /// both pick the same variant glyph for display-mode operators.

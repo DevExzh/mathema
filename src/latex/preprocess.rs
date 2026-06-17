@@ -29,16 +29,38 @@ struct Preprocessor {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Lower bound on the macro-expansion output cap. Inputs smaller than
+/// `MIN_EXPANSION_CAP / 64` bytes are still permitted to expand up to this
+/// many bytes, so ordinary `\newcommand` use is never penalized.
+const MIN_EXPANSION_CAP: usize = 1 << 20; // 1 MiB
+
+/// Maximum number of bytes macro expansion may produce for a given input.
+///
+/// Scales with the input so large legitimate documents still expand, while a
+/// tiny self-replicating macro is capped at the 1 MiB floor.
+fn expansion_cap(input_len: usize) -> usize {
+    input_len.saturating_mul(64).max(MIN_EXPANSION_CAP)
+}
+
 /// Main entry point: strip comments, extract definitions, expand macros.
+///
+/// Returns the original input unchanged if macro expansion exceeds the size
+/// limit; callers that need to surface the error use [`preprocess_cow`].
 pub fn preprocess(input: &str) -> String {
-    preprocess_cow(input).into_owned()
+    match preprocess_cow(input) {
+        Ok(cow) => cow.into_owned(),
+        Err(_) => input.to_owned(),
+    }
 }
 
 /// Like [`preprocess`] but borrows the input on the common fast path (no macros
 /// or comments), avoiding an allocation + full-string copy per parse.
-pub fn preprocess_cow(input: &str) -> std::borrow::Cow<'_, str> {
+///
+/// Returns `Err(limit)` when macro expansion would exceed `limit` bytes,
+/// protecting against exponential-blowup denial-of-service inputs.
+pub fn preprocess_cow(input: &str) -> Result<std::borrow::Cow<'_, str>, usize> {
     if !needs_preprocessing(input) {
-        return std::borrow::Cow::Borrowed(input);
+        return Ok(std::borrow::Cow::Borrowed(input));
     }
     let stripped = strip_comments(input);
     let mut pp = Preprocessor::default();
@@ -46,7 +68,7 @@ pub fn preprocess_cow(input: &str) -> std::borrow::Cow<'_, str> {
     // definitions extracted next override them (user definitions win).
     pp.seed_builtins();
     let after_defs = pp.extract_definitions(&stripped);
-    std::borrow::Cow::Owned(pp.expand_all(&after_defs))
+    Ok(std::borrow::Cow::Owned(pp.expand_all(&after_defs)?))
 }
 
 /// Fast-path check: does the input contain any syntax we need to process?
@@ -394,28 +416,49 @@ impl Preprocessor {
 
 impl Preprocessor {
     /// Iterate `expand_once` up to 64 times until stable.
-    fn expand_all(&self, input: &str) -> String {
+    ///
+    /// Returns `Err(cap)` if expansion output exceeds `cap` bytes, which
+    /// guards against exponential-blowup macros such as
+    /// `\newcommand{\a}{\a\a}\a` whose output doubles every pass. The 64-pass
+    /// iteration limit alone is *not* sufficient — a single self-doubling
+    /// macro reaches ~`2^64` bytes well before 64 passes — so output size is
+    /// bounded explicitly here and inside [`Self::expand_once`].
+    fn expand_all(&self, input: &str) -> Result<String, usize> {
         if self.macros.is_empty() && self.environments.is_empty() {
-            return input.to_owned();
+            return Ok(input.to_owned());
         }
+        let cap = expansion_cap(input.len());
         let mut text = input.to_owned();
         for _ in 0..64 {
-            let (next, changed) = self.expand_once(&text);
+            let (next, changed) = self.expand_once(&text, cap);
+            if next.len() > cap {
+                return Err(cap);
+            }
             if !changed {
-                return next;
+                return Ok(next);
             }
             text = next;
         }
-        text
+        Ok(text)
     }
 
     /// Single-pass expansion. Returns `(output, changed)`.
-    fn expand_once(&self, input: &str) -> (String, bool) {
+    ///
+    /// Stops appending once `out` grows past `cap`, bounding peak memory to
+    /// roughly `cap` plus one macro body even when a single pass would
+    /// otherwise multiply the input many-fold. The caller ([`Self::expand_all`])
+    /// detects the over-cap output and reports an error.
+    fn expand_once(&self, input: &str, cap: usize) -> (String, bool) {
         let mut out = String::with_capacity(input.len());
         let mut changed = false;
         let mut s = input;
 
         while !s.is_empty() {
+            // Bail out early on runaway expansion; the caller turns the
+            // over-cap result into an `ExpansionLimit` error.
+            if out.len() > cap {
+                break;
+            }
             // Try \begin{name}
             if s.starts_with("\\begin{")
                 && let Some((rest, replacement)) = self.try_expand_begin(s)
@@ -834,6 +877,41 @@ mod tests {
         let result = preprocess("\\newcommand{\\r}{\\r}\\r");
         // After 64 iterations it will still be \r — just check it doesn't hang
         assert!(result.contains("\\r"));
+    }
+
+    #[test]
+    fn expand_doubling_macro_is_capped() {
+        // \newcommand{\a}{\a\a}\a doubles its output every pass. Without an
+        // output-size cap this is an exponential-blowup DoS. It must terminate
+        // quickly and surface an error instead of exhausting memory/CPU.
+        let start = std::time::Instant::now();
+        let result = preprocess_cow("\\newcommand{\\a}{\\a\\a}\\a");
+        assert!(
+            result.is_err(),
+            "doubling macro should hit the expansion cap"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "expansion cap must terminate in well under a second"
+        );
+    }
+
+    #[test]
+    fn expand_tripling_macro_is_capped() {
+        let result = preprocess_cow("\\newcommand{\\a}{\\a\\a\\a}\\a");
+        assert!(
+            result.is_err(),
+            "tripling macro should hit the expansion cap"
+        );
+    }
+
+    #[test]
+    fn preprocess_falls_back_on_expansion_overflow() {
+        // The infallible `preprocess` wrapper returns the input unchanged
+        // rather than panicking when the cap is hit.
+        let input = "\\newcommand{\\a}{\\a\\a}\\a";
+        let result = preprocess(input);
+        assert_eq!(result, input);
     }
 
     #[test]
