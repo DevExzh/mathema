@@ -12,6 +12,59 @@
 
 use std::sync::LazyLock;
 
+/// A single part in an OpenType MATH vertical glyph assembly (e.g. the bottom
+/// hook, stretchy extender, or top of a radical/brace).
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct AssemblyPart {
+    glyph_id: u16,
+    /// Full advance of the part along the assembly axis, in em.
+    full_adv_em: f64,
+    /// Connector overlap length on the start (lower) side, in em.
+    start_conn_em: f64,
+    /// Connector overlap length on the end (upper) side, in em.
+    end_conn_em: f64,
+    /// Whether this part may be repeated to stretch the assembly.
+    is_extender: bool,
+    /// Glyph bbox bottom relative to its own baseline, in em (≤ 0 when below).
+    y_min_em: f64,
+    /// Glyph bbox top relative to its own baseline, in em.
+    y_max_em: f64,
+}
+
+/// A parsed vertical assembly recipe (parts ordered bottom → top).
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct AssemblyRecipe {
+    parts: Vec<AssemblyPart>,
+    /// Horizontal advance (width) of the assembly, in em.
+    width_em: f64,
+}
+
+/// One positioned part instance in a stretched assembly, ready to render.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+pub struct AssemblyPlacement {
+    /// Glyph ID to draw.
+    pub glyph_id: u16,
+    /// Baseline shift (em) of this part above the assembly's bottom origin.
+    pub shift_em: f64,
+}
+
+/// A fully laid-out stretchy assembly at a requested target height.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct StretchyAssembly {
+    /// Part instances, bottom → top, each with its baseline shift in em.
+    pub placements: Vec<AssemblyPlacement>,
+    /// Assembly width (advance), in em.
+    pub width_em: f64,
+    /// Highest ink above the assembly bottom origin, in em.
+    pub ink_top_em: f64,
+    /// Lowest ink relative to the assembly bottom origin, in em (≤ 0).
+    pub ink_bottom_em: f64,
+}
+
 /// A pre-designed glyph variant from the MATH table.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)] // fields used only when `raster` feature is enabled
@@ -38,6 +91,10 @@ struct VariantTable {
     /// Map from base character to its sorted list of horizontal variants
     /// (sorted by ascending advance_em).
     horizontal: Vec<(char, Vec<VariantGlyph>)>,
+    /// Map from base character to its vertical assembly recipe (parts).
+    vertical_assemblies: Vec<(char, AssemblyRecipe)>,
+    /// Minimum connector overlap between adjacent assembly parts, in em.
+    min_connector_overlap: f64,
     /// The display_operator_min_height from the MATH constants, in em units.
     display_op_min_height: f64,
 }
@@ -54,6 +111,8 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
             return VariantTable {
                 vertical: Vec::new(),
                 horizontal: Vec::new(),
+                vertical_assemblies: Vec::new(),
+                min_connector_overlap: 0.0,
                 display_op_min_height: 0.0,
             };
         },
@@ -67,6 +126,12 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
 
     let mut vertical = Vec::new();
     let mut horizontal = Vec::new();
+    let mut vertical_assemblies: Vec<(char, AssemblyRecipe)> = Vec::new();
+    let min_connector_overlap = math
+        .variants
+        .as_ref()
+        .map(|v| v.min_connector_overlap as f64 / upem)
+        .unwrap_or(0.0);
 
     // Build a `VariantGlyph`, looking up the variant glyph's bounding box and
     // horizontal advance (needed so the layout can position e.g. a radical
@@ -117,6 +182,33 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
                             glyph_variants.sort_by(|a, b| a.advance_em.total_cmp(&b.advance_em));
                             vertical.push((ch, glyph_variants));
                         }
+                        // Extract the stretchy assembly recipe, if present.
+                        if let Some(asm) = construction.assembly {
+                            let mut parts = Vec::new();
+                            let mut width_em = 0.0_f64;
+                            for i in 0..asm.parts.len() {
+                                let Some(p) = asm.parts.get(i) else { continue };
+                                let (y_min_em, y_max_em) = face
+                                    .glyph_bounding_box(p.glyph_id)
+                                    .map(|b| (b.y_min as f64 / upem, b.y_max as f64 / upem))
+                                    .unwrap_or((0.0, 0.0));
+                                let h_adv =
+                                    face.glyph_hor_advance(p.glyph_id).unwrap_or(0) as f64 / upem;
+                                width_em = width_em.max(h_adv);
+                                parts.push(AssemblyPart {
+                                    glyph_id: p.glyph_id.0,
+                                    full_adv_em: p.full_advance as f64 / upem,
+                                    start_conn_em: p.start_connector_length as f64 / upem,
+                                    end_conn_em: p.end_connector_length as f64 / upem,
+                                    is_extender: p.part_flags.extender(),
+                                    y_min_em,
+                                    y_max_em,
+                                });
+                            }
+                            if !parts.is_empty() {
+                                vertical_assemblies.push((ch, AssemblyRecipe { parts, width_em }));
+                            }
+                        }
                     }
                     // Check if this glyph has horizontal variants.
                     if let Some(construction) = variants.horizontal_constructions.get(gid) {
@@ -148,9 +240,14 @@ static VARIANT_TABLE: LazyLock<VariantTable> = LazyLock::new(|| {
     horizontal.sort_by_key(|(ch, _)| *ch);
     horizontal.dedup_by_key(|(ch, _)| *ch);
 
+    vertical_assemblies.sort_by_key(|(ch, _)| *ch);
+    vertical_assemblies.dedup_by_key(|(ch, _)| *ch);
+
     VariantTable {
         vertical,
         horizontal,
+        vertical_assemblies,
+        min_connector_overlap,
         display_op_min_height,
     }
 });
@@ -241,6 +338,104 @@ pub fn delimiter_variant(ch: char, target_height_em: f64) -> Option<VariantGlyph
     } else {
         None
     }
+}
+
+/// Build a stretchy vertical assembly for `ch` tall enough to reach
+/// `target_height_em`, using the font's OpenType MATH `GlyphAssembly` parts
+/// (e.g. radical checkmark + stretchy extender + top, or the 5-part brace).
+///
+/// Returns `None` when the glyph has no assembly recipe. The returned
+/// placements are ordered bottom → top; each `shift_em` is the baseline offset
+/// of that part above the assembly's bottom origin. This is the same mechanism
+/// MathJax/HarfBuzz use, so tall delimiters stay proportional instead of being
+/// uniformly scaled or approximated by a synthetic path.
+#[allow(dead_code)]
+pub fn vertical_assembly(ch: char, target_height_em: f64) -> Option<StretchyAssembly> {
+    let table = &*VARIANT_TABLE;
+    let idx = table
+        .vertical_assemblies
+        .binary_search_by_key(&ch, |(c, _)| *c)
+        .ok()?;
+    let recipe = &table.vertical_assemblies[idx].1;
+    let parts = &recipe.parts;
+    if parts.is_empty() {
+        return None;
+    }
+
+    let min_overlap = table.min_connector_overlap;
+    // Maximum overlap any connection allows = min over adjacent connector pairs.
+    let mut max_overlap = f64::INFINITY;
+    for w in parts.windows(2) {
+        max_overlap = max_overlap.min(w[0].end_conn_em.min(w[1].start_conn_em));
+    }
+    if !max_overlap.is_finite() {
+        max_overlap = min_overlap;
+    }
+    let max_overlap = max_overlap.max(min_overlap);
+
+    let fixed_count = parts.iter().filter(|p| !p.is_extender).count();
+    let ext_count = parts.iter().filter(|p| p.is_extender).count();
+    let fixed_sum: f64 = parts.iter().filter(|p| !p.is_extender).map(|p| p.full_adv_em).sum();
+    let ext_sum: f64 = parts.iter().filter(|p| p.is_extender).map(|p| p.full_adv_em).sum();
+
+    // Smallest repetition count whose maximum achievable size reaches the target.
+    let mut rep = 1usize;
+    if ext_count > 0 {
+        loop {
+            let num_parts = fixed_count + ext_count * rep;
+            let conns = num_parts.saturating_sub(1) as f64;
+            let full = fixed_sum + ext_sum * rep as f64;
+            let max_size = full - conns * min_overlap;
+            if max_size >= target_height_em || rep > 256 {
+                break;
+            }
+            rep += 1;
+        }
+    }
+
+    // Expand the part sequence with extenders repeated `rep` times.
+    let mut seq: Vec<&AssemblyPart> = Vec::with_capacity(fixed_count + ext_count * rep);
+    for p in parts {
+        let n = if p.is_extender { rep } else { 1 };
+        for _ in 0..n {
+            seq.push(p);
+        }
+    }
+    let num_parts = seq.len();
+    let conns = num_parts.saturating_sub(1) as f64;
+    let full: f64 = seq.iter().map(|p| p.full_adv_em).sum();
+
+    // Choose a single overlap to hit the target as closely as possible.
+    let overlap = if conns > 0.0 {
+        ((full - target_height_em) / conns).clamp(min_overlap, max_overlap)
+    } else {
+        0.0
+    };
+
+    // Stack bottom → top, accumulating advance minus overlap.
+    let mut placements = Vec::with_capacity(num_parts);
+    let mut ink_top = f64::NEG_INFINITY;
+    let mut ink_bottom = f64::INFINITY;
+    let mut shift = 0.0_f64;
+    for (i, p) in seq.iter().enumerate() {
+        placements.push(AssemblyPlacement {
+            glyph_id: p.glyph_id,
+            shift_em: shift,
+        });
+        ink_top = ink_top.max(shift + p.y_max_em);
+        ink_bottom = ink_bottom.min(shift + p.y_min_em);
+        shift += p.full_adv_em;
+        if i < num_parts - 1 {
+            shift -= overlap;
+        }
+    }
+
+    Some(StretchyAssembly {
+        placements,
+        width_em: recipe.width_em,
+        ink_top_em: ink_top,
+        ink_bottom_em: ink_bottom,
+    })
 }
 
 /// Get the display_operator_min_height from the MATH table, in em units.

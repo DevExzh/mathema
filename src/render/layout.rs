@@ -2630,6 +2630,24 @@ fn radical_geometry(
             surd_target: Some(min_height),
             synthetic_height: min_height,
         }
+    } else if let Some(asm) = glyph_variants::vertical_assembly('\u{221A}', min_height) {
+        // Too tall for any discrete variant: build the surd from real font
+        // assembly parts (checkmark + stretchy extender + top), like MathJax.
+        // The renderer fills the box [top = vinculum, bottom = radicand foot]
+        // using the same assembly, so layout only needs the box extent. We keep
+        // the same box shape as the synthetic fallback: all ink above the box
+        // baseline, height = min_height, depth = 0.
+        let surd_width = (asm.width_em * size).max(0.4 * size);
+        RadicalGeom {
+            thickness,
+            shift_up,
+            surd_width,
+            box_height: min_height,
+            box_depth: 0.0,
+            surd_dy: shift_up - min_height,
+            surd_target: Some(min_height),
+            synthetic_height: min_height,
+        }
     } else {
         // Fallback: synthetic path sized to the exact required height.
         RadicalGeom {
@@ -2824,6 +2842,8 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
     let compute_delim_w = |ch: char| -> f64 {
         if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
             v.h_adv_em * (target_h / v.advance_em)
+        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
+            asm.width_em * ctx.size()
         } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
@@ -5687,6 +5707,8 @@ fn layout_fenced_c(
             // Width of the variant glyph as the emitter will draw it (uniform
             // scale to the target height).
             v.h_adv_em * (target_h / v.advance_em)
+        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
+            asm.width_em * ctx.size()
         } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
@@ -8998,6 +9020,8 @@ fn layout_fenced_arena(
     {
         let delim_width = if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
             v.h_adv_em * (target_h / v.advance_em)
+        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
+            asm.width_em * ctx.size()
         } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {
@@ -9052,6 +9076,8 @@ fn layout_fenced_arena(
                     let delim_width =
                         if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
                             v.h_adv_em * (target_h / v.advance_em)
+                        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
+                            asm.width_em * ctx.size()
                         } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
                             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
                         } else {
@@ -9119,6 +9145,8 @@ fn layout_fenced_arena(
         cursor_x += 0.12 * ctx.size();
         let delim_width = if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
             v.h_adv_em * (target_h / v.advance_em)
+        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
+            asm.width_em * ctx.size()
         } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
             delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
         } else {

@@ -232,7 +232,17 @@ fn collect_variants_inner(node: &LayoutBox, ids: &mut HashSet<u16>) {
             }
         },
         BoxKind::Delimiter { ch, target_height } => {
-            if let Some(v) = select_vertical_variant(*ch, *target_height) {
+            if super::glyph_variants::delimiter_variant(*ch, *target_height).is_some() {
+                if let Some(v) = select_vertical_variant(*ch, *target_height) {
+                    ids.insert(v.glyph_id);
+                }
+            } else if let Some(asm) =
+                super::glyph_variants::vertical_assembly(*ch, *target_height)
+            {
+                for p in &asm.placements {
+                    ids.insert(p.glyph_id);
+                }
+            } else if let Some(v) = select_vertical_variant(*ch, *target_height) {
                 ids.insert(v.glyph_id);
             }
         },
@@ -274,7 +284,17 @@ fn collect_variants_arena_inner(arena: &LayoutArena, id: LayoutBoxId, ids: &mut 
             }
         },
         ArenaBoxKind::Delimiter { ch, target_height } => {
-            if let Some(v) = select_vertical_variant(*ch, *target_height) {
+            if super::glyph_variants::delimiter_variant(*ch, *target_height).is_some() {
+                if let Some(v) = select_vertical_variant(*ch, *target_height) {
+                    ids.insert(v.glyph_id);
+                }
+            } else if let Some(asm) =
+                super::glyph_variants::vertical_assembly(*ch, *target_height)
+            {
+                for p in &asm.placements {
+                    ids.insert(p.glyph_id);
+                }
+            } else if let Some(v) = select_vertical_variant(*ch, *target_height) {
                 ids.insert(v.glyph_id);
             }
         },

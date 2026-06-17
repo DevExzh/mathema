@@ -125,6 +125,42 @@ fn emit_variant_glyph(
     );
 }
 
+/// Emit a stretchy vertical delimiter/radical from its OpenType MATH glyph
+/// assembly parts (mirrors `raster::draw_vertical_assembly`). Returns `false`
+/// (emitting nothing) when no assembly exists, so the caller can fall back.
+#[allow(clippy::too_many_arguments)]
+fn emit_vertical_assembly_embedded(
+    svg: &mut String,
+    glyphs: &GlyphSet,
+    ch: char,
+    fill_height_em: f64,
+    box_top: f64,
+    x: f64,
+    em: f64,
+    upem: f64,
+    color: &str,
+) -> bool {
+    let Some(asm) = super::glyph_variants::vertical_assembly(ch, fill_height_em) else {
+        return false;
+    };
+    let h_nat = asm.ink_top_em - asm.ink_bottom_em;
+    if h_nat <= 0.001 {
+        return false;
+    }
+    // Bail if any part outline is missing from the embedded set (keeps SVG and
+    // PNG identical: the PNG path would also have nothing to draw).
+    if asm.placements.iter().any(|p| !glyphs.variants.contains_key(&p.glyph_id)) {
+        return false;
+    }
+    let k = fill_height_em / h_nat;
+    let fs = em * k;
+    for p in &asm.placements {
+        let baseline_y = box_top + (asm.ink_top_em - p.shift_em) * fs;
+        emit_variant_glyph(svg, p.glyph_id, fs, x, baseline_y, upem, color);
+    }
+    true
+}
+
 fn emit_box_embedded(
     svg: &mut String,
     layout: &LayoutBox,
@@ -239,6 +275,21 @@ fn emit_box_embedded(
                     glyphs.font_info.units_per_em,
                     &options.fg_color,
                 );
+                return;
+            }
+            // Too tall for a discrete variant: build from the font's stretchy
+            // assembly parts before falling back to a synthetic path.
+            if emit_vertical_assembly_embedded(
+                svg,
+                glyphs,
+                *ch,
+                layout.height + layout.depth,
+                y - layout.height * em,
+                x,
+                em,
+                glyphs.font_info.units_per_em,
+                &options.fg_color,
+            ) {
                 return;
             }
             // Use SVG path for tall delimiters
@@ -642,6 +693,21 @@ fn emit_box_arena_embedded(
                     glyphs.font_info.units_per_em,
                     &options.fg_color,
                 );
+                return;
+            }
+            // Too tall for a discrete variant: build from the font's stretchy
+            // assembly parts before falling back to a synthetic path.
+            if emit_vertical_assembly_embedded(
+                svg,
+                glyphs,
+                *ch,
+                layout.height + layout.depth,
+                y - layout.height * em,
+                x,
+                em,
+                glyphs.font_info.units_per_em,
+                &options.fg_color,
+            ) {
                 return;
             }
             // Use SVG path for tall delimiters

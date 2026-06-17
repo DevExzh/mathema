@@ -365,8 +365,17 @@ fn emit_raster_box(
             };
 
             if !variant_rendered {
-                // Fall back to SVG path for tall delimiters
-                if let Some(dp) = super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0) {
+                // Too tall for a discrete variant: try the font's stretchy
+                // assembly (real parts: hooks + extenders) before the synthetic
+                // path, so tall surds/braces stay proportional like MathJax.
+                let box_top = y - layout.height * em;
+                let fill_h = layout.height + layout.depth;
+                let assembled = draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em);
+                if assembled {
+                    // rendered from assembly parts
+                } else if let Some(dp) =
+                    super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+                {
                     if let Some((path, is_fill)) = parse_svg_path_ex(&dp.path_data) {
                         let tx = x as f32;
                         let ty = (y - layout.height * em) as f32;
@@ -669,6 +678,41 @@ fn draw_glyph_variant(
     paint.anti_alias = true;
 
     pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
+}
+
+/// Render a stretchy vertical delimiter/radical from its OpenType MATH glyph
+/// assembly parts. Fills the vertical span `[box_top, box_top + fill_height*em]`
+/// at horizontal position `x`. Returns `false` (drawing nothing) when the glyph
+/// has no assembly recipe, so the caller can fall back to a synthetic path.
+fn draw_vertical_assembly(
+    pixmap: &mut Pixmap,
+    fg: [u8; 3],
+    ch: char,
+    fill_height_em: f64,
+    box_top: f64,
+    x: f64,
+    em: f64,
+) -> bool {
+    let Some(asm) = super::glyph_variants::vertical_assembly(ch, fill_height_em) else {
+        return false;
+    };
+    let h_nat = asm.ink_top_em - asm.ink_bottom_em;
+    if h_nat <= 0.001 {
+        return false;
+    }
+    // Uniform fine-scale to land exactly on the requested fill height (the
+    // assembly already gets within one extender of it, so `k` stays ≈ 1).
+    let k = fill_height_em / h_nat;
+    let fs = em * k;
+    if fs < 0.5 {
+        return false;
+    }
+    for p in &asm.placements {
+        // Each part's baseline sits so its top ink aligns within the box.
+        let baseline_y = box_top + (asm.ink_top_em - p.shift_em) * fs;
+        draw_glyph_variant(pixmap, fg, p.glyph_id, fs, x, baseline_y);
+    }
+    true
 }
 
 /// OutlineBuilder that converts ttf-parser glyph outlines to tiny-skia Paths.
