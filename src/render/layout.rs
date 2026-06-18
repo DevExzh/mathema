@@ -594,6 +594,7 @@ fn is_extensible_arrow(ch: char) -> bool {
         | '\u{21A6}' // ↦ mapsto
         | '\u{21CC}' // ⇌ rightleftharpoons
         | '\u{21CB}' // ⇋ leftrightharpoons
+        | '\u{21C4}' // ⇄ rightleftarrows (xtofrom)
         | '\u{21A0}' // ↠ twoheadrightarrow
         | '\u{219E}' // ↞ twoheadleftarrow
         | '\u{21BC}' // ↼ leftharpoonup
@@ -628,35 +629,69 @@ fn get_extensible_arrow_heap(node: &MathNode) -> Option<char> {
     None
 }
 
-/// Generate a stretchy SVG path for an extensible arrow character at given width and em-size.
+/// Half-width of an extensible arrowhead, in em. This is also half the arrow's
+/// total vertical extent (the path frame is `[0, 2·this]`), so the arrow is
+/// centered on the math axis with this much head on each side of the shaft.
+const ARROW_HEAD_HALF_W_EM: f64 = 0.21;
+
+/// Build the box for an extensible arrow of the given char and total width,
+/// centered on the math axis. Shared by the heap and compact layout paths
+/// (both use `LayoutBox`); the arena path uses [`extensible_arrow_dims`].
+fn make_extensible_arrow_box(ch: char, arrow_w: f64, size: f64, axis: f64) -> LayoutBox {
+    let (w, h, d) = extensible_arrow_dims(arrow_w, size, axis);
+    LayoutBox {
+        width: w,
+        height: h,
+        depth: d,
+        kind: BoxKind::SvgPath(stretchy_arrow_svg(ch, arrow_w, size)),
+    }
+}
+
+/// `(width, height, depth)` for an extensible-arrow box whose shaft sits on the
+/// math axis. The path frame spans `[0, 2·tw]` with its center (the shaft) at
+/// `tw`; placing that center at `axis` above the baseline gives these extents.
+fn extensible_arrow_dims(arrow_w: f64, size: f64, axis: f64) -> (f64, f64, f64) {
+    let tw = ARROW_HEAD_HALF_W_EM * size;
+    (arrow_w, axis + tw, (tw - axis).max(0.0))
+}
+
+/// Generate a stretchy SVG path for an extensible arrow character at the given
+/// width and font `size` (em). Proportions (shaft thickness, head length/width)
+/// are absolute fractions of the em so the arrow keeps the robust, uniform line
+/// weight of a fraction bar / relation operator at any length — matching
+/// MathJax/LaTeX rather than scaling down with the box.
 fn stretchy_arrow_svg(ch: char, w: f64, em: f64) -> String {
-    let t = 0.02 * em; // half-thickness of arrow shaft
-    let tip = 0.24 * em; // arrowhead length
-    let tw = 0.12 * em; // arrowhead half-width (perpendicular to shaft)
-    let mid_y = 0.22 * em; // vertical center
+    let t = 0.027 * em; // half-thickness of arrow shaft (full ≈ rule thickness)
+    let tip = 0.44 * em; // arrowhead length
+    let tw = ARROW_HEAD_HALF_W_EM * em; // arrowhead half-width (perpendicular to shaft)
+    let mid_y = tw; // vertical center → path frame is [0, 2·tw]
 
     match ch {
-        // → rightarrow: shaft + right arrowhead
+        // → rightarrow: shaft + right arrowhead with swept-back barbs
         '\u{2192}' => {
-            let ax = w - tip;
+            let ax = w - tip; // back tips of the barbs
+            let notch = ax + 0.42 * tip; // concave back of the head (toward the tip)
             format!(
-                "F:M0,{y0:.4} L{ax:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{ax:.4},{y1:.4} L0,{y1:.4} Z",
+                "F:M0,{y0:.4} L{notch:.4},{y0:.4} L{ax:.4},{t1:.4} L{w:.4},{mid:.4} L{ax:.4},{t2:.4} L{notch:.4},{y1:.4} L0,{y1:.4} Z",
                 y0 = mid_y - t,
                 y1 = mid_y + t,
                 ax = ax,
+                notch = notch,
                 w = w,
                 mid = mid_y,
                 t1 = mid_y - tw,
                 t2 = mid_y + tw
             )
         },
-        // ← leftarrow: left arrowhead + shaft
+        // ← leftarrow: left arrowhead with swept-back barbs + shaft
         '\u{2190}' => {
+            let notch = tip - 0.42 * tip; // concave back of the head (toward the tip)
             format!(
-                "F:M{w:.4},{y0:.4} L{tip:.4},{y0:.4} L{tip:.4},{t1:.4} L0,{mid:.4} L{tip:.4},{t2:.4} L{tip:.4},{y1:.4} L{w:.4},{y1:.4} Z",
+                "F:M{w:.4},{y0:.4} L{notch:.4},{y0:.4} L{tip:.4},{t1:.4} L0,{mid:.4} L{tip:.4},{t2:.4} L{notch:.4},{y1:.4} L{w:.4},{y1:.4} Z",
                 y0 = mid_y - t,
                 y1 = mid_y + t,
                 tip = tip,
+                notch = notch,
                 w = w,
                 mid = mid_y,
                 t1 = mid_y - tw,
@@ -825,6 +860,35 @@ fn stretchy_arrow_svg(ch: char, w: f64, em: f64) -> String {
                 lt = lower + tw,
                 tip = tip,
                 ax = ax,
+                w = w
+            )
+        },
+        // ⇄ rightleftarrows: upper rightarrow + lower leftarrow (stacked full arrows)
+        '\u{21C4}' => {
+            let gap = 0.105 * em; // vertical offset of each arrow from center
+            let htw = 0.09 * em; // arrowhead half-width of each sub-arrow
+            let up = mid_y - gap;
+            let lo = mid_y + gap;
+            let ax = w - tip;
+            let rnotch = ax + 0.42 * tip;
+            let lnotch = tip - 0.42 * tip;
+            format!(
+                "F:M0,{u0:.4} L{rnotch:.4},{u0:.4} L{ax:.4},{ut:.4} L{w:.4},{up:.4} L{ax:.4},{ub:.4} L{rnotch:.4},{u1:.4} L0,{u1:.4} Z \
+                 M{w:.4},{l0:.4} L{lnotch:.4},{l0:.4} L{tip:.4},{lt:.4} L0,{lo:.4} L{tip:.4},{lb:.4} L{lnotch:.4},{l1:.4} L{w:.4},{l1:.4} Z",
+                u0 = up - t,
+                u1 = up + t,
+                ut = up - htw,
+                ub = up + htw,
+                l0 = lo - t,
+                l1 = lo + t,
+                lt = lo - htw,
+                lb = lo + htw,
+                up = up,
+                lo = lo,
+                ax = ax,
+                rnotch = rnotch,
+                lnotch = lnotch,
+                tip = tip,
                 w = w
             )
         },
@@ -3385,13 +3449,9 @@ fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> Layou
         let padding = 0.5 * size;
         let min_width = 1.75 * size;
         let arrow_w = over_box.width.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
-        let arrow_box = LayoutBox {
-            width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
-        };
+        let arrow_box =
+            make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
+        let arrow_d = arrow_box.depth;
 
         let gap = p.big_op_spacing[2] * size;
         let max_w = arrow_box.width.max(over_box.width);
@@ -3408,7 +3468,7 @@ fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCtx) -> Layou
         return LayoutBox {
             width: max_w,
             height: over_dy + over_h,
-            depth: arrow_h / 2.0,
+            depth: arrow_d,
             kind: BoxKind::VBox { children },
         };
     }
@@ -3465,13 +3525,9 @@ fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> Lay
         let padding = 0.5 * size;
         let min_width = 1.75 * size;
         let arrow_w = under_box.width.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
-        let arrow_box = LayoutBox {
-            width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
-        };
+        let arrow_box =
+            make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
+        let arrow_a = arrow_box.height;
 
         let gap = p.big_op_spacing[4] * size;
         let max_w = arrow_box.width.max(under_box.width);
@@ -3487,7 +3543,7 @@ fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> Lay
 
         return LayoutBox {
             width: max_w,
-            height: arrow_h / 2.0,
+            height: arrow_a,
             depth: under_dy + under_d,
             kind: BoxKind::VBox { children },
         };
@@ -3545,13 +3601,8 @@ fn layout_underover(
         let min_width = 1.75 * size;
         let content_w = over_box.width.max(under_box.width);
         let arrow_w = content_w.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
-        let arrow_box = LayoutBox {
-            width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
-        };
+        let arrow_box =
+            make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
 
         let gap_above = p.big_op_spacing[2] * size;
         let gap_below = p.big_op_spacing[4] * size;
@@ -6242,13 +6293,9 @@ fn layout_overscript_c(arena: &AstArena, base: NodeId, over: NodeId, ctx: &Layou
         let padding = 0.5 * size;
         let min_width = 1.75 * size;
         let arrow_w = over_box.width.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
-        let arrow_box = LayoutBox {
-            width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
-        };
+        let arrow_box =
+            make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
+        let arrow_d = arrow_box.depth;
 
         let gap = p.big_op_spacing[2] * size;
         let max_w = arrow_box.width.max(over_box.width);
@@ -6265,7 +6312,7 @@ fn layout_overscript_c(arena: &AstArena, base: NodeId, over: NodeId, ctx: &Layou
         return LayoutBox {
             width: max_w,
             height: over_dy + over_h,
-            depth: arrow_h / 2.0,
+            depth: arrow_d,
             kind: BoxKind::VBox { children },
         };
     }
@@ -6325,13 +6372,9 @@ fn layout_underscript_c(
         let padding = 0.5 * size;
         let min_width = 1.75 * size;
         let arrow_w = under_box.width.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
-        let arrow_box = LayoutBox {
-            width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
-        };
+        let arrow_box =
+            make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
+        let arrow_a = arrow_box.height;
 
         let gap = p.big_op_spacing[4] * size;
         let max_w = arrow_box.width.max(under_box.width);
@@ -6347,7 +6390,7 @@ fn layout_underscript_c(
 
         return LayoutBox {
             width: max_w,
-            height: arrow_h / 2.0,
+            height: arrow_a,
             depth: under_dy + under_d,
             kind: BoxKind::VBox { children },
         };
@@ -6404,13 +6447,8 @@ fn layout_underover_c(
         let min_width = 1.75 * size;
         let content_w = over_box.width.max(under_box.width);
         let arrow_w = content_w.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
-        let arrow_box = LayoutBox {
-            width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: BoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
-        };
+        let arrow_box =
+            make_extensible_arrow_box(arrow_ch, arrow_w, size, p.axis_height * size);
 
         let gap_above = p.big_op_spacing[2] * size;
         let gap_below = p.big_op_spacing[4] * size;
@@ -9741,19 +9779,20 @@ fn layout_overscript_arena(
         let padding = 0.5 * size;
         let min_width = 1.75 * size;
         let arrow_w = over_w.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
+        let (_aw, arrow_a, arrow_d) =
+            extensible_arrow_dims(arrow_w, size, p.axis_height * size);
         let arrow_id = arena.alloc(ArenaLayoutBox {
             width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+            height: arrow_a,
+            depth: arrow_d,
+            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
         });
 
         let gap = p.big_op_spacing[2] * size;
         let max_w = arrow_w.max(over_w);
         let base_dx = (max_w - arrow_w) / 2.0;
         let over_dx = (max_w - over_w) / 2.0;
-        let over_dy = arrow_h / 2.0 + gap + over_d;
+        let over_dy = arrow_a + gap + over_d;
 
         let children_start = arena.begin_children();
         arena.push_child(ArenaPositionedBox {
@@ -9771,7 +9810,7 @@ fn layout_overscript_arena(
         return arena.alloc(ArenaLayoutBox {
             width: max_w,
             height: over_dy + over_h,
-            depth: arrow_h / 2.0,
+            depth: arrow_d,
             kind: ArenaBoxKind::VBox { children },
         });
     }
@@ -9862,19 +9901,20 @@ fn layout_underscript_arena(
         let padding = 0.5 * size;
         let min_width = 1.75 * size;
         let arrow_w = under_w.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
+        let (_aw, arrow_a, arrow_d) =
+            extensible_arrow_dims(arrow_w, size, p.axis_height * size);
         let arrow_id = arena.alloc(ArenaLayoutBox {
             width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+            height: arrow_a,
+            depth: arrow_d,
+            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
         });
 
         let gap = p.big_op_spacing[4] * size;
         let max_w = arrow_w.max(under_w);
         let base_dx = (max_w - arrow_w) / 2.0;
         let under_dx = (max_w - under_w) / 2.0;
-        let under_dy = arrow_h / 2.0 + gap + under_h;
+        let under_dy = arrow_d + gap + under_h;
 
         let children_start = arena.begin_children();
         arena.push_child(ArenaPositionedBox {
@@ -9891,7 +9931,7 @@ fn layout_underscript_arena(
 
         return arena.alloc(ArenaLayoutBox {
             width: max_w,
-            height: arrow_h / 2.0,
+            height: arrow_a,
             depth: under_dy + under_d,
             kind: ArenaBoxKind::VBox { children },
         });
@@ -9977,12 +10017,13 @@ fn layout_underover_arena(
         let min_width = 1.75 * size;
         let content_w = over_w.max(under_w);
         let arrow_w = content_w.max(min_width) + padding;
-        let arrow_h = 0.36 * size;
+        let (_aw, arrow_a, arrow_d) =
+            extensible_arrow_dims(arrow_w, size, p.axis_height * size);
         let arrow_id = arena.alloc(ArenaLayoutBox {
             width: arrow_w,
-            height: arrow_h / 2.0,
-            depth: arrow_h / 2.0,
-            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, arrow_h)),
+            height: arrow_a,
+            depth: arrow_d,
+            kind: ArenaBoxKind::SvgPath(stretchy_arrow_svg(arrow_ch, arrow_w, size)),
         });
 
         let gap_above = p.big_op_spacing[2] * size;
@@ -9991,8 +10032,8 @@ fn layout_underover_arena(
         let base_dx = (max_w - arrow_w) / 2.0;
         let over_dx = (max_w - over_w) / 2.0;
         let under_dx = (max_w - under_w) / 2.0;
-        let over_dy = arrow_h / 2.0 + gap_above + over_d;
-        let under_dy = arrow_h / 2.0 + gap_below + under_h;
+        let over_dy = arrow_a + gap_above + over_d;
+        let under_dy = arrow_d + gap_below + under_h;
 
         let children_start = arena.begin_children();
         arena.push_child(ArenaPositionedBox {
