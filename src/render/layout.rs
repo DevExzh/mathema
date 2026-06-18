@@ -3418,17 +3418,20 @@ fn get_stretchy_overunder_sym(node: &MathNode) -> Option<&str> {
 }
 
 /// Create a stretchy overunder decoration LayoutBox at the given width.
-fn make_stretchy_overunder_box(sym: &str, width: f64, size: f64) -> LayoutBox {
-    // Heights matched to KaTeX's katexImagesData (viewBoxHeight / 1000):
-    //   overbrace/underbrace: 548 → 0.548em
-    //   overbracket/underbracket: ~440 → 0.44em
-    //   overline: thin rule
-    let deco_h = match sym {
+/// Decoration box height (em·size) for a stretchy over/under symbol, matched to
+/// KaTeX's `katexImagesData` (viewBoxHeight / 1000). Shared by the legacy and
+/// arena over/under-script layouts so they stay in sync.
+fn stretchy_overunder_deco_h(sym: &str, size: f64) -> f64 {
+    match sym {
         "\u{23DE}" | "\u{23DF}" => 0.548 * size, // overbrace/underbrace
         "\u{23B4}" | "\u{23B5}" => 0.44 * size,  // overbracket/underbracket
-        "\u{203E}" => 0.08 * size,               // overline
+        "\u{203E}" => 0.08 * size,               // overline/underline (thin rule)
         _ => 0.40 * size,
-    };
+    }
+}
+
+fn make_stretchy_overunder_box(sym: &str, width: f64, size: f64) -> LayoutBox {
+    let deco_h = stretchy_overunder_deco_h(sym, size);
     LayoutBox {
         width,
         height: deco_h,
@@ -5330,7 +5333,7 @@ fn layout_overbrace_annotated_arena(
 
     let sym = "\u{23DE}";
     let deco_w = content_w.max(0.5 * size);
-    let deco_h = 0.40 * size;
+    let deco_h = stretchy_overunder_deco_h(sym, size);
     let brace_id = arena.alloc(ArenaLayoutBox {
         width: deco_w,
         height: deco_h,
@@ -5406,7 +5409,7 @@ fn layout_underbrace_annotated_arena(
 
     let sym = "\u{23DF}";
     let deco_w = content_w.max(0.5 * size);
-    let deco_h = 0.40 * size;
+    let deco_h = stretchy_overunder_deco_h(sym, size);
     let brace_id = arena.alloc(ArenaLayoutBox {
         width: deco_w,
         height: deco_h,
@@ -7071,12 +7074,7 @@ fn layout_overscript_arena(
     // Check if the over node is a stretchy decoration symbol
     let (over_id, is_line_accent) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
         let deco_w = base_w.max(0.5 * size);
-        // Overline U+203E: thin rule with minimal box height (KaTeX Rule 9)
-        let deco_h = if sym == "\u{203E}" {
-            0.08 * size
-        } else {
-            0.40 * size
-        };
+        let deco_h = stretchy_overunder_deco_h(sym, size);
         (
             arena.alloc(ArenaLayoutBox {
                 width: deco_w,
@@ -7191,7 +7189,7 @@ fn layout_underscript_arena(
 
     let under_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
         let deco_w = base_w.max(0.5 * size);
-        let deco_h = 0.40 * size;
+        let deco_h = stretchy_overunder_deco_h(sym, size);
         arena.alloc(ArenaLayoutBox {
             width: deco_w,
             height: deco_h,
@@ -7314,11 +7312,7 @@ fn layout_underover_arena(
 
     let (over_id, is_over_line) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
         let deco_w = base_w.max(0.5 * size);
-        let deco_h = if sym == "\u{203E}" {
-            0.08 * size
-        } else {
-            0.40 * size
-        };
+        let deco_h = stretchy_overunder_deco_h(sym, size);
         (
             arena.alloc(ArenaLayoutBox {
                 width: deco_w,
@@ -7335,11 +7329,7 @@ fn layout_underover_arena(
 
     let (under_id, is_under_line) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
         let deco_w = base_w.max(0.5 * size);
-        let deco_h = if sym == "\u{203E}" {
-            0.08 * size
-        } else {
-            0.40 * size
-        };
+        let deco_h = stretchy_overunder_deco_h(sym, size);
         (
             arena.alloc(ArenaLayoutBox {
                 width: deco_w,

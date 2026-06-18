@@ -60,7 +60,7 @@ fn legacy_vs_arena_render_divergence_baseline() {
     // (fixing the arena engine to match legacy, or vice versa) to unblock
     // retiring the legacy layout engine; update the numbers when it changes.
     const EXPECTED_CHECKED: usize = 135;
-    const EXPECTED_DIVERGENCES: usize = 14;
+    const EXPECTED_DIVERGENCES: usize = 8;
 
     let opts = RenderOptions::default();
     let mut checked = 0usize;
