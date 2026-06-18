@@ -178,19 +178,35 @@ impl ConvertResult {
         crate::render::raster::render_to_image_compact(&self.compact.expr, options)
     }
 
-    /// Access the parsed AST (materialized from compact arena representation).
+    /// Access the parsed AST as a legacy [`MathExpr`].
+    ///
+    /// **Cost:** this *materializes* a full heap `Box`/`Vec`/`String` tree from
+    /// the compact arena representation and is measurably expensive — roughly
+    /// 60% of a full parse for a typical formula. Throughput-sensitive callers
+    /// should prefer [`compact_expr`](Self::compact_expr) together with the
+    /// `*_compact` writers/renderers (e.g. [`to_mathml`](Self::to_mathml),
+    /// [`to_svg`](Self::to_svg)), which operate on the compact tree with no
+    /// legacy materialization.
     #[must_use]
     pub fn expr(&self) -> MathExpr {
         self.compact.expr.to_math_expr()
     }
 
-    /// Take ownership of the parsed AST.
+    /// Take ownership of the parsed AST as a legacy [`MathExpr`].
+    ///
+    /// Like [`expr`](Self::expr), this materializes a full heap tree; see that
+    /// method's cost note and prefer [`compact_expr`](Self::compact_expr) on hot
+    /// paths.
     #[must_use]
     pub fn into_expr(self) -> MathExpr {
         self.compact.expr.to_math_expr()
     }
 
     /// Access the compact arena-based expression directly (zero-copy).
+    ///
+    /// This is the fast path: it borrows the already-parsed compact tree with no
+    /// allocation. Pair it with the `*_compact` writers/renderers for the lowest
+    /// per-conversion cost.
     #[must_use]
     pub fn compact_expr(&self) -> &CompactExpr {
         &self.compact.expr

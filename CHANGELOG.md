@@ -63,14 +63,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   AST. (UnicodeMath remains a deliberately lossy linear format and is not
   asserted idempotent — see the test note.)
 
+### Performance
+
+- **The default compact SVG path now reuses a pooled layout arena.**
+  `render_to_svg_compact` / `render_to_svg_standalone_compact` (and therefore
+  `convert(.., Svg)`) borrow a per-thread `LayoutArena` instead of allocating a
+  fresh cold arena per call, so the default public API captures the
+  allocation-reuse benefit that previously required callers to manage their own
+  arena via `render_to_svg_compact_arena`. Output is byte-identical (guarded by
+  `render_to_svg_compact_arena_matches_heap`).
+- **Discoverability of the zero-copy fast path.** `ConvertResult::expr()` /
+  `into_expr()` now document that they materialize a full legacy `MathExpr`
+  heap tree (~60% of a parse) and steer throughput-sensitive callers to
+  `compact_expr()` + the `*_compact` writers/renderers.
+- **Known render shortcomings (documented, not yet fixed):** end-to-end SVG is
+  *emit-bound* (SVG emit is ~73% of render time, so the arena layout win is
+  small end-to-end); PNG/JPEG still lay out through the heap `LayoutBox` path
+  (`layout_expr_c`) rather than the arena; and the compact UnicodeMath writer is
+  ~30% slower than its (trivial) legacy counterpart due to the fixed
+  arena-indirection floor. Unifying the three layout engines onto the arena
+  path — the prerequisite for routing raster through it — is tracked as a
+  dedicated follow-up.
+
 ### Changed
 
 - **The SVG compact render path uses the arena layout engine.**
   `render_to_svg_compact` (and therefore `convert(.., Svg)`) builds layout
-  through the arena `LayoutBuilder`. The `~1.25–1.77×` figure reported by the
-  `layout` benchmark is **layout-only with a warm, reused arena**; the default
-  public API allocates a fresh `LayoutArena` per call (a cold arena), so the
-  end-to-end SVG speedup is small. Output is unchanged (guarded by an existing
+  through the arena `LayoutBuilder` (now over a pooled, reused arena — see
+  **Performance**). The `~1.25–1.77×` figure reported by the `layout` benchmark
+  is **layout-only**; because SVG emit dominates end-to-end render time, the
+  full-pipeline speedup is small regardless. Output is unchanged (guarded by a
   byte-equality test against the heap path).
 - **Note on raster:** PNG/JPEG (`to_png()` / `to_jpeg()`,
   `render_to_image_compact`) currently lay out through the heap `LayoutBox`

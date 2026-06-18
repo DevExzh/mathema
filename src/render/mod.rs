@@ -22,9 +22,38 @@ pub(crate) mod svg_writer;
 /// Embedded Latin Modern Math font data, shared between font-embed and raster features.
 pub(crate) static FONT_DATA: &[u8] = include_bytes!("fonts/LatinModernMath-Regular.otf");
 
+use std::cell::RefCell;
+
 use crate::ast::compact::CompactExpr;
 use crate::ast::{DisplayStyle, MathExpr};
 use crate::error::Result;
+
+thread_local! {
+    /// Per-thread reusable layout arena for the cold-by-default compact SVG
+    /// entry points. Reusing it lets the *default* public API capture the
+    /// warm-arena allocation-reuse benefit (the layout pass clears the arena on
+    /// entry, so reuse is always correct and output is byte-identical — guarded
+    /// by `render_to_svg_compact_arena_matches_heap`). A `try_borrow_mut`
+    /// fallback keeps the API correct even under (currently impossible)
+    /// re-entrant calls.
+    static LAYOUT_ARENA_POOL: RefCell<arena::LayoutArena> =
+        RefCell::new(arena::LayoutArena::new());
+}
+
+/// Run `f` with the pooled per-thread layout arena, falling back to a fresh
+/// arena if the pool is already borrowed (re-entrancy guard).
+fn with_pooled_arena<F>(f: F) -> Result<String>
+where
+    F: FnOnce(&mut arena::LayoutArena) -> Result<String>,
+{
+    LAYOUT_ARENA_POOL.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut arena) => f(&mut arena),
+        Err(_) => {
+            let mut arena = arena::LayoutArena::new();
+            f(&mut arena)
+        },
+    })
+}
 
 /// Options controlling SVG rendering output.
 #[derive(Debug, Clone)]
@@ -73,17 +102,15 @@ pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String>
 
 /// Render a compact math expression to an SVG string.
 ///
-/// Uses the arena-based layout engine. Note that this entry point allocates a
-/// fresh [`arena::LayoutArena`] per call (a *cold* arena), so its end-to-end
-/// speedup over the heap path is small; the `~1.25–1.77×` figure from the
-/// `layout` benchmark is **layout-only and assumes a warm, reused arena**.
-/// Output is identical to the heap path, guarded by
-/// `render_to_svg_compact_arena_matches_heap`. Callers that render many
-/// expressions should reuse a single [`arena::LayoutArena`] via
-/// [`render_to_svg_compact_arena`] to actually capture that speedup.
+/// Uses the arena-based layout engine, reusing a per-thread pooled
+/// [`arena::LayoutArena`] across calls so the default path captures the
+/// allocation-reuse benefit (rather than allocating a fresh cold arena each
+/// call). Output is identical to the heap path, guarded by
+/// `render_to_svg_compact_arena_matches_heap`. Callers that want full control
+/// over arena lifetime (e.g. cross-thread batching) can manage their own arena
+/// via [`render_to_svg_compact_arena`].
 pub fn render_to_svg_compact(expr: &CompactExpr, options: &RenderOptions) -> Result<String> {
-    let mut layout_arena = arena::LayoutArena::new();
-    render_to_svg_compact_arena(expr, options, &mut layout_arena)
+    with_pooled_arena(|layout_arena| render_to_svg_compact_arena(expr, options, layout_arena))
 }
 
 /// Render a compact expression to SVG using arena-based layout (zero heap alloc in layout pass).
@@ -130,15 +157,17 @@ pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Res
 /// Render a compact expression to a standalone SVG with embedded font glyph paths.
 ///
 /// Uses the arena-based layout engine (faster than the heap path, identical
-/// output). Callers rendering many expressions can reuse one
-/// [`arena::LayoutArena`] via [`render_to_svg_standalone_compact_arena`].
+/// output), reusing a per-thread pooled [`arena::LayoutArena`] across calls.
+/// Callers that want explicit arena control can use
+/// [`render_to_svg_standalone_compact_arena`].
 #[cfg(feature = "render")]
 pub fn render_to_svg_standalone_compact(
     expr: &CompactExpr,
     options: &RenderOptions,
 ) -> Result<String> {
-    let mut layout_arena = arena::LayoutArena::new();
-    render_to_svg_standalone_compact_arena(expr, options, &mut layout_arena)
+    with_pooled_arena(|layout_arena| {
+        render_to_svg_standalone_compact_arena(expr, options, layout_arena)
+    })
 }
 
 /// Render a compact expression to standalone SVG using arena-based layout.

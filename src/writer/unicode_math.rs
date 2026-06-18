@@ -331,6 +331,20 @@ fn needs_space_before(node: &MathNode) -> bool {
 
 // ── Compact arena-based write helpers ────────────────────────────────
 
+// Performance note: the compact UnicodeMath writer is measurably slower than
+// the legacy one (~147 ns vs ~111 ns on the quadratic formula), the only
+// compact writer that does not beat its legacy counterpart. This is *not*
+// avoidable redundant work: the dispatch (`match *arena.node(id)`) and the
+// parenthesization logic are identical to the other compact writers and to the
+// legacy path. The gap is the fixed arena-indirection cost (`arena.node` /
+// `arena.str_val` lookups) showing through on the *cheapest* writer — the
+// legacy UnicodeMath writer just appends `&str`s with almost no other work, so
+// it has nothing to amortize the indirection against, unlike the LaTeX / MathML
+// / OMML writers (whose legacy paths pay for escaping and tag construction).
+// The absolute cost is sub-150 ns; closing the gap would require restructuring
+// the recursive helpers to thread `&CompactNode` instead of `NodeId`, which is
+// not worth the churn/regression risk for this format.
+
 fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
