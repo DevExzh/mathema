@@ -292,12 +292,13 @@ const ALIGN_PAIR_GAP_EM: f64 = 1.0;
 /// Added after super/subscripts per TeXBook Rule 18.
 const SCRIPT_SPACE: f64 = 0.05;
 
-/// De-slant angle (degrees) applied to the Latin Modern Math `∂` (U+2202) glyph.
-/// LMMath draws `∂` with a pronounced forward (cursive) lean; MathJax renders a
-/// more upright glyph, so a small backward (positive `skewX`) counter-shear is
-/// applied in every raster/SVG backend. Centralized here so all backends agree
-/// (important for SVG↔PNG parity).
-pub(crate) const PARTIAL_DESLANT_DEG: f32 = 12.0;
+/// Slant angle (degrees) applied to the Latin Modern Math `∂` (U+2202) glyph via
+/// `skewX`. The bare LMMath outline is nearly upright, whereas MathJax renders
+/// `∂` with the slight *forward* italic lean standard in math typography (top
+/// leans right). A negative angle (same sign convention as the synthetic italic
+/// shear) produces that forward lean. Centralized here so every raster/SVG
+/// backend agrees (important for SVG↔PNG parity).
+pub(crate) const PARTIAL_DESLANT_DEG: f32 = -8.0;
 
 /// Detect whether columns follow an aligned `[R, L, R, L, ...]` pattern and
 /// return `true` if so.  Used to switch from a uniform column gap to the

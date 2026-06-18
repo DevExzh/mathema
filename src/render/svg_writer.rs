@@ -471,8 +471,8 @@ fn emit_glyph(
                 color = XmlAttrEscape(&options.fg_color),
             );
         } else if ch == '\u{2202}' {
-            // De-slant the cursive Latin Modern Math `∂` toward MathJax's more
-            // upright glyph. Mirrors the raster backend's counter-shear so the
+            // Give the nearly-upright Latin Modern Math `∂` the slight forward
+            // italic lean MathJax uses. Mirrors the raster backend's shear so the
             // SVG and PNG outputs stay in parity.
             let _ = write!(
                 svg,

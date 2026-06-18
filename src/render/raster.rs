@@ -512,7 +512,7 @@ fn is_large_op_char(ch: char) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-/// Counter-shear (tangent) applied to `∂` to undo the font's forward lean.
+/// Forward italic shear (tangent) applied to `∂` to match MathJax's slant.
 #[inline]
 fn partial_deslant_skew() -> f32 {
     super::layout::PARTIAL_DESLANT_DEG.to_radians().tan()
@@ -609,9 +609,9 @@ fn draw_glyph(
         // embedded-SVG emitter, which applies `skewX(-12)` about the baseline. Without this
         // the two paths slant identically but offset horizontally, diverging in PNG vs SVG.
         //
-        // Separately, the Latin Modern Math `∂` (U+2202) outline is drawn with a
-        // pronounced forward (cursive) lean; MathJax renders a more upright glyph.
-        // Apply a small counter-shear to bring it toward the upright style.
+        // Separately, the Latin Modern Math `∂` (U+2202) outline is nearly
+        // upright; MathJax gives `∂` the slight forward italic lean standard in
+        // math typography. Apply that forward shear (negative angle).
         let skew = if use_shear {
             -0.21_f32
         } else if used_font == FontId::Math && render_ch == '\u{2202}' {
