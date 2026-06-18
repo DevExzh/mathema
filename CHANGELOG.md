@@ -131,6 +131,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Arena renderer no longer double-italicizes math-alphabet styles.** In the
+  default compact/arena render path, styled italic content (`\mathit{x}`,
+  `\mathnormal{x}`, and the italic-fallback letters inside `\mathbb`/`\mathcal`/
+  … groups) was both remapped to its italic Unicode codepoint (𝑥, U+1D465) *and*
+  given a `font-style="italic"` attribute, applying a second synthetic slant to
+  an already-italic glyph. The styled path now decides faux-italic exactly like
+  the normal identifier path (`is_math_italic_char` on the remapped char), so
+  `\mathit{x}` matches a plain italic `x` and the legacy engine. (This narrows
+  the legacy↔arena divergence within affected formulas, though the coarse
+  `legacy_vs_arena_render_divergence_baseline` formula count is unchanged because
+  those corpus formulas also exercise other still-diverging constructs.)
 - **AST variant count corrected from 27 to 30.** The `MathNode` doc comment,
   `README`, and the constructibility test (`all_27_variants_constructible`) all
   understated the enum, omitting `Rule`, `RaiseBox`, and `MathAtom`. The count

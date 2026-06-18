@@ -8314,18 +8314,17 @@ fn layout_styled_arena(
                         .chars()
                         .map(|c| styled_char(c, style).unwrap_or(c))
                         .collect();
-                    let styled_italic = matches!(
-                        style,
-                        TextStyle::Italic
-                            | TextStyle::BoldItalic
-                            | TextStyle::SansSerifItalic
-                            | TextStyle::SansSerifBoldItalic
-                    );
+                    // The style is already baked into the remapped Unicode
+                    // codepoint (e.g. `\mathit{x}` → U+1D465 𝑥), so decide
+                    // faux-italic exactly as a bare identifier would rather than
+                    // forcing it on — otherwise an already-italic glyph would be
+                    // double-italicized (a spurious `font-style="italic"`). This
+                    // mirrors the normal identifier path and the legacy engine.
                     if mapped.chars().count() == 1 {
                         let ch = mapped.chars().next().expect("non-empty checked");
-                        alloc_glyph(arena, ch, ctx.size(), styled_italic)
+                        alloc_glyph(arena, ch, ctx.size(), is_math_italic_char(ch))
                     } else {
-                        layout_text_run_arena(&mapped, arena, ctx, styled_italic, None)
+                        layout_text_run_arena(&mapped, arena, ctx, false, None)
                     }
                 }
             },
