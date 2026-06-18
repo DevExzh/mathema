@@ -8292,12 +8292,32 @@ fn layout_styled_arena(
         return arena.alloc(ArenaLayoutBox::kern(0.0));
     }
 
-    let children_start = arena.begin_children();
+    // Phase 1: lay out every child first. We must NOT hold `begin_children`
+    // open here: a composite child (e.g. an `Accent` taking the `_` arm below)
+    // lays itself out via `layout_node_arena`, which pushes ITS OWN children
+    // onto the shared, append-only children buffer. If our span were already
+    // open, `finish_children` would wrongly capture those grandchildren too and
+    // the wrapper would render its content twice. Mirror the normal HBox builder
+    // (two-phase: lay out, then push).
+    let mut laid_out: Vec<(LayoutBoxId, f64)> = Vec::with_capacity(ids.len());
     let mut cursor_x = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
+    let mut prev_atom: Option<AtomType> = None;
 
     for &id in ids {
+        // Inter-atom spacing (e.g. medium space around a binary `+`), matching
+        // the legacy styled-row layout and the normal arena row builder.
+        let raw_atom = spacing::classify_node_c(ast, id);
+        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+        let cur_atom = adj_cur.expect("passed Some");
+        if let Some(prev) = adj_prev {
+            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+            if space > 0.0 {
+                cursor_x += space * ctx.size();
+            }
+        }
+
         let lm_font = fonts_registry::text_font_for_style(style);
         let layout_id = match *ast.node(id) {
             CompactNode::Identifier(sid) => {
@@ -8346,14 +8366,21 @@ fn layout_styled_arena(
         max_height = max_height.max(b.height);
         max_depth = max_depth.max(b.depth);
         let w = b.width;
+        laid_out.push((layout_id, cursor_x));
+        cursor_x += w;
+        prev_atom = Some(cur_atom);
+    }
+
+    // Phase 2: now that all sub-layouts are done, capture exactly this box's
+    // direct children.
+    let children_start = arena.begin_children();
+    for &(layout_id, dx) in &laid_out {
         arena.push_child(ArenaPositionedBox {
-            dx: cursor_x,
+            dx,
             dy: 0.0,
             id: layout_id,
         });
-        cursor_x += w;
     }
-
     let children = arena.finish_children(children_start);
     arena.alloc(ArenaLayoutBox {
         width: cursor_x,
