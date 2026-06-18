@@ -295,7 +295,7 @@ static GLYPH_TABLE: &[(char, GlyphMetrics)] = &[
     ('\u{21D4}', GlyphMetrics::new(0.511, 0.011, 1.000, 0.0)), // ⇔ Leftrightarrow
     // Mathematical operators (U+2200–U+222E)
     ('\u{2200}', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)), // ∀ forall
-    ('\u{2202}', GlyphMetrics::new(0.694, 0.0, 0.500, 0.0)), // ∂ partial
+    ('\u{2202}', GlyphMetrics::new(0.694, 0.0, 0.620, 0.0)), // ∂ partial (wider advance for trailing space, cf. KaTeX 0.531 + italic)
     ('\u{2203}', GlyphMetrics::new(0.694, 0.0, 0.556, 0.0)), // ∃ exists
     ('\u{2205}', GlyphMetrics::new(0.772, 0.078, 0.500, 0.0)), // ∅ emptyset
     ('\u{2207}', GlyphMetrics::new(0.683, 0.0, 0.833, 0.0)), // ∇ nabla
