@@ -197,11 +197,66 @@ impl CompactParser {
     }
 
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // In argument position (after √/∛ or ^/_), a parenthesized group is a
+        // grouping delimiter, not literal parentheses (UTN#28): absorb the parens
+        // and return the inner content. This keeps the writer's `√(x)` / `x^(a+b)`
+        // wrapping invertible (otherwise re-reading would nest a literal Fenced
+        // and the next write would double the parentheses).
+        if input.starts_with('(')
+            && let Ok((rest, id)) = self.parse_absorbing_paren_group(input)
+        {
+            return Ok((rest, id));
+        }
         try_alt!(self, input, parse_group, parse_single_char_node);
         Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
         )))
+    }
+
+    /// Parse `(...)` in argument position, returning the inner content directly
+    /// (the parentheses are absorbed as a grouping delimiter, not kept as a
+    /// literal `Fenced`).
+    fn parse_absorbing_paren_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        if !input.starts_with('(') {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        }
+        let mut remaining = &input['('.len_utf8()..];
+        let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
+        loop {
+            if remaining.starts_with(')') {
+                break;
+            }
+            match self.parse_element(remaining) {
+                Ok((rest, id)) => {
+                    children.push(id);
+                    remaining = rest;
+                },
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                Err(_) => break,
+            }
+        }
+        // Require a closing paren; otherwise this is not a balanced group and the
+        // caller should fall back to literal handling.
+        let (remaining, _) = satisfy(|c| c == ')')(remaining)?;
+        // An empty `()` has no sensible "inner content"; keep it as a literal
+        // empty fence so it is not silently dropped.
+        if children.is_empty() {
+            let open = self.arena.push_str("(");
+            let close = self.arena.push_str(")");
+            let content_span = self.arena.push_children(&[]);
+            let id = self.arena.push_node(CompactNode::Fenced {
+                open,
+                close,
+                content: content_span,
+            });
+            return Ok((remaining, id));
+        }
+        let content_id = self.flatten_single(&children);
+        Ok((remaining, content_id))
     }
 
     fn parse_atom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -764,6 +819,23 @@ mod tests {
     fn sqrt() {
         let nodes = parse("\u{221A}x");
         assert!(matches!(&nodes[0], MathNode::Sqrt(_)));
+    }
+
+    #[test]
+    fn sqrt_absorbs_parenthesized_argument() {
+        // `√(x+y)`: the parentheses are a grouping delimiter (UTN#28), so the
+        // radicand is the inner content, NOT a literal Fenced of `(x+y)`.
+        let nodes = parse("\u{221A}(x+y)");
+        match &nodes[0] {
+            MathNode::Sqrt(inner) => assert!(
+                !matches!(inner.as_ref(), MathNode::Fenced { .. }),
+                "radicand parens should be absorbed, got {inner:?}"
+            ),
+            other => panic!("expected Sqrt, got {other:?}"),
+        }
+        // Bare parentheses (not in argument position) stay literal.
+        let lit = parse("(x)");
+        assert!(matches!(&lit[0], MathNode::Fenced { .. }));
     }
 
     #[test]

@@ -73,11 +73,14 @@ pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String>
 
 /// Render a compact math expression to an SVG string.
 ///
-/// Uses the arena-based layout engine (measured ~1.25–1.77× faster than the
-/// heap layout path); output is identical, guarded by
+/// Uses the arena-based layout engine. Note that this entry point allocates a
+/// fresh [`arena::LayoutArena`] per call (a *cold* arena), so its end-to-end
+/// speedup over the heap path is small; the `~1.25–1.77×` figure from the
+/// `layout` benchmark is **layout-only and assumes a warm, reused arena**.
+/// Output is identical to the heap path, guarded by
 /// `render_to_svg_compact_arena_matches_heap`. Callers that render many
-/// expressions can reuse a single [`arena::LayoutArena`] via
-/// [`render_to_svg_compact_arena`] to avoid re-allocating it each call.
+/// expressions should reuse a single [`arena::LayoutArena`] via
+/// [`render_to_svg_compact_arena`] to actually capture that speedup.
 pub fn render_to_svg_compact(expr: &CompactExpr, options: &RenderOptions) -> Result<String> {
     let mut layout_arena = arena::LayoutArena::new();
     render_to_svg_compact_arena(expr, options, &mut layout_arena)

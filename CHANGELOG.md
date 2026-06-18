@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixed a stack-overflow denial-of-service in the MTEF reader.** Deeply
+  nested MTEF input (PILE/template/line recursion) had no parse-depth limit and
+  could abort the process with a stack overflow before the post-parse
+  `validate_compact_depth` ran — a ~70 KB input (well inside the 4 MiB budget)
+  was enough. The reader now enforces `MAX_PARSE_DEPTH = 128` during parsing,
+  matching the other four readers, and rejects deeper input with an error.
+- **`MtefReader::parse_bytes` now honors `Config::max_input_bytes`.** The public
+  raw-bytes entry point previously bypassed the input-size limit; oversized byte
+  slices are now rejected with `Error::InputTooLarge`.
 - **Fixed a remotely-triggerable denial-of-service in macro expansion.**
   `\newcommand`/`\def` bodies that expand to a self-replicating macro (e.g.
   `\newcommand{\a}{\a\a}\a`) previously grew the working string exponentially —
@@ -40,6 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cargo doc --no-deps --all-features` with `-D warnings`.
 - **Crate-level `//!` documentation** on `lib.rs` with a runnable quick-start
   example and a feature-flag overview.
+- **`wasm32` and `cargo audit` CI jobs:** a new job builds
+  `--target wasm32-unknown-unknown --no-default-features --features wasm`, and
+  another runs `cargo audit` against the dependency tree.
+- **MTEF `tmBOX` and `tmSTRIKE` support (reader + writer).** The reader now maps
+  `tmBOX` → `Boxed` and `tmSTRIKE` → `Cancel` (with stroke direction from the
+  variation bits) instead of warning-and-flattening, and the writer emits both
+  templates for `Boxed`/`Cancel` nodes instead of silently dropping the box /
+  cross-out. Reader coverage is now 35 of 38 selectors.
+- **Idempotent round-trip proptests for OMML and MTEF**, plus a `fuzz_omml_roundtrip`
+  target; the proptest AST generator now covers all 30 `MathNode` variants and
+  all 14 text styles, so the "writers never panic" properties exercise the full
+  AST. (UnicodeMath remains a deliberately lossy linear format and is not
+  asserted idempotent — see the test note.)
 
 ### Changed
 
@@ -59,6 +81,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **AST variant count corrected from 27 to 30.** The `MathNode` doc comment,
+  `README`, and the constructibility test (`all_27_variants_constructible`) all
+  understated the enum, omitting `Rule`, `RaiseBox`, and `MathAtom`. The count
+  is now 30 and the renamed `all_30_variants_constructible` test constructs all
+  of them.
+- **UnicodeMath now absorbs parenthesized arguments after `√`/`∛`/scripts.** Per
+  UTN#28, `√(x+y)` and `x^(a+b)` use the parentheses as a grouping delimiter;
+  the reader previously kept them as a literal `Fenced`, so re-serializing
+  double-wrapped them (`√(x)` → `√((x))`). The parentheses are now absorbed.
+- **`fuzz_mtef` feeds raw bytes** through `parse_bytes` instead of requiring
+  valid UTF-8, so the fuzzer exercises the binary parser rather than mostly the
+  hex-decode error path.
+- **`render_to_svg_compact` rustdoc** no longer advertises the bare
+  `~1.25–1.77×` figure; it now matches the CHANGELOG's corrected, scoped wording
+  (layout-only, warm-arena-only; the default cold-arena path gains little).
+- **The infallible `preprocess` is now `pub(crate)`** (removed from the public
+  API) with a doc note that it is not DoS-safe and that untrusted input must use
+  the fallible `preprocess_cow`.
 - **MTEF reader no longer silently drops template-based accents and limits.**
   The `tmHAT`, `tmTILDE`, `tmVEC` (vector, incl. direction/harpoon/under
   variations), `tmARC`, `tmLIM` (lim with lower/upper limit slots), and

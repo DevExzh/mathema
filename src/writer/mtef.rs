@@ -382,10 +382,24 @@ fn write_node(buf: &mut Vec<u8>, node: &MathNode) -> Result<()> {
             write_node(buf, inner)?;
         },
         MathNode::Boxed { content: inner, .. } => {
-            write_node(buf, inner)?;
+            // tmBOX (TBoxBoxClass): a single boxed slot. MTEF has no slot for
+            // bg/border color, so those are dropped (lossy, but the box is kept).
+            write_tag_options(buf, TMPL, 0);
+            buf.push(37); // tmBOX
+            buf.push(0); // variation
+            buf.push(0); // template options
+            write_line_slot(buf, inner)?;
+            buf.push(END);
         },
-        MathNode::Cancel { content, .. } => {
-            write_node(buf, content)?;
+        MathNode::Cancel { content, stroke } => {
+            // tmSTRIKE (StrikeBoxClass): a single crossed-out slot; the variation
+            // bits select the stroke direction.
+            write_tag_options(buf, TMPL, 0);
+            buf.push(36); // tmSTRIKE
+            buf.push(strike_stroke_to_variation(*stroke));
+            buf.push(0); // template options
+            write_line_slot(buf, content)?;
+            buf.push(END);
         },
         MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
             write_node(buf, content)?;
@@ -527,6 +541,19 @@ fn resolve_to_mtef(ch: char) -> (u8, char) {
         _ if ch.is_ascii_alphabetic() => (TF_VARIABLE, ch),
         _ if ch.is_ascii_digit() => (TF_NUMBER, ch),
         _ => (TF_VARIABLE, ch),
+    }
+}
+
+/// Map a [`StrokeKind`] to MTEF `tmSTRIKE` variation bits
+/// (`tvST_HORIZ`/`tvST_UP`/`tvST_DOWN`). Inverse of `strike_variation_to_stroke`
+/// in the reader. `Vertical` has no MTEF representation and degrades to a
+/// horizontal strike.
+fn strike_stroke_to_variation(stroke: StrokeKind) -> u8 {
+    match stroke {
+        StrokeKind::Forward => 0x02,                           // tvST_UP
+        StrokeKind::Backward => 0x04,                          // tvST_DOWN
+        StrokeKind::Cross => 0x02 | 0x04,                      // tvST_UP | tvST_DOWN
+        StrokeKind::Horizontal | StrokeKind::Vertical => 0x01, // tvST_HORIZ
     }
 }
 
@@ -865,10 +892,20 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             write_node_c(buf, arena, inner)?;
         },
         CompactNode::Boxed { content: inner, .. } => {
-            write_node_c(buf, arena, inner)?;
+            write_tag_options(buf, TMPL, 0);
+            buf.push(37); // tmBOX
+            buf.push(0); // variation
+            buf.push(0); // template options
+            write_line_slot_c(buf, arena, inner)?;
+            buf.push(END);
         },
-        CompactNode::Cancel { content, .. } => {
-            write_node_c(buf, arena, content)?;
+        CompactNode::Cancel { content, stroke } => {
+            write_tag_options(buf, TMPL, 0);
+            buf.push(36); // tmSTRIKE
+            buf.push(strike_stroke_to_variation(stroke));
+            buf.push(0); // template options
+            write_line_slot_c(buf, arena, content)?;
+            buf.push(END);
         },
         CompactNode::Scaled { content, .. } => {
             write_node_c(buf, arena, content)?;

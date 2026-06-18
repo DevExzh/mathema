@@ -44,17 +44,23 @@ fn expansion_cap(input_len: usize) -> usize {
 
 /// Main entry point: strip comments, extract definitions, expand macros.
 ///
-/// Returns the original input unchanged if macro expansion exceeds the size
-/// limit; callers that need to surface the error use [`preprocess_cow`].
-pub fn preprocess(input: &str) -> String {
+/// **Not DoS-safe.** On macro-expansion overflow this returns the original
+/// input unchanged, silently swallowing the [`preprocess_cow`] error. It is
+/// `pub(crate)` (not part of the public API) and used only by this module's
+/// tests; all crate parsing goes through the fallible [`preprocess_cow`], which
+/// surfaces `LatexParseError::ExpansionLimit`. Callers that accept untrusted
+/// input must use [`preprocess_cow`].
+#[allow(dead_code)] // Infallible counterpart to `preprocess_cow`; exercised by this module's tests.
+pub(crate) fn preprocess(input: &str) -> String {
     match preprocess_cow(input) {
         Ok(cow) => cow.into_owned(),
         Err(_) => input.to_owned(),
     }
 }
 
-/// Like [`preprocess`] but borrows the input on the common fast path (no macros
-/// or comments), avoiding an allocation + full-string copy per parse.
+/// Like the (crate-private) `preprocess` but borrows the input on the common
+/// fast path (no macros or comments), avoiding an allocation + full-string copy
+/// per parse.
 ///
 /// Returns `Err(limit)` when macro expansion would exceed `limit` bytes,
 /// protecting against exponential-blowup denial-of-service inputs.

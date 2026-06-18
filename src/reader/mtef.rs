@@ -44,6 +44,18 @@ impl MtefReader {
     }
 
     fn parse_bytes_compact(bytes: &[u8], config: &Config) -> Result<CompactParseResult> {
+        // Enforce the configured input-size limit on the raw byte length. The
+        // hex-string entry point already checks the (larger) encoded input, but
+        // the public `parse_bytes`/`parse_bytes_compact` paths take bytes directly
+        // and must be guarded too.
+        if let Some(limit) = config.max_input_bytes
+            && bytes.len() > limit
+        {
+            return Err(Error::InputTooLarge {
+                size: bytes.len(),
+                limit,
+            });
+        }
         if bytes.is_empty() {
             return Ok(CompactParseResult::new(CompactExpr::new(
                 AstArena::new(),
@@ -211,6 +223,13 @@ const TF_VECTOR: u8 = 7;
 const TF_NUMBER: u8 = 8;
 const TF_MTEXTRA: u8 = 11;
 
+/// Maximum structural nesting depth accepted while parsing MTEF. Mirrors the
+/// `MAX_PARSE_DEPTH` guards in the LaTeX/MathML/OMML/UnicodeMath readers and the
+/// `MAX_AST_DEPTH` validators, and prevents adversarial deeply-nested input
+/// (PILE/template/line recursion) from overflowing the stack during parsing —
+/// before the post-parse `validate_compact_depth` ever runs.
+const MAX_PARSE_DEPTH: u32 = 128;
+
 struct MtefCompactParser<'a> {
     data: &'a [u8],
     pos: usize,
@@ -220,6 +239,7 @@ struct MtefCompactParser<'a> {
     fonts: Vec<String>,
     arena: AstArena,
     diagnostics: Vec<Diagnostic>,
+    depth: u32,
 }
 
 impl<'a> MtefCompactParser<'a> {
@@ -233,6 +253,7 @@ impl<'a> MtefCompactParser<'a> {
             fonts: Vec::new(),
             arena: AstArena::new(),
             diagnostics: Vec::new(),
+            depth: 0,
         }
     }
 
@@ -370,6 +391,13 @@ impl<'a> MtefCompactParser<'a> {
     }
 
     fn parse_object_list(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(Error::Unsupported(format!(
+                "maximum MTEF nesting depth ({MAX_PARSE_DEPTH}) exceeded"
+            )));
+        }
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             if self.remaining() == 0 {
@@ -432,6 +460,7 @@ impl<'a> MtefCompactParser<'a> {
                 },
             }
         }
+        self.depth -= 1;
         Ok(nodes)
     }
 
@@ -900,6 +929,18 @@ impl<'a> MtefCompactParser<'a> {
             // Accents over a single slot: vector / tilde / hat / arc
             // (records5 selectors 31-34, HatBoxClass)
             31..=34 => Ok(self.accent_template_to_compact(selector, variation, slots)),
+            // Overstrike / cross-out (records5 selector 36, StrikeBoxClass)
+            36 => Ok(self.strike_template_to_compact(variation, slots)),
+            // Box (records5 selector 37, TBoxBoxClass)
+            37 => {
+                let content = self.get_slot(&mut slots, 0);
+                let empty = self.arena.push_str("");
+                Ok(self.arena.push_node(CompactNode::Boxed {
+                    content,
+                    bg_color: empty,
+                    border_color: empty,
+                }))
+            },
             // Legacy slash fraction from earlier in-tree writer builds.
             40 => {
                 let num = self.get_slot(&mut slots, 0);
@@ -1060,6 +1101,19 @@ impl<'a> MtefCompactParser<'a> {
 
     fn slot_is_empty(slots: &[SmallVec<[NodeId; 8]>], i: usize) -> bool {
         i >= slots.len() || slots[i].is_empty()
+    }
+
+    /// StrikeBoxClass (tmSTRIKE): a single main slot crossed out. The variation
+    /// bits (`tvST_HORIZ`/`tvST_UP`/`tvST_DOWN`) select the stroke direction.
+    fn strike_template_to_compact(
+        &mut self,
+        variation: u16,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> NodeId {
+        let content = self.get_slot(&mut slots, 0);
+        let stroke = strike_variation_to_stroke(variation);
+        self.arena
+            .push_node(CompactNode::Cancel { stroke, content })
     }
 
     fn script_template_to_compact(
@@ -1288,6 +1342,21 @@ impl<'a> MtefCompactParser<'a> {
 }
 
 // --- Free helper functions (no arena needed) ---
+
+/// Map MTEF `tmSTRIKE` variation bits (`tvST_HORIZ`/`tvST_UP`/`tvST_DOWN`) to a
+/// [`StrokeKind`]. Kept in sync with `strike_stroke_to_variation` in the writer.
+fn strike_variation_to_stroke(variation: u16) -> StrokeKind {
+    let horiz = variation & 0x0001 != 0;
+    let up = variation & 0x0002 != 0;
+    let down = variation & 0x0004 != 0;
+    match (horiz, up, down) {
+        (true, _, _) => StrokeKind::Horizontal,
+        (false, true, true) => StrokeKind::Cross,
+        (false, false, true) => StrokeKind::Backward,
+        // up-only, or nothing set → forward slash (lower-left to upper-right).
+        (false, true, false) | (false, false, false) => StrokeKind::Forward,
+    }
+}
 
 fn fence_delimiters(selector: u8, variation: u16) -> (&'static str, &'static str) {
     let (open, close) = match selector {
@@ -1757,12 +1826,12 @@ mod tests {
 
     #[test]
     fn unsupported_template_warns_and_preserves_content() {
-        // tmSTRIKE (selector 36) has no dedicated handler: content must be
+        // tmJSTATUS (selector 35) has no dedicated handler: content must be
         // preserved AND a warning must be emitted (no silent data loss).
         let data = make_mtef_v5(&[
             TMPL,
             0x00,
-            36,
+            35,
             0x00,
             0x00,
             LINE,
@@ -1780,8 +1849,8 @@ mod tests {
             result
                 .diagnostics
                 .iter()
-                .any(|d| { d.kind == DiagnosticKind::Warning && d.message.contains("36") }),
-            "unsupported selector 36 must emit a warning, got {:?}",
+                .any(|d| { d.kind == DiagnosticKind::Warning && d.message.contains("35") }),
+            "unsupported selector 35 must emit a warning, got {:?}",
             result.diagnostics
         );
         // Content ('x') is still preserved despite the dropped template.
@@ -1790,6 +1859,107 @@ mod tests {
             flat.contains("\"x\""),
             "content should survive flattening: {flat}"
         );
+    }
+
+    /// Build `depth` nested single-row PILEs, innermost row empty. Each PILE
+    /// level adds one `parse_object_list` recursion frame.
+    fn nested_pile_bytes(depth: usize) -> Vec<u8> {
+        let mut body: Vec<u8> = Vec::new();
+        for _ in 0..depth {
+            let mut layer = vec![PILE, 0x00, 0x00, LINE, 0x00];
+            layer.extend_from_slice(&body);
+            layer.push(END); // close the LINE's object list
+            layer.push(END); // close the PILE's rows
+            body = layer;
+        }
+        body
+    }
+
+    #[test]
+    fn deeply_nested_pile_is_rejected_not_stack_overflow() {
+        // Shallow nesting (well under the depth cap) parses fine.
+        let shallow = make_mtef_v5(&nested_pile_bytes(50));
+        assert!(
+            MtefReader::parse_bytes(&shallow, &Config::default()).is_ok(),
+            "depth-50 nested PILE should parse"
+        );
+        // Deep nesting must be rejected gracefully — not abort the process via a
+        // stack overflow (the revision-2 [High] DoS finding).
+        let deep = make_mtef_v5(&nested_pile_bytes(200));
+        let result = MtefReader::parse_bytes(&deep, &Config::default());
+        assert!(
+            result.is_err(),
+            "depth-200 nested PILE must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn parse_bytes_enforces_input_size_limit() {
+        let big = vec![0u8; 200];
+        let config = Config {
+            max_input_bytes: Some(64),
+            ..Config::default()
+        };
+        let result = MtefReader::parse_bytes(&big, &config);
+        assert!(
+            matches!(result, Err(Error::InputTooLarge { .. })),
+            "oversized raw bytes must be rejected by parse_bytes, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn box_template_builds_boxed() {
+        // tmBOX (selector 37) over a single slot.
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            37,
+            0x00,
+            0x00, // box template
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x78,
+            0x00,
+            END, // x
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        assert!(
+            matches!(&expr.nodes[0], MathNode::Boxed { .. }),
+            "tmBOX should build a Boxed node, got {:?}",
+            expr.nodes
+        );
+    }
+
+    #[test]
+    fn strike_template_builds_cancel() {
+        // tmSTRIKE (selector 36), variation 0x02 (tvST_UP) → forward slash.
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            36,
+            0x02,
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x78,
+            0x00,
+            END, // x
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        match &expr.nodes[0] {
+            MathNode::Cancel { stroke, .. } => {
+                assert_eq!(*stroke, StrokeKind::Forward);
+            },
+            other => panic!("expected Cancel for tmSTRIKE, got {other:?}"),
+        }
     }
 
     #[test]

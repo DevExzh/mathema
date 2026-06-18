@@ -21,7 +21,7 @@ pub enum DisplayStyle {
     Inline,
 }
 
-/// The core math AST node. 27 variants covering the union of all target formats.
+/// The core math AST node. 30 variants covering the union of all target formats.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MathNode {
@@ -722,7 +722,7 @@ mod tests {
     }
 
     #[test]
-    fn all_27_variants_constructible() {
+    fn all_30_variants_constructible() {
         // Verify every variant can be constructed without panic
         let nodes: Vec<MathNode> = vec![
             MathNode::Number("1".into()),
@@ -824,7 +824,22 @@ mod tests {
                 script: Box::new(MathNode::Identifier("S".into())),
                 script_script: Box::new(MathNode::Identifier("SS".into())),
             },
+            MathNode::Rule {
+                width: Rational::new(1, 2),
+                height: Rational::new(2, 1),
+                lift: Rational::new(0, 1),
+            },
+            MathNode::RaiseBox {
+                shift: Rational::new(1, 4),
+                height: None,
+                depth: None,
+                content: Box::new(MathNode::Identifier("x".into())),
+            },
+            MathNode::MathAtom {
+                atom_type: MathAtomType::Op,
+                content: Box::new(MathNode::Identifier("f".into())),
+            },
         ];
-        assert_eq!(nodes.len(), 27);
+        assert_eq!(nodes.len(), 30);
     }
 }
