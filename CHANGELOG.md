@@ -72,18 +72,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocation-reuse benefit that previously required callers to manage their own
   arena via `render_to_svg_compact_arena`. Output is byte-identical (guarded by
   `render_to_svg_compact_arena_matches_heap`).
+- **PNG/JPEG rasterization now uses the arena layout engine.**
+  `render_to_image_compact` (and therefore `to_png()` / `to_jpeg()`) lays out
+  through the compact `LayoutBuilder` + `LayoutArena` and rasterizes directly
+  from the arena (`rasterize_layout_arena` / `emit_raster_box_arena`), instead
+  of the separate compact→heap `layout_expr_c` engine. Raster and SVG now share
+  a single layout pass, eliminating the SVG/raster layout-divergence risk; the
+  compact→heap layout engine is now production-dead (retained only for
+  `#[cfg(test)]` heap-vs-arena equality guards). Output is byte-identical to the
+  old heap raster path (guarded by `arena_raster_matches_heap_quadratic`).
 - **Discoverability of the zero-copy fast path.** `ConvertResult::expr()` /
   `into_expr()` now document that they materialize a full legacy `MathExpr`
   heap tree (~60% of a parse) and steer throughput-sensitive callers to
   `compact_expr()` + the `*_compact` writers/renderers.
 - **Known render shortcomings (documented, not yet fixed):** end-to-end SVG is
   *emit-bound* (SVG emit is ~73% of render time, so the arena layout win is
-  small end-to-end); PNG/JPEG still lay out through the heap `LayoutBox` path
-  (`layout_expr_c`) rather than the arena; and the compact UnicodeMath writer is
-  ~30% slower than its (trivial) legacy counterpart due to the fixed
-  arena-indirection floor. Unifying the three layout engines onto the arena
-  path — the prerequisite for routing raster through it — is tracked as a
-  dedicated follow-up.
+  small end-to-end); and the compact UnicodeMath writer is ~30% slower than its
+  (trivial) legacy counterpart due to the fixed arena-indirection floor.
+  Collapsing the remaining heap layout engines into the single arena engine
+  (now that raster no longer needs the heap path) and profiling/optimizing SVG
+  emit are tracked as dedicated follow-ups.
 
 ### Changed
 
@@ -94,11 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is **layout-only**; because SVG emit dominates end-to-end render time, the
   full-pipeline speedup is small regardless. Output is unchanged (guarded by a
   byte-equality test against the heap path).
-- **Note on raster:** PNG/JPEG (`to_png()` / `to_jpeg()`,
-  `render_to_image_compact`) currently lay out through the heap `LayoutBox`
-  path (`layout_expr_c`) and do **not** yet go through the arena, so they do not
-  receive the arena layout's reuse benefit. The parse/convert pipeline's compact
-  speedups (parse `~1.88×`, writers `2.5–4.7×`) are unaffected and measured
+- **Raster shares the SVG arena layout.** PNG/JPEG (`to_png()` / `to_jpeg()`,
+  `render_to_image_compact`) now lay out through the same compact arena
+  `LayoutBuilder` as SVG (see **Performance**), rather than a separate
+  compact→heap engine. The parse/convert pipeline's compact speedups (parse
+  `~1.88×`, writers `2.5–4.7×`) are unaffected and measured
   separately.
 
 ### Fixed

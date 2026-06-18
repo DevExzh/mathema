@@ -9,6 +9,7 @@ use fontdue::{Font, FontSettings};
 use tiny_skia::{Color, Paint, PathBuilder, Pixmap, PixmapPaint, Rect, Stroke, Transform};
 
 use super::RenderOptions;
+use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
 use super::fonts_registry::{self, FontId};
 use super::layout::{BoxKind, LayoutBox};
 use super::style::MathStyle;
@@ -111,8 +112,11 @@ pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> R
     } else {
         MathStyle::Text
     };
-    let root = super::layout::layout_expr_c(expr, style, &options.render);
-    rasterize_layout(&root, options)
+    let mut layout_arena = crate::render::arena::LayoutArena::new();
+    let builder = super::layout::LayoutBuilder::new(style, &options.render);
+    layout_arena.clear();
+    let root = builder.layout(&mut layout_arena, expr);
+    rasterize_layout_arena(&layout_arena, root, options)
 }
 
 /// Recursively compute the horizontal extent of all visible content in a layout
@@ -225,9 +229,76 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
     encode_image(&pixmap, options)
 }
 
-// ---------------------------------------------------------------------------
-// Recursive tree walker
-// ---------------------------------------------------------------------------
+/// Arena-based counterpart of [`rasterize_layout`]. Produces byte-identical
+/// output for the same layout geometry, traversing the arena instead of the
+/// heap `LayoutBox` tree.
+fn rasterize_layout_arena(
+    arena: &LayoutArena,
+    root: LayoutBoxId,
+    options: &RasterOptions,
+) -> Result<Vec<u8>> {
+    let em = options.render.font_size_px * options.scale;
+    let padding = 2.0 * options.scale; // 2px padding at 1x
+
+    // Guard against excessive dimensions that could cause OOM
+    const MAX_PIXMAP_DIMENSION: u32 = 8192;
+
+    let root_box = arena.get(root);
+
+    // Use the same horizontal bounds policy as SVG so leading negative space
+    // does not clip content and trailing layout width remains represented.
+    let (view_x_px, content_width_px) = super::emit::svg_x_bounds_px_arena(arena, root, em);
+    let x_shift_px = if view_x_px < 0.0 { -view_x_px } else { 0.0 };
+
+    let width = (content_width_px + padding * 2.0).ceil().max(1.0) as u32;
+    let height = ((root_box.height + root_box.depth) * em + padding * 2.0)
+        .ceil()
+        .max(1.0) as u32;
+
+    if width > MAX_PIXMAP_DIMENSION || height > MAX_PIXMAP_DIMENSION {
+        return Err(crate::error::Error::Render {
+            message: format!(
+                "image dimensions {width}x{height} exceed maximum of {MAX_PIXMAP_DIMENSION}x{MAX_PIXMAP_DIMENSION}"
+            ),
+        });
+    }
+
+    let mut pixmap = Pixmap::new(width, height).ok_or_else(|| crate::error::Error::Render {
+        message: format!("failed to create {width}x{height} pixmap"),
+    })?;
+
+    // Fill background
+    let bg = match options.background {
+        Some(rgba) => Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3]),
+        None => match options.format {
+            ImageFormat::Png => Color::from_rgba8(0, 0, 0, 0), // transparent
+            ImageFormat::Jpeg => Color::from_rgba8(255, 255, 255, 255), // white
+        },
+    };
+    pixmap.fill(bg);
+
+    let fg = parse_color(&options.render.fg_color);
+
+    let mut ctx = RasterCtx {
+        em,
+        fg,
+        cache: HashMap::new(),
+        glyph_rgba_buf: Vec::new(),
+    };
+
+    // Shift content right by |view_x_px| so negatively-positioned glyphs are inside the pixmap.
+    let baseline_y = root_box.height * em + padding;
+    emit_raster_box_arena(
+        &mut pixmap,
+        &mut ctx,
+        arena,
+        root,
+        padding + x_shift_px,
+        baseline_y,
+    );
+
+    encode_image(&pixmap, options)
+}
 
 struct RasterCtx {
     em: f64,
@@ -497,6 +568,273 @@ fn emit_raster_box(
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
+        },
+    }
+}
+
+/// Arena-based counterpart of [`emit_raster_box`]. Traverses the arena instead
+/// of the heap `LayoutBox` tree, drawing byte-identical output for the same
+/// layout geometry.
+fn emit_raster_box_arena(
+    pixmap: &mut Pixmap,
+    ctx: &mut RasterCtx,
+    arena: &LayoutArena,
+    id: LayoutBoxId,
+    x: f64,
+    y: f64, // baseline position (y-down)
+) {
+    let em = ctx.em;
+    let fg = ctx.fg;
+    let layout = arena.get(id);
+    match &layout.kind {
+        ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => {
+            // For large operators at display size, use MATH table variant glyphs
+            // for better quality (properly designed display glyphs vs scaled base).
+            let used_variant = if *size > 1.2 && is_large_op_char(*ch) {
+                if let Some(variant) = super::glyph_variants::display_operator_variant(*ch) {
+                    let target_px = em * size;
+                    let font_size_px = if variant.advance_em > 0.01 {
+                        target_px / variant.advance_em
+                    } else {
+                        target_px
+                    };
+                    draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !used_variant {
+                let font_size_px = (em * size).max(1.0) as f32;
+                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic, *font);
+            }
+        },
+
+        ArenaBoxKind::TextRun {
+            text,
+            size,
+            italic,
+            text_style,
+        } => {
+            let font = fonts_registry::font_for_text_run(*text_style);
+            let font_size_px = (em * size).max(1.0) as f32;
+            let mut cx = x;
+            for ch in text.chars() {
+                // Use the same metric lookup as layout_text_run to keep
+                // glyph positions consistent with the layout pass.
+                let m = fonts_registry::text_metrics(ch, *italic, font);
+                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font);
+                cx += m.width * size * em;
+            }
+        },
+
+        ArenaBoxKind::HBox { children } | ArenaBoxKind::VBox { children } => {
+            for child in arena.children(*children) {
+                let cx = x + child.dx * em;
+                let cy = y - child.dy * em; // dy positive = up in TeX, subtract for y-down
+                emit_raster_box_arena(pixmap, ctx, arena, child.id, cx, cy);
+            }
+        },
+
+        ArenaBoxKind::Rule { thickness } => {
+            let th_px = (thickness * em) as f32;
+            let w_px = (layout.width * em) as f32;
+            let ry = (y - layout.height * em) as f32;
+            // Guard against degenerate rects.
+            let rw = w_px.max(0.5);
+            let rh = th_px.max(0.5);
+            if rw.is_finite()
+                && rh.is_finite()
+                && ry.is_finite()
+                && (x as f32).is_finite()
+                && rw > 0.0
+                && rh > 0.0
+            {
+                // Use fill_path instead of fill_rect to get proper anti-aliasing
+                // without triggering tiny-skia's hairline_aa assertion on thin rects.
+                let mut pb = PathBuilder::new();
+                let rx = x as f32;
+                pb.move_to(rx, ry);
+                pb.line_to(rx + rw, ry);
+                pb.line_to(rx + rw, ry + rh);
+                pb.line_to(rx, ry + rh);
+                pb.close();
+                if let Some(path) = pb.finish() {
+                    let mut paint = Paint::default();
+                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                    paint.anti_alias = true;
+                    pixmap.fill_path(
+                        &path,
+                        &paint,
+                        tiny_skia::FillRule::Winding,
+                        Transform::identity(),
+                        None,
+                    );
+                }
+            }
+        },
+
+        ArenaBoxKind::Kern | ArenaBoxKind::Phantom => {
+            // Invisible — no output
+        },
+
+        ArenaBoxKind::Delimiter { ch, target_height } => {
+            // Try MATH table glyph variant first for better quality.
+            let variant_rendered = if let Some(variant) =
+                super::glyph_variants::delimiter_variant(*ch, *target_height)
+            {
+                // Render the variant glyph scaled to match the layout's target height.
+                // font_size_px = target_height_pixels / advance_em
+                let target_px = target_height * em;
+                let font_size_px = if variant.advance_em > 0.01 {
+                    target_px / variant.advance_em
+                } else {
+                    em
+                };
+                draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                true
+            } else {
+                false
+            };
+
+            if !variant_rendered {
+                // Too tall for a discrete variant: try the font's stretchy
+                // assembly (real parts: hooks + extenders) before the synthetic
+                // path, so tall surds/braces stay proportional like MathJax.
+                let box_top = y - layout.height * em;
+                let fill_h = layout.height + layout.depth;
+                let assembled = draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em);
+                if assembled {
+                    // rendered from assembly parts
+                } else if let Some(dp) =
+                    super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+                {
+                    if let Some((path, is_fill)) = parse_svg_path_ex(&dp.path_data) {
+                        let tx = x as f32;
+                        let ty = (y - layout.height * em) as f32;
+                        let scale = em as f32;
+
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                        paint.anti_alias = true;
+
+                        let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                        if is_fill {
+                            pixmap.fill_path(
+                                &path,
+                                &paint,
+                                tiny_skia::FillRule::Winding,
+                                transform,
+                                None,
+                            );
+                        } else if dp.stroke_width > 0.0 {
+                            let stroke = Stroke {
+                                width: dp.stroke_width as f32,
+                                line_cap: tiny_skia::LineCap::Round,
+                                line_join: tiny_skia::LineJoin::Round,
+                                ..Stroke::default()
+                            };
+                            pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                        }
+                    }
+                } else {
+                    // Final fallback: render as text glyph
+                    let font_size_px = (target_height * em).max(1.0) as f32;
+                    draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false, FontId::Math);
+                }
+            }
+        },
+
+        ArenaBoxKind::SvgPath(path_data) => {
+            if let Some((path, is_fill)) = parse_svg_path_ex(path_data) {
+                let tx = x as f32;
+                let ty = (y - layout.height * em) as f32;
+                let scale = em as f32;
+
+                let mut paint = Paint::default();
+                paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                paint.anti_alias = true;
+
+                let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                if is_fill {
+                    pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
+                } else {
+                    let stroke = Stroke {
+                        width: 0.04,
+                        ..Stroke::default()
+                    };
+                    pixmap.stroke_path(&path, &paint, &stroke, transform, None);
+                }
+            }
+        },
+
+        ArenaBoxKind::Color { color, child } => {
+            let new_fg = parse_color(color);
+            let old_fg = ctx.fg;
+            ctx.fg = new_fg;
+            // Color child is rendered at same position (no dx/dy offset)
+            emit_raster_box_arena(pixmap, ctx, arena, *child, x, y);
+            ctx.fg = old_fg;
+        },
+
+        ArenaBoxKind::Boxed {
+            child,
+            padding,
+            bg_color,
+            border_color,
+        } => {
+            // Background fill
+            if let Some(bg) = bg_color {
+                let w_px = (layout.width * em) as f32;
+                let h_px = ((layout.height + layout.depth) * em) as f32;
+                let ry = (y - layout.height * em) as f32;
+
+                if let Some(rect) = Rect::from_xywh(x as f32, ry, w_px, h_px) {
+                    let mut paint = Paint::default();
+                    let rgb = parse_color(bg);
+                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
+                    paint.anti_alias = true;
+                    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                }
+            }
+
+            // Border rectangle
+            let w_px = (layout.width * em) as f32;
+            let h_px = ((layout.height + layout.depth) * em) as f32;
+            let ry = (y - layout.height * em) as f32;
+
+            let mut pb = PathBuilder::new();
+            pb.move_to(x as f32, ry);
+            pb.line_to(x as f32 + w_px, ry);
+            pb.line_to(x as f32 + w_px, ry + h_px);
+            pb.line_to(x as f32, ry + h_px);
+            pb.close();
+            if let Some(path) = pb.finish() {
+                let mut paint = Paint::default();
+                if let Some(bc) = border_color {
+                    let rgb = parse_color(bc);
+                    paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
+                } else {
+                    paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+                }
+                paint.anti_alias = true;
+                let stroke = Stroke {
+                    width: (0.04 * em) as f32, // proportional to font size, matches SVG path
+                    ..Stroke::default()
+                };
+                pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+            }
+
+            // Content — arena stores the child without a position offset, so we
+            // apply the box padding here (heap version stored dx=padding).
+            emit_raster_box_arena(pixmap, ctx, arena, *child, x + padding * em, y);
         },
     }
 }
@@ -1574,6 +1912,38 @@ mod tests {
         assert_eq!(opts.scale, 1.0);
         assert_eq!(opts.quality, 90);
         assert!(opts.background.is_none());
+    }
+
+    #[test]
+    fn arena_raster_matches_heap_quadratic() {
+        use crate::reader::Reader;
+
+        let config = crate::error::Config::default();
+        let compact = crate::reader::latex::LatexReader::parse_compact(
+            "x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}",
+            &config,
+        )
+        .unwrap();
+        let opts = RasterOptions::default();
+
+        // OLD heap PNG. Compute the style exactly as `render_to_image_compact`
+        // does so the comparison is apples-to-apples.
+        let style = if opts
+            .render
+            .display_mode
+            .unwrap_or(compact.expr.display == crate::ast::DisplayStyle::Block)
+        {
+            MathStyle::Display
+        } else {
+            MathStyle::Text
+        };
+        let heap_root = crate::render::layout::layout_expr_c(&compact.expr, style, &opts.render);
+        let heap_png = rasterize_layout(&heap_root, &opts).unwrap();
+
+        // NEW arena PNG.
+        let arena_png = render_to_image_compact(&compact.expr, &opts).unwrap();
+
+        assert_eq!(heap_png, arena_png, "arena raster must match heap raster");
     }
 
     // --- Color parser ---
