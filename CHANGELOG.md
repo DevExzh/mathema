@@ -99,9 +99,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   *emit-bound* (SVG emit is ~73% of render time, so the arena layout win is
   small end-to-end); and the compact UnicodeMath writer is ~30% slower than its
   (trivial) legacy counterpart due to the fixed arena-indirection floor.
-  Profiling/optimizing SVG emit, and lowering the remaining legacy `&MathExpr`
-  render entry points through the arena so the last heap engine can also be
-  retired, are tracked as dedicated follow-ups.
+  Profiling/optimizing SVG emit is tracked as a dedicated follow-up.
+- **Legacy layout engine cannot yet be retired (measured).** A new gate,
+  `legacy_vs_arena_render_divergence_baseline` (`tests/render_svg.rs`), renders
+  every formula in the KaTeX + small corpora through both the legacy
+  `MathExpr→heap` engine and the arena engine (via `from_math_expr`). Simple
+  atomic constructs already match exactly, but **28 of 135** *complex* formulas
+  (arrays/matrices with alignment + inter-row spacing, nested `\displaystyle`,
+  raisebox, cancel/strikethrough stacks, color resets) render differently — a
+  **pre-existing** divergence between the crate's two production layout engines,
+  not introduced by the compact→heap removal. Retiring the legacy engine
+  (re-implementing `render_to_svg`/`render_to_svg_standalone` on the arena) is
+  blocked until this divergence is reconciled to 0; the gate pins the current
+  count so progress is tracked and regressions are caught.
 
 ### Changed
 

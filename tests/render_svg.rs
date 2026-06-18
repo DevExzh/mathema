@@ -33,6 +33,90 @@ fn assert_valid_svg(svg: &str, label: &str) {
     assert!(svg.contains("viewBox"), "{label}: missing viewBox");
 }
 
+/// Tracks how far the legacy heap layout engine and the production arena engine
+/// agree, which is the precondition for retiring the legacy engine: once they
+/// render every input identically, `render_to_svg`/`render_to_svg_standalone`
+/// (over `&MathExpr`) can be re-implemented on top of the arena engine and the
+/// legacy `layout_node` engine deleted.
+///
+/// Today they diverge on a set of *complex* corpus formulas (arrays/matrices
+/// with alignment and inter-row spacing, nested `\displaystyle`, raisebox,
+/// cancel/strikethrough stacks, color resets, …); simple atomic constructs
+/// (`\overline`, `\operatorname`, `\cancel`, `\vec`, fractions, scripts, roots)
+/// already match exactly. This divergence is **pre-existing** — the crate's two
+/// production layout engines (legacy for `&MathExpr` callers, arena for compact
+/// callers) genuinely produce different SVG for these inputs.
+///
+/// This gate pins the current divergence count as a baseline so (a) new
+/// divergences are caught and (b) progress toward retirement (count → 0) forces
+/// a deliberate baseline update. When this reaches 0, the legacy engine can be
+/// retired (see the performance assessment, M1).
+#[test]
+fn legacy_vs_arena_render_divergence_baseline() {
+    use mathema::CompactExpr;
+    use mathema::ast::DisplayStyle;
+
+    // Current known divergence baseline over the corpora below. Drive this to 0
+    // (fixing the arena engine to match legacy, or vice versa) to unblock
+    // retiring the legacy layout engine; update the numbers when it changes.
+    const EXPECTED_CHECKED: usize = 135;
+    const EXPECTED_DIVERGENCES: usize = 28;
+
+    let opts = RenderOptions::default();
+    let mut checked = 0usize;
+    let mut mismatches: Vec<String> = Vec::new();
+
+    for path in ["tests/data/katex_corpus.json", "tests/data/formulas.json"] {
+        let data = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&data).unwrap();
+        for v in &arr {
+            let tex = v["tex"].as_str().unwrap_or("");
+            let name = v["name"].as_str().unwrap_or("?");
+            let display = v["display"].as_bool().unwrap_or(false);
+            let config = Config {
+                display: if display {
+                    DisplayStyle::Block
+                } else {
+                    DisplayStyle::Inline
+                },
+                ..Config::default()
+            };
+            // Native legacy parse → MathExpr → legacy engine.
+            let Ok(parsed) = LatexReader::parse(tex, &config) else {
+                continue;
+            };
+            let mathexpr = parsed.expr;
+            let Ok(legacy_svg) = render_to_svg(&mathexpr, &opts) else {
+                continue;
+            };
+            // The same MathExpr lowered to compact → arena engine (what a future
+            // arena-backed `render_to_svg` would produce).
+            let compact = CompactExpr::from_math_expr(&mathexpr);
+            let Ok(arena_svg) = render_to_svg_compact(&compact, &opts) else {
+                continue;
+            };
+            checked += 1;
+            if legacy_svg != arena_svg {
+                mismatches.push(name.to_string());
+            }
+        }
+    }
+
+    assert_eq!(
+        checked, EXPECTED_CHECKED,
+        "corpus size changed; update EXPECTED_CHECKED"
+    );
+    assert_eq!(
+        mismatches.len(),
+        EXPECTED_DIVERGENCES,
+        "legacy↔arena divergence count changed (now {}): {:?}.\n\
+         If you fixed divergences, lower EXPECTED_DIVERGENCES (0 unblocks legacy-engine retirement); \
+         if you introduced one, fix it.",
+        mismatches.len(),
+        mismatches
+    );
+}
+
 fn first_rect_y(svg: &str) -> f64 {
     let rect_start = svg.find("<rect").expect("SVG should contain a rect");
     let rect = &svg[rect_start..];
