@@ -95,7 +95,7 @@ impl MathemaConverter {
         })
     }
 
-    /// Parse input asynchronously, returning a Promise<ParsedMath>.
+    /// Parse input asynchronously, returning a `Promise<ParsedMath>`.
     #[wasm_bindgen(js_name = "parseAsync")]
     pub fn parse_async(&self, input: String) -> js_sys::Promise {
         let format = self.format;

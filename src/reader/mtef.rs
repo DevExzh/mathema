@@ -73,11 +73,15 @@ impl MtefReader {
                     DisplayStyle::Block
                 };
                 let roots = parser.arena.push_children(&ids);
-                Ok(CompactParseResult::new(CompactExpr {
-                    arena: parser.arena,
-                    roots,
-                    display,
-                }))
+                let diagnostics = std::mem::take(&mut parser.diagnostics);
+                Ok(CompactParseResult::with_diagnostics(
+                    CompactExpr {
+                        arena: parser.arena,
+                        roots,
+                        display,
+                    },
+                    diagnostics,
+                ))
             },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
@@ -215,6 +219,7 @@ struct MtefCompactParser<'a> {
     inline: bool,
     fonts: Vec<String>,
     arena: AstArena,
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl<'a> MtefCompactParser<'a> {
@@ -227,7 +232,17 @@ impl<'a> MtefCompactParser<'a> {
             inline: true,
             fonts: Vec::new(),
             arena: AstArena::new(),
+            diagnostics: Vec::new(),
         }
+    }
+
+    /// Record a non-fatal parse warning (e.g. an unhandled template selector).
+    fn warn(&mut self, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: message.into(),
+            span: None,
+        });
     }
 
     fn remaining(&self) -> usize {
@@ -878,6 +893,13 @@ impl<'a> MtefCompactParser<'a> {
             24 | 25 => self.horizontal_brace_template_to_compact(selector, variation, slots),
             // Scripts (records5 selectors 27-29)
             27..=29 => self.script_template_to_compact(selector, slots),
+            // Limits: lim with lower/upper slots (records5 selector 23)
+            23 => self.lim_template_to_compact(slots),
+            // Dirac bra-ket notation (records5 selector 30)
+            30 => Ok(self.dirac_template_to_compact(variation, slots)),
+            // Accents over a single slot: vector / tilde / hat / arc
+            // (records5 selectors 31-34, HatBoxClass)
+            31..=34 => Ok(self.accent_template_to_compact(selector, variation, slots)),
             // Legacy slash fraction from earlier in-tree writer builds.
             40 => {
                 let num = self.get_slot(&mut slots, 0);
@@ -888,8 +910,15 @@ impl<'a> MtefCompactParser<'a> {
                     den,
                 }))
             },
-            // Fallback
+            // Fallback: no dedicated handler for this template. Flatten the slots
+            // into a row so content is preserved, but emit a warning so the loss
+            // of template structure (e.g. cross-outs, boxes, joint-status) is
+            // observable instead of silent.
             _ => {
+                self.warn(format!(
+                    "MTEF template selector {selector} is not supported; \
+                     its slots were flattened and the template structure was dropped"
+                ));
                 let mut all: SmallVec<[NodeId; 8]> = SmallVec::new();
                 for slot in &mut slots {
                     all.extend(std::mem::take(slot));
@@ -897,6 +926,140 @@ impl<'a> MtefCompactParser<'a> {
                 Ok(self.wrap_ids(&all))
             },
         }
+    }
+
+    /// HatBoxClass templates (tmVEC/tmTILDE/tmHAT/tmARC): a single main slot with
+    /// an accent drawn over (or, for an under-vector, below) it.
+    fn accent_template_to_compact(
+        &mut self,
+        selector: u8,
+        variation: u16,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> NodeId {
+        let base = self.get_slot(&mut slots, 0);
+        let (accent, position) = match selector {
+            32 => ('\u{0303}', AccentPosition::Above), // tmTILDE
+            33 => ('\u{0302}', AccentPosition::Above), // tmHAT
+            34 => ('\u{0311}', AccentPosition::Above), // tmARC (inverted breve)
+            _ => {
+                // tmVEC (31): direction/harpoon/under selected by variation bits.
+                let left = variation & 0x0001 != 0;
+                let harpoon = variation & 0x0008 != 0;
+                let under = variation & 0x0004 != 0;
+                let ch = match (left, harpoon) {
+                    (true, true) => '\u{20D0}',   // left harpoon above
+                    (true, false) => '\u{20D6}',  // left arrow above
+                    (false, true) => '\u{20D1}',  // right harpoon above
+                    (false, false) => '\u{20D7}', // right arrow above
+                };
+                let pos = if under {
+                    AccentPosition::Below
+                } else {
+                    AccentPosition::Above
+                };
+                (ch, pos)
+            },
+        };
+        self.arena.push_node(CompactNode::Accent {
+            base,
+            accent,
+            position,
+            // Template accents in MTEF stretch over the whole slot (like \widehat).
+            wide: true,
+        })
+    }
+
+    /// LimBoxClass (tmLIM): a main slot with optional lower and upper limit slots.
+    fn lim_template_to_compact(&mut self, mut slots: Vec<SmallVec<[NodeId; 8]>>) -> Result<NodeId> {
+        let has_lower = !Self::slot_is_empty(&slots, 1);
+        let has_upper = !Self::slot_is_empty(&slots, 2);
+        let base = self.get_slot(&mut slots, 0);
+        Ok(match (has_lower, has_upper) {
+            (true, true) => {
+                let under = self.get_slot(&mut slots, 1);
+                let over = self.get_slot(&mut slots, 2);
+                self.arena.push_node(CompactNode::UnderOver {
+                    base,
+                    under,
+                    over,
+                    movable_limits: true,
+                })
+            },
+            (true, false) => {
+                let under = self.get_slot(&mut slots, 1);
+                self.arena.push_node(CompactNode::Underscript {
+                    base,
+                    under,
+                    movable_limits: true,
+                })
+            },
+            (false, true) => {
+                let over = self.get_slot(&mut slots, 2);
+                self.arena.push_node(CompactNode::Overscript {
+                    base,
+                    over,
+                    movable_limits: true,
+                })
+            },
+            (false, false) => base,
+        })
+    }
+
+    /// DiracBoxClass (tmDIRAC): bra `⟨a|`, ket `|b⟩`, or braket `⟨a|b⟩`,
+    /// selected by the `tvDI_LEFT` / `tvDI_RIGHT` variation bits.
+    fn dirac_template_to_compact(
+        &mut self,
+        variation: u16,
+        mut slots: Vec<SmallVec<[NodeId; 8]>>,
+    ) -> NodeId {
+        let has_left = variation & 0x0001 != 0;
+        let has_right = variation & 0x0002 != 0;
+        // Default to a full bra-ket if neither presence bit is set.
+        let (has_left, has_right) = if !has_left && !has_right {
+            (true, true)
+        } else {
+            (has_left, has_right)
+        };
+        let mut idx = 0;
+        let left = if has_left {
+            let id = self.get_slot(&mut slots, idx);
+            idx += 1;
+            Some(id)
+        } else {
+            None
+        };
+        let right = if has_right {
+            Some(self.get_slot(&mut slots, idx))
+        } else {
+            None
+        };
+
+        let mut parts: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let angle_open = self.dirac_symbol('\u{27E8}', SymbolKind::Open);
+        let bar = self.dirac_symbol('\u{2223}', SymbolKind::Fence);
+        let angle_close = self.dirac_symbol('\u{27E9}', SymbolKind::Close);
+        if let Some(left) = left {
+            parts.push(angle_open);
+            parts.push(left);
+            parts.push(bar);
+        } else {
+            parts.push(bar);
+        }
+        if let Some(right) = right {
+            parts.push(right);
+            parts.push(angle_close);
+        }
+        self.wrap_ids(&parts)
+    }
+
+    fn dirac_symbol(&mut self, ch: char, kind: SymbolKind) -> NodeId {
+        let mut buf = [0u8; 4];
+        let sid = self.arena.push_str(ch.encode_utf8(&mut buf));
+        self.arena.push_node(CompactNode::Symbol(kind, sid))
+    }
+
+    fn slot_is_empty(slots: &[SmallVec<[NodeId; 8]>], i: usize) -> bool {
+        i >= slots.len() || slots[i].is_empty()
     }
 
     fn script_template_to_compact(
@@ -1451,6 +1614,182 @@ mod tests {
         ]);
         let expr = parse_bytes(&data);
         assert!(matches!(&expr.nodes[0], MathNode::Subscript { .. }));
+    }
+
+    #[test]
+    fn hat_template_preserves_accent() {
+        // tmHAT (selector 33) over a single variable slot.
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            33,
+            0x00,
+            0x00, // hat template, no variation
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x78,
+            0x00,
+            END, // base: x
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        match &expr.nodes[0] {
+            MathNode::Accent { base, accent, .. } => {
+                assert_eq!(
+                    *accent, '\u{0302}',
+                    "hat should map to combining circumflex"
+                );
+                assert!(matches!(base.as_ref(), MathNode::Identifier(s) if s == "x"));
+            },
+            other => panic!("expected Accent for tmHAT, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vec_template_preserves_arrow() {
+        // tmVEC (selector 31), default variation → right arrow above.
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            31,
+            0x00,
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x76,
+            0x00,
+            END, // base: v
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        match &expr.nodes[0] {
+            MathNode::Accent { accent, .. } => {
+                assert_eq!(
+                    *accent, '\u{20D7}',
+                    "vec should map to combining right arrow"
+                );
+            },
+            other => panic!("expected Accent for tmVEC, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lim_template_builds_underscript() {
+        // tmLIM (selector 23): main slot + lower slot, no upper slot.
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            23,
+            0x00,
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x6C,
+            0x00,
+            END, // main: l
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x6E,
+            0x00,
+            END, // lower: n
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        assert!(
+            matches!(&expr.nodes[0], MathNode::Underscript { .. }),
+            "tmLIM with only a lower slot should be an Underscript, got {:?}",
+            expr.nodes
+        );
+    }
+
+    #[test]
+    fn dirac_template_builds_braket() {
+        // tmDIRAC (selector 30), variation 0x03 → both left and right parts.
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            30,
+            0x03,
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x61,
+            0x00,
+            END, // left: a
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x62,
+            0x00,
+            END, // right: b
+            END,
+        ]);
+        let expr = parse_bytes(&data);
+        match &expr.nodes[0] {
+            MathNode::Row(items) => {
+                assert!(
+                    items
+                        .iter()
+                        .any(|n| matches!(n, MathNode::Symbol(_, s) if s == "\u{27E8}")),
+                    "bra-ket should contain a left angle bracket, got {items:?}"
+                );
+            },
+            other => panic!("expected Row for tmDIRAC, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsupported_template_warns_and_preserves_content() {
+        // tmSTRIKE (selector 36) has no dedicated handler: content must be
+        // preserved AND a warning must be emitted (no silent data loss).
+        let data = make_mtef_v5(&[
+            TMPL,
+            0x00,
+            36,
+            0x00,
+            0x00,
+            LINE,
+            0x00,
+            CHAR,
+            0x00,
+            128 + TF_VARIABLE,
+            0x78,
+            0x00,
+            END, // x
+            END,
+        ]);
+        let result = MtefReader::parse_bytes(&data, &Config::default()).unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| { d.kind == DiagnosticKind::Warning && d.message.contains("36") }),
+            "unsupported selector 36 must emit a warning, got {:?}",
+            result.diagnostics
+        );
+        // Content ('x') is still preserved despite the dropped template.
+        let flat = format!("{:?}", result.expr.nodes);
+        assert!(
+            flat.contains("\"x\""),
+            "content should survive flattening: {flat}"
+        );
     }
 
     #[test]

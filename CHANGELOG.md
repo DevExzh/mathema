@@ -29,17 +29,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Lint gates:** a `[lints]` table plus a CI workflow that runs
   `cargo fmt --check`, `cargo clippy --all-features -- -D warnings`, the test
   suite, and a fuzz smoke job.
+- **Publish hygiene:** `Cargo.toml` now declares `repository`, `homepage`,
+  `readme`, `keywords`, and `categories`, plus an `exclude` list that drops the
+  multi-megabyte format specs, internal planning docs, demo web/WASM apps,
+  debug examples, and test fixtures from the published tarball (172 → 111
+  files).
+- **CI coverage for the library-only and docs paths:** new jobs run
+  `cargo build`/`cargo test --no-default-features` (the common
+  `default-features = false` consumer path) and
+  `cargo doc --no-deps --all-features` with `-D warnings`.
+- **Crate-level `//!` documentation** on `lib.rs` with a runnable quick-start
+  example and a feature-flag overview.
 
 ### Changed
 
-- **Default render paths now use the faster arena layout engine.**
-  `render_to_svg_compact` and `render_to_image_compact` (and therefore
-  `convert(.., Svg)`, `to_png()`, `to_jpeg()`) route through the arena
-  `LayoutBuilder` path, which the benchmarks measure as ~1.25–1.77× faster than
-  the heap path. Output is unchanged (guarded by an existing equality test).
+- **The SVG compact render path uses the arena layout engine.**
+  `render_to_svg_compact` (and therefore `convert(.., Svg)`) builds layout
+  through the arena `LayoutBuilder`. The `~1.25–1.77×` figure reported by the
+  `layout` benchmark is **layout-only with a warm, reused arena**; the default
+  public API allocates a fresh `LayoutArena` per call (a cold arena), so the
+  end-to-end SVG speedup is small. Output is unchanged (guarded by an existing
+  byte-equality test against the heap path).
+- **Note on raster:** PNG/JPEG (`to_png()` / `to_jpeg()`,
+  `render_to_image_compact`) currently lay out through the heap `LayoutBox`
+  path (`layout_expr_c`) and do **not** yet go through the arena, so they do not
+  receive the arena layout's reuse benefit. The parse/convert pipeline's compact
+  speedups (parse `~1.88×`, writers `2.5–4.7×`) are unaffected and measured
+  separately.
 
 ### Fixed
 
+- **MTEF reader no longer silently drops template-based accents and limits.**
+  The `tmHAT`, `tmTILDE`, `tmVEC` (vector, incl. direction/harpoon/under
+  variations), `tmARC`, `tmLIM` (lim with lower/upper limit slots), and
+  `tmDIRAC` (bra/ket/bra-ket) templates now map to the corresponding AST nodes
+  instead of being flattened into a bare row. Any *still*-unsupported template
+  selector now emits a `DiagnosticKind::Warning` (content is still preserved by
+  flattening) so structural loss is observable rather than silent.
+- **Clippy lint gate is green again.** The
+  `#[allow(clippy::too_many_arguments)]` was attached to the zero-argument
+  `partial_deslant_skew()` instead of the 8-argument `draw_glyph`, so
+  `cargo clippy --all-features --all-targets -- -D warnings` failed; the
+  annotation is now on the function that actually needs it.
 - **OMML phantom subtypes are no longer collapsed to `Full`.** `<m:phant>`
   honors `m:show`/`m:zeroAsc`/`m:zeroDesc`/`m:zeroWid` to round-trip
   `Horizontal`/`Vertical`/`Full` phantoms.

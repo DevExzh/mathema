@@ -40,7 +40,7 @@ pub enum MathNode {
     Space(Rational),
 
     // === Grouping / delimiters ===
-    /// Group acting as a unit ({...} in TeX, <mrow> in MathML)
+    /// Group acting as a unit (`{...}` in TeX, `<mrow>` in MathML)
     Row(Vec<MathNode>),
     /// Delimited group with open/close and optional mid-separators
     Fenced {

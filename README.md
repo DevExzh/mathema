@@ -22,13 +22,16 @@ let umath  = result.to_unicode_math().unwrap();
 | Format | Read | Write |
 |---|---|---|
 | LaTeX | Yes | Yes |
-| MathML | Yes | Yes |
+| MathML | Yes (Presentation + Content) | Yes (Presentation only) |
 | Office MathML (OMML) | Yes | Yes |
 | UnicodeMath | Yes | Yes |
 | MathType (MTEF) | Yes | Yes |
 | SVG | -- | Yes (`render`) |
 | PNG | -- | Yes (`raster`) |
 | JPEG | -- | Yes (`raster`) |
+
+> **MathML note:** input accepts both Presentation and Content MathML (Content
+> is lowered to Presentation on read); output emits **Presentation MathML only**.
 
 ## CLI
 
@@ -63,9 +66,9 @@ Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (
 
 | Feature | Description |
 |---|---|
-| `render` | SVG output via a built-in TeX-style layout engine |
+| `render` | SVG output via a built-in TeX-style layout engine, including standalone SVG with embedded Latin Modern glyph outlines |
 | `raster` | PNG/JPEG output (implies `render`) |
-| `font-embed` | Standalone SVG with embedded glyph outlines (implies `render`) |
+| `font-embed` | Alias of `render` (kept for forward compatibility); standalone embedded-outline SVG is already available under `render` |
 | `serde` | Serialize / deserialize the AST |
 | `wasm` | WebAssembly bindings (implies `serde`) |
 
@@ -90,9 +93,9 @@ Input string ──Reader──▸ MathExpr (AST) ──Writer──▸ Output s
                          rasterize ──▸ PNG/JPEG             (raster)
 ```
 
-The shared AST (`MathExpr` / `MathNode`) has 26 node variants covering the union of all supported formats. Readers parse format-specific input into this AST; writers serialize it back out.
+The shared AST (`MathExpr` / `MathNode`) has 27 node variants covering the union of all supported formats. Readers parse format-specific input into this AST; writers serialize it back out.
 
-The optional render pipeline applies TeX typesetting rules (TeXBook Rules 11–18) to produce positioned layout boxes, then emits them as SVG. The `raster` feature adds PNG/JPEG rasterization via `fontdue` + `tiny-skia`. The `font-embed` feature embeds glyph `<path>` outlines into the SVG for standalone rendering without external fonts.
+The optional render pipeline applies TeX typesetting rules (TeXBook Rules 11–18) to produce positioned layout boxes, then emits them as SVG. The `raster` feature adds PNG/JPEG rasterization via `fontdue` + `tiny-skia`. Standalone SVG embeds glyph `<path>` outlines for rendering without external fonts; this is available under the `render` feature (the `font-embed` feature is currently an alias of `render`).
 
 ## License
 

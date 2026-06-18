@@ -511,13 +511,13 @@ fn is_large_op_char(ch: char) -> bool {
     super::glyph_variants::is_large_op_char(ch)
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Forward italic shear (tangent) applied to `∂` to match MathJax's slant.
 #[inline]
 fn partial_deslant_skew() -> f32 {
     super::layout::PARTIAL_DESLANT_DEG.to_radians().tan()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_glyph(
     pixmap: &mut Pixmap,
     ctx: &mut RasterCtx,

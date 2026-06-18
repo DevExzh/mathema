@@ -1,6 +1,6 @@
-#![cfg(feature = "render")]
-
-use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "render")]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use mathema::ast::{DisplayStyle, MathNode};
 use mathema::error::{Config, Strictness};
@@ -230,6 +230,7 @@ fn extract_svg_text_content(svg: &str) -> Vec<String> {
     texts
 }
 
+#[cfg(feature = "render")]
 #[test]
 fn find_unsupported_commands() {
     let data =
@@ -356,6 +357,7 @@ fn find_unsupported_commands() {
 }
 
 /// Additional test: verify specific known-problematic commands
+#[cfg(feature = "render")]
 #[test]
 fn verify_specific_commands() {
     println!("\n=== Individual Command Verification ===");
@@ -468,4 +470,128 @@ fn verify_specific_commands() {
     for (label, err) in &parse_error {
         println!("  [ERROR] {label}: {err}");
     }
+}
+
+/// Collect the set of LaTeX commands in `path` that the parser lowers to literal
+/// multi-character identifiers (i.e. it does not understand the command and
+/// emits its name as text). Returns `(unsupported_commands, parse_failures)`.
+///
+/// This does not require the `render` feature, so it runs under the default
+/// `cargo test` and can act as a regression gate over the full corpus.
+fn unsupported_commands_in(path: &str) -> (BTreeSet<String>, Vec<(String, String)>) {
+    let data = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let formulas = parse_formulas(&data);
+
+    let mut found: BTreeSet<String> = BTreeSet::new();
+    let mut parse_failures: Vec<(String, String)> = Vec::new();
+
+    for formula in &formulas {
+        let config = Config {
+            strictness: Strictness::Lenient,
+            display: if formula.display {
+                DisplayStyle::Block
+            } else {
+                DisplayStyle::Inline
+            },
+            ..Config::default()
+        };
+        match from_latex_with(&formula.tex, &config) {
+            Err(e) => parse_failures.push((formula.name.clone(), e.to_string())),
+            Ok(result) => {
+                let expr = result.expr();
+                let mut suspicious = Vec::new();
+                for node in &expr.nodes {
+                    collect_suspicious_identifiers(node, &mut suspicious);
+                }
+                for name in suspicious {
+                    if is_backslash_command_in_tex(&formula.tex, &name) {
+                        found.insert(name);
+                    }
+                }
+            },
+        }
+    }
+    (found, parse_failures)
+}
+
+/// Regression gate over the 126-formula KaTeX corpus.
+///
+/// Unlike the report-only `find_unsupported_commands` test, this one *asserts*:
+/// lenient parsing must never hard-error on the curated corpus, and no LaTeX
+/// command outside the recorded baseline may be silently lowered to literal
+/// text. When a command gains real support, remove it from `KNOWN_UNSUPPORTED`;
+/// the test then guards against regressing it. The baseline must only shrink.
+#[test]
+fn katex_corpus_no_new_unsupported_commands() {
+    // Commands the corpus currently renders as literal identifiers. Keep sorted.
+    // These are custom macro names used by a handful of corpus fixtures, not
+    // standard LaTeX the engine should understand. The list must only shrink.
+    const KNOWN_UNSUPPORTED: &[&str] = &[
+        "endExp", "err", "fracerr", "sqrterr", "startExp", "suberr", "superr",
+    ];
+
+    let allow: BTreeSet<&str> = KNOWN_UNSUPPORTED.iter().copied().collect();
+    let (found, parse_failures) = unsupported_commands_in("tests/data/katex_corpus.json");
+
+    assert!(
+        parse_failures.is_empty(),
+        "lenient parsing of the KaTeX corpus produced hard errors: {parse_failures:?}"
+    );
+
+    let novel: Vec<&str> = found
+        .iter()
+        .map(String::as_str)
+        .filter(|c| !allow.contains(c))
+        .collect();
+    assert!(
+        novel.is_empty(),
+        "new unsupported LaTeX commands are being rendered as literal text \
+         (add support for them, or extend KNOWN_UNSUPPORTED only if intentional): {novel:?}"
+    );
+
+    // Keep the baseline honest: a command that is now supported must be dropped
+    // from the allowlist so it cannot silently regress later.
+    let stale: Vec<&str> = allow
+        .iter()
+        .copied()
+        .filter(|c| !found.contains(*c))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "KNOWN_UNSUPPORTED lists commands that are now handled; remove them: {stale:?}"
+    );
+}
+
+/// The full corpus must render to SVG without error (no panics, no `Err`).
+#[cfg(feature = "render")]
+#[test]
+fn katex_corpus_renders_without_error() {
+    let data = std::fs::read_to_string("tests/data/katex_corpus.json")
+        .expect("read tests/data/katex_corpus.json");
+    let formulas = parse_formulas(&data);
+
+    let mut failures: Vec<(String, String)> = Vec::new();
+    for formula in &formulas {
+        let config = Config {
+            strictness: Strictness::Lenient,
+            display: if formula.display {
+                DisplayStyle::Block
+            } else {
+                DisplayStyle::Inline
+            },
+            ..Config::default()
+        };
+        match from_latex_with(&formula.tex, &config) {
+            Err(e) => failures.push((formula.name.clone(), format!("parse: {e}"))),
+            Ok(result) => {
+                if let Err(e) = result.to_svg() {
+                    failures.push((formula.name.clone(), format!("render: {e}")));
+                }
+            },
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "corpus formulas failed to render: {failures:?}"
+    );
 }

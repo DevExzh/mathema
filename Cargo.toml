@@ -5,6 +5,31 @@ edition = "2024"
 rust-version = "1.88"
 description = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and UnicodeMath via a shared AST"
 license = "MIT"
+repository = "https://github.com/DevExzh/mathema"
+homepage = "https://github.com/DevExzh/mathema"
+readme = "README.md"
+keywords = ["latex", "mathml", "omml", "math", "tex"]
+categories = ["mathematics", "parsing", "text-processing"]
+# Keep the published tarball lean: drop multi-megabyte format specs, internal
+# planning docs, the demo web/WASM apps, debug/audit examples, and test fixtures.
+# None of these are needed to build or use the library.
+exclude = [
+    "docs/specs/",
+    "docs/superpowers/",
+    "docs/reports/",
+    "docs/PACKAGE_SUPPORT_PLAN.md",
+    "web/",
+    "wasm/bench/",
+    "wasm/example/",
+    "examples/",
+    "benches/",
+    "fuzz/",
+    "tests/data/",
+    "tests/fixtures/",
+    "testsuite.zip",
+    ".github/",
+    "CLAUDE.md",
+]
 
 [dependencies]
 # Core (always compiled)
