@@ -5,7 +5,7 @@ use mathema::reader::latex::LatexReader;
 use mathema::render::RenderOptions;
 use mathema::render::arena::LayoutArena;
 use mathema::render::emit::{emit_svg, emit_svg_arena};
-use mathema::render::layout::{LayoutBuilder, layout_expr_c};
+use mathema::render::layout::{LayoutBuilder, layout_expr};
 use mathema::render::style::MathStyle;
 
 const SIMPLE: &str = "x^2 + 1";
@@ -27,8 +27,9 @@ fn bench_layout_heap(c: &mut Criterion) {
         ("navier_stokes", NAVIER_STOKES),
     ] {
         let expr = LatexReader::parse_compact(latex, &config).unwrap().expr;
+        let mexpr = expr.to_math_expr();
         group.bench_function(name, |b| {
-            b.iter(|| layout_expr_c(black_box(&expr), MathStyle::Display, &options))
+            b.iter(|| layout_expr(black_box(&mexpr), MathStyle::Display, &options))
         });
     }
     group.finish();
@@ -108,9 +109,10 @@ fn bench_full_pipeline_heap(c: &mut Criterion) {
 
     for (name, latex) in [("quadratic", QUADRATIC), ("navier_stokes", NAVIER_STOKES)] {
         let expr = LatexReader::parse_compact(latex, &config).unwrap().expr;
+        let mexpr = expr.to_math_expr();
         group.bench_function(name, |b| {
             b.iter(|| {
-                let root = layout_expr_c(black_box(&expr), MathStyle::Display, &options);
+                let root = layout_expr(black_box(&mexpr), MathStyle::Display, &options);
                 emit_svg(black_box(&root), &options)
             })
         });

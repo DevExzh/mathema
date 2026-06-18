@@ -236,8 +236,7 @@ fn collect_variants_inner(node: &LayoutBox, ids: &mut HashSet<u16>) {
                 if let Some(v) = select_vertical_variant(*ch, *target_height) {
                     ids.insert(v.glyph_id);
                 }
-            } else if let Some(asm) =
-                super::glyph_variants::vertical_assembly(*ch, *target_height)
+            } else if let Some(asm) = super::glyph_variants::vertical_assembly(*ch, *target_height)
             {
                 for p in &asm.placements {
                     ids.insert(p.glyph_id);
@@ -288,8 +287,7 @@ fn collect_variants_arena_inner(arena: &LayoutArena, id: LayoutBoxId, ids: &mut 
                 if let Some(v) = select_vertical_variant(*ch, *target_height) {
                     ids.insert(v.glyph_id);
                 }
-            } else if let Some(asm) =
-                super::glyph_variants::vertical_assembly(*ch, *target_height)
+            } else if let Some(asm) = super::glyph_variants::vertical_assembly(*ch, *target_height)
             {
                 for p in &asm.placements {
                     ids.insert(p.glyph_id);
@@ -463,7 +461,7 @@ mod tests {
     fn collect_chars_arena_matches_heap() {
         use crate::reader::Reader;
         use crate::render::arena::LayoutArena;
-        use crate::render::layout::{LayoutBuilder, layout_expr_c};
+        use crate::render::layout::{LayoutBuilder, layout_expr};
 
         let config = crate::error::Config::default();
         let result =
@@ -471,7 +469,7 @@ mod tests {
                 .unwrap();
         let options = RenderOptions::default();
 
-        let heap_root = layout_expr_c(&result.expr, MathStyle::Text, &options);
+        let heap_root = layout_expr(&result.expr.to_math_expr(), MathStyle::Text, &options);
         let heap_chars = collect_chars(&heap_root);
 
         let mut arena = LayoutArena::new();

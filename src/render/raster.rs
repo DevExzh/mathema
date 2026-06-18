@@ -1937,7 +1937,8 @@ mod tests {
         } else {
             MathStyle::Text
         };
-        let heap_root = crate::render::layout::layout_expr_c(&compact.expr, style, &opts.render);
+        let heap_root =
+            crate::render::layout::layout_expr(&compact.expr.to_math_expr(), style, &opts.render);
         let heap_png = rasterize_layout(&heap_root, &opts).unwrap();
 
         // NEW arena PNG.

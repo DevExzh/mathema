@@ -85,13 +85,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `into_expr()` now document that they materialize a full legacy `MathExpr`
   heap tree (~60% of a parse) and steer throughput-sensitive callers to
   `compact_expr()` + the `*_compact` writers/renderers.
+- **Removed the dead compact→heap layout engine.** Now that raster lays out
+  through the arena, the compact→heap layout engine (`layout_expr_c` /
+  `layout_node_c` and ~30 `*_c` helpers) had no production callers, so it was
+  deleted — shrinking `src/render/layout.rs` from 13,035 to ~10,324 lines and
+  removing one of the three near-isomorphic layout families (a maintenance and
+  binary-size liability flagged by the assessment). The `#[cfg(test)]`
+  heap-vs-arena byte-equality guards now use the legacy `MathExpr→heap` engine
+  (`layout_expr`) as the reference, which is what real `&MathExpr` callers use.
+  No production layout/emit/raster behavior changed (test counts unchanged:
+  default 736, all-features 1531, no-default 711).
 - **Known render shortcomings (documented, not yet fixed):** end-to-end SVG is
   *emit-bound* (SVG emit is ~73% of render time, so the arena layout win is
   small end-to-end); and the compact UnicodeMath writer is ~30% slower than its
   (trivial) legacy counterpart due to the fixed arena-indirection floor.
-  Collapsing the remaining heap layout engines into the single arena engine
-  (now that raster no longer needs the heap path) and profiling/optimizing SVG
-  emit are tracked as dedicated follow-ups.
+  Profiling/optimizing SVG emit, and lowering the remaining legacy `&MathExpr`
+  render entry points through the arena so the last heap engine can also be
+  retired, are tracked as dedicated follow-ups.
 
 ### Changed
 

@@ -149,7 +149,11 @@ fn emit_vertical_assembly_embedded(
     }
     // Bail if any part outline is missing from the embedded set (keeps SVG and
     // PNG identical: the PNG path would also have nothing to draw).
-    if asm.placements.iter().any(|p| !glyphs.variants.contains_key(&p.glyph_id)) {
+    if asm
+        .placements
+        .iter()
+        .any(|p| !glyphs.variants.contains_key(&p.glyph_id))
+    {
         return false;
     }
     let k = fill_height_em / h_nat;
@@ -960,7 +964,7 @@ mod tests {
     fn arena_emit_matches_heap() {
         use crate::reader::Reader;
         use crate::render::arena::LayoutArena;
-        use crate::render::layout::{LayoutBuilder, layout_expr_c};
+        use crate::render::layout::{LayoutBuilder, layout_expr};
         use crate::render::subset::collect_chars_arena;
 
         let config = crate::error::Config::default();
@@ -968,7 +972,7 @@ mod tests {
         let options = RenderOptions::default();
 
         // Heap path
-        let heap_root = layout_expr_c(&result.expr, MathStyle::Text, &options);
+        let heap_root = layout_expr(&result.expr.to_math_expr(), MathStyle::Text, &options);
         let heap_chars = collect_chars(&heap_root);
         let heap_glyphs = build_glyph_set(&heap_chars);
         let heap_svg = emit_svg_with_fonts(&heap_root, &options, &heap_glyphs);

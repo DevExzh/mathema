@@ -1007,7 +1007,7 @@ pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
 mod tests {
     use super::*;
     use crate::ast::*;
-    use crate::render::layout::{PositionedBox, layout_expr, layout_expr_c};
+    use crate::render::layout::{PositionedBox, layout_expr};
     use crate::render::style::MathStyle;
 
     fn render(latex_nodes: Vec<MathNode>) -> String {
@@ -1366,7 +1366,7 @@ mod tests {
         let options = RenderOptions::default();
 
         // Heap path
-        let heap_root = layout_expr_c(&result.expr, MathStyle::Text, &options);
+        let heap_root = layout_expr(&result.expr.to_math_expr(), MathStyle::Text, &options);
         let heap_svg = emit_svg(&heap_root, &options);
 
         // Arena path
@@ -1392,7 +1392,7 @@ mod tests {
         .unwrap();
         let options = RenderOptions::default();
 
-        let heap_root = layout_expr_c(&result.expr, MathStyle::Display, &options);
+        let heap_root = layout_expr(&result.expr.to_math_expr(), MathStyle::Display, &options);
         let heap_svg = emit_svg(&heap_root, &options);
 
         let mut arena = LayoutArena::new();
