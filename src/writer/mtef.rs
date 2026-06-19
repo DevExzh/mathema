@@ -1,7 +1,7 @@
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::*;
-use crate::error::{Config, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 use crate::writer::Writer as MathWriter;
 
 pub struct MtefWriter;
@@ -72,6 +72,77 @@ impl MathWriter for MtefWriter {
         // Hex encode — lookup table, no formatting overhead
         let hex = hex_encode(&buf);
         Ok(hex)
+    }
+
+    fn write_compact_with_diagnostics(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let hex = Self::write_compact(expr, config)?;
+        let mut visitor = MtefLossVisitor {
+            diagnostics: Vec::new(),
+        };
+        crate::ast::visit::CompactVisitor::visit_expr(&mut visitor, expr);
+        Ok((hex, visitor.diagnostics))
+    }
+}
+
+/// Walks a compact expression and records a `Warning` for each node whose
+/// information the MTEF writer cannot represent and therefore drops. Mirrors the
+/// MTEF *reader*, which already warns on lossy constructs, so AST→MTEF data loss
+/// is detectable rather than silent.
+struct MtefLossVisitor {
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl MtefLossVisitor {
+    fn warn(&mut self, message: &str) {
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: message.to_string(),
+            span: None,
+        });
+    }
+}
+
+impl crate::ast::visit::CompactVisitor for MtefLossVisitor {
+    fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+        match arena.node(id) {
+            CompactNode::Rule { .. } => {
+                self.warn("MTEF cannot represent a rule (\\rule/\\hline); it was dropped");
+            },
+            CompactNode::Scaled { .. } => {
+                self.warn(
+                    "MTEF cannot represent scaling (\\scalebox); the scale factor was dropped",
+                );
+            },
+            CompactNode::RaiseBox { .. } => {
+                self.warn("MTEF cannot represent \\raisebox; the vertical shift was dropped");
+            },
+            CompactNode::MathChoice { .. } => {
+                self.warn(
+                    "MTEF cannot represent \\mathchoice; only the display-style branch was written",
+                );
+            },
+            CompactNode::MathAtom { .. } => {
+                self.warn("MTEF does not preserve the math atom spacing class; it was dropped");
+            },
+            CompactNode::Color { .. } => {
+                self.warn("MTEF cannot represent color; the color was dropped");
+            },
+            CompactNode::Boxed {
+                bg_color,
+                border_color,
+                ..
+            } => {
+                if !arena.str_val(*bg_color).is_empty() || !arena.str_val(*border_color).is_empty()
+                {
+                    self.warn("MTEF cannot represent box colors; box kept, colors dropped");
+                }
+            },
+            _ => {},
+        }
+        crate::ast::visit::walk_compact_node(self, arena, id);
     }
 }
 
@@ -1034,6 +1105,31 @@ mod tests {
     use super::*;
     use crate::reader::Reader;
     use crate::reader::mtef::MtefReader;
+
+    #[test]
+    fn write_emits_warning_for_dropped_nodes() {
+        let config = Config::default();
+        // \color{red}{x} lowers to a Color node, which the MTEF writer drops.
+        let result =
+            crate::reader::latex::LatexReader::parse_compact("\\color{red}{x}", &config).unwrap();
+        let (hex, diags) =
+            MtefWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
+        assert!(!hex.is_empty());
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::Warning && d.message.contains("color")),
+            "expected a color-loss warning, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn write_emits_no_warning_for_lossless_input() {
+        let config = Config::default();
+        let result = crate::reader::latex::LatexReader::parse_compact("x + y", &config).unwrap();
+        let (_, diags) = MtefWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    }
 
     fn roundtrip(node: MathNode) -> MathExpr {
         let expr = MathExpr::inline(vec![node]);
