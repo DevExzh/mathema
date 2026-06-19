@@ -20,6 +20,7 @@ pub struct AstArena {
 }
 
 impl AstArena {
+    /// Create a new, empty arena with no pre-allocated capacity.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -30,6 +31,8 @@ impl AstArena {
         }
     }
 
+    /// Create an empty arena with pre-allocated capacity for `nodes` nodes,
+    /// `children` child references, and `strings` bytes of interned string data.
     #[must_use]
     pub fn with_capacity(nodes: usize, children: usize, strings: usize) -> Self {
         let mut str_starts = Vec::with_capacity(nodes.min(strings) + 1);
@@ -75,16 +78,19 @@ impl AstArena {
 
     // ── Safe accessors (bounds-checked) ────────────────────────────────
 
+    /// Return a shared reference to the node identified by `id`.
     #[inline]
     pub fn node(&self, id: NodeId) -> &CompactNode {
         &self.nodes[id.index()]
     }
 
+    /// Return a mutable reference to the node identified by `id`.
     #[inline]
     pub fn node_mut(&mut self, id: NodeId) -> &mut CompactNode {
         &mut self.nodes[id.index()]
     }
 
+    /// Return the slice of child `NodeId`s covered by `span`.
     #[inline]
     pub fn children(&self, span: NodeSpan) -> &[NodeId] {
         let start = span.start() as usize;
@@ -92,6 +98,7 @@ impl AstArena {
         &self.children[start..end]
     }
 
+    /// Return the interned string identified by `id`.
     #[inline]
     pub fn str_val(&self, id: StrId) -> &str {
         let idx = id.index();
@@ -141,16 +148,19 @@ impl AstArena {
 
     // ── Stats ──────────────────────────────────────────────────────────
 
+    /// Number of nodes currently stored in the arena.
     #[must_use]
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Number of child references currently stored in the arena.
     #[must_use]
     pub fn children_count(&self) -> usize {
         self.children.len()
     }
 
+    /// Number of interned strings currently stored in the arena.
     #[must_use]
     pub fn string_count(&self) -> usize {
         self.str_starts.len() - 1

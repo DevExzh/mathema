@@ -7,10 +7,12 @@ use crate::ast::*;
 /// Default implementations recurse into child nodes. Override specific
 /// methods to inspect nodes of interest.
 pub trait Visitor {
+    /// Visit an expression; by default walks its child nodes.
     fn visit_expr(&mut self, expr: &MathExpr) {
         walk_expr(self, expr);
     }
 
+    /// Visit a single node; by default walks its children.
     fn visit_node(&mut self, node: &MathNode) {
         walk_node(self, node);
     }
@@ -161,10 +163,12 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
 ///
 /// Each method receives a mutable reference and can modify nodes in place.
 pub trait MutVisitor {
+    /// Visit an expression mutably; by default walks its child nodes.
     fn visit_expr_mut(&mut self, expr: &mut MathExpr) {
         walk_expr_mut(self, expr);
     }
 
+    /// Visit a single node mutably; by default walks its children.
     fn visit_node_mut(&mut self, node: &mut MathNode) {
         walk_node_mut(self, node);
     }
@@ -315,21 +319,25 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
 
 /// Immutable visitor for compact arena-based AST traversal.
 pub trait CompactVisitor {
+    /// Visit a compact expression; by default walks its root nodes.
     fn visit_expr(&mut self, expr: &CompactExpr) {
         walk_compact_expr(self, expr);
     }
 
+    /// Visit a compact node by id; by default walks its children in the arena.
     fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
         walk_compact_node(self, arena, id);
     }
 }
 
+/// Walk the root nodes of a `CompactExpr`.
 pub fn walk_compact_expr<V: CompactVisitor + ?Sized>(v: &mut V, expr: &CompactExpr) {
     for &id in expr.arena.children(expr.roots) {
         v.visit_node(&expr.arena, id);
     }
 }
 
+/// Walk the children of a compact node identified by `id` within `arena`.
 pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(_)
@@ -466,11 +474,13 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
 /// Because `CompactNode` is `Copy`, the mutable visitor copies the node,
 /// recurses into children, and can replace nodes via `arena.node_mut(id)`.
 pub trait CompactMutVisitor {
+    /// Visit a compact node mutably by id; by default walks its children in the arena.
     fn visit_node_mut(&mut self, arena: &mut AstArena, id: NodeId) {
         walk_compact_node_mut(self, arena, id);
     }
 }
 
+/// Walk and mutably visit the children of the compact node identified by `id` within `arena`.
 pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
     v: &mut V,
     arena: &mut AstArena,

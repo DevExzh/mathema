@@ -25,16 +25,19 @@ impl NodeId {
         Self(raw)
     }
 
+    /// Returns `true` if this is the `NONE` sentinel (no node).
     #[inline]
     pub fn is_none(self) -> bool {
         self.0 == u32::MAX
     }
 
+    /// Returns `true` if this refers to an actual node (not the `NONE` sentinel).
     #[inline]
     pub fn is_some(self) -> bool {
         self.0 != u32::MAX
     }
 
+    /// Returns the raw `u32` index into `AstArena::nodes`.
     #[inline]
     pub fn raw(self) -> u32 {
         self.0
@@ -54,6 +57,7 @@ pub struct NodeSpan {
 }
 
 impl NodeSpan {
+    /// Empty span: zero children starting at index 0.
     pub const EMPTY: Self = Self { start: 0, len: 0 };
 
     #[inline]
@@ -61,16 +65,19 @@ impl NodeSpan {
         Self { start, len }
     }
 
+    /// Returns the start offset into `AstArena::children`.
     #[inline]
     pub fn start(self) -> u32 {
         self.start
     }
 
+    /// Returns the number of children in this span.
     #[inline]
     pub fn len(self) -> u16 {
         self.len
     }
 
+    /// Returns `true` if the span contains no children.
     #[inline]
     pub fn is_empty(self) -> bool {
         self.len == 0
@@ -87,6 +94,7 @@ impl StrId {
         Self(raw)
     }
 
+    /// Returns the raw `u32` index into `AstArena`'s string pool.
     #[inline]
     pub fn raw(self) -> u32 {
         self.0
@@ -108,89 +116,149 @@ impl StrId {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CompactNode {
     // ── Leaf nodes ─────────────────────────────────────────────────
+    /// A numeric literal; the string is interned in the arena's string pool.
     Number(StrId),
+    /// An identifier (variable/function name); the string is interned.
     Identifier(StrId),
+    /// An operator such as `+`, `=`, or `\sin`.
     Operator {
+        /// Interned operator name/glyph.
         name: StrId,
+        /// Whether sub/superscripts render as limits above/below the operator.
         limits: LimitStyle,
     },
+    /// A named symbol of a given category, with its interned glyph string.
     Symbol(SymbolKind, StrId),
+    /// Literal text rendered in the given text style; the string is interned.
     Text(TextStyle, StrId),
+    /// Explicit horizontal space of the given width.
     Space(Rational),
+    /// A line break (e.g. `\\` inside an environment).
     Newline,
 
     // ── Grouping ───────────────────────────────────────────────────
+    /// A horizontal sequence of child nodes (a group/row).
     Row(NodeSpan),
+    /// Delimited content wrapped by opening and closing fences.
     Fenced {
+        /// Interned opening delimiter glyph (empty string for none).
         open: StrId,
+        /// Interned closing delimiter glyph (empty string for none).
         close: StrId,
+        /// The fenced children, possibly including `Middle` separator nodes.
         content: NodeSpan,
     },
 
     // ── Scripts ────────────────────────────────────────────────────
+    /// Subscript: `base_sub`.
     Subscript {
+        /// The base expression.
         base: NodeId,
+        /// The subscript expression.
         sub: NodeId,
     },
+    /// Superscript: `base^sup`.
     Superscript {
+        /// The base expression.
         base: NodeId,
+        /// The superscript expression.
         sup: NodeId,
     },
+    /// Combined sub- and superscript: `base_sub^sup`.
     SubSup {
+        /// The base expression.
         base: NodeId,
+        /// The subscript expression.
         sub: NodeId,
+        /// The superscript expression.
         sup: NodeId,
     },
+    /// Prescripts attached before the base (`\sideset`/`{}_sub^sup base`).
     PreScripts {
+        /// The base expression.
         base: NodeId,
+        /// The pre-subscript, or `NodeId::NONE` if absent.
         pre_sub: NodeId,
+        /// The pre-superscript, or `NodeId::NONE` if absent.
         pre_sup: NodeId,
     },
 
     // ── Over/Under ─────────────────────────────────────────────────
+    /// An expression with content placed above it.
     Overscript {
+        /// The base expression.
         base: NodeId,
+        /// The over-script expression.
         over: NodeId,
+        /// Whether the script moves to a superscript position in inline style.
         movable_limits: bool,
     },
+    /// An expression with content placed below it.
     Underscript {
+        /// The base expression.
         base: NodeId,
+        /// The under-script expression.
         under: NodeId,
+        /// Whether the script moves to a subscript position in inline style.
         movable_limits: bool,
     },
+    /// An expression with content both above and below it.
     UnderOver {
+        /// The base expression.
         base: NodeId,
+        /// The under-script expression.
         under: NodeId,
+        /// The over-script expression.
         over: NodeId,
+        /// Whether scripts move to sub/superscript positions in inline style.
         movable_limits: bool,
     },
 
     // ── Fractions/roots ────────────────────────────────────────────
+    /// A fraction with numerator and denominator.
     Fraction {
+        /// The fraction's visual kind (normal, binomial, line thickness, etc.).
         kind: FractionKind,
+        /// The numerator expression.
         num: NodeId,
+        /// The denominator expression.
         den: NodeId,
     },
+    /// A square root of its single child expression.
     Sqrt(NodeId),
+    /// An nth root with an explicit index.
     Root {
+        /// The root index (the small superscript degree).
         index: NodeId,
+        /// The expression under the radical.
         radicand: NodeId,
     },
 
     // ── N-ary ──────────────────────────────────────────────────────
+    /// A large n-ary operator (sum, integral, product, …) with optional bounds.
     Nary {
+        /// The operator character (e.g. `∑`, `∫`, `∏`).
         op: char,
+        /// The lower bound/subscript, or `NodeId::NONE` if absent.
         sub: NodeId,
+        /// The upper bound/superscript, or `NodeId::NONE` if absent.
         sup: NodeId,
+        /// The operand the operator applies to.
         body: NodeId,
+        /// Whether bounds render as limits above/below the operator.
         limits: LimitStyle,
     },
 
     // ── Accent ─────────────────────────────────────────────────────
+    /// An accent (hat, bar, tilde, arrow, …) placed over or under the base.
     Accent {
+        /// The accented base expression.
         base: NodeId,
+        /// The accent character to draw.
         accent: char,
+        /// Whether the accent sits above or below the base.
         position: AccentPosition,
+        /// Whether the accent stretches to the base's width.
         wide: bool,
     },
 
@@ -198,10 +266,15 @@ pub enum CompactNode {
     /// Cells stored flat: `cells[row * num_cols + col]` gives the Row node for each cell.
     /// Column alignments stored as `ColAlign` nodes in the `col_aligns` span.
     Array {
+        /// Span of `ColAlign` nodes giving each column's alignment.
         col_aligns: NodeSpan,
+        /// Span of cell `Row` nodes stored row-major (`row * num_cols + col`).
         cells: NodeSpan,
+        /// Number of columns per row.
         num_cols: u16,
+        /// Row-height scale as a percentage (`\arraystretch` × 100; 100 = default).
         arraystretch_pct: u8,
+        /// Whether `\jot` extra inter-row spacing is added.
         add_jot: bool,
         /// `true` for LaTeX `array`/`cases`-style tables that add `\arraycolsep`
         /// padding on both sides of every column (including the outer edges);
@@ -218,48 +291,74 @@ pub enum CompactNode {
     },
 
     // ── Decorators ─────────────────────────────────────────────────
+    /// Invisible (phantom) content occupying space per the given `PhantomKind`.
     Phantom(NodeId, PhantomKind),
+    /// Boxed content, optionally with background and border colors.
     Boxed {
+        /// The boxed inner expression.
         content: NodeId,
+        /// Interned background color (empty string for none).
         bg_color: StrId,
+        /// Interned border color (empty string for none).
         border_color: StrId,
     },
+    /// Content struck through with a cancellation line.
     Cancel {
+        /// The cancellation stroke direction/style.
         stroke: StrokeKind,
+        /// The content being cancelled.
         content: NodeId,
     },
+    /// Content scaled by a rational factor.
     Scaled {
+        /// The scale factor applied to the content.
         factor: Rational,
+        /// The scaled content.
         content: NodeId,
     },
+    /// Content raised/lowered with optional overridden height and depth.
     RaiseBox {
+        /// Vertical shift (positive raises, negative lowers).
         shift: Rational,
+        /// Overridden height when bit 0 of `extents` is set.
         height: Rational,
+        /// Overridden depth when bit 1 of `extents` is set.
         depth: Rational,
+        /// Bitflags: bit 0 = height set, bit 1 = depth set.
         extents: u8,
+        /// The shifted content.
         content: NodeId,
     },
+    /// Children rendered in the given text/math style.
     Styled(TextStyle, NodeSpan),
 
     // ── MathChoice ─────────────────────────────────────────────────
     /// Style-dependent content: \mathchoice{D}{T}{S}{SS}
     MathChoice {
+        /// Variant used in display style.
         display: NodeId,
+        /// Variant used in text (inline) style.
         text: NodeId,
+        /// Variant used in script style.
         script: NodeId,
+        /// Variant used in scriptscript style.
         script_script: NodeId,
     },
 
     // ── Color ───────────────────────────────────────────────────────
     /// Color wrapper: applies a named color to its content.
     Color {
+        /// Interned color name/value.
         color: StrId,
+        /// The colored content.
         content: NodeId,
     },
 
     /// Explicit atom-type override: \mathop, \mathrel, \mathbin, etc.
     MathAtom {
+        /// The math atom class to apply (op, rel, bin, …).
         atom_type: MathAtomType,
+        /// The content reclassified by `atom_type`.
         content: NodeId,
     },
 
@@ -271,8 +370,11 @@ pub enum CompactNode {
 
     /// `\rule[lift]{width}{height}` — visible filled rectangle.
     Rule {
+        /// Rectangle width.
         width: Rational,
+        /// Rectangle height.
         height: Rational,
+        /// Vertical lift of the rectangle above the baseline.
         lift: Rational,
     },
 
@@ -294,12 +396,16 @@ const _: () = assert!(
 /// A complete math expression stored in a compact arena.
 #[derive(Debug, Clone)]
 pub struct CompactExpr {
+    /// The arena owning all node, child, and string data.
     pub arena: AstArena,
+    /// Span of the top-level root nodes within the arena.
     pub roots: NodeSpan,
+    /// Display style (display vs. inline) of the whole expression.
     pub display: DisplayStyle,
 }
 
 impl CompactExpr {
+    /// Creates a `CompactExpr` from an existing arena, root span, and display style.
     #[must_use]
     pub fn new(arena: AstArena, roots: NodeSpan, display: DisplayStyle) -> Self {
         Self {

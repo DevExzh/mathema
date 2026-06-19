@@ -41,7 +41,6 @@
 
 #![deny(missing_docs)]
 
-#[doc(hidden)]
 pub mod ast;
 pub mod convert;
 #[path = "render/css_colors.rs"]

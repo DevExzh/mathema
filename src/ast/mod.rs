@@ -1,8 +1,17 @@
+//! Core math AST: the [`MathNode`] tree and its supporting types.
+//!
+//! This module defines the format-independent abstract syntax tree that all
+//! readers parse into and all writers render from, plus the [`compact`] arena
+//! representation, normalization passes, and traversal helpers.
 #![deny(missing_docs)]
 
+/// Arena-backed storage for the compact AST representation.
 pub mod arena;
+/// Compact, `Copy`-able arena-indexed AST node representation.
 pub mod compact;
+/// Structural normalization passes over the AST.
 pub mod normalize;
+/// Traversal helpers for walking the AST.
 pub mod visit;
 
 use std::fmt;
@@ -63,78 +72,111 @@ pub enum MathNode {
     // === Scripts ===
     /// Subscript: base_sub
     Subscript {
+        /// Expression the subscript attaches to.
         base: Box<MathNode>,
+        /// Subscript content.
         sub: Box<MathNode>,
     },
     /// Superscript: base^sup
     Superscript {
+        /// Expression the superscript attaches to.
         base: Box<MathNode>,
+        /// Superscript content.
         sup: Box<MathNode>,
     },
     /// Combined sub+superscript: base_sub^sup
     SubSup {
+        /// Expression the scripts attach to.
         base: Box<MathNode>,
+        /// Subscript content.
         sub: Box<MathNode>,
+        /// Superscript content.
         sup: Box<MathNode>,
     },
     /// Pre-scripts (isotope notation): _{pre_sub}^{pre_sup}base
     PreScripts {
+        /// Expression the pre-scripts attach to.
         base: Box<MathNode>,
+        /// Pre-subscript content, if present.
         pre_sub: Option<Box<MathNode>>,
+        /// Pre-superscript content, if present.
         pre_sup: Option<Box<MathNode>>,
     },
 
     // === Over/Under ===
     /// Content placed over base
     Overscript {
+        /// Expression the overscript sits above.
         base: Box<MathNode>,
+        /// Content drawn above the base.
         over: Box<MathNode>,
+        /// Whether the overscript moves to a superscript position in inline style.
         movable_limits: bool,
     },
     /// Content placed under base
     Underscript {
+        /// Expression the underscript sits below.
         base: Box<MathNode>,
+        /// Content drawn below the base.
         under: Box<MathNode>,
+        /// Whether the underscript moves to a subscript position in inline style.
         movable_limits: bool,
     },
     /// Content placed both over and under base
     UnderOver {
+        /// Expression the scripts sit above and below.
         base: Box<MathNode>,
+        /// Content drawn below the base.
         under: Box<MathNode>,
+        /// Content drawn above the base.
         over: Box<MathNode>,
+        /// Whether the scripts move to sub/superscript positions in inline style.
         movable_limits: bool,
     },
 
     // === Fractions and roots ===
     /// Fraction: num/den with configurable style
     Fraction {
+        /// Fraction style (bar visibility and sizing).
         kind: FractionKind,
+        /// Numerator expression.
         num: Box<MathNode>,
+        /// Denominator expression.
         den: Box<MathNode>,
     },
     /// Square root
     Sqrt(Box<MathNode>),
     /// Nth root with explicit index
     Root {
+        /// Root index (the small number in the radical's notch).
         index: Box<MathNode>,
+        /// Expression under the radical sign.
         radicand: Box<MathNode>,
     },
 
     // === N-ary operations ===
     /// N-ary operator: summation, integral, product, etc.
     Nary {
+        /// Operator character (e.g. `∑`, `∫`, `∏`).
         op: char,
+        /// Lower limit, if present.
         sub: Option<Box<MathNode>>,
+        /// Upper limit, if present.
         sup: Option<Box<MathNode>>,
+        /// Operand the operator applies to.
         body: Box<MathNode>,
+        /// Whether limits render above/below or as sub/superscripts.
         limits: LimitStyle,
     },
 
     // === Accent ===
     /// Accent mark above or below base
     Accent {
+        /// Expression the accent decorates.
         base: Box<MathNode>,
+        /// Accent character (e.g. `̂` for hat, `̃` for tilde).
         accent: char,
+        /// Whether the accent is drawn above or below the base.
         position: AccentPosition,
         /// `true` for wide/stretchy accents like `\widehat`, `\widetilde`, `\widecheck`.
         /// `false` for fixed-size accents like `\hat`, `\tilde`, `\check`.
@@ -145,9 +187,13 @@ pub enum MathNode {
     // === Tables/Arrays ===
     /// Matrix, equation array, cases, etc.
     Array {
+        /// Per-column horizontal alignments.
         columns: Vec<ColumnAlign>,
+        /// Rows of cells, where each cell is a sequence of nodes.
         rows: Vec<Vec<Vec<MathNode>>>,
+        /// Optional `\arraystretch` row-height multiplier.
         arraystretch: Option<f64>,
+        /// Whether to add `\jot` extra vertical spacing between rows.
         add_jot: bool,
     },
 
@@ -156,45 +202,65 @@ pub enum MathNode {
     Phantom(Box<MathNode>, PhantomKind),
     /// Visible filled rectangle: `\rule[lift]{width}{height}`.
     Rule {
+        /// Rectangle width.
         width: Rational,
+        /// Rectangle height.
         height: Rational,
+        /// Vertical offset above the baseline.
         lift: Rational,
     },
     /// Bordered box around content (with optional background/border colors for \colorbox/\fcolorbox)
     Boxed {
+        /// Boxed expression.
         content: Box<MathNode>,
+        /// Optional background fill color (`\colorbox`/`\fcolorbox`).
         bg_color: Option<String>,
+        /// Optional border color (`\fcolorbox`).
         border_color: Option<String>,
     },
     /// Strikethrough/cancellation
     Cancel {
+        /// Direction/shape of the cancellation stroke.
         stroke: StrokeKind,
+        /// Expression being struck through.
         content: Box<MathNode>,
     },
     /// Scaled to a factor of normal size
     Scaled {
+        /// Scale factor relative to normal size.
         factor: Rational,
+        /// Expression being scaled.
         content: Box<MathNode>,
     },
     /// Vertically shifted box: `\raisebox{shift}[height][depth]{content}`.
     RaiseBox {
+        /// Vertical shift (positive raises, negative lowers).
         shift: Rational,
+        /// Optional overridden box height.
         height: Option<Rational>,
+        /// Optional overridden box depth.
         depth: Option<Rational>,
+        /// Expression placed in the raised box.
         content: Box<MathNode>,
     },
     /// Applies a text/font style to children
     Styled(TextStyle, Vec<MathNode>),
     /// Style-dependent content: \mathchoice{D}{T}{S}{SS}
     MathChoice {
+        /// Variant used in display style.
         display: Box<MathNode>,
+        /// Variant used in text (inline) style.
         text: Box<MathNode>,
+        /// Variant used in script style.
         script: Box<MathNode>,
+        /// Variant used in script-script style.
         script_script: Box<MathNode>,
     },
     /// Explicit atom-type override: \mathop, \mathrel, \mathbin, etc.
     MathAtom {
+        /// TeX atom type controlling spacing.
         atom_type: MathAtomType,
+        /// Expression reclassified with this atom type.
         content: Box<MathNode>,
     },
 }
