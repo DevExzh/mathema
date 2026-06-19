@@ -34,7 +34,7 @@ Input string ──Reader──▶ MathExpr (AST) ──Writer──▶ Output s
                          rasterize ──▶ PNG/JPEG         (feature: raster)
 ```
 
-**AST** (`src/ast/mod.rs`): `MathExpr` holds `Vec<MathNode>` + `DisplayStyle`. `MathNode` is a 26-variant enum covering the union of all formats. `normalize.rs` canonicalizes the AST between parse and write. `visit.rs` provides a visitor trait.
+**AST** (`src/ast/mod.rs`): `MathExpr` holds `Vec<MathNode>` + `DisplayStyle`. `MathNode` is a 30-variant enum covering the union of all formats. `normalize.rs` canonicalizes the AST between parse and write. `visit.rs` provides a visitor trait.
 
 **Reader trait** (`src/reader/mod.rs`): `fn parse(input: &str, config: &Config) -> Result<ParseResult>`. One implementation per format in `src/reader/{latex,mathml,omml,mtef,unicode_math}.rs`. LaTeX and UnicodeMath use `nom` combinators; MathML and OMML use `quick-xml`.
 
@@ -64,8 +64,8 @@ The MathML reader handles **both Presentation and Content MathML**. Content form
 
 **Unicode tables** (`src/unicode/`): `symbols.rs` and `operators.rs` are `phf` perfect-hash maps for symbol/operator lookup. `fonts.rs` has embedded font metrics.
 
-**LaTeX package support** (`src/latex/`): ~26 LaTeX packages (MathJax-style) are supported via three seams:
-- `packages/` — a per-package registry (`mod.rs` aggregates one file per package). Each file exports `MACROS: &[(name, nargs, body)]` (builtin macros seeded into the preprocessor before parsing; user `\newcommand` overrides them) and `SYMBOLS: &[(name, unicode, SymbolClass)]` (consulted by the parser's unknown-command fallback after the core PHF tables miss). Macro/symbol packages live entirely here: amsbsy, amsfonts, amssymb, bbm, bboldx, braket, centernot, dsfont, extpfeil, gensymb, mathtools, physics, textcomp, units, upgreek. Add a package by filling one stub file.
+**LaTeX package support** (`src/latex/`): a curated set of LaTeX packages (MathJax-style) is supported via three seams:
+- `packages/` — a per-package registry (`mod.rs` aggregates one file per package). Each file exports `MACROS: &[(name, nargs, body)]` (builtin macros seeded into the preprocessor before parsing; user `\newcommand` overrides them) and `SYMBOLS: &[(name, unicode, SymbolClass)]` (consulted by the parser's unknown-command fallback after the core PHF tables miss). Macro/symbol packages live entirely here: amsfonts, amssymb, bbm, bboldx, braket, dsfont, extpfeil, gensymb, mathtools, physics, textcomp, units, upgreek (`amsbsy` and `centernot` are placeholder stubs whose behavior is implemented in `parse.rs`). Add a package by filling one stub file.
 - `mhchem.rs` / `siunitx.rs` — mini-language translators (`\ce`/`\pu`, `\SI`/`\num`/`\si`/`\ang`/`\qty`/`\unit`) that rewrite their argument into standard LaTeX and re-parse it. One dispatch arm each in `parse.rs`.
 - New environments/commands in `parse.rs` that **compose existing `CompactNode` variants** (no new variant): amscd `CD`, cases `numcases`/`subnumcases`, `empheq`, colortbl (`\cellcolor`/`\rowcolor`/`\columncolor` → `Boxed` cell backgrounds), bussproofs `prooftree` (→ `Array`+`Rule`), xypic `\xymatrix`, and real `color`/`xcolor` (`\color` switch, `\definecolor`, `red!50!blue` mixing → resolved into the existing `Color`/`Boxed` nodes; resolution helpers in `render/css_colors.rs`).
 
@@ -89,4 +89,4 @@ The MathML reader handles **both Presentation and Content MathML**. Content form
 
 ## Rust Edition
 
-Edition 2024 — requires Rust nightly or recent stable (1.85+).
+Edition 2024 — builds on stable Rust 1.88+ (the MSRV declared in `Cargo.toml`); nightly is only required for `cargo fuzz`.
