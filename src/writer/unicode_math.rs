@@ -345,6 +345,14 @@ fn needs_space_before(node: &MathNode) -> bool {
 // the recursive helpers to thread `&CompactNode` instead of `NodeId`, which is
 // not worth the churn/regression risk for this format.
 
+/// True when an over/under decoration node is the stretchy overline/underline
+/// rule (U+203E), as produced by `\overline`/`\underline`/`\bar`. Such nodes are
+/// rendered as a combining overline/underline; any other over/under content
+/// (`\overset`, `\overbrace`, arrows, …) must be emitted, not dropped.
+fn is_overunder_line(arena: &AstArena, id: NodeId) -> bool {
+    matches!(arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(*sid) == "\u{203E}")
+}
+
 fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
@@ -429,21 +437,41 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Overscript { base, over, .. } => {
             write_node_c(out, arena, base);
-            out.push('\u{0305}');
-            let _ = over;
+            if is_overunder_line(arena, over) {
+                out.push('\u{0305}'); // combining overline for \overline / \bar
+            } else {
+                // Preserve overset / brace / arrow content instead of dropping it.
+                out.push('^');
+                write_script_arg_c(out, arena, over);
+            }
         },
 
         CompactNode::Underscript { base, under, .. } => {
             write_node_c(out, arena, base);
-            out.push('\u{0332}');
-            let _ = under;
+            if is_overunder_line(arena, under) {
+                out.push('\u{0332}'); // combining underline for \underline
+            } else {
+                out.push('_');
+                write_script_arg_c(out, arena, under);
+            }
         },
 
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
             write_node_c(out, arena, base);
-            let _ = (under, over);
+            if is_overunder_line(arena, under) {
+                out.push('\u{0332}');
+            } else {
+                out.push('_');
+                write_script_arg_c(out, arena, under);
+            }
+            if is_overunder_line(arena, over) {
+                out.push('\u{0305}');
+            } else {
+                out.push('^');
+                write_script_arg_c(out, arena, over);
+            }
         },
 
         CompactNode::Fraction { num, den, .. } => {
