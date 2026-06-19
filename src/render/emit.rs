@@ -450,18 +450,23 @@ fn emit_box(
         BoxKind::Rule { thickness } => {
             let th_px = thickness * em;
             let w_px = layout.width * em;
-            let ry = y - layout.height * em;
-            svg.push_str(r#"<rect x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, ry);
-            svg.push_str(r#"" width=""#);
-            push_f3(svg, w_px);
-            svg.push_str(r#"" height=""#);
-            push_f3(svg, th_px);
-            svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#""/>"#);
+            // A zero-area rule (e.g. a zero-width `\\[Nem]` row strut) renders
+            // nothing; skip it so output matches the arena engine, which adds
+            // such gaps to positions directly rather than as a strut box.
+            if w_px != 0.0 && th_px != 0.0 {
+                let ry = y - layout.height * em;
+                svg.push_str(r#"<rect x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, ry);
+                svg.push_str(r#"" width=""#);
+                push_f3(svg, w_px);
+                svg.push_str(r#"" height=""#);
+                push_f3(svg, th_px);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#""/>"#);
+            }
         },
 
         BoxKind::Kern => {
@@ -817,18 +822,22 @@ fn emit_box_arena(
         ArenaBoxKind::Rule { thickness } => {
             let th_px = thickness * em;
             let w_px = layout.width * em;
-            let ry = y - layout.height * em;
-            svg.push_str(r#"<rect x=""#);
-            push_f3(svg, x);
-            svg.push_str(r#"" y=""#);
-            push_f3(svg, ry);
-            svg.push_str(r#"" width=""#);
-            push_f3(svg, w_px);
-            svg.push_str(r#"" height=""#);
-            push_f3(svg, th_px);
-            svg.push_str(r#"" fill=""#);
-            svg.push_str(&attrs.fg_color);
-            svg.push_str(r#""/>"#);
+            // A zero-area rule renders nothing; skip it (keeps parity with the
+            // legacy emitter and avoids emitting invisible struts).
+            if w_px != 0.0 && th_px != 0.0 {
+                let ry = y - layout.height * em;
+                svg.push_str(r#"<rect x=""#);
+                push_f3(svg, x);
+                svg.push_str(r#"" y=""#);
+                push_f3(svg, ry);
+                svg.push_str(r#"" width=""#);
+                push_f3(svg, w_px);
+                svg.push_str(r#"" height=""#);
+                push_f3(svg, th_px);
+                svg.push_str(r#"" fill=""#);
+                svg.push_str(&attrs.fg_color);
+                svg.push_str(r#""/>"#);
+            }
         },
 
         ArenaBoxKind::Kern => {

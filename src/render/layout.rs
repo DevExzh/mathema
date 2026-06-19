@@ -2898,6 +2898,7 @@ fn layout_fenced(open: &str, close: &str, content: &[FencedItem], ctx: &LayoutCt
             .max(2.0 * max_dist_from_axis - delim_shortfall);
         target.max(1.0 * ctx.size())
     };
+    let target_h = quantize_delim_height(target_h);
     let half = target_h / 2.0;
     let delim_h = half + axis;
     let delim_d = half - axis;
@@ -3418,6 +3419,17 @@ fn get_stretchy_overunder_sym(node: &MathNode) -> Option<&str> {
 }
 
 /// Create a stretchy overunder decoration LayoutBox at the given width.
+/// Quantize a stretchy-delimiter target height to a fine (1e-9 em) grid. The
+/// heap and arena layout engines accumulate content height in different f64
+/// orders, so their raw target heights can differ by ~1 ULP; without this, that
+/// sub-ULP difference can straddle a rounding boundary and flip a 4-decimal
+/// coordinate in the emitted delimiter path. The adjustment is ≤5e-10 em — far
+/// below output precision — so it changes no visible or emitted geometry while
+/// keeping the two engines byte-identical.
+fn quantize_delim_height(h: f64) -> f64 {
+    (h * 1.0e9).round() / 1.0e9
+}
+
 /// Decoration box height (em·size) for a stretchy over/under symbol, matched to
 /// KaTeX's `katexImagesData` (viewBoxHeight / 1000). Shared by the legacy and
 /// arena over/under-script layouts so they stay in sync.
@@ -6317,6 +6329,7 @@ fn layout_fenced_arena(
             .max(2.0 * max_dist_from_axis - delim_shortfall);
         target.max(1.0 * ctx.size())
     };
+    let target_h = quantize_delim_height(target_h);
     // Recompute axis-centered delimiter box dimensions with updated target
     let half = target_h / 2.0;
     let delim_h = half + axis;

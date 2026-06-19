@@ -100,18 +100,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   small end-to-end); and the compact UnicodeMath writer is ~30% slower than its
   (trivial) legacy counterpart due to the fixed arena-indirection floor.
   Profiling/optimizing SVG emit is tracked as a dedicated follow-up.
-- **Legacy layout engine cannot yet be retired (measured).** A new gate,
-  `legacy_vs_arena_render_divergence_baseline` (`tests/render_svg.rs`), renders
-  every formula in the KaTeX + small corpora through both the legacy
-  `MathExpr→heap` engine and the arena engine (via `from_math_expr`). Simple
-  atomic constructs already match exactly, but **28 of 135** *complex* formulas
-  (arrays/matrices with alignment + inter-row spacing, nested `\displaystyle`,
-  raisebox, cancel/strikethrough stacks, color resets) render differently — a
-  **pre-existing** divergence between the crate's two production layout engines,
-  not introduced by the compact→heap removal. Retiring the legacy engine
-  (re-implementing `render_to_svg`/`render_to_svg_standalone` on the arena) is
-  blocked until this divergence is reconciled to 0; the gate pins the current
-  count so progress is tracked and regressions are caught.
+- **Legacy and arena layout engines reconciled (retirement now unblocked).** A
+  new gate, `legacy_vs_arena_render_divergence_baseline` (`tests/render_svg.rs`),
+  renders every formula in the KaTeX + small corpora through both the legacy
+  `MathExpr→heap` engine and the arena engine (via `from_math_expr`). It began at
+  **28 of 135** diverging *complex* formulas (a pre-existing gap between the two
+  production engines, not introduced by the compact→heap removal); all 28 were
+  reconciled to **0** by the arena-engine fixes listed under **Fixed**. The two
+  engines now produce byte-identical SVG everywhere, so `render_to_svg`/
+  `render_to_svg_standalone` can be re-implemented on the arena engine and the
+  legacy `layout_node` engine retired (the remaining step toward a single layout
+  engine); the gate guards against any regression.
 
 ### Changed
 
@@ -131,17 +130,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Arena renderer no longer double-italicizes math-alphabet styles.** In the
-  default compact/arena render path, styled italic content (`\mathit{x}`,
-  `\mathnormal{x}`, and the italic-fallback letters inside `\mathbb`/`\mathcal`/
-  … groups) was both remapped to its italic Unicode codepoint (𝑥, U+1D465) *and*
-  given a `font-style="italic"` attribute, applying a second synthetic slant to
-  an already-italic glyph. The styled path now decides faux-italic exactly like
-  the normal identifier path (`is_math_italic_char` on the remapped char), so
-  `\mathit{x}` matches a plain italic `x` and the legacy engine. (This narrows
-  the legacy↔arena divergence within affected formulas, though the coarse
-  `legacy_vs_arena_render_divergence_baseline` formula count is unchanged because
-  those corpus formulas also exercise other still-diverging constructs.)
+- **Legacy and arena layout engines now render every corpus formula
+  byte-identically (28 → 0 divergences).** A regression gate
+  (`legacy_vs_arena_render_divergence_baseline`) renders the KaTeX + small
+  corpora through both engines; reconciling them fixed a series of real
+  arena-engine (default `convert(.., Svg)`/compact path) bugs:
+  - **Math-alphabet double-italic:** `\mathit{x}` / `\mathnormal{x}` (and
+    italic-fallback letters in `\mathbb`/`\mathcal`/… groups) were remapped to
+    the italic Unicode codepoint (𝑥, U+1D465) *and* given `font-style="italic"`,
+    double-slanting an already-italic glyph; the styled path now decides
+    faux-italic like the normal identifier path.
+  - **Styled-group child duplication:** `layout_styled_arena` held the shared
+    children buffer open across composite sub-layouts, so e.g. `\mathbb{\breve a}`
+    rendered its content twice; switched to the normal HBox two-phase pattern.
+  - **Missing inter-atom spacing** in styled groups (e.g. the medium space
+    around the binary `+` in `\mathbb{\imath+}`).
+  - **Over/under decoration heights:** `\underline` rules were too thick, and
+    `\overbrace`/`\underbrace`/`\overbracket` used wrong heights; unified all
+    over/under-script sites on a shared `stretchy_overunder_deco_h` table
+    (brace 0.548, bracket 0.44, overline 0.08).
+  - **Invisible struts:** zero-area rules (e.g. `\\[1em]` row struts) are no
+    longer emitted as `width="0.000"` rects.
+  - **`\cr` row separator:** array/matrix cells now stop at `\cr` (previously it
+    was swallowed as a `Space`, collapsing rows/columns).
+  - **Stretchy-delimiter target height** is quantized to a 1e-9 grid so the two
+    engines' f64 accumulation order cannot flip a 4-decimal path coordinate.
 - **AST variant count corrected from 27 to 30.** The `MathNode` doc comment,
   `README`, and the constructibility test (`all_27_variants_constructible`) all
   understated the enum, omitting `Rule`, `RaiseBox`, and `MathAtom`. The count

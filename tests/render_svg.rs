@@ -33,34 +33,27 @@ fn assert_valid_svg(svg: &str, label: &str) {
     assert!(svg.contains("viewBox"), "{label}: missing viewBox");
 }
 
-/// Tracks how far the legacy heap layout engine and the production arena engine
-/// agree, which is the precondition for retiring the legacy engine: once they
-/// render every input identically, `render_to_svg`/`render_to_svg_standalone`
-/// (over `&MathExpr`) can be re-implemented on top of the arena engine and the
-/// legacy `layout_node` engine deleted.
+/// The legacy heap layout engine and the production arena engine must render
+/// every corpus formula to **byte-identical** SVG. This is the precondition for
+/// retiring the legacy engine: since the two now agree everywhere,
+/// `render_to_svg`/`render_to_svg_standalone` (over `&MathExpr`) can be
+/// re-implemented on top of the arena engine and the legacy `layout_node` engine
+/// deleted (tracked as performance-assessment M1).
 ///
-/// Today they diverge on a set of *complex* corpus formulas (arrays/matrices
-/// with alignment and inter-row spacing, nested `\displaystyle`, raisebox,
-/// cancel/strikethrough stacks, color resets, …); simple atomic constructs
-/// (`\overline`, `\operatorname`, `\cancel`, `\vec`, fractions, scripts, roots)
-/// already match exactly. This divergence is **pre-existing** — the crate's two
-/// production layout engines (legacy for `&MathExpr` callers, arena for compact
-/// callers) genuinely produce different SVG for these inputs.
-///
-/// This gate pins the current divergence count as a baseline so (a) new
-/// divergences are caught and (b) progress toward retirement (count → 0) forces
-/// a deliberate baseline update. When this reaches 0, the legacy engine can be
-/// retired (see the performance assessment, M1).
+/// This started as a baseline of 28 known divergences; they were reconciled to
+/// 0 by fixing real arena-engine bugs (math-alphabet double-italic, styled-group
+/// child duplication + missing inter-atom spacing, over/under decoration
+/// heights, invisible zero-area struts, `\cr` row separators, and quantizing the
+/// stretchy-delimiter target height against cross-engine f64 noise). The gate now
+/// asserts full agreement, so any new divergence is caught immediately.
 #[test]
 fn legacy_vs_arena_render_divergence_baseline() {
     use mathema::CompactExpr;
     use mathema::ast::DisplayStyle;
 
-    // Current known divergence baseline over the corpora below. Drive this to 0
-    // (fixing the arena engine to match legacy, or vice versa) to unblock
-    // retiring the legacy layout engine; update the numbers when it changes.
+    // The two layout engines must agree on every corpus formula.
     const EXPECTED_CHECKED: usize = 135;
-    const EXPECTED_DIVERGENCES: usize = 8;
+    const EXPECTED_DIVERGENCES: usize = 0;
 
     let opts = RenderOptions::default();
     let mut checked = 0usize;
@@ -109,9 +102,9 @@ fn legacy_vs_arena_render_divergence_baseline() {
     assert_eq!(
         mismatches.len(),
         EXPECTED_DIVERGENCES,
-        "legacy↔arena divergence count changed (now {}): {:?}.\n\
-         If you fixed divergences, lower EXPECTED_DIVERGENCES (0 unblocks legacy-engine retirement); \
-         if you introduced one, fix it.",
+        "legacy↔arena render divergence (now {}): {:?}.\n\
+         The two layout engines must render every corpus formula identically; \
+         a new divergence means a regression in one of them.",
         mismatches.len(),
         mismatches
     );

@@ -381,6 +381,17 @@ fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
     (result, seps)
 }
 
+/// True if `input` begins with a `\cr` row separator (not `\cross` etc.).
+/// Used by table-cell parsing to stop a cell at `\cr`, mirroring the `\cr`
+/// branch of [`parse_row_separator`].
+fn is_cr_row_separator(input: &str) -> bool {
+    input.starts_with("\\cr")
+        && !input
+            .as_bytes()
+            .get(3)
+            .is_some_and(|b| b.is_ascii_alphabetic())
+}
+
 fn parse_row_separator(input: &str) -> IResult<&str, (Option<&str>, bool)> {
     let (input, _) = ws(input)?;
     // Accept \\ or \cr as row separator
@@ -2999,7 +3010,13 @@ impl LatexCompactParser {
                 (glyph, sub, sup, body, limits)
             },
             // Non-n-ary operator: hug it directly, no above/below limits to lift.
-            _ => (op_id, NodeId::NONE, NodeId::NONE, NodeId::NONE, LimitStyle::Default),
+            _ => (
+                op_id,
+                NodeId::NONE,
+                NodeId::NONE,
+                NodeId::NONE,
+                LimitStyle::Default,
+            ),
         };
 
         // Left group → prescripts on the glyph.
@@ -3021,12 +3038,14 @@ impl LatexCompactParser {
                 sub: r_sub,
                 sup: r_sup,
             }),
-            (true, false) => self
-                .arena
-                .push_node(CompactNode::Subscript { base: with_pre, sub: r_sub }),
-            (false, true) => self
-                .arena
-                .push_node(CompactNode::Superscript { base: with_pre, sup: r_sup }),
+            (true, false) => self.arena.push_node(CompactNode::Subscript {
+                base: with_pre,
+                sub: r_sub,
+            }),
+            (false, true) => self.arena.push_node(CompactNode::Superscript {
+                base: with_pre,
+                sup: r_sup,
+            }),
             (false, false) => with_pre,
         };
 
@@ -3515,7 +3534,15 @@ impl LatexCompactParser {
             cells.into_iter().map(|cell| vec![cell]).collect();
         Ok((
             input,
-            self.build_array_with_spacing(&[ColumnAlign::Center], table_rows, 50, false, 0, 0, false),
+            self.build_array_with_spacing(
+                &[ColumnAlign::Center],
+                table_rows,
+                50,
+                false,
+                0,
+                0,
+                false,
+            ),
         ))
     }
 
@@ -4115,9 +4142,7 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_seps_rows(
-                &columns.0, columns.1, row_seps, columns.2, rows,
-            ),
+            self.build_array_with_seps_rows(&columns.0, columns.1, row_seps, columns.2, rows),
         ))
     }
 
@@ -5251,11 +5276,7 @@ impl LatexCompactParser {
         // Drop a trailing rule recorded against a phantom empty row: if the last
         // row is entirely empty it was produced by a trailing `\\`; move its rule
         // bit down to the true bottom edge and discard the empty row.
-        if rows.len() > 1
-            && rows
-                .last()
-                .is_some_and(|r| r.iter().all(|c| c.is_empty()))
-        {
+        if rows.len() > 1 && rows.last().is_some_and(|r| r.iter().all(|c| c.is_empty())) {
             let last = rows.len();
             if row_seps & (1 << last) != 0 {
                 row_seps &= !(1 << last);
@@ -5389,10 +5410,11 @@ impl LatexCompactParser {
     }
 
     fn parse_cell_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        // Stop at &, \\, or \end
+        // Stop at &, \\, \cr, or \end
         if input.starts_with('&')
             || input.starts_with("\\\\")
             || input.starts_with("\\end")
+            || is_cr_row_separator(input)
             || input.is_empty()
         {
             return Err(nom::Err::Error(nom::error::Error::new(
