@@ -101,12 +101,17 @@ impl AstArena {
         unsafe { std::str::from_utf8_unchecked(&self.strings[start..end]) }
     }
 
-    // ── Unsafe hot-path accessors ──────────────────────────────────────
+    // ── Unsafe hot-path accessors (crate-internal; not part of the public API) ──
+    // Kept `pub(crate)` rather than `pub`: precondition-carrying `unsafe fn`s must
+    // not be part of a math library's semver-committed surface. `#[allow(dead_code)]`
+    // because they are currently exercised only by the parity regression tests
+    // below; they remain available as an internal fast path.
 
     /// # Safety
     /// `id.raw()` must be `< self.nodes.len()`.
     #[inline]
-    pub unsafe fn node_unchecked(&self, id: NodeId) -> &CompactNode {
+    #[allow(dead_code)]
+    pub(crate) unsafe fn node_unchecked(&self, id: NodeId) -> &CompactNode {
         unsafe { self.nodes.get_unchecked(id.index()) }
     }
 
@@ -114,7 +119,8 @@ impl AstArena {
     /// The entire range `span.start()..span.start()+span.len()` must be
     /// within `self.children` bounds.
     #[inline]
-    pub unsafe fn children_unchecked(&self, span: NodeSpan) -> &[NodeId] {
+    #[allow(dead_code)]
+    pub(crate) unsafe fn children_unchecked(&self, span: NodeSpan) -> &[NodeId] {
         let start = span.start() as usize;
         let end = start + span.len() as usize;
         unsafe { self.children.get_unchecked(start..end) }
@@ -123,7 +129,8 @@ impl AstArena {
     /// # Safety
     /// `id.raw()` must be `< self.str_starts.len() - 1`.
     #[inline]
-    pub unsafe fn str_unchecked(&self, id: StrId) -> &str {
+    #[allow(dead_code)]
+    pub(crate) unsafe fn str_unchecked(&self, id: StrId) -> &str {
         unsafe {
             let idx = id.index();
             let start = *self.str_starts.get_unchecked(idx) as usize;

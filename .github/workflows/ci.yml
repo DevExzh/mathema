@@ -99,6 +99,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
 
+  miri:
+    name: miri (unsafe checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: miri test (AST arena unsafe accessors + string interner)
+        run: cargo miri test --lib ast
+
   fuzz-smoke:
     name: fuzz smoke
     runs-on: ubuntu-latest
