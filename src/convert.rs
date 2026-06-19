@@ -135,6 +135,40 @@ impl ConvertResult {
         UnicodeMathWriter::write_compact(&self.compact.expr, config)
     }
 
+    /// Serialize to Presentation MathML, also returning diagnostics for any
+    /// information that the target format cannot represent (writer-side loss).
+    ///
+    /// Unlike [`diagnostics`](Self::diagnostics) — which reports *reader-side*
+    /// warnings from parsing — this surfaces *writer-side* loss (e.g. a node
+    /// kind the target cannot express). Use it when round-trip fidelity matters.
+    pub fn to_mathml_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        MathmlWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+    }
+
+    /// Serialize to OMML, also returning writer-side loss diagnostics.
+    /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
+    pub fn to_omml_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        OmmlWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+    }
+
+    /// Serialize to MTEF, also returning writer-side loss diagnostics. MTEF
+    /// silently drops several decorations (rules, colors, scale, phantoms), so
+    /// this is the recommended entry point when targeting MathType.
+    /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
+    pub fn to_mtef_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        MtefWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+    }
+
+    /// Serialize to UnicodeMath, also returning writer-side loss diagnostics.
+    /// UnicodeMath is an intentionally lossy linear notation; this reports the
+    /// node kinds that could not be represented faithfully.
+    /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
+    pub fn to_unicode_math_with_diagnostics(
+        &self,
+    ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        UnicodeMathWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+    }
+
     /// Render to a standalone SVG with embedded glyph outlines.
     ///
     /// This is the default for [`to_svg`](Self::to_svg): the output embeds

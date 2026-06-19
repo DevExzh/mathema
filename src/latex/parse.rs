@@ -939,6 +939,11 @@ pub(crate) struct LatexCompactParser {
     /// Warnings accumulated during parsing (e.g. metadata-dropping macros such
     /// as `\href`/`\includegraphics`), merged into the `ParseResult`.
     diagnostics: Vec<Diagnostic>,
+    /// Set to `true` the first time an infix-fraction marker (`\over`/`\atop`/
+    /// `\choose`/`\brace`/`\brack`/`\above`) is produced. The vast majority of
+    /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
+    /// every braced group unless this flag is set.
+    infix_marker_seen: bool,
 }
 
 impl LatexCompactParser {
@@ -956,6 +961,7 @@ impl LatexCompactParser {
             display_override: false,
             colors: HashMap::new(),
             diagnostics: Vec::new(),
+            infix_marker_seen: false,
         }
     }
 
@@ -990,6 +996,14 @@ impl LatexCompactParser {
     /// (`\over`, `\atop`, `\choose`, `\brace`, `\brack`). If found, split
     /// into numerator/denominator and produce the appropriate node.
     fn check_infix_fraction(&mut self, ids: &[NodeId]) -> Option<NodeId> {
+        // Fast path: if no infix-fraction marker was ever produced during this
+        // parse, there is nothing to find — skip the O(n) scan entirely. Infix
+        // operators (`\over`/`\atop`/…) are rare, so this short-circuits the
+        // common case (every braced group + the top-level list would otherwise
+        // be scanned).
+        if !self.infix_marker_seen {
+            return None;
+        }
         // Scan for the first infix marker
         let mut marker_pos = None;
         let mut marker_kind = "";
@@ -2136,6 +2150,7 @@ impl LatexCompactParser {
                     "brack" => "__infix_brack__",
                     _ => unreachable!(),
                 });
+                self.infix_marker_seen = true;
                 Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
             },
 
@@ -2375,6 +2390,7 @@ impl LatexCompactParser {
                     Err(_) => input,
                 };
                 let sid = self.arena.push_str("__infix_over__");
+                self.infix_marker_seen = true;
                 Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
             },
 

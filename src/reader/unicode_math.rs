@@ -265,6 +265,7 @@ impl CompactParser {
         try_alt!(
             self,
             input,
+            parse_box_phantom,
             parse_sqrt,
             parse_cbrt,
             parse_matrix,
@@ -280,6 +281,38 @@ impl CompactParser {
             input,
             nom::error::ErrorKind::Alt,
         )))
+    }
+
+    /// Parse a UnicodeMath box (`▭` U+25AD) or phantom (`⟡` U+27E1) operator
+    /// emitted by this crate's UnicodeMath writer, so a write→read round-trip
+    /// recovers the `Boxed`/`Phantom` structure instead of dropping it as an
+    /// unknown symbol. The marker is followed by its content (parenthesized only
+    /// when complex), which we parse as the next atom.
+    fn parse_box_phantom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let mut chars = input.chars();
+        let is_box = match chars.next() {
+            Some('\u{25AD}') => true,  // ▭ box
+            Some('\u{27E1}') => false, // ⟡ phantom
+            _ => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )));
+            },
+        };
+        let rest = chars.as_str();
+        let (rest, content) = self.parse_atom(rest)?;
+        let node = if is_box {
+            let empty = self.arena.push_str("");
+            CompactNode::Boxed {
+                content,
+                bg_color: empty,
+                border_color: empty,
+            }
+        } else {
+            CompactNode::Phantom(content, PhantomKind::Full)
+        };
+        Ok((rest, self.arena.push_node(node)))
     }
 
     fn parse_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -749,6 +782,24 @@ mod tests {
     fn identifier() {
         let nodes = parse("x");
         assert!(matches!(&nodes[0], MathNode::Identifier(s) if s == "x"));
+    }
+
+    #[test]
+    fn reads_back_box_and_phantom_sentinels() {
+        // The UnicodeMath writer emits ▭ (U+25AD) for \boxed and ⟡ (U+27E1) for
+        // \phantom; the reader must recognize them so the structure round-trips.
+        let nodes = parse("\u{25AD}x");
+        assert!(
+            matches!(&nodes[0], MathNode::Boxed { content, .. } if matches!(&**content, MathNode::Identifier(s) if s == "x")),
+            "▭x should parse to Boxed{{x}}, got {:?}",
+            nodes
+        );
+        let nodes = parse("\u{27E1}y");
+        assert!(
+            matches!(&nodes[0], MathNode::Phantom(inner, _) if matches!(&**inner, MathNode::Identifier(s) if s == "y")),
+            "⟡y should parse to Phantom(y), got {:?}",
+            nodes
+        );
     }
 
     #[test]

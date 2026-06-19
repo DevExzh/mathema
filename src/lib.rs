@@ -68,7 +68,9 @@ pub use convert::{
     from_mathml_with, from_mtef, from_mtef_with, from_omml, from_omml_with, from_unicode_math,
     from_unicode_math_with,
 };
-pub use error::{Config, Error, Format, ParseResult, Result, Strictness};
+pub use error::{
+    Config, Diagnostic, DiagnosticKind, Error, Format, ParseResult, Result, Strictness,
+};
 #[cfg(feature = "raster")]
 pub use render::raster::{ImageFormat, RasterOptions, render_to_image};
 #[cfg(feature = "render")]

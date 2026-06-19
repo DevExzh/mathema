@@ -95,3 +95,25 @@ fn lossless_input_has_no_writer_diagnostics() {
         );
     }
 }
+
+/// Writer-loss diagnostics must be reachable through the mainstream public
+/// builder API (`from_latex().to_*_with_diagnostics()`), not only the
+/// `#[doc(hidden)]` writer trait.
+#[test]
+fn convert_result_surfaces_writer_diagnostics() {
+    let r = mathema::from_latex(r"\color{red}{x}").unwrap();
+    let (_, diags) = r.to_omml_with_diagnostics().unwrap();
+    assert!(has_warning(&diags, "color"), "omml: {diags:?}");
+
+    let r = mathema::from_latex(r"\phantom{x}").unwrap();
+    let (_, diags) = r.to_mtef_with_diagnostics().unwrap();
+    assert!(has_warning(&diags, "phantom"), "mtef: {diags:?}");
+
+    let r = mathema::from_latex(r"\boxed{x}").unwrap();
+    let (_, diags) = r.to_unicode_math_with_diagnostics().unwrap();
+    assert!(has_warning(&diags, "box"), "unicode: {diags:?}");
+
+    // Lossless input → no writer diagnostics via the builder either.
+    let r = mathema::from_latex("x + y = z").unwrap();
+    assert!(r.to_mathml_with_diagnostics().unwrap().1.is_empty());
+}

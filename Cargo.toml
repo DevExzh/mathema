@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Convert math formulas between LaTeX, MathML, OMML, MTEF, and UnicodeMath via a shared AST"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/DevExzh/mathema"
 homepage = "https://github.com/DevExzh/mathema"
 readme = "README.md"
@@ -30,6 +30,12 @@ exclude = [
     ".github/",
     "CLAUDE.md",
 ]
+
+# docs.rs builds with the default features only (`cli`), which would hide the
+# optional render/raster/serde public API. Build the docs with those features
+# enabled so the full library surface is visible online.
+[package.metadata.docs.rs]
+features = ["render", "raster", "serde"]
 
 [dependencies]
 # Core (always compiled)

@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+
 pub mod arena;
 pub mod compact;
 pub mod normalize;
@@ -9,14 +11,19 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MathExpr {
+    /// Top-level sequence of nodes making up the expression, in reading order.
     pub nodes: Vec<MathNode>,
+    /// Whether the expression renders as block (display) or inline math.
     pub display: DisplayStyle,
 }
 
+/// Render mode of a math expression.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DisplayStyle {
+    /// Displayed (block) math, centered on its own line with full-size operators.
     Block,
+    /// Inline math, flowed within surrounding text with compact operators.
     #[default]
     Inline,
 }
@@ -45,8 +52,11 @@ pub enum MathNode {
     Row(Vec<MathNode>),
     /// Delimited group with open/close and optional mid-separators
     Fenced {
+        /// Opening delimiter (e.g. `(`, `[`, `\{`); empty string for none.
         open: String,
+        /// Closing delimiter (e.g. `)`, `]`, `\}`); empty string for none.
         close: String,
+        /// Inner content, interleaving elements with `\middle` separators.
         content: Vec<FencedItem>,
     },
 
@@ -189,71 +199,115 @@ pub enum MathNode {
     },
 }
 
+/// TeX math class of a symbol, controlling spacing and stretchiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SymbolKind {
+    /// Ordinary symbol with no special spacing (e.g. `\partial`, `\infty`).
     Ordinary,
+    /// Large operator that may carry limits (e.g. `\sum`, `\int`).
     LargeOp,
+    /// Binary operator with surrounding medium space (e.g. `+`, `\times`).
     BinaryOp,
+    /// Relation with surrounding thick space (e.g. `=`, `\leq`).
     Relation,
+    /// Opening delimiter (e.g. `(`, `[`).
     Open,
+    /// Closing delimiter (e.g. `)`, `]`).
     Close,
+    /// Punctuation with trailing space (e.g. `,`, `;`).
     Punctuation,
+    /// Stretchable fence delimiter (e.g. `|`, `\|`).
     Fence,
+    /// Alphabetic symbol treated as a letter (e.g. a Greek letter).
     Alphabetic,
 }
 
+/// Font variant (math alphabet) applied to text or symbols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextStyle {
+    /// Upright (roman) normal weight, e.g. `\mathrm`.
     Normal,
+    /// Bold weight, e.g. `\mathbf`.
     Bold,
+    /// Italic, e.g. `\mathit` (the default for variables).
     Italic,
+    /// Bold italic.
     BoldItalic,
+    /// Monospace (typewriter), e.g. `\mathtt`.
     Monospace,
+    /// Sans-serif, e.g. `\mathsf`.
     SansSerif,
+    /// Bold sans-serif.
     SansSerifBold,
+    /// Italic sans-serif.
     SansSerifItalic,
+    /// Bold italic sans-serif.
     SansSerifBoldItalic,
+    /// Double-struck (blackboard bold), e.g. `\mathbb`.
     DoubleStruck,
+    /// Script (calligraphic), e.g. `\mathcal`/`\mathscr`.
     Script,
+    /// Bold script.
     BoldScript,
+    /// Fraktur (blackletter), e.g. `\mathfrak`.
     Fraktur,
+    /// Bold fraktur.
     BoldFraktur,
 }
 
+/// Style of a fraction, controlling bar visibility and sizing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FractionKind {
+    /// Standard `\frac`: bar shown, size follows current style.
     Normal,
+    /// `\dfrac`: forced display-style sizing.
     Display,
+    /// `\tfrac`: forced text (inline) sizing.
     Inline,
+    /// `\binom`-style fraction with no fraction bar.
     NoBar,
+    /// `\sfrac`-style skewed (diagonal) fraction.
     Skewed,
 }
 
+/// Horizontal alignment of an array/matrix column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ColumnAlign {
+    /// Left-aligned (`l`).
     Left,
+    /// Centered (`c`).
     Center,
+    /// Right-aligned (`r`).
     Right,
 }
 
+/// Placement of an accent relative to its base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AccentPosition {
+    /// Accent drawn above the base (e.g. `\hat`, `\bar`).
     Above,
+    /// Accent drawn below the base (e.g. `\underbar`).
     Below,
 }
 
+/// Direction/shape of a cancellation stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StrokeKind {
+    /// Diagonal line from bottom-left to top-right (`\cancel`).
     Forward,
+    /// Diagonal line from top-left to bottom-right (`\bcancel`).
     Backward,
+    /// Both diagonals forming an X (`\xcancel`).
     Cross,
+    /// Horizontal strike-through line.
     Horizontal,
+    /// Vertical strike-through line.
     Vertical,
 }
 
@@ -280,16 +334,25 @@ pub enum PhantomKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MathAtomType {
+    /// Ordinary atom (`\mathord`): no extra spacing.
     Ord,
+    /// Large operator atom (`\mathop`): may take limits.
     Op,
+    /// Binary operator atom (`\mathbin`): medium space on both sides.
     Bin,
+    /// Relation atom (`\mathrel`): thick space on both sides.
     Rel,
+    /// Opening atom (`\mathopen`): delimiter-like opening spacing.
     Open,
+    /// Closing atom (`\mathclose`): delimiter-like closing spacing.
     Close,
+    /// Punctuation atom (`\mathpunct`): trailing space.
     Punct,
+    /// Inner atom (`\mathinner`): treated as a self-contained subformula.
     Inner,
 }
 
+/// Whether operator limits sit above/below or as sub/superscripts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum LimitStyle {
@@ -301,17 +364,23 @@ pub enum LimitStyle {
     SubSup,
 }
 
+/// One element inside a [`MathNode::Fenced`] group's content list.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FencedItem {
+    /// A normal content node.
     Element(MathNode),
+    /// A `\middle` separator with the given delimiter string.
     Middle(String),
 }
 
+/// A named math operator together with its limit-placement behavior.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct OperatorAttr {
+    /// Operator name as it appears in the formula (e.g. `"sin"`, `"lim"`).
     pub name: String,
+    /// How limits attach to this operator.
     pub limit_style: LimitStyle,
 }
 
@@ -320,7 +389,9 @@ pub struct OperatorAttr {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Rational {
+    /// Signed numerator.
     pub num: i32,
+    /// Strictly positive denominator.
     pub den: u32,
 }
 
@@ -335,6 +406,10 @@ const fn gcd(mut a: u32, mut b: u32) -> u32 {
 }
 
 impl Rational {
+    /// Creates a rational reduced to lowest terms.
+    ///
+    /// # Panics
+    /// Panics if `den` is zero.
     #[must_use]
     pub fn new(num: i32, den: u32) -> Self {
         assert!(den > 0, "Rational denominator must be non-zero");
@@ -355,16 +430,19 @@ impl Rational {
         }
     }
 
+    /// The rational `0/1`.
     #[must_use]
     pub fn zero() -> Self {
         Self { num: 0, den: 1 }
     }
 
+    /// The rational `1/1`.
     #[must_use]
     pub fn one() -> Self {
         Self { num: 1, den: 1 }
     }
 
+    /// Converts to an `f64` (`num / den`).
     #[must_use]
     pub fn as_f64(self) -> f64 {
         self.num as f64 / self.den as f64
@@ -382,11 +460,13 @@ impl fmt::Display for Rational {
 }
 
 impl MathExpr {
+    /// Creates an expression from nodes with the given display mode.
     #[must_use]
     pub fn new(nodes: Vec<MathNode>, display: DisplayStyle) -> Self {
         Self { nodes, display }
     }
 
+    /// Creates an inline expression from the given nodes.
     #[must_use]
     pub fn inline(nodes: Vec<MathNode>) -> Self {
         Self {
@@ -395,6 +475,7 @@ impl MathExpr {
         }
     }
 
+    /// Creates a block (display) expression from the given nodes.
     #[must_use]
     pub fn block(nodes: Vec<MathNode>) -> Self {
         Self {

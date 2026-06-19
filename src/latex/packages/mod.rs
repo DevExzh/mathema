@@ -50,7 +50,7 @@
 /// [`crate::ast::SymbolKind`].
 pub use crate::ast::SymbolKind as SymbolClass;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 // --- Registered package files (each owns its own file) ---------------------
@@ -133,19 +133,31 @@ pub fn is_builtin_macro_name(name: &str) -> bool {
     builtin_name_set().contains(name)
 }
 
+/// Cached lookup map of every package-contributed symbol command name to its
+/// `(unicode_str, class)`. Built once on first use, mirroring
+/// [`builtin_name_set`]. Replaces an O(n) linear scan over all package tables.
+///
+/// Insertion preserves first-table-wins semantics (`or_insert`), matching the
+/// previous linear scan that returned the first matching entry.
+fn package_symbol_map() -> &'static HashMap<&'static str, (&'static str, SymbolClass)> {
+    static MAP: OnceLock<HashMap<&'static str, (&'static str, SymbolClass)>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut m = HashMap::new();
+        for table in PACKAGE_SYMBOLS {
+            for &(cmd, unicode, class) in *table {
+                m.entry(cmd).or_insert((unicode, class));
+            }
+        }
+        m
+    })
+}
+
 /// Parser fallback: look up a package-contributed symbol by command name.
 ///
 /// Returns `(unicode_str, class)`. Consulted only after the core PHF tables
 /// miss, so it can never shadow a core symbol.
 pub fn lookup_package_symbol(name: &str) -> Option<(&'static str, SymbolClass)> {
-    for table in PACKAGE_SYMBOLS {
-        for &(cmd, unicode, class) in *table {
-            if cmd == name {
-                return Some((unicode, class));
-            }
-        }
-    }
-    None
+    package_symbol_map().get(name).copied()
 }
 
 #[cfg(test)]

@@ -69,24 +69,47 @@ pub(super) fn layout_boxed(
     }
 }
 
+/// Build the stroke `<path>` data for a `\cancel`/`\bcancel`/`\xcancel`/`\sout`
+/// strike, rounded to the minimal coordinate precision via [`PathWriter`].
+/// Shared by the heap and arena cancel layouts.
+fn cancel_stroke_path(stroke: StrokeKind, w: f64, h: f64) -> String {
+    use crate::render::path_writer::PathWriter;
+
+    fn seg(pw: &mut PathWriter, x0: f64, y0: f64, x1: f64, y1: f64) {
+        pw.cmd(b'M');
+        pw.push_f64(x0);
+        pw.push_f64(y0);
+        pw.cmd(b'L');
+        pw.push_f64(x1);
+        pw.push_f64(y1);
+    }
+
+    let mut pw = PathWriter::with_prefix("");
+    match stroke {
+        StrokeKind::Forward => seg(&mut pw, 0.0, h, w, 0.0),
+        StrokeKind::Backward => seg(&mut pw, 0.0, 0.0, w, h),
+        StrokeKind::Cross => {
+            seg(&mut pw, 0.0, h, w, 0.0);
+            seg(&mut pw, 0.0, 0.0, w, h);
+        },
+        StrokeKind::Horizontal => {
+            let mid = h / 2.0;
+            seg(&mut pw, 0.0, mid, w, mid);
+        },
+        StrokeKind::Vertical => {
+            let mid = w / 2.0;
+            seg(&mut pw, mid, 0.0, mid, h);
+        },
+    }
+    pw.finish()
+}
+
 pub(super) fn layout_cancel(stroke: StrokeKind, content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     let inner = layout_node(content, ctx);
     let w = inner.width;
     let h = inner.height + inner.depth;
 
-    let path = match stroke {
-        StrokeKind::Forward => format!("M0,{h} L{w},0"),
-        StrokeKind::Backward => format!("M0,0 L{w},{h}"),
-        StrokeKind::Cross => format!("M0,{h} L{w},0 M0,0 L{w},{h}"),
-        StrokeKind::Horizontal => {
-            let mid = h / 2.0;
-            format!("M0,{mid} L{w},{mid}")
-        },
-        StrokeKind::Vertical => {
-            let mid = w / 2.0;
-            format!("M{mid},0 L{mid},{h}")
-        },
-    };
+    let path = cancel_stroke_path(stroke, w, h);
 
     // Capture dimensions before moving inner into children vec
     let inner_width = inner.width;
@@ -354,19 +377,7 @@ pub(super) fn layout_cancel_arena(
     let w = inner_w;
     let h = inner_h + inner_d;
 
-    let path = match stroke {
-        StrokeKind::Forward => format!("M0,{h} L{w},0"),
-        StrokeKind::Backward => format!("M0,0 L{w},{h}"),
-        StrokeKind::Cross => format!("M0,{h} L{w},0 M0,0 L{w},{h}"),
-        StrokeKind::Horizontal => {
-            let mid = h / 2.0;
-            format!("M0,{mid} L{w},{mid}")
-        },
-        StrokeKind::Vertical => {
-            let mid = w / 2.0;
-            format!("M{mid},0 L{mid},{h}")
-        },
-    };
+    let path = cancel_stroke_path(stroke, w, h);
 
     let path_id = arena.alloc(ArenaLayoutBox {
         width: w,

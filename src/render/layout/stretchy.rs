@@ -82,6 +82,13 @@ pub(super) fn extensible_arrow_dims(arrow_w: f64, size: f64, axis: f64) -> (f64,
 /// weight of a fraction bar / relation operator at any length — matching
 /// MathJax/LaTeX rather than scaling down with the box.
 pub(super) fn stretchy_arrow_svg(ch: char, w: f64, em: f64) -> String {
+    // Extensible arrows are infrequent (only `\xrightarrow` & friends), so the
+    // verbose `format!` builder is kept and its output is minimized in one pass
+    // (trailing/leading zeros trimmed, minimal separators, collapsed commands).
+    crate::render::path_writer::minify_path_d(&stretchy_arrow_svg_verbose(ch, w, em))
+}
+
+fn stretchy_arrow_svg_verbose(ch: char, w: f64, em: f64) -> String {
     let t = 0.027 * em; // half-thickness of arrow shaft (full ≈ rule thickness)
     let tip = 0.44 * em; // arrowhead length
     let tw = ARROW_HEAD_HALF_W_EM * em; // arrowhead half-width (perpendicular to shaft)

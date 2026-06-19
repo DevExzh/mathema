@@ -15,11 +15,12 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
             "UnicodeMath cannot represent a cancellation stroke; only the content is written"
                 .into(),
         ),
-        CompactNode::Boxed { .. } => {
-            Some("UnicodeMath box (▭) is not read back by the reader; round-trip is lossy".into())
-        },
+        CompactNode::Boxed { .. } => Some(
+            "UnicodeMath box (▭) round-trips structurally but drops background/border color".into(),
+        ),
         CompactNode::Phantom(..) => Some(
-            "UnicodeMath phantom (⟡) is not read back by the reader; round-trip is lossy".into(),
+            "UnicodeMath phantom (⟡) round-trips structurally but drops the phantom kind (v/h)"
+                .into(),
         ),
         CompactNode::Color { .. } => {
             Some("UnicodeMath cannot represent color; only the content is written".into())

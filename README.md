@@ -99,4 +99,4 @@ The optional render pipeline applies core TeXBook typesetting rules (radicals â€
 
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

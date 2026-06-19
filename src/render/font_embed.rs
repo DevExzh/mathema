@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 
 use super::fonts_registry::{self, FontId};
 
@@ -66,13 +66,17 @@ pub fn parse_font_info(font_data: &[u8]) -> Option<FontInfo> {
 /// [`crate::render::subset::build_glyph_set`]) only pay a refcount bump on a
 /// cache hit rather than cloning the outline's `path_data`.
 pub fn extract_glyph(font: FontId, ch: char) -> Option<Arc<GlyphOutline>> {
-    if let Some(hit) = GLYPH_CACHE.read().expect("glyph cache").get(&(font, ch)) {
+    if let Some(hit) = GLYPH_CACHE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&(font, ch))
+    {
         return hit.clone();
     }
     let outline = extract_glyph_from_face(fonts_registry::face(font), ch).map(Arc::new);
     GLYPH_CACHE
         .write()
-        .expect("glyph cache")
+        .unwrap_or_else(PoisonError::into_inner)
         .insert((font, ch), outline.clone());
     outline
 }
@@ -106,7 +110,7 @@ fn extract_glyph_from_face(face: &ttf_parser::Face<'_>, ch: char) -> Option<Glyp
 pub fn extract_glyph_by_id(font: FontId, glyph_id: u16) -> Option<Arc<GlyphOutline>> {
     if let Some(hit) = VARIANT_CACHE
         .read()
-        .expect("variant cache")
+        .unwrap_or_else(PoisonError::into_inner)
         .get(&(font, glyph_id))
     {
         return hit.clone();
@@ -114,7 +118,7 @@ pub fn extract_glyph_by_id(font: FontId, glyph_id: u16) -> Option<Arc<GlyphOutli
     let outline = extract_glyph_by_id_from_face(fonts_registry::face(font), glyph_id).map(Arc::new);
     VARIANT_CACHE
         .write()
-        .expect("variant cache")
+        .unwrap_or_else(PoisonError::into_inner)
         .insert((font, glyph_id), outline.clone());
     outline
 }
@@ -143,20 +147,28 @@ fn extract_glyph_by_id_from_face(
 /// Builds an SVG path `d` attribute string from `ttf_parser::OutlineBuilder` callbacks.
 /// Y-coordinates are negated to convert from font coordinates (y-up) to SVG (y-down).
 struct SvgPathBuilder {
-    buf: String,
-    first: bool,
+    pw: super::path_writer::PathWriter,
+    scratch: String,
 }
 
 impl SvgPathBuilder {
     fn new() -> Self {
         Self {
-            buf: String::with_capacity(256),
-            first: true,
+            pw: super::path_writer::PathWriter::with_capacity(256),
+            scratch: String::with_capacity(16),
         }
     }
 
+    /// Format a font-unit coordinate compactly (integer when exact, else one
+    /// decimal) into `scratch`, then push it through the minimal writer.
+    fn coord(&mut self, v: f32) {
+        self.scratch.clear();
+        let _ = write!(self.scratch, "{}", fmt_coord(v));
+        self.pw.number(&self.scratch);
+    }
+
     fn finish(self) -> String {
-        self.buf
+        self.pw.finish()
     }
 }
 
@@ -181,43 +193,37 @@ impl std::fmt::Display for CompactCoord {
 
 impl ttf_parser::OutlineBuilder for SvgPathBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
-        if !self.first {
-            self.buf.push(' ');
-        }
-        self.first = false;
-        let _ = write!(self.buf, "M {} {}", fmt_coord(x), fmt_coord(-y));
+        self.pw.cmd(b'M');
+        self.coord(x);
+        self.coord(-y);
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
-        let _ = write!(self.buf, " L {} {}", fmt_coord(x), fmt_coord(-y));
+        self.pw.cmd(b'L');
+        self.coord(x);
+        self.coord(-y);
     }
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        let _ = write!(
-            self.buf,
-            " Q {} {} {} {}",
-            fmt_coord(x1),
-            fmt_coord(-y1),
-            fmt_coord(x),
-            fmt_coord(-y),
-        );
+        self.pw.cmd(b'Q');
+        self.coord(x1);
+        self.coord(-y1);
+        self.coord(x);
+        self.coord(-y);
     }
 
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        let _ = write!(
-            self.buf,
-            " C {} {} {} {} {} {}",
-            fmt_coord(x1),
-            fmt_coord(-y1),
-            fmt_coord(x2),
-            fmt_coord(-y2),
-            fmt_coord(x),
-            fmt_coord(-y),
-        );
+        self.pw.cmd(b'C');
+        self.coord(x1);
+        self.coord(-y1);
+        self.coord(x2);
+        self.coord(-y2);
+        self.coord(x);
+        self.coord(-y);
     }
 
     fn close(&mut self) {
-        self.buf.push('Z');
+        self.pw.close();
     }
 }
 
@@ -282,17 +288,38 @@ mod tests {
     #[test]
     fn path_data_has_negated_y() {
         let outline = extract_glyph(FontId::Math, 'A').expect("A should have outline");
-        let parts: Vec<&str> = outline.path_data.split_whitespace().collect();
-        assert_eq!(parts[0], "M");
-        // 'A' extends above baseline, so at least some y-coordinates must be negative
-        // after negation (font y-up → SVG y-down). The first point may be at y=0
-        // (baseline), so we check that negative y values exist anywhere in the path.
-        let has_negative_y = parts
-            .iter()
-            .any(|s| s.parse::<f64>().map(|v| v < -1.0).unwrap_or(false));
+        let d = &outline.path_data;
+        assert!(d.starts_with('M'), "path must start with a moveto: {d}");
+        // 'A' extends above baseline, so after negation (font y-up → SVG y-down)
+        // some y-coordinates are negative. Scan numeric tokens for a value < -1.
+        // The minimized encoding fuses commands with numbers (e.g. `M717-123`),
+        // so split on the number grammar rather than whitespace.
+        let bytes = d.as_bytes();
+        let mut has_negative_y = false;
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'-' || b == b'.' || b.is_ascii_digit() {
+                let start = i;
+                if bytes[i] == b'-' {
+                    i += 1;
+                }
+                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                    i += 1;
+                }
+                if let Ok(v) = d[start..i].parse::<f64>()
+                    && v < -1.0
+                {
+                    has_negative_y = true;
+                    break;
+                }
+            } else {
+                i += 1;
+            }
+        }
         assert!(
             has_negative_y,
-            "path should contain negated y values for glyph above baseline"
+            "path should contain negated y values for glyph above baseline: {d}"
         );
     }
 
