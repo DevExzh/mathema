@@ -1,4 +1,5 @@
 use super::*;
+use crate::render::path_writer::{PathWriter, minify_path_d};
 
 /// Returns `true` if the accent char should be drawn as a stretchy SVG path
 /// that scales to the base width, rather than as a fixed glyph.
@@ -142,7 +143,7 @@ pub(super) fn katex_accent_tier(w: f64) -> usize {
 /// appropriate scale factor (`sx` for x-coordinates, `sy` for y-coordinates).
 /// Supports commands: M, L, H, V, C, S, Q, T, A, Z (both cases).
 pub(super) fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
-    let mut result = String::with_capacity(path.len() + 64);
+    let mut pw = PathWriter::with_prefix("");
     let bytes = path.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -155,16 +156,16 @@ pub(super) fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
 
     while i < len {
         let b = bytes[i];
-        if b.is_ascii_alphabetic() {
+        if b.is_ascii_alphabetic() && b != b'e' && b != b'E' {
             cmd = b;
             param_index = 0;
-            result.push(b as char);
+            pw.cmd(b);
             i += 1;
             continue;
         }
-        // Skip whitespace and commas between tokens
+        // Skip whitespace and commas between tokens (PathWriter inserts minimal
+        // separators itself).
         if b == b' ' || b == b',' || b == b'\n' || b == b'\r' || b == b'\t' {
-            result.push(b as char);
             i += 1;
             continue;
         }
@@ -226,27 +227,18 @@ pub(super) fn scale_svg_path(path: &str, sx: f64, sy: f64) -> String {
                         }
                     },
                 };
-                // Ensure a separator before this number if the previous char
-                // could be mistaken as part of the same token (digit or '.').
-                if let Some(&last) = result.as_bytes().last()
-                    && (last.is_ascii_digit() || last == b'.')
-                {
-                    result.push(' ');
-                }
-                // Format with up to 4 decimal places, trimming trailing zeros
-                fmt_fixed4_trim(&mut result, scaled);
+                pw.push_f64(scaled);
             } else {
-                // Fallback: push the raw string
-                result.push_str(num_str);
+                // Fallback: push the raw token
+                pw.number(num_str);
             }
             param_index += 1;
             continue;
         }
-        // Anything else, just copy
-        result.push(b as char);
+        // Anything else, skip
         i += 1;
     }
-    result
+    pw.finish()
 }
 
 /// Build a filled, scaled KaTeX accent path for the given base dimensions.
@@ -260,7 +252,7 @@ pub(super) fn katex_accent_scaled(paths: &[KatexAccentPath; 4], w: f64, h: f64) 
     let sx = (w * compensation) / data.viewbox_w;
     let sy = h / data.viewbox_h;
     let scaled = scale_svg_path(data.path, sx, sy);
-    format!("F:{scaled}")
+    minify_path_d(&format!("F:{scaled}"))
 }
 
 /// Compute the height of a KaTeX accent path for a given tier.
@@ -293,7 +285,9 @@ pub(super) fn stretchy_accent_height(accent: char, w: f64, size: f64) -> f64 {
 /// `r` is the radius. The path fits in a 2r × 2r box.
 pub(super) fn ring_circle_path(r: f64) -> String {
     let d = r * 2.0;
-    format!("M{d:.4},{r:.4} a{r:.4},{r:.4} 0 1 1 -{d:.4},0 a{r:.4},{r:.4} 0 1 1 {d:.4},0")
+    minify_path_d(&format!(
+        "M{d:.4},{r:.4} a{r:.4},{r:.4} 0 1 1 -{d:.4},0 a{r:.4},{r:.4} 0 1 1 {d:.4},0"
+    ))
 }
 
 /// Generate an SVG path string for a stretchy accent at the given width and height.
@@ -304,10 +298,16 @@ pub(super) fn ring_circle_path(r: f64) -> String {
 /// `r` is the radius in em-equivalent units. The path fits in a 2r × 2r box.
 pub(super) fn dot_circle_path(r: f64) -> String {
     let d = r * 2.0;
-    format!("F:M{d:.4},{r:.4} a{r:.4},{r:.4} 0 1 1 -{d:.4},0 a{r:.4},{r:.4} 0 1 1 {d:.4},0 Z")
+    minify_path_d(&format!(
+        "F:M{d:.4},{r:.4} a{r:.4},{r:.4} 0 1 1 -{d:.4},0 a{r:.4},{r:.4} 0 1 1 {d:.4},0 Z"
+    ))
 }
 
 pub(super) fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
+    minify_path_d(&stretchy_accent_path_verbose(accent, w, h))
+}
+
+fn stretchy_accent_path_verbose(accent: char, w: f64, h: f64) -> String {
     match accent {
         // Hat (U+0302): use KaTeX widehat paths
         '\u{0302}' => katex_accent_scaled(&WIDEHAT_PATHS, w, h),
@@ -409,6 +409,10 @@ pub(super) fn stretchy_accent_path(accent: char, w: f64, h: f64) -> String {
 /// Generate an SVG path string for a stretchy over/under decoration.
 /// Coordinates are in em units with (0,0) at top-left.
 pub(super) fn stretchy_overunder_path(sym: &str, w: f64, h: f64) -> String {
+    minify_path_d(&stretchy_overunder_path_verbose(sym, w, h))
+}
+
+fn stretchy_overunder_path_verbose(sym: &str, w: f64, h: f64) -> String {
     // Thickness for filled brace shapes (proportion of height)
     // KaTeX's brace glyphs have ~12-15% visible stroke weight relative to height
     let t = (h * 0.22).max(0.03);

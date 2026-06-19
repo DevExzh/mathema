@@ -1676,19 +1676,26 @@ fn parse_number(chars: &mut std::iter::Peekable<std::str::Chars>) -> Option<f32>
         buf[len] = chars.next().unwrap() as u8;
         len += 1;
     }
-    // Digits and decimal point
+    // Digits and a single decimal point. A second '.' terminates the number:
+    // in minimal SVG path data a number like `.067` directly follows another
+    // dotted number (`.477.067`) with no separator, so we must stop at the
+    // second dot rather than greedily consuming `.477.067` as one token.
     let mut has_digit = false;
-    while chars
-        .peek()
-        .is_some_and(|c| c.is_ascii_digit() || *c == '.')
-    {
+    let mut seen_dot = false;
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            has_digit = true;
+        } else if c == '.' && !seen_dot {
+            seen_dot = true;
+        } else {
+            break;
+        }
         if len < buf.len() {
             buf[len] = chars.next().unwrap() as u8;
             len += 1;
         } else {
             chars.next(); // consume but skip on overflow
         }
-        has_digit = true;
     }
     if has_digit {
         // SAFETY: buf contains only ASCII digits, '.', '+', '-'
@@ -2002,6 +2009,25 @@ mod tests {
     #[test]
     fn path_parse_empty() {
         assert!(parse_svg_path("").is_none());
+    }
+
+    #[test]
+    fn path_parse_minified_separatorless_dots() {
+        // Minimal SVG path data packs dotted numbers with no separator:
+        // `.477.067` is two numbers (0.477, 0.067), not one. The parser must
+        // terminate a number at its second '.'.
+        let path = parse_svg_path("M.3174.0555L.477.067.017.159Z").expect("must parse");
+        let b = path.bounds();
+        assert!(b.width() > 0.0 && b.height() > 0.0, "non-degenerate bounds");
+    }
+
+    #[test]
+    fn parse_number_stops_at_second_dot() {
+        let mut it = ".477.067".chars().peekable();
+        let a = parse_number(&mut it).unwrap();
+        assert!((a - 0.477).abs() < 1e-6, "first number = .477, got {a}");
+        let b = parse_number(&mut it).unwrap();
+        assert!((b - 0.067).abs() < 1e-6, "second number = .067, got {b}");
     }
 
     // --- Rendering with various AST nodes ---

@@ -8,7 +8,7 @@
 //! All paths are in a coordinate system where (0,0) is top-left and the path
 //! extends to (width, height), measured in **em units** (not pixels).
 
-use std::fmt::Write;
+use crate::render::path_writer::PathWriter;
 
 /// Threshold: use SVG paths only when the delimiter is significantly taller
 /// than normal text size. Below this ratio (target_height / size), we fall
@@ -69,23 +69,23 @@ pub fn delimiter_path(ch: char, height: f64, size: f64) -> Option<DelimiterPath>
     }
     let h = height;
     let sw = 0.04 * (h / 1.0).sqrt().min(1.5); // stroke scales gently with height
-    match ch {
-        '(' => Some(left_paren(h, sw)),
-        ')' => Some(right_paren(h, sw)),
-        '[' => Some(left_bracket(h, sw)),
-        ']' => Some(right_bracket(h, sw)),
-        '{' => Some(left_brace(h, sw)),
-        '}' => Some(right_brace(h, sw)),
-        '|' => Some(vertical_bar(h, sw)),
-        '‖' | '∥' => Some(double_vertical_bar(h, sw)),
-        '⌊' => Some(left_floor(h, sw)),
-        '⌋' => Some(right_floor(h, sw)),
-        '⌈' => Some(left_ceil(h, sw)),
-        '⌉' => Some(right_ceil(h, sw)),
-        '⟨' | '〈' => Some(left_angle(h, sw)),
-        '⟩' | '〉' => Some(right_angle(h, sw)),
-        _ => None,
-    }
+    Some(match ch {
+        '(' => left_paren(h, sw),
+        ')' => right_paren(h, sw),
+        '[' => left_bracket(h, sw),
+        ']' => right_bracket(h, sw),
+        '{' => left_brace(h, sw),
+        '}' => right_brace(h, sw),
+        '|' => vertical_bar(h, sw),
+        '‖' | '∥' => double_vertical_bar(h, sw),
+        '⌊' => left_floor(h, sw),
+        '⌋' => right_floor(h, sw),
+        '⌈' => left_ceil(h, sw),
+        '⌉' => right_ceil(h, sw),
+        '⟨' | '〈' => left_angle(h, sw),
+        '⟩' | '〉' => right_angle(h, sw),
+        _ => return None,
+    })
 }
 
 /// Compute the delimiter width for path-based rendering.
@@ -146,7 +146,6 @@ fn angle_width(h: f64) -> f64 {
 
 fn left_paren(h: f64, _sw: f64) -> DelimiterPath {
     let w = paren_width(h);
-    let mut d = String::with_capacity(256);
     // Filled crescent shape: outer arc curves further left, inner arc curves
     // less, creating a shape that is thicker in the middle (~0.04em) and tapers
     // to ~0.015em at the tips -- mimicking KaTeX's font-traced glyphs.
@@ -155,30 +154,32 @@ fn left_paren(h: f64, _sw: f64) -> DelimiterPath {
     let inner_cx = w * 0.15; // inner control-point x (curves less)
 
     // Outer curve: top-right → bottom-right, curving left
-    let _ = write!(
-        d,
-        "F:M{w:.4},{start:.4} C{ocx:.4},{ocy1:.4} {ocx:.4},{ocy2:.4} {w:.4},{h:.4}",
-        w = w,
-        start = 0.0,
-        ocx = outer_cx,
-        ocy1 = h * 0.25,
-        ocy2 = h * 0.75,
-        h = h,
-    );
+    let mut pw = PathWriter::with_prefix("F:");
+    pw.cmd(b'M');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.cmd(b'C');
+    pw.push_f64(outer_cx);
+    pw.push_f64(h * 0.25);
+    pw.push_f64(outer_cx);
+    pw.push_f64(h * 0.75);
+    pw.push_f64(w);
+    pw.push_f64(h);
     // Line to inner bottom endpoint (slightly inset)
-    let _ = write!(d, " L{ix:.4},{iy:.4}", ix = w - tip, iy = h - tip,);
+    pw.cmd(b'L');
+    pw.push_f64(w - tip);
+    pw.push_f64(h - tip);
     // Inner curve: bottom → top, curving left but less deeply (reverse direction)
-    let _ = write!(
-        d,
-        " C{icx:.4},{icy2:.4} {icx:.4},{icy1:.4} {ix:.4},{iy:.4} Z",
-        icx = inner_cx,
-        icy2 = h * 0.72,
-        icy1 = h * 0.28,
-        ix = w - tip,
-        iy = tip,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(inner_cx);
+    pw.push_f64(h * 0.72);
+    pw.push_f64(inner_cx);
+    pw.push_f64(h * 0.28);
+    pw.push_f64(w - tip);
+    pw.push_f64(tip);
+    pw.close();
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: 0.0,
     }
@@ -186,7 +187,6 @@ fn left_paren(h: f64, _sw: f64) -> DelimiterPath {
 
 fn right_paren(h: f64, _sw: f64) -> DelimiterPath {
     let w = paren_width(h);
-    let mut d = String::with_capacity(256);
     // Filled crescent, mirror of left paren: arc from top-left to bottom-left,
     // curving right, with tapering tips.
     let tip = 0.015;
@@ -194,30 +194,32 @@ fn right_paren(h: f64, _sw: f64) -> DelimiterPath {
     let inner_cx = w * 0.85; // inner control-point x (curves less)
 
     // Outer curve: top-left → bottom-left, curving right
-    let _ = write!(
-        d,
-        "F:M{start:.4},{top:.4} C{ocx:.4},{ocy1:.4} {ocx:.4},{ocy2:.4} {start:.4},{bot:.4}",
-        start = 0.0,
-        top = 0.0,
-        ocx = outer_cx,
-        ocy1 = h * 0.25,
-        ocy2 = h * 0.75,
-        bot = h,
-    );
+    let mut pw = PathWriter::with_prefix("F:");
+    pw.cmd(b'M');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.cmd(b'C');
+    pw.push_f64(outer_cx);
+    pw.push_f64(h * 0.25);
+    pw.push_f64(outer_cx);
+    pw.push_f64(h * 0.75);
+    pw.push_f64(0.0);
+    pw.push_f64(h);
     // Line to inner bottom endpoint (slightly inset)
-    let _ = write!(d, " L{ix:.4},{iy:.4}", ix = tip, iy = h - tip,);
+    pw.cmd(b'L');
+    pw.push_f64(tip);
+    pw.push_f64(h - tip);
     // Inner curve: bottom → top, curving right but less deeply (reverse direction)
-    let _ = write!(
-        d,
-        " C{icx:.4},{icy2:.4} {icx:.4},{icy1:.4} {ix:.4},{iy:.4} Z",
-        icx = inner_cx,
-        icy2 = h * 0.72,
-        icy1 = h * 0.28,
-        ix = tip,
-        iy = tip,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(inner_cx);
+    pw.push_f64(h * 0.72);
+    pw.push_f64(inner_cx);
+    pw.push_f64(h * 0.28);
+    pw.push_f64(tip);
+    pw.push_f64(tip);
+    pw.close();
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: 0.0,
     }
@@ -225,11 +227,20 @@ fn right_paren(h: f64, _sw: f64) -> DelimiterPath {
 
 fn left_bracket(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
-    let mut d = String::with_capacity(80);
     // ┌ shape: horizontal top, vertical left, horizontal bottom
-    let _ = write!(d, "M{w:.4},0 L0,0 L0,{h:.4} L{w:.4},{h:.4}", w = w, h = h,);
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.push_f64(h);
+    pw.push_f64(w);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -237,11 +248,20 @@ fn left_bracket(h: f64, sw: f64) -> DelimiterPath {
 
 fn right_bracket(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
-    let mut d = String::with_capacity(80);
     // ┐ shape: horizontal top, vertical right, horizontal bottom
-    let _ = write!(d, "M0,0 L{w:.4},0 L{w:.4},{h:.4} L0,{h:.4}", w = w, h = h,);
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.push_f64(w);
+    pw.push_f64(h);
+    pw.push_f64(0.0);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -249,7 +269,6 @@ fn right_bracket(h: f64, sw: f64) -> DelimiterPath {
 
 fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     let w = brace_width(h);
-    let mut d = String::with_capacity(512);
     // Filled curly brace { — outer + inner contour approach.
     //
     // Shape anatomy (left brace):
@@ -278,43 +297,43 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     let tip_dx = w * 0.12;
     let tip_dy = h * 0.06;
 
+    let mut pw = PathWriter::with_prefix("F:");
     // === Outer contour (clockwise) ===
     // Segment 1: top hook — (w, 0) → (arm, hk)
-    //   c1x = w*0.45 keeps entry nearly horizontal, c2y = hk*0.08 makes sharp turn
-    let _ = write!(
-        d,
-        "F:M{w:.4},0 C{c1x:.4},0 {arm:.4},{c2y:.4} {arm:.4},{hk:.4}",
-        c1x = w * 0.45,
-        c2y = hk * 0.08,
-    );
+    pw.cmd(b'M');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.cmd(b'C');
+    pw.push_f64(w * 0.45);
+    pw.push_f64(0.0);
+    pw.push_f64(arm);
+    pw.push_f64(hk * 0.08);
+    pw.push_f64(arm);
+    pw.push_f64(hk);
     // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
-    //   Arm stays relatively straight; last control point is above-right of tip
-    //   to create angled V approach
-    let _ = write!(
-        d,
-        " C{arm:.4},{c3y:.4} {c4x:.4},{c4y:.4} {tip:.4},{mid:.4}",
-        c3y = mid * 0.40,
-        c4x = tip + tip_dx,
-        c4y = mid - tip_dy,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(arm);
+    pw.push_f64(mid * 0.40);
+    pw.push_f64(tip + tip_dx);
+    pw.push_f64(mid - tip_dy);
+    pw.push_f64(tip);
+    pw.push_f64(mid);
     // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
-    //   First control point is below-right of tip for angled V departure
-    let _ = write!(
-        d,
-        " C{c5x:.4},{c5y:.4} {arm:.4},{c6y:.4} {arm:.4},{lk:.4}",
-        c5x = tip + tip_dx,
-        c5y = mid + tip_dy,
-        c6y = mid + (h - mid) * 0.60,
-        lk = h - hk,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(tip + tip_dx);
+    pw.push_f64(mid + tip_dy);
+    pw.push_f64(arm);
+    pw.push_f64(mid + (h - mid) * 0.60);
+    pw.push_f64(arm);
+    pw.push_f64(h - hk);
     // Segment 4: bottom hook — (arm, h - hk) → (w, h)
-    //   c2y near h-hk*0.08 for sharp turn, c1x = w*0.45 for horizontal exit
-    let _ = write!(
-        d,
-        " C{arm:.4},{c7y:.4} {c8x:.4},{h:.4} {w:.4},{h:.4}",
-        c7y = h - hk * 0.08,
-        c8x = w * 0.45,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(arm);
+    pw.push_f64(h - hk * 0.08);
+    pw.push_f64(w * 0.45);
+    pw.push_f64(h);
+    pw.push_f64(w);
+    pw.push_f64(h);
 
     // === Inner contour (counter-clockwise) — offset inward by `thick` ===
     let iarm = arm + thick;
@@ -324,40 +343,44 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
     let itip_dx = tip_dx.max(thick * 0.5); // ensure inner V control offset is meaningful
 
     // Segment 4i: bottom hook inner — (wi, h-eg) → (iarm, h-hk)
-    let _ = write!(
-        d,
-        " L{wi:.4},{hi:.4} C{c8xi:.4},{hi:.4} {iarm:.4},{c7yi:.4} {iarm:.4},{lki:.4}",
-        hi = h - eg,
-        c8xi = w * 0.50,
-        c7yi = h - hk * 0.12,
-        lki = h - hk,
-    );
+    pw.cmd(b'L');
+    pw.push_f64(wi);
+    pw.push_f64(h - eg);
+    pw.cmd(b'C');
+    pw.push_f64(w * 0.50);
+    pw.push_f64(h - eg);
+    pw.push_f64(iarm);
+    pw.push_f64(h - hk * 0.12);
+    pw.push_f64(iarm);
+    pw.push_f64(h - hk);
     // Segment 3i: lower arm → tip inner — (iarm, h-hk) → (itip, mid)
-    let _ = write!(
-        d,
-        " C{iarm:.4},{c6yi:.4} {c5xi:.4},{c5yi:.4} {itip:.4},{mid:.4}",
-        c6yi = mid + (h - mid) * 0.60,
-        c5xi = itip + itip_dx,
-        c5yi = mid + tip_dy,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(iarm);
+    pw.push_f64(mid + (h - mid) * 0.60);
+    pw.push_f64(itip + itip_dx);
+    pw.push_f64(mid + tip_dy);
+    pw.push_f64(itip);
+    pw.push_f64(mid);
     // Segment 2i: tip → upper arm inner — (itip, mid) → (iarm, hk)
-    let _ = write!(
-        d,
-        " C{c4xi:.4},{c4yi:.4} {iarm:.4},{c3yi:.4} {iarm:.4},{hk:.4}",
-        c4xi = itip + itip_dx,
-        c4yi = mid - tip_dy,
-        c3yi = mid * 0.40,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(itip + itip_dx);
+    pw.push_f64(mid - tip_dy);
+    pw.push_f64(iarm);
+    pw.push_f64(mid * 0.40);
+    pw.push_f64(iarm);
+    pw.push_f64(hk);
     // Segment 1i: top hook inner — (iarm, hk) → (wi, eg)
-    let _ = write!(
-        d,
-        " C{iarm:.4},{c2yi:.4} {c1xi:.4},{eg:.4} {wi:.4},{eg:.4} Z",
-        c2yi = hk * 0.12,
-        c1xi = w * 0.50,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(iarm);
+    pw.push_f64(hk * 0.12);
+    pw.push_f64(w * 0.50);
+    pw.push_f64(eg);
+    pw.push_f64(wi);
+    pw.push_f64(eg);
+    pw.close();
 
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: 0.0,
     }
@@ -365,7 +388,6 @@ fn left_brace(h: f64, _sw: f64) -> DelimiterPath {
 
 fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
     let w = brace_width(h);
-    let mut d = String::with_capacity(512);
     // Filled curly brace } — mirror of left brace, middle tip points right.
     //
     // Shape anatomy (right brace):
@@ -387,38 +409,43 @@ fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
     let tip_dx = w * 0.12;
     let tip_dy = h * 0.06;
 
+    let mut pw = PathWriter::with_prefix("F:");
     // === Outer contour (clockwise) ===
     // Segment 1: top hook — (0, 0) → (arm, hk)
-    let _ = write!(
-        d,
-        "F:M0,0 C{c1x:.4},0 {arm:.4},{c2y:.4} {arm:.4},{hk:.4}",
-        c1x = w * 0.55,
-        c2y = hk * 0.08,
-    );
+    pw.cmd(b'M');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.cmd(b'C');
+    pw.push_f64(w * 0.55);
+    pw.push_f64(0.0);
+    pw.push_f64(arm);
+    pw.push_f64(hk * 0.08);
+    pw.push_f64(arm);
+    pw.push_f64(hk);
     // Segment 2: upper arm → middle tip — (arm, hk) → (tip, mid)
-    let _ = write!(
-        d,
-        " C{arm:.4},{c3y:.4} {c4x:.4},{c4y:.4} {tip:.4},{mid:.4}",
-        c3y = mid * 0.40,
-        c4x = tip - tip_dx,
-        c4y = mid - tip_dy,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(arm);
+    pw.push_f64(mid * 0.40);
+    pw.push_f64(tip - tip_dx);
+    pw.push_f64(mid - tip_dy);
+    pw.push_f64(tip);
+    pw.push_f64(mid);
     // Segment 3: middle tip → lower arm — (tip, mid) → (arm, h - hk)
-    let _ = write!(
-        d,
-        " C{c5x:.4},{c5y:.4} {arm:.4},{c6y:.4} {arm:.4},{lk:.4}",
-        c5x = tip - tip_dx,
-        c5y = mid + tip_dy,
-        c6y = mid + (h - mid) * 0.60,
-        lk = h - hk,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(tip - tip_dx);
+    pw.push_f64(mid + tip_dy);
+    pw.push_f64(arm);
+    pw.push_f64(mid + (h - mid) * 0.60);
+    pw.push_f64(arm);
+    pw.push_f64(h - hk);
     // Segment 4: bottom hook — (arm, h - hk) → (0, h)
-    let _ = write!(
-        d,
-        " C{arm:.4},{c7y:.4} {c8x:.4},{h:.4} 0,{h:.4}",
-        c7y = h - hk * 0.08,
-        c8x = w * 0.55,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(arm);
+    pw.push_f64(h - hk * 0.08);
+    pw.push_f64(w * 0.55);
+    pw.push_f64(h);
+    pw.push_f64(0.0);
+    pw.push_f64(h);
 
     // === Inner contour (counter-clockwise) ===
     let iarm = arm - thick;
@@ -427,40 +454,44 @@ fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
     let itip_dx = tip_dx.max(thick * 0.5);
 
     // Segment 4i: bottom hook inner — (eg, h-eg) → (iarm, h-hk)
-    let _ = write!(
-        d,
-        " L{eg:.4},{hi:.4} C{c8xi:.4},{hi:.4} {iarm:.4},{c7yi:.4} {iarm:.4},{lki:.4}",
-        hi = h - eg,
-        c8xi = w * 0.50,
-        c7yi = h - hk * 0.12,
-        lki = h - hk,
-    );
+    pw.cmd(b'L');
+    pw.push_f64(eg);
+    pw.push_f64(h - eg);
+    pw.cmd(b'C');
+    pw.push_f64(w * 0.50);
+    pw.push_f64(h - eg);
+    pw.push_f64(iarm);
+    pw.push_f64(h - hk * 0.12);
+    pw.push_f64(iarm);
+    pw.push_f64(h - hk);
     // Segment 3i: lower arm → tip inner — (iarm, h-hk) → (itip, mid)
-    let _ = write!(
-        d,
-        " C{iarm:.4},{c6yi:.4} {c5xi:.4},{c5yi:.4} {itip:.4},{mid:.4}",
-        c6yi = mid + (h - mid) * 0.60,
-        c5xi = itip - itip_dx,
-        c5yi = mid + tip_dy,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(iarm);
+    pw.push_f64(mid + (h - mid) * 0.60);
+    pw.push_f64(itip - itip_dx);
+    pw.push_f64(mid + tip_dy);
+    pw.push_f64(itip);
+    pw.push_f64(mid);
     // Segment 2i: tip → upper arm inner — (itip, mid) → (iarm, hk)
-    let _ = write!(
-        d,
-        " C{c4xi:.4},{c4yi:.4} {iarm:.4},{c3yi:.4} {iarm:.4},{hk:.4}",
-        c4xi = itip - itip_dx,
-        c4yi = mid - tip_dy,
-        c3yi = mid * 0.40,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(itip - itip_dx);
+    pw.push_f64(mid - tip_dy);
+    pw.push_f64(iarm);
+    pw.push_f64(mid * 0.40);
+    pw.push_f64(iarm);
+    pw.push_f64(hk);
     // Segment 1i: top hook inner — (iarm, hk) → (eg, eg)
-    let _ = write!(
-        d,
-        " C{iarm:.4},{c2yi:.4} {c1xi:.4},{eg:.4} {eg:.4},{eg:.4} Z",
-        c2yi = hk * 0.12,
-        c1xi = w * 0.50,
-    );
+    pw.cmd(b'C');
+    pw.push_f64(iarm);
+    pw.push_f64(hk * 0.12);
+    pw.push_f64(w * 0.50);
+    pw.push_f64(eg);
+    pw.push_f64(eg);
+    pw.push_f64(eg);
+    pw.close();
 
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: 0.0,
     }
@@ -468,11 +499,16 @@ fn right_brace(h: f64, _sw: f64) -> DelimiterPath {
 
 fn vertical_bar(h: f64, sw: f64) -> DelimiterPath {
     let w = bar_width(h);
-    let mut d = String::with_capacity(40);
     let x = w * 0.5;
-    let _ = write!(d, "M{x:.4},0 L{x:.4},{h:.4}", x = x, h = h);
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(x);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(x);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -480,18 +516,23 @@ fn vertical_bar(h: f64, sw: f64) -> DelimiterPath {
 
 fn double_vertical_bar(h: f64, sw: f64) -> DelimiterPath {
     let w = double_bar_width(h);
-    let mut d = String::with_capacity(80);
     let x1 = w * 0.28;
     let x2 = w * 0.72;
-    let _ = write!(
-        d,
-        "M{x1:.4},0 L{x1:.4},{h:.4} M{x2:.4},0 L{x2:.4},{h:.4}",
-        x1 = x1,
-        x2 = x2,
-        h = h,
-    );
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(x1);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(x1);
+    pw.push_f64(h);
+    pw.cmd(b'M');
+    pw.push_f64(x2);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(x2);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -499,11 +540,18 @@ fn double_vertical_bar(h: f64, sw: f64) -> DelimiterPath {
 
 fn left_floor(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
-    let mut d = String::with_capacity(60);
     // └ shape: vertical left side + horizontal bottom
-    let _ = write!(d, "M0,0 L0,{h:.4} L{w:.4},{h:.4}", h = h, w = w);
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(0.0);
+    pw.push_f64(h);
+    pw.push_f64(w);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -511,11 +559,18 @@ fn left_floor(h: f64, sw: f64) -> DelimiterPath {
 
 fn right_floor(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
-    let mut d = String::with_capacity(60);
     // ┘ shape: vertical right side + horizontal bottom
-    let _ = write!(d, "M{w:.4},0 L{w:.4},{h:.4} L0,{h:.4}", w = w, h = h,);
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(w);
+    pw.push_f64(h);
+    pw.push_f64(0.0);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -523,11 +578,18 @@ fn right_floor(h: f64, sw: f64) -> DelimiterPath {
 
 fn left_ceil(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
-    let mut d = String::with_capacity(60);
     // ┌ shape: horizontal top + vertical left side
-    let _ = write!(d, "M{w:.4},0 L0,0 L0,{h:.4}", w = w, h = h);
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -535,11 +597,18 @@ fn left_ceil(h: f64, sw: f64) -> DelimiterPath {
 
 fn right_ceil(h: f64, sw: f64) -> DelimiterPath {
     let w = bracket_width(h);
-    let mut d = String::with_capacity(60);
     // ┐ shape: horizontal top + vertical right side
-    let _ = write!(d, "M0,0 L{w:.4},0 L{w:.4},{h:.4}", w = w, h = h);
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.push_f64(w);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -547,18 +616,19 @@ fn right_ceil(h: f64, sw: f64) -> DelimiterPath {
 
 fn left_angle(h: f64, sw: f64) -> DelimiterPath {
     let w = angle_width(h);
-    let mut d = String::with_capacity(60);
     let mid = h * 0.5;
     // V-shape pointing left: top-right → middle-left → bottom-right
-    let _ = write!(
-        d,
-        "M{w:.4},0 L0,{mid:.4} L{w:.4},{h:.4}",
-        w = w,
-        mid = mid,
-        h = h,
-    );
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(w);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(0.0);
+    pw.push_f64(mid);
+    pw.push_f64(w);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }
@@ -566,18 +636,19 @@ fn left_angle(h: f64, sw: f64) -> DelimiterPath {
 
 fn right_angle(h: f64, sw: f64) -> DelimiterPath {
     let w = angle_width(h);
-    let mut d = String::with_capacity(60);
     let mid = h * 0.5;
     // V-shape pointing right: top-left → middle-right → bottom-left
-    let _ = write!(
-        d,
-        "M0,0 L{w:.4},{mid:.4} L0,{h:.4}",
-        w = w,
-        mid = mid,
-        h = h,
-    );
+    let mut pw = PathWriter::with_prefix("");
+    pw.cmd(b'M');
+    pw.push_f64(0.0);
+    pw.push_f64(0.0);
+    pw.cmd(b'L');
+    pw.push_f64(w);
+    pw.push_f64(mid);
+    pw.push_f64(0.0);
+    pw.push_f64(h);
     DelimiterPath {
-        path_data: d,
+        path_data: pw.finish(),
         width: w,
         stroke_width: sw,
     }

@@ -634,99 +634,6 @@ fn layout_operator(op: &OperatorAttr, ctx: &LayoutCtx) -> LayoutBox {
 
 // === Structure node layouts ===
 
-/// Append `v` to `out` as fixed 4-decimal text, e.g. `12.3400`.
-///
-/// This avoids `core::fmt`'s float path (`{:.4}`), which costs ~300 ns per
-/// value; integer formatting is roughly an order of magnitude cheaper. Used by
-/// the SVG-path builders, which run during layout and were a measured hotspot
-/// (a single `\sqrt` was spending ~7 µs formatting ~20 radical coordinates).
-#[inline]
-pub(crate) fn fmt_fixed4(out: &mut String, v: f64) {
-    let mut x = v;
-    if x.is_sign_negative() {
-        out.push('-');
-        x = -x;
-    }
-    if !x.is_finite() {
-        out.push('0');
-        return;
-    }
-    let scaled = (x * 10_000.0 + 0.5) as u64; // round half up; matches {:.4} visually
-    let int = scaled / 10_000;
-    let frac = (scaled % 10_000) as u32;
-    push_u64(out, int);
-    out.push('.');
-    // 4-digit zero-padded fractional part, emitted directly (no core::fmt).
-    out.push((b'0' + (frac / 1000) as u8) as char);
-    out.push((b'0' + ((frac / 100) % 10) as u8) as char);
-    out.push((b'0' + ((frac / 10) % 10) as u8) as char);
-    out.push((b'0' + (frac % 10) as u8) as char);
-}
-
-/// Append a `u64` in base-10 directly to `out` without going through `core::fmt`.
-#[inline]
-fn push_u64(out: &mut String, mut n: u64) {
-    if n == 0 {
-        out.push('0');
-        return;
-    }
-    let mut buf = [0u8; 20];
-    let mut i = buf.len();
-    while n > 0 {
-        i -= 1;
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-    }
-    // SAFETY: buf[i..] contains only ASCII digits written above.
-    out.push_str(unsafe { std::str::from_utf8_unchecked(&buf[i..]) });
-}
-
-/// Append `v` to `out` with up to 4 decimals, trailing zeros (and a bare
-/// decimal point) trimmed — e.g. `12`, `12.5`, `0.3125`→`0.3125`.
-///
-/// Equivalent to `format!("{:.4}", v)` then trimming, but ~10× cheaper.
-/// Used by `scale_svg_path`, which reformats every coordinate of long
-/// KaTeX accent paths (a single `\widetilde` was ~20 µs of float formatting).
-#[inline]
-pub(crate) fn fmt_fixed4_trim(out: &mut String, v: f64) {
-    let mut x = v;
-    let neg = x.is_sign_negative();
-    if neg {
-        x = -x;
-    }
-    if !x.is_finite() {
-        out.push('0');
-        return;
-    }
-    let scaled = (x * 10_000.0 + 0.5) as u64; // round half up
-    if scaled == 0 {
-        out.push('0');
-        return;
-    }
-    if neg {
-        out.push('-');
-    }
-    let int = scaled / 10_000;
-    let frac = (scaled % 10_000) as u32;
-    push_u64(out, int);
-    if frac != 0 {
-        let digits = [
-            (frac / 1000) as u8,
-            ((frac / 100) % 10) as u8,
-            ((frac / 10) % 10) as u8,
-            (frac % 10) as u8,
-        ];
-        let mut last = 3usize;
-        while digits[last] == 0 {
-            last -= 1;
-        }
-        out.push('.');
-        for &d in &digits[..=last] {
-            out.push((b'0' + d) as char);
-        }
-    }
-}
-
 /// Build the synthetic radical `<path>` for a `√` `Delimiter` box of the given
 /// width and total height (em units). Used by the text-based SVG emitter, which
 /// cannot embed font glyph outlines and would otherwise scale a `√` character.
@@ -750,8 +657,7 @@ pub(crate) fn scale_svg_path_data(path: &str, f: f64) -> String {
         ("", path)
     };
 
-    let mut result = String::with_capacity(path.len() + 16);
-    result.push_str(prefix);
+    let mut pw = crate::render::path_writer::PathWriter::with_prefix(prefix);
 
     let bytes = data.as_bytes();
     let len = bytes.len();
@@ -783,10 +689,10 @@ pub(crate) fn scale_svg_path_data(path: &str, f: f64) -> String {
     while i < len {
         let b = bytes[i];
         if b.is_ascii_alphabetic() && b != b'e' && b != b'E' {
-            // SVG path command letter — pass through unchanged
+            // SVG path command letter
             cmd = b;
             param_idx = 0;
-            result.push(b as char);
+            pw.cmd(b);
             i += 1;
         } else if b == b'-' || b == b'+' || b == b'.' || b.is_ascii_digit() {
             // Start of a number — collect it, parse, optionally scale, and re-emit
@@ -809,15 +715,14 @@ pub(crate) fn scale_svg_path_data(path: &str, f: f64) -> String {
             }
             let num_str = &data[start..i];
             if let Ok(val) = num_str.parse::<f64>() {
-                use std::fmt::Write;
                 if is_arc_noscale(cmd, param_idx) {
                     // Preserve arc rotation/flags unscaled
-                    let _ = write!(result, "{:.4}", val);
+                    pw.push_f64(val);
                 } else {
-                    let _ = write!(result, "{:.4}", val * f);
+                    pw.push_f64(val * f);
                 }
             } else {
-                result.push_str(num_str);
+                pw.number(num_str);
             }
             param_idx += 1;
             // Handle implicit command repeats (wrap around param count)
@@ -832,12 +737,12 @@ pub(crate) fn scale_svg_path_data(path: &str, f: f64) -> String {
                 }
             }
         } else {
-            // Whitespace, comma, or other separator — pass through
-            result.push(b as char);
+            // Whitespace, comma, or other separator — drop it (PathWriter inserts
+            // minimal separators itself)
             i += 1;
         }
     }
-    result
+    pw.finish()
 }
 
 /// Recursively scale all child positions (dx/dy) and dimensions in a BoxKind

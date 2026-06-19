@@ -24,6 +24,7 @@ pub(crate) mod math_table;
 pub(crate) mod metrics;
 #[allow(dead_code)]
 pub(crate) mod params;
+pub(crate) mod path_writer;
 #[cfg(feature = "raster")]
 pub mod raster;
 pub mod spacing;

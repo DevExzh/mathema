@@ -1802,12 +1802,13 @@ fn svg_single_char_fraction() {
 fn svg_deeply_nested_scripts() {
     let svg = render_latex(r"x^{y^{z^{w}}}");
     assert_valid_svg(&svg, "deeply nested scripts");
-    // Should produce decreasing font sizes
-    let count_11_2 = svg.matches("font-size=\"11.").count();
-    let count_8 = svg.matches("font-size=\"8.").count();
+    // Should produce decreasing font sizes (minimized: exact integers like
+    // "8" have no trailing ".0", so match the integer prefix).
+    let count_11_2 = svg.matches("font-size=\"11").count();
+    let count_8 = svg.matches("font-size=\"8").count();
     assert!(count_11_2 > 0, "should have script-size text");
     assert!(
-        count_8 > 0 || svg.matches("font-size=\"5.").count() > 0,
+        count_8 > 0 || svg.matches("font-size=\"5").count() > 0,
         "should have scriptscript-size text"
     );
 }
@@ -1816,9 +1817,10 @@ fn svg_deeply_nested_scripts() {
 fn svg_display_integral_larger() {
     let svg = render_latex(r"\displaystyle\int_0^1 f(x)\,dx");
     assert_valid_svg(&svg, "display integral");
-    // Display integral should use larger font size (32.000 = 2x base)
+    // Display integral should use larger font size (32 = 2x base; minimized
+    // exact integer has no trailing ".0").
     assert!(
-        svg.contains("font-size=\"32.") || svg.contains("font-size=\"24."),
+        svg.contains("font-size=\"32") || svg.contains("font-size=\"24"),
         "display integral should be larger than text size"
     );
 }
@@ -1942,16 +1944,48 @@ fn svg_substack_renders() {
 // =========================================================================
 
 #[test]
+fn svg_path_data_is_minimized() {
+    // Default render uses synthetic SVG paths (radical, brace) whose `d` data
+    // must be emitted minimally: no untrimmed 4-decimal zeros, no double
+    // spaces, and no space before a command letter.
+    let svg = render_latex(r"\sqrt{x} + \underbrace{a+b}_{c}");
+    let mut count = 0usize;
+    let mut hay = svg.as_str();
+    while let Some(i) = hay.find("d=\"") {
+        let rest = &hay[i + 3..];
+        let end = rest.find('"').unwrap_or(rest.len());
+        let d = &rest[..end];
+        count += 1;
+        assert!(!d.contains("  "), "no double spaces in path d: {d}");
+        assert!(!d.contains("0000"), "no untrimmed 4-decimal zeros: {d}");
+        assert!(
+            !d.contains(" L") && !d.contains(" C") && !d.contains(" Z") && !d.contains(" M"),
+            "no space before a command letter: {d}"
+        );
+        hay = &rest[end..];
+    }
+    assert!(count > 0, "expected at least one <path d=...>");
+}
+
+#[test]
 fn svg_sqrt_single_digit_no_glitch() {
     // A tiny radicand must not produce a degenerate radical path
     let svg = render_latex(r"\sqrt{2}");
     assert_valid_svg(&svg, "sqrt single digit");
     assert!(svg.contains("<path"), "sqrt should have path element");
-    // Verify no negative coordinates in the radical path that escape the viewBox
-    assert!(
-        !svg.contains("d=\"F:M0,") || !svg.contains("-0."),
-        "radical path should not have negative escape"
-    );
+    // The synthetic radical is the filled path beginning at x=0 (minimized form
+    // `d="F:M0 ..."`). When present (text-based SVG mode), verify it contains no
+    // negative coordinates, which would escape the viewBox. Under font-embedding
+    // the surd is a real glyph outline instead, so the synthetic path is absent.
+    if let Some(start) = svg.find("d=\"F:M0 ") {
+        let rest = &svg[start + 3..]; // skip `d="`
+        let end = rest.find('"').unwrap_or(rest.len());
+        let d = &rest[..end];
+        assert!(
+            !d.contains('-'),
+            "radical path should not have negative escape: {d}"
+        );
+    }
 }
 
 #[test]

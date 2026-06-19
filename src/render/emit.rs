@@ -28,41 +28,50 @@ pub(crate) fn push_xml_escaped(out: &mut String, s: &str) {
     }
 }
 
-/// Write a float with 3 decimal places directly into a String, avoiding
-/// `std::fmt` formatting overhead. This is 3-5x faster than `write!(buf, "{:.3}", v)`.
+/// Write a float as a minimal SVG attribute value (up to 3 decimal places,
+/// trailing zeros and a redundant leading zero trimmed), avoiding `std::fmt`.
+/// E.g. `12.0` → `12`, `0.04` → `.04`, `16.5` → `16.5`, `-0.384` → `-.384`.
 #[inline]
 pub(crate) fn push_f3(out: &mut String, v: f64) {
     // Guard against NaN/Infinity producing corrupt SVG attribute values
     if !v.is_finite() {
-        out.push_str("0.000");
+        out.push('0');
         return;
     }
 
-    // Handle negative inline (no recursion)
-    let v = if v < 0.0 {
-        out.push('-');
-        -v
-    } else {
-        v
-    };
-
+    let neg = v < 0.0;
     // Multiply by 1000, round, then split into integer and fractional parts.
     // Clamp to prevent overflow when casting to u64 (v > ~1.8e16 would overflow).
-    let scaled = (v * 1000.0).round().min(u64::MAX as f64) as u64;
+    let scaled = (v.abs() * 1000.0).round().min(u64::MAX as f64) as u64;
+    if scaled == 0 {
+        out.push('0');
+        return;
+    }
+
     let integer_part = scaled / 1000;
     let frac_part = (scaled % 1000) as u32;
 
-    // Write integer part using itoa-style manual conversion
-    push_u64(out, integer_part);
-
-    // Write decimal point and exactly 3 fractional digits
-    out.push('.');
-    if frac_part < 10 {
-        out.push_str("00");
-    } else if frac_part < 100 {
-        out.push('0');
+    if neg {
+        out.push('-');
     }
-    push_u32(out, frac_part);
+    // Strip a redundant leading zero (`0.04` → `.04`); a bare integer keeps its
+    // digits.
+    if integer_part != 0 {
+        push_u64(out, integer_part);
+    }
+    if frac_part != 0 {
+        let d0 = (frac_part / 100) as u8;
+        let d1 = ((frac_part / 10) % 10) as u8;
+        let d2 = (frac_part % 10) as u8;
+        out.push('.');
+        out.push((b'0' + d0) as char);
+        if d1 != 0 || d2 != 0 {
+            out.push((b'0' + d1) as char);
+            if d2 != 0 {
+                out.push((b'0' + d2) as char);
+            }
+        }
+    }
 }
 
 /// Write a u64 in decimal to a String buffer (manual, no fmt overhead).
@@ -82,12 +91,6 @@ pub(crate) fn push_u64(out: &mut String, mut n: u64) {
     }
     // SAFETY: buf[i..20] contains only ASCII digits
     out.push_str(unsafe { std::str::from_utf8_unchecked(&buf[i..20]) });
-}
-
-/// Write a u32 in decimal to a String buffer.
-#[inline]
-fn push_u32(out: &mut String, n: u32) {
-    push_u64(out, n as u64);
 }
 
 /// Pre-escaped SVG attribute strings cached from RenderOptions.
@@ -1052,9 +1055,10 @@ mod tests {
         assert!(svg.contains("<text"));
         assert!(svg.contains("x"));
         assert!(svg.contains("2"));
-        // Superscript should have smaller font size
+        // Superscript should have smaller font size (script size ≈ 11.2px,
+        // minimized from "11.200").
         assert!(
-            svg.contains("11.200"),
+            svg.contains("font-size=\"11.2\""),
             "superscript should use script-size font"
         );
     }
@@ -1390,21 +1394,21 @@ mod tests {
     fn push_f3_handles_nan() {
         let mut buf = String::new();
         push_f3(&mut buf, f64::NAN);
-        assert_eq!(buf, "0.000");
+        assert_eq!(buf, "0");
     }
 
     #[test]
     fn push_f3_handles_infinity() {
         let mut buf = String::new();
         push_f3(&mut buf, f64::INFINITY);
-        assert_eq!(buf, "0.000");
+        assert_eq!(buf, "0");
     }
 
     #[test]
     fn push_f3_handles_neg_infinity() {
         let mut buf = String::new();
         push_f3(&mut buf, f64::NEG_INFINITY);
-        assert_eq!(buf, "0.000");
+        assert_eq!(buf, "0");
     }
 
     #[test]
@@ -1415,11 +1419,30 @@ mod tests {
 
         buf.clear();
         push_f3(&mut buf, -2.5);
-        assert_eq!(buf, "-2.500");
+        assert_eq!(buf, "-2.5");
 
         buf.clear();
         push_f3(&mut buf, 0.0);
-        assert_eq!(buf, "0.000");
+        assert_eq!(buf, "0");
+    }
+
+    #[test]
+    fn push_f3_minimizes_zeros() {
+        // Trailing zeros trimmed, redundant leading zero stripped.
+        let cases = [
+            (16.0_f64, "16"),
+            (16.5, "16.5"),
+            (0.04, ".04"),
+            (0.5, ".5"),
+            (-0.384, "-.384"),
+            (0.004, ".004"),
+            (12.34, "12.34"),
+        ];
+        for (v, expected) in cases {
+            let mut buf = String::new();
+            push_f3(&mut buf, v);
+            assert_eq!(buf, expected, "push_f3({v})");
+        }
     }
 
     #[test]

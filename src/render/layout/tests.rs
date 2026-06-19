@@ -1914,21 +1914,17 @@ fn scale_svg_path_preserves_arc_flags() {
     let path = "M0,0 A10,20 45 1 0 30,40";
     let scaled = scale_svg_path_data(path, 2.0);
     // rx=10*2=20, ry=20*2=40, rot=45 (unchanged), flag=1 (unchanged),
-    // flag=0 (unchanged), x=30*2=60, y=40*2=80
-    assert_eq!(
-        scaled,
-        "M0.0000,0.0000 A20.0000,40.0000 45.0000 1.0000 0.0000 60.0000,80.0000"
-    );
+    // flag=0 (unchanged), x=30*2=60, y=40*2=80.
+    // Output is minimized: trailing zeros trimmed, minimal separators.
+    assert_eq!(scaled, "M0 0A20 40 45 1 0 60 80");
 }
 
 #[test]
 fn scale_svg_path_arc_relative() {
     let path = "M0,0 a5,10 30 0 1 15,20";
     let scaled = scale_svg_path_data(path, 3.0);
-    assert_eq!(
-        scaled,
-        "M0.0000,0.0000 a15.0000,30.0000 30.0000 0.0000 1.0000 45.0000,60.0000"
-    );
+    // rx=15, ry=30, rot=30 (unchanged), flags 0/1 (unchanged), x=45, y=60.
+    assert_eq!(scaled, "M0 0a15 30 30 0 1 45 60");
 }
 
 #[test]
@@ -1936,8 +1932,9 @@ fn scale_svg_path_fill_prefix_preserved() {
     let path = "F:M0,0 L10,20";
     let scaled = scale_svg_path_data(path, 2.0);
     assert!(scaled.starts_with("F:"));
-    assert!(scaled.contains("20.0000"));
-    assert!(scaled.contains("40.0000"));
+    // 10*2=20, 20*2=40 (trailing zeros trimmed in minimized output).
+    assert!(scaled.contains("20"));
+    assert!(scaled.contains("40"));
 }
 
 #[test]
@@ -1945,5 +1942,5 @@ fn scale_svg_path_implicit_lineto_after_move() {
     // After M, implicit repeats become L
     let path = "M10,20 30,40";
     let scaled = scale_svg_path_data(path, 2.0);
-    assert_eq!(scaled, "M20.0000,40.0000 60.0000,80.0000");
+    assert_eq!(scaled, "M20 40 60 80");
 }

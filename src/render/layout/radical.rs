@@ -1,4 +1,5 @@
 use super::*;
+use crate::render::path_writer::PathWriter;
 
 /// Generate a **filled** SVG path string for a radical sign (square root
 /// symbol), closely matching the proportions of KaTeX's sqrtMain glyph.
@@ -91,52 +92,57 @@ pub(crate) fn radical_path(w: f64, h: f64, t: f64) -> String {
     let cp_iup_x = ix1 + (ix2 - ix1) * 0.3;
     let cp_iup_y = iy1 - (iy1 - iy2) * 0.1;
 
-    // Build the path with the fast fixed-point formatter (avoids ~20 slow
-    // `{:.4}` float formats per radical — the dominant cost of \sqrt layout).
-    let mut s = String::with_capacity(320);
-    s.push_str("F:M");
-    let pt = |s: &mut String, a: f64, b: f64| {
-        fmt_fixed4(s, a);
-        s.push(',');
-        fmt_fixed4(s, b);
-    };
-    pt(&mut s, ox0, oy0);
-    s.push_str(" L");
-    pt(&mut s, ox1, oy1);
-    s.push_str(" C");
-    pt(&mut s, cp_down_x, cp_down_y);
-    s.push(' ');
-    pt(&mut s, ox2, oy2);
-    s.push(' ');
-    pt(&mut s, ox2, oy2);
-    s.push_str(" C");
-    pt(&mut s, cp_up_x, cp_up_y);
-    s.push(' ');
-    pt(&mut s, ox3, oy3);
-    s.push(' ');
-    pt(&mut s, ox3, oy3);
-    s.push_str(" L");
-    pt(&mut s, vx0, vy0);
-    s.push_str(" L");
-    pt(&mut s, vx1, vy1);
-    s.push_str(" L");
-    pt(&mut s, ix0, iy0);
-    s.push_str(" C");
-    pt(&mut s, cp_idown_x, cp_idown_y);
-    s.push(' ');
-    pt(&mut s, ix1, iy1);
-    s.push(' ');
-    pt(&mut s, ix1, iy1);
-    s.push_str(" C");
-    pt(&mut s, cp_iup_x, cp_iup_y);
-    s.push(' ');
-    pt(&mut s, ix2, iy2);
-    s.push(' ');
-    pt(&mut s, ix2, iy2);
-    s.push_str(" L");
-    pt(&mut s, ix3, iy3);
-    s.push_str(" Z");
-    s
+    // Build the path with PathWriter, which emits minimal `d` data directly
+    // (trimmed numbers, minimal separators, collapsed repeated commands).
+    let mut pw = PathWriter::with_prefix("F:");
+    pw.cmd(b'M');
+    pw.push_f64(ox0);
+    pw.push_f64(oy0);
+    pw.cmd(b'L');
+    pw.push_f64(ox1);
+    pw.push_f64(oy1);
+    pw.cmd(b'C');
+    pw.push_f64(cp_down_x);
+    pw.push_f64(cp_down_y);
+    pw.push_f64(ox2);
+    pw.push_f64(oy2);
+    pw.push_f64(ox2);
+    pw.push_f64(oy2);
+    pw.cmd(b'C');
+    pw.push_f64(cp_up_x);
+    pw.push_f64(cp_up_y);
+    pw.push_f64(ox3);
+    pw.push_f64(oy3);
+    pw.push_f64(ox3);
+    pw.push_f64(oy3);
+    pw.cmd(b'L');
+    pw.push_f64(vx0);
+    pw.push_f64(vy0);
+    pw.cmd(b'L');
+    pw.push_f64(vx1);
+    pw.push_f64(vy1);
+    pw.cmd(b'L');
+    pw.push_f64(ix0);
+    pw.push_f64(iy0);
+    pw.cmd(b'C');
+    pw.push_f64(cp_idown_x);
+    pw.push_f64(cp_idown_y);
+    pw.push_f64(ix1);
+    pw.push_f64(iy1);
+    pw.push_f64(ix1);
+    pw.push_f64(iy1);
+    pw.cmd(b'C');
+    pw.push_f64(cp_iup_x);
+    pw.push_f64(cp_iup_y);
+    pw.push_f64(ix2);
+    pw.push_f64(iy2);
+    pw.push_f64(ix2);
+    pw.push_f64(iy2);
+    pw.cmd(b'L');
+    pw.push_f64(ix3);
+    pw.push_f64(iy3);
+    pw.close();
+    pw.finish()
 }
 
 /// Resolved geometry for drawing a radical surd, shared by the heap / compact /
