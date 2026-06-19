@@ -595,3 +595,61 @@ fn katex_corpus_renders_without_error() {
         "corpus formulas failed to render: {failures:?}"
     );
 }
+
+/// Honest output-level gate: the AST-heuristic `find_unsupported` test cannot
+/// see internal sentinels or silent drops, so this asserts directly on rendered
+/// MathML for the failure modes the assessment called out.
+#[test]
+fn output_never_leaks_infix_sentinel() {
+    let config = Config {
+        strictness: Strictness::Lenient,
+        display: DisplayStyle::Inline,
+        ..Config::default()
+    };
+    // Unbraced, braced, and *chained* infix operators must all build fractions
+    // and never leak a `__infix_*__` sentinel into output.
+    for tex in [
+        "a \\over b",
+        "a \\atop b",
+        "x \\above 1pt y",
+        "n \\choose k",
+        "{a \\over b}",
+        "1 \\over 2 \\over 3",
+        "a + b \\over c + d",
+        "\\frac{a \\over b}{c}",
+    ] {
+        let mathml = from_latex_with(tex, &config).unwrap().to_mathml().unwrap();
+        assert!(
+            !mathml.contains("__infix"),
+            "infix sentinel leaked for {tex:?}: {mathml}"
+        );
+        assert!(
+            mathml.contains("<mfrac"),
+            "expected a fraction for {tex:?}: {mathml}"
+        );
+    }
+}
+
+/// Argument-bearing wrapper commands must preserve their *visible* argument
+/// (they may drop the URL / id / class metadata, but not the rendered content).
+#[test]
+fn wrapper_commands_preserve_visible_content() {
+    let config = Config {
+        strictness: Strictness::Lenient,
+        display: DisplayStyle::Inline,
+        ..Config::default()
+    };
+    // Use a single-letter visible argument so it survives as one <mi>Z</mi>.
+    for tex in [
+        "\\href{http://example.com}{Z}",
+        "\\htmlId{theid}{Z}",
+        "\\htmlClass{cls}{Z}",
+        "\\texttt{Z}",
+    ] {
+        let mathml = from_latex_with(tex, &config).unwrap().to_mathml().unwrap();
+        assert!(
+            mathml.contains('Z'),
+            "visible content dropped for {tex:?}: {mathml}"
+        );
+    }
+}

@@ -1000,6 +1000,12 @@ impl LatexCompactParser {
         let num_ids: SmallVec<[NodeId; 8]> = ids[..pos].to_vec().into();
         let den_ids: SmallVec<[NodeId; 8]> = ids[pos + 1..].to_vec().into();
 
+        // Recursively resolve further infix markers in each side so chained
+        // operators (e.g. `1 \over 2 \over 3`) never leak a `__infix_*__`
+        // sentinel into the numerator/denominator.
+        let num_ids = self.resolve_infix_fraction(num_ids);
+        let den_ids = self.resolve_infix_fraction(den_ids);
+
         let num_id = self.flatten_single(&num_ids);
         let den_id = self.flatten_single(&den_ids);
 
