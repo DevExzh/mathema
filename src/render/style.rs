@@ -1,14 +1,24 @@
-/// TeX math style system with 8 styles and transition rules.
+//! TeX math style system with 8 styles and transition rules.
 
+/// One of TeX's eight math styles (display/text/script/scriptscript, each with a
+/// cramped variant) that controls sizing and layout of sub-expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MathStyle {
+    /// Display style (`\displaystyle`), used for standalone equations.
     Display,
+    /// Cramped display style (e.g. under a radical).
     DisplayCramped,
+    /// Text style (`\textstyle`), used for inline math.
     Text,
+    /// Cramped text style.
     TextCramped,
+    /// Script style (`\scriptstyle`), used for first-level scripts.
     Script,
+    /// Cramped script style.
     ScriptCramped,
+    /// Script-script style (`\scriptscriptstyle`), used for nested scripts.
     ScriptScript,
+    /// Cramped script-script style.
     ScriptScriptCramped,
 }
 
@@ -65,6 +75,7 @@ impl MathStyle {
         }
     }
 
+    /// Return `true` if this is a cramped style.
     #[must_use]
     #[inline]
     pub fn is_cramped(self) -> bool {
@@ -77,6 +88,7 @@ impl MathStyle {
         )
     }
 
+    /// Return `true` if this is a display style (cramped or not).
     #[must_use]
     #[inline]
     pub fn is_display(self) -> bool {

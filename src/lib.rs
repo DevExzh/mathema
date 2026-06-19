@@ -39,6 +39,8 @@
 //! and AST depth limits, so adversarial input is rejected rather than exhausting
 //! memory. See [`Error`] for the failure modes.
 
+#![deny(missing_docs)]
+
 #[doc(hidden)]
 pub mod ast;
 pub mod convert;

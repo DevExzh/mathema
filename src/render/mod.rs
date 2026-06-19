@@ -1,3 +1,6 @@
+//! TeX-style layout and rendering: turns the AST into positioned boxes and emits
+//! SVG (and, with the `raster` feature, PNG/JPEG) output.
+
 #[doc(hidden)]
 pub mod arena;
 // `#[allow(dead_code)]`: these modules were previously `pub` and reachable as

@@ -1,20 +1,29 @@
+//! Inter-atom spacing based on the TeXBook 8×8 spacing table (p. 170).
+
 use super::style::MathStyle;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId};
-/// Inter-atom spacing based on the TeXBook 8×8 spacing table (p. 170).
 use crate::ast::{MathAtomType, MathNode, SymbolKind};
 
 /// TeX atom types for spacing classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtomType {
-    Ord,   // ordinary
-    Op,    // large operator
-    Bin,   // binary operator
-    Rel,   // relation
-    Open,  // opening delimiter
-    Close, // closing delimiter
-    Punct, // punctuation
-    Inner, // inner (fractions, etc.)
+    /// Ordinary atom (e.g. a variable or number).
+    Ord,
+    /// Large operator (e.g. summation, integral).
+    Op,
+    /// Binary operator (e.g. `+`, `-`).
+    Bin,
+    /// Relation (e.g. `=`, `<`).
+    Rel,
+    /// Opening delimiter (e.g. `(`).
+    Open,
+    /// Closing delimiter (e.g. `)`).
+    Close,
+    /// Punctuation (e.g. `,`).
+    Punct,
+    /// Inner atom (e.g. fractions, fenced groups).
+    Inner,
 }
 
 /// Classify a MathNode into its atom type for spacing purposes.

@@ -1,7 +1,7 @@
-/// Direct raster rendering: converts a LayoutBox tree into PNG or JPEG image bytes.
-///
-/// Pipeline: MathExpr → LayoutBox tree → tiny_skia::Pixmap → PNG/JPEG bytes.
-/// Glyphs are rasterized with `fontdue` using an embedded Latin Modern Math font.
+//! Direct raster rendering: converts a LayoutBox tree into PNG or JPEG image bytes.
+//!
+//! Pipeline: MathExpr → LayoutBox tree → tiny_skia::Pixmap → PNG/JPEG bytes.
+//! Glyphs are rasterized with `fontdue` using an embedded Latin Modern Math font.
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -53,7 +53,9 @@ static TTF_FACE: LazyLock<ttf_parser::Face<'static>> = LazyLock::new(|| {
 /// Supported raster image formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageFormat {
+    /// PNG (lossless, supports transparency).
     Png,
+    /// JPEG (lossy, no transparency).
     Jpeg,
 }
 

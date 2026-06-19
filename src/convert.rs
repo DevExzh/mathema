@@ -1,3 +1,6 @@
+//! Top-level conversion entry points: the one-shot [`convert`] function and the
+//! parse-once [`from_latex`]/[`from_mathml`]/… builders returning [`ConvertResult`].
+
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
 use crate::ast::normalize::normalize_compact_expr;
@@ -82,42 +85,52 @@ pub struct ConvertResult {
 }
 
 impl ConvertResult {
+    /// Serialize the parsed expression to LaTeX.
     pub fn to_latex(&self) -> Result<String> {
         LatexWriter::write_compact(&self.compact.expr, &self.config)
     }
 
+    /// Serialize the parsed expression to Presentation MathML.
     pub fn to_mathml(&self) -> Result<String> {
         MathmlWriter::write_compact(&self.compact.expr, &self.config)
     }
 
+    /// Serialize to LaTeX using the given configuration.
     pub fn to_latex_with(&self, config: &Config) -> Result<String> {
         LatexWriter::write_compact(&self.compact.expr, config)
     }
 
+    /// Serialize to Presentation MathML using the given configuration.
     pub fn to_mathml_with(&self, config: &Config) -> Result<String> {
         MathmlWriter::write_compact(&self.compact.expr, config)
     }
 
+    /// Serialize the parsed expression to OMML (Office MathML).
     pub fn to_omml(&self) -> Result<String> {
         OmmlWriter::write_compact(&self.compact.expr, &self.config)
     }
 
+    /// Serialize to OMML using the given configuration.
     pub fn to_omml_with(&self, config: &Config) -> Result<String> {
         OmmlWriter::write_compact(&self.compact.expr, config)
     }
 
+    /// Serialize the parsed expression to MTEF (hex-encoded MathType bytes).
     pub fn to_mtef(&self) -> Result<String> {
         MtefWriter::write_compact(&self.compact.expr, &self.config)
     }
 
+    /// Serialize to MTEF using the given configuration.
     pub fn to_mtef_with(&self, config: &Config) -> Result<String> {
         MtefWriter::write_compact(&self.compact.expr, config)
     }
 
+    /// Serialize the parsed expression to UnicodeMath linear notation.
     pub fn to_unicode_math(&self) -> Result<String> {
         UnicodeMathWriter::write_compact(&self.compact.expr, &self.config)
     }
 
+    /// Serialize to UnicodeMath using the given configuration.
     pub fn to_unicode_math_with(&self, config: &Config) -> Result<String> {
         UnicodeMathWriter::write_compact(&self.compact.expr, config)
     }
@@ -134,6 +147,7 @@ impl ConvertResult {
         crate::render::render_to_svg_standalone_compact(&self.compact.expr, &options)
     }
 
+    /// Render a standalone SVG using custom [`RenderOptions`](crate::render::RenderOptions).
     #[cfg(feature = "render")]
     pub fn to_svg_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
         crate::render::render_to_svg_standalone_compact(&self.compact.expr, options)
@@ -148,22 +162,26 @@ impl ConvertResult {
         crate::render::render_to_svg_compact(&self.compact.expr, &options)
     }
 
+    /// Render a text-based (client-font) SVG using custom [`RenderOptions`](crate::render::RenderOptions).
     #[cfg(feature = "render")]
     pub fn to_svg_text_with(&self, options: &crate::render::RenderOptions) -> Result<String> {
         crate::render::render_to_svg_compact(&self.compact.expr, options)
     }
 
+    /// Render the expression to PNG image bytes.
     #[cfg(feature = "raster")]
     pub fn to_png(&self) -> Result<Vec<u8>> {
         let options = crate::render::raster::RasterOptions::default();
         crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
     }
 
+    /// Render to PNG image bytes using custom [`RasterOptions`](crate::render::raster::RasterOptions).
     #[cfg(feature = "raster")]
     pub fn to_png_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
         crate::render::raster::render_to_image_compact(&self.compact.expr, options)
     }
 
+    /// Render the expression to JPEG image bytes.
     #[cfg(feature = "raster")]
     pub fn to_jpeg(&self) -> Result<Vec<u8>> {
         let options = crate::render::raster::RasterOptions {
@@ -173,6 +191,7 @@ impl ConvertResult {
         crate::render::raster::render_to_image_compact(&self.compact.expr, &options)
     }
 
+    /// Render to JPEG image bytes using custom [`RasterOptions`](crate::render::raster::RasterOptions).
     #[cfg(feature = "raster")]
     pub fn to_jpeg_with(&self, options: &crate::render::raster::RasterOptions) -> Result<Vec<u8>> {
         crate::render::raster::render_to_image_compact(&self.compact.expr, options)
