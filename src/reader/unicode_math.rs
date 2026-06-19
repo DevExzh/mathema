@@ -107,7 +107,9 @@ impl CompactParser {
                     remaining = rest;
                 },
                 Err(nom::Err::Failure(_)) => {
-                    return Err(Error::Unsupported("UnicodeMath parse error".into()));
+                    return Err(Error::UnicodeMathParse {
+                        message: "UnicodeMath parse error".into(),
+                    });
                 },
                 Err(_) => break,
             }

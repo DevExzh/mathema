@@ -80,6 +80,8 @@ impl CliError {
             } => CliError::Conversion(message),
             mathema::Error::MathmlParse { message } => CliError::Conversion(message),
             mathema::Error::OmmlParse { message } => CliError::Conversion(message),
+            mathema::Error::MtefParse { message } => CliError::Conversion(message),
+            mathema::Error::UnicodeMathParse { message } => CliError::Conversion(message),
             mathema::Error::Xml(e) => CliError::Conversion(e.to_string()),
             mathema::Error::Render { message } => CliError::Render(message),
             mathema::Error::Unsupported(msg) => CliError::Unsupported(msg),

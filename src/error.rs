@@ -26,6 +26,12 @@ pub enum Error {
     #[error("OMML parse error: {message}")]
     OmmlParse { message: String },
 
+    #[error("MTEF parse error: {message}")]
+    MtefParse { message: String },
+
+    #[error("UnicodeMath parse error: {message}")]
+    UnicodeMathParse { message: String },
+
     #[error("XML error: {0}")]
     Xml(#[from] quick_xml::Error),
 

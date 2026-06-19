@@ -130,7 +130,9 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
     }
     let hex_bytes: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
     if !hex_bytes.len().is_multiple_of(2) {
-        return Err(Error::Unsupported("MTEF hex string has odd length".into()));
+        return Err(Error::MtefParse {
+            message: "MTEF hex string has odd length".into(),
+        });
     }
     let mut out = Vec::with_capacity(hex_bytes.len() / 2);
     for pair in hex_bytes.chunks_exact(2) {
@@ -146,17 +148,18 @@ fn hex_val_byte(b: u8) -> Result<u8> {
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),
         b'A'..=b'F' => Ok(b - b'A' + 10),
-        _ => Err(Error::Unsupported(format!(
-            "invalid hex char: {}",
-            b as char
-        ))),
+        _ => Err(Error::MtefParse {
+            message: format!("invalid hex char: {}", b as char),
+        }),
     }
 }
 
 fn combine_template_variation_bytes(first: u8, second: Option<u8>) -> Result<u16> {
     if first & 0x80 != 0 {
         let second = second.ok_or_else(|| {
-            Error::Unsupported("two-byte MTEF template variation missing high byte".into())
+            Error::MtefParse {
+                message: "two-byte MTEF template variation missing high byte".into(),
+            }
         })?;
         Ok(((first & 0x7F) as u16) | ((second as u16) << 8))
     } else {
@@ -272,7 +275,9 @@ impl<'a> MtefCompactParser<'a> {
 
     fn read_byte(&mut self) -> Result<u8> {
         if self.pos >= self.data.len() {
-            return Err(Error::Unsupported("unexpected end of MTEF data".into()));
+            return Err(Error::MtefParse {
+                message: "unexpected end of MTEF data".into(),
+            });
         }
         let b = self.data[self.pos];
         self.pos += 1;
@@ -353,10 +358,9 @@ impl<'a> MtefCompactParser<'a> {
                 self.inline = inline_byte != 0;
             },
             _ => {
-                return Err(Error::Unsupported(format!(
-                    "unsupported MTEF version: {}",
-                    self.version
-                )));
+                return Err(Error::MtefParse {
+                    message: format!("unsupported MTEF version: {}", self.version),
+                });
             },
         }
         Ok(())
@@ -394,9 +398,9 @@ impl<'a> MtefCompactParser<'a> {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
             self.depth -= 1;
-            return Err(Error::Unsupported(format!(
-                "maximum MTEF nesting depth ({MAX_PARSE_DEPTH}) exceeded"
-            )));
+            return Err(Error::MtefParse {
+                message: format!("maximum MTEF nesting depth ({MAX_PARSE_DEPTH}) exceeded"),
+            });
         }
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
