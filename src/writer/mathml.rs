@@ -5,9 +5,30 @@ use std::io::Cursor;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::*;
-use crate::error::{Config, Result};
+use crate::error::{Config, Diagnostic, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
 use crate::writer::Writer as MathWriter;
+
+/// Classifies a compact node that the MathML writer cannot fully represent.
+/// MathML preserves `Color`/`Boxed`/`Phantom`/`Cancel`, so only the genuinely
+/// lossy kinds are reported.
+fn mathml_loss(_arena: &AstArena, node: &CompactNode) -> Option<String> {
+    match node {
+        CompactNode::MathChoice { .. } => {
+            Some("MathML output keeps only the display-style branch of \\mathchoice".into())
+        },
+        CompactNode::MathAtom { .. } => {
+            Some("MathML output does not preserve the math atom spacing class".into())
+        },
+        CompactNode::Scaled { .. } => {
+            Some("MathML output does not preserve the \\scalebox factor".into())
+        },
+        CompactNode::RaiseBox { .. } => {
+            Some("MathML output does not preserve the \\raisebox shift".into())
+        },
+        _ => None,
+    }
+}
 
 pub struct MathmlWriter;
 
@@ -34,6 +55,15 @@ impl MathWriter for MathmlWriter {
         String::from_utf8(buf).map_err(|e| {
             crate::error::Error::Unsupported(format!("MathML output contained invalid UTF-8: {e}"))
         })
+    }
+
+    fn write_compact_with_diagnostics(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let out = Self::write_compact(expr, config)?;
+        let diags = super::collect_loss_diagnostics(expr, mathml_loss);
+        Ok((out, diags))
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {

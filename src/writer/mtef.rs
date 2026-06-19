@@ -1,7 +1,7 @@
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
+use crate::error::{Config, Diagnostic, Result};
 use crate::writer::Writer as MathWriter;
 
 pub struct MtefWriter;
@@ -79,69 +79,57 @@ impl MathWriter for MtefWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let hex = Self::write_compact(expr, config)?;
-        let mut visitor = MtefLossVisitor {
-            diagnostics: Vec::new(),
-        };
-        crate::ast::visit::CompactVisitor::visit_expr(&mut visitor, expr);
-        Ok((hex, visitor.diagnostics))
+        let diags = super::collect_loss_diagnostics(expr, mtef_loss);
+        Ok((hex, diags))
     }
 }
 
-/// Walks a compact expression and records a `Warning` for each node whose
-/// information the MTEF writer cannot represent and therefore drops. Mirrors the
-/// MTEF *reader*, which already warns on lossy constructs, so AST→MTEF data loss
-/// is detectable rather than silent.
-struct MtefLossVisitor {
-    diagnostics: Vec<Diagnostic>,
-}
-
-impl MtefLossVisitor {
-    fn warn(&mut self, message: &str) {
-        self.diagnostics.push(Diagnostic {
-            kind: DiagnosticKind::Warning,
-            message: message.to_string(),
-            span: None,
-        });
-    }
-}
-
-impl crate::ast::visit::CompactVisitor for MtefLossVisitor {
-    fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
-        match arena.node(id) {
-            CompactNode::Rule { .. } => {
-                self.warn("MTEF cannot represent a rule (\\rule/\\hline); it was dropped");
-            },
-            CompactNode::Scaled { .. } => {
-                self.warn(
-                    "MTEF cannot represent scaling (\\scalebox); the scale factor was dropped",
-                );
-            },
-            CompactNode::RaiseBox { .. } => {
-                self.warn("MTEF cannot represent \\raisebox; the vertical shift was dropped");
-            },
-            CompactNode::MathChoice { .. } => {
-                self.warn(
-                    "MTEF cannot represent \\mathchoice; only the display-style branch was written",
-                );
-            },
-            CompactNode::MathAtom { .. } => {
-                self.warn("MTEF does not preserve the math atom spacing class; it was dropped");
-            },
-            CompactNode::Color { .. } => {
-                self.warn("MTEF cannot represent color; the color was dropped");
-            },
-            CompactNode::Boxed {
-                bg_color,
-                border_color,
-                ..
-            } if !arena.str_val(*bg_color).is_empty()
-                || !arena.str_val(*border_color).is_empty() =>
-            {
-                self.warn("MTEF cannot represent box colors; box kept, colors dropped");
-            },
-            _ => {},
+/// Classifies a compact node whose information the MTEF writer drops, so AST→MTEF
+/// data loss is detectable rather than silent (mirrors the MTEF reader's
+/// lenient warnings).
+fn mtef_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
+    match node {
+        CompactNode::Rule { .. } => {
+            Some("MTEF cannot represent a rule (\\rule/\\hline); it was dropped".into())
+        },
+        CompactNode::Scaled { .. } => {
+            Some("MTEF cannot represent scaling (\\scalebox); the scale factor was dropped".into())
+        },
+        CompactNode::RaiseBox { .. } => {
+            Some("MTEF cannot represent \\raisebox; the vertical shift was dropped".into())
+        },
+        CompactNode::MathChoice { .. } => Some(
+            "MTEF cannot represent \\mathchoice; only the display-style branch was written".into(),
+        ),
+        CompactNode::MathAtom { .. } => {
+            Some("MTEF does not preserve the math atom spacing class; it was dropped".into())
+        },
+        CompactNode::Color { .. } => {
+            Some("MTEF cannot represent color; the color was dropped".into())
+        },
+        CompactNode::Phantom(..) => {
+            Some("MTEF cannot represent \\phantom; only the content was written".into())
+        },
+        CompactNode::Boxed {
+            bg_color,
+            border_color,
+            ..
+        } if !arena.str_val(*bg_color).is_empty() || !arena.str_val(*border_color).is_empty() => {
+            Some("MTEF cannot represent box colors; box kept, colors dropped".into())
+        },
+        // The MTEF writer drops over/under content when limits are movable.
+        CompactNode::Overscript {
+            movable_limits, ..
         }
-        crate::ast::visit::walk_compact_node(self, arena, id);
+        | CompactNode::Underscript {
+            movable_limits, ..
+        }
+        | CompactNode::UnderOver {
+            movable_limits, ..
+        } if *movable_limits => {
+            Some("MTEF writes movable-limit over/under scripts as the base only; the scripts were dropped".into())
+        },
+        _ => None,
     }
 }
 
@@ -1102,6 +1090,7 @@ fn write_arrow_label_template_c(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::DiagnosticKind;
     use crate::reader::Reader;
     use crate::reader::mtef::MtefReader;
 

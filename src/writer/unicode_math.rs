@@ -1,8 +1,52 @@
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::*;
-use crate::error::{Config, Result};
+use crate::error::{Config, Diagnostic, Result};
 use crate::writer::Writer as MathWriter;
+
+/// Classifies a compact node that the UnicodeMath writer cannot fully or
+/// round-trippably represent. UnicodeMath is a lossy linear notation.
+fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
+    match node {
+        CompactNode::Rule { .. } => {
+            Some("UnicodeMath cannot represent a rule (\\rule/\\hline); it was dropped".into())
+        },
+        CompactNode::Cancel { .. } => Some(
+            "UnicodeMath cannot represent a cancellation stroke; only the content is written"
+                .into(),
+        ),
+        CompactNode::Boxed { .. } => {
+            Some("UnicodeMath box (▭) is not read back by the reader; round-trip is lossy".into())
+        },
+        CompactNode::Phantom(..) => Some(
+            "UnicodeMath phantom (⟡) is not read back by the reader; round-trip is lossy".into(),
+        ),
+        CompactNode::Color { .. } => {
+            Some("UnicodeMath cannot represent color; only the content is written".into())
+        },
+        CompactNode::Scaled { .. } => {
+            Some("UnicodeMath does not preserve the \\scalebox factor".into())
+        },
+        CompactNode::RaiseBox { .. } => {
+            Some("UnicodeMath does not preserve the \\raisebox shift".into())
+        },
+        CompactNode::MathChoice { .. } => {
+            Some("UnicodeMath keeps only the display-style branch of \\mathchoice".into())
+        },
+        CompactNode::MathAtom { .. } => {
+            Some("UnicodeMath does not preserve the math atom spacing class".into())
+        },
+        // Over/under content is now emitted (approximated as limit-scripts), but
+        // the over/under *positioning* is not faithfully round-trippable.
+        CompactNode::Overscript { over, .. } if !is_overunder_line(arena, *over) => Some(
+            "UnicodeMath approximates \\overset as a limit-script; positioning is lossy".into(),
+        ),
+        CompactNode::Underscript { under, .. } if !is_overunder_line(arena, *under) => Some(
+            "UnicodeMath approximates \\underset as a limit-script; positioning is lossy".into(),
+        ),
+        _ => None,
+    }
+}
 
 pub struct UnicodeMathWriter;
 
@@ -16,6 +60,15 @@ impl MathWriter for UnicodeMathWriter {
             write_node(&mut out, node);
         }
         Ok(out)
+    }
+
+    fn write_compact_with_diagnostics(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let out = Self::write_compact(expr, config)?;
+        let diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        Ok((out, diags))
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {

@@ -5,8 +5,43 @@ pub mod omml;
 pub mod unicode_math;
 
 use crate::ast::MathExpr;
-use crate::ast::compact::CompactExpr;
-use crate::error::{Config, Diagnostic, Result};
+use crate::ast::arena::AstArena;
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
+use crate::ast::visit::{CompactVisitor, walk_compact_node};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
+
+/// Walk a compact expression and collect a `Warning` for every node the target
+/// writer cannot represent, using a per-format `classify` closure that returns
+/// the warning message for a lossy node (or `None`). Shared by the format
+/// writers so AST→format data loss is reported consistently (see
+/// `write_compact_with_diagnostics`).
+pub(crate) fn collect_loss_diagnostics<F>(expr: &CompactExpr, classify: F) -> Vec<Diagnostic>
+where
+    F: Fn(&AstArena, &CompactNode) -> Option<String>,
+{
+    struct LossVisitor<F> {
+        diagnostics: Vec<Diagnostic>,
+        classify: F,
+    }
+    impl<F: Fn(&AstArena, &CompactNode) -> Option<String>> CompactVisitor for LossVisitor<F> {
+        fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+            if let Some(message) = (self.classify)(arena, arena.node(id)) {
+                self.diagnostics.push(Diagnostic {
+                    kind: DiagnosticKind::Warning,
+                    message,
+                    span: None,
+                });
+            }
+            walk_compact_node(self, arena, id);
+        }
+    }
+    let mut visitor = LossVisitor {
+        diagnostics: Vec::new(),
+        classify,
+    };
+    visitor.visit_expr(expr);
+    visitor.diagnostics
+}
 
 /// Trait for serializing the shared AST into a math format.
 pub trait Writer {

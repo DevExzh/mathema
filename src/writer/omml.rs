@@ -5,10 +5,35 @@ use std::io::Cursor;
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
-use crate::error::{Config, Result};
+use crate::error::{Config, Diagnostic, Result};
 use crate::writer::Writer as MathWriter;
 
 const NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+
+/// Classifies a compact node that the OMML writer cannot fully represent.
+fn omml_loss(_arena: &AstArena, node: &CompactNode) -> Option<String> {
+    match node {
+        CompactNode::Color { .. } => {
+            Some("OMML output does not preserve color; only the content is written".into())
+        },
+        CompactNode::MathChoice { .. } => {
+            Some("OMML output keeps only the display-style branch of \\mathchoice".into())
+        },
+        CompactNode::MathAtom { .. } => {
+            Some("OMML output does not preserve the math atom spacing class".into())
+        },
+        CompactNode::Rule { .. } => {
+            Some("OMML cannot represent a rule (\\rule/\\hline); written as a space".into())
+        },
+        CompactNode::Scaled { .. } => {
+            Some("OMML output does not preserve the \\scalebox factor".into())
+        },
+        CompactNode::RaiseBox { .. } => {
+            Some("OMML output does not preserve the \\raisebox shift".into())
+        },
+        _ => None,
+    }
+}
 
 pub struct OmmlWriter;
 
@@ -27,6 +52,15 @@ impl MathWriter for OmmlWriter {
         String::from_utf8(buf).map_err(|e| {
             crate::error::Error::Unsupported(format!("OMML output contained invalid UTF-8: {e}"))
         })
+    }
+
+    fn write_compact_with_diagnostics(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let out = Self::write_compact(expr, config)?;
+        let diags = super::collect_loss_diagnostics(expr, omml_loss);
+        Ok((out, diags))
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
