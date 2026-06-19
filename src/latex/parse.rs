@@ -855,11 +855,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             } else {
                 config.display
             };
-            Ok(CompactParseResult::new(CompactExpr::new(
-                parser.arena,
-                roots,
-                display,
-            )))
+            let diagnostics = std::mem::take(&mut parser.diagnostics);
+            Ok(CompactParseResult::with_diagnostics(
+                CompactExpr::new(parser.arena, roots, display),
+                diagnostics,
+            ))
         },
         Ok((rest, ids)) => {
             if config.strictness == Strictness::Strict {
@@ -883,6 +883,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 } else {
                     config.display
                 };
+                diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 Ok(CompactParseResult::with_diagnostics(
                     CompactExpr::new(parser.arena, roots, display),
                     diagnostics,
@@ -904,6 +905,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 } else {
                     config.display
                 };
+                diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 Ok(CompactParseResult::with_diagnostics(
                     CompactExpr::new(parser.arena, roots, display),
                     diagnostics,
@@ -934,6 +936,9 @@ pub(crate) struct LatexCompactParser {
     /// User-defined colors registered via `\definecolor`/`\colorlet`,
     /// keyed by exact name, resolved to RGB bytes.
     colors: HashMap<String, [u8; 3]>,
+    /// Warnings accumulated during parsing (e.g. metadata-dropping macros such
+    /// as `\href`/`\includegraphics`), merged into the `ParseResult`.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl LatexCompactParser {
@@ -950,7 +955,17 @@ impl LatexCompactParser {
             depth: 0,
             display_override: false,
             colors: HashMap::new(),
+            diagnostics: Vec::new(),
         }
+    }
+
+    /// Record a non-fatal parse warning (e.g. a metadata-dropping macro).
+    fn warn(&mut self, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: message.into(),
+            span: None,
+        });
     }
 
     /// Intern a single char as a string, avoiding heap allocation.
@@ -2220,6 +2235,7 @@ impl LatexCompactParser {
             "href" => {
                 // \href{url}{text} — consume url, return text
                 let (input, _url_id) = self.parse_required_group(input)?;
+                self.warn("\\href target URL was dropped; only the visible text is rendered");
                 self.parse_required_group(input)
             },
             "url" => {
@@ -2255,6 +2271,9 @@ impl LatexCompactParser {
             "htmlId" | "htmlClass" | "htmlData" | "htmlStyle" => {
                 // \htmlId{id}{content} — consume attribute arg, return content
                 let (input, _attr_id) = self.parse_required_group(input)?;
+                self.warn(format!(
+                    "\\{name} attribute was dropped; only the content is rendered"
+                ));
                 self.parse_required_group(input)
             },
 
@@ -2280,6 +2299,7 @@ impl LatexCompactParser {
                     input
                 };
                 let (input, _) = self.parse_required_group(input)?;
+                self.warn("\\includegraphics was dropped; images are not rendered in math output");
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -4112,7 +4132,7 @@ impl LatexCompactParser {
             "numcases" | "subnumcases" => self.parse_numcases_env(input, env_name),
             "empheq" => self.parse_empheq_env(input),
             "aligned" | "align" | "align*" => self.parse_align_env(input, env_name),
-            "alignedat" => self.parse_alignedat_env(input, env_name),
+            "alignedat" | "alignat" | "alignat*" => self.parse_alignedat_env(input, env_name),
             "gathered" => self.parse_gather_env(input, env_name),
             "gather" | "gather*" => self.parse_gather_env(input, env_name),
             "equation" | "equation*" => self.parse_equation_env(input, env_name),

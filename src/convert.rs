@@ -211,6 +211,18 @@ impl ConvertResult {
     pub fn compact_expr(&self) -> &CompactExpr {
         &self.compact.expr
     }
+
+    /// Diagnostics collected while *parsing* the input (e.g. lenient-mode
+    /// recovery warnings, and metadata-dropping macros such as `\href` /
+    /// `\includegraphics`).
+    ///
+    /// Note: these are **reader-side** diagnostics. Writer-side loss (e.g. a
+    /// format that cannot represent color) is reported separately by
+    /// [`Writer::write_compact_with_diagnostics`](crate::writer::Writer::write_compact_with_diagnostics).
+    #[must_use]
+    pub fn diagnostics(&self) -> &[crate::error::Diagnostic] {
+        &self.compact.diagnostics
+    }
 }
 
 /// Parse LaTeX input into a reusable conversion result.

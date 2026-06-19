@@ -653,3 +653,47 @@ fn wrapper_commands_preserve_visible_content() {
         );
     }
 }
+
+/// FM3: metadata-dropping macros must emit a reachable parse Warning.
+#[test]
+fn metadata_dropping_macros_warn() {
+    for (tex, needle) in [
+        ("\\href{http://x}{y}", "href"),
+        ("\\includegraphics{a.png}", "includegraphics"),
+        ("\\htmlId{q}{z}", "htmlId"),
+    ] {
+        let result = from_latex_with(tex, &Config::default()).unwrap();
+        assert!(
+            result
+                .diagnostics()
+                .iter()
+                .any(|d| d.message.contains(needle)),
+            "expected a drop warning for {tex:?}, got {:?}",
+            result.diagnostics()
+        );
+    }
+    // Plain input produces no diagnostics.
+    assert!(
+        from_latex_with("x + y", &Config::default())
+            .unwrap()
+            .diagnostics()
+            .is_empty()
+    );
+}
+
+/// FM4: `alignat` must align like `alignedat` (columnalign present), not fall
+/// through to the array fallback (which drops the column-count and alignment).
+#[test]
+fn alignat_aligns_like_alignedat() {
+    let mathml = from_latex_with(
+        "\\begin{alignat}{2} a&=b & c&=d \\\\ e&=f & g&=h \\end{alignat}",
+        &Config::default(),
+    )
+    .unwrap()
+    .to_mathml()
+    .unwrap();
+    assert!(
+        mathml.contains("columnalign"),
+        "alignat lost column alignment: {mathml}"
+    );
+}
