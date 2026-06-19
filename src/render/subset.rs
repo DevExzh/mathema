@@ -2,6 +2,7 @@
 //! layout tree and extract only the glyph outlines needed for the SVG output.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
 use super::font_embed::{FontInfo, GlyphOutline, extract_glyph, extract_glyph_by_id, font_info};
@@ -11,8 +12,10 @@ use super::layout::{BoxKind, LayoutBox};
 /// Extracted glyph outlines for a single embedded face.
 #[derive(Debug)]
 pub struct FontGlyphs {
-    /// Outlines keyed by character.
-    pub glyphs: HashMap<char, GlyphOutline>,
+    /// Outlines keyed by character. Outlines are shared via [`Arc`] with the
+    /// process-wide extraction cache, so rebuilding the set per render only
+    /// bumps refcounts instead of cloning each glyph's `path_data`.
+    pub glyphs: HashMap<char, Arc<GlyphOutline>>,
     /// Font-level metrics (units per em) for this face.
     pub font_info: FontInfo,
 }
@@ -26,7 +29,7 @@ pub struct GlyphSet {
     /// MATH-table size-variant outlines keyed by font glyph id (large operators,
     /// stretchy delimiters). Mirrors what the raster backend draws so the
     /// standalone SVG matches the PNG.
-    pub variants: HashMap<u16, GlyphOutline>,
+    pub variants: HashMap<u16, Arc<GlyphOutline>>,
     /// Math-font metrics (used for variants and as the default).
     pub font_info: FontInfo,
 }
@@ -39,13 +42,13 @@ impl GlyphSet {
         if let Some(fg) = self.fonts.get(&font)
             && let Some(o) = fg.glyphs.get(&ch)
         {
-            return Some((o, font, fg.font_info));
+            return Some((&**o, font, fg.font_info));
         }
         if !font.is_math()
             && let Some(fg) = self.fonts.get(&FontId::Math)
             && let Some(o) = fg.glyphs.get(&ch)
         {
-            return Some((o, FontId::Math, fg.font_info));
+            return Some((&**o, FontId::Math, fg.font_info));
         }
         None
     }

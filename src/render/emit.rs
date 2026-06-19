@@ -1,39 +1,13 @@
 /// SVG emission: converts a LayoutBox tree into an SVG string.
-#[cfg(feature = "render")]
-use std::fmt::Write;
-
 use super::RenderOptions;
 use super::fonts_registry::FontId;
 use super::layout::{BoxKind, LayoutBox};
 
-/// Wrapper that escapes a string for safe use in XML/SVG attributes.
-/// Prevents attribute injection via `"`, `<`, `>`, `&`, `'` in user-controlled values.
-/// Used by `svg_writer.rs` (font-embed feature).
-#[cfg(feature = "render")]
-pub(crate) struct XmlAttrEscape<'a>(pub(crate) &'a str);
-
-#[cfg(feature = "render")]
-impl std::fmt::Display for XmlAttrEscape<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for ch in self.0.chars() {
-            match ch {
-                '<' => f.write_str("&lt;")?,
-                '>' => f.write_str("&gt;")?,
-                '&' => f.write_str("&amp;")?,
-                '"' => f.write_str("&quot;")?,
-                '\'' => f.write_str("&apos;")?,
-                _ => f.write_char(ch)?,
-            }
-        }
-        Ok(())
-    }
-}
-
 /// Write an XML-escaped version of `s` directly into a `String` buffer.
-/// More efficient than using `XmlAttrEscape` via `write!` because it avoids
-/// the `std::fmt` machinery entirely.
+/// Maps `<`, `>`, `&`, `"`, `'` to their entities to prevent attribute
+/// injection, while avoiding the `std::fmt` machinery entirely.
 #[inline]
-fn push_xml_escaped(out: &mut String, s: &str) {
+pub(crate) fn push_xml_escaped(out: &mut String, s: &str) {
     // Fast path: if the string contains no special chars, push it directly
     if !s
         .bytes()
@@ -57,7 +31,7 @@ fn push_xml_escaped(out: &mut String, s: &str) {
 /// Write a float with 3 decimal places directly into a String, avoiding
 /// `std::fmt` formatting overhead. This is 3-5x faster than `write!(buf, "{:.3}", v)`.
 #[inline]
-fn push_f3(out: &mut String, v: f64) {
+pub(crate) fn push_f3(out: &mut String, v: f64) {
     // Guard against NaN/Infinity producing corrupt SVG attribute values
     if !v.is_finite() {
         out.push_str("0.000");
@@ -93,7 +67,7 @@ fn push_f3(out: &mut String, v: f64) {
 
 /// Write a u64 in decimal to a String buffer (manual, no fmt overhead).
 #[inline]
-fn push_u64(out: &mut String, mut n: u64) {
+pub(crate) fn push_u64(out: &mut String, mut n: u64) {
     if n == 0 {
         out.push('0');
         return;

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 
 use super::fonts_registry::{self, FontId};
 
@@ -29,8 +29,10 @@ pub struct FontInfo {
 ///
 /// Outline extraction (CFF charstring interpretation + path-string building)
 /// dominates the embedded-SVG render path (~7 µs/glyph) and the embedded fonts
-/// are static, so caching turns repeated renders into cheap clones.
-type OutlineCache<K> = RwLock<HashMap<K, Option<GlyphOutline>>>;
+/// are static, so caching turns repeated renders into cheap clones. Outlines are
+/// stored behind an [`Arc`] so a cache hit is a refcount bump rather than a deep
+/// clone of the (potentially large) `path_data: String`.
+type OutlineCache<K> = RwLock<HashMap<K, Option<Arc<GlyphOutline>>>>;
 
 static GLYPH_CACHE: LazyLock<OutlineCache<(FontId, char)>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -60,11 +62,14 @@ pub fn parse_font_info(font_data: &[u8]) -> Option<FontInfo> {
 /// Extract a single glyph's outline from a registered font.
 ///
 /// Returns `None` if the character has no glyph or no outline (e.g., space).
-pub fn extract_glyph(font: FontId, ch: char) -> Option<GlyphOutline> {
+/// The result is shared via [`Arc`], so repeated calls (and the per-render
+/// [`crate::render::subset::build_glyph_set`]) only pay a refcount bump on a
+/// cache hit rather than cloning the outline's `path_data`.
+pub fn extract_glyph(font: FontId, ch: char) -> Option<Arc<GlyphOutline>> {
     if let Some(hit) = GLYPH_CACHE.read().expect("glyph cache").get(&(font, ch)) {
         return hit.clone();
     }
-    let outline = extract_glyph_from_face(fonts_registry::face(font), ch);
+    let outline = extract_glyph_from_face(fonts_registry::face(font), ch).map(Arc::new);
     GLYPH_CACHE
         .write()
         .expect("glyph cache")
@@ -98,7 +103,7 @@ fn extract_glyph_from_face(face: &ttf_parser::Face<'_>, ch: char) -> Option<Glyp
 /// so it can be placed with the same positive-scale transform.
 ///
 /// Returns `None` if the glyph has no outline.
-pub fn extract_glyph_by_id(font: FontId, glyph_id: u16) -> Option<GlyphOutline> {
+pub fn extract_glyph_by_id(font: FontId, glyph_id: u16) -> Option<Arc<GlyphOutline>> {
     if let Some(hit) = VARIANT_CACHE
         .read()
         .expect("variant cache")
@@ -106,7 +111,7 @@ pub fn extract_glyph_by_id(font: FontId, glyph_id: u16) -> Option<GlyphOutline> 
     {
         return hit.clone();
     }
-    let outline = extract_glyph_by_id_from_face(fonts_registry::face(font), glyph_id);
+    let outline = extract_glyph_by_id_from_face(fonts_registry::face(font), glyph_id).map(Arc::new);
     VARIANT_CACHE
         .write()
         .expect("variant cache")

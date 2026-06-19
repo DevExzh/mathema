@@ -3,29 +3,130 @@
 //! Produces standalone SVGs that render without client-side fonts.
 //! Glyph outlines are defined once in `<defs>` and referenced via `<use>`.
 
-use std::fmt::Write;
-
 use super::RenderOptions;
 use super::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
-use super::emit::{XmlAttrEscape, svg_x_bounds_px, svg_x_bounds_px_arena, write_escaped_char};
+use super::emit::{
+    push_f3, push_u64, push_xml_escaped, svg_x_bounds_px, svg_x_bounds_px_arena, write_escaped_char,
+};
 use super::fonts_registry::{self, FontId};
 use super::layout::{BoxKind, LayoutBox};
 use super::subset::GlyphSet;
 
-/// Build the `<defs>` id for an embedded glyph.
+/// Write the `<defs>` id for an embedded glyph directly into `out`.
 ///
 /// The Math font keeps the historical `g{cp}` ids (so embedded references stay
 /// stable); other faces are namespaced as `gf{font}_{cp}` to avoid collisions
-/// when the same base codepoint is drawn from multiple faces.
-fn glyph_id(font: FontId, cp: u32) -> String {
+/// when the same base codepoint is drawn from multiple faces. Streaming into the
+/// buffer avoids the per-glyph `format!` allocation the previous emitter used.
+#[inline]
+fn push_glyph_id(out: &mut String, font: FontId, cp: u32) {
     if font.is_math() {
-        format!("g{cp}")
+        out.push('g');
+        push_u64(out, u64::from(cp));
     } else {
-        format!("gf{}_{}", font.index(), cp)
+        out.push_str("gf");
+        push_u64(out, font.index() as u64);
+        out.push('_');
+        push_u64(out, u64::from(cp));
     }
 }
 
+/// Write a float with exactly `places` decimal digits into `out`, avoiding the
+/// `std::fmt` machinery. Mirrors [`emit::push_f3`] (3-5x faster than `write!`)
+/// but for the higher precisions the embedded path needs (`.4` stroke widths,
+/// `.6` glyph scales). Output is byte-identical to the previous
+/// `write!(out, "{v:.N}")` for the finite values produced here.
+#[inline]
+fn push_fixed(out: &mut String, v: f64, places: u32) {
+    if !v.is_finite() {
+        out.push_str("0.");
+        for _ in 0..places {
+            out.push('0');
+        }
+        return;
+    }
+
+    let v = if v < 0.0 {
+        out.push('-');
+        -v
+    } else {
+        v
+    };
+
+    let pow = 10u64.pow(places);
+    let scaled = (v * pow as f64).round().min(u64::MAX as f64) as u64;
+    let integer_part = scaled / pow;
+    let frac_part = scaled % pow;
+
+    push_u64(out, integer_part);
+    out.push('.');
+
+    // Emit the fractional part zero-padded to exactly `places` digits.
+    let mut buf = [b'0'; 20];
+    let n_digits = places as usize;
+    let mut n = frac_part;
+    let mut i = n_digits;
+    while i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+    }
+    // SAFETY: buf[..n_digits] contains only ASCII digits.
+    out.push_str(unsafe { std::str::from_utf8_unchecked(&buf[..n_digits]) });
+}
+
 // ── Heap-based emission ──────────────────────────────────────────────
+
+/// Stream the standard `<svg …>` opening tag using the fast float formatter.
+///
+/// Byte-identical to the previous `write!(… "{:.3}" …)` header. Shared by the
+/// heap and arena entry points.
+#[inline]
+fn push_svg_open(
+    svg: &mut String,
+    view_x_px: f64,
+    width_px: f64,
+    height_px: f64,
+    depth_px: f64,
+    pad: f64,
+) {
+    let w = width_px + 2.0 * pad;
+    let h = height_px + 2.0 * pad;
+    svg.push_str(r#"<svg xmlns="http://www.w3.org/2000/svg" width=""#);
+    push_f3(svg, w);
+    svg.push_str(r#"" height=""#);
+    push_f3(svg, h);
+    svg.push_str(r#"" viewBox=""#);
+    push_f3(svg, view_x_px - pad);
+    svg.push(' ');
+    push_f3(svg, -pad);
+    svg.push(' ');
+    push_f3(svg, w);
+    svg.push(' ');
+    push_f3(svg, h);
+    svg.push_str(r#"" style="vertical-align: -"#);
+    push_f3(svg, depth_px + pad);
+    svg.push_str(r#"px">"#);
+}
+
+/// Estimate the output buffer size from the glyph defs, with a 4096-byte floor.
+///
+/// The `<defs>` path strings dominate the byte count and are cheap to sum, so a
+/// single pass over them gives a good initial allocation and avoids repeated
+/// `String` regrowth on larger formulas.
+fn estimate_capacity(glyphs: &GlyphSet) -> usize {
+    let mut cap = 256usize; // header + closing tag
+    for fg in glyphs.fonts.values() {
+        for outline in fg.glyphs.values() {
+            // `<path id="…" d="…"/>` plus a reference (`<use …/>`) per glyph.
+            cap += outline.path_data.len() + 96;
+        }
+    }
+    for outline in glyphs.variants.values() {
+        cap += outline.path_data.len() + 96;
+    }
+    cap.max(4096)
+}
 
 /// Emit SVG with embedded font paths from a heap-based layout tree.
 pub fn emit_svg_with_fonts(root: &LayoutBox, options: &RenderOptions, glyphs: &GlyphSet) -> String {
@@ -38,17 +139,9 @@ pub fn emit_svg_with_fonts(root: &LayoutBox, options: &RenderOptions, glyphs: &G
     // (matches the padding in emit.rs).
     let pad = 0.08 * em;
 
-    let mut svg = String::with_capacity(4096);
+    let mut svg = String::with_capacity(estimate_capacity(glyphs));
 
-    let _ = write!(
-        svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3}" height="{h:.3}" viewBox="{vx:.3} {vy:.3} {w:.3} {h:.3}" style="vertical-align: -{d:.3}px">"#,
-        w = width_px + 2.0 * pad,
-        h = height_px + 2.0 * pad,
-        vx = view_x_px - pad,
-        vy = -pad,
-        d = depth_px + pad,
-    );
+    push_svg_open(&mut svg, view_x_px, width_px, height_px, depth_px, pad);
 
     emit_defs(&mut svg, glyphs);
 
@@ -75,12 +168,11 @@ fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
         let mut entries: Vec<_> = fg.glyphs.iter().collect();
         entries.sort_by_key(|(ch, _)| **ch as u32);
         for (ch, outline) in entries {
-            let _ = write!(
-                svg,
-                r#"<path id="{}" d="{}"/>"#,
-                glyph_id(*font, *ch as u32),
-                XmlAttrEscape(&outline.path_data),
-            );
+            svg.push_str(r#"<path id=""#);
+            push_glyph_id(svg, *font, *ch as u32);
+            svg.push_str(r#"" d=""#);
+            push_xml_escaped(svg, &outline.path_data);
+            svg.push_str(r#""/>"#);
         }
     }
 
@@ -88,22 +180,143 @@ fn emit_defs(svg: &mut String, glyphs: &GlyphSet) {
     let mut var_entries: Vec<_> = glyphs.variants.iter().collect();
     var_entries.sort_by_key(|(id, _)| **id);
     for (id, outline) in var_entries {
-        let _ = write!(
-            svg,
-            r#"<path id="vg{}" d="{}"/>"#,
-            *id,
-            XmlAttrEscape(&outline.path_data),
-        );
+        svg.push_str(r#"<path id="vg"#);
+        push_u64(svg, u64::from(*id));
+        svg.push_str(r#"" d=""#);
+        push_xml_escaped(svg, &outline.path_data);
+        svg.push_str(r#""/>"#);
     }
 
     svg.push_str("</defs>");
 }
 
-/// Emit a `<use>` referencing an embedded MATH-table variant glyph outline.
+/// Append the shared `<use>` transform/fill tail.
 ///
-/// Matches `raster::draw_glyph_variant`: the variant outline (y-negated font
-/// units) is scaled by `font_size_px / units_per_em` and placed at the baseline
-/// `(x, y)`, so the standalone SVG and the PNG draw the identical glyph.
+/// Call after the `<use href="#…id` opening has been streamed. `skew` is an
+/// optional trailing transform token (e.g. `"skewX(-12)"`). Byte-identical to
+/// the previous `transform="translate({x:.3},{y:.3}) scale({s:.6})…"` output.
+#[inline]
+fn push_use_tail(svg: &mut String, x: f64, y: f64, scale: f64, skew: Option<&str>, color: &str) {
+    svg.push_str(r#"" transform="translate("#);
+    push_f3(svg, x);
+    svg.push(',');
+    push_f3(svg, y);
+    svg.push_str(r#") scale("#);
+    push_fixed(svg, scale, 6);
+    svg.push(')');
+    if let Some(s) = skew {
+        svg.push(' ');
+        svg.push_str(s);
+    }
+    svg.push_str(r#"" fill=""#);
+    push_xml_escaped(svg, color);
+    svg.push_str(r#""/>"#);
+}
+
+/// Stream a `<use href="#…glyph-id…">` reference followed by the transform/fill
+/// tail. Convenience wrapper over [`push_glyph_id`] + [`push_use_tail`].
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn push_use_glyph(
+    svg: &mut String,
+    font: FontId,
+    cp: u32,
+    x: f64,
+    y: f64,
+    scale: f64,
+    skew: Option<&str>,
+    color: &str,
+) {
+    svg.push_str(r##"<use href="#"##);
+    push_glyph_id(svg, font, cp);
+    push_use_tail(svg, x, y, scale, skew, color);
+}
+/// scale(s)">`. Shared by delimiter and free-path emission.
+#[inline]
+fn push_g_open(svg: &mut String, tx: f64, ty: f64, scale: f64) {
+    svg.push_str(r#"<g transform="translate("#);
+    push_f3(svg, tx);
+    svg.push(',');
+    push_f3(svg, ty);
+    svg.push_str(r#") scale("#);
+    push_f3(svg, scale);
+    svg.push_str(r#")">"#);
+}
+
+/// Emit a filled `<path>` inside a transformed group (parens, braces, accents).
+#[inline]
+fn push_fill_path(svg: &mut String, tx: f64, ty: f64, scale: f64, path: &str, color: &str) {
+    push_g_open(svg, tx, ty, scale);
+    svg.push_str(r#"<path d=""#);
+    push_xml_escaped(svg, path);
+    svg.push_str(r#"" fill=""#);
+    push_xml_escaped(svg, color);
+    svg.push_str(r#"" stroke="none"/></g>"#);
+}
+
+/// Emit a stroked delimiter `<path>` (rounded caps, `.4`-precision stroke width).
+#[inline]
+fn push_stroke_delim_path(
+    svg: &mut String,
+    tx: f64,
+    ty: f64,
+    scale: f64,
+    path: &str,
+    color: &str,
+    stroke_width: f64,
+) {
+    push_g_open(svg, tx, ty, scale);
+    svg.push_str(r#"<path d=""#);
+    push_xml_escaped(svg, path);
+    svg.push_str(r#"" stroke=""#);
+    push_xml_escaped(svg, color);
+    svg.push_str(r#"" stroke-width=""#);
+    push_fixed(svg, stroke_width, 4);
+    svg.push_str(r#"" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#);
+}
+
+/// Emit a stroked free `<path>` (KaTeX-style accents/arrows, fixed `0.04` width).
+#[inline]
+fn push_stroke_free_path(svg: &mut String, tx: f64, ty: f64, scale: f64, path: &str, color: &str) {
+    push_g_open(svg, tx, ty, scale);
+    svg.push_str(r#"<path d=""#);
+    push_xml_escaped(svg, path);
+    svg.push_str(r#"" stroke=""#);
+    push_xml_escaped(svg, color);
+    svg.push_str(r#"" stroke-width="0.04" fill="none"/></g>"#);
+}
+
+/// Emit the border/background `<rect>` for a `\boxed`/`\fbox` (`.3`-precision).
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn push_boxed_rect(
+    svg: &mut String,
+    x: f64,
+    ry: f64,
+    w: f64,
+    h: f64,
+    stroke: &str,
+    fill: &str,
+    stroke_width: f64,
+) {
+    svg.push_str(r#"<rect x=""#);
+    push_f3(svg, x);
+    svg.push_str(r#"" y=""#);
+    push_f3(svg, ry);
+    svg.push_str(r#"" width=""#);
+    push_f3(svg, w);
+    svg.push_str(r#"" height=""#);
+    push_f3(svg, h);
+    svg.push_str(r#"" stroke=""#);
+    push_xml_escaped(svg, stroke);
+    svg.push_str(r#"" fill=""#);
+    push_xml_escaped(svg, fill);
+    svg.push_str(r#"" stroke-width=""#);
+    push_f3(svg, stroke_width);
+    svg.push_str(r#""/>"#);
+}
+
+/// Emit a `<use>` referencing an embedded MATH-table variant glyph outline.
 fn emit_variant_glyph(
     svg: &mut String,
     glyph_id: u16,
@@ -114,15 +327,9 @@ fn emit_variant_glyph(
     color: &str,
 ) {
     let scale = font_size_px / upem;
-    let _ = write!(
-        svg,
-        r##"<use href="#vg{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
-        id = glyph_id,
-        x = x,
-        y = y,
-        s = scale,
-        color = XmlAttrEscape(color),
-    );
+    svg.push_str(r##"<use href="#vg"##);
+    push_u64(svg, u64::from(glyph_id));
+    push_use_tail(svg, x, y, scale, None, color);
 }
 
 /// Emit a stretchy vertical delimiter/radical from its OpenType MATH glyph
@@ -246,15 +453,17 @@ fn emit_box_embedded(
             let th_px = thickness * em;
             let w_px = layout.width * em;
             let ry = y - layout.height * em;
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = th_px,
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<rect x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, ry);
+            svg.push_str(r#"" width=""#);
+            push_f3(svg, w_px);
+            svg.push_str(r#"" height=""#);
+            push_f3(svg, th_px);
+            svg.push_str(r#"" fill=""#);
+            push_xml_escaped(svg, &options.fg_color);
+            svg.push_str(r#""/>"#);
         },
 
         BoxKind::Kern => {},
@@ -302,25 +511,16 @@ fn emit_box_embedded(
                 let ty = y - layout.height * em;
                 // "F:" prefix indicates a filled path (parentheses, braces)
                 if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
-                    let _ = write!(
-                        svg,
-                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
-                        tx = tx,
-                        ty = ty,
-                        s = em,
-                        path = XmlAttrEscape(fill_path),
-                        color = XmlAttrEscape(&options.fg_color),
-                    );
+                    push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
                 } else {
-                    let _ = write!(
+                    push_stroke_delim_path(
                         svg,
-                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
-                        tx = tx,
-                        ty = ty,
-                        s = em,
-                        path = XmlAttrEscape(&dp.path_data),
-                        color = XmlAttrEscape(&options.fg_color),
-                        sw = dp.stroke_width,
+                        tx,
+                        ty,
+                        em,
+                        &dp.path_data,
+                        &options.fg_color,
+                        dp.stroke_width,
                     );
                 }
             } else {
@@ -345,25 +545,9 @@ fn emit_box_embedded(
             let ty = y - layout.height * em;
             // "F:" prefix indicates a filled path (KaTeX-style accents, arrows)
             if let Some(fill_path) = path.strip_prefix("F:") {
-                let _ = write!(
-                    svg,
-                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
-                    tx = tx,
-                    ty = ty,
-                    s = em,
-                    path = XmlAttrEscape(fill_path),
-                    color = XmlAttrEscape(&options.fg_color),
-                );
+                push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
             } else {
-                let _ = write!(
-                    svg,
-                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
-                    tx = tx,
-                    ty = ty,
-                    s = em,
-                    path = XmlAttrEscape(path),
-                    color = XmlAttrEscape(&options.fg_color),
-                );
+                push_stroke_free_path(svg, tx, ty, em, path, &options.fg_color);
             }
         },
 
@@ -389,17 +573,7 @@ fn emit_box_embedded(
             let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
             let fill_color = bg_color.as_deref().unwrap_or("none");
             let sw = 0.04 * em; // proportional stroke width
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="{sw:.3}"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = h_px,
-                stroke = XmlAttrEscape(stroke_color),
-                fill = XmlAttrEscape(fill_color),
-                sw = sw,
-            );
+            push_boxed_rect(svg, x, ry, w_px, h_px, stroke_color, fill_color, sw);
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
             emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
@@ -428,14 +602,15 @@ fn emit_glyph(
         if let Some((outline, used_font, info)) = glyphs.outline(font, ch) {
             let _ = outline;
             let scale = size * em / info.units_per_em;
-            let _ = write!(
+            push_use_glyph(
                 svg,
-                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
-                id = glyph_id(used_font, ch as u32),
-                x = x,
-                y = y,
-                s = scale,
-                color = XmlAttrEscape(&options.fg_color),
+                used_font,
+                ch as u32,
+                x,
+                y,
+                scale,
+                None,
+                &options.fg_color,
             );
             return;
         }
@@ -450,14 +625,15 @@ fn emit_glyph(
         && let Some((_, used_font, info)) = glyphs.outline(FontId::Math, italic_ch)
     {
         let scale = size * em / info.units_per_em;
-        let _ = write!(
+        push_use_glyph(
             svg,
-            r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
-            id = glyph_id(used_font, italic_ch as u32),
-            x = x,
-            y = y,
-            s = scale,
-            color = XmlAttrEscape(&options.fg_color),
+            used_font,
+            italic_ch as u32,
+            x,
+            y,
+            scale,
+            None,
+            &options.fg_color,
         );
         return;
     }
@@ -465,38 +641,41 @@ fn emit_glyph(
         let scale = size * em / info.units_per_em;
         if italic {
             // Apply synthetic italic via skewX(-12) to the glyph outline
-            let _ = write!(
+            push_use_glyph(
                 svg,
-                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6}) skewX(-12)" fill="{color}"/>"##,
-                id = glyph_id(used_font, ch as u32),
-                x = x,
-                y = y,
-                s = scale,
-                color = XmlAttrEscape(&options.fg_color),
+                used_font,
+                ch as u32,
+                x,
+                y,
+                scale,
+                Some("skewX(-12)"),
+                &options.fg_color,
             );
         } else if ch == '\u{2202}' {
             // Give the nearly-upright Latin Modern Math `∂` the slight forward
             // italic lean MathJax uses. Mirrors the raster backend's shear so the
             // SVG and PNG outputs stay in parity.
-            let _ = write!(
+            let skew = format!("skewX({})", super::layout::PARTIAL_DESLANT_DEG);
+            push_use_glyph(
                 svg,
-                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6}) skewX({deg})" fill="{color}"/>"##,
-                id = glyph_id(used_font, ch as u32),
-                x = x,
-                y = y,
-                s = scale,
-                deg = super::layout::PARTIAL_DESLANT_DEG,
-                color = XmlAttrEscape(&options.fg_color),
+                used_font,
+                ch as u32,
+                x,
+                y,
+                scale,
+                Some(&skew),
+                &options.fg_color,
             );
         } else {
-            let _ = write!(
+            push_use_glyph(
                 svg,
-                r##"<use href="#{id}" transform="translate({x:.3},{y:.3}) scale({s:.6})" fill="{color}"/>"##,
-                id = glyph_id(used_font, ch as u32),
-                x = x,
-                y = y,
-                s = scale,
-                color = XmlAttrEscape(&options.fg_color),
+                used_font,
+                ch as u32,
+                x,
+                y,
+                scale,
+                None,
+                &options.fg_color,
             );
         }
     } else {
@@ -517,27 +696,21 @@ fn emit_text_fallback(
     italic: bool,
 ) {
     let font_size = em * size;
+    svg.push_str(r#"<text x=""#);
+    push_f3(svg, x);
+    svg.push_str(r#"" y=""#);
+    push_f3(svg, y);
+    svg.push_str(r#"" font-size=""#);
+    push_f3(svg, font_size);
+    svg.push_str(r#"" font-family=""#);
+    push_xml_escaped(svg, &options.font_family);
     if italic {
-        let _ = write!(
-            svg,
-            r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" font-style="italic" fill="{color}">"#,
-            x = x,
-            y = y,
-            fs = font_size,
-            ff = XmlAttrEscape(&options.font_family),
-            color = XmlAttrEscape(&options.fg_color),
-        );
+        svg.push_str(r#"" font-style="italic" fill=""#);
     } else {
-        let _ = write!(
-            svg,
-            r#"<text x="{x:.3}" y="{y:.3}" font-size="{fs:.3}" font-family="{ff}" fill="{color}">"#,
-            x = x,
-            y = y,
-            fs = font_size,
-            ff = XmlAttrEscape(&options.font_family),
-            color = XmlAttrEscape(&options.fg_color),
-        );
+        svg.push_str(r#"" fill=""#);
     }
+    push_xml_escaped(svg, &options.fg_color);
+    svg.push_str(r#"">"#);
     write_escaped_char(svg, ch);
     svg.push_str("</text>");
 }
@@ -561,17 +734,9 @@ pub fn emit_svg_with_fonts_arena(
     // (matches the padding in emit.rs).
     let pad = 0.08 * em;
 
-    let mut svg = String::with_capacity(4096);
+    let mut svg = String::with_capacity(estimate_capacity(glyphs));
 
-    let _ = write!(
-        svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w:.3}" height="{h:.3}" viewBox="{vx:.3} {vy:.3} {w:.3} {h:.3}" style="vertical-align: -{d:.3}px">"#,
-        w = width_px + 2.0 * pad,
-        h = height_px + 2.0 * pad,
-        vx = view_x_px - pad,
-        vy = -pad,
-        d = depth_px + pad,
-    );
+    push_svg_open(&mut svg, view_x_px, width_px, height_px, depth_px, pad);
 
     emit_defs(&mut svg, glyphs);
 
@@ -664,15 +829,17 @@ fn emit_box_arena_embedded(
             let th_px = thickness * em;
             let w_px = layout.width * em;
             let ry = y - layout.height * em;
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" fill="{color}"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = th_px,
-                color = XmlAttrEscape(&options.fg_color),
-            );
+            svg.push_str(r#"<rect x=""#);
+            push_f3(svg, x);
+            svg.push_str(r#"" y=""#);
+            push_f3(svg, ry);
+            svg.push_str(r#"" width=""#);
+            push_f3(svg, w_px);
+            svg.push_str(r#"" height=""#);
+            push_f3(svg, th_px);
+            svg.push_str(r#"" fill=""#);
+            push_xml_escaped(svg, &options.fg_color);
+            svg.push_str(r#""/>"#);
         },
 
         ArenaBoxKind::Kern => {},
@@ -720,25 +887,16 @@ fn emit_box_arena_embedded(
                 let ty = y - layout.height * em;
                 // "F:" prefix indicates a filled path (parentheses, braces)
                 if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
-                    let _ = write!(
-                        svg,
-                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
-                        tx = tx,
-                        ty = ty,
-                        s = em,
-                        path = XmlAttrEscape(fill_path),
-                        color = XmlAttrEscape(&options.fg_color),
-                    );
+                    push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
                 } else {
-                    let _ = write!(
+                    push_stroke_delim_path(
                         svg,
-                        r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="{sw:.4}" fill="none" stroke-linecap="round" stroke-linejoin="round"/></g>"#,
-                        tx = tx,
-                        ty = ty,
-                        s = em,
-                        path = XmlAttrEscape(&dp.path_data),
-                        color = XmlAttrEscape(&options.fg_color),
-                        sw = dp.stroke_width,
+                        tx,
+                        ty,
+                        em,
+                        &dp.path_data,
+                        &options.fg_color,
+                        dp.stroke_width,
                     );
                 }
             } else {
@@ -763,25 +921,9 @@ fn emit_box_arena_embedded(
             let ty = y - layout.height * em;
             // "F:" prefix indicates a filled path (KaTeX-style accents, arrows)
             if let Some(fill_path) = path.strip_prefix("F:") {
-                let _ = write!(
-                    svg,
-                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" fill="{color}" stroke="none"/></g>"#,
-                    tx = tx,
-                    ty = ty,
-                    s = em,
-                    path = XmlAttrEscape(fill_path),
-                    color = XmlAttrEscape(&options.fg_color),
-                );
+                push_fill_path(svg, tx, ty, em, fill_path, &options.fg_color);
             } else {
-                let _ = write!(
-                    svg,
-                    r#"<g transform="translate({tx:.3},{ty:.3}) scale({s:.3})"><path d="{path}" stroke="{color}" stroke-width="0.04" fill="none"/></g>"#,
-                    tx = tx,
-                    ty = ty,
-                    s = em,
-                    path = XmlAttrEscape(path),
-                    color = XmlAttrEscape(&options.fg_color),
-                );
+                push_stroke_free_path(svg, tx, ty, em, path, &options.fg_color);
             }
         },
 
@@ -805,17 +947,7 @@ fn emit_box_arena_embedded(
             let stroke_color = border_color.as_deref().unwrap_or(&options.fg_color);
             let fill_color = bg_color.as_deref().unwrap_or("none");
             let sw = 0.04 * em; // proportional stroke width
-            let _ = write!(
-                svg,
-                r#"<rect x="{x:.3}" y="{ry:.3}" width="{w:.3}" height="{h:.3}" stroke="{stroke}" fill="{fill}" stroke-width="{sw:.3}"/>"#,
-                x = x,
-                ry = ry,
-                w = w_px,
-                h = h_px,
-                stroke = XmlAttrEscape(stroke_color),
-                fill = XmlAttrEscape(fill_color),
-                sw = sw,
-            );
+            push_boxed_rect(svg, x, ry, w_px, h_px, stroke_color, fill_color, sw);
             emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
         },
     }

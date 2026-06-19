@@ -360,6 +360,7 @@ fn bench_render_svg(c: &mut Criterion) {
     let quad_ast = LatexReader::parse(QUADRATIC, &config).unwrap().expr;
     let sum_ast = LatexReader::parse(SUM, &config).unwrap().expr;
 
+    // Text path (`<text>` elements, client-side fonts).
     let mut group = c.benchmark_group("render_svg");
     group.bench_function("simple", |b| {
         b.iter(|| mathema::render::render_to_svg(black_box(&simple_ast), &options))
@@ -371,6 +372,19 @@ fn bench_render_svg(c: &mut Criterion) {
         b.iter(|| mathema::render::render_to_svg(black_box(&sum_ast), &options))
     });
     group.finish();
+
+    // Embedded path (default `to_svg()`: glyph outlines embedded as <path>/<use>).
+    let mut embed = c.benchmark_group("render_svg_embedded");
+    embed.bench_function("simple", |b| {
+        b.iter(|| mathema::render::render_to_svg_standalone(black_box(&simple_ast), &options))
+    });
+    embed.bench_function("quadratic", |b| {
+        b.iter(|| mathema::render::render_to_svg_standalone(black_box(&quad_ast), &options))
+    });
+    embed.bench_function("sum", |b| {
+        b.iter(|| mathema::render::render_to_svg_standalone(black_box(&sum_ast), &options))
+    });
+    embed.finish();
 }
 
 #[cfg(not(feature = "render"))]
