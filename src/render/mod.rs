@@ -1,21 +1,32 @@
+#[doc(hidden)]
 pub mod arena;
-pub mod delimiter_paths;
+// `#[allow(dead_code)]`: these modules were previously `pub` and reachable as
+// API; now `pub(crate)` some helpers are unused internally but kept for the
+// render engine's completeness.
+#[allow(dead_code)]
+pub(crate) mod delimiter_paths;
+#[doc(hidden)]
 pub mod emit;
 #[cfg(feature = "render")]
-pub mod font_embed;
+#[allow(dead_code)]
+pub(crate) mod font_embed;
 #[cfg(feature = "render")]
-pub mod fonts_registry;
+#[allow(dead_code)]
+pub(crate) mod fonts_registry;
 pub(crate) mod glyph_variants;
+#[doc(hidden)]
 pub mod layout;
 pub(crate) mod math_table;
-pub mod metrics;
-pub mod params;
+#[allow(dead_code)]
+pub(crate) mod metrics;
+#[allow(dead_code)]
+pub(crate) mod params;
 #[cfg(feature = "raster")]
 pub mod raster;
 pub mod spacing;
 pub mod style;
 #[cfg(feature = "render")]
-pub mod subset;
+pub(crate) mod subset;
 #[cfg(feature = "render")]
 pub(crate) mod svg_writer;
 

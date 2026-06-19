@@ -39,18 +39,22 @@
 //! and AST depth limits, so adversarial input is rejected rather than exhausting
 //! memory. See [`Error`] for the failure modes.
 
+#[doc(hidden)]
 pub mod ast;
 pub mod convert;
 #[path = "render/css_colors.rs"]
 pub(crate) mod css_colors;
 pub mod error;
-pub mod latex;
+pub(crate) mod latex;
+#[doc(hidden)]
 pub mod reader;
 #[cfg(feature = "render")]
 pub mod render;
+#[doc(hidden)]
 pub mod unicode;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+#[doc(hidden)]
 pub mod writer;
 
 // Re-export the public API
