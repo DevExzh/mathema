@@ -66,14 +66,11 @@ fn legacy_vs_arena_render_divergence_baseline() {
             let tex = v["tex"].as_str().unwrap_or("");
             let name = v["name"].as_str().unwrap_or("?");
             let display = v["display"].as_bool().unwrap_or(false);
-            let config = Config {
-                display: if display {
-                    DisplayStyle::Block
-                } else {
-                    DisplayStyle::Inline
-                },
-                ..Config::default()
-            };
+            let config = Config::default().with_display(if display {
+                DisplayStyle::Block
+            } else {
+                DisplayStyle::Inline
+            });
             // Native legacy parse → MathExpr → legacy engine.
             let Ok(parsed) = LatexReader::parse(tex, &config) else {
                 continue;
@@ -1565,19 +1562,15 @@ fn svg_color_multi() {
 fn svg_display_vs_inline_size() {
     // Display-mode sum should be taller than inline
     let display = {
-        let config = mathema::error::Config {
-            display: mathema::ast::DisplayStyle::Block,
-            ..Default::default()
-        };
+        let config =
+            mathema::error::Config::default().with_display(mathema::ast::DisplayStyle::Block);
         let parsed = LatexReader::parse(r"\sum_{i=0}^{n} a_i", &config).unwrap();
         let options = RenderOptions::default();
         mathema::render::render_to_svg(&parsed.expr, &options).unwrap()
     };
     let inline = {
-        let config = mathema::error::Config {
-            display: mathema::ast::DisplayStyle::Inline,
-            ..Default::default()
-        };
+        let config =
+            mathema::error::Config::default().with_display(mathema::ast::DisplayStyle::Inline);
         let parsed = LatexReader::parse(r"\sum_{i=0}^{n} a_i", &config).unwrap();
         let options = RenderOptions::default();
         mathema::render::render_to_svg(&parsed.expr, &options).unwrap()

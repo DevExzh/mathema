@@ -171,11 +171,9 @@ fn png_nested_fractions() {
 fn png_display_integral() {
     let result = mathema::from_latex_with(
         r"\int_{0}^{\infty} e^{-x^2} \, dx = \frac{\sqrt{\pi}}{2}",
-        &mathema::error::Config {
-            strictness: mathema::error::Strictness::Lenient,
-            display: mathema::ast::DisplayStyle::Block,
-            ..Default::default()
-        },
+        &mathema::error::Config::default()
+            .with_strictness(mathema::error::Strictness::Lenient)
+            .with_display(mathema::ast::DisplayStyle::Block),
     )
     .unwrap();
     let png = result.to_png().unwrap();

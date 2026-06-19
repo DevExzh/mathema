@@ -672,14 +672,13 @@ fn resolve_format(
 
 /// Build a `mathema::Config` from CLI flags.
 fn make_config(lenient: bool) -> mathema::Config {
-    mathema::Config {
-        strictness: if lenient {
-            mathema::Strictness::Lenient
-        } else {
-            mathema::Strictness::Strict
-        },
-        ..mathema::Config::default()
-    }
+    let mut config = mathema::Config::default();
+    config.strictness = if lenient {
+        mathema::Strictness::Lenient
+    } else {
+        mathema::Strictness::Strict
+    };
+    config
 }
 
 /// Read content from a file path.
@@ -716,6 +715,8 @@ fn format_extension(fmt: Format) -> &'static str {
         Format::Png => "png",
         #[cfg(feature = "raster")]
         Format::Jpeg => "jpeg",
+        // `Format` is `#[non_exhaustive]`; default extension for any new format.
+        _ => "txt",
     }
 }
 

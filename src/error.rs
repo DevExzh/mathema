@@ -16,6 +16,7 @@ impl Span {
 
 /// Mathema error type.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("LaTeX parse error: {message}")]
     LatexParse { message: String, span: Option<Span> },
@@ -32,8 +33,8 @@ pub enum Error {
     #[error("UnicodeMath parse error: {message}")]
     UnicodeMathParse { message: String },
 
-    #[error("XML error: {0}")]
-    Xml(#[from] quick_xml::Error),
+    #[error("XML error: {message}")]
+    Xml { message: String },
 
     #[error("render error: {message}")]
     Render { message: String },
@@ -48,9 +49,21 @@ pub enum Error {
     InputTooLarge { size: usize, limit: usize },
 }
 
+// `quick_xml` is an implementation detail of the MathML/OMML readers. Convert
+// its errors into an opaque message so the third-party type does not leak into
+// the public `Error` API (which would tie `mathema`'s semver to `quick-xml`'s).
+impl From<quick_xml::Error> for Error {
+    fn from(e: quick_xml::Error) -> Self {
+        Error::Xml {
+            message: e.to_string(),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DiagnosticKind {
     Warning,
     Info,
@@ -65,6 +78,7 @@ pub struct Diagnostic {
 
 /// Result of parsing, containing the AST and any diagnostics.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ParseResult {
     pub expr: MathExpr,
     pub diagnostics: Vec<Diagnostic>,
@@ -92,6 +106,7 @@ impl ParseResult {
 
 /// Result of parsing into the compact arena representation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CompactParseResult {
     pub expr: CompactExpr,
     pub diagnostics: Vec<Diagnostic>,
@@ -152,6 +167,7 @@ pub const DEFAULT_MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 // Both fields are `Copy`, so deriving `Copy` avoids unnecessary `.clone()` calls
 // across all `from_*_with` conversion functions.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Config {
     pub strictness: Strictness,
     pub display: DisplayStyle,
@@ -171,6 +187,28 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Builder: set the parse strictness. Use with [`Config::default`] so new
+    /// fields stay source-compatible (the struct is `#[non_exhaustive]`).
+    #[must_use]
+    pub fn with_strictness(mut self, strictness: Strictness) -> Self {
+        self.strictness = strictness;
+        self
+    }
+
+    /// Builder: set the default display style.
+    #[must_use]
+    pub fn with_display(mut self, display: DisplayStyle) -> Self {
+        self.display = display;
+        self
+    }
+
+    /// Builder: set the maximum accepted input size (`None` disables the limit).
+    #[must_use]
+    pub fn with_max_input_bytes(mut self, max_input_bytes: Option<usize>) -> Self {
+        self.max_input_bytes = max_input_bytes;
+        self
+    }
+
     /// Return an error if `input` exceeds the configured `max_input_bytes`.
     ///
     /// Called at reader entry points so oversized inputs are rejected before
@@ -190,6 +228,7 @@ impl Config {
 
 /// Supported formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Format {
     LaTeX,
     MathML,

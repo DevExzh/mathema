@@ -24,6 +24,7 @@ pub enum DisplayStyle {
 /// The core math AST node. 30 variants covering the union of all target formats.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum MathNode {
     // === Leaf nodes ===
     /// Numeric literal: "3.14", "42"

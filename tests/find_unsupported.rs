@@ -153,6 +153,8 @@ fn collect_suspicious_identifiers(node: &MathNode, found: &mut Vec<String>) {
         | MathNode::Text(_, _)
         | MathNode::Space(_)
         | MathNode::Rule { .. } => {},
+        // `MathNode` is `#[non_exhaustive]`; ignore any future leaf variants.
+        _ => {},
     }
 }
 
@@ -249,15 +251,13 @@ fn find_unsupported_commands() {
     let mut success_count = 0;
 
     for formula in &formulas {
-        let config = Config {
-            strictness: Strictness::Lenient,
-            display: if formula.display {
+        let config = Config::default()
+            .with_strictness(Strictness::Lenient)
+            .with_display(if formula.display {
                 DisplayStyle::Block
             } else {
                 DisplayStyle::Inline
-            },
-            ..Config::default()
-        };
+            });
 
         let result = from_latex_with(&formula.tex, &config);
         match result {
@@ -417,11 +417,9 @@ fn verify_specific_commands() {
         ("\\textup{x}", "textup"),
     ];
 
-    let config = Config {
-        strictness: Strictness::Lenient,
-        display: DisplayStyle::Inline,
-        ..Config::default()
-    };
+    let config = Config::default()
+        .with_strictness(Strictness::Lenient)
+        .with_display(DisplayStyle::Inline);
 
     let mut unsupported = Vec::new();
     let mut supported = Vec::new();
@@ -486,15 +484,13 @@ fn unsupported_commands_in(path: &str) -> (BTreeSet<String>, Vec<(String, String
     let mut parse_failures: Vec<(String, String)> = Vec::new();
 
     for formula in &formulas {
-        let config = Config {
-            strictness: Strictness::Lenient,
-            display: if formula.display {
+        let config = Config::default()
+            .with_strictness(Strictness::Lenient)
+            .with_display(if formula.display {
                 DisplayStyle::Block
             } else {
                 DisplayStyle::Inline
-            },
-            ..Config::default()
-        };
+            });
         match from_latex_with(&formula.tex, &config) {
             Err(e) => parse_failures.push((formula.name.clone(), e.to_string())),
             Ok(result) => {
@@ -572,15 +568,13 @@ fn katex_corpus_renders_without_error() {
 
     let mut failures: Vec<(String, String)> = Vec::new();
     for formula in &formulas {
-        let config = Config {
-            strictness: Strictness::Lenient,
-            display: if formula.display {
+        let config = Config::default()
+            .with_strictness(Strictness::Lenient)
+            .with_display(if formula.display {
                 DisplayStyle::Block
             } else {
                 DisplayStyle::Inline
-            },
-            ..Config::default()
-        };
+            });
         match from_latex_with(&formula.tex, &config) {
             Err(e) => failures.push((formula.name.clone(), format!("parse: {e}"))),
             Ok(result) => {
@@ -601,11 +595,9 @@ fn katex_corpus_renders_without_error() {
 /// MathML for the failure modes the assessment called out.
 #[test]
 fn output_never_leaks_infix_sentinel() {
-    let config = Config {
-        strictness: Strictness::Lenient,
-        display: DisplayStyle::Inline,
-        ..Config::default()
-    };
+    let config = Config::default()
+        .with_strictness(Strictness::Lenient)
+        .with_display(DisplayStyle::Inline);
     // Unbraced, braced, and *chained* infix operators must all build fractions
     // and never leak a `__infix_*__` sentinel into output.
     for tex in [
@@ -634,11 +626,9 @@ fn output_never_leaks_infix_sentinel() {
 /// (they may drop the URL / id / class metadata, but not the rendered content).
 #[test]
 fn wrapper_commands_preserve_visible_content() {
-    let config = Config {
-        strictness: Strictness::Lenient,
-        display: DisplayStyle::Inline,
-        ..Config::default()
-    };
+    let config = Config::default()
+        .with_strictness(Strictness::Lenient)
+        .with_display(DisplayStyle::Inline);
     // Use a single-letter visible argument so it survives as one <mi>Z</mi>.
     for tex in [
         "\\href{http://example.com}{Z}",

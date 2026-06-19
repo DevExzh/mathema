@@ -9,20 +9,16 @@ use mathema::error::{Config, Strictness};
 use mathema::{ast::DisplayStyle, from_mathml_with};
 
 fn render(mml: &str) -> String {
-    let cfg = Config {
-        strictness: Strictness::Lenient,
-        display: DisplayStyle::Block,
-        ..Config::default()
-    };
+    let cfg = Config::default()
+        .with_strictness(Strictness::Lenient)
+        .with_display(DisplayStyle::Block);
     from_mathml_with(mml, &cfg).unwrap().to_svg().unwrap()
 }
 
 fn latex(mml: &str) -> String {
-    let cfg = Config {
-        strictness: Strictness::Lenient,
-        display: DisplayStyle::Block,
-        ..Config::default()
-    };
+    let cfg = Config::default()
+        .with_strictness(Strictness::Lenient)
+        .with_display(DisplayStyle::Block);
     from_mathml_with(mml, &cfg).unwrap().to_latex().unwrap()
 }
 

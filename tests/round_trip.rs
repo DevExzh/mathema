@@ -825,10 +825,7 @@ fn convert_mathml_to_all() {
 // =========================================================================
 
 fn lenient_config() -> Config {
-    Config {
-        strictness: Strictness::Lenient,
-        ..Config::default()
-    }
+    Config::default().with_strictness(Strictness::Lenient)
 }
 
 #[test]
