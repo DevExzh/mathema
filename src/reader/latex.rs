@@ -474,6 +474,71 @@ mod tests {
         }
     }
 
+    // Regression: unbraced infix operators at the TOP level must build a
+    // fraction too (previously leaked a `__infix_*__` sentinel into output).
+    #[test]
+    fn over_infix_top_level() {
+        let node = parse_one("a \\over b");
+        assert!(matches!(
+            node,
+            MathNode::Fraction {
+                kind: FractionKind::Normal,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn atop_infix_top_level() {
+        let node = parse_one("a \\atop b");
+        assert!(matches!(
+            node,
+            MathNode::Fraction {
+                kind: FractionKind::NoBar,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn above_infix_top_level() {
+        // `\above <dim>` → fraction at top level (dimension currently dropped).
+        let node = parse_one("a \\above 1pt b");
+        assert!(matches!(node, MathNode::Fraction { .. }));
+    }
+
+    #[test]
+    fn choose_infix_top_level() {
+        let node = parse_one("n \\choose k");
+        assert!(matches!(node, MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn no_infix_sentinel_leaks_to_output() {
+        // The `__infix_*__` sentinel must never survive into rendered output.
+        for tex in [
+            "a \\over b",
+            "a \\atop b",
+            "a \\above 1pt b",
+            "n \\choose k",
+        ] {
+            let mathml = crate::convert::convert(
+                tex,
+                crate::error::Format::LaTeX,
+                crate::error::Format::MathML,
+            )
+            .unwrap();
+            assert!(
+                !mathml.contains("__infix"),
+                "sentinel leaked for {tex:?}: {mathml}"
+            );
+            assert!(
+                mathml.contains("<mfrac"),
+                "no <mfrac> for {tex:?}: {mathml}"
+            );
+        }
+    }
+
     #[test]
     fn font_sizing_noop() {
         // Font sizing commands should not appear as literal text

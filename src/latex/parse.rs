@@ -848,6 +848,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
     let mut parser = LatexCompactParser::with_capacity(processed.len());
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
+            let ids = parser.resolve_infix_fraction(ids);
             let roots = parser.arena.push_children(&ids);
             let display = if parser.display_override {
                 DisplayStyle::Block
@@ -875,6 +876,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 let mut result_ids = ids;
                 let recovered = parser.parse_lenient_remainder(rest, &mut diagnostics);
                 result_ids.extend(recovered);
+                let result_ids = parser.resolve_infix_fraction(result_ids);
                 let roots = parser.arena.push_children(&result_ids);
                 let display = if parser.display_override {
                     DisplayStyle::Block
@@ -1067,6 +1069,23 @@ impl LatexCompactParser {
                 }))
             },
             _ => None,
+        }
+    }
+
+    /// Resolve a top-level/group infix fraction operator (`\over`/`\atop`/
+    /// `\choose`/`\brace`/`\brack`) into the corresponding node, returning the
+    /// rewritten node list. If no infix marker is present the list is returned
+    /// unchanged. This must be applied to the top-level node list (not only to
+    /// braced groups) so unbraced plain-TeX input like `a \over b` builds an
+    /// `mfrac` instead of leaking a `__infix_over__` sentinel into output.
+    fn resolve_infix_fraction(&mut self, ids: SmallVec<[NodeId; 8]>) -> SmallVec<[NodeId; 8]> {
+        match self.check_infix_fraction(&ids) {
+            Some(node) => {
+                let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+                out.push(node);
+                out
+            },
+            None => ids,
         }
     }
 

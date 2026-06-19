@@ -36,7 +36,7 @@ fn mathml_roundtrip(input: &str) {
 }
 
 // =========================================================================
-// LaTeX round-trips for all 26 AST variants
+// LaTeX round-trips for all 30 AST variants
 // =========================================================================
 
 #[test]

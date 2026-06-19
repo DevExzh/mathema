@@ -375,8 +375,16 @@ pub fn vertical_assembly(ch: char, target_height_em: f64) -> Option<StretchyAsse
 
     let fixed_count = parts.iter().filter(|p| !p.is_extender).count();
     let ext_count = parts.iter().filter(|p| p.is_extender).count();
-    let fixed_sum: f64 = parts.iter().filter(|p| !p.is_extender).map(|p| p.full_adv_em).sum();
-    let ext_sum: f64 = parts.iter().filter(|p| p.is_extender).map(|p| p.full_adv_em).sum();
+    let fixed_sum: f64 = parts
+        .iter()
+        .filter(|p| !p.is_extender)
+        .map(|p| p.full_adv_em)
+        .sum();
+    let ext_sum: f64 = parts
+        .iter()
+        .filter(|p| p.is_extender)
+        .map(|p| p.full_adv_em)
+        .sum();
 
     // Smallest repetition count whose maximum achievable size reaches the target.
     let mut rep = 1usize;
