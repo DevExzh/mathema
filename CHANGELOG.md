@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-19
+
 ### Security
 
 - **Fixed a stack-overflow denial-of-service in the MTEF reader.** Deeply
@@ -94,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   heap-vs-arena byte-equality guards now use the legacy `MathExpr→heap` engine
   (`layout_expr`) as the reference, which is what real `&MathExpr` callers use.
   No production layout/emit/raster behavior changed (test counts unchanged:
-  default 736, all-features 1531, no-default 711).
+  default 736, all-features 1532, no-default 711).
 - **Known render shortcomings (documented, not yet fixed):** end-to-end SVG is
   *emit-bound* (SVG emit is ~73% of render time, so the arena layout win is
   small end-to-end); and the compact UnicodeMath writer is ~30% slower than its
@@ -130,6 +132,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Silent corruption: unbraced infix `\over`/`\atop`/`\above`/`\choose` leaked
+  a `__infix_*__` sentinel into output.** `check_infix_fraction` was only called
+  inside braced groups, so top-level plain-TeX like `a \over b` emitted
+  `<mi>__infix_over__</mi>` instead of an `<mfrac>`. It is now applied to the
+  top-level node list and recurses into numerator/denominator, so chained
+  operators (`1 \over 2 \over 3`) also resolve without leaking. Regression tests
+  added (`reader/latex.rs`, `tests/find_unsupported.rs`).
+- **`AstArena` unchecked `unsafe fn` accessors are no longer public API.**
+  `node_unchecked`/`children_unchecked`/`str_unchecked` are now `pub(crate)`
+  (they had no external callers); a `miri` CI job validates the arena's
+  `unsafe` blocks for UB.
+- **MTEF parse errors are distinguishable.** New `Error::MtefParse` /
+  `Error::UnicodeMathParse` variants replace the previous generic
+  `Error::Unsupported` for malformed MTEF/UnicodeMath input.
+- **MTEF writer data loss is now observable.** `Writer::write_compact_with_diagnostics`
+  reports `DiagnosticKind::Warning` for nodes the MTEF writer drops (Rule, color,
+  `Scaled`/`RaiseBox`/`MathChoice`/`MathAtom`, box colors), matching the reader.
+- **`find_unsupported` gained honest output-level gates** that the AST heuristic
+  cannot provide (`__infix_*__` sentinel detection; wrapper commands preserve
+  visible content).
+- **`cargo fmt --check` is clean** (cleared the `glyph_variants.rs` drift); stale
+  "26 AST variants" corrected to 30 in `tests/round_trip.rs`.
 - **Legacy and arena layout engines now render every corpus formula
   byte-identically (28 → 0 divergences).** A regression gate
   (`legacy_vs_arena_render_divergence_baseline`) renders the KaTeX + small

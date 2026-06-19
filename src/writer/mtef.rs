@@ -134,11 +134,10 @@ impl crate::ast::visit::CompactVisitor for MtefLossVisitor {
                 bg_color,
                 border_color,
                 ..
-            } => {
-                if !arena.str_val(*bg_color).is_empty() || !arena.str_val(*border_color).is_empty()
-                {
-                    self.warn("MTEF cannot represent box colors; box kept, colors dropped");
-                }
+            } if !arena.str_val(*bg_color).is_empty()
+                || !arena.str_val(*border_color).is_empty() =>
+            {
+                self.warn("MTEF cannot represent box colors; box kept, colors dropped");
             },
             _ => {},
         }

@@ -156,10 +156,8 @@ fn hex_val_byte(b: u8) -> Result<u8> {
 
 fn combine_template_variation_bytes(first: u8, second: Option<u8>) -> Result<u16> {
     if first & 0x80 != 0 {
-        let second = second.ok_or_else(|| {
-            Error::MtefParse {
-                message: "two-byte MTEF template variation missing high byte".into(),
-            }
+        let second = second.ok_or_else(|| Error::MtefParse {
+            message: "two-byte MTEF template variation missing high byte".into(),
         })?;
         Ok(((first & 0x7F) as u16) | ((second as u16) << 8))
     } else {
