@@ -80,6 +80,12 @@ render = ["dep:ttf-parser"]
 raster = ["render", "dep:fontdue", "dep:tiny-skia", "dep:jpeg-encoder"]
 font-embed = ["render"]
 
+# Release profile tuning: cross-crate inlining + single codegen unit trade a
+# little compile time for faster parse/layout/emit in the produced binary.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

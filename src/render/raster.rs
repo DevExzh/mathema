@@ -112,11 +112,12 @@ pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> R
     } else {
         MathStyle::Text
     };
-    let mut layout_arena = crate::render::arena::LayoutArena::new();
-    let builder = super::layout::LayoutBuilder::new(style, &options.render);
-    layout_arena.clear();
-    let root = builder.layout(&mut layout_arena, expr);
-    rasterize_layout_arena(&layout_arena, root, options)
+    crate::render::with_pooled_arena(|layout_arena| {
+        let builder = super::layout::LayoutBuilder::new(style, &options.render);
+        layout_arena.clear();
+        let root = builder.layout(layout_arena, expr);
+        rasterize_layout_arena(layout_arena, root, options)
+    })
 }
 
 /// Recursively compute the horizontal extent of all visible content in a layout

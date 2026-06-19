@@ -58,7 +58,7 @@ mathema render --format png -o out/ *.tex
 
 The `--from` / `-f` flag is optional; the format is auto-detected from file extension or content when omitted.
 
-SVG output is **self-contained** by default: glyph outlines from Latin Modern Math are embedded as `<path>`/`<use>` elements, so the SVG renders identically everywhere (no fonts to install) and **looks the same as the PNG/JPEG output**, which is rasterized from the same outlines.
+SVG output is **self-contained** by default: glyph outlines from Latin Modern Math are embedded as `<path>`/`<use>` elements, so the SVG renders identically everywhere (no fonts to install). It is rasterized from the same glyph outlines as the PNG/JPEG output and uses the same layout, so the two match closely (pixel-level luminance parity within ~8%, since SVG is rasterized via `resvg` and PNG/JPEG via `tiny-skia`).
 
 Format names: `latex` (`tex`), `mathml` (`mml`), `omml`, `mtef`, `unicodemath` (`um`), `svg`, `png`, `jpeg` (`jpg`).
 
@@ -95,7 +95,7 @@ Input string ──Reader──▸ MathExpr (AST) ──Writer──▸ Output s
 
 The shared AST (`MathExpr` / `MathNode`) has 30 node variants covering the union of all supported formats. Readers parse format-specific input into this AST; writers serialize it back out.
 
-The optional render pipeline applies TeX typesetting rules (TeXBook Rules 11–18) to produce positioned layout boxes, then emits them as SVG. The `raster` feature adds PNG/JPEG rasterization via `fontdue` + `tiny-skia`. Standalone SVG embeds glyph `<path>` outlines for rendering without external fonts; this is available under the `render` feature (the `font-embed` feature is currently an alias of `render`).
+The optional render pipeline applies core TeXBook typesetting rules (radicals — Rule 11; accent skew — Rule 12; axis centering — Rule 13a; fractions — Rule 15; sub/superscript positioning — Rules 18a/c–f) to produce positioned layout boxes, then emits them as SVG. The `raster` feature adds PNG/JPEG rasterization via `fontdue` + `tiny-skia`. Standalone SVG embeds glyph `<path>` outlines for rendering without external fonts; this is available under the `render` feature (the `font-embed` feature is currently an alias of `render`).
 
 ## License
 

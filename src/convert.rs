@@ -218,7 +218,7 @@ impl ConvertResult {
     ///
     /// Note: these are **reader-side** diagnostics. Writer-side loss (e.g. a
     /// format that cannot represent color) is reported separately by
-    /// [`Writer::write_compact_with_diagnostics`](crate::writer::Writer::write_compact_with_diagnostics).
+    /// [`crate::writer::Writer::write_compact_with_diagnostics`].
     #[must_use]
     pub fn diagnostics(&self) -> &[crate::error::Diagnostic] {
         &self.compact.diagnostics

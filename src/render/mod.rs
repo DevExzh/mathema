@@ -41,10 +41,12 @@ thread_local! {
 }
 
 /// Run `f` with the pooled per-thread layout arena, falling back to a fresh
-/// arena if the pool is already borrowed (re-entrancy guard).
-fn with_pooled_arena<F>(f: F) -> Result<String>
+/// arena if the pool is already borrowed (re-entrancy guard). Generic over the
+/// result type so both the SVG (`String`) and raster (`Vec<u8>`) entry points
+/// can share one pool.
+pub(crate) fn with_pooled_arena<T, F>(f: F) -> Result<T>
 where
-    F: FnOnce(&mut arena::LayoutArena) -> Result<String>,
+    F: FnOnce(&mut arena::LayoutArena) -> Result<T>,
 {
     LAYOUT_ARENA_POOL.with(|cell| match cell.try_borrow_mut() {
         Ok(mut arena) => f(&mut arena),
