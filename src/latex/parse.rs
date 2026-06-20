@@ -228,8 +228,15 @@ fn parse_empheq_options(opts: &str) -> (Option<String>, Option<String>, Option<S
     let mut start = 0usize;
     let mut bytes_end = opts.len();
     let mut parts: SmallVec<[&str; 4]> = SmallVec::new();
+    let mut escaped = false;
     for (i, c) in opts.char_indices() {
+        if escaped {
+            escaped = false;
+            bytes_end = i + c.len_utf8();
+            continue;
+        }
         match c {
+            '\\' => escaped = true,
             '{' | '[' => depth += 1,
             '}' | ']' if depth > 0 => depth -= 1,
             ',' if depth <= 0 => {
@@ -248,7 +255,8 @@ fn parse_empheq_options(opts: &str) -> (Option<String>, Option<String>, Option<S
         if let Some((key, val)) = part.split_once('=') {
             let val = val.trim().to_string();
             match key.trim() {
-                "box" => box_spec = Some(val),
+                // `box`, `innerbox` and `outerbox` all wrap the body in a box.
+                "box" | "innerbox" | "outerbox" => box_spec = Some(val),
                 "left" => left_spec = Some(val),
                 "right" => right_spec = Some(val),
                 _ => {},
@@ -296,6 +304,18 @@ fn empheq_brace_arg(mut s: &str, n: usize) -> &str {
     }
 }
 
+/// Inference-line style for a bussproofs inference (`\singleLine`/`\noLine`/
+/// `\doubleLine`/…).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BussLine {
+    /// A single solid rule (default; also `\solidLine`/`\dottedLine`).
+    Single,
+    /// Two stacked rules (`\doubleLine`).
+    Double,
+    /// No rule (`\noLine`): premises sit directly above the conclusion.
+    None,
+}
+
 /// Per-cell colortbl background directives gathered while scanning the leading
 /// tokens of a table cell. Used to wrap cell content in a [`CompactNode::Boxed`]
 /// with a background color.
@@ -322,6 +342,104 @@ fn strip_control_word<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     } else {
         Some(after)
     }
+}
+
+/// Parse an optional leading `[model]` color-model argument (xcolor color
+/// model: `rgb`, `RGB`, `HTML`, `gray`, `cmyk`, …). Returns `(rest, None)` when
+/// no bracket group is present.
+fn parse_optional_model(input: &str) -> IResult<&str, Option<String>> {
+    if input.starts_with('[') {
+        let (input, _) = char('[')(input)?;
+        let (input, model) = take_while(|c: char| c != ']')(input)?;
+        let (input, _) = char(']')(input)?;
+        Ok((input, Some(model.trim().to_string())))
+    } else {
+        Ok((input, None))
+    }
+}
+
+/// Consume a `{ ... }` group starting at byte offset `start` in `s` (skipping
+/// leading whitespace). Returns `(index_after_close_brace, inner)` or `None`
+/// when no balanced group is present. Used by array column-spec scanning.
+fn take_braced_at(s: &str, start: usize) -> Option<(usize, &str)> {
+    let sub = &s[start..];
+    let ws_len = sub.len() - sub.trim_start().len();
+    let rest = sub[ws_len..].strip_prefix('{')?;
+    let open_abs = start + ws_len + 1; // absolute index of first inner char
+    let mut depth = 1i32;
+    for (rel, ch) in rest.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open_abs + rel + 1, &rest[..rel]));
+                }
+            },
+            _ => {},
+        }
+    }
+    None
+}
+
+/// Map a LaTeX `\paired-delimiter` open/close token to its glyph string
+/// (used by `\DeclarePairedDelimiter`). `.` / empty → no delimiter.
+fn delim_to_glyph(d: &str) -> String {
+    let d = d.trim();
+    match d {
+        "" | "." => String::new(),
+        "\\lceil" => "\u{2308}".into(),
+        "\\rceil" => "\u{2309}".into(),
+        "\\lfloor" => "\u{230A}".into(),
+        "\\rfloor" => "\u{230B}".into(),
+        "\\langle" => "\u{27E8}".into(),
+        "\\rangle" => "\u{27E9}".into(),
+        "\\{" | "\\lbrace" => "{".into(),
+        "\\}" | "\\rbrace" => "}".into(),
+        "\\|" | "\\Vert" | "\\lVert" | "\\rVert" => "\u{2016}".into(),
+        "\\vert" | "\\lvert" | "\\rvert" => "|".into(),
+        "\\backslash" => "\\".into(),
+        "(" | ")" | "[" | "]" | "|" | "/" => d.into(),
+        _ => d.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+    }
+}
+
+/// Map a base relation/operator glyph to its precomposed *negated* Unicode
+/// codepoint, used by `\centernot` so the slash is centered by the font and the
+/// result round-trips to a named negation (e.g. `↛` → `\nrightarrow`). Returns
+/// `None` when no precomposed negation exists (the caller then overlays a
+/// combining solidus).
+fn centernot_precomposed(ch: char) -> Option<char> {
+    Some(match ch {
+        '=' => '\u{2260}',        // ≠
+        '<' => '\u{226E}',        // ≮
+        '>' => '\u{226F}',        // ≯
+        '\u{2192}' => '\u{219B}', // → ↛
+        '\u{2190}' => '\u{219A}', // ← ↚
+        '\u{2194}' => '\u{21AE}', // ↔ ↮
+        '\u{21D2}' => '\u{21CF}', // ⇒ ⇏
+        '\u{21D0}' => '\u{21CD}', // ⇐ ⇍
+        '\u{21D4}' => '\u{21CE}', // ⇔ ⇎
+        '\u{2208}' => '\u{2209}', // ∈ ∉
+        '\u{220B}' => '\u{220C}', // ∋ ∌
+        '\u{2282}' => '\u{2284}', // ⊂ ⊄
+        '\u{2283}' => '\u{2285}', // ⊃ ⊅
+        '\u{2286}' => '\u{2288}', // ⊆ ⊈
+        '\u{2287}' => '\u{2289}', // ⊇ ⊉
+        '\u{2261}' => '\u{2262}', // ≡ ≢
+        '\u{223C}' => '\u{2241}', // ∼ ≁
+        '\u{2243}' => '\u{2244}', // ≃ ≄
+        '\u{2245}' => '\u{2247}', // ≅ ≇
+        '\u{2248}' => '\u{2249}', // ≈ ≉
+        '\u{2203}' => '\u{2204}', // ∃ ∄
+        '\u{2223}' => '\u{2224}', // ∣ ∤
+        '\u{2225}' => '\u{2226}', // ∥ ∦
+        '\u{227A}' => '\u{2280}', // ≺ ⊀
+        '\u{227B}' => '\u{2281}', // ≻ ⊁
+        '\u{2264}' => '\u{2270}', // ≤ ≰
+        '\u{2265}' => '\u{2271}', // ≥ ≱
+        _ => return None,
+    })
 }
 
 fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
@@ -726,6 +844,49 @@ fn xy_take_bracket(input: &str) -> (&str, &str) {
     (input, "")
 }
 
+/// Skip optional `\ar` shaft/curve/offset modifiers: `@{->}`, `@/^/`, `@(u,d)`,
+/// `@<1ex>`, `@[white]`, or a bare style char (`@2`, `@.`, `@-`, …). The arrow
+/// glyph/direction is still taken from the following `[dir]`.
+fn xy_skip_ar_modifiers(input: &str) -> &str {
+    let mut s = input;
+    loop {
+        let t = s.trim_start();
+        let Some(after_at) = t.strip_prefix('@') else {
+            return t;
+        };
+        let Some(first) = after_at.chars().next() else {
+            return after_at;
+        };
+        s = match first {
+            '{' => xy_skip_pair(after_at, '{', '}'),
+            '(' => xy_skip_pair(after_at, '(', ')'),
+            '<' => xy_skip_pair(after_at, '<', '>'),
+            '[' => xy_skip_pair(after_at, '[', ']'),
+            '/' => match after_at[1..].find('/') {
+                Some(p) => &after_at[1 + p + 1..],
+                None => "",
+            },
+            _ => &after_at[first.len_utf8()..],
+        };
+    }
+}
+
+/// Skip a balanced `open..close` group at the start of `s`.
+fn xy_skip_pair(s: &str, open: char, close: char) -> &str {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        if c == open {
+            depth += 1;
+        } else if c == close {
+            depth -= 1;
+            if depth == 0 {
+                return &s[i + c.len_utf8()..];
+            }
+        }
+    }
+    ""
+}
+
 /// Consume a script argument following `^`/`_`: a braced group or a single
 /// token (one command or one character). Returns `(rest_after, content)`.
 fn xy_take_script(input: &str) -> (&str, &str) {
@@ -939,6 +1100,13 @@ pub(crate) struct LatexCompactParser {
     /// Warnings accumulated during parsing (e.g. metadata-dropping macros such
     /// as `\href`/`\includegraphics`), merged into the `ParseResult`.
     diagnostics: Vec<Diagnostic>,
+    /// Active `\rowcolors{start}{odd}{even}` alternating-row coloring (xcolor
+    /// `[table]`), captured for the next `array`/`tabular`. Cleared once that
+    /// array consumes it.
+    rowcolors: Option<(usize, String, String)>,
+    /// User paired delimiters declared via `\DeclarePairedDelimiter`, mapping
+    /// the command name to its `(open, close)` delimiter glyph strings.
+    paired_delims: HashMap<String, (String, String)>,
     /// Set to `true` the first time an infix-fraction marker (`\over`/`\atop`/
     /// `\choose`/`\brace`/`\brack`/`\above`) is produced. The vast majority of
     /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
@@ -961,6 +1129,8 @@ impl LatexCompactParser {
             display_override: false,
             colors: HashMap::new(),
             diagnostics: Vec::new(),
+            rowcolors: None,
+            paired_delims: HashMap::new(),
             infix_marker_seen: false,
         }
     }
@@ -1873,11 +2043,24 @@ impl LatexCompactParser {
     }
 
     fn dispatch_command<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
+        // User-declared paired delimiters (`\DeclarePairedDelimiter`).
+        if let Some((open, close)) = self.paired_delims.get(name).cloned() {
+            return self.parse_paired_delim(input, &open, &close);
+        }
         // Leaf commands that produce a node without consuming additional input.
         if let Some(id) = self.try_leaf_command(name) {
             return Ok((input, id));
         }
         match name {
+            // --- mathtools / physics paired delimiters (auto-scaling) ---
+            // Each accepts an optional `*` (auto-size; a no-op here since the
+            // engine always auto-sizes) before the single argument.
+            "abs" => self.parse_paired_delim(input, "|", "|"),
+            "norm" => self.parse_paired_delim(input, "\u{2016}", "\u{2016}"),
+            "ceil" => self.parse_paired_delim(input, "\u{2308}", "\u{2309}"),
+            "floor" => self.parse_paired_delim(input, "\u{230A}", "\u{230B}"),
+            // `\DeclarePairedDelimiter\cmd{open}{close}` — register a delimiter.
+            "DeclarePairedDelimiter" => self.parse_declare_paired_delim(input),
             // --- Fractions ---
             "frac" => self.parse_frac(input, FractionKind::Normal),
             "dfrac" | "cfrac" => self.parse_frac(input, FractionKind::Display),
@@ -1987,6 +2170,25 @@ impl LatexCompactParser {
                 } else {
                     super::mhchem::pu_to_latex(body)
                 };
+                let processed = match preprocess_cow(&latex) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        return Ok((
+                            after,
+                            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                        ));
+                    },
+                };
+                let id = match self.parse_node_list(&processed) {
+                    Ok((_, ids)) => self.flatten_single(&ids),
+                    Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                };
+                Ok((after, id))
+            },
+
+            // --- physics: variadic derivative operators ---
+            "dv" | "pdv" | "fdv" => {
+                let (after, latex) = super::physics::translate_derivative(name, input);
                 let processed = match preprocess_cow(&latex) {
                     Ok(p) => p,
                     Err(_) => {
@@ -2186,6 +2388,9 @@ impl LatexCompactParser {
             "xrightharpoondown" => self.parse_extensible_arrow(input, '\u{21C1}'),
             "xrightharpoonup" => self.parse_extensible_arrow(input, '\u{21C0}'),
             "xlongequal" => self.parse_extensible_arrow(input, '='),
+            // extpfeil: the true long double rightarrow ⟹ (U+27F9), distinct
+            // from the standard double arrow ⇒ (U+21D2) of `\xRightarrow`.
+            "xLongrightarrow" => self.parse_extensible_arrow(input, '\u{27F9}'),
 
             // --- Substack ---
             "substack" => self.parse_substack(input),
@@ -2212,6 +2417,30 @@ impl LatexCompactParser {
             "textcolor" => self.parse_textcolor(input),
             "definecolor" | "providecolor" => self.parse_definecolor(input),
             "colorlet" => self.parse_colorlet(input),
+            // `\rowcolors{start}{odd}{even}` — alternating-row coloring for the
+            // next array/tabular (xcolor `[table]`).
+            "rowcolors" | "rowcolors*" => self.parse_rowcolors(input),
+            // `\arrayrulecolor{c}` at top level — accepted and ignored (rule
+            // colors are not representable on the Array node).
+            "arrayrulecolor" => {
+                let (input, _) = self.parse_colortbl_color(input)?;
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                ))
+            },
+            // `\empheqset{...}` — global empheq option setup; accepted/ignored.
+            "empheqset" => {
+                let (input, _) = ws(input)?;
+                let input = match super::mhchem::capture_braced(input) {
+                    Some((rest, _)) => rest,
+                    None => input,
+                };
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                ))
+            },
 
             // --- Colored boxes (consume color, return content) ---
             "colorbox" => self.parse_colorbox(input),
@@ -2228,8 +2457,8 @@ impl LatexCompactParser {
             // --- Strikethrough / sout ---
             "sout" => self.parse_cancel(input, StrokeKind::Horizontal),
 
-            // --- Poor man's bold (render as bold font) ---
-            "pmb" => self.parse_math_font(input, "mathbf"),
+            // --- Poor man's bold: bold-italic for math letters (amsbsy) ---
+            "pmb" => self.parse_math_font(input, "pmb"),
 
             // --- Raisebox (consume dimension, return content) ---
             "raisebox" => self.parse_raisebox(input),
@@ -2237,6 +2466,20 @@ impl LatexCompactParser {
             // --- Centernot (negation overlay) ---
             "centernot" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
+                // Prefer a precomposed negated codepoint (e.g. → ↛, = ≠) when
+                // one exists: it is correctly centered by the font and round-
+                // trips cleanly (↛ → \nrightarrow). Otherwise fall back to a
+                // combining-solidus overlay (U+0338).
+                if let Some(ch) = self.node_single_char(arg_id)
+                    && let Some(neg) = centernot_precomposed(ch)
+                {
+                    let sid = self.push_char_str(neg);
+                    return Ok((
+                        input,
+                        self.arena
+                            .push_node(CompactNode::Symbol(SymbolKind::Relation, sid)),
+                    ));
+                }
                 // Overlay a combining solidus on the argument
                 let slash_sid = self.arena.push_str("\u{0338}");
                 let slash_id = self
@@ -3894,14 +4137,299 @@ impl LatexCompactParser {
         }
     }
 
-    /// `\colorbox{color}{content}` — consume color arg, emit content in a colored box.
+    /// Resolve a `\colorbox`/`\fcolorbox` color spec, honouring an optional
+    /// `[model]` (`rgb`/`RGB`/`HTML`/`gray`/`cmyk`). Without a model the spec is
+    /// resolved as a named/user/xcolor-expression color.
+    fn resolve_box_color(&self, model: Option<&str>, spec: &str) -> String {
+        match model {
+            Some(m) => crate::css_colors::resolve_color_model(m.trim(), spec.trim())
+                .map(crate::css_colors::rgb_to_hex)
+                .unwrap_or_else(|| self.resolve_color(spec)),
+            None => self.resolve_color(spec),
+        }
+    }
+
+    /// `\rowcolors[cmds]{start}{odd}{even}` — capture alternating-row coloring
+    /// for the next array/tabular. Produces no visible output.
+    fn parse_rowcolors<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        // Optional `[commands]` argument (e.g. `\hline`); accepted and ignored.
+        let input = if input.starts_with('[') {
+            input.find(']').map(|e| &input[e + 1..]).unwrap_or(input)
+        } else {
+            input
+        };
+        let (input, _) = ws(input)?;
+        let (input, _) = char('{')(input)?;
+        let (input, start_s) = take_while(|c: char| c != '}')(input)?;
+        let (input, _) = char('}')(input)?;
+        let (input, odd) = self.parse_colortbl_color(input)?;
+        let (input, even) = self.parse_colortbl_color(input)?;
+        let start = start_s.trim().parse::<usize>().unwrap_or(1).max(1);
+        self.rowcolors = Some((start, odd, even));
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+        ))
+    }
+
+    /// Extract per-column background colors from `>{\columncolor{c}}` prefixes in
+    /// an array column spec, returning the spec with those `>{...}` (and any
+    /// `<{...}`) groups removed plus a per-column color vector aligned to the
+    /// alignment columns. Specs using `*{n}{...}` repetition are left untouched
+    /// (column indices cannot be statically aligned) and yield no colors.
+    fn extract_column_colors(&self, spec: &str) -> (String, Vec<Option<String>>) {
+        if spec.contains('*') {
+            return (spec.to_string(), Vec::new());
+        }
+        let bytes = spec.as_bytes();
+        let mut i = 0usize;
+        let mut cleaned = String::with_capacity(spec.len());
+        let mut col_bg: Vec<Option<String>> = Vec::new();
+        let mut pending: Option<String> = None;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            match c {
+                'l' | 'c' | 'r' => {
+                    cleaned.push(c);
+                    col_bg.push(pending.take());
+                    i += 1;
+                },
+                'p' | 'm' | 'b' => {
+                    // Column with a {width} argument: copy the letter and the
+                    // braced width verbatim.
+                    cleaned.push(c);
+                    col_bg.push(pending.take());
+                    i += 1;
+                    if let Some((after, inner)) = take_braced_at(spec, i) {
+                        cleaned.push('{');
+                        cleaned.push_str(inner);
+                        cleaned.push('}');
+                        i = after;
+                    }
+                },
+                '>' => {
+                    // `>{...}` pre-column directive: capture \columncolor, strip.
+                    if let Some((after, inner)) = take_braced_at(spec, i + 1) {
+                        if let Some(color) = self.columncolor_in(inner) {
+                            pending = Some(color);
+                        }
+                        i = after;
+                    } else {
+                        cleaned.push(c);
+                        i += 1;
+                    }
+                },
+                '<' => {
+                    // `<{...}` post-column directive: strip.
+                    if let Some((after, _)) = take_braced_at(spec, i + 1) {
+                        i = after;
+                    } else {
+                        cleaned.push(c);
+                        i += 1;
+                    }
+                },
+                '@' | '!' => {
+                    // Inter-column material: keep verbatim.
+                    cleaned.push(c);
+                    i += 1;
+                    if let Some((after, inner)) = take_braced_at(spec, i) {
+                        cleaned.push('{');
+                        cleaned.push_str(inner);
+                        cleaned.push('}');
+                        i = after;
+                    }
+                },
+                _ => {
+                    cleaned.push(c);
+                    i += 1;
+                },
+            }
+        }
+        (cleaned, col_bg)
+    }
+
+    /// If `s` contains a `\columncolor{c}` / `\columncolor[model]{spec}`
+    /// directive, return the resolved color string.
+    fn columncolor_in(&self, s: &str) -> Option<String> {
+        let after = s
+            .find("\\columncolor")
+            .map(|p| &s[p + "\\columncolor".len()..])?;
+        let after = after.trim_start();
+        // Optional [model]
+        let (model, after) = if let Some(rest) = after.strip_prefix('[') {
+            let end = rest.find(']')?;
+            (Some(&rest[..end]), &rest[end + 1..])
+        } else {
+            (None, after)
+        };
+        let after = after.trim_start();
+        let rest = after.strip_prefix('{')?;
+        let end = rest.find('}')?;
+        let spec = &rest[..end];
+        Some(self.resolve_box_color(model, spec))
+    }
+
+    /// Apply captured `\rowcolors` and per-column `\columncolor` backgrounds to
+    /// table `rows`, wrapping only cells that are not already explicitly colored
+    /// (`\cellcolor`/`\rowcolor`). Consumes (clears) `self.rowcolors`.
+    fn apply_table_colors(
+        &mut self,
+        rows: &mut [Vec<SmallVec<[NodeId; 8]>>],
+        col_bg: &[Option<String>],
+    ) {
+        let rowcolors = self.rowcolors.take();
+        if rowcolors.is_none() && col_bg.iter().all(Option::is_none) {
+            return;
+        }
+        for (r, row) in rows.iter_mut().enumerate() {
+            // Row-level alternating color (1-based row numbering).
+            let row_color: Option<String> = rowcolors.as_ref().and_then(|(start, odd, even)| {
+                let n = r + 1;
+                if n < *start {
+                    return None;
+                }
+                let c = if (n - start) % 2 == 0 { odd } else { even };
+                if c.is_empty() { None } else { Some(c.clone()) }
+            });
+            for (col, cell) in row.iter_mut().enumerate() {
+                if self.cell_is_boxed(cell) {
+                    continue; // already colored by \cellcolor/\rowcolor
+                }
+                let color = col_bg
+                    .get(col)
+                    .and_then(|c| c.clone())
+                    .or_else(|| row_color.clone());
+                if let Some(color) = color
+                    && !color.is_empty()
+                {
+                    *cell = self.wrap_cell_bg(std::mem::take(cell), &color);
+                }
+            }
+        }
+    }
+
+    /// Whether a parsed cell is already a single background-`Boxed` node.
+    fn cell_is_boxed(&self, cell: &SmallVec<[NodeId; 8]>) -> bool {
+        cell.len() == 1
+            && matches!(
+                *self.arena.node(cell[0]),
+                CompactNode::Boxed { bg_color, .. } if !self.arena.str_val(bg_color).is_empty()
+            )
+    }
+
+    /// If `id` resolves to a node carrying exactly one character (a `Symbol` or
+    /// single-char `Identifier`, possibly wrapped in a one-child `Row`), return
+    /// that char. Used by `\centernot` to look up a precomposed negation.
+    fn node_single_char(&self, id: NodeId) -> Option<char> {
+        match *self.arena.node(id) {
+            CompactNode::Symbol(_, sid) | CompactNode::Identifier(sid) => {
+                let s = self.arena.str_val(sid);
+                let mut it = s.chars();
+                let c = it.next()?;
+                it.next().is_none().then_some(c)
+            },
+            CompactNode::Row(span) => {
+                let kids = self.arena.children(span);
+                if kids.len() == 1 {
+                    let k = kids[0];
+                    self.node_single_char(k)
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        }
+    }
+
+    /// Parse a paired-delimiter command body: an optional `*` (auto-size, a
+    /// no-op here) followed by a single required group, wrapped in a
+    /// [`CompactNode::Fenced`] with the given open/close delimiters.
+    fn parse_paired_delim<'a>(
+        &mut self,
+        input: &'a str,
+        open: &str,
+        close: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let input = input.strip_prefix('*').unwrap_or(input);
+        let (input, arg_id) = self.parse_required_group(input)?;
+        let open_sid = self.arena.push_str(open);
+        let close_sid = self.arena.push_str(close);
+        let content = self.arena.push_children(&[arg_id]);
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Fenced {
+                open: open_sid,
+                close: close_sid,
+                content,
+            }),
+        ))
+    }
+
+    /// `\DeclarePairedDelimiter\cmd{open}{close}` (or `{\cmd}` form) — register a
+    /// user paired delimiter so `\cmd{x}` / `\cmd*{x}` auto-scale `open x close`.
+    fn parse_declare_paired_delim<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let empty = |me: &mut Self| me.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        let mut rest = input.trim_start();
+        // Command name: `{\name}` or `\name`.
+        let name = if rest.starts_with('{') {
+            match super::mhchem::capture_braced(rest) {
+                Some((r, inner)) => {
+                    rest = r;
+                    inner.trim().trim_start_matches('\\').to_string()
+                },
+                None => return Ok((input, empty(self))),
+            }
+        } else if let Some(after) = rest.strip_prefix('\\') {
+            let len = after.bytes().take_while(u8::is_ascii_alphabetic).count();
+            if len == 0 {
+                return Ok((input, empty(self)));
+            }
+            let n = after[..len].to_string();
+            rest = &after[len..];
+            n
+        } else {
+            return Ok((input, empty(self)));
+        };
+        // Skip optional `[...]` groups (xparse arg-count / default-arg specs).
+        loop {
+            let t = rest.trim_start();
+            match t
+                .strip_prefix('[')
+                .and_then(|r| r.find(']').map(|e| &r[e + 1..]))
+            {
+                Some(after) => rest = after,
+                None => {
+                    rest = t;
+                    break;
+                },
+            }
+        }
+        // `{open}{close}` delimiter groups.
+        let Some((rest, open)) = super::mhchem::capture_braced(rest) else {
+            return Ok((rest, empty(self)));
+        };
+        let Some((rest, close)) = super::mhchem::capture_braced(rest) else {
+            return Ok((rest, empty(self)));
+        };
+        self.paired_delims
+            .insert(name, (delim_to_glyph(open), delim_to_glyph(close)));
+        Ok((rest, empty(self)))
+    }
+
+    /// `\colorbox{color}{content}` or `\colorbox[model]{spec}{content}` —
+    /// consume an optional color model and the color arg, emit content in a
+    /// colored box.
     fn parse_colorbox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let (input, model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
         let (input, color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
-        let bg_color = self.resolve_color(color);
+        let bg_color = self.resolve_box_color(model.as_deref(), color);
         let bg_sid = self.arena.push_str(&bg_color);
         let border_sid = self.arena.push_str("");
         Ok((
@@ -3914,8 +4442,12 @@ impl LatexCompactParser {
         ))
     }
 
-    /// `\fcolorbox{framecolor}{bgcolor}{content}` — consume two color args, emit content in a colored box.
+    /// `\fcolorbox{framecolor}{bgcolor}{content}` or
+    /// `\fcolorbox[model]{frame}{bg}{content}` — consume an optional color model
+    /// and two color args, emit content in a colored box.
     fn parse_fcolorbox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let (input, model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
         let (input, frame_color) = take_while(|c: char| c != '}')(input)?;
@@ -3925,8 +4457,8 @@ impl LatexCompactParser {
         let (input, bg_color) = take_while(|c: char| c != '}')(input)?;
         let (input, _) = char('}')(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
-        let bg = self.resolve_color(bg_color);
-        let frame = self.resolve_color(frame_color);
+        let bg = self.resolve_box_color(model.as_deref(), bg_color);
+        let frame = self.resolve_box_color(model.as_deref(), frame_color);
         let bg_sid = self.arena.push_str(&bg);
         let border_sid = self.arena.push_str(&frame);
         Ok((
@@ -4153,6 +4685,22 @@ impl LatexCompactParser {
             "gather" | "gather*" => self.parse_gather_env(input, env_name),
             "equation" | "equation*" => self.parse_equation_env(input, env_name),
             "multline" | "multline*" => self.parse_multline_env(input, env_name),
+            // mathtools `multlined`: paragraph-style multline. Skip optional
+            // `[pos]` / `[width]` brackets, then lay out like `multline`.
+            "multlined" | "multlined*" => {
+                let mut inp = input;
+                for _ in 0..2 {
+                    let (i, _) = ws(inp)?;
+                    match i
+                        .strip_prefix('[')
+                        .and_then(|r| r.find(']').map(|e| &r[e + 1..]))
+                    {
+                        Some(after) => inp = after,
+                        None => break,
+                    }
+                }
+                self.parse_multline_env(inp, env_name)
+            },
             "split" => self.parse_align_env(input, env_name),
             _ => self.parse_array_env(input, env_name),
         }
@@ -4160,7 +4708,7 @@ impl LatexCompactParser {
 
     fn parse_array_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let (input, columns) = 'col: {
+        let (input, columns, col_bg) = 'col: {
             if let Some(inner) = input.strip_prefix('{') {
                 // Scan with brace-depth to handle nested {} in column specs
                 // e.g., {l*{2}{rc}} has nested braces
@@ -4181,25 +4729,31 @@ impl LatexCompactParser {
                     let spec = &inner[..end];
                     let rest = &inner[end + 1..];
                     if !spec.is_empty() {
-                        let (aligns, col_seps) = parse_column_spec(spec);
+                        // Extract `>{\columncolor{..}}` column backgrounds and
+                        // strip them so the alignment spec parses cleanly.
+                        let (cleaned, col_bg) = self.extract_column_colors(spec);
+                        let (aligns, col_seps) = parse_column_spec(&cleaned);
                         // LaTeX `array` adds `\arraycolsep` on both outer edges
                         // unless the preamble suppresses it with a leading `@{}`
                         // (as in `@{}cc@{}`).
-                        let array_style = !spec.trim_start().starts_with('@');
-                        break 'col (rest, (aligns, col_seps, array_style));
+                        let array_style = !cleaned.trim_start().starts_with('@');
+                        break 'col (rest, (aligns, col_seps, array_style), col_bg);
                     }
                 }
             }
-            (input, (SmallVec::new(), 0u32, true))
+            (input, (SmallVec::new(), 0u32, true), Vec::new())
         };
 
-        let (input, (rows, row_seps)) = self.parse_table_body_with_seps(input)?;
+        let (input, (mut rows, row_seps)) = self.parse_table_body_with_seps(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
+
+        // Apply `\rowcolors` alternating rows and `\columncolor` backgrounds.
+        self.apply_table_colors(&mut rows, &col_bg);
 
         Ok((
             input,
@@ -4351,9 +4905,15 @@ impl LatexCompactParser {
                         .push_node(CompactNode::Symbol(SymbolKind::Relation, sid)),
                 );
             },
-            // `@|` / `@\vert` / `@\Vert` vertical double line.
+            // `@|` / `@\vert` / `@\Vert` vertical line. `\vert` is a *single*
+            // bar `|`; bare `@|`, `@\|` and `@\Vert` are the double bar `‖`.
             Some(b'|') | Some(b'\\') => {
-                let sid = self.push_char_str('\u{2016}'); // ‖
+                let glyph = if conn.trim() == "\\vert" {
+                    '\u{007C}' // single bar |
+                } else {
+                    '\u{2016}' // double bar ‖
+                };
+                let sid = self.push_char_str(glyph);
                 out.push(
                     self.arena
                         .push_node(CompactNode::Symbol(SymbolKind::Relation, sid)),
@@ -4485,6 +5045,7 @@ impl LatexCompactParser {
         let mut stack: Vec<NodeId> = Vec::new();
         let mut right_label: Option<NodeId> = None;
         let mut left_label: Option<NodeId> = None;
+        let mut line_style = BussLine::Single;
         let mut rest = body;
 
         while let Some(bs) = rest.find('\\') {
@@ -4512,6 +5073,7 @@ impl LatexCompactParser {
                         arg.unwrap_or(""),
                         &mut left_label,
                         &mut right_label,
+                        &mut line_style,
                     );
                     rest = after;
                 },
@@ -4523,6 +5085,7 @@ impl LatexCompactParser {
                         arg.unwrap_or(""),
                         &mut left_label,
                         &mut right_label,
+                        &mut line_style,
                     );
                     rest = after;
                 },
@@ -4534,6 +5097,7 @@ impl LatexCompactParser {
                         arg.unwrap_or(""),
                         &mut left_label,
                         &mut right_label,
+                        &mut line_style,
                     );
                     rest = after;
                 },
@@ -4545,6 +5109,7 @@ impl LatexCompactParser {
                         arg.unwrap_or(""),
                         &mut left_label,
                         &mut right_label,
+                        &mut line_style,
                     );
                     rest = after;
                 },
@@ -4556,6 +5121,7 @@ impl LatexCompactParser {
                         arg.unwrap_or(""),
                         &mut left_label,
                         &mut right_label,
+                        &mut line_style,
                     );
                     rest = after;
                 },
@@ -4569,6 +5135,10 @@ impl LatexCompactParser {
                     left_label = Some(self.buss_content(arg.unwrap_or("")));
                     rest = after;
                 },
+                // Inference line styles (apply to the next inference).
+                "noLine" => line_style = BussLine::None,
+                "doubleLine" => line_style = BussLine::Double,
+                "singleLine" | "solidLine" | "dottedLine" => line_style = BussLine::Single,
                 // \DisplayProof / \DP take no argument; everything else is
                 // skipped along with any braced argument it might carry.
                 "DisplayProof" | "DP" => {},
@@ -4598,6 +5168,7 @@ impl LatexCompactParser {
         concl_src: &str,
         left: &mut Option<NodeId>,
         right: &mut Option<NodeId>,
+        line: &mut BussLine,
     ) {
         let avail = stack.len().min(arity);
         let split = stack.len() - avail;
@@ -4607,7 +5178,9 @@ impl LatexCompactParser {
             premises.insert(0, empty);
         }
         let concl = self.buss_content(concl_src);
-        let node = self.buss_make_node(&premises, concl, left.take(), right.take());
+        let node = self.buss_make_node(&premises, concl, left.take(), right.take(), *line);
+        // Line style resets to the default after each inference.
+        *line = BussLine::Single;
         stack.push(node);
     }
 
@@ -4620,6 +5193,7 @@ impl LatexCompactParser {
         concl: NodeId,
         left: Option<NodeId>,
         right: Option<NodeId>,
+        line: BussLine,
     ) -> NodeId {
         let prem_row = self.buss_hstack(premises);
         let width = self
@@ -4627,11 +5201,36 @@ impl LatexCompactParser {
             .max(self.buss_width(concl))
             .max(0.6)
             + 0.3;
-        let rule = self.arena.push_node(CompactNode::Rule {
-            width: rat_em(width),
-            height: Rational::new(4, 100),
-            lift: Rational::new(6, 100),
-        });
+        // Build the inference line according to the requested style.
+        let make_rule = |me: &mut Self| {
+            me.arena.push_node(CompactNode::Rule {
+                width: rat_em(width),
+                height: Rational::new(4, 100),
+                lift: Rational::new(6, 100),
+            })
+        };
+        let rule: NodeId = match line {
+            // No rule: a thin vertical gap so premises sit above the conclusion.
+            BussLine::None => self
+                .arena
+                .push_node(CompactNode::Space(Rational::new(1, 10))),
+            // Double rule: two stacked thin lines.
+            BussLine::Double => {
+                let r1 = make_rule(self);
+                let gap = self
+                    .arena
+                    .push_node(CompactNode::Space(Rational::new(1, 20)));
+                let r2 = make_rule(self);
+                let cols = [ColumnAlign::Center];
+                let rows = vec![
+                    vec![smallvec::smallvec![r1]],
+                    vec![smallvec::smallvec![gap]],
+                    vec![smallvec::smallvec![r2]],
+                ];
+                self.build_array(&cols, rows)
+            },
+            BussLine::Single => make_rule(self),
+        };
         let rule_row = if left.is_some() || right.is_some() {
             let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
             if let Some(l) = left {
@@ -4815,6 +5414,10 @@ impl LatexCompactParser {
         let mut rest = &cell[head_end..];
         while rest.starts_with("\\ar") {
             rest = &rest[3..];
+            // Skip optional `\ar` shaft/curve/offset modifiers (`@{->}`,
+            // `@/^/`, `@(u,d)`, `@<1ex>`, `@2`, …) — the arrow direction is
+            // still taken from the following `[dir]`.
+            rest = xy_skip_ar_modifiers(rest);
             let (after_dir, dir) = xy_take_bracket(rest);
             rest = after_dir;
             let mut over = None;
@@ -4952,11 +5555,13 @@ impl LatexCompactParser {
     ///
     /// Syntax: `\begin{numcases}{<left-expr>} <val> & <cond> \\ ... \end{...}`.
     /// Builds `<left-expr> = { <cases-rows> }` and appends a right-aligned
-    /// equation-number column whose cells are `(1a)`, `(1b)`, … Since this is a
-    /// single-formula converter with no document-wide counter, the master
-    /// number is fixed at `1`; the sub-letters `a, b, c, …` increment per row.
-    /// `subnumcases` is handled identically (its first argument is treated as
-    /// the shared left expression, best-effort).
+    /// equation-number column. Since this is a single-formula converter with no
+    /// document-wide counter, the master number starts at `1`:
+    ///
+    /// * `numcases` numbers each row `(1)`, `(2)`, `(3)`, … (one master number
+    ///   per case row).
+    /// * `subnumcases` shares a single master number `1` and increments the
+    ///   sub-letter per row: `(1a)`, `(1b)`, `(1c)`, ….
     fn parse_numcases_env<'a>(
         &mut self,
         input: &'a str,
@@ -4972,11 +5577,19 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
+        let sub = env_name == "subnumcases";
+
         // Append an upright parenthesized equation-number cell to each row.
         let mut numbered_rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::with_capacity(rows.len());
         for (i, mut row) in rows.into_iter().enumerate() {
-            let letter = char::from(b'a' + (i % 26) as u8);
-            let label = format!("(1{letter})");
+            let label = if sub {
+                // Shared master number 1, incrementing sub-letter per row.
+                let letter = char::from(b'a' + (i % 26) as u8);
+                format!("(1{letter})")
+            } else {
+                // One master number per row: (1), (2), (3), …
+                format!("({})", i + 1)
+            };
             let sid = self.arena.push_str(&label);
             let num_id = self
                 .arena
@@ -5028,11 +5641,18 @@ impl LatexCompactParser {
         // Optional `[options]`.
         let (input, _) = ws(input)?;
         let (input, opts) = if let Some(after) = input.strip_prefix('[') {
-            // Scan to the top-level closing `]` (brace-depth aware).
+            // Scan to the top-level closing `]` (brace-depth aware, skipping
+            // backslash-escaped braces such as `\{` in `left=\{`).
             let mut depth = 0i32;
             let mut end = None;
+            let mut escaped = false;
             for (i, c) in after.char_indices() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
                 match c {
+                    '\\' => escaped = true,
                     '{' => depth += 1,
                     '}' if depth > 0 => depth -= 1,
                     ']' if depth == 0 => {

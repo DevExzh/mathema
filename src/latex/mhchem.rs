@@ -24,10 +24,11 @@
 //! * Parentheses / brackets grouping with trailing subscripts.
 //! * Embedded `$...$` math and nested `\ce{...}` (best-effort).
 //! * Gas / precipitate markers: a standalone `^` → `↑`, `v` → `↓`.
+//! * Isotope left pre-scripts: `\ce{^{227}_{90}Th}` → mass/atomic numbers as
+//!   true left super/subscripts (an `<mmultiscripts>`/`<mprescripts>`).
 //!
-//! Deferred (documented, not implemented): isotope pre-scripts
-//! `\ce{^{227}_{90}Th}`, electron dots, complex bond geometry / Lewis
-//! structures, advanced `\pu` unit algebra.
+//! Deferred (documented, not implemented): electron dots, complex bond
+//! geometry / Lewis structures, advanced `\pu` unit algebra.
 
 /// Capture a balanced `{ ... }` group at the start of `input` (after optional
 /// leading whitespace).
@@ -130,6 +131,12 @@ impl Translator {
                 continue;
             }
             if self.try_arrow() {
+                continue;
+            }
+            // Isotope left pre-scripts: a `^`/`_` at the *start* of a species
+            // (before its element letters) is a mass/atomic-number pre-script,
+            // not a gas marker or empty-base subscript.
+            if matches!(c, '^' | '_') && self.try_prescript() {
                 continue;
             }
             match c {
@@ -314,7 +321,15 @@ impl Translator {
     fn minus(&mut self) {
         let next = self.peek(1);
         if self.last == Kind::Atom && !self.had_space {
-            if matches!(next, Some(c) if c.is_ascii_alphabetic() || c == '(' || c == '[') {
+            // A `-` glued to a preceding species is a *bond* only when it
+            // directly joins it to another atom (`A-B`) or a bracket group
+            // (`-[...]`). Otherwise the `-` *terminates* the species and is an
+            // ionic charge superscript: this fires when the next char is
+            // whitespace, end of input, `+`, a closing/opening delimiter such
+            // as `(` (a state like `(aq)` or a following group), etc. In
+            // particular `-(` is a charge so `\ce{Cl-(aq)}` → Cl⁻(aq), matching
+            // mhchem, rather than the old inline `Cl−(aq)` bond reading.
+            if matches!(next, Some(c) if c.is_ascii_alphabetic() || c == '[') {
                 self.out.push_str("{-}"); // bond
                 self.last = Kind::Start;
             } else {
@@ -337,6 +352,113 @@ impl Translator {
         self.last = Kind::Start;
         self.had_space = false;
         self.i += 1;
+    }
+
+    /// Try to parse a leading isotope pre-script `^{mass}_{atomic}Element`
+    /// (mhchem order; either script optional, in either order) immediately
+    /// followed by the element letters.
+    ///
+    /// Emits `\sideset{_{atomic}^{mass}}{}\mathrm{Element}` so the re-parser
+    /// builds a *true* left pre-script (a `PreScripts` node → `<mmultiscripts>`
+    /// with `<mprescripts/>`), instead of degrading the leading `^` into a `↑`
+    /// gas marker and the `_` into a subscript on an empty base. The element
+    /// letters themselves are emitted by the normal `letters()` path on the
+    /// next loop iteration, becoming the pre-script base.
+    ///
+    /// Returns `true` when a pre-script was consumed and emitted.
+    fn try_prescript(&mut self) -> bool {
+        // Only meaningful where a `^`/`_` is NOT glued to a preceding atom,
+        // i.e. at the very start of a species. A glued `^`/`_` is an ordinary
+        // charge / subscript and must be left to `caret()` / `underscore()`.
+        if self.last == Kind::Atom && !self.had_space {
+            return false;
+        }
+        let mut j = self.i;
+        let mut sup: Option<String> = None;
+        let mut sub: Option<String> = None;
+        // Collect the leading `^{...}` / `_{...}` script groups (each at most
+        // once), in whatever order they appear.
+        loop {
+            match self.chars.get(j) {
+                Some('^') if sup.is_none() => match self.scan_script_arg(j + 1) {
+                    Some((next, body)) => {
+                        sup = Some(body);
+                        j = next;
+                    },
+                    None => return false,
+                },
+                Some('_') if sub.is_none() => match self.scan_script_arg(j + 1) {
+                    Some((next, body)) => {
+                        sub = Some(body);
+                        j = next;
+                    },
+                    None => return false,
+                },
+                _ => break,
+            }
+        }
+        // Require at least one script immediately followed by element letters;
+        // otherwise this is not an isotope pre-script (e.g. a bare gas marker).
+        if (sup.is_none() && sub.is_none())
+            || !self.chars.get(j).is_some_and(|c| c.is_ascii_alphabetic())
+        {
+            return false;
+        }
+        self.value_space();
+        self.out.push_str("\\sideset{");
+        if let Some(s) = &sub {
+            self.out.push_str("_{");
+            self.out.push_str(s);
+            self.out.push('}');
+        }
+        if let Some(s) = &sup {
+            self.out.push_str("^{");
+            self.out.push_str(s);
+            self.out.push('}');
+        }
+        self.out.push_str("}{}");
+        self.i = j; // advance past the consumed script groups to the element
+        // `last = Start` so the following letters are emitted without a leading
+        // thin space and are not mistaken for a subscript.
+        self.last = Kind::Start;
+        self.had_space = false;
+        true
+    }
+
+    /// Scan a script argument starting at index `k` (just past `^`/`_`): either
+    /// a braced group `{...}` (returns its inner text) or a bare run of digits.
+    /// Returns the index just past the argument and the argument body, or
+    /// `None` when nothing usable follows.
+    fn scan_script_arg(&self, k: usize) -> Option<(usize, String)> {
+        match self.chars.get(k) {
+            Some('{') => {
+                let mut depth = 1usize;
+                let start = k + 1;
+                let mut j = start;
+                while j < self.chars.len() {
+                    match self.chars[j] {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some((j + 1, self.chars[start..j].iter().collect()));
+                            }
+                        },
+                        _ => {},
+                    }
+                    j += 1;
+                }
+                None
+            },
+            Some(c) if c.is_ascii_digit() => {
+                let mut j = k;
+                while j < self.chars.len() && self.chars[j].is_ascii_digit() {
+                    j += 1;
+                }
+                Some((j, self.chars[k..j].iter().collect()))
+            },
+            _ => None,
+        }
     }
 
     fn caret(&mut self) {
@@ -706,5 +828,90 @@ mod tests {
         let _ = from_latex(r"\ce{").and_then(|c| c.to_mathml());
         let _ = from_latex(r"\ce{((()))}").and_then(|c| c.to_mathml());
         let _ = from_latex(r"\pu{}").and_then(|c| c.to_mathml());
+        // Leading scripts with no element / unbalanced braces must not panic.
+        let _ = from_latex(r"\ce{^{227}").and_then(|c| c.to_mathml());
+        let _ = from_latex(r"\ce{^{227}_{90}}").and_then(|c| c.to_mathml());
+    }
+
+    #[test]
+    fn isotope_left_prescripts() {
+        // `^{227}_{90}Th` must become a TRUE left pre-script (mmultiscripts with
+        // mprescripts), not a stray gas-marker `↑` plus empty-base subscripts.
+        let ml = mathml(r"\ce{^{227}_{90}Th}");
+        assert!(
+            ml.contains("<mmultiscripts>") && ml.contains("<mprescripts"),
+            "expected mprescripts in {ml}"
+        );
+        assert!(
+            ml.contains("227") && ml.contains("90"),
+            "expected masses in {ml}"
+        );
+        // No degraded gas-marker up-arrow.
+        assert!(!ml.contains('\u{2191}'), "unexpected ↑ in {ml}");
+        // Element letters present as the base.
+        assert!(
+            ml.contains(">T</mi>") && ml.contains(">h</mi>"),
+            "expected Th in {ml}"
+        );
+    }
+
+    #[test]
+    fn isotope_mass_only_prescript() {
+        let ml = mathml(r"\ce{^{14}C}");
+        assert!(
+            ml.contains("<mmultiscripts>") && ml.contains("<mprescripts"),
+            "expected mprescripts in {ml}"
+        );
+        assert!(ml.contains("14"), "expected mass 14 in {ml}");
+    }
+
+    #[test]
+    fn chloride_charge_at_end() {
+        // `Cl-` at end of input: the `-` is a charge, rendered as a superscript.
+        let ml = mathml(r"\ce{Cl-}");
+        assert!(ml.contains("<msup>"), "expected charge superscript in {ml}");
+        assert!(
+            ml.contains('-') || ml.contains('\u{2212}'),
+            "expected minus charge in {ml}"
+        );
+    }
+
+    #[test]
+    fn chloride_charge_before_state() {
+        // `Cl-(aq)`: the `-` terminates the species (next char `(`), so it is a
+        // charge superscript, NOT an inline bond.
+        let ml = mathml(r"\ce{Cl-(aq)}");
+        assert!(ml.contains("<msup>"), "expected charge superscript in {ml}");
+        // State `(aq)` still renders upright.
+        assert!(ml.contains('(') && ml.contains(')'));
+        // The minus must be the charge *inside* the superscript (closing
+        // `</msup>` before the `(` of the state), not a sibling inline bond.
+        let sup_end = ml.find("</msup>").expect("msup present");
+        let paren = ml.find("form=\"prefix\"").expect("opening paren present");
+        assert!(
+            sup_end < paren,
+            "charge superscript should close before the state in {ml}"
+        );
+    }
+
+    #[test]
+    fn chloride_charge_before_space_state() {
+        let ml = mathml(r"\ce{Cl- (aq)}");
+        assert!(ml.contains("<msup>"), "expected charge superscript in {ml}");
+    }
+
+    #[test]
+    fn single_letter_bond_stays_bond() {
+        // `A-B` joins two atoms: the `-` is a bond (inline operator), not a
+        // charge. No charge superscript should appear.
+        let ml = mathml(r"\ce{A-B}");
+        assert!(
+            !ml.contains("<msup>"),
+            "A-B should not produce a charge in {ml}"
+        );
+        assert!(
+            ml.contains('-') || ml.contains('\u{2212}'),
+            "expected bond glyph in {ml}"
+        );
     }
 }

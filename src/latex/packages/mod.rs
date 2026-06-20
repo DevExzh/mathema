@@ -160,6 +160,38 @@ pub fn lookup_package_symbol(name: &str) -> Option<(&'static str, SymbolClass)> 
     package_symbol_map().get(name).copied()
 }
 
+/// Detect cross-package builtin-macro shadows that would silently change
+/// behavior. Returns the sorted list of macro names that are registered by more
+/// than one package with **differing** bodies (identical re-definitions, e.g.
+/// `\abs` in both `mathtools` and `physics`, are harmless and excluded).
+///
+/// Builtin macros are seeded into a `HashMap` with last-writer-wins semantics,
+/// so a name defined by two packages with different bodies is a silent shadow
+/// (this was the `physics`-over-`braket` `\bra`/`\ket` bug). The
+/// `no_conflicting_builtin_macro_shadows` test asserts this list is empty.
+#[must_use]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn conflicting_macro_shadows() -> Vec<&'static str> {
+    let mut bodies: HashMap<&'static str, &'static str> = HashMap::new();
+    let mut conflicts: HashSet<&'static str> = HashSet::new();
+    for table in PACKAGE_MACROS {
+        for &(name, _, body) in *table {
+            match bodies.get(name) {
+                Some(&prev) if prev != body => {
+                    conflicts.insert(name);
+                },
+                Some(_) => {},
+                None => {
+                    bodies.insert(name, body);
+                },
+            }
+        }
+    }
+    let mut v: Vec<&'static str> = conflicts.into_iter().collect();
+    v.sort_unstable();
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{Format, convert};
@@ -216,5 +248,18 @@ mod tests {
     fn builtin_name_set_contains_gensymb() {
         assert!(super::is_builtin_macro_name("degree"));
         assert!(!super::is_builtin_macro_name("frac"));
+    }
+
+    #[test]
+    fn no_conflicting_builtin_macro_shadows() {
+        // No two packages may register the same macro name with differing
+        // bodies (that would be a silent last-writer-wins shadow, as the
+        // physics-over-braket `\bra`/`\ket` bug was). Identical re-definitions
+        // (e.g. `\abs` in both mathtools and physics) are harmless.
+        let conflicts = super::conflicting_macro_shadows();
+        assert!(
+            conflicts.is_empty(),
+            "conflicting builtin macro shadows: {conflicts:?}"
+        );
     }
 }

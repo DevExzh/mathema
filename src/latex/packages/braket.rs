@@ -5,9 +5,16 @@
 //! Provides Dirac bra-ket notation. The parser (`parse.rs`) already handles the
 //! single-argument `\braket`/`\Braket` (→ `⟨…⟩`) and `\Set`/`\set` (→ `{…}`)
 //! forms, so we deliberately do **not** define macros for those names (a builtin
-//! macro would expand in preprocessing and shadow the existing handler). We only
-//! contribute the forms the parser is currently missing: `\bra`, `\ket`,
-//! `\ketbra`, and the auto-scaling `\Bra` / `\Ket`.
+//! macro would expand in preprocessing and shadow the existing handler).
+//!
+//! `\bra`/`\ket` are intentionally **not** defined here: the `physics` package
+//! contributes auto-scaling `\bra`/`\ket` (`\left\langle…\right|` /
+//! `\left|…\right\rangle`), and defining them here too would be a silent
+//! cross-package shadow (last-writer-wins in the macro `HashMap`). The
+//! `packages::tests::no_conflicting_builtin_macro_shadows` guard enforces that
+//! no two packages register the same macro name with *different* bodies. We
+//! contribute only the forms `physics` does not: `\ketbra`, and the
+//! auto-scaling `\Bra` / `\Ket`.
 
 use super::SymbolClass;
 
@@ -19,10 +26,6 @@ use super::SymbolClass;
 /// Note: this parser does not recognise `\vert`, so the literal `|` delimiter
 /// (which is parser-supported and renders as the same glyph) is used instead.
 pub const MACROS: &[(&str, u8, &str)] = &[
-    // \bra{x} → ⟨x|
-    ("bra", 1, r"\langle{#1}|"),
-    // \ket{x} → |x⟩
-    ("ket", 1, r"|{#1}\rangle"),
     // \ketbra{x}{y} → |x⟩⟨y|
     ("ketbra", 2, r"|{#1}\rangle\langle{#2}|"),
     // \Bra{x} → auto-scaling ⟨x| via \left\langle … \right|

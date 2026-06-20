@@ -7,17 +7,22 @@
 //! The `centernot` package provides a single command, `\centernot`, which
 //! overlays a centered negation slash on its argument (a better-centered
 //! alternative to `\not`). This command is **already handled directly by the
-//! core parser** in `src/latex/parse.rs` (see the `"centernot"` arm, which
-//! overlays a combining long solidus `U+0338` on the parsed argument and
+//! core parser** in `src/latex/parse.rs` (see the `"centernot"` arm), which
 //! supports both braced `\centernot{=}` and unbraced `\centernot\rightarrow`
-//! forms via `parse_required_group`).
+//! forms via `parse_required_group`.
 //!
-//! Because the parser builds the negation overlay structurally, there is no
-//! macro rewrite or fallback symbol that would express it more faithfully —
-//! seeding a builtin macro here would only *shadow* the existing parser
-//! handling. Therefore both [`MACROS`] and [`SYMBOLS`] are intentionally left
-//! empty. The `#[cfg(test)]` regression tests below pin the parser behavior so
-//! a future change cannot silently regress `centernot` support.
+//! For a negated relation/arrow that has a **precomposed Unicode codepoint**
+//! (e.g. `→`→`↛`, `=`→`≠`, `∈`→`∉`), the parser emits that single glyph: it is
+//! correctly centered by the font and round-trips to a named negation. For any
+//! other argument it falls back to overlaying a combining long solidus
+//! `U+0338`.
+//!
+//! Because the parser builds the negation structurally, there is no macro
+//! rewrite or fallback symbol that would express it more faithfully — seeding a
+//! builtin macro here would only *shadow* the existing parser handling.
+//! Therefore both [`MACROS`] and [`SYMBOLS`] are intentionally left empty. The
+//! `#[cfg(test)]` regression tests below pin the parser behavior so a future
+//! change cannot silently regress `centernot` support.
 
 use super::SymbolClass;
 
@@ -44,40 +49,44 @@ mod tests {
     }
 
     #[test]
-    fn centernot_arrow_parses_and_overlays_solidus() {
-        // Unbraced single-token argument form: `\centernot\rightarrow`.
+    fn centernot_arrow_uses_precomposed_negation() {
+        // `\centernot\rightarrow` → ↛ (U+219B), correctly centered.
         let mathml = to_mathml(r"\centernot\rightarrow");
-        // The right arrow glyph (U+2192) must survive.
         assert!(
-            mathml.contains('\u{2192}'),
-            "expected right arrow glyph, got: {mathml}"
-        );
-        // ...and be negated by the combining solidus overlay.
-        assert!(
-            mathml.contains(COMBINING_SOLIDUS),
-            "expected combining solidus overlay (U+0338), got: {mathml}"
+            mathml.contains('\u{219B}'),
+            "expected precomposed ↛ (U+219B), got: {mathml}"
         );
     }
 
     #[test]
-    fn centernot_equals_parses_and_overlays_solidus() {
-        // Unbraced single-token argument form: `\centernot=`.
+    fn centernot_equals_uses_precomposed_negation() {
+        // `\centernot=` → ≠ (U+2260).
         let mathml = to_mathml(r"\centernot=");
-        assert!(mathml.contains('='), "expected equals sign, got: {mathml}");
         assert!(
-            mathml.contains(COMBINING_SOLIDUS),
-            "expected combining solidus overlay (U+0338), got: {mathml}"
+            mathml.contains('\u{2260}'),
+            "expected precomposed ≠ (U+2260), got: {mathml}"
         );
     }
 
     #[test]
     fn centernot_braced_argument_parses() {
-        // Braced argument form: `\centernot{=}`.
+        // Braced argument form: `\centernot{=}` → ≠.
         let mathml = to_mathml(r"\centernot{=}");
-        assert!(mathml.contains('='));
+        assert!(
+            mathml.contains('\u{2260}'),
+            "expected precomposed ≠ (U+2260), got: {mathml}"
+        );
+    }
+
+    #[test]
+    fn centernot_fallback_overlay_for_unmapped_base() {
+        // A base with no precomposed negation falls back to the combining
+        // solidus overlay (U+0338).
+        let mathml = to_mathml(r"\centernot{a}");
+        assert!(mathml.contains('a'), "expected base glyph, got: {mathml}");
         assert!(
             mathml.contains(COMBINING_SOLIDUS),
-            "expected combining solidus overlay (U+0338), got: {mathml}"
+            "expected combining solidus fallback (U+0338), got: {mathml}"
         );
     }
 
@@ -87,8 +96,8 @@ mod tests {
         let uni = convert(r"\centernot=", Format::LaTeX, Format::UnicodeMath)
             .expect("unicode-math convert should succeed");
         assert!(
-            uni.contains(COMBINING_SOLIDUS),
-            "expected combining solidus in unicode-math output, got: {uni:?}"
+            uni.contains('\u{2260}'),
+            "expected ≠ in unicode-math output, got: {uni:?}"
         );
     }
 

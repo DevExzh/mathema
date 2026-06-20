@@ -317,11 +317,12 @@ fn monospace_offset(ch: char) -> Option<u32> {
 pub fn latex_font_to_style(command: &str) -> Option<TextStyle> {
     match command {
         "mathrm" | "textrm" | "text" | "mathup" | "mathsfup" => Some(TextStyle::Normal),
-        "mathbf" | "textbf" | "boldsymbol" | "bm" | "pmb" | "mathbfup" | "mathbfsfup" => {
-            Some(TextStyle::Bold)
-        },
+        "mathbf" | "textbf" | "mathbfup" | "mathbfsfup" => Some(TextStyle::Bold),
         "mathit" | "textit" | "mathnormal" => Some(TextStyle::Italic),
-        "mathbfit" | "mathbfsfit" => Some(TextStyle::BoldItalic),
+        // amsbsy/bm: `\boldsymbol`, `\bm` and `\pmb` bold the symbol while
+        // preserving the math-italic shape of letters/Greek → bold-italic
+        // (distinct from `\mathbf`, which is bold-upright).
+        "mathbfit" | "mathbfsfit" | "boldsymbol" | "bm" | "pmb" => Some(TextStyle::BoldItalic),
         "mathtt" | "texttt" => Some(TextStyle::Monospace),
         "mathsf" | "textsf" => Some(TextStyle::SansSerif),
         "mathsfit" => Some(TextStyle::SansSerifItalic),

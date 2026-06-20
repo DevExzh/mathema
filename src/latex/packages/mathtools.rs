@@ -7,18 +7,16 @@
 //!
 //! * **Relation colons** (`\coloneqq`, `\eqqcolon`, `\Coloneqq`, `\vcentcolon`,
 //!   `\dblcolon`) are emitted as their Unicode relation glyphs via [`SYMBOLS`].
-//! * **Paired delimiters** (`\abs`, `\norm`, `\ceil`, `\floor`) expand to
-//!   auto-scaling `\left ... \right` groups via [`MACROS`].
 //!
-//! Deferred (need structural / parser support, not expressible as a simple
-//! macro or symbol):
+//! Handled directly by the parser (not as fixed-arity macros, so the starred
+//! auto-size forms work):
 //!
-//! * `\DeclarePairedDelimiter` — declares *new* user macros; this is a
-//!   meta-definition facility, not a fixed expansion.
-//! * the `multlined` environment — a multi-line structural environment.
-//! * the starred paired-delimiter forms (`\ceil*`, `\floor*`, ...) — the `*`
-//!   is a separate token the preprocessor cannot fold into the macro name, so
-//!   the unstarred (already auto-scaling) forms are provided instead.
+//! * **Paired delimiters** (`\abs`, `\norm`, `\ceil`, `\floor`) and their
+//!   starred forms (`\abs*`, `\ceil*`, …) wrap their argument in an
+//!   auto-scaling `Fenced` (`parse_paired_delim`).
+//! * `\DeclarePairedDelimiter\cmd{open}{close}` registers a new paired
+//!   delimiter `\cmd` / `\cmd*` (`parse_declare_paired_delim`).
+//! * the `multlined` environment is laid out like `multline`.
 //!
 //! Note: `\mathclap`, `\mathllap`, `\mathrlap` (and `\clap`/`\llap`/`\rlap`)
 //! are already handled directly by the parser (they emit their content), so
@@ -29,16 +27,12 @@ use super::SymbolClass;
 
 /// Builtin macros contributed by this package: `(name, param_count, body)`.
 ///
-/// The paired-delimiter shorthands expand to auto-scaling `\left ... \right`
-/// groups. `\abs`/`\norm` deliberately mirror the bodies the `physics` package
-/// would use (registry is later-wins, so an identical body keeps behavior
-/// stable regardless of which package "wins").
-pub const MACROS: &[(&str, u8, &str)] = &[
-    ("abs", 1, r"\left|#1\right|"),
-    ("norm", 1, r"\left\|#1\right\|"),
-    ("ceil", 1, r"\left\lceil #1\right\rceil"),
-    ("floor", 1, r"\left\lfloor #1\right\rfloor"),
-];
+/// Empty: the paired-delimiter shorthands (`\abs`, `\norm`, `\ceil`, `\floor`)
+/// are handled directly by the parser (`parse_paired_delim`), which also
+/// supports the starred auto-size forms (`\ceil*`, `\floor*`, …) and
+/// `\DeclarePairedDelimiter`. Defining them as fixed-arity macros here could not
+/// consume the optional `*`.
+pub const MACROS: &[(&str, u8, &str)] = &[];
 
 /// Symbol entries for the parser fallback: `(command_name, unicode_str, class)`.
 ///
@@ -130,6 +124,40 @@ mod tests {
         let out = mathml(r"\floor{x}");
         assert!(out.contains('\u{230A}'), "expected lfloor in: {out}");
         assert!(out.contains('\u{230B}'), "expected rfloor in: {out}");
+    }
+
+    #[test]
+    fn starred_paired_delimiters_consume_star() {
+        // `\ceil*{x}` must not leave a stray `*`; it auto-scales like `\ceil`.
+        let out = mathml(r"\ceil*{x}");
+        assert!(
+            out.contains('\u{2308}') && out.contains('\u{2309}'),
+            "got: {out}"
+        );
+        assert!(!out.contains('*'), "star must be consumed, got: {out}");
+        let out2 = mathml(r"\abs*{y}");
+        assert_eq!(out2.matches('|').count(), 2, "got: {out2}");
+        assert!(!out2.contains('*'), "star must be consumed, got: {out2}");
+    }
+
+    #[test]
+    fn declare_paired_delimiter_registers_command() {
+        // \DeclarePairedDelimiter\bra{\langle}{\rangle} → \bra{x} = ⟨x⟩.
+        let out = mathml(r"\DeclarePairedDelimiter\anglebr{\langle}{\rangle}\anglebr{x}");
+        assert!(out.contains('\u{27E8}'), "expected ⟨ in: {out}");
+        assert!(out.contains('\u{27E9}'), "expected ⟩ in: {out}");
+        // Starred form works too.
+        let out2 = mathml(r"\DeclarePairedDelimiter\anglebr{\langle}{\rangle}\anglebr*{x}");
+        assert!(
+            out2.contains('\u{27E8}') && out2.contains('\u{27E9}'),
+            "got: {out2}"
+        );
+    }
+
+    #[test]
+    fn multlined_environment_lays_out_rows() {
+        let out = mathml(r"\begin{multlined} a+b \\ +c \end{multlined}");
+        assert!(out.contains("<mtable"), "expected mtable, got: {out}");
     }
 
     #[cfg(feature = "render")]

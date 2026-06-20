@@ -12,9 +12,16 @@
 //! Mathema has no dedicated CM-style bbm glyph set, so each selector is
 //! expanded to the standard `\mathbb{#1}` blackboard style — the closest
 //! supported approximation. This covers the common cases (`\mathbbm{1}` → 𝟙,
-//! `\mathbbm{Z}` → ℤ, etc.). The distinct CM-style glyph shapes of `bbm`
-//! (and the sans-serif / typewriter variants) are *not* reproduced exactly;
-//! see the package summary for the deferred work.
+//! `\mathbbm{Z}` → ℤ, etc.).
+//!
+//! **The roman/sans-serif/typewriter collapse is a Unicode limitation, not a
+//! bug.** Unicode encodes exactly *one* double-struck alphabet (the
+//! mathematical-alphanumeric block) and assigns no distinct codepoints for the
+//! CM-roman, sans-serif, or typewriter *shapes* that `bbm` draws. Because the
+//! rendering pipeline operates on Unicode codepoints, those shape variants are
+//! physically unrepresentable and necessarily fold onto `\mathbb`. The distinct
+//! `bbm` glyph shapes are therefore *not* reproduced; see the package summary
+//! for the deferred work.
 
 use super::SymbolClass;
 

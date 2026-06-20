@@ -373,6 +373,28 @@ fn cd_equals_and_double_line_parse() {
 }
 
 #[test]
+fn cd_vert_is_single_bar_distinct_from_double() {
+    use crate::convert::from_latex;
+    // `@\vert` is a single bar `|`; `@|` / `@\Vert` are the double bar `‖`.
+    let single = from_latex(r"\begin{CD} A @VVV B \\ @\vert @\vert \\ C @>>> D \end{CD}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        single.contains(">|</mo>"),
+        "expected single bar | for @\\vert, got:\n{single}"
+    );
+    let double = from_latex(r"\begin{CD} A @VVV B \\ @\Vert @\Vert \\ C @>>> D \end{CD}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        double.contains('\u{2016}'),
+        "expected double bar ‖ for @\\Vert, got:\n{double}"
+    );
+}
+
+#[test]
 fn cd_vertical_labels_and_left_arrow() {
     use crate::convert::from_latex;
     let src = r"\begin{CD} A @V{g}V{h}V B @<<< C \end{CD}";
@@ -429,11 +451,32 @@ fn numcases_builds_braced_grid_with_number_labels() {
     // Shared left expression and the `=`.
     assert!(mathml.contains(">x<"), "missing x in:\n{mathml}");
     assert!(mathml.contains(">=<"), "missing = in:\n{mathml}");
-    // Per-row upright equation numbers (1a), (1b).
-    assert!(mathml.contains("(1a)"), "missing (1a) label in:\n{mathml}");
-    assert!(mathml.contains("(1b)"), "missing (1b) label in:\n{mathml}");
+    // `numcases` numbers each row with a full master number: (1), (2).
+    assert!(mathml.contains("(1)"), "missing (1) label in:\n{mathml}");
+    assert!(mathml.contains("(2)"), "missing (2) label in:\n{mathml}");
     // Conditions present.
     assert!(mathml.contains('\u{2265}'), "missing ≥ in:\n{mathml}");
+}
+
+#[test]
+fn numcases_and_subnumcases_label_differently() {
+    use crate::convert::from_latex;
+    // numcases → (1),(2); subnumcases → (1a),(1b). They must not be identical.
+    let num = from_latex(r"\begin{numcases}{f} a & p\\ b & q \end{numcases}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    let sub = from_latex(r"\begin{subnumcases}{f} a & p\\ b & q \end{subnumcases}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(num.contains("(1)") && num.contains("(2)"), "got:\n{num}");
+    assert!(
+        !num.contains("(1a)"),
+        "numcases must not use sub-letters:\n{num}"
+    );
+    assert!(sub.contains("(1a)") && sub.contains("(1b)"), "got:\n{sub}");
+    assert_ne!(num, sub, "numcases and subnumcases must differ");
 }
 
 #[test]
@@ -482,6 +525,57 @@ fn empheq_box_wraps_inner_align_in_boxed() {
     assert!(
         mathml.contains(">a<") && mathml.contains(">d<"),
         "missing cells in:\n{mathml}"
+    );
+}
+
+#[test]
+fn empheq_left_brace_delimiter_and_combined_box() {
+    use crate::convert::from_latex;
+    // `left=\{` (escaped brace) plus a combined `box=` key must both apply.
+    let src = r"\begin{empheq}[left=\{,box=\fbox]{align} a &= b\\ c &= d \end{empheq}";
+    let mathml = from_latex(src).unwrap().to_mathml().unwrap();
+    assert!(
+        mathml.contains(">{</mo>"),
+        "expected a left brace delimiter, got:\n{mathml}"
+    );
+    assert!(
+        mathml.contains("menclose notation=\"box\""),
+        "expected the box to also apply, got:\n{mathml}"
+    );
+}
+
+#[test]
+fn empheq_innerbox_key_and_empheqset_accepted() {
+    use crate::convert::from_latex;
+    // `\empheqset{...}` is accepted/ignored; `innerbox=` is a box alias.
+    let src = r"\empheqset{box=\fbox}\begin{empheq}[innerbox=\fbox]{align} a &= b \end{empheq}";
+    let mathml = from_latex(src).unwrap().to_mathml().unwrap();
+    assert!(
+        mathml.contains("menclose notation=\"box\""),
+        "expected innerbox to wrap in a box, got:\n{mathml}"
+    );
+}
+
+#[test]
+fn colorbox_optional_model_resolves() {
+    use crate::convert::from_latex;
+    // \colorbox[rgb]{1,0,0}{x} — optional model must parse and resolve to red.
+    let mathml = from_latex(r"\colorbox[rgb]{1,0,0}{x}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        mathml.contains("background-color: #ff0000"),
+        "expected red background from rgb model, got:\n{mathml}"
+    );
+    // \fcolorbox[RGB]{0,0,255}{255,255,0}{z} — both specs use the model.
+    let m2 = from_latex(r"\fcolorbox[RGB]{0,0,255}{255,255,0}{z}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        m2.contains("border-color: #0000ff") && m2.contains("background-color: #ffff00"),
+        "expected blue border + yellow bg, got:\n{m2}"
     );
 }
 
@@ -605,6 +699,48 @@ fn colortbl_inline_columncolor_colors_its_cell() {
 }
 
 #[test]
+fn colortbl_rowcolors_alternates_rows() {
+    use crate::convert::from_latex;
+    // \rowcolors{1}{red}{blue} → row1 red, row2 blue, row3 red.
+    let src = r"\rowcolors{1}{red}{blue}\begin{array}{cc} a & b \\ c & d \\ e & f \end{array}";
+    let mathml = from_latex(src).unwrap().to_mathml().unwrap();
+    assert_eq!(
+        mathml.matches("background-color: red").count(),
+        4,
+        "rows 1 and 3 (4 cells) should be red, got:\n{mathml}"
+    );
+    assert_eq!(
+        mathml.matches("background-color: blue").count(),
+        2,
+        "row 2 (2 cells) should be blue, got:\n{mathml}"
+    );
+}
+
+#[test]
+fn colortbl_rowcolors_respects_cellcolor_override() {
+    use crate::convert::from_latex;
+    let src =
+        r"\rowcolors{1}{red}{blue}\begin{array}{cc} \cellcolor{yellow} a & b \\ c & d \end{array}";
+    let mathml = from_latex(src).unwrap().to_mathml().unwrap();
+    assert_eq!(mathml.matches("background-color: yellow").count(), 1);
+    assert_eq!(mathml.matches("background-color: red").count(), 1);
+    assert_eq!(mathml.matches("background-color: blue").count(), 2);
+}
+
+#[test]
+fn colortbl_columncolor_spec_colors_whole_column() {
+    use crate::convert::from_latex;
+    // >{\columncolor{green}} in the spec colors the entire first column.
+    let src = r"\begin{array}{>{\columncolor{green}}c c} a & b \\ c & d \end{array}";
+    let mathml = from_latex(src).unwrap().to_mathml().unwrap();
+    assert_eq!(
+        mathml.matches("background-color: green").count(),
+        2,
+        "both first-column cells should be green, got:\n{mathml}"
+    );
+}
+
+#[test]
 fn colortbl_arrayrulecolor_is_accepted_but_ignored() {
     use crate::convert::from_latex;
     let src = r"\begin{array}{cc} \arrayrulecolor{green} a & b \end{array}";
@@ -701,6 +837,28 @@ fn bussproofs_lenient_underflow() {
     assert!(from_latex(r"\begin{prooftree}\end{prooftree}").is_ok());
 }
 
+#[test]
+fn bussproofs_line_styles() {
+    use crate::convert::from_latex;
+    // \noLine suppresses the inference rule (no filled rect / mspace gap only).
+    let no_line = from_latex(r"\begin{prooftree}\AxiomC{A}\noLine\UnaryInfC{B}\end{prooftree}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        no_line.contains("<mtable"),
+        "expected proof grid: {no_line}"
+    );
+    // \doubleLine draws two stacked rules (nested table) and must not panic.
+    assert!(
+        from_latex(r"\begin{prooftree}\AxiomC{A}\doubleLine\UnaryInfC{B}\end{prooftree}").is_ok()
+    );
+    // \singleLine / \solidLine / \dottedLine are accepted.
+    assert!(
+        from_latex(r"\begin{prooftree}\AxiomC{A}\dottedLine\UnaryInfC{B}\end{prooftree}").is_ok()
+    );
+}
+
 // ── xypic (xymatrix) ───────────────────────────────────────────────────
 
 #[test]
@@ -725,6 +883,30 @@ fn xymatrix_grid_with_arrows() {
     assert!(ml.contains("<mi>f</mi>"), "missing label f:\n{ml}");
     #[cfg(feature = "render")]
     assert!(r.to_svg().is_ok());
+}
+
+#[test]
+fn xymatrix_tolerates_ar_modifiers_and_spacing() {
+    use crate::convert::from_latex;
+    // `\ar` shaft/curve modifiers and `@R=`/`@C=` spacing must not break the
+    // arrow direction.
+    let ml = from_latex(r"\xymatrix@R=1pc@C=2pc{ A \ar@{->}[r] & B \ar@/^1pc/[d]^f \\ C & D }")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(ml.contains("<mtable>"), "expected grid:\n{ml}");
+    assert!(
+        ml.contains('\u{2192}'),
+        "missing → from \\ar@{{->}}[r]:\n{ml}"
+    );
+    assert!(
+        ml.contains('\u{2193}'),
+        "missing ↓ from \\ar@/^1pc/[d]:\n{ml}"
+    );
+    assert!(
+        ml.contains("<mi>f</mi>"),
+        "missing curved-arrow label:\n{ml}"
+    );
 }
 
 #[test]

@@ -31,10 +31,31 @@ fn mathml_reports_mathchoice_loss() {
 }
 
 #[test]
-fn omml_reports_color_loss() {
+fn omml_preserves_color_without_loss() {
+    // OMML can express run color, so `\color` is preserved (no loss diagnostic)
+    // and the resolved hex appears in the output.
     let expr = compact(r"\color{red}{x}");
-    let (_, diags) = OmmlWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    let (out, diags) =
+        OmmlWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    assert!(
+        !has_warning(&diags, "color"),
+        "OMML preserves color, so no color-loss warning expected: {diags:?}"
+    );
+    assert!(
+        out.to_uppercase().contains("FF0000"),
+        "expected the resolved red color in OMML output: {out}"
+    );
+}
+
+#[test]
+fn unicode_math_reports_color_loss() {
+    // UnicodeMath has no portable color syntax, so color is dropped (with a
+    // loss diagnostic) while the content is preserved.
+    let expr = compact(r"\color{red}{x}");
+    let (out, diags) =
+        UnicodeMathWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
     assert!(has_warning(&diags, "color"), "{diags:?}");
+    assert!(out.contains('x'), "content must be preserved: {out}");
 }
 
 #[test]
@@ -101,9 +122,11 @@ fn lossless_input_has_no_writer_diagnostics() {
 /// `#[doc(hidden)]` writer trait.
 #[test]
 fn convert_result_surfaces_writer_diagnostics() {
+    // A lossy conversion (UnicodeMath cannot express color) must surface its
+    // diagnostic through the mainstream builder API.
     let r = mathema::from_latex(r"\color{red}{x}").unwrap();
-    let (_, diags) = r.to_omml_with_diagnostics().unwrap();
-    assert!(has_warning(&diags, "color"), "omml: {diags:?}");
+    let (_, diags) = r.to_unicode_math_with_diagnostics().unwrap();
+    assert!(has_warning(&diags, "color"), "unicode color: {diags:?}");
 
     let r = mathema::from_latex(r"\phantom{x}").unwrap();
     let (_, diags) = r.to_mtef_with_diagnostics().unwrap();
@@ -112,6 +135,13 @@ fn convert_result_surfaces_writer_diagnostics() {
     let r = mathema::from_latex(r"\boxed{x}").unwrap();
     let (_, diags) = r.to_unicode_math_with_diagnostics().unwrap();
     assert!(has_warning(&diags, "box"), "unicode: {diags:?}");
+
+    // OMML preserves color, so it surfaces no color diagnostic.
+    let r = mathema::from_latex(r"\color{red}{x}").unwrap();
+    assert!(!has_warning(
+        &r.to_omml_with_diagnostics().unwrap().1,
+        "color"
+    ));
 
     // Lossless input → no writer diagnostics via the builder either.
     let r = mathema::from_latex("x + y = z").unwrap();

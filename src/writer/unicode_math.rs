@@ -651,6 +651,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Color { content, .. } => {
+            // Plain-text UnicodeMath has no portable color syntax, so the color
+            // is dropped (see `unicode_math_loss`); the inner content is always
+            // emitted so nothing is lost from the rendered expression.
             write_node_c(out, arena, content);
         },
 
@@ -849,5 +852,24 @@ mod tests {
             content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
         });
         assert_eq!(output, "(x)");
+    }
+
+    #[test]
+    fn textcolor_drops_color_but_keeps_content() {
+        use crate::reader::Reader;
+        let config = Config::default();
+        // UnicodeMath has no portable color syntax, so `\textcolor{red}{x}`
+        // must still emit the inner content `x` (color is dropped, with a
+        // loss diagnostic).
+        let result =
+            crate::reader::latex::LatexReader::parse_compact("\\textcolor{red}{x}", &config)
+                .unwrap();
+        let (output, diags) =
+            UnicodeMathWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
+        assert_eq!(output, "x", "{output}");
+        assert!(
+            diags.iter().any(|d| d.message.contains("color")),
+            "expected a color-loss diagnostic, got {diags:?}"
+        );
     }
 }

@@ -20,26 +20,22 @@
 //! | `\xtofrom`           | exact    | parser (`\u{21C4}` stretchy)               |
 //! | `\xrightharpoondown` | exact    | parser (`\u{21C1}` stretchy)               |
 //! | (other harpoons/hooks/double arrows) | exact | parser              |
-//! | `\xLongrightarrow`   | approx.  | macro -> `\xRightarrow` (double-head `\u{21D2}`) |
+//! | `\xLongrightarrow`   | exact    | parser (`\u{27F9}` long double arrow ⟹) |
 //! | `\Newextarrow`       | deferred | custom-arrow macro factory (structural)    |
 //!
-//! Only `\xLongrightarrow` is genuinely MISSING from the parser, so it is the
-//! single command this package contributes. It expands to the parser-supported
-//! `\xRightarrow`, which carries the matching double `=>` arrowhead and the same
-//! optional `[below]{above}` argument shape (the macro rewrites only the name,
-//! so any following `[...]{...}` is consumed by `\xRightarrow` as usual). This
-//! is an approximation: the literal long double arrow (`\u{27F9}`) is rendered
-//! as the standard stretchy double arrow (`\u{21D2}`).
+//! Every named extpfeil arrow — including `\xLongrightarrow`, which renders as
+//! the true long double arrow `⟹` (U+27F9) — is handled directly by the
+//! parser's extensible-arrow machinery, so this package contributes **no**
+//! builtin macros (a macro would shadow the tested parser behavior).
+//! `\Newextarrow` (the custom-arrow factory) remains deferred.
 
 use super::SymbolClass;
 
 /// Builtin macros contributed by this package: `(name, param_count, body)`.
 ///
-/// `\xLongrightarrow` is the only extpfeil arrow not already handled by the
-/// parser; it rewrites to the parser-supported `\xRightarrow` (same argument
-/// shape, matching double arrowhead). `\Newextarrow` is intentionally absent —
-/// see the module docs (deferred: needs structural macro-factory support).
-pub const MACROS: &[(&str, u8, &str)] = &[("xLongrightarrow", 0, "\\xRightarrow")];
+/// Empty: all extpfeil arrows are handled by the parser. `\Newextarrow` is
+/// intentionally absent (deferred: needs structural macro-factory support).
+pub const MACROS: &[(&str, u8, &str)] = &[];
 
 /// Symbol entries for the parser fallback: `(command_name, unicode_str, class)`.
 ///
@@ -62,13 +58,12 @@ mod tests {
     // --- \xLongrightarrow: the one command this package adds -----------------
 
     #[test]
-    fn xlongrightarrow_renders_double_arrowhead() {
-        // Approximated as \xRightarrow -> stretchy U+21D2 (=>) with the label
-        // placed above (Overscript).
+    fn xlongrightarrow_renders_long_double_arrowhead() {
+        // The true long double arrow ⟹ (U+27F9), with the label placed above.
         let mathml = to_mathml(r"\xLongrightarrow{f}");
         assert!(
-            mathml.contains('\u{21D2}'),
-            "expected double rightarrow U+21D2, got: {mathml}"
+            mathml.contains('\u{27F9}'),
+            "expected long double rightarrow U+27F9, got: {mathml}"
         );
         assert!(
             mathml.contains("over") || mathml.contains('f'),
@@ -78,9 +73,9 @@ mod tests {
 
     #[test]
     fn xlongrightarrow_with_below_label() {
-        // Optional [below] must flow through to \xRightarrow (under+over).
+        // Optional [below] must flow through (under+over).
         let mathml = to_mathml(r"\xLongrightarrow[g]{f}");
-        assert!(mathml.contains('\u{21D2}'), "got: {mathml}");
+        assert!(mathml.contains('\u{27F9}'), "got: {mathml}");
         assert!(mathml.contains('f'), "expected above label, got: {mathml}");
         assert!(mathml.contains('g'), "expected below label, got: {mathml}");
     }
@@ -89,8 +84,8 @@ mod tests {
     fn xlongrightarrow_unicode_path() {
         let out = to_unicode(r"\xLongrightarrow{f}");
         assert!(
-            out.contains('\u{21D2}'),
-            "expected U+21D2 in unicode-math output, got: {out}"
+            out.contains('\u{27F9}'),
+            "expected U+27F9 in unicode-math output, got: {out}"
         );
     }
 

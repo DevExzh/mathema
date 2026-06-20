@@ -977,6 +977,11 @@ fn write_node_c(buf: &mut Vec<u8>, arena: &AstArena, id: NodeId) -> Result<()> {
             }
         },
         CompactNode::Color { content, .. } => {
+            // MTEF color is a stateful COLOR/COLOR_DEF record pair that applies
+            // until the next COLOR record (no scoped wrapper), so faithfully
+            // coloring just this subtree is not straightforward. Prefer content
+            // preservation: emit the inner content and report color loss via
+            // `mtef_loss`.
             write_node_c(buf, arena, content)?;
         },
         CompactNode::MathChoice { display, .. } => {
@@ -1312,5 +1317,19 @@ mod tests {
         assert!(flat.contains("\"X\""), "lost base: {flat}");
         assert!(flat.contains("\"1\""), "lost pre-sub: {flat}");
         assert!(flat.contains("\"2\""), "lost pre-sup: {flat}");
+    }
+
+    #[test]
+    fn color_preserves_inner_content() {
+        let config = Config::default();
+        // `\textcolor{red}{x}` lowers to a Color node; MTEF drops the color but
+        // must preserve the inner `x` (verified by a write→read round-trip).
+        let result =
+            crate::reader::latex::LatexReader::parse_compact("\\textcolor{red}{x}", &config)
+                .unwrap();
+        let hex = MtefWriter::write_compact(&result.expr, &config).unwrap();
+        let expr = MtefReader::parse(&hex, &config).unwrap().expr;
+        let flat = format!("{:?}", expr.nodes);
+        assert!(flat.contains("\"x\""), "lost colored content: {flat}");
     }
 }

@@ -19,3 +19,43 @@ pub const MACROS: &[(&str, u8, &str)] = &[
 
 /// Symbol entries for the parser fallback: `(command_name, unicode_str, class)`.
 pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[];
+
+#[cfg(test)]
+mod tests {
+    use crate::{Format, convert};
+
+    fn to_mathml(latex: &str) -> String {
+        convert(latex, Format::LaTeX, Format::MathML).expect("convert should succeed")
+    }
+
+    #[test]
+    fn degree_sign() {
+        assert!(to_mathml(r"45\degree").contains('\u{00B0}'));
+    }
+
+    #[test]
+    fn celsius_sign() {
+        assert!(to_mathml(r"\celsius").contains('\u{2103}'));
+    }
+
+    #[test]
+    fn micro_sign() {
+        assert!(to_mathml(r"\micro").contains('\u{00B5}'));
+    }
+
+    #[test]
+    fn ohm_sign() {
+        assert!(to_mathml(r"\ohm").contains('\u{03A9}'));
+    }
+
+    #[test]
+    fn perthousand_sign() {
+        assert!(to_mathml(r"\perthousand").contains('\u{2030}'));
+    }
+
+    #[test]
+    fn mode_agnostic_in_text() {
+        // gensymb symbols are valid in text mode too (mode-agnostic macros).
+        assert!(to_mathml(r"\text{room \degree}").contains('\u{00B0}'));
+    }
+}

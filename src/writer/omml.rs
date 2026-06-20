@@ -11,10 +11,19 @@ use crate::writer::Writer as MathWriter;
 const NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 
 /// Classifies a compact node that the OMML writer cannot fully represent.
-fn omml_loss(_arena: &AstArena, node: &CompactNode) -> Option<String> {
+fn omml_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     match node {
-        CompactNode::Color { .. } => {
-            Some("OMML output does not preserve color; only the content is written".into())
+        // Color is preserved as a WML run property when it resolves to RGB;
+        // only report loss when the color string cannot be resolved.
+        CompactNode::Color { color, .. } => {
+            if crate::css_colors::resolve_named_or_hex(arena.str_val(*color)).is_some() {
+                None
+            } else {
+                Some(
+                    "OMML output could not resolve the color value; only the content is written"
+                        .into(),
+                )
+            }
         },
         CompactNode::MathChoice { .. } => {
             Some("OMML output keeps only the display-style branch of \\mathchoice".into())
@@ -1148,11 +1157,16 @@ fn f_cancel_strike_props(buf: &mut String, stroke: StrokeKind) {
 }
 
 #[inline]
-fn f_run(buf: &mut String, text: &str, style: Option<&str>) {
+fn f_run(buf: &mut String, text: &str, style: Option<&str>, color: Option<&str>) {
     f_start(buf, "m:r");
-    if let Some(sty) = style {
+    if style.is_some() || color.is_some() {
         f_start(buf, "m:rPr");
-        f_val_elem(buf, "m:sty", sty);
+        if let Some(sty) = style {
+            f_val_elem(buf, "m:sty", sty);
+        }
+        if let Some(c) = color {
+            f_color_elem(buf, c);
+        }
         f_end(buf, "m:rPr");
     }
     f_start(buf, "m:t");
@@ -1161,13 +1175,26 @@ fn f_run(buf: &mut String, text: &str, style: Option<&str>) {
     f_end(buf, "m:r");
 }
 
+/// Emit a WordprocessingML run color property `<w:color w:val="RRGGBB"/>`,
+/// the OMML-compatible way to carry a run's text color. `hex` is a validated
+/// 6-digit RRGGBB value, so it needs no XML escaping.
 #[inline]
-fn f_styled_run(buf: &mut String, text: &str, sty: &str, scr: Option<&str>) {
+fn f_color_elem(buf: &mut String, hex: &str) {
+    buf.push_str("<w:color w:val=\"");
+    buf.push_str(hex);
+    buf.push_str("\"/>");
+}
+
+#[inline]
+fn f_styled_run(buf: &mut String, text: &str, sty: &str, scr: Option<&str>, color: Option<&str>) {
     f_start(buf, "m:r");
     f_start(buf, "m:rPr");
     f_val_elem(buf, "m:sty", sty);
     if let Some(s) = scr {
         f_val_elem(buf, "m:scr", s);
+    }
+    if let Some(c) = color {
+        f_color_elem(buf, c);
     }
     f_end(buf, "m:rPr");
     f_start(buf, "m:t");
@@ -1177,32 +1204,40 @@ fn f_styled_run(buf: &mut String, text: &str, sty: &str, scr: Option<&str>) {
 }
 
 #[inline]
-fn f_e(buf: &mut String, arena: &AstArena, id: NodeId) {
+fn f_e(buf: &mut String, arena: &AstArena, id: NodeId, color: Option<&str>) {
     f_start(buf, "m:e");
-    write_node_cf(buf, arena, id);
+    write_node_cf_colored(buf, arena, id, color);
     f_end(buf, "m:e");
 }
 
+/// Entry point for the fast compact OMML writer; no active run color.
 fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
+    write_node_cf_colored(buf, arena, id, None);
+}
+
+/// Compact OMML writer carrying an optional active run color (`RRGGBB`). The
+/// color, when present, is emitted as a WML run property on every run produced
+/// for this subtree, which is how OMML represents `\textcolor`/`\color`.
+fn write_node_cf_colored(buf: &mut String, arena: &AstArena, id: NodeId, color: Option<&str>) {
     match *arena.node(id) {
-        CompactNode::Number(sid) => f_run(buf, arena.str_val(sid), None),
-        CompactNode::Identifier(sid) => f_run(buf, arena.str_val(sid), Some("i")),
+        CompactNode::Number(sid) => f_run(buf, arena.str_val(sid), None, color),
+        CompactNode::Identifier(sid) => f_run(buf, arena.str_val(sid), Some("i"), color),
         CompactNode::Operator { name, .. } => {
             f_start(buf, "m:func");
             f_start(buf, "m:fName");
-            f_run(buf, arena.str_val(name), Some("p"));
+            f_run(buf, arena.str_val(name), Some("p"), color);
             f_end(buf, "m:fName");
             f_start(buf, "m:e");
             f_end(buf, "m:e");
             f_end(buf, "m:func");
         },
-        CompactNode::Symbol(_kind, sid) => f_run(buf, arena.str_val(sid), None),
-        CompactNode::Text(_, sid) => f_run(buf, arena.str_val(sid), Some("p")),
-        CompactNode::Space(_) => f_run(buf, "\u{00A0}", None),
+        CompactNode::Symbol(_kind, sid) => f_run(buf, arena.str_val(sid), None, color),
+        CompactNode::Text(_, sid) => f_run(buf, arena.str_val(sid), Some("p"), color),
+        CompactNode::Space(_) => f_run(buf, "\u{00A0}", None, color),
 
         CompactNode::Row(span) => {
             for &child_id in arena.children(span) {
-                write_node_cf(buf, arena, child_id);
+                write_node_cf_colored(buf, arena, child_id, color);
             }
         },
 
@@ -1224,7 +1259,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
                     continue;
                 }
                 f_start(buf, "m:e");
-                write_node_cf(buf, arena, child_id);
+                write_node_cf_colored(buf, arena, child_id, color);
                 f_end(buf, "m:e");
             }
             f_end(buf, "m:d");
@@ -1232,30 +1267,30 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Subscript { base, sub } => {
             f_start(buf, "m:sSub");
-            f_e(buf, arena, base);
+            f_e(buf, arena, base, color);
             f_start(buf, "m:sub");
-            write_node_cf(buf, arena, sub);
+            write_node_cf_colored(buf, arena, sub, color);
             f_end(buf, "m:sub");
             f_end(buf, "m:sSub");
         },
 
         CompactNode::Superscript { base, sup } => {
             f_start(buf, "m:sSup");
-            f_e(buf, arena, base);
+            f_e(buf, arena, base, color);
             f_start(buf, "m:sup");
-            write_node_cf(buf, arena, sup);
+            write_node_cf_colored(buf, arena, sup, color);
             f_end(buf, "m:sup");
             f_end(buf, "m:sSup");
         },
 
         CompactNode::SubSup { base, sub, sup } => {
             f_start(buf, "m:sSubSup");
-            f_e(buf, arena, base);
+            f_e(buf, arena, base, color);
             f_start(buf, "m:sub");
-            write_node_cf(buf, arena, sub);
+            write_node_cf_colored(buf, arena, sub, color);
             f_end(buf, "m:sub");
             f_start(buf, "m:sup");
-            write_node_cf(buf, arena, sup);
+            write_node_cf_colored(buf, arena, sup, color);
             f_end(buf, "m:sup");
             f_end(buf, "m:sSubSup");
         },
@@ -1268,15 +1303,15 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_start(buf, "m:sPre");
             f_start(buf, "m:sub");
             if pre_sub.is_some() {
-                write_node_cf(buf, arena, pre_sub);
+                write_node_cf_colored(buf, arena, pre_sub, color);
             }
             f_end(buf, "m:sub");
             f_start(buf, "m:sup");
             if pre_sup.is_some() {
-                write_node_cf(buf, arena, pre_sup);
+                write_node_cf_colored(buf, arena, pre_sup, color);
             }
             f_end(buf, "m:sup");
-            f_e(buf, arena, base);
+            f_e(buf, arena, base, color);
             f_end(buf, "m:sPre");
         },
 
@@ -1287,9 +1322,9 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
         } => {
             if movable_limits {
                 f_start(buf, "m:limUpp");
-                f_e(buf, arena, base);
+                f_e(buf, arena, base, color);
                 f_start(buf, "m:lim");
-                write_node_cf(buf, arena, over);
+                write_node_cf_colored(buf, arena, over, color);
                 f_end(buf, "m:lim");
                 f_end(buf, "m:limUpp");
             } else if is_line_symbol_c(arena, over) {
@@ -1297,7 +1332,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
                 f_start(buf, "m:barPr");
                 f_val_elem(buf, "m:pos", "top");
                 f_end(buf, "m:barPr");
-                f_e(buf, arena, base);
+                f_e(buf, arena, base, color);
                 f_end(buf, "m:bar");
             } else {
                 f_start(buf, "m:groupChr");
@@ -1306,7 +1341,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
                 f_val_elem(buf, "m:chr", &chr_str);
                 f_val_elem(buf, "m:pos", "top");
                 f_end(buf, "m:groupChrPr");
-                f_e(buf, arena, base);
+                f_e(buf, arena, base, color);
                 f_end(buf, "m:groupChr");
             }
         },
@@ -1318,9 +1353,9 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
         } => {
             if movable_limits {
                 f_start(buf, "m:limLow");
-                f_e(buf, arena, base);
+                f_e(buf, arena, base, color);
                 f_start(buf, "m:lim");
-                write_node_cf(buf, arena, under);
+                write_node_cf_colored(buf, arena, under, color);
                 f_end(buf, "m:lim");
                 f_end(buf, "m:limLow");
             } else if is_line_symbol_c(arena, under) {
@@ -1328,7 +1363,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
                 f_start(buf, "m:barPr");
                 f_val_elem(buf, "m:pos", "bot");
                 f_end(buf, "m:barPr");
-                f_e(buf, arena, base);
+                f_e(buf, arena, base, color);
                 f_end(buf, "m:bar");
             } else {
                 f_start(buf, "m:groupChr");
@@ -1337,7 +1372,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
                 f_val_elem(buf, "m:chr", &chr_str);
                 f_val_elem(buf, "m:pos", "bot");
                 f_end(buf, "m:groupChrPr");
-                f_e(buf, arena, base);
+                f_e(buf, arena, base, color);
                 f_end(buf, "m:groupChr");
             }
         },
@@ -1351,14 +1386,14 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_start(buf, "m:limUpp");
             f_start(buf, "m:e");
             f_start(buf, "m:limLow");
-            f_e(buf, arena, base);
+            f_e(buf, arena, base, color);
             f_start(buf, "m:lim");
-            write_node_cf(buf, arena, under);
+            write_node_cf_colored(buf, arena, under, color);
             f_end(buf, "m:lim");
             f_end(buf, "m:limLow");
             f_end(buf, "m:e");
             f_start(buf, "m:lim");
-            write_node_cf(buf, arena, over);
+            write_node_cf_colored(buf, arena, over, color);
             f_end(buf, "m:lim");
             f_end(buf, "m:limUpp");
         },
@@ -1375,10 +1410,10 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_val_elem(buf, "m:type", type_val);
             f_end(buf, "m:fPr");
             f_start(buf, "m:num");
-            write_node_cf(buf, arena, num);
+            write_node_cf_colored(buf, arena, num, color);
             f_end(buf, "m:num");
             f_start(buf, "m:den");
-            write_node_cf(buf, arena, den);
+            write_node_cf_colored(buf, arena, den, color);
             f_end(buf, "m:den");
             f_end(buf, "m:f");
         },
@@ -1390,16 +1425,16 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_end(buf, "m:radPr");
             f_start(buf, "m:deg");
             f_end(buf, "m:deg");
-            f_e(buf, arena, inner);
+            f_e(buf, arena, inner, color);
             f_end(buf, "m:rad");
         },
 
         CompactNode::Root { index, radicand } => {
             f_start(buf, "m:rad");
             f_start(buf, "m:deg");
-            write_node_cf(buf, arena, index);
+            write_node_cf_colored(buf, arena, index, color);
             f_end(buf, "m:deg");
-            f_e(buf, arena, radicand);
+            f_e(buf, arena, radicand, color);
             f_end(buf, "m:rad");
         },
 
@@ -1431,15 +1466,15 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_end(buf, "m:naryPr");
             f_start(buf, "m:sub");
             if sub.is_some() {
-                write_node_cf(buf, arena, sub);
+                write_node_cf_colored(buf, arena, sub, color);
             }
             f_end(buf, "m:sub");
             f_start(buf, "m:sup");
             if sup.is_some() {
-                write_node_cf(buf, arena, sup);
+                write_node_cf_colored(buf, arena, sup, color);
             }
             f_end(buf, "m:sup");
-            f_e(buf, arena, body);
+            f_e(buf, arena, body, color);
             f_end(buf, "m:nary");
         },
 
@@ -1450,7 +1485,7 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             let acc_str = accent.encode_utf8(&mut char_buf);
             f_val_elem(buf, "m:chr", acc_str);
             f_end(buf, "m:accPr");
-            f_e(buf, arena, base);
+            f_e(buf, arena, base, color);
             f_end(buf, "m:acc");
         },
 
@@ -1471,10 +1506,10 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
                     match *arena.node(cell_id) {
                         CompactNode::Row(span) => {
                             for &child_id in arena.children(span) {
-                                write_node_cf(buf, arena, child_id);
+                                write_node_cf_colored(buf, arena, child_id, color);
                             }
                         },
-                        _ => write_node_cf(buf, arena, cell_id),
+                        _ => write_node_cf_colored(buf, arena, cell_id, color),
                     }
                     f_end(buf, "m:e");
                 }
@@ -1486,13 +1521,13 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Phantom(inner, kind) => {
             f_start(buf, "m:phant");
             f_write_phantom_pr(buf, kind);
-            f_e(buf, arena, inner);
+            f_e(buf, arena, inner, color);
             f_end(buf, "m:phant");
         },
 
         CompactNode::Boxed { content: inner, .. } => {
             f_start(buf, "m:borderBox");
-            f_e(buf, arena, inner);
+            f_e(buf, arena, inner, color);
             f_end(buf, "m:borderBox");
         },
 
@@ -1501,12 +1536,12 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             f_start(buf, "m:borderBoxPr");
             f_cancel_strike_props(buf, stroke);
             f_end(buf, "m:borderBoxPr");
-            f_e(buf, arena, content);
+            f_e(buf, arena, content, color);
             f_end(buf, "m:borderBox");
         },
 
         CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
-            write_node_cf(buf, arena, content)
+            write_node_cf_colored(buf, arena, content, color)
         },
 
         CompactNode::Styled(style, span) => {
@@ -1514,23 +1549,36 @@ fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
             for &child_id in arena.children(span) {
                 match *arena.node(child_id) {
                     CompactNode::Identifier(sid) | CompactNode::Number(sid) => {
-                        f_styled_run(buf, arena.str_val(sid), sty, scr);
+                        f_styled_run(buf, arena.str_val(sid), sty, scr, color);
                     },
                     CompactNode::Text(_, sid) => {
-                        f_styled_run(buf, arena.str_val(sid), sty, scr);
+                        f_styled_run(buf, arena.str_val(sid), sty, scr, color);
                     },
-                    _ => write_node_cf(buf, arena, child_id),
+                    _ => write_node_cf_colored(buf, arena, child_id, color),
                 }
             }
         },
 
-        CompactNode::Color { content, .. } => write_node_cf(buf, arena, content),
+        CompactNode::Color {
+            color: color_sid,
+            content,
+        } => {
+            // Resolve the (CSS-name or `#rrggbb`) color to an OMML `RRGGBB`
+            // value. An inner color overrides an outer one; an unresolvable
+            // color leaves the active color unchanged so content still renders.
+            let resolved = crate::css_colors::resolve_named_or_hex(arena.str_val(color_sid))
+                .map(|rgb| format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]));
+            let inner = resolved.as_deref().or(color);
+            write_node_cf_colored(buf, arena, content, inner);
+        },
 
-        CompactNode::MathChoice { display, .. } => write_node_cf(buf, arena, display),
+        CompactNode::MathChoice { display, .. } => {
+            write_node_cf_colored(buf, arena, display, color)
+        },
 
-        CompactNode::MathAtom { content, .. } => write_node_cf(buf, arena, content),
+        CompactNode::MathAtom { content, .. } => write_node_cf_colored(buf, arena, content, color),
 
-        CompactNode::Rule { .. } => f_run(buf, "\u{00A0}", None),
+        CompactNode::Rule { .. } => f_run(buf, "\u{00A0}", None, color),
 
         CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
@@ -1768,5 +1816,47 @@ mod tests {
             border_color: None,
         });
         assert!(output.contains("<m:borderBox>"));
+    }
+
+    #[test]
+    fn textcolor_emits_run_color_and_keeps_content() {
+        use crate::reader::Reader;
+        let config = Config::default();
+        // `\textcolor{red}{x}` lowers to a Color node wrapping `x`.
+        let result =
+            crate::reader::latex::LatexReader::parse_compact("\\textcolor{red}{x}", &config)
+                .unwrap();
+        let (output, diags) =
+            OmmlWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
+        // red → FF0000 as an OMML run color property, and the content survives.
+        assert!(output.contains("FF0000"), "{output}");
+        assert!(output.contains("<w:color w:val=\"FF0000\"/>"), "{output}");
+        assert!(output.contains("<m:t>x</m:t>"), "{output}");
+        // A resolvable color is preserved, so no color-loss diagnostic.
+        assert!(
+            !diags.iter().any(|d| d.message.contains("color")),
+            "unexpected color-loss diagnostic: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn unresolvable_color_keeps_content_and_warns() {
+        use crate::error::DiagnosticKind;
+        use crate::reader::Reader;
+        let config = Config::default();
+        // An unknown color name cannot be resolved to RGB.
+        let result =
+            crate::reader::latex::LatexReader::parse_compact("\\textcolor{notacolor}{y}", &config)
+                .unwrap();
+        let (output, diags) =
+            OmmlWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
+        assert!(output.contains("<m:t>y</m:t>"), "{output}");
+        assert!(!output.contains("<w:color"), "{output}");
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::Warning && d.message.contains("color")),
+            "expected a color-loss warning, got {diags:?}"
+        );
     }
 }

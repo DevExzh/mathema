@@ -89,7 +89,11 @@ pub fn translate<'a>(name: &str, input: &'a str) -> (&'a str, String) {
             match (a, b) {
                 (Some(a), Some(b)) => {
                     let mut out = numrange_to_latex(a, b);
-                    if let Some(u) = u {
+                    // Skip the thin space + unit when the unit group is empty
+                    // (e.g. `\SIrange{1}{10}{}`) so we don't emit a trailing `\,`.
+                    if let Some(u) = u
+                        && !u.trim().is_empty()
+                    {
                         out.push_str("\\,");
                         out.push_str(&unit_to_latex(u));
                     }
@@ -231,7 +235,12 @@ fn format_number(tok: &str) -> String {
         None => (mantissa, None),
     };
 
-    out.push_str(&group_int(int_part));
+    if int_part.is_empty() && frac_part.is_some() {
+        // `\num{.5}` → `0.5`: supply the integer zero siunitx omits on input.
+        out.push('0');
+    } else {
+        out.push_str(&group_int(int_part));
+    }
     if let Some(frac) = frac_part {
         out.push('.');
         out.push_str(frac);
@@ -361,6 +370,21 @@ fn parse_units(body: &str) -> Vec<Item> {
         };
     }
 
+    // Push a superscript exponent (call after `emit!`). When a `\per` (or `/`)
+    // slash is directly followed by an exponent macro with no unit in between
+    // (e.g. `\si{\per\squared}`), the slash would be left dangling and render as
+    // a bare `/^2`. The least-surprising, non-panicking choice is to drop the
+    // dangling slash and the orphan exponent rather than emit `/^2`.
+    macro_rules! push_sup {
+        ($exp:expr) => {
+            if matches!(items.last(), Some(Item::Per)) {
+                items.pop();
+            } else {
+                items.push(Item::Sup($exp));
+            }
+        };
+    }
+
     while i < n {
         let c = chars[i];
         match c {
@@ -380,7 +404,7 @@ fn parse_units(body: &str) -> Vec<Item> {
                 has_base = false;
                 i += 1;
                 let exp = read_exponent(&chars, &mut i);
-                items.push(Item::Sup(exp));
+                push_sup!(exp);
             },
             '\\' => {
                 i += 1;
@@ -417,12 +441,12 @@ fn parse_units(body: &str) -> Vec<Item> {
                     Some(UnitTok::Squared) => {
                         emit!();
                         has_base = false;
-                        items.push(Item::Sup("2".to_string()));
+                        push_sup!("2".to_string());
                     },
                     Some(UnitTok::Cubed) => {
                         emit!();
                         has_base = false;
-                        items.push(Item::Sup("3".to_string()));
+                        push_sup!("3".to_string());
                     },
                     None => {
                         // Unknown macro: emit its name as upright text.
@@ -451,7 +475,7 @@ fn parse_units(body: &str) -> Vec<Item> {
                 while i < n && chars[i].is_ascii_digit() {
                     i += 1;
                 }
-                items.push(Item::Sup(chars[start..i].iter().collect()));
+                push_sup!(chars[start..i].iter().collect());
             },
             c if c.is_alphabetic() => {
                 if has_base {
@@ -570,6 +594,9 @@ fn unit_macro(name: &str) -> Option<UnitTok> {
         "tesla" => Base("T"),
         "henry" => Base("H"),
         "celsius" => Base("\u{00B0}C"),
+        // `\degreeCelsius` is the dedicated single-glyph unit ℃ (U+2103),
+        // distinct from `\celsius` (which composes ° + C).
+        "degreeCelsius" => Base("\u{2103}"),
         "lumen" => Base("lm"),
         "lux" => Base("lx"),
         "becquerel" => Base("Bq"),
@@ -899,5 +926,59 @@ mod tests {
         let _ = from_latex(r"\ang{}").and_then(|c| c.to_mathml());
         let _ = from_latex(r"\numrange{1}").and_then(|c| c.to_mathml());
         let _ = from_latex(r"\si{\per\squared}").and_then(|c| c.to_mathml());
+    }
+
+    #[test]
+    fn degree_celsius_unit() {
+        // `\degreeCelsius` renders the single upright glyph ℃ (U+2103).
+        let ml = mathml(r"\SI{37}{\degreeCelsius}");
+        assert!(ml.contains("<mn>37</mn>"), "expected number in {ml}");
+        assert!(ml.contains('\u{2103}'), "expected ℃ in {ml}");
+        assert!(
+            ml.contains("mathvariant=\"normal\""),
+            "expected upright unit in {ml}"
+        );
+        // Bare `\si{\degreeCelsius}` works too, and `\celsius` still renders.
+        assert!(mathml(r"\si{\degreeCelsius}").contains('\u{2103}'));
+        let cel = mathml(r"\si{\celsius}");
+        assert!(
+            cel.contains('\u{2103}') || cel.contains('\u{00B0}'),
+            "expected a celsius glyph in {cel}"
+        );
+    }
+
+    #[test]
+    fn num_leading_zero_for_bare_decimal() {
+        // `\num{.5}` → `0.5` (siunitx supplies the omitted leading zero).
+        let ml = mathml(r"\num{.5}");
+        assert!(ml.contains("<mn>0.5</mn>"), "expected 0.5 in {ml}");
+        let neg = mathml(r"\num{-.5}");
+        assert!(
+            neg.contains("<mn>0.5</mn>"),
+            "expected -0.5 mantissa in {neg}"
+        );
+    }
+
+    #[test]
+    fn si_range_empty_unit_no_trailing_thin_space() {
+        // `\SIrange{1}{10}{}`: an empty unit must not leave a trailing `\,`.
+        let ml = mathml(r"\SIrange{1}{10}{}");
+        assert!(ml.contains("<mn>1</mn>") && ml.contains("<mn>10</mn>"));
+        assert!(ml.contains('\u{2013}'), "expected en dash in {ml}");
+        assert!(
+            !ml.contains("<mspace"),
+            "did not expect a trailing thin space in {ml}"
+        );
+    }
+
+    #[test]
+    fn per_squared_no_dangling_slash() {
+        // `\si{\per\squared}` must not emit a bare `/^2`; the dangling slash and
+        // orphan exponent are dropped.
+        let ml = mathml(r"\si{\per\squared}");
+        assert!(
+            !ml.contains("<mo>/</mo>"),
+            "did not expect a dangling slash in {ml}"
+        );
     }
 }

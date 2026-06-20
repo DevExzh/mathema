@@ -380,27 +380,65 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             position,
             wide,
         } => {
-            let cmd = match (accent, position, wide) {
-                ('\u{0302}', AccentPosition::Above, true) => "widehat",
-                ('\u{0302}', AccentPosition::Above, false) => "hat",
-                ('\u{0304}', AccentPosition::Above, _) => "bar",
-                ('\u{20D7}', AccentPosition::Above, _) => "vec",
-                ('\u{0307}', AccentPosition::Above, _) => "dot",
-                ('\u{0308}', AccentPosition::Above, _) => "ddot",
-                ('\u{0303}', AccentPosition::Above, true) => "widetilde",
-                ('\u{0303}', AccentPosition::Above, false) => "tilde",
-                ('\u{0306}', AccentPosition::Above, _) => "breve",
-                ('\u{030C}', AccentPosition::Above, true) => "widecheck",
-                ('\u{030C}', AccentPosition::Above, false) => "check",
-                ('\u{0301}', AccentPosition::Above, _) => "acute",
-                ('\u{0300}', AccentPosition::Above, _) => "grave",
-                _ => "hat",
+            // Map (accent char, position, wide) back to its LaTeX command.
+            // `None` means there is no dedicated command and the generic
+            // overset/underset fallback is used (preserving the glyph).
+            let cmd: Option<&str> = match position {
+                AccentPosition::Above => match (accent, wide) {
+                    ('\u{0302}', true) => Some("widehat"),
+                    ('\u{0302}', false) => Some("hat"),
+                    ('\u{0304}', _) => Some("bar"),
+                    ('\u{20D7}', _) => Some("vec"),
+                    ('\u{0307}', _) => Some("dot"),
+                    ('\u{0308}', _) => Some("ddot"),
+                    ('\u{20DB}', _) => Some("dddot"),
+                    ('\u{20DC}', _) => Some("ddddot"),
+                    ('\u{0303}', true) => Some("widetilde"),
+                    ('\u{0303}', false) => Some("tilde"),
+                    ('\u{0306}', _) => Some("breve"),
+                    ('\u{030C}', true) => Some("widecheck"),
+                    ('\u{030C}', false) => Some("check"),
+                    ('\u{0301}', _) => Some("acute"),
+                    ('\u{0300}', _) => Some("grave"),
+                    ('\u{030A}', _) => Some("mathring"),
+                    ('\u{2192}', _) => Some("overrightarrow"),
+                    ('\u{2190}', _) => Some("overleftarrow"),
+                    ('\u{2194}', _) => Some("overleftrightarrow"),
+                    ('\u{21C0}', _) => Some("overrightharpoon"),
+                    ('\u{21BC}', _) => Some("overleftharpoon"),
+                    ('\u{21D2}', _) => Some("Overrightarrow"),
+                    ('\u{23DC}', _) => Some("overgroup"),
+                    ('\u{23B4}', _) => Some("overlinesegment"),
+                    _ => None,
+                },
+                AccentPosition::Below => match accent {
+                    '\u{2192}' => Some("underrightarrow"),
+                    '\u{2190}' => Some("underleftarrow"),
+                    '\u{2194}' => Some("underleftrightarrow"),
+                    '\u{0330}' => Some("utilde"),
+                    '\u{23DD}' => Some("undergroup"),
+                    '\u{23B5}' => Some("underlinesegment"),
+                    _ => None,
+                },
             };
-            buf.push('\\');
-            buf.push_str(cmd);
-            buf.push('{');
-            write_node(buf, arena, base);
-            buf.push('}');
+            if let Some(cmd) = cmd {
+                buf.push('\\');
+                buf.push_str(cmd);
+                buf.push('{');
+                write_node(buf, arena, base);
+                buf.push('}');
+            } else {
+                // No dedicated command: preserve the accent glyph faithfully
+                // via overset/underset rather than silently emitting \hat.
+                buf.push_str(match position {
+                    AccentPosition::Above => "\\overset{",
+                    AccentPosition::Below => "\\underset{",
+                });
+                buf.push(accent);
+                buf.push_str("}{");
+                write_node(buf, arena, base);
+                buf.push('}');
+            }
         },
 
         CompactNode::Array {
@@ -869,6 +907,35 @@ mod tests {
     #[test]
     fn phantom() {
         assert_eq!(roundtrip("\\phantom{x}"), "\\phantom{x}");
+    }
+
+    #[test]
+    fn under_accents_roundtrip() {
+        // Below accents must not collapse to \hat (regression: catch-all bug).
+        assert_eq!(roundtrip("\\underrightarrow{x}"), "\\underrightarrow{x}");
+        assert_eq!(roundtrip("\\underleftarrow{x}"), "\\underleftarrow{x}");
+        assert_eq!(
+            roundtrip("\\underleftrightarrow{x}"),
+            "\\underleftrightarrow{x}"
+        );
+        assert_eq!(roundtrip("\\utilde{x}"), "\\utilde{x}");
+    }
+
+    #[test]
+    fn varinjlim_varprojlim_roundtrip() {
+        // amsmath \varinjlim / \varprojlim expand to under-arrow accents over \lim.
+        assert_eq!(roundtrip("\\varinjlim"), "\\underrightarrow{\\lim}");
+        assert_eq!(roundtrip("\\varprojlim"), "\\underleftarrow{\\lim}");
+    }
+
+    #[test]
+    fn over_accents_roundtrip() {
+        // These Above accents previously fell through to \hat.
+        assert_eq!(roundtrip("\\overrightarrow{x}"), "\\overrightarrow{x}");
+        assert_eq!(roundtrip("\\overleftarrow{x}"), "\\overleftarrow{x}");
+        assert_eq!(roundtrip("\\dddot{x}"), "\\dddot{x}");
+        assert_eq!(roundtrip("\\ddddot{x}"), "\\ddddot{x}");
+        assert_eq!(roundtrip("\\mathring{x}"), "\\mathring{x}");
     }
 
     #[test]

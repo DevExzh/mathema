@@ -16,10 +16,28 @@
 //! shape, so every `bboldx` alphabet selector is expanded to the standard
 //! `\mathbb{#1}` — the closest supported approximation.
 //!
-//! For the named Greek symbols we emit the canonical Unicode double-struck
-//! codepoints where they exist (only Γ, Π, γ, π and the n-ary summation have
-//! dedicated double-struck codepoints in Unicode); the remaining `bboldx`
-//! Greek glyphs have no Unicode representation and are listed as deferred in
+//! **This collapse is a Unicode limitation, not a bug.** Unicode encodes
+//! exactly *one* double-struck alphabet (the mathematical-alphanumeric block);
+//! it does not assign distinct codepoints for the light/bold *weight* or the
+//! *italic* shape that `bboldx` draws. Because the rendering pipeline works on
+//! Unicode codepoints, those weight/shape variants are physically
+//! unrepresentable and necessarily fold onto the single `\mathbb` alphabet.
+//!
+//! For the named symbols we emit the canonical Unicode double-struck codepoints
+//! where they exist:
+//! * the indicator digits `\bbone` → 𝟙 (U+1D7D9) and `\bbzero` → 𝟘 (U+1D7D8);
+//! * the Greek glyphs Γ, Π, γ, π and the n-ary summation ⅀ — the only Greek
+//!   letters with dedicated double-struck codepoints.
+//!
+//! The single-letter helpers `\bbL`, `\bbN`, `\bbR`, `\bbZ` are macros that
+//! expand to `\mathbb{L|N|R|Z}` so they still materialize a real double-struck
+//! glyph (ℝ, ℤ, ℕ, …).
+//!
+//! The remaining `bboldx` named Greek macros (`\bbalpha`, `\bbbeta`,
+//! `\bbDelta`, `\bbTheta`, …) have **no** dedicated Unicode codepoint: their
+//! base letters survive only as plain Greek glyphs even under a double-struck
+//! `mstyle` (e.g. `\mathbb{\gamma}` → a plain γ, not a blackboard γ). Rather
+//! than emit a misleading non-double-struck glyph we leave them deferred; see
 //! the package summary.
 //!
 //! [`DoubleStruck`]: crate::ast::TextStyle::DoubleStruck
@@ -44,19 +62,32 @@ pub const MACROS: &[(&str, u8, &str)] = &[
     // Bold weight (upright + italic).
     ("mathbbb", 1, r"\mathbb{#1}"),
     ("mathbbbit", 1, r"\mathbb{#1}"),
+    // Single-letter named shortcuts. These Latin letters have no *dedicated*
+    // double-struck codepoint of their own beyond the math-alphanumeric block,
+    // so we expand each to `\mathbb{<letter>}`, which the parser materializes as
+    // the canonical glyph (ℝ, ℤ, ℕ, 𝕃, …). Kept as macros (not SYMBOLS) so the
+    // existing `\mathbb` letter path — and any user `\renewcommand` — still win.
+    ("bbL", 0, r"\mathbb{L}"),
+    ("bbN", 0, r"\mathbb{N}"),
+    ("bbR", 0, r"\mathbb{R}"),
+    ("bbZ", 0, r"\mathbb{Z}"),
 ];
 
 /// Symbol entries for the parser fallback: `(command_name, unicode_str, class)`.
 ///
-/// Only the Greek glyphs that have dedicated Unicode double-struck codepoints
-/// are mapped; the rest of `bboldx`'s named Greek macros have no Unicode home
-/// and are deferred.
+/// Only the named glyphs that have dedicated Unicode double-struck codepoints
+/// are mapped: the two indicator digits and the five Greek/operator symbols.
+/// The rest of `bboldx`'s named Greek macros have no Unicode home and are
+/// deferred (see the module doc).
 pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
+    // Indicator digits — the canonical use of `bboldx`'s named digit macros.
+    ("bbone", "\u{1D7D9}", SymbolClass::Ordinary), // 𝟙 MATHEMATICAL DOUBLE-STRUCK DIGIT ONE
+    ("bbzero", "\u{1D7D8}", SymbolClass::Ordinary), // 𝟘 MATHEMATICAL DOUBLE-STRUCK DIGIT ZERO
     ("bbGamma", "\u{213E}", SymbolClass::Alphabetic), // ℾ DOUBLE-STRUCK CAPITAL GAMMA
-    ("bbPi", "\u{213F}", SymbolClass::Alphabetic),    // ℿ DOUBLE-STRUCK CAPITAL PI
+    ("bbPi", "\u{213F}", SymbolClass::Alphabetic), // ℿ DOUBLE-STRUCK CAPITAL PI
     ("bbgamma", "\u{213D}", SymbolClass::Alphabetic), // ℽ DOUBLE-STRUCK SMALL GAMMA
-    ("bbpi", "\u{213C}", SymbolClass::Alphabetic),    // ℼ DOUBLE-STRUCK SMALL PI
-    ("bbsum", "\u{2140}", SymbolClass::LargeOp),      // ⅀ DOUBLE-STRUCK N-ARY SUMMATION
+    ("bbpi", "\u{213C}", SymbolClass::Alphabetic), // ℼ DOUBLE-STRUCK SMALL PI
+    ("bbsum", "\u{2140}", SymbolClass::LargeOp),   // ⅀ DOUBLE-STRUCK N-ARY SUMMATION
 ];
 
 #[cfg(test)]
@@ -161,6 +192,59 @@ mod tests {
         assert!(mathml(r"\bbgamma").contains('\u{213D}'));
         assert!(mathml(r"\bbpi").contains('\u{213C}'));
         assert!(mathml(r"\bbsum").contains('\u{2140}'));
+    }
+
+    // --- named indicator digits (dedicated Unicode codepoints) -------------
+
+    #[test]
+    fn indicator_digit_symbols() {
+        // \bbone -> 𝟙 (U+1D7D9), \bbzero -> 𝟘 (U+1D7D8): the canonical
+        // double-struck indicator digits, emitted as literal codepoints.
+        assert!(
+            mathml(r"\bbone").contains('\u{1D7D9}'),
+            "expected 𝟙 in: {}",
+            mathml(r"\bbone")
+        );
+        assert!(
+            mathml(r"\bbzero").contains('\u{1D7D8}'),
+            "expected 𝟘 in: {}",
+            mathml(r"\bbzero")
+        );
+        assert!(unicode(r"\bbone").contains('\u{1D7D9}'));
+        assert!(unicode(r"\bbzero").contains('\u{1D7D8}'));
+    }
+
+    // --- single-letter named macros (expand to \mathbb{<letter>}) ----------
+
+    #[test]
+    fn single_letter_named_macros() {
+        // \bbR/\bbZ/\bbN materialize the canonical named double-struck letters;
+        // \bbL has no dedicated codepoint but still gets a double-struck mstyle.
+        for (cmd, ch) in [
+            (r"\bbR", 'R'),
+            (r"\bbZ", 'Z'),
+            (r"\bbN", 'N'),
+            (r"\bbL", 'L'),
+        ] {
+            let m = mathml(cmd);
+            assert!(
+                m.contains("double-struck") && m.contains(ch),
+                "expected double-struck {ch} from {cmd}, got: {m}"
+            );
+        }
+        // ℝ (U+211D) and ℤ (U+2124) are the canonical letter-like forms.
+        let r = unicode(r"\bbR");
+        assert!(
+            r.contains('\u{211D}') || r.contains('\u{1D54D}'),
+            "expected double-struck R, got: {r}"
+        );
+        assert!(unicode(r"\bbZ").contains('\u{2124}'));
+    }
+
+    #[test]
+    fn single_letter_macro_user_override() {
+        let out = mathml(r"\newcommand{\bbR}{X}\bbR");
+        assert!(out.contains('X'));
     }
 
     // --- registry plumbing -------------------------------------------------
