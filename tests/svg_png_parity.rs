@@ -28,8 +28,10 @@ fn rasterize_svg(svg: &str, scale: f32) -> Option<(u32, u32, Vec<u8>)> {
 }
 
 fn decode_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
-    let mut reader = png::Decoder::new(bytes).read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buf).ok()?;
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {

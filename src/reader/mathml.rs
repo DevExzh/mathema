@@ -174,6 +174,12 @@ impl<'a> MathmlCompactParser<'a> {
                         nodes.push(self.classify_text_compact(&text));
                     }
                 },
+                Ok(Event::GeneralRef(r)) => {
+                    let text = resolve_general_ref(&r);
+                    if !text.trim().is_empty() {
+                        nodes.push(self.classify_text_compact(&text));
+                    }
+                },
                 Ok(Event::Eof) | Ok(Event::End(_)) => break,
                 _ => continue,
             }
@@ -203,6 +209,12 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 Ok(Event::Text(e)) => {
                     let text = unescape_text(&e);
+                    if !text.trim().is_empty() {
+                        nodes.push(self.classify_text_compact(&text));
+                    }
+                },
+                Ok(Event::GeneralRef(r)) => {
+                    let text = resolve_general_ref(&r);
                     if !text.trim().is_empty() {
                         nodes.push(self.classify_text_compact(&text));
                     }
@@ -651,6 +663,9 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Text(e)) => {
                     text.push_str(&unescape_text(&e));
                 },
+                Ok(Event::GeneralRef(r)) => {
+                    text.push_str(&resolve_general_ref(&r));
+                },
                 Ok(Event::End(e)) => {
                     if Self::local_name_end(&e) == tag_name {
                         break;
@@ -725,6 +740,13 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 Ok(Event::Text(e)) => {
                     let text = unescape_text(&e);
+                    if !text.trim().is_empty() {
+                        let id = self.classify_text_compact(&text);
+                        cells.push(smallvec::smallvec![id]);
+                    }
+                },
+                Ok(Event::GeneralRef(r)) => {
+                    let text = resolve_general_ref(&r);
                     if !text.trim().is_empty() {
                         let id = self.classify_text_compact(&text);
                         cells.push(smallvec::smallvec![id]);
@@ -879,6 +901,20 @@ impl<'a> MathmlCompactParser<'a> {
                         }
                     }
                 },
+                Ok(Event::GeneralRef(r)) => {
+                    let text = resolve_general_ref(&r);
+                    if !text.trim().is_empty() {
+                        let id = self.classify_text_compact(&text);
+                        if !seen_base {
+                            base = id;
+                            seen_base = true;
+                        } else if in_pre {
+                            pre.push(id);
+                        } else {
+                            post.push(id);
+                        }
+                    }
+                },
                 Ok(Event::End(e)) => {
                     if Self::local_name_end(&e) == parent_tag {
                         break;
@@ -919,18 +955,26 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
 /// references. Falls back to a manual pass if quick-xml reports an error so
 /// that a single unknown entity never discards the surrounding text.
 fn unescape_text(e: &BytesText<'_>) -> String {
-    match e.unescape_with(|name| crate::unicode::MATHML_ENTITIES.get(name).copied()) {
+    let raw = String::from_utf8_lossy(e.as_ref());
+    match quick_xml::escape::unescape_with(&raw, |name| {
+        crate::unicode::MATHML_ENTITIES.get(name).copied()
+    }) {
         Ok(cow) => cow.into_owned(),
-        Err(_) => {
-            let raw = String::from_utf8_lossy(e.as_ref());
-            resolve_entities_lossy(&raw)
-        },
+        Err(_) => resolve_entities_lossy(&raw),
     }
 }
 
 /// Unescape an attribute value the same way text content is unescaped.
 fn unescape_attr(raw: &[u8]) -> String {
     resolve_entities_lossy(&String::from_utf8_lossy(raw))
+}
+
+/// Resolve a `&name;` or `&#...;` general entity reference into its replacement.
+fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> String {
+    let name = r.decode().unwrap_or_default().into_owned();
+    crate::unicode::resolve_entity(&name)
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|| format!("&{name};"))
 }
 
 /// Manual entity resolver used as a robust fallback: replaces every

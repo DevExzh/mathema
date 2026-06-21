@@ -1023,16 +1023,18 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             ))
         },
         Ok((rest, ids)) => {
+            let start = processed.len().saturating_sub(rest.len());
+            let end = processed.len();
             if config.strictness == Strictness::Strict {
                 Err(Error::from(LatexParseError::UnexpectedToken {
                     token: rest.chars().take(20).collect(),
-                    span: Some(Span::new(input.len() - rest.len(), input.len())),
+                    span: Some(Span::new(start, end)),
                 }))
             } else {
                 let mut diagnostics = vec![Diagnostic {
                     kind: DiagnosticKind::Warning,
                     message: format!("ignored trailing input: {rest:?}"),
-                    span: Some(Span::new(input.len() - rest.len(), input.len())),
+                    span: Some(Span::new(start, end)),
                 }];
                 let mut result_ids = ids;
                 let recovered = parser.parse_lenient_remainder(rest, &mut diagnostics);
@@ -3879,12 +3881,23 @@ impl LatexCompactParser {
                 ']' => (SymbolKind::Close, "]"),
                 '|' => (SymbolKind::Fence, "|"),
                 '/' => (SymbolKind::Ordinary, "/"),
-                _ => return self.parse_command(input),
+                _ => {
+                    if input.starts_with('\\') {
+                        return self.parse_command(input);
+                    }
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Char,
+                    )));
+                },
             };
             let sid = self.arena.push_str(s);
             return Ok((rest, self.arena.push_node(CompactNode::Symbol(kind, sid))));
         }
-        self.parse_command(input)
+        Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Eof,
+        )))
     }
 
     fn parse_color_discard<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

@@ -10,6 +10,14 @@ use crate::error::{
 };
 use crate::reader::Reader as MathReader;
 
+/// Resolve a `&name;` or `&#...;` general entity reference into its replacement.
+fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> String {
+    let name = r.decode().unwrap_or_default().into_owned();
+    crate::unicode::resolve_entity(&name)
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|| format!("&{name};"))
+}
+
 pub struct OmmlReader;
 
 impl MathReader for OmmlReader {
@@ -173,7 +181,17 @@ impl<'a> OmmlCompactParser<'a> {
                 },
                 Ok(Event::Empty(_)) => {},
                 Ok(Event::Text(e)) => {
-                    let text = e.unescape().unwrap_or_default().to_string();
+                    let raw = String::from_utf8_lossy(e.as_ref());
+                    let text = quick_xml::escape::unescape(&raw)
+                        .unwrap_or_default()
+                        .to_string();
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        nodes.push(self.classify_run_text(trimmed));
+                    }
+                },
+                Ok(Event::GeneralRef(r)) => {
+                    let text = resolve_general_ref(&r);
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         nodes.push(self.classify_run_text(trimmed));
@@ -1520,7 +1538,11 @@ impl<'a> OmmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Text(e)) => {
-                    text.push_str(&e.unescape().unwrap_or_default());
+                    let raw = String::from_utf8_lossy(e.as_ref());
+                    text.push_str(&quick_xml::escape::unescape(&raw).unwrap_or_default());
+                },
+                Ok(Event::GeneralRef(r)) => {
+                    text.push_str(&resolve_general_ref(&r));
                 },
                 Ok(Event::End(e)) => {
                     if local_name_end(&e) == tag_name {
@@ -1671,7 +1693,9 @@ fn local_name_end(e: &quick_xml::events::BytesEnd<'_>) -> String {
 fn get_val_attr(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.local_name().as_ref() == b"val" {
-            a.unescape_value().ok().map(|value| value.into_owned())
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()
+                .map(|value| value.into_owned())
         } else {
             None
         }

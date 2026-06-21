@@ -928,3 +928,16 @@ fn xymatrix_lenient_malformed() {
     assert!(from_latex(r"\xymatrix{}").is_ok());
     assert!(from_latex(r"\begin{xy}\end{xy}").is_ok());
 }
+
+#[test]
+fn fuzz_repro_dd() {
+    let config = Config::default();
+    // These inputs previously caused parser panics: span underflow after
+    // builtin-macro expansion, and out-of-bounds indexing when a \big-like
+    // command is followed by an empty or non-ASCII delimiter argument.
+    for input in [r"*\*\dd", "\0\0\0\0\0\0\\dd", r"\d\big", "\\bigg\u{06C5}"] {
+        if let Ok(parsed) = LatexReader::parse(input, &config) {
+            let _ = LatexWriter::write(&parsed.expr, &config);
+        }
+    }
+}
