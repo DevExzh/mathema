@@ -406,10 +406,8 @@ impl<'a> MathmlCompactParser<'a> {
                         kids.push(id);
                     }
                 },
-                Event::End(e) => {
-                    if Self::local_name_end(&e) == "ci" {
-                        break;
-                    }
+                Event::End(e) if Self::local_name_end(&e) == "ci" => {
+                    break;
                 },
                 Event::Eof => break,
                 _ => {},
@@ -440,10 +438,8 @@ impl<'a> MathmlCompactParser<'a> {
                     let t = unescape_text(&e);
                     parts.last_mut().unwrap().push_str(&t);
                 },
-                Event::Empty(e) | Event::Start(e) => {
-                    if Self::local_name(&e) == "sep" {
-                        parts.push(String::new());
-                    }
+                Event::Empty(e) | Event::Start(e) if Self::local_name(&e) == "sep" => {
+                    parts.push(String::new());
                 },
                 Event::End(e) => {
                     let n = Self::local_name_end(&e);
@@ -520,10 +516,8 @@ impl<'a> MathmlCompactParser<'a> {
                         acc.args.push(id);
                     }
                 },
-                Event::End(e) => {
-                    if Self::local_name_end(&e) == tag {
-                        break;
-                    }
+                Event::End(e) if Self::local_name_end(&e) == tag => {
+                    break;
                 },
                 Event::Eof => break,
                 _ => {},
@@ -623,10 +617,8 @@ impl<'a> MathmlCompactParser<'a> {
                         var = Some(self.classify_text_compact(&t));
                     }
                 },
-                Event::End(e) => {
-                    if Self::local_name_end(&e) == "bvar" {
-                        break;
-                    }
+                Event::End(e) if Self::local_name_end(&e) == "bvar" => {
+                    break;
                 },
                 Event::Eof => break,
                 _ => {},
@@ -670,10 +662,8 @@ impl<'a> MathmlCompactParser<'a> {
                         let _ = self.parse_element_by_name(&n, &e)?;
                     }
                 },
-                Event::End(e) => {
-                    if Self::local_name_end(&e) == "matrix" {
-                        break;
-                    }
+                Event::End(e) if Self::local_name_end(&e) == "matrix" => {
+                    break;
                 },
                 Event::Eof => break,
                 _ => {},
@@ -741,10 +731,8 @@ impl<'a> MathmlCompactParser<'a> {
                         },
                     }
                 },
-                Event::End(e) => {
-                    if Self::local_name_end(&e) == "piecewise" {
-                        break;
-                    }
+                Event::End(e) if Self::local_name_end(&e) == "piecewise" => {
+                    break;
                 },
                 Event::Eof => break,
                 _ => {},
@@ -812,10 +800,8 @@ impl<'a> MathmlCompactParser<'a> {
                         body = Some(id);
                     }
                 },
-                Event::End(e) => {
-                    if Self::local_name_end(&e) == "lambda" {
-                        break;
-                    }
+                Event::End(e) if Self::local_name_end(&e) == "lambda" => {
+                    break;
                 },
                 Event::Eof => break,
                 _ => {},
