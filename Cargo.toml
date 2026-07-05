@@ -41,7 +41,7 @@ features = ["render", "raster", "serde"]
 # Core (always compiled)
 smallvec = "1"
 nom = "8"
-quick-xml = "0.40"
+quick-xml = "0.41"
 thiserror = "2"
 phf = { version = "0.14", features = ["macros"] }
 
