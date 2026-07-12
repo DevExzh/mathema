@@ -366,7 +366,7 @@ fn is_script_with_empty_base(arena: &AstArena, id: NodeId) -> bool {
         | CompactNode::SubSup { base, .. } => base,
         _ => return false,
     };
-    is_empty_row(arena, base)
+    is_empty_script_base(arena, base)
 }
 
 /// Check if the buffer ends with a `\command` pattern (backslash followed by ASCII letters).
@@ -1397,6 +1397,16 @@ fn would_merge_with_buffer(buf: &str, arena: &AstArena, id: NodeId) -> bool {
 /// Check if a node is an empty Row.
 fn is_empty_row(arena: &AstArena, id: NodeId) -> bool {
     matches!(*arena.node(id), CompactNode::Row(span) if arena.children(span).is_empty())
+}
+
+/// Check whether a script base writes no visible content.
+///
+/// A zero-width `\kern` is represented as `Space(0)` but serializes to the
+/// same `{}` base as an empty row. Treating both forms alike keeps the script
+/// argument's bracing stable after re-parsing.
+fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
+    is_empty_row(arena, id)
+        || matches!(*arena.node(id), CompactNode::Space(width) if width.num == 0)
 }
 
 /// Check if a Nary body is effectively empty (empty Row or NONE node).

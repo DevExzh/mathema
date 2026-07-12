@@ -1038,6 +1038,7 @@ fn fuzz_repro_roundtrip_misc() {
         "\\big \\int\\ ",
         ".$'$\\choose",
         "1F_\\AXC\\AXC ",
+        "' \\kern_O",
     ] {
         let Ok(mut r1) = LatexReader::parse_compact(input, &config) else {
             continue;
