@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
@@ -29,7 +29,7 @@ fn bench_layout_heap(c: &mut Criterion) {
         let expr = LatexReader::parse_compact(latex, &config).unwrap().expr;
         let mexpr = expr.to_math_expr();
         group.bench_function(name, |b| {
-            b.iter(|| layout_expr(black_box(&mexpr), MathStyle::Display, &options))
+            b.iter(|| layout_expr(std::hint::black_box(&mexpr), MathStyle::Display, &options))
         });
     }
     group.finish();
@@ -53,7 +53,7 @@ fn bench_layout_arena(c: &mut Criterion) {
             let mut arena = LayoutArena::new();
             b.iter(|| {
                 arena.clear();
-                builder.layout(black_box(&mut arena), black_box(&expr))
+                builder.layout(std::hint::black_box(&mut arena), std::hint::black_box(&expr))
             })
         });
     }
@@ -75,7 +75,7 @@ fn bench_layout_arena_cold(c: &mut Criterion) {
         group.bench_function(name, |b| {
             b.iter(|| {
                 let mut arena = LayoutArena::new();
-                builder.layout(black_box(&mut arena), black_box(&expr))
+                builder.layout(std::hint::black_box(&mut arena), std::hint::black_box(&expr))
             })
         });
     }
@@ -94,8 +94,8 @@ fn bench_full_pipeline_arena(c: &mut Criterion) {
             let mut arena = LayoutArena::new();
             b.iter(|| {
                 arena.clear();
-                let root = builder.layout(&mut arena, black_box(&expr));
-                emit_svg_arena(black_box(&arena), root, &options)
+                let root = builder.layout(&mut arena, std::hint::black_box(&expr));
+                emit_svg_arena(std::hint::black_box(&arena), root, &options)
             })
         });
     }
@@ -112,8 +112,8 @@ fn bench_full_pipeline_heap(c: &mut Criterion) {
         let mexpr = expr.to_math_expr();
         group.bench_function(name, |b| {
             b.iter(|| {
-                let root = layout_expr(black_box(&mexpr), MathStyle::Display, &options);
-                emit_svg(black_box(&root), &options)
+                let root = layout_expr(std::hint::black_box(&mexpr), MathStyle::Display, &options);
+                emit_svg(std::hint::black_box(&root), &options)
             })
         });
     }

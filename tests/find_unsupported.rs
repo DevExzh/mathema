@@ -28,16 +28,15 @@ fn parse_formulas(data: &str) -> Vec<Formula> {
 /// that look like they might be unhandled LaTeX commands.
 fn collect_suspicious_identifiers(node: &MathNode, found: &mut Vec<String>) {
     match node {
-        MathNode::Identifier(s) => {
-            // Multi-character identifiers that are all-ASCII-alphabetic
-            // and appear in the TeX source preceded by backslash
-            // are likely unhandled commands rendered as literal text.
+        // Multi-character identifiers that are all-ASCII-alphabetic and appear
+        // in the TeX source preceded by backslash are likely unhandled commands
+        // rendered as literal text.
+        MathNode::Identifier(s)
             if s.len() > 1
                 && s.chars().all(|c| c.is_ascii_alphabetic())
-                && !is_known_math_function(s)
-            {
-                found.push(s.clone());
-            }
+                && !is_known_math_function(s) =>
+        {
+            found.push(s.clone());
         },
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {
@@ -235,8 +234,12 @@ fn extract_svg_text_content(svg: &str) -> Vec<String> {
 #[cfg(feature = "render")]
 #[test]
 fn find_unsupported_commands() {
-    let data =
-        std::fs::read_to_string("tests/data/formulas.json").expect("Failed to read formulas.json");
+    let path = "tests/data/formulas.json";
+    if !std::path::Path::new(path).exists() {
+        println!("skipping {path}: corpus not present");
+        return;
+    }
+    let data = std::fs::read_to_string(path).expect("Failed to read formulas.json");
     let formulas = parse_formulas(&data);
 
     let total = formulas.len();
@@ -526,8 +529,13 @@ fn katex_corpus_no_new_unsupported_commands() {
         "endExp", "err", "fracerr", "sqrterr", "startExp", "suberr", "superr",
     ];
 
+    let corpus = "tests/data/katex_corpus.json";
+    if !std::path::Path::new(corpus).exists() {
+        println!("skipping {corpus}: corpus not present");
+        return;
+    }
     let allow: BTreeSet<&str> = KNOWN_UNSUPPORTED.iter().copied().collect();
-    let (found, parse_failures) = unsupported_commands_in("tests/data/katex_corpus.json");
+    let (found, parse_failures) = unsupported_commands_in(corpus);
 
     assert!(
         parse_failures.is_empty(),
@@ -562,8 +570,12 @@ fn katex_corpus_no_new_unsupported_commands() {
 #[cfg(feature = "render")]
 #[test]
 fn katex_corpus_renders_without_error() {
-    let data = std::fs::read_to_string("tests/data/katex_corpus.json")
-        .expect("read tests/data/katex_corpus.json");
+    let corpus = "tests/data/katex_corpus.json";
+    if !std::path::Path::new(corpus).exists() {
+        println!("skipping {corpus}: corpus not present");
+        return;
+    }
+    let data = std::fs::read_to_string(corpus).expect("read {corpus}");
     let formulas = parse_formulas(&data);
 
     let mut failures: Vec<(String, String)> = Vec::new();

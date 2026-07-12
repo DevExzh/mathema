@@ -29,7 +29,6 @@ fn round_trip_simple() {
         assert_eq!(out1, out2, "round-trip failed for input: {input}");
     }
 }
-
 #[test]
 fn round_trip_spacing() {
     let config = Config::default();
@@ -935,9 +934,139 @@ fn fuzz_repro_dd() {
     // These inputs previously caused parser panics: span underflow after
     // builtin-macro expansion, and out-of-bounds indexing when a \big-like
     // command is followed by an empty or non-ASCII delimiter argument.
-    for input in [r"*\*\dd", "\0\0\0\0\0\0\\dd", r"\d\big", "\\bigg\u{06C5}"] {
+    for input in [
+        r"*\*\dd",
+        "\0\0\0\0\0\0\\dd",
+        r"\d\big",
+        "\\bigg\u{06C5}",
+        r"\url{",
+        r"\middle~",
+    ] {
         if let Ok(parsed) = LatexReader::parse(input, &config) {
             let _ = LatexWriter::write(&parsed.expr, &config);
         }
+    }
+}
+
+#[test]
+fn fuzz_repro_roundtrip_misc() {
+    use crate::ast::normalize::normalize_compact_expr;
+    let config = Config::default();
+    // Inputs that previously broke LaTeX round-trip idempotency:
+    // "~" was mangled by trimming, "\&" was written as a bare "&",
+    // "'/\n'" triggered a prime-handling regression, "^$" is an empty-base
+    // superscript with a special char, and "26$\n \n'1" mixes $/newline/primes.
+    for input in [
+        "\n\\&",
+        "~",
+        "/\n'",
+        "^$",
+        "^6\n6",
+        "\\Z\\,f,\\,f,ffff6*ff6)?\n^66)??\n^6\n6",
+        "26$\n \n'1",
+        "P6$\n6'\n1",
+        "'ev$'ev",
+        "''\t_\t$",
+        "'_`_@",
+        "'^'^\\prim",
+        "mapmodx'\\verb*an\\cw\\o\\mand",
+        "p'pmod;;;;\\verb_;;;;;;;;;;;;\n'pp'`p'p'p''p'`",
+        "\\verb*&d'7vvvv~vvvo_'\n^oc|",
+        "\\bigg\\bg",
+        "\\bigg\\b_ ? \\b_ ?i",
+        "f^6)\\p!\\ip\\ip?\n^2)6)?\n^?\n^6)?\n^6)6)?\n^6)",
+        "\\red\n\n\\lnc",
+        "5.\r6'~''''",
+        ",\\boxed\\tfracboxed\\redlime?6",
+        "\\ip!le_3",
+        "2_\r2\r2",
+        "$\\$\\intop$\\$jitt",
+        "6$\n1\n6$\r\n\n1\n6(\n1$\n$\n1\n6$^7_1\n1",
+        "d_7^\\newcommand",
+        "<<\\,<<<\\,<d\\def=f_dd\\def=f_\\over]f\\;s\\overd",
+        "\\verb*arg&d^o\u{2}\0\0 \0\0\0:Big~,\n,=,=i!p~\\\n,$g|,\\ip!\n\\",
+        "\\unders\\underset\\undet\\und",
+        "_6$\n1\n$\n0$\n1\n'_9A",
+        "_'^$",
+        "\\atop^o",
+        "Bigp\\Bigg\\o'",
+        "\\tt a\\brace b",
+        "/\\nGGGGGGGLGGGGGGGGYYY++6\\ip+{\\ip+{ot}YYYYYYYYYYYYYYYYYY}YYYYYYYYYYYYYYYYYYYYYYYYBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBYYYY  ,YYYY",
+        "\\genfrac'{\\}.{\\}{}{}{}{}",
+        "6_'^1\n1$\n_\'^1\n1'",
+        "\\genfrac;;;;;;;;\\|v;;;!!!!!!!!!!!",
+        "\\verb's`_\\verb's`_*e\\middle *er_\\verb's .;H_{",
+        "\\not< <",
+        "\\lll+ llllll(",
+        "\\intop_\\t$ '",
+        r"\\left\\{\\frac{a}{\\left\\langle \\brace \\right|}\\right\\}",
+        "_'sTfc(\\middle~\\s-'",
+        ";\\int\\pod \\int\\podop ",
+        "$\\\\$\\\\$\\idotsint$\\\\$jitt",
+        "\\text{\\fonment{e\\\t- *\\} '\\t& (*a\\ngln#}  (",
+        "\\verb*&%\\verbb*&\\ver{} irnB cig)t\\ip!\\newe!\\color\t {+'\t\t\\ip!\\newbox]onmeox]onmeXXXXX\r\nB)\\newenv      \t{} irnBJJJJJJJJJJJJJJJJJJ\\middle^oc|",
+        "xAg'\\ov       {} irn\\middle\"!\\newe \\color\t {+Yp!\\newe!\\color\t ~   {+Yp n!{e\\ov       {} irn\\midd~e !\\newe \\color\t {+YvvoBivv&ip    e\\ov       {} irn\\middlvev\\%",
+        "]//\\su7\r        m{7{mbox'}$6}'-\\i7\r*\\} '\\text{t\\kad[4`1quad[ `;.etxd[ lan`\\{}(",
+        "6 '\r\r\r\r\r\r\r7^7\r\r\r\r\r\r.\r\r7^7_$'7",
+        "\\ip{op$'},",
+        "Tdv  dman;sm\\Big\\label:'r]    m\\label:     dman;sm\\label:'r]'f\\otw''6d\\{\\d",
+        "\\d\\begin{1}''~\n\n,'ddefe\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\22222222222\\\\      ",
+        "\\Big\\ggg-gggggggggggggggggggggggggggggggggggggggggggggggggg  ",
+        "_ss\n\nss\nsf\\Big\t/g\t_\tf",
+        "~\\color\t {+{} _o",
+        "\\floor\n\nv\r\\bigg\\t",
+        ")\\color\t{ {}'@",
+        "\n\\genfrac\\eo>>>eo",
+        "$\\$\\choose   \\newmmncaod ",
+        "\u{03C1}\u{02C1}\r'",
+        "m\\textcolor{'_'}=m",
+        "]_1.$_W",
+        r#",[[f{]
+?\ce{[[[{[f]
+{
+\f{]
+  [^07Qne{{
+\sf{d     b}}  b}}}}}}"#,
+        "\\choose|\r'",
+        ",\\bigm\\pu{rm #}c",
+        r#"e\\substack{o\\kern}o"#,
+        "=\\\\kern\r",
+        r#"\\v/\\kern+a"#,
+        r#"=\\kern'"#,
+        "\\ip \\idotsint t\t",
+        " {\\,\\xymatrix[{ {\\cr}+}}",
+        "\\big \\int\\ ",
+        ".$'$\\choose",
+        "1F_\\AXC\\AXC ",
+    ] {
+        let Ok(mut r1) = LatexReader::parse_compact(input, &config) else {
+            continue;
+        };
+        normalize_compact_expr(&mut r1.expr);
+        let Ok(out1) = LatexWriter::write_compact(&r1.expr, &config) else {
+            continue;
+        };
+        let Ok(mut r2) = LatexReader::parse_compact(&out1, &config) else {
+            panic!(
+                "round-trip failed: first write output could not be re-parsed.\n\
+                 input:  {input:?}\n\
+                 write1: {out1:?}"
+            );
+        };
+        normalize_compact_expr(&mut r2.expr);
+        let Ok(out2) = LatexWriter::write_compact(&r2.expr, &config) else {
+            panic!(
+                "round-trip failed: second write panicked.\n\
+                 input:  {input:?}\n\
+                 write1: {out1:?}"
+            );
+        };
+        assert_eq!(
+            out1, out2,
+            "LaTeX round-trip not idempotent.\n\
+             input:  {input:?}\n\
+             write1: {out1:?}\n\
+             write2: {out2:?}"
+        );
     }
 }

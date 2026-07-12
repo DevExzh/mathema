@@ -46,6 +46,32 @@ fn skip_horizontal_ws_bytes(input: &[u8]) -> usize {
         .unwrap_or(input.len())
 }
 
+/// Trim leading/trailing whitespace like `str::trim`, but keep a single trailing
+/// whitespace character when it immediately follows a backslash. This prevents
+/// destroying backslash-space commands such as `\ ` or `\\ ` during trimming.
+fn trim_latex_input(input: &str) -> &str {
+    let start = input
+        .char_indices()
+        .find(|(_, c)| !c.is_whitespace())
+        .map(|(i, _)| i)
+        .unwrap_or(input.len());
+    let trimmed_start = &input[start..];
+
+    let mut end = trimmed_start.len();
+    while end > 0 {
+        let b = trimmed_start.as_bytes()[end - 1];
+        if !b.is_ascii_whitespace() {
+            break;
+        }
+        // Preserve the whitespace that belongs to a trailing backslash command.
+        if end >= 2 && trimmed_start.as_bytes()[end - 2] == b'\\' {
+            break;
+        }
+        end -= 1;
+    }
+    &trimmed_start[..end]
+}
+
 /// Byte table of ASCII characters that are recognized as symbol tokens.
 const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@()[]";
 
@@ -996,7 +1022,7 @@ fn nom_err_to_latex_error(
 /// directly on `&str` slices and builds into an arena, avoiding per-node
 /// heap allocations on the hot path.
 pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
-    let trimmed = input.trim();
+    let trimmed = trim_latex_input(input);
     if trimmed.is_empty() {
         return Ok(CompactParseResult::new(CompactExpr::new(
             AstArena::new(),
@@ -1010,6 +1036,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
             let ids = parser.resolve_infix_fraction(ids);
+            let ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
+                ids.into_iter().map(|id| parser.cleanup_infix_markers(id)).collect()
+            } else {
+                ids
+            };
             let roots = parser.arena.push_children(&ids);
             let display = if parser.display_override {
                 DisplayStyle::Block
@@ -1040,6 +1071,14 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 let recovered = parser.parse_lenient_remainder(rest, &mut diagnostics);
                 result_ids.extend(recovered);
                 let result_ids = parser.resolve_infix_fraction(result_ids);
+                let result_ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
+                    result_ids
+                        .into_iter()
+                        .map(|id| parser.cleanup_infix_markers(id))
+                        .collect()
+                } else {
+                    result_ids
+                };
                 let roots = parser.arena.push_children(&result_ids);
                 let display = if parser.display_override {
                     DisplayStyle::Block
@@ -1062,6 +1101,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                     message: format!("parse error (recovered): {e}"),
                     span: None,
                 });
+                let ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
+                    ids.into_iter().map(|id| parser.cleanup_infix_markers(id)).collect()
+                } else {
+                    ids
+                };
                 let roots = parser.arena.push_children(&ids);
                 let display = if parser.display_override {
                     DisplayStyle::Block
@@ -1296,6 +1340,391 @@ impl LatexCompactParser {
         }
     }
 
+    /// True if `id` is an infix-fraction sentinel identifier (`__infix_*__`).
+    fn is_infix_marker_id(&self, id: NodeId) -> bool {
+        if let CompactNode::Identifier(sid) = *self.arena.node(id) {
+            let s = self.arena.str_val(sid);
+            s.starts_with("__infix_") && s.ends_with("__")
+        } else {
+            false
+        }
+    }
+
+    /// Replace a stray infix-fraction sentinel with an empty Row so it can be
+    /// used as a script base or argument without leaking the internal marker
+    /// string into output.
+    fn resolve_stray_infix_marker(&mut self, id: NodeId) -> NodeId {
+        if self.is_infix_marker_id(id) {
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+        } else {
+            id
+        }
+    }
+
+    /// Recursively resolve any infix-fraction sentinels that leaked out of a
+    /// top-level/braced context (for example inside `\left...\right` fences or
+    /// nested rows).  Any remaining stray marker that is not part of a resolvable
+    /// fraction is replaced by an empty Row.
+    fn cleanup_infix_markers(&mut self, id: NodeId) -> NodeId {
+        if id == NodeId::NONE {
+            return id;
+        }
+        let new_id = self.cleanup_infix_markers_in_node(id);
+        if self.is_infix_marker_id(new_id) {
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+        } else {
+            new_id
+        }
+    }
+
+    fn cleanup_infix_markers_in_node(&mut self, id: NodeId) -> NodeId {
+        let node = *self.arena.node(id);
+
+        let has_marker = |this: &Self, ids: &[NodeId]| {
+            ids.iter().any(|&c| this.is_infix_marker_id(c))
+        };
+
+        let clean_list = |this: &mut Self, ids: &[NodeId]| {
+            let mut changed = false;
+            let mut out: SmallVec<[NodeId; 8]> = SmallVec::with_capacity(ids.len());
+            for &child in ids {
+                let cleaned = this.cleanup_infix_markers(child);
+                changed |= cleaned != child;
+                out.push(cleaned);
+            }
+            (out, changed)
+        };
+
+        match node {
+            CompactNode::Row(span) => {
+                let children: Vec<NodeId> = self.arena.children(span).to_vec();
+                let (cleaned, changed) = clean_list(self, &children);
+                if has_marker(self, &cleaned) {
+                    let resolved = self.resolve_infix_fraction(cleaned);
+                    debug_assert_eq!(resolved.len(), 1);
+                    resolved[0]
+                } else if changed {
+                    let new_span = self.arena.push_children(&cleaned);
+                    self.arena.push_node(CompactNode::Row(new_span))
+                } else {
+                    id
+                }
+            },
+            CompactNode::Fenced { open, close, content } => {
+                let children: Vec<NodeId> = self.arena.children(content).to_vec();
+                let (cleaned, changed) = clean_list(self, &children);
+                let new_content = if has_marker(self, &cleaned) {
+                    let resolved = self.resolve_infix_fraction(cleaned);
+                    debug_assert_eq!(resolved.len(), 1);
+                    self.arena.push_children(&resolved)
+                } else if changed {
+                    self.arena.push_children(&cleaned)
+                } else {
+                    content
+                };
+                if new_content == content {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Fenced {
+                        open,
+                        close,
+                        content: new_content,
+                    })
+                }
+            },
+            CompactNode::Fraction { kind, num, den } => {
+                let new_num = self.cleanup_infix_markers(num);
+                let new_den = self.cleanup_infix_markers(den);
+                if new_num == num && new_den == den {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Fraction {
+                        kind,
+                        num: new_num,
+                        den: new_den,
+                    })
+                }
+            },
+            CompactNode::Subscript { base, sub } => {
+                let new_base = self.cleanup_infix_markers(base);
+                let new_sub = self.cleanup_infix_markers(sub);
+                if new_base == base && new_sub == sub {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Subscript {
+                        base: new_base,
+                        sub: new_sub,
+                    })
+                }
+            },
+            CompactNode::Superscript { base, sup } => {
+                let new_base = self.cleanup_infix_markers(base);
+                let new_sup = self.cleanup_infix_markers(sup);
+                if new_base == base && new_sup == sup {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Superscript {
+                        base: new_base,
+                        sup: new_sup,
+                    })
+                }
+            },
+            CompactNode::SubSup { base, sub, sup } => {
+                let new_base = self.cleanup_infix_markers(base);
+                let new_sub = self.cleanup_infix_markers(sub);
+                let new_sup = self.cleanup_infix_markers(sup);
+                if new_base == base && new_sub == sub && new_sup == sup {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::SubSup {
+                        base: new_base,
+                        sub: new_sub,
+                        sup: new_sup,
+                    })
+                }
+            },
+            CompactNode::PreScripts { base, pre_sub, pre_sup } => {
+                let new_base = self.cleanup_infix_markers(base);
+                let new_pre_sub = self.cleanup_infix_markers(pre_sub);
+                let new_pre_sup = self.cleanup_infix_markers(pre_sup);
+                if new_base == base && new_pre_sub == pre_sub && new_pre_sup == pre_sup {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::PreScripts {
+                        base: new_base,
+                        pre_sub: new_pre_sub,
+                        pre_sup: new_pre_sup,
+                    })
+                }
+            },
+            CompactNode::Overscript { base, over, movable_limits } => {
+                let new_base = self.cleanup_infix_markers(base);
+                let new_over = self.cleanup_infix_markers(over);
+                if new_base == base && new_over == over {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Overscript {
+                        base: new_base,
+                        over: new_over,
+                        movable_limits,
+                    })
+                }
+            },
+            CompactNode::Underscript { base, under, movable_limits } => {
+                let new_base = self.cleanup_infix_markers(base);
+                let new_under = self.cleanup_infix_markers(under);
+                if new_base == base && new_under == under {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Underscript {
+                        base: new_base,
+                        under: new_under,
+                        movable_limits,
+                    })
+                }
+            },
+            CompactNode::UnderOver { base, under, over, movable_limits } => {
+                let new_base = self.cleanup_infix_markers(base);
+                let new_under = self.cleanup_infix_markers(under);
+                let new_over = self.cleanup_infix_markers(over);
+                if new_base == base && new_under == under && new_over == over {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::UnderOver {
+                        base: new_base,
+                        under: new_under,
+                        over: new_over,
+                        movable_limits,
+                    })
+                }
+            },
+            CompactNode::Sqrt(inner) => {
+                let new_inner = self.cleanup_infix_markers(inner);
+                if new_inner == inner {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Sqrt(new_inner))
+                }
+            },
+            CompactNode::Root { index, radicand } => {
+                let new_index = self.cleanup_infix_markers(index);
+                let new_radicand = self.cleanup_infix_markers(radicand);
+                if new_index == index && new_radicand == radicand {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Root {
+                        index: new_index,
+                        radicand: new_radicand,
+                    })
+                }
+            },
+            CompactNode::Nary { op, sub, sup, body, limits } => {
+                let new_sub = self.cleanup_infix_markers(sub);
+                let new_sup = self.cleanup_infix_markers(sup);
+                let new_body = self.cleanup_infix_markers(body);
+                if new_sub == sub && new_sup == sup && new_body == body {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Nary {
+                        op,
+                        sub: new_sub,
+                        sup: new_sup,
+                        body: new_body,
+                        limits,
+                    })
+                }
+            },
+            CompactNode::Accent { base, accent, position, wide } => {
+                let new_base = self.cleanup_infix_markers(base);
+                if new_base == base {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Accent {
+                        base: new_base,
+                        accent,
+                        position,
+                        wide,
+                    })
+                }
+            },
+            CompactNode::Array {
+                col_aligns,
+                cells,
+                num_cols,
+                arraystretch_pct,
+                add_jot,
+                array_style,
+                col_seps,
+                row_seps,
+            } => {
+                let cell_ids: Vec<NodeId> = self.arena.children(cells).to_vec();
+                let (cleaned, changed) = clean_list(self, &cell_ids);
+                if changed {
+                    let new_cells = self.arena.push_children(&cleaned);
+                    self.arena.push_node(CompactNode::Array {
+                        col_aligns,
+                        cells: new_cells,
+                        num_cols,
+                        arraystretch_pct,
+                        add_jot,
+                        array_style,
+                        col_seps,
+                        row_seps,
+                    })
+                } else {
+                    id
+                }
+            },
+            CompactNode::Phantom(inner, kind) => {
+                let new_inner = self.cleanup_infix_markers(inner);
+                if new_inner == inner {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Phantom(new_inner, kind))
+                }
+            },
+            CompactNode::Boxed { content, bg_color, border_color } => {
+                let new_content = self.cleanup_infix_markers(content);
+                if new_content == content {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Boxed {
+                        content: new_content,
+                        bg_color,
+                        border_color,
+                    })
+                }
+            },
+            CompactNode::Cancel { stroke, content } => {
+                let new_content = self.cleanup_infix_markers(content);
+                if new_content == content {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Cancel {
+                        stroke,
+                        content: new_content,
+                    })
+                }
+            },
+            CompactNode::Scaled { factor, content } => {
+                let new_content = self.cleanup_infix_markers(content);
+                if new_content == content {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Scaled {
+                        factor,
+                        content: new_content,
+                    })
+                }
+            },
+            CompactNode::RaiseBox { shift, height, depth, extents, content } => {
+                let new_content = self.cleanup_infix_markers(content);
+                if new_content == content {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::RaiseBox {
+                        shift,
+                        height,
+                        depth,
+                        extents,
+                        content: new_content,
+                    })
+                }
+            },
+            CompactNode::Styled(style, span) => {
+                let children: Vec<NodeId> = self.arena.children(span).to_vec();
+                let (cleaned, changed) = clean_list(self, &children);
+                if changed {
+                    let new_span = self.arena.push_children(&cleaned);
+                    self.arena.push_node(CompactNode::Styled(style, new_span))
+                } else {
+                    id
+                }
+            },
+            CompactNode::MathChoice { display, text, script, script_script } => {
+                let new_display = self.cleanup_infix_markers(display);
+                let new_text = self.cleanup_infix_markers(text);
+                let new_script = self.cleanup_infix_markers(script);
+                let new_script_script = self.cleanup_infix_markers(script_script);
+                if new_display == display
+                    && new_text == text
+                    && new_script == script
+                    && new_script_script == script_script
+                {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::MathChoice {
+                        display: new_display,
+                        text: new_text,
+                        script: new_script,
+                        script_script: new_script_script,
+                    })
+                }
+            },
+            CompactNode::Color { color, content } => {
+                let new_content = self.cleanup_infix_markers(content);
+                if new_content == content {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::Color { color, content: new_content })
+                }
+            },
+            CompactNode::MathAtom { atom_type, content } => {
+                let new_content = self.cleanup_infix_markers(content);
+                if new_content == content {
+                    id
+                } else {
+                    self.arena.push_node(CompactNode::MathAtom {
+                        atom_type,
+                        content: new_content,
+                    })
+                }
+            },
+            // Leaves and helper nodes never contain children.
+            _ => id,
+        }
+    }
+
     /// Check whether a node is a large-operator symbol (n-ary).
     fn is_nary_id(&self, id: NodeId) -> bool {
         matches!(
@@ -1408,10 +1837,17 @@ impl LatexCompactParser {
                             .unwrap_or(rest.len());
                         let name = &rest[..end];
                         let after = &rest[end..];
-                        let sid = match latex_to_unicode(name) {
-                            Some(ch) => self.push_char_str(ch),
-                            None => self.arena.push_str(name),
-                        };
+                        // A backslash-delimited delimiter must name a known
+                        // math symbol (e.g. \langle, \Vert). Unknown command
+                        // names are not valid delimiters and would produce
+                        // unparseable output when written back.
+                        let ch = latex_to_unicode(name).ok_or_else(|| {
+                            nom::Err::Error(nom::error::Error::new(
+                                input,
+                                nom::error::ErrorKind::Char,
+                            ))
+                        })?;
+                        let sid = self.push_char_str(ch);
                         Ok((after, sid))
                     },
                     _ => Err(nom::Err::Error(nom::error::Error::new(
@@ -1419,6 +1855,17 @@ impl LatexCompactParser {
                         nom::error::ErrorKind::Char,
                     ))),
                 }
+            },
+            // Any remaining non-whitespace, non-alphanumeric character that is
+            // not a backslash or brace is treated as a literal delimiter string.
+            // This keeps round-trips stable for delimiters produced by macros
+            // such as \genfrac, which may place arbitrary math symbols (e.g. the
+            // prime \u{2032}) or punctuation (e.g. ';') in the delimiter position.
+            c if !c.is_ascii_alphanumeric()
+                && !c.is_whitespace()
+                && !matches!(c, '\\' | '{' | '}') =>
+            {
+                Ok((rest, self.push_char_str(c)))
             },
             _ => Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -1521,6 +1968,11 @@ impl LatexCompactParser {
         self.parse_scripts(input, base)
     }
 
+    #[inline]
+    fn is_empty_row(&self, id: NodeId) -> bool {
+        matches!(*self.arena.node(id), CompactNode::Row(span) if self.arena.children(span).is_empty())
+    }
+
     /// Attach optional sub/super scripts to a base node.
     ///
     /// Handles `'` (prime) as LaTeX shorthand for `^{\prime}`.  Multiple
@@ -1528,9 +1980,16 @@ impl LatexCompactParser {
     /// row of U+2032 PRIME symbols.  A trailing `_` after primes produces a
     /// `SubSup` node.
     #[inline]
-    fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
+    fn parse_scripts<'a>(&mut self, input: &'a str, mut base: NodeId) -> IResult<&'a str, NodeId> {
         // Skip whitespace, then check for ^, _, or ' via byte inspection
         let skip = self.skip_script_ws(input.as_bytes());
+        // If the base is a stray infix marker and it is about to carry scripts,
+        // normalize it to an empty Row so the marker string never leaks into output.
+        if self.is_infix_marker_id(base)
+            && input.as_bytes().get(skip).is_some_and(|&b| matches!(b, b'^' | b'_' | b'\''))
+        {
+            base = self.resolve_stray_infix_marker(base);
+        }
         let input = &input[skip..];
 
         // --- Prime (') handling -------------------------------------------
@@ -1570,11 +2029,21 @@ impl LatexCompactParser {
             if input2.as_bytes().first() == Some(&b'_') {
                 let input2 = &input2[1..];
                 let (input2, sub_arg) = self.parse_script_arg(input2)?;
+                if !self.is_empty_row(sub_arg) {
+                    return Ok((
+                        input2,
+                        self.arena.push_node(CompactNode::SubSup {
+                            base,
+                            sub: sub_arg,
+                            sup: sup_node,
+                        }),
+                    ));
+                }
+                // Ignore an empty subscript argument and emit a plain superscript.
                 return Ok((
                     input2,
-                    self.arena.push_node(CompactNode::SubSup {
+                    self.arena.push_node(CompactNode::Superscript {
                         base,
-                        sub: sub_arg,
                         sup: sup_node,
                     }),
                 ));
@@ -1598,6 +2067,11 @@ impl LatexCompactParser {
         let input = &input[1..];
 
         let (input, first_arg) = self.parse_script_arg(input)?;
+        if self.is_empty_row(first_arg) {
+            // Ignore an empty script argument (e.g. `^$` or `^{}`) and keep
+            // looking for further scripts on the same base.
+            return self.parse_scripts(input, base);
+        }
 
         // Check for the complementary script
         let skip2 = self.skip_script_ws(input.as_bytes());
@@ -1719,7 +2193,13 @@ impl LatexCompactParser {
         // Use `parse_element` (not bare `parse_atom`) so a nested n-ary operator
         // body — e.g. the 2nd integral in `\int\limits.. \int\limits.. f` — is
         // itself routed through `parse_nary_rest` and keeps its \limits/limits.
-        let (input, body_id) = if is_table_boundary(input) {
+        //
+        // Inside a `\left...\right` fence the body must not consume the closing
+        // `\right`; treat it as an empty body so the fence parser can terminate.
+        let (input, body_id) = if is_table_boundary(input)
+            || (input.starts_with("\\right")
+                && input[6..].chars().next().is_none_or(|c| !c.is_ascii_alphabetic()))
+        {
             let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             (input, row_id)
         } else {
@@ -1775,7 +2255,12 @@ impl LatexCompactParser {
     /// Parse a single script argument: either a single token or a braced group.
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        self.parse_atom(input)
+        let (input, arg) = self.parse_atom(input)?;
+        // A bare infix-fraction primitive (`\over`, `\atop`, ...) cannot be a
+        // valid script argument on its own. Treat it as empty so the script
+        // marker is omitted and the `__infix_*__` sentinel never leaks into
+        // output.
+        Ok((input, self.resolve_stray_infix_marker(arg)))
     }
 
     // -----------------------------------------------------------------------
@@ -1948,8 +2433,12 @@ impl LatexCompactParser {
         let c = input.as_bytes()[0] as char;
         let rest = &input[1..]; // all symbol chars are single-byte ASCII
         let kind = classify_char(c);
-        // Remap ASCII hyphen-minus to proper math minus sign
-        let ch = if c == '-' { '\u{2212}' } else { c };
+        // Remap ASCII characters that have distinct math semantics.
+        let ch = match c {
+            '-' => '\u{2212}',       // hyphen-minus -> minus sign
+            '\'' => '\u{2032}',     // apostrophe -> prime
+            _ => c,
+        };
         let sid = self.push_char_str(ch);
         Ok((rest, self.arena.push_node(CompactNode::Symbol(kind, sid))))
     }
@@ -2406,12 +2895,50 @@ impl LatexCompactParser {
             // --- \middle delimiter (outside \left..\right context) ---
             "middle" => {
                 let (input, _) = ws(input)?;
+                // Characters that are active script/prime markers in math mode
+                // cannot be written as bare delimiters after an atom: a literal
+                // `^` would be re-parsed as a superscript marker. Drop the
+                // \middle command and let the following marker be parsed as a
+                // script on the preceding atom.
+                if let Some(ch) = input.chars().next()
+                    && matches!(ch, '^' | '_' | '\'')
+                {
+                    return Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    ));
+                }
                 let (input, sid) = self.parse_delimiter_into(input)?;
-                Ok((
-                    input,
-                    self.arena
-                        .push_node(CompactNode::Symbol(SymbolKind::Fence, sid)),
-                ))
+                let ch = self.arena.str_val(sid).chars().next().unwrap_or('\0');
+                // The active-character `~` is a non-breaking space in LaTeX, not a
+                // delimiter. Treating it as a bare symbol would write a literal `~`
+                // that re-parses as a space and breaks round-trip idempotency.
+                if ch == '~' {
+                    return Ok((
+                        input,
+                        self.arena
+                            .push_node(CompactNode::Space(Rational::new(1, 4))),
+                    ));
+                }
+                // A delimiter character that is not a recognized math symbol
+                // cannot be written as a bare atom outside a fence without
+                // producing unparseable output. Treat the whole \middle as
+                // unparseable and stop.
+                if ch.is_ascii() && !SYMBOL_BYTES.contains(&(ch as u8)) {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Char,
+                    )));
+                }
+                // Outside a \left..\right pair the delimiter is just a bare
+                // symbol. Use the same ASCII class mapping the parser uses for
+                // literal characters so the writer applies the right spacing.
+                let kind = if ch.is_ascii() && SYMBOL_BYTES.contains(&(ch as u8)) {
+                    classify_char(ch)
+                } else {
+                    SymbolKind::Ordinary
+                };
+                Ok((input, self.arena.push_node(CompactNode::Symbol(kind, sid))))
             },
 
             // --- Color (consume color arg, return content) ---
@@ -2503,20 +3030,26 @@ impl LatexCompactParser {
                 let (input, _) = ws(input)?;
                 let (input, _) = char('{')(input)?;
                 let mut depth = 1u32;
-                let mut end = 0;
+                let mut end = None;
                 for (i, c) in input.char_indices() {
                     match c {
                         '{' => depth += 1,
                         '}' => {
                             depth -= 1;
                             if depth == 0 {
-                                end = i;
+                                end = Some(i);
                                 break;
                             }
                         },
                         _ => {},
                     }
                 }
+                let Some(end) = end else {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Tag,
+                    )));
+                };
                 let text = &input[..end];
                 let rest = &input[end + 1..];
                 let sid = self.arena.push_str(text);
@@ -2762,7 +3295,7 @@ impl LatexCompactParser {
             // --- \cr (row separator used outside table context) ---
             "cr" => Ok((
                 input,
-                self.arena.push_node(CompactNode::Space(Rational::zero())),
+                self.arena.push_node(CompactNode::Newline),
             )),
 
             // --- Catch-all: symbols, n-ary, operators, Greek letters ---
@@ -2976,9 +3509,18 @@ impl LatexCompactParser {
     }
 
     /// Extract a delimiter string from a parsed node (for \genfrac).
+    /// Maps `<`/`>` to the same angle-bracket codepoints used by
+    /// `parse_delimiter_into`, so the writer emits \langle/\rangle and the
+    /// output round-trips stably.
     fn extract_delimiter_str(&self, id: NodeId) -> String {
         match self.arena.node(id) {
-            CompactNode::Symbol(_, sid) => self.arena.str_val(*sid).to_string(),
+            CompactNode::Symbol(_, sid) => {
+                match self.arena.str_val(*sid) {
+                    "<" => "\u{27E8}".to_string(),
+                    ">" => "\u{27E9}".to_string(),
+                    s => s.to_string(),
+                }
+            },
             CompactNode::Row(span) if span.is_empty() => String::new(),
             _ => String::new(),
         }
@@ -3223,10 +3765,15 @@ impl LatexCompactParser {
         };
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
-        // Scan for matching '}' with brace counting (handles nested {})
+        // Scan for matching '}' with brace counting (handles nested {}).
+        // Escaped braces `\{` and `\}` are text literals and must not affect
+        // the brace balance, otherwise an early `\}` prematurely closes the
+        // argument and leaves stray braces in the surrounding math.
         let mut depth = 1u32;
         let mut end = 0;
-        for (i, c) in input.char_indices() {
+        let mut i = 0;
+        while i < input.len() {
+            let c = input[i..].chars().next().unwrap();
             match c {
                 '{' => depth += 1,
                 '}' => {
@@ -3236,8 +3783,15 @@ impl LatexCompactParser {
                         break;
                     }
                 },
+                '\\' if input[i + 1..].starts_with('{')
+                    || input[i + 1..].starts_with('}') =>
+                {
+                    i += 2;
+                    continue;
+                },
                 _ => {},
             }
+            i += c.len_utf8();
         }
         if depth != 0 {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -3880,10 +4434,15 @@ impl LatexCompactParser {
                 '[' => (SymbolKind::Open, "["),
                 ']' => (SymbolKind::Close, "]"),
                 '|' => (SymbolKind::Fence, "|"),
-                '/' => (SymbolKind::Ordinary, "/"),
+                '/' => (SymbolKind::Fence, "/"),
                 _ => {
                     if input.starts_with('\\') {
-                        return self.parse_command(input);
+                        // Use parse_element so that n-ary operators like \int get
+                        // their normal scripts/body consumed. parse_command alone
+                        // would return a bare LargeOp symbol, which then diverges
+                        // when the sizing wrapper is later dropped and the symbol
+                        // is re-parsed as a full n-ary (e.g. \big \int\ ).
+                        return self.parse_element(input);
                     }
                     return Err(nom::Err::Error(nom::error::Error::new(
                         input,
@@ -4576,8 +5135,11 @@ impl LatexCompactParser {
         input: &'a str,
         name: &str,
     ) -> IResult<&'a str, NodeId> {
-        // In math mode, these are typically no-ops or apply a style to following content.
-        // We'll parse the next token and apply the style.
+        // In math mode these are typically no-ops or apply a style to the next
+        // token only. Consuming all remaining content used to create deeply
+        // nested `Styled` nodes for inputs like `\sf\sf\sf...`, which could
+        // exhaust memory during parsing. Limiting the scope to a single token
+        // keeps the AST shallow and round-trip stable.
         let style = match name {
             "rm" => TextStyle::Normal,
             "it" => TextStyle::Italic,
@@ -4587,7 +5149,6 @@ impl LatexCompactParser {
             _ => TextStyle::Normal,
         };
         let (input, _) = ws(input)?;
-        // If there's content to style, consume the next token
         if input.is_empty()
             || input.starts_with('}')
             || input.starts_with('&')
@@ -4599,41 +5160,25 @@ impl LatexCompactParser {
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             ));
         }
-        // Parse remaining content in current group
-        let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-        let mut rest = input;
-        loop {
-            let (r, _) = ws(rest)?;
-            rest = r;
-            if rest.is_empty()
-                || rest.starts_with('}')
-                || rest.starts_with('&')
-                || rest.starts_with("\\\\")
-                || rest.starts_with("\\end")
-            {
-                break;
-            }
-            match self.parse_element(rest) {
-                Ok((r, id)) => {
-                    ids.push(id);
-                    rest = r;
-                },
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => break,
-            }
-        }
-        if ids.is_empty() {
-            return Ok((
-                rest,
+        match self.parse_element(input) {
+            Ok((rest, id)) => {
+                let id = self.resolve_stray_infix_marker(id);
+                let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+                ids.push(id);
+                let ids = self.resolve_infix_fraction(ids);
+                let content_span = self.arena.push_children(&ids);
+                Ok((
+                    rest,
+                    self.arena
+                        .push_node(CompactNode::Styled(style, content_span)),
+                ))
+            },
+            Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
+            Err(_) => Ok((
+                input,
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-            ));
+            )),
         }
-        let content_span = self.arena.push_children(&ids);
-        Ok((
-            rest,
-            self.arena
-                .push_node(CompactNode::Styled(style, content_span)),
-        ))
     }
 
     /// Parse \DeclareMathOperator and similar declaration commands — consume all arguments.
@@ -5972,7 +6517,11 @@ impl LatexCompactParser {
         // bit down to the true bottom edge and discard the empty row.
         if rows.len() > 1 && rows.last().is_some_and(|r| r.iter().all(|c| c.is_empty())) {
             let last = rows.len();
-            if row_seps & (1 << last) != 0 {
+            // row_seps is a u32, so only row indices < 32 can carry a bit.  The
+            // hline setter above already caps rows.len() < 32, but a pathological
+            // input can produce more rows than that; guard the shift to avoid a
+            // left-shift overflow panic.
+            if last < 32 && row_seps & (1 << last) != 0 {
                 row_seps &= !(1 << last);
                 row_seps |= 1 << (last - 1);
             }

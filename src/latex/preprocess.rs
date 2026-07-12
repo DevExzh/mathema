@@ -123,22 +123,39 @@ fn uses_builtin_macro(input: &str) -> bool {
 
 fn strip_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
+    let mut i = 0;
     let mut prev_was_backslash = false;
-    let mut in_comment = false;
 
-    for ch in input.chars() {
-        if in_comment {
-            if ch == '\n' {
-                in_comment = false;
-                out.push(ch);
-            }
-            // else skip
-        } else if ch == '%' && !prev_was_backslash {
-            in_comment = true;
-        } else {
-            out.push(ch);
+    while i < input.len() {
+        // Verbatim content must be copied unchanged, including `%` characters.
+        if input.as_bytes().get(i) == Some(&b'\\')
+            && let Some(end) = find_verb_end(input, i)
+        {
+            out.push_str(&input[i..end]);
+            i = end;
+            prev_was_backslash = false;
+            continue;
         }
+
+        let ch = input[i..].chars().next().unwrap();
+        let ch_len = ch.len_utf8();
+        if ch == '%' && !prev_was_backslash {
+            // Skip until end of line.
+            i += ch_len;
+            while i < input.len() {
+                let c = input[i..].chars().next().unwrap();
+                i += c.len_utf8();
+                if c == '\n' {
+                    out.push(c);
+                    break;
+                }
+            }
+            prev_was_backslash = false;
+            continue;
+        }
+        out.push(ch);
         prev_was_backslash = ch == '\\' && !prev_was_backslash;
+        i += ch_len;
     }
     out
 }
@@ -146,6 +163,23 @@ fn strip_comments(input: &str) -> String {
 // ---------------------------------------------------------------------------
 // Scanning helpers
 // ---------------------------------------------------------------------------
+
+/// If `input[start..]` begins `\verb` or `\verb*` followed by a delimiter,
+/// return the byte index just past the matching closing delimiter. Verbatim
+/// segments must not be altered by comment stripping or macro expansion.
+fn find_verb_end(input: &str, start: usize) -> Option<usize> {
+    if !input[start..].starts_with("\\verb") {
+        return None;
+    }
+    let mut i = start + "\\verb".len();
+    if input[i..].starts_with('*') {
+        i += 1;
+    }
+    let delim = input[i..].chars().next()?;
+    let after_delim = i + delim.len_utf8();
+    let end = input[after_delim..].find(delim)?;
+    Some(after_delim + end + delim.len_utf8())
+}
 
 /// Trim leading whitespace.
 fn skip_ws(s: &str) -> &str {
@@ -481,6 +515,13 @@ impl Preprocessor {
                 out.push_str(&replacement);
                 s = rest;
                 changed = true;
+                continue;
+            }
+            // Skip \verb / \verb* content unchanged — macro expansion must not
+            // rewrite text inside a verbatim block.
+            if let Some(end) = find_verb_end(s, 0) {
+                out.push_str(&s[..end]);
+                s = &s[end..];
                 continue;
             }
             // Try \name macro expansion
@@ -929,5 +970,28 @@ mod tests {
     #[test]
     fn no_macros_passthrough() {
         assert_eq!(preprocess("x+y"), "x+y");
+    }
+
+    #[test]
+    fn verb_content_not_expanded() {
+        // Builtin macros (here the physics package \ip) must not be expanded
+        // inside a \verb / \verb* verbatim block.
+        assert_eq!(
+            preprocess("\\verb@\\ip!@"),
+            "\\verb@\\ip!@"
+        );
+        assert_eq!(
+            preprocess("\\verb*!\\ip{!}!"),
+            "\\verb*!\\ip{!}!"
+        );
+    }
+
+    #[test]
+    fn comments_not_stripped_inside_verb() {
+        // A percent sign inside \verb content is literal text, not a comment.
+        assert_eq!(
+            preprocess("\\verb@% still here@"),
+            "\\verb@% still here@"
+        );
     }
 }

@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
@@ -14,19 +14,19 @@ fn bench_latex_parse_focused(c: &mut Criterion) {
     let mut group = c.benchmark_group("latex_parse_focused");
 
     group.bench_function("simple", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(SIMPLE), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(SIMPLE), &config))
     });
     group.bench_function("quadratic", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(QUADRATIC), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(QUADRATIC), &config))
     });
     group.bench_function("nested_frac", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(NESTED), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(NESTED), &config))
     });
     group.bench_function("sum", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(SUM), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(SUM), &config))
     });
     group.bench_function("navier_stokes", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(NAVIER_STOKES), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(NAVIER_STOKES), &config))
     });
 
     group.finish();

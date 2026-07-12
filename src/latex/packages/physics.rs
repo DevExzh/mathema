@@ -52,19 +52,19 @@ pub const MACROS: &[(&str, u8, &str)] = &[
     // \bra{x} → ⟨x|   (auto-scaling; the effective \bra)
     ("bra", 1, r"\left\langle #1\right|"),
     // \ket{x} → |x⟩
-    ("ket", 1, r"\left|#1\right\rangle"),
+    ("ket", 1, r"\left|#1\right\rangle "),
     // \dyad{a}{b} → |a⟩⟨b|  (outer product)
-    ("dyad", 2, r"\left|#1\right\rangle\!\left\langle #2\right|"),
+    ("dyad", 2, r"\left|#1\right\rangle \!\left\langle #2\right|"),
     // \op{a}{b} → |a⟩⟨b|  (outer product; alias of \dyad)
-    ("op", 2, r"\left|#1\right\rangle\!\left\langle #2\right|"),
+    ("op", 2, r"\left|#1\right\rangle \!\left\langle #2\right|"),
     // \ip{a}{b} → ⟨a|b⟩  (inner product)
-    ("ip", 2, r"\left\langle #1\middle|#2\right\rangle"),
+    ("ip", 2, r"\left\langle #1\middle|#2\right\rangle "),
     // \mel{a}{B}{c} → ⟨a|B|c⟩  (matrix element)
-    ("mel", 3, r"\left\langle #1\right|#2\left|#3\right\rangle"),
+    ("mel", 3, r"\left\langle #1\right|#2\left|#3\right\rangle "),
     // \expval{A} → ⟨A⟩  (expectation value)
-    ("expval", 1, r"\left\langle #1\right\rangle"),
+    ("expval", 1, r"\left\langle #1\right\rangle "),
     // \ev{A} → ⟨A⟩  (alias of \expval)
-    ("ev", 1, r"\left\langle #1\right\rangle"),
+    ("ev", 1, r"\left\langle #1\right\rangle "),
     // --- Commutators ------------------------------------------------------
     // \comm{A}{B} → [A,B]
     ("comm", 2, r"\left[#1,#2\right]"),
