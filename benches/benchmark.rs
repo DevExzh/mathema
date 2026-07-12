@@ -1,4 +1,4 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use mathema::ast::compact::CompactExpr;
 use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
 use mathema::error::Config;
@@ -21,16 +21,16 @@ fn bench_latex_parse(c: &mut Criterion) {
     let config = Config::default();
     let mut group = c.benchmark_group("latex_parse");
     group.bench_function("simple", |b| {
-        b.iter(|| LatexReader::parse(black_box(SIMPLE), &config))
+        b.iter(|| LatexReader::parse(std::hint::black_box(SIMPLE), &config))
     });
     group.bench_function("quadratic", |b| {
-        b.iter(|| LatexReader::parse(black_box(QUADRATIC), &config))
+        b.iter(|| LatexReader::parse(std::hint::black_box(QUADRATIC), &config))
     });
     group.bench_function("nested_frac", |b| {
-        b.iter(|| LatexReader::parse(black_box(NESTED), &config))
+        b.iter(|| LatexReader::parse(std::hint::black_box(NESTED), &config))
     });
     group.bench_function("sum", |b| {
-        b.iter(|| LatexReader::parse(black_box(SUM), &config))
+        b.iter(|| LatexReader::parse(std::hint::black_box(SUM), &config))
     });
     group.finish();
 }
@@ -42,10 +42,10 @@ fn bench_latex_write(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("latex_write");
     group.bench_function("simple", |b| {
-        b.iter(|| LatexWriter::write(black_box(&simple_ast), &config))
+        b.iter(|| LatexWriter::write(std::hint::black_box(&simple_ast), &config))
     });
     group.bench_function("quadratic", |b| {
-        b.iter(|| LatexWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| LatexWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.finish();
 }
@@ -57,10 +57,10 @@ fn bench_mathml_write(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("mathml_write");
     group.bench_function("simple", |b| {
-        b.iter(|| MathmlWriter::write(black_box(&simple_ast), &config))
+        b.iter(|| MathmlWriter::write(std::hint::black_box(&simple_ast), &config))
     });
     group.bench_function("quadratic", |b| {
-        b.iter(|| MathmlWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| MathmlWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.finish();
 }
@@ -77,10 +77,10 @@ fn bench_mathml_parse(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("mathml_parse");
     group.bench_function("simple", |b| {
-        b.iter(|| MathmlReader::parse(black_box(&simple_mathml), &config))
+        b.iter(|| MathmlReader::parse(std::hint::black_box(&simple_mathml), &config))
     });
     group.bench_function("quadratic", |b| {
-        b.iter(|| MathmlReader::parse(black_box(&quad_mathml), &config))
+        b.iter(|| MathmlReader::parse(std::hint::black_box(&quad_mathml), &config))
     });
     group.finish();
 }
@@ -91,13 +91,13 @@ fn bench_cross_format(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("cross_format_write");
     group.bench_function("to_omml", |b| {
-        b.iter(|| OmmlWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| OmmlWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.bench_function("to_mtef", |b| {
-        b.iter(|| MtefWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| MtefWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.bench_function("to_unicode_math", |b| {
-        b.iter(|| UnicodeMathWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| UnicodeMathWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.finish();
 }
@@ -107,7 +107,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.bench_function("latex_to_mathml", |b| {
         b.iter(|| {
             mathema::convert(
-                black_box(QUADRATIC),
+                std::hint::black_box(QUADRATIC),
                 mathema::Format::LaTeX,
                 mathema::Format::MathML,
             )
@@ -116,7 +116,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.bench_function("latex_to_omml", |b| {
         b.iter(|| {
             mathema::convert(
-                black_box(QUADRATIC),
+                std::hint::black_box(QUADRATIC),
                 mathema::Format::LaTeX,
                 mathema::Format::Omml,
             )
@@ -125,7 +125,7 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.bench_function("latex_to_unicode_math", |b| {
         b.iter(|| {
             mathema::convert(
-                black_box(QUADRATIC),
+                std::hint::black_box(QUADRATIC),
                 mathema::Format::LaTeX,
                 mathema::Format::UnicodeMath,
             )
@@ -140,16 +140,16 @@ fn bench_parse_compact_vs_legacy(c: &mut Criterion) {
     let config = Config::default();
     let mut group = c.benchmark_group("parse_compact_vs_legacy");
     group.bench_function("parse_legacy/quadratic", |b| {
-        b.iter(|| LatexReader::parse(black_box(QUADRATIC), &config))
+        b.iter(|| LatexReader::parse(std::hint::black_box(QUADRATIC), &config))
     });
     group.bench_function("parse_compact/quadratic", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(QUADRATIC), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(QUADRATIC), &config))
     });
     group.bench_function("parse_legacy/sum", |b| {
-        b.iter(|| LatexReader::parse(black_box(SUM), &config))
+        b.iter(|| LatexReader::parse(std::hint::black_box(SUM), &config))
     });
     group.bench_function("parse_compact/sum", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(SUM), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(SUM), &config))
     });
     group.finish();
 }
@@ -161,34 +161,34 @@ fn bench_write_compact_vs_legacy(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("write_compact_vs_legacy");
     group.bench_function("latex_legacy", |b| {
-        b.iter(|| LatexWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| LatexWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.bench_function("latex_compact", |b| {
-        b.iter(|| LatexWriter::write_compact(black_box(&quad_compact), &config))
+        b.iter(|| LatexWriter::write_compact(std::hint::black_box(&quad_compact), &config))
     });
     group.bench_function("mathml_legacy", |b| {
-        b.iter(|| MathmlWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| MathmlWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.bench_function("mathml_compact", |b| {
-        b.iter(|| MathmlWriter::write_compact(black_box(&quad_compact), &config))
+        b.iter(|| MathmlWriter::write_compact(std::hint::black_box(&quad_compact), &config))
     });
     group.bench_function("unicode_legacy", |b| {
-        b.iter(|| UnicodeMathWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| UnicodeMathWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.bench_function("unicode_compact", |b| {
-        b.iter(|| UnicodeMathWriter::write_compact(black_box(&quad_compact), &config))
+        b.iter(|| UnicodeMathWriter::write_compact(std::hint::black_box(&quad_compact), &config))
     });
     group.bench_function("omml_legacy", |b| {
-        b.iter(|| OmmlWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| OmmlWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.bench_function("omml_compact", |b| {
-        b.iter(|| OmmlWriter::write_compact(black_box(&quad_compact), &config))
+        b.iter(|| OmmlWriter::write_compact(std::hint::black_box(&quad_compact), &config))
     });
     group.bench_function("mtef_legacy", |b| {
-        b.iter(|| MtefWriter::write(black_box(&quad_ast), &config))
+        b.iter(|| MtefWriter::write(std::hint::black_box(&quad_ast), &config))
     });
     group.bench_function("mtef_compact", |b| {
-        b.iter(|| MtefWriter::write_compact(black_box(&quad_compact), &config))
+        b.iter(|| MtefWriter::write_compact(std::hint::black_box(&quad_compact), &config))
     });
     group.finish();
 }
@@ -203,28 +203,28 @@ fn bench_ast_traversal(c: &mut Criterion) {
         let base = LatexReader::parse(QUADRATIC, &config).unwrap().expr;
         b.iter(|| {
             let mut expr = base.clone();
-            normalize_expr(black_box(&mut expr));
+            normalize_expr(std::hint::black_box(&mut expr));
         })
     });
     group.bench_function("normalize_compact/quadratic", |b| {
         let base = LatexReader::parse_compact(QUADRATIC, &config).unwrap().expr;
         b.iter(|| {
             let mut expr = base.clone();
-            normalize_compact_expr(black_box(&mut expr));
+            normalize_compact_expr(std::hint::black_box(&mut expr));
         })
     });
 
     // Depth validation: MathExpr vs CompactExpr
     group.bench_function("validate_depth_legacy/quadratic", |b| {
         let expr = LatexReader::parse(QUADRATIC, &config).unwrap().expr;
-        b.iter(|| mathema::ast::validate_ast_depth(black_box(&expr)))
+        b.iter(|| mathema::ast::validate_ast_depth(std::hint::black_box(&expr)))
     });
     group.bench_function("validate_depth_compact/quadratic", |b| {
         let compact = LatexReader::parse_compact(QUADRATIC, &config).unwrap().expr;
         b.iter(|| {
             mathema::ast::validate_compact_depth(
-                black_box(&compact.arena),
-                black_box(compact.roots),
+                std::hint::black_box(&compact.arena),
+                std::hint::black_box(compact.roots),
             )
         })
     });
@@ -232,7 +232,7 @@ fn bench_ast_traversal(c: &mut Criterion) {
     // Count nodes via visitor (compact only — measures traversal speed)
     group.bench_function("visitor_count_nodes/quadratic", |b| {
         let compact = LatexReader::parse_compact(QUADRATIC, &config).unwrap().expr;
-        b.iter(|| count_arena_nodes(black_box(&compact)))
+        b.iter(|| count_arena_nodes(std::hint::black_box(&compact)))
     });
 
     group.finish();
@@ -324,13 +324,13 @@ fn bench_arena_memory(c: &mut Criterion) {
 
     // Measure memory: CompactExpr construction (includes allocation)
     group.bench_function("compact_alloc/quadratic", |b| {
-        b.iter(|| LatexReader::parse_compact(black_box(QUADRATIC), &config))
+        b.iter(|| LatexReader::parse_compact(std::hint::black_box(QUADRATIC), &config))
     });
 
     // Measure round-trip: CompactExpr → MathExpr materialization cost
     group.bench_function("to_math_expr/quadratic", |b| {
         let compact = LatexReader::parse_compact(QUADRATIC, &config).unwrap().expr;
-        b.iter(|| black_box(&compact).to_math_expr())
+        b.iter(|| std::hint::black_box(&compact).to_math_expr())
     });
 
     group.finish();
@@ -363,26 +363,32 @@ fn bench_render_svg(c: &mut Criterion) {
     // Text path (`<text>` elements, client-side fonts).
     let mut group = c.benchmark_group("render_svg");
     group.bench_function("simple", |b| {
-        b.iter(|| mathema::render::render_to_svg(black_box(&simple_ast), &options))
+        b.iter(|| mathema::render::render_to_svg(std::hint::black_box(&simple_ast), &options))
     });
     group.bench_function("quadratic", |b| {
-        b.iter(|| mathema::render::render_to_svg(black_box(&quad_ast), &options))
+        b.iter(|| mathema::render::render_to_svg(std::hint::black_box(&quad_ast), &options))
     });
     group.bench_function("sum", |b| {
-        b.iter(|| mathema::render::render_to_svg(black_box(&sum_ast), &options))
+        b.iter(|| mathema::render::render_to_svg(std::hint::black_box(&sum_ast), &options))
     });
     group.finish();
 
     // Embedded path (default `to_svg()`: glyph outlines embedded as <path>/<use>).
     let mut embed = c.benchmark_group("render_svg_embedded");
     embed.bench_function("simple", |b| {
-        b.iter(|| mathema::render::render_to_svg_standalone(black_box(&simple_ast), &options))
+        b.iter(|| {
+            mathema::render::render_to_svg_standalone(std::hint::black_box(&simple_ast), &options)
+        })
     });
     embed.bench_function("quadratic", |b| {
-        b.iter(|| mathema::render::render_to_svg_standalone(black_box(&quad_ast), &options))
+        b.iter(|| {
+            mathema::render::render_to_svg_standalone(std::hint::black_box(&quad_ast), &options)
+        })
     });
     embed.bench_function("sum", |b| {
-        b.iter(|| mathema::render::render_to_svg_standalone(black_box(&sum_ast), &options))
+        b.iter(|| {
+            mathema::render::render_to_svg_standalone(std::hint::black_box(&sum_ast), &options)
+        })
     });
     embed.finish();
 }

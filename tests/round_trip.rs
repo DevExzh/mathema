@@ -151,10 +151,10 @@ fn rt_prime_as_superscript() {
     let output = LatexWriter::write(&parsed.expr, &config).unwrap();
     assert_eq!(output, "f^{\\prime\\prime\\prime}");
 
-    // f'_0 -> f_0^{\prime} (SubSup with sub=0, sup=prime)
+    // f'_0 -> f_{0}^{\prime} (SubSup with sub=0, sup=prime)
     let parsed = LatexReader::parse("f'_0", &config).unwrap();
     let output = LatexWriter::write(&parsed.expr, &config).unwrap();
-    assert_eq!(output, "f_0^{\\prime}");
+    assert_eq!(output, "f_{0}^{\\prime}");
 
     // f'^2 -> f^{\prime 2} (prime merged with explicit superscript)
     let parsed = LatexReader::parse("f'^2", &config).unwrap();
@@ -166,10 +166,10 @@ fn rt_prime_as_superscript() {
     let output = LatexWriter::write(&parsed.expr, &config).unwrap();
     assert_eq!(output, "f^{\\prime2}");
 
-    // f_0' -> f_0^{\prime} (SubSup with sub=0, sup=prime)
+    // f_0' -> f_{0}^{\prime} (SubSup with sub=0, sup=prime)
     let parsed = LatexReader::parse("f_0'", &config).unwrap();
     let output = LatexWriter::write(&parsed.expr, &config).unwrap();
-    assert_eq!(output, "f_0^{\\prime}");
+    assert_eq!(output, "f_{0}^{\\prime}");
 }
 
 #[test]

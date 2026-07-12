@@ -94,7 +94,10 @@ struct OmmlCompactParser<'a> {
 impl<'a> OmmlCompactParser<'a> {
     fn new(input: &'a str) -> Result<Self> {
         let mut reader = Reader::from_str(input);
-        reader.config_mut().trim_text(true);
+        // Preserve text until the complete `<m:t>` value has been assembled.
+        // Trimming individual XML text events loses whitespace next to entity
+        // references because quick-xml reports those as separate events.
+        reader.config_mut().trim_text(false);
         Ok(Self {
             reader,
             arena: AstArena::new(),

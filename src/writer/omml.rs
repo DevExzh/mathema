@@ -10,6 +10,18 @@ use crate::writer::Writer as MathWriter;
 
 const NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
 
+/// Match the OMML reader's text normalization so write/read cycles stabilize.
+///
+/// A non-breaking-space placeholder represents `Space` and `Rule` nodes
+/// and must remain intact.
+fn trim_omml_text(text: &str) -> &str {
+    if text == "\u{00A0}" {
+        text
+    } else {
+        text.trim()
+    }
+}
+
 /// Classifies a compact node that the OMML writer cannot fully represent.
 fn omml_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     match node {
@@ -550,6 +562,7 @@ fn write_run(w: &mut XmlW, text: &str, style: Option<&str>) -> Result<()> {
         end(w, "m:rPr")?;
     }
     start(w, "m:t")?;
+    let text = trim_omml_text(text);
     w.write_event(Event::Text(BytesText::new(text)))
         .map_err(io_err)?;
     end(w, "m:t")?;
@@ -566,6 +579,7 @@ fn write_styled_run(w: &mut XmlW, text: &str, sty: &str, scr: Option<&str>) -> R
     }
     end(w, "m:rPr")?;
     start(w, "m:t")?;
+    let text = trim_omml_text(text);
     w.write_event(Event::Text(BytesText::new(text)))
         .map_err(io_err)?;
     end(w, "m:t")?;
@@ -1170,7 +1184,7 @@ fn f_run(buf: &mut String, text: &str, style: Option<&str>, color: Option<&str>)
         f_end(buf, "m:rPr");
     }
     f_start(buf, "m:t");
-    xml_esc(buf, text);
+    xml_esc(buf, trim_omml_text(text));
     f_end(buf, "m:t");
     f_end(buf, "m:r");
 }
@@ -1198,7 +1212,7 @@ fn f_styled_run(buf: &mut String, text: &str, sty: &str, scr: Option<&str>, colo
     }
     f_end(buf, "m:rPr");
     f_start(buf, "m:t");
-    xml_esc(buf, text);
+    xml_esc(buf, trim_omml_text(text));
     f_end(buf, "m:t");
     f_end(buf, "m:r");
 }
@@ -1615,6 +1629,34 @@ mod tests {
     fn identifier() {
         let output = write(MathNode::Identifier("x".into()));
         assert!(output.contains("<m:t>x</m:t>"));
+    }
+
+    #[test]
+    fn run_text_is_trimmed_consistently_in_both_writers() {
+        let node = MathNode::Text(TextStyle::Normal, "  x  ".into());
+        for output in [write(node.clone()), write_compact(node)] {
+            assert!(output.contains("<m:t>x</m:t>"), "{output}");
+            assert!(!output.contains("<m:t>  x  </m:t>"), "{output}");
+        }
+    }
+
+    #[test]
+    fn escaped_text_preserves_adjacent_newlines_across_round_trip() {
+        use crate::ast::normalize::normalize_compact_expr;
+        use crate::reader::Reader;
+        use crate::reader::omml::OmmlReader;
+
+        let config = Config::default();
+        let node = MathNode::Text(TextStyle::Normal, "x'\nM".into());
+        let mut first = CompactExpr::from_math_expr(&MathExpr::inline(vec![node]));
+        normalize_compact_expr(&mut first);
+        let out1 = OmmlWriter::write_compact(&first, &config).unwrap();
+
+        let mut second = OmmlReader::parse_compact(&out1, &config).unwrap().expr;
+        normalize_compact_expr(&mut second);
+        let out2 = OmmlWriter::write_compact(&second, &config).unwrap();
+
+        assert_eq!(out1, out2);
     }
 
     #[test]

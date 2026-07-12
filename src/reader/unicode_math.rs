@@ -15,6 +15,34 @@ pub struct UnicodeMathReader;
 
 const MAX_PARSE_DEPTH: u32 = 128;
 
+/// Maximum bytes to scan for a matching `)` in script and radical arguments.
+///
+/// The bound prevents malformed, unbalanced suffixes from being rescanned
+/// recursively while retaining normal parenthesized UnicodeMath arguments.
+const SCRIPT_PAREN_LOOKAHEAD: usize = 256;
+
+/// Return the byte index immediately after the balanced closing parenthesis.
+fn matching_paren_end(input: &str) -> Option<usize> {
+    debug_assert!(input.starts_with('('));
+    let mut depth = 1_u32;
+    for (index, character) in input.char_indices().skip(1) {
+        if index > SCRIPT_PAREN_LOOKAHEAD {
+            return None;
+        }
+        match character {
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index + character.len_utf8());
+                }
+            },
+            _ => {},
+        }
+    }
+    None
+}
+
 impl Reader for UnicodeMathReader {
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
         Self::parse_compact(input, config).map(|r| r.to_parse_result())
@@ -204,10 +232,13 @@ impl CompactParser {
         // and return the inner content. This keeps the writer's `√(x)` / `x^(a+b)`
         // wrapping invertible (otherwise re-reading would nest a literal Fenced
         // and the next write would double the parentheses).
-        if input.starts_with('(')
-            && let Ok((rest, id)) = self.parse_absorbing_paren_group(input)
-        {
-            return Ok((rest, id));
+        if input.starts_with('(') && matching_paren_end(input).is_some() {
+            if let Ok((rest, id)) = self.parse_absorbing_paren_group(input) {
+                return Ok((rest, id));
+            }
+            // A balanced argument can still fail at the configured parse-depth
+            // limit. Consume one literal token rather than rescanning its suffix.
+            return self.parse_single_char_node(input);
         }
         try_alt!(self, input, parse_group, parse_single_char_node);
         Err(nom::Err::Error(nom::error::Error::new(
@@ -889,6 +920,15 @@ mod tests {
         // Bare parentheses (not in argument position) stay literal.
         let lit = parse("(x)");
         assert!(matches!(&lit[0], MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn script_parenthesis_lookahead_is_balanced_and_bounded() {
+        assert_eq!(matching_paren_end("(x)y"), Some(3));
+        assert_eq!(matching_paren_end("((x))y"), Some(5));
+        assert_eq!(matching_paren_end("(x"), None);
+        let distant_close = format!("({})", "x".repeat(SCRIPT_PAREN_LOOKAHEAD + 1));
+        assert_eq!(matching_paren_end(&distant_close), None);
     }
 
     #[test]

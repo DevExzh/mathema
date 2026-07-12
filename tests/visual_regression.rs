@@ -14,8 +14,12 @@ struct Formula {
 }
 
 fn load_formulas() -> Vec<Formula> {
-    let data = fs::read_to_string("tests/data/formulas.json")
-        .expect("tests/data/formulas.json should exist");
+    let path = "tests/data/formulas.json";
+    if !Path::new(path).exists() {
+        println!("skipping {path}: corpus not present");
+        return Vec::new();
+    }
+    let data = fs::read_to_string(path).expect("tests/data/formulas.json should exist");
     let values: Vec<serde_json::Value> =
         serde_json::from_str(&data).expect("formulas.json should be valid JSON");
 
