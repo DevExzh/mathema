@@ -137,11 +137,7 @@ fn flatten_empty_script_math(node: &mut MathNode) {
                     sub: Box::new(*sub),
                 }
             } else {
-                MathNode::SubSup {
-                    base,
-                    sub,
-                    sup,
-                }
+                MathNode::SubSup { base, sub, sup }
             };
         },
         other => *node = other,
@@ -605,9 +601,10 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
                     sub: pre_sub,
                     sup: pre_sup,
                 }),
-                (true, false) => {
-                    arena.push_node(CompactNode::Subscript { base: empty, sub: pre_sub })
-                },
+                (true, false) => arena.push_node(CompactNode::Subscript {
+                    base: empty,
+                    sub: pre_sub,
+                }),
                 (false, true) => arena.push_node(CompactNode::Superscript {
                     base: empty,
                     sup: pre_sup,
@@ -694,7 +691,10 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             // sizing command and just emit the content. Flatten the wrapper now
             // so that the emitted bracing matches the re-parsed shape.
             match *arena.node(content) {
-                CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, _) => {
+                CompactNode::Symbol(
+                    SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence,
+                    _,
+                ) => {
                     // Keep the sizing wrapper for delimiters.
                 },
                 CompactNode::Row(span) => {
@@ -749,29 +749,19 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
 fn flatten_empty_script(arena: &mut AstArena, id: NodeId) {
     let node = *arena.node(id);
     let base = match node {
-        CompactNode::Subscript { base, sub }
-            if is_effectively_empty_node(arena, sub) =>
-        {
-            base
-        },
-        CompactNode::Superscript { base, sup }
-            if is_effectively_empty_node(arena, sup) =>
-        {
-            base
-        },
+        CompactNode::Subscript { base, sub } if is_effectively_empty_node(arena, sub) => base,
+        CompactNode::Superscript { base, sup } if is_effectively_empty_node(arena, sup) => base,
         CompactNode::SubSup { base, sub, sup } => {
             let sub_empty = is_effectively_empty_node(arena, sub);
             let sup_empty = is_effectively_empty_node(arena, sup);
             if sub_empty && sup_empty {
                 base
             } else if sub_empty {
-                let new_id =
-                    arena.push_node(CompactNode::Superscript { base, sup });
+                let new_id = arena.push_node(CompactNode::Superscript { base, sup });
                 *arena.node_mut(id) = *arena.node(new_id);
                 return;
             } else if sup_empty {
-                let new_id =
-                    arena.push_node(CompactNode::Subscript { base, sub });
+                let new_id = arena.push_node(CompactNode::Subscript { base, sub });
                 *arena.node_mut(id) = *arena.node(new_id);
                 return;
             } else {
@@ -912,9 +902,7 @@ fn can_carry_script(node: CompactNode) -> bool {
 /// taken from the empty-base script node `script_id`.
 fn make_script_with_base(arena: &mut AstArena, base: NodeId, script_id: NodeId) -> NodeId {
     match *arena.node(script_id) {
-        CompactNode::Subscript { sub, .. } => {
-            arena.push_node(CompactNode::Subscript { base, sub })
-        },
+        CompactNode::Subscript { sub, .. } => arena.push_node(CompactNode::Subscript { base, sub }),
         CompactNode::Superscript { sup, .. } => {
             arena.push_node(CompactNode::Superscript { base, sup })
         },
@@ -944,8 +932,14 @@ mod tests {
         ]);
         normalize_expr(&mut expr);
         assert_eq!(expr.nodes.len(), 4);
-        assert_eq!(expr.nodes[1], MathNode::Symbol(SymbolKind::Ordinary, "b".into()));
-        assert_eq!(expr.nodes[2], MathNode::Symbol(SymbolKind::Ordinary, "c".into()));
+        assert_eq!(
+            expr.nodes[1],
+            MathNode::Symbol(SymbolKind::Ordinary, "b".into())
+        );
+        assert_eq!(
+            expr.nodes[2],
+            MathNode::Symbol(SymbolKind::Ordinary, "c".into())
+        );
     }
 
     #[test]
@@ -967,8 +961,14 @@ mod tests {
         ]);
         normalize_expr(&mut expr);
         assert_eq!(expr.nodes.len(), 2);
-        assert_eq!(expr.nodes[0], MathNode::Symbol(SymbolKind::Ordinary, "x".into()));
-        assert_eq!(expr.nodes[1], MathNode::Symbol(SymbolKind::Ordinary, "y".into()));
+        assert_eq!(
+            expr.nodes[0],
+            MathNode::Symbol(SymbolKind::Ordinary, "x".into())
+        );
+        assert_eq!(
+            expr.nodes[1],
+            MathNode::Symbol(SymbolKind::Ordinary, "y".into())
+        );
     }
 
     #[test]

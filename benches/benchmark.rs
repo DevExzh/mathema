@@ -376,13 +376,19 @@ fn bench_render_svg(c: &mut Criterion) {
     // Embedded path (default `to_svg()`: glyph outlines embedded as <path>/<use>).
     let mut embed = c.benchmark_group("render_svg_embedded");
     embed.bench_function("simple", |b| {
-        b.iter(|| mathema::render::render_to_svg_standalone(std::hint::black_box(&simple_ast), &options))
+        b.iter(|| {
+            mathema::render::render_to_svg_standalone(std::hint::black_box(&simple_ast), &options)
+        })
     });
     embed.bench_function("quadratic", |b| {
-        b.iter(|| mathema::render::render_to_svg_standalone(std::hint::black_box(&quad_ast), &options))
+        b.iter(|| {
+            mathema::render::render_to_svg_standalone(std::hint::black_box(&quad_ast), &options)
+        })
     });
     embed.bench_function("sum", |b| {
-        b.iter(|| mathema::render::render_to_svg_standalone(std::hint::black_box(&sum_ast), &options))
+        b.iter(|| {
+            mathema::render::render_to_svg_standalone(std::hint::black_box(&sum_ast), &options)
+        })
     });
     embed.finish();
 }

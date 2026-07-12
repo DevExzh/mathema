@@ -53,7 +53,10 @@ fn bench_layout_arena(c: &mut Criterion) {
             let mut arena = LayoutArena::new();
             b.iter(|| {
                 arena.clear();
-                builder.layout(std::hint::black_box(&mut arena), std::hint::black_box(&expr))
+                builder.layout(
+                    std::hint::black_box(&mut arena),
+                    std::hint::black_box(&expr),
+                )
             })
         });
     }
@@ -75,7 +78,10 @@ fn bench_layout_arena_cold(c: &mut Criterion) {
         group.bench_function(name, |b| {
             b.iter(|| {
                 let mut arena = LayoutArena::new();
-                builder.layout(std::hint::black_box(&mut arena), std::hint::black_box(&expr))
+                builder.layout(
+                    std::hint::black_box(&mut arena),
+                    std::hint::black_box(&expr),
+                )
             })
         });
     }

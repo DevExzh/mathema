@@ -976,22 +976,13 @@ mod tests {
     fn verb_content_not_expanded() {
         // Builtin macros (here the physics package \ip) must not be expanded
         // inside a \verb / \verb* verbatim block.
-        assert_eq!(
-            preprocess("\\verb@\\ip!@"),
-            "\\verb@\\ip!@"
-        );
-        assert_eq!(
-            preprocess("\\verb*!\\ip{!}!"),
-            "\\verb*!\\ip{!}!"
-        );
+        assert_eq!(preprocess("\\verb@\\ip!@"), "\\verb@\\ip!@");
+        assert_eq!(preprocess("\\verb*!\\ip{!}!"), "\\verb*!\\ip{!}!");
     }
 
     #[test]
     fn comments_not_stripped_inside_verb() {
         // A percent sign inside \verb content is literal text, not a comment.
-        assert_eq!(
-            preprocess("\\verb@% still here@"),
-            "\\verb@% still here@"
-        );
+        assert_eq!(preprocess("\\verb@% still here@"), "\\verb@% still here@");
     }
 }

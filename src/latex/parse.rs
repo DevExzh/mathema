@@ -1037,7 +1037,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
         Ok(("", ids)) => {
             let ids = parser.resolve_infix_fraction(ids);
             let ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
-                ids.into_iter().map(|id| parser.cleanup_infix_markers(id)).collect()
+                ids.into_iter()
+                    .map(|id| parser.cleanup_infix_markers(id))
+                    .collect()
             } else {
                 ids
             };
@@ -1102,7 +1104,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                     span: None,
                 });
                 let ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
-                    ids.into_iter().map(|id| parser.cleanup_infix_markers(id)).collect()
+                    ids.into_iter()
+                        .map(|id| parser.cleanup_infix_markers(id))
+                        .collect()
                 } else {
                     ids
                 };
@@ -1380,9 +1384,8 @@ impl LatexCompactParser {
     fn cleanup_infix_markers_in_node(&mut self, id: NodeId) -> NodeId {
         let node = *self.arena.node(id);
 
-        let has_marker = |this: &Self, ids: &[NodeId]| {
-            ids.iter().any(|&c| this.is_infix_marker_id(c))
-        };
+        let has_marker =
+            |this: &Self, ids: &[NodeId]| ids.iter().any(|&c| this.is_infix_marker_id(c));
 
         let clean_list = |this: &mut Self, ids: &[NodeId]| {
             let mut changed = false;
@@ -1410,7 +1413,11 @@ impl LatexCompactParser {
                     id
                 }
             },
-            CompactNode::Fenced { open, close, content } => {
+            CompactNode::Fenced {
+                open,
+                close,
+                content,
+            } => {
                 let children: Vec<NodeId> = self.arena.children(content).to_vec();
                 let (cleaned, changed) = clean_list(self, &children);
                 let new_content = if has_marker(self, &cleaned) {
@@ -1483,7 +1490,11 @@ impl LatexCompactParser {
                     })
                 }
             },
-            CompactNode::PreScripts { base, pre_sub, pre_sup } => {
+            CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            } => {
                 let new_base = self.cleanup_infix_markers(base);
                 let new_pre_sub = self.cleanup_infix_markers(pre_sub);
                 let new_pre_sup = self.cleanup_infix_markers(pre_sup);
@@ -1497,7 +1508,11 @@ impl LatexCompactParser {
                     })
                 }
             },
-            CompactNode::Overscript { base, over, movable_limits } => {
+            CompactNode::Overscript {
+                base,
+                over,
+                movable_limits,
+            } => {
                 let new_base = self.cleanup_infix_markers(base);
                 let new_over = self.cleanup_infix_markers(over);
                 if new_base == base && new_over == over {
@@ -1510,7 +1525,11 @@ impl LatexCompactParser {
                     })
                 }
             },
-            CompactNode::Underscript { base, under, movable_limits } => {
+            CompactNode::Underscript {
+                base,
+                under,
+                movable_limits,
+            } => {
                 let new_base = self.cleanup_infix_markers(base);
                 let new_under = self.cleanup_infix_markers(under);
                 if new_base == base && new_under == under {
@@ -1523,7 +1542,12 @@ impl LatexCompactParser {
                     })
                 }
             },
-            CompactNode::UnderOver { base, under, over, movable_limits } => {
+            CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits,
+            } => {
                 let new_base = self.cleanup_infix_markers(base);
                 let new_under = self.cleanup_infix_markers(under);
                 let new_over = self.cleanup_infix_markers(over);
@@ -1558,7 +1582,13 @@ impl LatexCompactParser {
                     })
                 }
             },
-            CompactNode::Nary { op, sub, sup, body, limits } => {
+            CompactNode::Nary {
+                op,
+                sub,
+                sup,
+                body,
+                limits,
+            } => {
                 let new_sub = self.cleanup_infix_markers(sub);
                 let new_sup = self.cleanup_infix_markers(sup);
                 let new_body = self.cleanup_infix_markers(body);
@@ -1574,7 +1604,12 @@ impl LatexCompactParser {
                     })
                 }
             },
-            CompactNode::Accent { base, accent, position, wide } => {
+            CompactNode::Accent {
+                base,
+                accent,
+                position,
+                wide,
+            } => {
                 let new_base = self.cleanup_infix_markers(base);
                 if new_base == base {
                     id
@@ -1623,7 +1658,11 @@ impl LatexCompactParser {
                     self.arena.push_node(CompactNode::Phantom(new_inner, kind))
                 }
             },
-            CompactNode::Boxed { content, bg_color, border_color } => {
+            CompactNode::Boxed {
+                content,
+                bg_color,
+                border_color,
+            } => {
                 let new_content = self.cleanup_infix_markers(content);
                 if new_content == content {
                     id
@@ -1657,7 +1696,13 @@ impl LatexCompactParser {
                     })
                 }
             },
-            CompactNode::RaiseBox { shift, height, depth, extents, content } => {
+            CompactNode::RaiseBox {
+                shift,
+                height,
+                depth,
+                extents,
+                content,
+            } => {
                 let new_content = self.cleanup_infix_markers(content);
                 if new_content == content {
                     id
@@ -1681,7 +1726,12 @@ impl LatexCompactParser {
                     id
                 }
             },
-            CompactNode::MathChoice { display, text, script, script_script } => {
+            CompactNode::MathChoice {
+                display,
+                text,
+                script,
+                script_script,
+            } => {
                 let new_display = self.cleanup_infix_markers(display);
                 let new_text = self.cleanup_infix_markers(text);
                 let new_script = self.cleanup_infix_markers(script);
@@ -1706,7 +1756,10 @@ impl LatexCompactParser {
                 if new_content == content {
                     id
                 } else {
-                    self.arena.push_node(CompactNode::Color { color, content: new_content })
+                    self.arena.push_node(CompactNode::Color {
+                        color,
+                        content: new_content,
+                    })
                 }
             },
             CompactNode::MathAtom { atom_type, content } => {
@@ -1986,7 +2039,10 @@ impl LatexCompactParser {
         // If the base is a stray infix marker and it is about to carry scripts,
         // normalize it to an empty Row so the marker string never leaks into output.
         if self.is_infix_marker_id(base)
-            && input.as_bytes().get(skip).is_some_and(|&b| matches!(b, b'^' | b'_' | b'\''))
+            && input
+                .as_bytes()
+                .get(skip)
+                .is_some_and(|&b| matches!(b, b'^' | b'_' | b'\''))
         {
             base = self.resolve_stray_infix_marker(base);
         }
@@ -2198,7 +2254,10 @@ impl LatexCompactParser {
         // `\right`; treat it as an empty body so the fence parser can terminate.
         let (input, body_id) = if is_table_boundary(input)
             || (input.starts_with("\\right")
-                && input[6..].chars().next().is_none_or(|c| !c.is_ascii_alphabetic()))
+                && input[6..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_ascii_alphabetic()))
         {
             let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             (input, row_id)
@@ -2435,8 +2494,8 @@ impl LatexCompactParser {
         let kind = classify_char(c);
         // Remap ASCII characters that have distinct math semantics.
         let ch = match c {
-            '-' => '\u{2212}',       // hyphen-minus -> minus sign
-            '\'' => '\u{2032}',     // apostrophe -> prime
+            '-' => '\u{2212}',  // hyphen-minus -> minus sign
+            '\'' => '\u{2032}', // apostrophe -> prime
             _ => c,
         };
         let sid = self.push_char_str(ch);
@@ -3293,10 +3352,7 @@ impl LatexCompactParser {
             },
 
             // --- \cr (row separator used outside table context) ---
-            "cr" => Ok((
-                input,
-                self.arena.push_node(CompactNode::Newline),
-            )),
+            "cr" => Ok((input, self.arena.push_node(CompactNode::Newline))),
 
             // --- Catch-all: symbols, n-ary, operators, Greek letters ---
             //
@@ -3514,12 +3570,10 @@ impl LatexCompactParser {
     /// output round-trips stably.
     fn extract_delimiter_str(&self, id: NodeId) -> String {
         match self.arena.node(id) {
-            CompactNode::Symbol(_, sid) => {
-                match self.arena.str_val(*sid) {
-                    "<" => "\u{27E8}".to_string(),
-                    ">" => "\u{27E9}".to_string(),
-                    s => s.to_string(),
-                }
+            CompactNode::Symbol(_, sid) => match self.arena.str_val(*sid) {
+                "<" => "\u{27E8}".to_string(),
+                ">" => "\u{27E9}".to_string(),
+                s => s.to_string(),
             },
             CompactNode::Row(span) if span.is_empty() => String::new(),
             _ => String::new(),
@@ -3783,9 +3837,7 @@ impl LatexCompactParser {
                         break;
                     }
                 },
-                '\\' if input[i + 1..].starts_with('{')
-                    || input[i + 1..].starts_with('}') =>
-                {
+                '\\' if input[i + 1..].starts_with('{') || input[i + 1..].starts_with('}') => {
                     i += 2;
                     continue;
                 },

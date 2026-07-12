@@ -85,27 +85,62 @@ fn bench_operators(c: &mut Criterion) {
 
     // Exact (char, form) lookup
     group.bench_function("lookup_operator/hit_plus_infix", |b| {
-        b.iter(|| lookup_operator(std::hint::black_box('+'), std::hint::black_box(OperatorForm::Infix)))
+        b.iter(|| {
+            lookup_operator(
+                std::hint::black_box('+'),
+                std::hint::black_box(OperatorForm::Infix),
+            )
+        })
     });
     group.bench_function("lookup_operator/hit_paren_prefix", |b| {
-        b.iter(|| lookup_operator(std::hint::black_box('('), std::hint::black_box(OperatorForm::Prefix)))
+        b.iter(|| {
+            lookup_operator(
+                std::hint::black_box('('),
+                std::hint::black_box(OperatorForm::Prefix),
+            )
+        })
     });
     group.bench_function("lookup_operator/hit_arrow_infix", |b| {
-        b.iter(|| lookup_operator(std::hint::black_box('\u{2192}'), std::hint::black_box(OperatorForm::Infix)))
+        b.iter(|| {
+            lookup_operator(
+                std::hint::black_box('\u{2192}'),
+                std::hint::black_box(OperatorForm::Infix),
+            )
+        })
     });
     group.bench_function("lookup_operator/miss", |b| {
-        b.iter(|| lookup_operator(std::hint::black_box('Q'), std::hint::black_box(OperatorForm::Infix)))
+        b.iter(|| {
+            lookup_operator(
+                std::hint::black_box('Q'),
+                std::hint::black_box(OperatorForm::Infix),
+            )
+        })
     });
 
     // Fallback lookup
     group.bench_function("lookup_operator_any/exact_hit", |b| {
-        b.iter(|| lookup_operator_any(std::hint::black_box('+'), std::hint::black_box(OperatorForm::Infix)))
+        b.iter(|| {
+            lookup_operator_any(
+                std::hint::black_box('+'),
+                std::hint::black_box(OperatorForm::Infix),
+            )
+        })
     });
     group.bench_function("lookup_operator_any/fallback_hit", |b| {
-        b.iter(|| lookup_operator_any(std::hint::black_box('='), std::hint::black_box(OperatorForm::Prefix)))
+        b.iter(|| {
+            lookup_operator_any(
+                std::hint::black_box('='),
+                std::hint::black_box(OperatorForm::Prefix),
+            )
+        })
     });
     group.bench_function("lookup_operator_any/miss", |b| {
-        b.iter(|| lookup_operator_any(std::hint::black_box('Q'), std::hint::black_box(OperatorForm::Prefix)))
+        b.iter(|| {
+            lookup_operator_any(
+                std::hint::black_box('Q'),
+                std::hint::black_box(OperatorForm::Prefix),
+            )
+        })
     });
 
     // Stretchy check
@@ -127,19 +162,44 @@ fn bench_fonts(c: &mut Criterion) {
 
     // Arithmetic offset computation
     group.bench_function("styled_char/bold_upper", |b| {
-        b.iter(|| styled_char(std::hint::black_box('A'), std::hint::black_box(TextStyle::Bold)))
+        b.iter(|| {
+            styled_char(
+                std::hint::black_box('A'),
+                std::hint::black_box(TextStyle::Bold),
+            )
+        })
     });
     group.bench_function("styled_char/italic_h", |b| {
-        b.iter(|| styled_char(std::hint::black_box('h'), std::hint::black_box(TextStyle::Italic)))
+        b.iter(|| {
+            styled_char(
+                std::hint::black_box('h'),
+                std::hint::black_box(TextStyle::Italic),
+            )
+        })
     });
     group.bench_function("styled_char/double_struck_R", |b| {
-        b.iter(|| styled_char(std::hint::black_box('R'), std::hint::black_box(TextStyle::DoubleStruck)))
+        b.iter(|| {
+            styled_char(
+                std::hint::black_box('R'),
+                std::hint::black_box(TextStyle::DoubleStruck),
+            )
+        })
     });
     group.bench_function("styled_char/normal_passthrough", |b| {
-        b.iter(|| styled_char(std::hint::black_box('x'), std::hint::black_box(TextStyle::Normal)))
+        b.iter(|| {
+            styled_char(
+                std::hint::black_box('x'),
+                std::hint::black_box(TextStyle::Normal),
+            )
+        })
     });
     group.bench_function("styled_char/unmappable", |b| {
-        b.iter(|| styled_char(std::hint::black_box('!'), std::hint::black_box(TextStyle::Bold)))
+        b.iter(|| {
+            styled_char(
+                std::hint::black_box('!'),
+                std::hint::black_box(TextStyle::Bold),
+            )
+        })
     });
 
     // Reverse: styled → (base, style)

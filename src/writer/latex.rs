@@ -96,8 +96,7 @@ fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
 
         if i > 0 {
             let space = needs_space(arena, children.get(i - 1).copied(), id)
-                || (buf_ends_with_letter_command(buf)
-                    && node_starts_with_ascii_letter(arena, id));
+                || (buf_ends_with_letter_command(buf) && node_starts_with_ascii_letter(arena, id));
             if space {
                 buf.push(' ');
             }
@@ -113,9 +112,7 @@ fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
             // An empty-body nary operator followed by another node needs an
             // explicit `{}` body, otherwise the next node would be re-parsed as
             // the operator's body.
-            if i + 1 < children.len()
-                && is_empty_body_nary(arena, id)
-            {
+            if i + 1 < children.len() && is_empty_body_nary(arena, id) {
                 buf.push_str("{}");
             }
         }
@@ -188,12 +185,7 @@ fn write_script_node_with_next(
 /// Write a script argument.  Digit sequences are always braced so that a
 /// following `.` is not swallowed into a decimal literal and so that trailing
 /// vs. non-trailing position cannot change the bracing decision.
-fn write_script_arg(
-    buf: &mut String,
-    arena: &AstArena,
-    arg: NodeId,
-    _next: Option<NodeId>,
-) {
+fn write_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, _next: Option<NodeId>) {
     if is_digit_sequence_script_arg(arena, arg) {
         buf.push('{');
         write_node(buf, arena, arg);
@@ -238,15 +230,11 @@ fn write_standalone_empty_base_script_markers(
     script_id: NodeId,
 ) {
     match *arena.node(script_id) {
-        CompactNode::Subscript { sub, .. }
-            if !is_effectively_empty_arg(arena, sub) =>
-        {
+        CompactNode::Subscript { sub, .. } if !is_effectively_empty_arg(arena, sub) => {
             buf.push('_');
             write_always_braced(buf, arena, sub);
         },
-        CompactNode::Superscript { sup, .. }
-            if !is_effectively_empty_arg(arena, sup) =>
-        {
+        CompactNode::Superscript { sup, .. } if !is_effectively_empty_arg(arena, sup) => {
             buf.push('^');
             write_always_braced(buf, arena, sup);
         },
@@ -1026,10 +1014,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             // written verbatim inside \textcolor{...} without breaking brace
             // balance or being re-interpreted as special LaTeX tokens. In those
             // cases the color cannot round-trip, so emit only the content.
-            if color_str
-                .chars()
-                .any(|c| matches!(c, '{' | '}' | '\\' | '~' | '#' | '$' | '%' | '&' | '^' | '_'))
-            {
+            if color_str.chars().any(|c| {
+                matches!(
+                    c,
+                    '{' | '}' | '\\' | '~' | '#' | '$' | '%' | '&' | '^' | '_'
+                )
+            }) {
                 if let CompactNode::Row(span) = *arena.node(content) {
                     write_nodes(buf, arena, span);
                 } else {
@@ -1393,7 +1383,7 @@ fn would_merge_with_buffer(buf: &str, arena: &AstArena, id: NodeId) -> bool {
             if !matches!(*arena.node(content), CompactNode::Symbol(..)) =>
         {
             would_merge_with_buffer(buf, arena, content)
-        }
+        },
         CompactNode::Number(_) => last.is_ascii_digit(),
         CompactNode::Identifier(sid) => {
             let s = arena.str_val(sid);
