@@ -1641,6 +1641,25 @@ mod tests {
     }
 
     #[test]
+    fn escaped_text_preserves_adjacent_newlines_across_round_trip() {
+        use crate::ast::normalize::normalize_compact_expr;
+        use crate::reader::Reader;
+        use crate::reader::omml::OmmlReader;
+
+        let config = Config::default();
+        let node = MathNode::Text(TextStyle::Normal, "x'\nM".into());
+        let mut first = CompactExpr::from_math_expr(&MathExpr::inline(vec![node]));
+        normalize_compact_expr(&mut first);
+        let out1 = OmmlWriter::write_compact(&first, &config).unwrap();
+
+        let mut second = OmmlReader::parse_compact(&out1, &config).unwrap().expr;
+        normalize_compact_expr(&mut second);
+        let out2 = OmmlWriter::write_compact(&second, &config).unwrap();
+
+        assert_eq!(out1, out2);
+    }
+
+    #[test]
     fn fraction() {
         let output = write(MathNode::Fraction {
             kind: FractionKind::Normal,
