@@ -41,7 +41,7 @@ jobs:
 
       - name: Install JS dependencies
         working-directory: ./web
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile --registry https://registry.npmjs.org
 
       - name: Build static site
         working-directory: ./web
