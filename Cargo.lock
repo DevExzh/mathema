@@ -261,9 +261,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.2"
+version = "4.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd059f9da4f5c36b3787f65d38ccaab1cc315f07b01f89abc8359ee6a8205011"
+checksum = "0fb99565819980999fb7b4a1796046a5c949e6d4ff132cf5fadf5a641e20d776"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -283,9 +283,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.6.1"
+version = "4.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2ce8604710f6733aa641a2b3731eaa1e8b3d9973d5e3565da11800813f997a9"
+checksum = "32f2392eae7f16557a3d727ef3a12e57b2b2ca6f98566a5f4fb41ffe305df077"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -554,17 +554,17 @@ dependencies = [
  "memmap2",
  "slotmap",
  "tinyvec",
- "ttf-parser 0.25.1",
+ "ttf-parser",
 ]
 
 [[package]]
 name = "fontdue"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e57e16b3fe8ff4364c0661fdaac543fb38b29ea9bc9c2f45612d90adf931d2b"
+checksum = "7894823fa221401399e2598f8b63f81ac77ff5c63248b7656779bff1632d7d3d"
 dependencies = [
  "hashbrown",
- "ttf-parser 0.21.1",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -716,9 +716,9 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jpeg-encoder"
-version = "0.7.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b0b36cbb4e6704f12f5b5d7b01dac593982c6550859ebd5a66fb15c9ea27fd5"
+checksum = "a0370574b86f7eca156b9f298392b5e69a23f8c86f3f865add60bbc2e79467a6"
 
 [[package]]
 name = "js-sys"
@@ -795,7 +795,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tiny-skia",
- "ttf-parser 0.25.1",
+ "ttf-parser",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
@@ -1324,7 +1324,7 @@ dependencies = [
  "core_maths",
  "log",
  "smallvec",
- "ttf-parser 0.25.1",
+ "ttf-parser",
  "unicode-bidi-mirroring",
  "unicode-ccc",
  "unicode-properties",
@@ -1383,9 +1383,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.150"
+version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
  "itoa",
  "memchr",
@@ -1622,12 +1622,6 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "ttf-parser"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c591d83f69777866b9126b24c6dd9a18351f177e49d625920d19f989fd31cf8"
-
-[[package]]
-name = "ttf-parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
@@ -1728,7 +1722,7 @@ dependencies = [
  "strict-num",
  "svgtypes",
  "tiny-skia-path",
- "ttf-parser 0.25.1",
+ "ttf-parser",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",
