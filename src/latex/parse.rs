@@ -13,7 +13,7 @@ use crate::error::{
 };
 use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
-    is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
+    is_operator_command, latex_to_unicode, lookup_command, operator_has_limits, symbol_kind,
 };
 
 use super::error::LatexParseError;
@@ -2373,7 +2373,7 @@ impl LatexCompactParser {
                     Ok((
                         &input[len..],
                         self.arena
-                            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+                            .push_node(CompactNode::Symbol(symbol_kind(ch), sid)),
                     ))
                 }
             },

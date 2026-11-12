@@ -60,6 +60,13 @@ mod tests {
     }
 
     #[test]
+    fn unicode_symbols_match_commands() {
+        for (literal, command) in [("±", "\\pm"), ("×", "\\times"), ("≤", "\\leq")] {
+            assert_eq!(parse(literal), parse(command), "symbol: {literal}");
+        }
+    }
+
+    #[test]
     fn fraction() {
         let node = parse_one("\\frac{a}{b}");
         assert!(matches!(

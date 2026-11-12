@@ -102,24 +102,16 @@ impl<'a> MathmlCompactParser<'a> {
         })
     }
 
-    /// Convert a quick-xml QName to `&str` without heap allocation.
-    /// MathML tag names are always ASCII, so this is safe.
-    #[inline]
-    fn name_str(raw: &[u8]) -> &str {
-        // MathML tags are ASCII; fast path avoids UTF-8 validation.
-        std::str::from_utf8(raw).unwrap_or("")
-    }
-
     #[inline]
     fn local_name(start: &quick_xml::events::BytesStart<'_>) -> String {
         let qname = start.name();
-        Self::name_str(qname.local_name().as_ref()).to_owned()
+        qname.local_name().as_ref().to_owned()
     }
 
     #[inline]
     fn local_name_end(end: &quick_xml::events::BytesEnd<'_>) -> String {
         let qname = end.name();
-        Self::name_str(qname.local_name().as_ref()).to_owned()
+        qname.local_name().as_ref().to_owned()
     }
 
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
@@ -129,8 +121,8 @@ impl<'a> MathmlCompactParser<'a> {
                     let name = Self::local_name(&e);
                     if name == "math" {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"display" {
-                                self.display = Some(if attr.value.as_ref() == b"block" {
+                            if attr.key.as_ref() == "display" {
+                                self.display = Some(if attr.value.as_ref() == "block" {
                                     DisplayStyle::Block
                                 } else {
                                     DisplayStyle::Inline
@@ -946,7 +938,7 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
     start
         .attributes()
         .flatten()
-        .find(|a| a.key.as_ref() == key.as_bytes())
+        .find(|a| a.key.as_ref() == key)
         .map(|a| unescape_attr(&a.value))
 }
 
@@ -955,24 +947,24 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
 /// references. Falls back to a manual pass if quick-xml reports an error so
 /// that a single unknown entity never discards the surrounding text.
 fn unescape_text(e: &BytesText<'_>) -> String {
-    let raw = String::from_utf8_lossy(e.as_ref());
-    match quick_xml::escape::unescape_with(&raw, |name| {
+    let raw = e.as_ref();
+    match quick_xml::escape::unescape_with(raw, |name| {
         crate::unicode::MATHML_ENTITIES.get(name).copied()
     }) {
         Ok(cow) => cow.into_owned(),
-        Err(_) => resolve_entities_lossy(&raw),
+        Err(_) => resolve_entities_lossy(raw),
     }
 }
 
 /// Unescape an attribute value the same way text content is unescaped.
-fn unescape_attr(raw: &[u8]) -> String {
-    resolve_entities_lossy(&String::from_utf8_lossy(raw))
+fn unescape_attr(raw: &str) -> String {
+    resolve_entities_lossy(raw)
 }
 
 /// Resolve a `&name;` or `&#...;` general entity reference into its replacement.
 fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> String {
-    let name = r.decode().unwrap_or_default().into_owned();
-    crate::unicode::resolve_entity(&name)
+    let name = r.as_ref();
+    crate::unicode::resolve_entity(name)
         .map(|s| s.into_owned())
         .unwrap_or_else(|| format!("&{name};"))
 }

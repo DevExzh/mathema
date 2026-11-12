@@ -1809,7 +1809,7 @@ fn encode_jpeg(pixmap: &Pixmap, quality: u8) -> Result<Vec<u8>> {
 
     // Convert premultiplied RGBA → straight RGB (with white fallback for transparent pixels)
     let mut rgb = Vec::with_capacity(w * h * 3);
-    for pixel in data.chunks_exact(4) {
+    for pixel in data.as_chunks::<4>().0 {
         let (pr, pg, pb, a) = (pixel[0], pixel[1], pixel[2], pixel[3]);
         if a == 0 {
             rgb.extend_from_slice(&[255, 255, 255]); // transparent → white
