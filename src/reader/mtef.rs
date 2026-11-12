@@ -135,7 +135,7 @@ fn hex_decode(s: &str) -> Result<Vec<u8>> {
         });
     }
     let mut out = Vec::with_capacity(hex_bytes.len() / 2);
-    for pair in hex_bytes.chunks_exact(2) {
+    for pair in hex_bytes.as_chunks::<2>().0 {
         let hi = hex_val_byte(pair[0])?;
         let lo = hex_val_byte(pair[1])?;
         out.push((hi << 4) | lo);
