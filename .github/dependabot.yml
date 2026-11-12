@@ -15,6 +15,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # SvelteKit and svelte-check currently require the TypeScript 6 compiler API.
+    ignore:
+      - dependency-name: typescript
+        versions: [">=7.0.0"]
     groups:
       bun-dependencies:
         patterns:
