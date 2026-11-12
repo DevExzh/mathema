@@ -12,8 +12,8 @@ use crate::reader::Reader as MathReader;
 
 /// Resolve a `&name;` or `&#...;` general entity reference into its replacement.
 fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> String {
-    let name = r.decode().unwrap_or_default().into_owned();
-    crate::unicode::resolve_entity(&name)
+    let name = r.as_ref();
+    crate::unicode::resolve_entity(name)
         .map(|s| s.into_owned())
         .unwrap_or_else(|| format!("&{name};"))
 }
@@ -184,8 +184,7 @@ impl<'a> OmmlCompactParser<'a> {
                 },
                 Ok(Event::Empty(_)) => {},
                 Ok(Event::Text(e)) => {
-                    let raw = String::from_utf8_lossy(e.as_ref());
-                    let text = quick_xml::escape::unescape(&raw)
+                    let text = quick_xml::escape::unescape(e.as_ref())
                         .unwrap_or_default()
                         .to_string();
                     let trimmed = text.trim();
@@ -1541,8 +1540,7 @@ impl<'a> OmmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Text(e)) => {
-                    let raw = String::from_utf8_lossy(e.as_ref());
-                    text.push_str(&quick_xml::escape::unescape(&raw).unwrap_or_default());
+                    text.push_str(&quick_xml::escape::unescape(e.as_ref()).unwrap_or_default());
                 },
                 Ok(Event::GeneralRef(r)) => {
                     text.push_str(&resolve_general_ref(&r));
@@ -1684,18 +1682,18 @@ impl<'a> OmmlCompactParser<'a> {
 fn local_name(e: &quick_xml::events::BytesStart<'_>) -> String {
     let qname = e.name();
     let local = qname.local_name();
-    std::str::from_utf8(local.as_ref()).unwrap_or("").to_owned()
+    local.as_ref().to_owned()
 }
 
 fn local_name_end(e: &quick_xml::events::BytesEnd<'_>) -> String {
     let qname = e.name();
     let local = qname.local_name();
-    std::str::from_utf8(local.as_ref()).unwrap_or("").to_owned()
+    local.as_ref().to_owned()
 }
 
 fn get_val_attr(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
-        if a.key.local_name().as_ref() == b"val" {
+        if a.key.local_name().as_ref() == "val" {
             a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
                 .ok()
                 .map(|value| value.into_owned())
