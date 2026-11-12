@@ -10,6 +10,35 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  web:
+    name: web (check and build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Build WASM bindings
+        working-directory: ./web
+        run: bun run wasm
+      - name: Install JS dependencies
+        working-directory: ./web
+        run: bun install --frozen-lockfile --registry https://registry.npmjs.org
+      - name: Check Svelte and TypeScript
+        working-directory: ./web
+        run: bun run check
+      - name: Build static site
+        working-directory: ./web
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}
+        run: bun run build
+
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest

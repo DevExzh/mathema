@@ -7,7 +7,7 @@
     INPUT_FORMATS,
     OUTPUT_FORMATS,
     type Diagnostic
-  } from '$lib/mathema';
+  } from '#lib/mathema.js';
 
   const EXAMPLES: Record<string, string[]> = {
     latex: [
