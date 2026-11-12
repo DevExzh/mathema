@@ -1620,7 +1620,7 @@ impl<'a> OmmlCompactParser<'a> {
             };
         }
         // Multi-character: likely an operator name or text
-        if crate::unicode::symbols::is_operator_command(text) {
+        if style == TextStyle::Normal && crate::unicode::symbols::is_operator_command(text) {
             let sid = self.arena.push_str(text);
             return self.arena.push_node(CompactNode::Operator {
                 name: sid,
@@ -1938,9 +1938,13 @@ mod tests {
 
     #[test]
     fn italic_multi_character_run_is_identifier() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:rPr><m:sty m:val="i"/></m:rPr><m:t>abc</m:t></m:r></m:oMath>"#;
-        let node = parse_one(input);
-        assert_eq!(node, MathNode::Identifier("abc".into()));
+        for text in ["abc", "Pr", "sin", "lim"] {
+            let input = format!(
+                r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:rPr><m:sty m:val="i"/></m:rPr><m:t>{text}</m:t></m:r></m:oMath>"#
+            );
+            let node = parse_one(&input);
+            assert_eq!(node, MathNode::Identifier(text.into()));
+        }
     }
 
     #[test]
