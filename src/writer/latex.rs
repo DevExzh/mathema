@@ -1137,6 +1137,15 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
 fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
     let s = arena.str_val(sid);
     let ch = s.chars().next().unwrap_or('?');
+    // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064 INVISIBLE
+    // PLUS) only mark structure; LaTeX has no glyph for them. A space keeps
+    // the neighbouring tokens apart (`sin x`, not `sinx`).
+    if matches!(s, "\u{2061}" | "\u{2062}" | "\u{2063}" | "\u{2064}") {
+        if !buf.is_empty() && !buf.ends_with(' ') {
+            buf.push(' ');
+        }
+        return;
+    }
     // Math minus sign → ASCII hyphen-minus for LaTeX output
     if ch == '\u{2212}' {
         buf.push('-');
