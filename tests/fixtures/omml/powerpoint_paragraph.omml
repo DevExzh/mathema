@@ -1,0 +1,129 @@
+<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <m:oMathParaPr>
+    <m:jc m:val="centerGroup"/>
+  </m:oMathParaPr>
+  <m:oMath>
+    <m:sSup>
+      <m:sSupPr>
+        <m:ctrlPr>
+          <a:rPr lang="en-US" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+        </m:ctrlPr>
+      </m:sSupPr>
+      <m:e>
+        <m:r>
+          <a:rPr lang="en-US" b="0" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+          <m:t>𝑎</m:t>
+        </m:r>
+      </m:e>
+      <m:sup>
+        <m:r>
+          <a:rPr lang="en-US" b="0" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+          <m:t>2</m:t>
+        </m:r>
+      </m:sup>
+    </m:sSup>
+    <m:r>
+      <a:rPr lang="en-US" b="0" i="1">
+        <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+      </a:rPr>
+      <m:t>+</m:t>
+    </m:r>
+    <m:func>
+      <m:funcPr>
+        <m:ctrlPr>
+          <a:rPr lang="en-US" b="0" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+        </m:ctrlPr>
+      </m:funcPr>
+      <m:fName>
+        <m:r>
+          <a:rPr lang="en-US" b="0" i="0">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+          <m:t>cos</m:t>
+        </m:r>
+      </m:fName>
+      <m:e>
+        <m:r>
+          <a:rPr lang="en-US" b="0" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+          <m:t>𝜃</m:t>
+        </m:r>
+      </m:e>
+    </m:func>
+    <m:r>
+      <a:rPr lang="en-US" b="0" i="1">
+        <a:solidFill>
+          <a:srgbClr val="0070C0"/>
+        </a:solidFill>
+        <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+      </a:rPr>
+      <m:t>=𝑐</m:t>
+    </m:r>
+  </m:oMath>
+  <m:oMath>
+    <m:r>
+      <m:rPr>
+        <m:sty m:val="bi"/>
+      </m:rPr>
+      <a:rPr lang="en-US" b="1" i="1">
+        <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+      </a:rPr>
+      <m:t>𝒗</m:t>
+    </m:r>
+    <m:r>
+      <a:rPr lang="en-US" b="0" i="1">
+        <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+      </a:rPr>
+      <m:t>∈</m:t>
+    </m:r>
+    <m:sSup>
+      <m:sSupPr>
+        <m:ctrlPr>
+          <a:rPr lang="en-US" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+        </m:ctrlPr>
+      </m:sSupPr>
+      <m:e>
+        <m:r>
+          <a:rPr lang="en-US" b="0" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+          <m:t>ℝ</m:t>
+        </m:r>
+      </m:e>
+      <m:sup>
+        <m:r>
+          <a:rPr lang="en-US" b="0" i="1">
+            <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+          </a:rPr>
+          <m:t>3</m:t>
+        </m:r>
+      </m:sup>
+    </m:sSup>
+    <m:r>
+      <m:rPr>
+        <m:nor/>
+      </m:rPr>
+      <a:rPr lang="en-US" b="0" i="0" dirty="0">
+        <a:latin typeface="+mn-lt"/>
+      </a:rPr>
+      <m:t xml:space="preserve"> for all </m:t>
+    </m:r>
+    <m:r>
+      <a:rPr lang="en-US" b="0" i="1">
+        <a:latin typeface="Cambria Math" panose="02040503050406030204" pitchFamily="18" charset="0"/>
+      </a:rPr>
+      <m:t>𝑡</m:t>
+    </m:r>
+  </m:oMath>
+</m:oMathPara>
