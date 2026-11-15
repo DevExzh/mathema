@@ -1167,11 +1167,11 @@ fn ends_with_nary_command(buf: &str) -> bool {
         .strip_suffix("\\limits")
         .or_else(|| trimmed.strip_suffix("\\nolimits"))
         .unwrap_or(trimmed);
-    let name_start = trimmed
-        .rfind(|c: char| !c.is_ascii_alphabetic())
-        .map_or(0, |i| i + 1);
-    trimmed[..name_start].ends_with('\\')
-        && crate::unicode::symbols::is_nary_command(&trimmed[name_start..])
+    // The command name is the trailing run of ASCII letters (split at a
+    // character boundary, whatever precedes it).
+    let before = trimmed.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    let name = &trimmed[before.len()..];
+    before.ends_with('\\') && crate::unicode::symbols::is_nary_command(name)
 }
 
 fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {

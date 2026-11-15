@@ -322,6 +322,9 @@ fn leading_script_after_an_integral_keeps_its_base_in_latex() {
     let latex = convert(mathml, Format::MathML, Format::LaTeX).unwrap();
     assert_eq!(latex, r"\int{{}_{C}f}");
     assert_eq!(bases(&normalized(&from_latex(&latex).unwrap())).len(), 1);
+    // A non-ASCII character before the scripts is no command name.
+    let after_text = "<math><mtext>中</mtext><mmultiscripts><mi>f</mi><mprescripts/><mi>C</mi><none/></mmultiscripts></math>";
+    assert!(convert(after_text, Format::MathML, Format::LaTeX).is_ok());
 }
 
 /// Writing a parsed but not normalized expression gives the bytes its
