@@ -300,6 +300,31 @@ impl MtefWriter {
         }
         mtef.extend_from_slice(&body);
 
+        // The reader rebuilds the AST with rows around slots and cells, so it
+        // can nest deeper than the AST written. Read the output back with the
+        // same limits so that a successful write is always readable.
+        let check = config.with_strictness(crate::error::Strictness::Strict);
+        match crate::reader::mtef::MtefReader::parse_bytes_compact(&mtef, &check) {
+            // The input-size limit is for what a caller reads, not writes.
+            Ok(_) | Err(crate::error::Error::InputTooLarge { .. }) => {},
+            Err(limit @ crate::error::Error::LimitExceeded { .. }) => return Err(limit),
+            Err(other) => {
+                return Err(crate::error::Error::Unsupported(format!(
+                    "the MTEF written for this expression does not read back: {other}"
+                )));
+            },
+        }
+
+        Self::finish(mtef, diagnostics, options, v5)
+    }
+
+    /// Add the OLE header when asked for.
+    fn finish(
+        mtef: Vec<u8>,
+        diagnostics: Vec<Diagnostic>,
+        options: &MtefWriteOptions,
+        v5: bool,
+    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         if !options.ole_header {
             return Ok((mtef, diagnostics));
         }

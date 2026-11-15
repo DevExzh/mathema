@@ -312,3 +312,32 @@ fn latex_round_trips_through_mtef3() {
         assert_round_trip(latex, MtefVersion::V3);
     }
 }
+
+/// A write that succeeds reads back, in every mode; an AST the reader would
+/// rebuild too deep is refused with a limit error instead.
+#[test]
+fn written_output_always_reads_back() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/mtef-writer/fuzz-nested-piles.bin");
+    let data = std::fs::read(path).unwrap();
+    let lenient = mathema::Config::default().with_strictness(mathema::Strictness::Lenient);
+    let result = mathema::from_mtef_bytes_with(&data, &lenient).unwrap();
+    for version in [MtefVersion::V5, MtefVersion::V3] {
+        match result.to_mtef_bytes(&MtefWriteOptions::new(version)) {
+            Ok(bytes) => {
+                from_mtef_bytes(&bytes).unwrap();
+                mathema::from_mtef_bytes_with(&bytes, &lenient).unwrap();
+            },
+            Err(err) => assert!(
+                matches!(
+                    err,
+                    mathema::Error::LimitExceeded {
+                        kind: mathema::LimitKind::Depth,
+                        ..
+                    }
+                ),
+                "{err}"
+            ),
+        }
+    }
+}

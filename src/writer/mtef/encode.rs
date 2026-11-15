@@ -983,9 +983,11 @@ impl<'a> Encoder<'a> {
         // gives a script the single item before it as base, so a row holding
         // one node is that node.
         let base = self.unwrap_row(base);
-        if let CompactNode::Operator { name, limits } = *self.arena.node(base)
-            && (limits == LimitStyle::AboveBelow
-                || chars::is_limit_function(self.arena.str_val(name)))
+        // Only the name decides: MTEF does not record an operator's limit
+        // placement, so the reader could not tell `\operatorname*{foo}`
+        // from `\operatorname{foo}` and the output would change on rewrite.
+        if let CompactNode::Operator { name, .. } = *self.arena.node(base)
+            && chars::is_limit_function(self.arena.str_val(name))
         {
             return self.limit(size, base, sub, sup);
         }

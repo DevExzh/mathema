@@ -16,3 +16,8 @@ written by MathType 6, from the test suites of two Ruby projects, both
 `mathtype_to_mathml` renders both with `mmultiscripts` and `mprescripts`
 (its `spec/fixtures/expected/equation13.xml`, `424.xml` and `450.xml`): the scripts
 belong to the item after them.
+
+`fuzz-nested-piles.bin` was found by the `fuzz_mtef` target (minimized;
+no external source): read leniently it gives a subscript holding about 65
+nested one-column arrays, which the reader rebuilds deeper than the AST it
+was written from.
