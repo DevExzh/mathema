@@ -1043,7 +1043,8 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             } else {
                 ids
             };
-            let roots = parser.arena.push_children(&ids);
+            parser.arena.check_lists()?;
+            let roots = parser.arena.push_children(&ids)?;
             let display = if parser.display_override {
                 DisplayStyle::Block
             } else {
@@ -1081,7 +1082,8 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 } else {
                     result_ids
                 };
-                let roots = parser.arena.push_children(&result_ids);
+                parser.arena.check_lists()?;
+                let roots = parser.arena.push_children(&result_ids)?;
                 let display = if parser.display_override {
                     DisplayStyle::Block
                 } else {
@@ -1110,7 +1112,8 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 } else {
                     ids
                 };
-                let roots = parser.arena.push_children(&ids);
+                parser.arena.check_lists()?;
+                let roots = parser.arena.push_children(&ids)?;
                 let display = if parser.display_override {
                     DisplayStyle::Block
                 } else {
@@ -1207,7 +1210,7 @@ impl LatexCompactParser {
         if ids.len() == 1 {
             ids[0]
         } else {
-            let span = self.arena.push_children(ids);
+            let span = self.arena.push_children_deferred(ids);
             self.arena.push_node(CompactNode::Row(span))
         }
     }
@@ -1284,7 +1287,7 @@ impl LatexCompactParser {
                 });
                 let open = self.arena.push_str("(");
                 let close = self.arena.push_str(")");
-                let content = self.arena.push_children(&[frac_id]);
+                let content = self.arena.push_children_deferred(&[frac_id]);
                 Some(self.arena.push_node(CompactNode::Fenced {
                     open,
                     close,
@@ -1300,7 +1303,7 @@ impl LatexCompactParser {
                 });
                 let open = self.arena.push_str("{");
                 let close = self.arena.push_str("}");
-                let content = self.arena.push_children(&[frac_id]);
+                let content = self.arena.push_children_deferred(&[frac_id]);
                 Some(self.arena.push_node(CompactNode::Fenced {
                     open,
                     close,
@@ -1316,7 +1319,7 @@ impl LatexCompactParser {
                 });
                 let open = self.arena.push_str("[");
                 let close = self.arena.push_str("]");
-                let content = self.arena.push_children(&[frac_id]);
+                let content = self.arena.push_children_deferred(&[frac_id]);
                 Some(self.arena.push_node(CompactNode::Fenced {
                     open,
                     close,
@@ -1407,7 +1410,7 @@ impl LatexCompactParser {
                     debug_assert_eq!(resolved.len(), 1);
                     resolved[0]
                 } else if changed {
-                    let new_span = self.arena.push_children(&cleaned);
+                    let new_span = self.arena.push_children_deferred(&cleaned);
                     self.arena.push_node(CompactNode::Row(new_span))
                 } else {
                     id
@@ -1423,9 +1426,9 @@ impl LatexCompactParser {
                 let new_content = if has_marker(self, &cleaned) {
                     let resolved = self.resolve_infix_fraction(cleaned);
                     debug_assert_eq!(resolved.len(), 1);
-                    self.arena.push_children(&resolved)
+                    self.arena.push_children_deferred(&resolved)
                 } else if changed {
-                    self.arena.push_children(&cleaned)
+                    self.arena.push_children_deferred(&cleaned)
                 } else {
                     content
                 };
@@ -1635,7 +1638,7 @@ impl LatexCompactParser {
                 let cell_ids: Vec<NodeId> = self.arena.children(cells).to_vec();
                 let (cleaned, changed) = clean_list(self, &cell_ids);
                 if changed {
-                    let new_cells = self.arena.push_children(&cleaned);
+                    let new_cells = self.arena.push_children_deferred(&cleaned);
                     self.arena.push_node(CompactNode::Array {
                         col_aligns,
                         cells: new_cells,
@@ -1720,7 +1723,7 @@ impl LatexCompactParser {
                 let children: Vec<NodeId> = self.arena.children(span).to_vec();
                 let (cleaned, changed) = clean_list(self, &children);
                 if changed {
-                    let new_span = self.arena.push_children(&cleaned);
+                    let new_span = self.arena.push_children_deferred(&cleaned);
                     self.arena.push_node(CompactNode::Styled(style, new_span))
                 } else {
                     id
@@ -1829,12 +1832,12 @@ impl LatexCompactParser {
         for &col in columns {
             align_ids.push(self.arena.push_node(CompactNode::ColAlign(col)));
         }
-        let col_aligns = self.arena.push_children(&align_ids);
+        let col_aligns = self.arena.push_children_deferred(&align_ids);
 
         let mut cell_ids: SmallVec<[NodeId; 16]> = SmallVec::new();
         for row in &rows {
             for cell in row {
-                let span = self.arena.push_children(cell);
+                let span = self.arena.push_children_deferred(cell);
                 cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
             }
             // Pad short rows to num_cols
@@ -1842,7 +1845,7 @@ impl LatexCompactParser {
                 cell_ids.push(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
             }
         }
-        let cells = self.arena.push_children(&cell_ids);
+        let cells = self.arena.push_children_deferred(&cell_ids);
         self.arena.push_node(CompactNode::Array {
             col_aligns,
             cells,
@@ -3073,7 +3076,7 @@ impl LatexCompactParser {
                 let slash_id = self
                     .arena
                     .push_node(CompactNode::Symbol(SymbolKind::Ordinary, slash_sid));
-                let children = self.arena.push_children(&[arg_id, slash_id]);
+                let children = self.arena.push_children_deferred(&[arg_id, slash_id]);
                 Ok((input, self.arena.push_node(CompactNode::Row(children))))
             },
 
@@ -3198,7 +3201,7 @@ impl LatexCompactParser {
                 let int2 = self
                     .arena
                     .push_node(CompactNode::Symbol(SymbolKind::LargeOp, int_sid2));
-                let children = self.arena.push_children(&[int1, dots, int2]);
+                let children = self.arena.push_children_deferred(&[int1, dots, int2]);
                 Ok((input, self.arena.push_node(CompactNode::Row(children))))
             },
 
@@ -3315,7 +3318,7 @@ impl LatexCompactParser {
                 let angle_id = self
                     .arena
                     .push_node(CompactNode::Symbol(SymbolKind::Ordinary, angle_sid));
-                let children = self.arena.push_children(&[angle_id, content_id]);
+                let children = self.arena.push_children_deferred(&[angle_id, content_id]);
                 Ok((input, self.arena.push_node(CompactNode::Row(children))))
             },
 
@@ -3325,7 +3328,7 @@ impl LatexCompactParser {
                 let (input, content_id) = self.parse_required_group(input)?;
                 let open = self.arena.push_str("\u{27E8}");
                 let close = self.arena.push_str("\u{27E9}");
-                let content = self.arena.push_children(&[content_id]);
+                let content = self.arena.push_children_deferred(&[content_id]);
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Fenced {
@@ -3340,7 +3343,7 @@ impl LatexCompactParser {
                 let (input, content_id) = self.parse_required_group(input)?;
                 let open = self.arena.push_str("{");
                 let close = self.arena.push_str("}");
-                let content = self.arena.push_children(&[content_id]);
+                let content = self.arena.push_children_deferred(&[content_id]);
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::Fenced {
@@ -3552,7 +3555,7 @@ impl LatexCompactParser {
         } else {
             let open = self.arena.push_str(&left_s);
             let close = self.arena.push_str(&right_s);
-            let content = self.arena.push_children(&[frac_id]);
+            let content = self.arena.push_children_deferred(&[frac_id]);
             Ok((
                 input,
                 self.arena.push_node(CompactNode::Fenced {
@@ -3590,7 +3593,7 @@ impl LatexCompactParser {
         });
         let open = self.arena.push_str("(");
         let close = self.arena.push_str(")");
-        let content = self.arena.push_children(&[frac_id]);
+        let content = self.arena.push_children_deferred(&[frac_id]);
         Ok((
             input,
             self.arena.push_node(CompactNode::Fenced {
@@ -3765,7 +3768,7 @@ impl LatexCompactParser {
         let (input, content_ids) = self.parse_until_right(input)?;
         let (input, close) = self.parse_delimiter_into(input)?;
 
-        let content = self.arena.push_children(&content_ids);
+        let content = self.arena.push_children_deferred(&content_ids);
         Ok((
             input,
             self.arena.push_node(CompactNode::Fenced {
@@ -3864,7 +3867,7 @@ impl LatexCompactParser {
         // If content is a Row, use its children span; otherwise wrap in single-element span
         let span = match *self.arena.node(content_id) {
             CompactNode::Row(s) => s,
-            _ => self.arena.push_children(&[content_id]),
+            _ => self.arena.push_children_deferred(&[content_id]),
         };
         Ok((
             input,
@@ -3991,7 +3994,7 @@ impl LatexCompactParser {
             items.push(op_body);
         }
 
-        let span = self.arena.push_children(&items);
+        let span = self.arena.push_children_deferred(&items);
         Ok((input, self.arena.push_node(CompactNode::Row(span))))
     }
 
@@ -4097,7 +4100,7 @@ impl LatexCompactParser {
         });
         let open = self.arena.push_str("(");
         let close = self.arena.push_str(")");
-        let content = self.arena.push_children(&[frac_id]);
+        let content = self.arena.push_children_deferred(&[frac_id]);
         Ok((
             input,
             self.arena.push_node(CompactNode::Fenced {
@@ -4163,7 +4166,9 @@ impl LatexCompactParser {
             .push_node(CompactNode::Space(Rational::new(5, 18)));
         let open = self.arena.push_str("(");
         let close = self.arena.push_str(")");
-        let content = self.arena.push_children(&[mod_id, space_id, content_id]);
+        let content = self
+            .arena
+            .push_children_deferred(&[mod_id, space_id, content_id]);
         Ok((
             input,
             self.arena.push_node(CompactNode::Fenced {
@@ -4980,7 +4985,7 @@ impl LatexCompactParser {
         let (input, arg_id) = self.parse_required_group(input)?;
         let open_sid = self.arena.push_str(open);
         let close_sid = self.arena.push_str(close);
-        let content = self.arena.push_children(&[arg_id]);
+        let content = self.arena.push_children_deferred(&[arg_id]);
         Ok((
             input,
             self.arena.push_node(CompactNode::Fenced {
@@ -5218,7 +5223,7 @@ impl LatexCompactParser {
                 let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
                 ids.push(id);
                 let ids = self.resolve_infix_fraction(ids);
-                let content_span = self.arena.push_children(&ids);
+                let content_span = self.arena.push_children_deferred(&ids);
                 Ok((
                     rest,
                     self.arena
@@ -5422,7 +5427,7 @@ impl LatexCompactParser {
         } else {
             let open = self.arena.push_str(open_s);
             let close = self.arena.push_str(close_s);
-            let content = self.arena.push_children(&[array_id]);
+            let content = self.arena.push_children_deferred(&[array_id]);
             Ok((
                 input,
                 self.arena.push_node(CompactNode::Fenced {
@@ -5763,7 +5768,7 @@ impl LatexCompactParser {
             1 => stack[0],
             0 => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             _ => {
-                let span = self.arena.push_children(&stack);
+                let span = self.arena.push_children_deferred(&stack);
                 self.arena.push_node(CompactNode::Row(span))
             },
         }
@@ -6119,7 +6124,7 @@ impl LatexCompactParser {
         );
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
-        let content = self.arena.push_children(&[array_id]);
+        let content = self.arena.push_children_deferred(&[array_id]);
         Ok((
             input,
             self.arena.push_node(CompactNode::Fenced {
@@ -6150,7 +6155,7 @@ impl LatexCompactParser {
         );
         let open = self.arena.push_str("");
         let close = self.arena.push_str("}");
-        let content = self.arena.push_children(&[array_id]);
+        let content = self.arena.push_children_deferred(&[array_id]);
         Ok((
             input,
             self.arena.push_node(CompactNode::Fenced {
@@ -6223,7 +6228,7 @@ impl LatexCompactParser {
         // Big left brace, no right delimiter (cases style).
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
-        let content = self.arena.push_children(&[array_id]);
+        let content = self.arena.push_children_deferred(&[array_id]);
         let fenced = self.arena.push_node(CompactNode::Fenced {
             open,
             close,
@@ -6235,7 +6240,7 @@ impl LatexCompactParser {
         let eq_id = self
             .arena
             .push_node(CompactNode::Symbol(SymbolKind::Relation, eq_sid));
-        let row_span = self.arena.push_children(&[left_id, eq_id, fenced]);
+        let row_span = self.arena.push_children_deferred(&[left_id, eq_id, fenced]);
         Ok((input, self.arena.push_node(CompactNode::Row(row_span))))
     }
 
@@ -6305,7 +6310,7 @@ impl LatexCompactParser {
         if left_spec.is_some() || right_spec.is_some() {
             let open = self.resolve_empheq_delim(left_spec.as_deref());
             let close = self.resolve_empheq_delim(right_spec.as_deref());
-            let content = self.arena.push_children(&[node]);
+            let content = self.arena.push_children_deferred(&[node]);
             node = self.arena.push_node(CompactNode::Fenced {
                 open,
                 close,
@@ -6623,7 +6628,7 @@ impl LatexCompactParser {
     /// Wrap a cell's content nodes in a [`CompactNode::Boxed`] with the given
     /// background color (no border), producing a single-element cell.
     fn wrap_cell_bg(&mut self, ids: SmallVec<[NodeId; 8]>, color: &str) -> SmallVec<[NodeId; 8]> {
-        let span = self.arena.push_children(&ids);
+        let span = self.arena.push_children_deferred(&ids);
         let content = self.arena.push_node(CompactNode::Row(span));
         let bg_color = self.arena.push_str(color);
         let border_color = self.arena.push_str("");

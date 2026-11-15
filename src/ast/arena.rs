@@ -17,6 +17,9 @@ pub struct AstArena {
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
     /// Always has one more entry than the number of interned strings.
     str_starts: Vec<u32>,
+    /// Set when [`push_children_deferred`](Self::push_children_deferred)
+    /// refused a list; reported by [`check_lists`](Self::check_lists).
+    list_overflow: bool,
 }
 
 impl AstArena {
@@ -28,6 +31,7 @@ impl AstArena {
             children: Vec::new(),
             strings: Vec::new(),
             str_starts: vec![0],
+            list_overflow: false,
         }
     }
 
@@ -42,6 +46,7 @@ impl AstArena {
             children: Vec::with_capacity(children),
             strings: Vec::with_capacity(strings),
             str_starts,
+            list_overflow: false,
         }
     }
 
@@ -66,44 +71,62 @@ impl AstArena {
         StrId::new(id as u32)
     }
 
-    /// Push a contiguous span of child `NodeId`s, refusing more than
-    /// [`MAX_CHILDREN`](Self::MAX_CHILDREN) of them.
-    ///
-    /// Readers of untrusted input must use this instead of
-    /// [`push_children`](Self::push_children): a span stores its length in
-    /// 16 bits, so a longer list cannot be represented.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
-    /// [`LimitKind::ListLength`](crate::LimitKind::ListLength) when `ids` is
-    /// longer than [`MAX_CHILDREN`](Self::MAX_CHILDREN).
-    #[inline]
-    pub fn try_push_children(&mut self, ids: &[NodeId]) -> crate::error::Result<NodeSpan> {
-        if ids.len() > Self::MAX_CHILDREN {
-            return Err(crate::error::Error::LimitExceeded {
-                kind: crate::error::LimitKind::ListLength,
-                limit: Self::MAX_CHILDREN,
-            });
-        }
-        Ok(self.push_children(ids))
-    }
-
     /// The most children one node can hold (a span length is 16 bits).
     pub const MAX_CHILDREN: usize = u16::MAX as usize;
 
     /// Push a contiguous span of child `NodeId`s and return the `NodeSpan`.
     ///
-    /// The caller must keep `ids` within [`MAX_CHILDREN`](Self::MAX_CHILDREN);
-    /// a longer list is truncated in release builds. Use
-    /// [`try_push_children`](Self::try_push_children) for input-driven lists.
+    /// # Errors
+    ///
+    /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
+    /// [`LimitKind::ListLength`](crate::LimitKind::ListLength) when `ids` is
+    /// longer than [`MAX_CHILDREN`](Self::MAX_CHILDREN): a span stores its
+    /// length in 16 bits, so a longer list cannot be represented.
     #[inline]
-    pub fn push_children(&mut self, ids: &[NodeId]) -> NodeSpan {
+    pub fn push_children(&mut self, ids: &[NodeId]) -> crate::error::Result<NodeSpan> {
+        let Ok(len) = u16::try_from(ids.len()) else {
+            return Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                limit: Self::MAX_CHILDREN,
+            });
+        };
         let start = self.children.len();
         debug_assert!(start < u32::MAX as usize, "arena children overflow");
-        debug_assert!(ids.len() <= u16::MAX as usize, "too many children");
         self.children.extend_from_slice(ids);
-        NodeSpan::new(start as u32, ids.len() as u16)
+        Ok(NodeSpan::new(start as u32, len))
+    }
+
+    /// Push a span like [`push_children`](Self::push_children), for builders
+    /// that cannot return an error at the point of the call (parser
+    /// combinators, recursive conversions). A list that is too long is not
+    /// stored: the span is empty and the arena remembers the failure, which
+    /// [`check_lists`](Self::check_lists) reports. Every builder that uses
+    /// this must call `check_lists` before handing the arena out.
+    pub fn push_children_deferred(&mut self, ids: &[NodeId]) -> NodeSpan {
+        match self.push_children(ids) {
+            Ok(span) => span,
+            Err(_) => {
+                self.list_overflow = true;
+                NodeSpan::EMPTY
+            },
+        }
+    }
+
+    /// Report a list refused by
+    /// [`push_children_deferred`](Self::push_children_deferred).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
+    /// [`LimitKind::ListLength`](crate::LimitKind::ListLength).
+    pub fn check_lists(&self) -> crate::error::Result<()> {
+        if self.list_overflow {
+            return Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                limit: Self::MAX_CHILDREN,
+            });
+        }
+        Ok(())
     }
 
     // ── Safe accessors (bounds-checked) ────────────────────────────────
@@ -246,7 +269,7 @@ mod tests {
         let b = arena.push_node(CompactNode::Identifier(s));
         let s = arena.push_str("z");
         let c = arena.push_node(CompactNode::Identifier(s));
-        let span = arena.push_children(&[a, b, c]);
+        let span = arena.push_children(&[a, b, c]).unwrap();
         let kids = arena.children(span);
         assert_eq!(kids.len(), 3);
         assert_eq!(kids[0], a);
@@ -292,7 +315,7 @@ mod tests {
         let id = arena.push_node(CompactNode::Identifier(s));
         let s2 = arena.push_str("child");
         let c = arena.push_node(CompactNode::Identifier(s2));
-        let span = arena.push_children(&[c]);
+        let span = arena.push_children(&[c]).unwrap();
 
         unsafe {
             assert_eq!(*arena.node_unchecked(id), *arena.node(id));

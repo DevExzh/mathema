@@ -33,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: list builders are fallible.** `AstArena::push_children`,
+  `CompactExpr::from_math_expr`, `CompactParseResult::from_parse_result` and
+  `normalize_compact_expr` return `Result` and refuse a node with more than
+  `AstArena::MAX_CHILDREN` (65 535) children with `LimitKind::ListLength`.
+  Parsers that cannot return an error where they build a list use
+  `AstArena::push_children_deferred` and report it through
+  `AstArena::check_lists`.
 - **The OMML reader is strict.** In Strict mode malformed XML (mismatched or
   missing end tags, unclosed comments, truncated input, undeclared entities,
   duplicate attributes), unknown math elements, invalid property values and
@@ -81,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Lists longer than 65 535 nodes were silently truncated by every reader
+  and by normalization (for example two OMML `m:e` of 40 000 runs flattened
+  into one delimiter): they are now refused with `LimitKind::ListLength`.
 - `CompactExpr::from_math_expr` no longer splits array rows that are wider
   than the column-alignment list.
 

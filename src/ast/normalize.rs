@@ -360,14 +360,25 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
 /// Same semantics as `normalize_expr`: flatten nested Rows, unwrap
 /// single-child Rows, merge adjacent Text nodes, remove empty Rows.
 /// Operates directly on the arena — dead nodes become unreachable garbage.
-pub fn normalize_compact_expr(expr: &mut CompactExpr) {
-    expr.roots = normalize_compact_span(&mut expr.arena, expr.roots, 0);
+///
+/// # Errors
+///
+/// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
+/// [`LimitKind::ListLength`](crate::LimitKind::ListLength) when flattening
+/// nested rows would give one node more children than the arena can store.
+pub fn normalize_compact_expr(expr: &mut CompactExpr) -> crate::error::Result<()> {
+    expr.roots = normalize_compact_span(&mut expr.arena, expr.roots, 0)?;
+    Ok(())
 }
 
 /// Normalize a span of child nodes. Returns a (possibly new) span.
-fn normalize_compact_span(arena: &mut AstArena, span: NodeSpan, depth: usize) -> NodeSpan {
+fn normalize_compact_span(
+    arena: &mut AstArena,
+    span: NodeSpan,
+    depth: usize,
+) -> crate::error::Result<NodeSpan> {
     if depth > super::MAX_AST_DEPTH {
-        return span;
+        return Ok(span);
     }
     let d = depth + 1;
 
@@ -375,7 +386,7 @@ fn normalize_compact_span(arena: &mut AstArena, span: NodeSpan, depth: usize) ->
     // Collect IDs first to avoid borrow conflicts with arena.
     let child_ids: SmallVec<[NodeId; 8]> = arena.children(span).into();
     for &id in &child_ids {
-        normalize_compact_node(arena, id, d);
+        normalize_compact_node(arena, id, d)?;
     }
 
     // Phase 2: flatten Rows and remove empty Rows.
@@ -520,16 +531,20 @@ fn normalize_compact_span(arena: &mut AstArena, span: NodeSpan, depth: usize) ->
 }
 
 /// Normalize a single compact node. May replace it in-place via `arena.node_mut`.
-fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
+fn normalize_compact_node(
+    arena: &mut AstArena,
+    id: NodeId,
+    depth: usize,
+) -> crate::error::Result<()> {
     if depth > super::MAX_AST_DEPTH {
-        return;
+        return Ok(());
     }
     let d = depth + 1;
 
     let node = *arena.node(id);
     match node {
         CompactNode::Row(span) => {
-            let new_span = normalize_compact_span(arena, span, d);
+            let new_span = normalize_compact_span(arena, span, d)?;
             let children = arena.children(new_span);
             if children.len() == 1 {
                 // Unwrap single-child Row: replace this node with its child
@@ -541,7 +556,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         },
 
         CompactNode::Styled(style, span) => {
-            let new_span = normalize_compact_span(arena, span, d);
+            let new_span = normalize_compact_span(arena, span, d)?;
             *arena.node_mut(id) = CompactNode::Styled(style, new_span);
         },
 
@@ -554,7 +569,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             // remove empty rows, merge adjacent text/number atoms, and attach
             // empty-base scripts to the preceding atom.  Middle delimiters are
             // leaves and pass through untouched.
-            let new_content = normalize_compact_span(arena, content, d);
+            let new_content = normalize_compact_span(arena, content, d)?;
             *arena.node_mut(id) = CompactNode::Fenced {
                 open,
                 close,
@@ -563,19 +578,19 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         },
 
         CompactNode::Subscript { base, sub } => {
-            normalize_compact_node(arena, base, d);
-            normalize_compact_node(arena, sub, d);
+            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node(arena, sub, d)?;
             flatten_empty_script(arena, id);
         },
         CompactNode::Superscript { base, sup } => {
-            normalize_compact_node(arena, base, d);
-            normalize_compact_node(arena, sup, d);
+            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node(arena, sup, d)?;
             flatten_empty_script(arena, id);
         },
         CompactNode::SubSup { base, sub, sup } => {
-            normalize_compact_node(arena, base, d);
-            normalize_compact_node(arena, sub, d);
-            normalize_compact_node(arena, sup, d);
+            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node(arena, sub, d)?;
+            normalize_compact_node(arena, sup, d)?;
             flatten_empty_script(arena, id);
         },
         CompactNode::PreScripts {
@@ -583,12 +598,12 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             pre_sub,
             pre_sup,
         } => {
-            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, base, d)?;
             if pre_sub.is_some() {
-                normalize_compact_node(arena, pre_sub, d);
+                normalize_compact_node(arena, pre_sub, d)?;
             }
             if pre_sup.is_some() {
-                normalize_compact_node(arena, pre_sup, d);
+                normalize_compact_node(arena, pre_sup, d)?;
             }
             // The LaTeX writer cannot emit a prescript in a way that the
             // parser reliably reconstructs as PreScripts; the usual source
@@ -611,53 +626,53 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
                 }),
                 (false, false) => {
                     *arena.node_mut(id) = *arena.node(base);
-                    return;
+                    return Ok(());
                 },
             };
-            let span = arena.push_children(&[script_id, base]);
+            let span = arena.push_children(&[script_id, base])?;
             *arena.node_mut(id) = CompactNode::Row(span);
         },
 
         CompactNode::Overscript { base, over, .. } => {
-            normalize_compact_node(arena, base, d);
-            normalize_compact_node(arena, over, d);
+            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node(arena, over, d)?;
         },
         CompactNode::Underscript { base, under, .. } => {
-            normalize_compact_node(arena, base, d);
-            normalize_compact_node(arena, under, d);
+            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node(arena, under, d)?;
         },
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
-            normalize_compact_node(arena, base, d);
-            normalize_compact_node(arena, under, d);
-            normalize_compact_node(arena, over, d);
+            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node(arena, under, d)?;
+            normalize_compact_node(arena, over, d)?;
         },
 
         CompactNode::Fraction { num, den, .. } => {
-            normalize_compact_node(arena, num, d);
-            normalize_compact_node(arena, den, d);
+            normalize_compact_node(arena, num, d)?;
+            normalize_compact_node(arena, den, d)?;
         },
         CompactNode::Sqrt(inner) => {
-            normalize_compact_node(arena, inner, d);
+            normalize_compact_node(arena, inner, d)?;
         },
         CompactNode::Root { index, radicand } => {
-            normalize_compact_node(arena, index, d);
-            normalize_compact_node(arena, radicand, d);
+            normalize_compact_node(arena, index, d)?;
+            normalize_compact_node(arena, radicand, d)?;
         },
 
         CompactNode::Nary { sub, sup, body, .. } => {
             if sub.is_some() {
-                normalize_compact_node(arena, sub, d);
+                normalize_compact_node(arena, sub, d)?;
             }
             if sup.is_some() {
-                normalize_compact_node(arena, sup, d);
+                normalize_compact_node(arena, sup, d)?;
             }
-            normalize_compact_node(arena, body, d);
+            normalize_compact_node(arena, body, d)?;
         },
 
         CompactNode::Accent { base, .. } => {
-            normalize_compact_node(arena, base, d);
+            normalize_compact_node(arena, base, d)?;
         },
 
         CompactNode::Array { cells, .. } => {
@@ -668,24 +683,24 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             let cell_ids: SmallVec<[NodeId; 8]> = arena.children(cells).into();
             let mut new_cells: SmallVec<[NodeId; 8]> = SmallVec::new();
             for &cell_id in &cell_ids {
-                normalize_compact_node(arena, cell_id, d);
-                let new_id = normalize_array_cell(arena, cell_id);
+                normalize_compact_node(arena, cell_id, d)?;
+                let new_id = normalize_array_cell(arena, cell_id)?;
                 new_cells.push(new_id);
             }
-            let new_cells_span = arena.push_children(&new_cells);
+            let new_cells_span = arena.push_children(&new_cells)?;
             if let CompactNode::Array { cells: c, .. } = arena.node_mut(id) {
                 *c = new_cells_span;
             }
         },
 
         CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => {
-            normalize_compact_node(arena, inner, d);
+            normalize_compact_node(arena, inner, d)?;
         },
         CompactNode::Cancel { content, .. } | CompactNode::RaiseBox { content, .. } => {
-            normalize_compact_node(arena, content, d);
+            normalize_compact_node(arena, content, d)?;
         },
         CompactNode::Scaled { content, .. } => {
-            normalize_compact_node(arena, content, d);
+            normalize_compact_node(arena, content, d)?;
             // Sizing commands only apply to delimiter symbols. If the parser
             // produced a wrapper around anything else, the writer will drop the
             // sizing command and just emit the content. Flatten the wrapper now
@@ -699,7 +714,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
                 },
                 CompactNode::Row(span) => {
                     let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
-                    let new_span = arena.push_children(&children);
+                    let new_span = arena.push_children(&children)?;
                     *arena.node_mut(id) = CompactNode::Row(new_span);
                 },
                 _ => {
@@ -708,7 +723,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             }
         },
         CompactNode::Color { content, .. } => {
-            normalize_compact_node(arena, content, d);
+            normalize_compact_node(arena, content, d)?;
         },
         CompactNode::MathChoice {
             display,
@@ -716,13 +731,13 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
             script,
             script_script,
         } => {
-            normalize_compact_node(arena, display, d);
-            normalize_compact_node(arena, text, d);
-            normalize_compact_node(arena, script, d);
-            normalize_compact_node(arena, script_script, d);
+            normalize_compact_node(arena, display, d)?;
+            normalize_compact_node(arena, text, d)?;
+            normalize_compact_node(arena, script, d)?;
+            normalize_compact_node(arena, script_script, d)?;
         },
         CompactNode::MathAtom { content, .. } => {
-            normalize_compact_node(arena, content, d);
+            normalize_compact_node(arena, content, d)?;
         },
 
         // Leaf nodes: nothing to normalize
@@ -739,6 +754,7 @@ fn normalize_compact_node(arena: &mut AstArena, id: NodeId, depth: usize) {
         | CompactNode::StyleSwitch(_)
         | CompactNode::SizeScale(_) => {},
     }
+    Ok(())
 }
 
 /// If a script node's subscript and/or superscript argument is effectively
@@ -817,10 +833,10 @@ fn is_idotsint_row(arena: &AstArena, span: NodeSpan) -> bool {
 /// `\\`/`\cr` inside a cell is always interpreted as ending the row on
 /// re-parse. Keeping it as a node makes the written shape flip between
 /// `...t\\ +...` and `...t \\\\ +...`.
-fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> NodeId {
+fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::Result<NodeId> {
     let span = match *arena.node(cell_id) {
         CompactNode::Row(span) => span,
-        _ => return cell_id,
+        _ => return Ok(cell_id),
     };
     let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
     let is_ws = |arena: &AstArena, id: NodeId| {
@@ -847,8 +863,8 @@ fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> NodeId {
             new_children.push(child_id);
         }
     }
-    let new_span = arena.push_children(&new_children);
-    arena.push_node(CompactNode::Row(new_span))
+    let new_span = arena.push_children(&new_children)?;
+    Ok(arena.push_node(CompactNode::Row(new_span)))
 }
 
 /// True for color strings that the LaTeX writer cannot emit verbatim inside
@@ -1048,8 +1064,8 @@ mod tests {
         normalize_expr(&mut path_a);
 
         // Path B: MathExpr → CompactExpr → normalize → MathExpr
-        let mut compact = CompactExpr::from_math_expr(&input);
-        normalize_compact_expr(&mut compact);
+        let mut compact = CompactExpr::from_math_expr(&input).unwrap();
+        normalize_compact_expr(&mut compact).unwrap();
         let path_b = compact.to_math_expr();
 
         assert_eq!(path_a, path_b, "normalize equivalence failed");

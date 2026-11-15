@@ -579,7 +579,7 @@ fn child_count_beyond_the_arena_span_limit_is_an_error() {
     for _ in 0..70_000 {
         body.push_str("<m:r><m:t>+</m:t></m:r>");
     }
-    assert!(strict_err(&omath(&body)).contains("children"));
+    assert!(strict_err(&omath(&body)).contains("list length"));
 }
 
 #[test]
@@ -997,7 +997,7 @@ fn padding_cells_are_separate_nodes() {
     assert_ne!(pad1, pad2);
     let x = expr.arena.push_str("x");
     let ident = expr.arena.push_node(CompactNode::Identifier(x));
-    let span = expr.arena.push_children(&[ident]);
+    let span = expr.arena.push_children(&[ident]).unwrap();
     *expr.arena.node_mut(pad1) = CompactNode::Row(span);
     assert!(matches!(*expr.arena.node(pad2), CompactNode::Row(s) if s.is_empty()));
 }

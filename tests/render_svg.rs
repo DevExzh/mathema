@@ -91,7 +91,7 @@ fn legacy_vs_arena_render_divergence_baseline() {
             };
             // The same MathExpr lowered to compact → arena engine (what a future
             // arena-backed `render_to_svg` would produce).
-            let compact = CompactExpr::from_math_expr(&mathexpr);
+            let compact = CompactExpr::from_math_expr(&mathexpr).unwrap();
             let Ok(arena_svg) = render_to_svg_compact(&compact, &opts) else {
                 continue;
             };

@@ -369,14 +369,7 @@ fn omml_err(message: impl Into<String>) -> Error {
 
 /// Push `ids` as a child span, refusing spans the arena cannot index.
 fn checked_span(arena: &mut AstArena, ids: &[NodeId]) -> Result<NodeSpan> {
-    if ids.len() > u16::MAX as usize {
-        return Err(omml_err(format!(
-            "an OMML element has {} children; at most {} are supported",
-            ids.len(),
-            u16::MAX
-        )));
-    }
-    Ok(arena.push_children(ids))
+    arena.push_children(ids)
 }
 
 fn is_xml_whitespace(s: &str) -> bool {

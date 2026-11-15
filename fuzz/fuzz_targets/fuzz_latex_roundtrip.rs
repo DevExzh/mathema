@@ -15,7 +15,9 @@ fuzz_target!(|data: &[u8]| {
         let Ok(mut r1) = LatexReader::parse_compact(input, &config) else {
             return;
         };
-        normalize_compact_expr(&mut r1.expr);
+        if normalize_compact_expr(&mut r1.expr).is_err() {
+            return;
+        }
         let Ok(out1) = LatexWriter::write_compact(&r1.expr, &config) else {
             return;
         };
@@ -28,7 +30,9 @@ fuzz_target!(|data: &[u8]| {
                  write1: {out1:?}"
             );
         };
-        normalize_compact_expr(&mut r2.expr);
+        if normalize_compact_expr(&mut r2.expr).is_err() {
+            return;
+        }
         let Ok(out2) = LatexWriter::write_compact(&r2.expr, &config) else {
             panic!(
                 "round-trip failed: second write panicked.\n\

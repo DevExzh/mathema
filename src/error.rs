@@ -222,11 +222,15 @@ impl CompactParseResult {
     }
 
     /// Bridge: build from a `ParseResult` by interning into a fresh arena.
-    pub fn from_parse_result(result: &ParseResult) -> Self {
-        Self {
-            expr: CompactExpr::from_math_expr(&result.expr),
+    ///
+    /// # Errors
+    ///
+    /// See [`CompactExpr::from_math_expr`].
+    pub fn from_parse_result(result: &ParseResult) -> Result<Self> {
+        Ok(Self {
+            expr: CompactExpr::from_math_expr(&result.expr)?,
             diagnostics: result.diagnostics.clone(),
-        }
+        })
     }
 
     /// Bridge: reconstruct a `ParseResult` from the arena.

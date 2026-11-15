@@ -73,7 +73,7 @@ pub fn convert(input: &str, from: &str, to: &str) -> Result<String, JsValue> {
 pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
     let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr).map_err(to_js_err)?;
     MathmlWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }
 
@@ -82,7 +82,7 @@ pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
 pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
     let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr).map_err(to_js_err)?;
     OmmlWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }
 
@@ -91,7 +91,7 @@ pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
 pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
     let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr).map_err(to_js_err)?;
     UnicodeMathWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }
 
@@ -100,7 +100,7 @@ pub fn latex_to_unicode_math(input: &str) -> Result<String, JsValue> {
 pub fn normalize_latex(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
     let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
-    crate::ast::normalize::normalize_compact_expr(&mut compact.expr);
+    crate::ast::normalize::normalize_compact_expr(&mut compact.expr).map_err(to_js_err)?;
     LatexWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }
 

@@ -88,7 +88,7 @@ impl MathemaConverter {
         let mut compact = self.parse_compact(input)?;
         crate::ast::validate_compact_depth(&compact.expr.arena, compact.expr.roots)
             .map_err(to_js_err)?;
-        normalize_compact_expr(&mut compact.expr);
+        normalize_compact_expr(&mut compact.expr).map_err(to_js_err)?;
         Ok(ParsedMath {
             compact,
             config: self.config,

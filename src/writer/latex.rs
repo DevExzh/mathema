@@ -10,7 +10,7 @@ pub struct LatexWriter;
 
 impl Writer for LatexWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
-        let compact = CompactExpr::from_math_expr(expr);
+        let compact = CompactExpr::from_math_expr(expr)?;
         Self::write_compact(&compact, config)
     }
 

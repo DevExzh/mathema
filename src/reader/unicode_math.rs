@@ -61,7 +61,8 @@ impl Reader for UnicodeMathReader {
         let mut parser = CompactParser::new();
         match parser.parse_expr_list(input) {
             Ok(ids) => {
-                let roots = parser.arena.push_children(&ids);
+                parser.arena.check_lists()?;
+                let roots = parser.arena.push_children(&ids)?;
                 Ok(CompactParseResult::new(CompactExpr::new(
                     parser.arena,
                     roots,
@@ -73,7 +74,7 @@ impl Reader for UnicodeMathReader {
                     let mut arena = AstArena::new();
                     let sid = arena.push_str(input);
                     let id = arena.push_node(CompactNode::Text(TextStyle::Normal, sid));
-                    let roots = arena.push_children(&[id]);
+                    let roots = arena.push_children(&[id])?;
                     Ok(CompactParseResult::with_diagnostics(
                         CompactExpr::new(arena, roots, DisplayStyle::Inline),
                         vec![Diagnostic {
@@ -280,7 +281,7 @@ impl CompactParser {
         if children.is_empty() {
             let open = self.arena.push_str("(");
             let close = self.arena.push_str(")");
-            let content_span = self.arena.push_children(&[]);
+            let content_span = self.arena.push_children_deferred(&[]);
             let id = self.arena.push_node(CompactNode::Fenced {
                 open,
                 close,
@@ -365,7 +366,7 @@ impl CompactParser {
         if ids.len() == 1 {
             ids[0]
         } else {
-            let span = self.arena.push_children(ids);
+            let span = self.arena.push_children_deferred(ids);
             self.arena.push_node(CompactNode::Row(span))
         }
     }
@@ -396,7 +397,7 @@ impl CompactParser {
         let content_id = self.flatten_single(&children);
         let open = self.arena.push_str("(");
         let close = self.arena.push_str(")");
-        let content_span = self.arena.push_children(&[content_id]);
+        let content_span = self.arena.push_children_deferred(&[content_id]);
         let id = self.arena.push_node(CompactNode::Fenced {
             open,
             close,
@@ -431,7 +432,7 @@ impl CompactParser {
         let content_id = self.flatten_single(&children);
         let open = self.arena.push_str("[");
         let close = self.arena.push_str("]");
-        let content_span = self.arena.push_children(&[content_id]);
+        let content_span = self.arena.push_children_deferred(&[content_id]);
         let id = self.arena.push_node(CompactNode::Fenced {
             open,
             close,
@@ -466,7 +467,7 @@ impl CompactParser {
         let content_id = self.flatten_single(&children);
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("}");
-        let content_span = self.arena.push_children(&[content_id]);
+        let content_span = self.arena.push_children_deferred(&[content_id]);
         let id = self.arena.push_node(CompactNode::Fenced {
             open,
             close,
@@ -553,13 +554,13 @@ impl CompactParser {
                     .push_node(CompactNode::ColAlign(ColumnAlign::Center)),
             );
         }
-        let col_aligns = self.arena.push_children(&col_ids);
+        let col_aligns = self.arena.push_children_deferred(&col_ids);
 
         // Cells stored flat in row-major order, padded
         let mut cell_ids: SmallVec<[NodeId; 16]> = SmallVec::new();
         for row in &rows {
             for cell in row {
-                let span = self.arena.push_children(cell);
+                let span = self.arena.push_children_deferred(cell);
                 cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
             }
             // Pad short rows
@@ -567,7 +568,7 @@ impl CompactParser {
                 cell_ids.push(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
             }
         }
-        let cells = self.arena.push_children(&cell_ids);
+        let cells = self.arena.push_children_deferred(&cell_ids);
 
         let id = self.arena.push_node(CompactNode::Array {
             col_aligns,

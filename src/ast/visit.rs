@@ -708,7 +708,7 @@ mod tests {
             MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
             MathNode::Number("2".into()),
         ]);
-        let compact = CompactExpr::from_math_expr(&expr);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let mut counter = CompactNodeCounter { count: 0 };
         counter.visit_expr(&compact);
         assert_eq!(counter.count, 3);
@@ -725,7 +725,7 @@ mod tests {
                 MathNode::Identifier("c".into()),
             ])),
         }]);
-        let compact = CompactExpr::from_math_expr(&expr);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let mut counter = CompactNodeCounter { count: 0 };
         counter.visit_expr(&compact);
         // fraction(1) + a(1) + row(1) + b(1) + +(1) + c(1) = 6
@@ -754,7 +754,7 @@ mod tests {
             MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
             MathNode::Number("5".into()),
         ]);
-        let mut compact = CompactExpr::from_math_expr(&expr);
+        let mut compact = CompactExpr::from_math_expr(&expr).unwrap();
         let root_ids: smallvec::SmallVec<[NodeId; 8]> =
             compact.arena.children(compact.roots).into();
         for &id in &root_ids {

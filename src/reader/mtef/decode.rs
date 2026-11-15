@@ -272,7 +272,7 @@ impl<'a> Decoder<'a> {
 
     /// Store a node's children, refusing more than a node can hold.
     pub(super) fn children(&mut self, ids: &[NodeId]) -> Result<NodeSpan> {
-        self.arena.try_push_children(ids)
+        self.arena.push_children(ids)
     }
 
     pub(super) fn str_node(

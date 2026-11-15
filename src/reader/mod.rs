@@ -16,6 +16,6 @@ pub trait Reader {
     /// Readers that build into an arena natively should override this.
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         let result = Self::parse(input, config)?;
-        Ok(CompactParseResult::from_parse_result(&result))
+        CompactParseResult::from_parse_result(&result)
     }
 }

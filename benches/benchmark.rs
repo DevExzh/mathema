@@ -210,7 +210,7 @@ fn bench_ast_traversal(c: &mut Criterion) {
         let base = LatexReader::parse_compact(QUADRATIC, &config).unwrap().expr;
         b.iter(|| {
             let mut expr = base.clone();
-            normalize_compact_expr(std::hint::black_box(&mut expr));
+            normalize_compact_expr(std::hint::black_box(&mut expr)).unwrap();
         })
     });
 

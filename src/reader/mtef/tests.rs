@@ -1046,11 +1046,11 @@ fn arena_refuses_oversized_child_lists() {
     let mut arena = crate::AstArena::new();
     let ids = vec![crate::NodeId::NONE; crate::AstArena::MAX_CHILDREN + 1];
     assert!(matches!(
-        arena.try_push_children(&ids),
+        arena.push_children(&ids),
         Err(Error::LimitExceeded {
             kind: LimitKind::ListLength,
             ..
         })
     ));
-    assert!(arena.try_push_children(&ids[1..]).is_ok());
+    assert!(arena.push_children(&ids[1..]).is_ok());
 }

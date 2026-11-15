@@ -416,19 +416,25 @@ impl CompactExpr {
     }
 
     /// Build a `CompactExpr` from a `MathExpr`, interning all data into an arena.
-    #[must_use]
-    pub fn from_math_expr(expr: &MathExpr) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
+    /// [`LimitKind::ListLength`](crate::LimitKind::ListLength) when a node has
+    /// more children than the arena can store.
+    pub fn from_math_expr(expr: &MathExpr) -> crate::error::Result<Self> {
         let mut arena = AstArena::new();
         let mut root_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
         for node in &expr.nodes {
             root_ids.push(push_math_node(&mut arena, node));
         }
-        let roots = arena.push_children(&root_ids);
-        Self {
+        let roots = arena.push_children(&root_ids)?;
+        arena.check_lists()?;
+        Ok(Self {
             arena,
             roots,
             display: expr.display,
-        }
+        })
     }
 
     /// Reconstruct a `MathExpr` from the arena. O(n) walk.
@@ -504,7 +510,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                     },
                 }
             }
-            let content_span = arena.push_children(&ids);
+            let content_span = arena.push_children_deferred(&ids);
             arena.push_node(CompactNode::Fenced {
                 open: open_id,
                 close: close_id,
@@ -663,7 +669,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             for col in columns {
                 align_ids.push(arena.push_node(CompactNode::ColAlign(*col)));
             }
-            let col_aligns = arena.push_children(&align_ids);
+            let col_aligns = arena.push_children_deferred(&align_ids);
 
             // Rows may be wider than the column list; size by the widest so
             // the row-major cell layout keeps every row intact.
@@ -682,7 +688,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                     cell_ids.push(arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
                 }
             }
-            let cells = arena.push_children(&cell_ids);
+            let cells = arena.push_children_deferred(&cell_ids);
 
             let arraystretch_pct = match arraystretch {
                 Some(v) => (v * 100.0).round() as u8,
@@ -785,7 +791,7 @@ fn push_children(arena: &mut AstArena, nodes: &[MathNode]) -> NodeSpan {
     for node in nodes {
         ids.push(push_math_node(arena, node));
     }
-    arena.push_children(&ids)
+    arena.push_children_deferred(&ids)
 }
 
 /// Push an optional node, returning `NodeId::NONE` for `None`.
@@ -1155,7 +1161,7 @@ mod tests {
         let mut arena = AstArena::new();
         let s = arena.push_str("42");
         let n = arena.push_node(CompactNode::Number(s));
-        let roots = arena.push_children(&[n]);
+        let roots = arena.push_children(&[n]).unwrap();
         let expr = CompactExpr::new(arena, roots, DisplayStyle::Inline);
         assert_eq!(expr.display, DisplayStyle::Inline);
         assert_eq!(expr.roots.len(), 1);
@@ -1166,7 +1172,7 @@ mod tests {
         let mut arena = AstArena::new();
         let s = arena.push_str("x");
         let id = arena.push_node(CompactNode::Identifier(s));
-        let span = arena.push_children(&[id]);
+        let span = arena.push_children(&[id]).unwrap();
 
         let variants: Vec<CompactNode> = vec![
             CompactNode::Number(s),
@@ -1272,7 +1278,7 @@ mod tests {
 
     /// Helper: round-trip a MathExpr through CompactExpr and assert equality.
     fn assert_roundtrip(expr: &MathExpr) {
-        let compact = CompactExpr::from_math_expr(expr);
+        let compact = CompactExpr::from_math_expr(expr).unwrap();
         let restored = compact.to_math_expr();
         assert_eq!(expr, &restored, "round-trip failed");
     }
@@ -1494,8 +1500,8 @@ mod tests {
     fn roundtrip_display_style() {
         let block = MathExpr::block(vec![MathNode::Number("1".into())]);
         let inline = MathExpr::inline(vec![MathNode::Number("1".into())]);
-        let compact_block = CompactExpr::from_math_expr(&block);
-        let compact_inline = CompactExpr::from_math_expr(&inline);
+        let compact_block = CompactExpr::from_math_expr(&block).unwrap();
+        let compact_inline = CompactExpr::from_math_expr(&inline).unwrap();
         assert_eq!(compact_block.to_math_expr().display, DisplayStyle::Block);
         assert_eq!(compact_inline.to_math_expr().display, DisplayStyle::Inline);
     }

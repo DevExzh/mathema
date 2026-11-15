@@ -7,7 +7,7 @@ fn write(node: MathNode) -> String {
 }
 
 fn write_with(node: MathNode, options: &OmmlOptions) -> (String, Vec<Diagnostic>) {
-    let compact = CompactExpr::from_math_expr(&MathExpr::inline(vec![node]));
+    let compact = CompactExpr::from_math_expr(&MathExpr::inline(vec![node])).unwrap();
     OmmlWriter::write_with_options(&compact, &Config::default(), options).unwrap()
 }
 
@@ -430,11 +430,11 @@ fn escaped_text_preserves_adjacent_newlines_across_round_trip() {
     use crate::ast::normalize::normalize_compact_expr;
     let config = Config::default();
     let node = MathNode::Text(TextStyle::Normal, "x'\nM".into());
-    let mut first = CompactExpr::from_math_expr(&MathExpr::inline(vec![node]));
-    normalize_compact_expr(&mut first);
+    let mut first = CompactExpr::from_math_expr(&MathExpr::inline(vec![node])).unwrap();
+    normalize_compact_expr(&mut first).unwrap();
     let out1 = OmmlWriter::write_compact(&first, &config).unwrap();
     let mut second = OmmlReader::parse_compact(&out1, &config).unwrap().expr;
-    normalize_compact_expr(&mut second);
+    normalize_compact_expr(&mut second).unwrap();
     let out2 = OmmlWriter::write_compact(&second, &config).unwrap();
     assert_eq!(out1, out2);
 }
@@ -459,7 +459,7 @@ fn compact_and_tree_writers_agree() {
     };
     let tree = write(node.clone());
     let compact = OmmlWriter::write_compact(
-        &CompactExpr::from_math_expr(&MathExpr::inline(vec![node])),
+        &CompactExpr::from_math_expr(&MathExpr::inline(vec![node])).unwrap(),
         &Config::default(),
     )
     .unwrap();

@@ -100,7 +100,7 @@ pub struct OmmlWriter;
 
 impl MathWriter for OmmlWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
-        Self::write_compact(&CompactExpr::from_math_expr(expr), config)
+        Self::write_compact(&CompactExpr::from_math_expr(expr)?, config)
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {

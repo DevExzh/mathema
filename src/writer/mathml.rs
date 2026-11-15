@@ -1224,7 +1224,7 @@ mod tests {
         assert!(!output.contains("<munder accent=\"true\">"));
 
         let expr = MathExpr::inline(vec![node]);
-        let compact = CompactExpr::from_math_expr(&expr);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let config = Config::default();
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();
         assert!(output.contains("<munder accentunder=\"true\">"));
@@ -1247,7 +1247,7 @@ mod tests {
         let output = MathmlWriter::write(&expr, &config).unwrap();
         assert!(output.contains(expected), "non-compact output: {output}");
 
-        let compact = CompactExpr::from_math_expr(&expr);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();
         assert!(output.contains(expected), "compact output: {output}");
     }
@@ -1280,7 +1280,7 @@ mod tests {
             position: AccentPosition::Below,
             wide: false,
         }]);
-        let compact = CompactExpr::from_math_expr(&expr);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let config = Config::default();
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();
         assert!(output.contains("<mo>&lt;</mo>"), "compact output: {output}");
@@ -1296,7 +1296,7 @@ mod tests {
             body: Box::new(MathNode::Identifier("x".into())),
             limits: LimitStyle::SubSup,
         }]);
-        let compact = CompactExpr::from_math_expr(&expr);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let config = Config::default();
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();
         assert!(
@@ -1313,7 +1313,7 @@ mod tests {
             bg_color: Some("red&blue\"".into()),
             border_color: Some("black&white\"".into()),
         }]);
-        let compact = CompactExpr::from_math_expr(&expr);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let config = Config::default();
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();
         assert!(
@@ -1337,7 +1337,7 @@ mod tests {
         let x = arena.push_str("x");
         let content = arena.push_node(CompactNode::Identifier(x));
         let root = arena.push_node(CompactNode::Color { color, content });
-        let roots = arena.push_children(&[root]);
+        let roots = arena.push_children(&[root]).unwrap();
         let compact = CompactExpr::new(arena, roots, DisplayStyle::Inline);
         let config = Config::default();
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();

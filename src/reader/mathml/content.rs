@@ -236,14 +236,14 @@ impl<'a> MathmlCompactParser<'a> {
         if ids.len() == 1 {
             ids[0]
         } else {
-            let span = self.arena.push_children(ids);
+            let span = self.arena.push_children_deferred(ids);
             self.arena.push_node(CompactNode::Row(span))
         }
     }
     fn c_fenced(&mut self, open: &str, close: &str, content: &[NodeId]) -> NodeId {
         let open = self.arena.push_str(open);
         let close = self.arena.push_str(close);
-        let content = self.arena.push_children(content);
+        let content = self.arena.push_children_deferred(content);
         self.arena.push_node(CompactNode::Fenced {
             open,
             close,
@@ -420,7 +420,7 @@ impl<'a> MathmlCompactParser<'a> {
         };
         // type="vector"/"matrix" → bold
         if matches!(ty.as_deref(), Some("vector") | Some("matrix")) {
-            let span = self.arena.push_children(&[id]);
+            let span = self.arena.push_children_deferred(&[id]);
             return Ok(self
                 .arena
                 .push_node(CompactNode::Styled(TextStyle::Bold, span)));
@@ -675,7 +675,7 @@ impl<'a> MathmlCompactParser<'a> {
         for r in &rows {
             for c in 0..num_cols as usize {
                 let cell = r.get(c).copied().unwrap_or_else(|| self.empty_row());
-                let span = self.arena.push_children(&[cell]);
+                let span = self.arena.push_children_deferred(&[cell]);
                 cells.push(self.arena.push_node(CompactNode::Row(span)));
             }
         }
@@ -685,8 +685,8 @@ impl<'a> MathmlCompactParser<'a> {
                     .push_node(CompactNode::ColAlign(crate::ast::ColumnAlign::Center))
             })
             .collect();
-        let col_aligns = self.arena.push_children(&col_aligns);
-        let cells = self.arena.push_children(&cells);
+        let col_aligns = self.arena.push_children_deferred(&col_aligns);
+        let cells = self.arena.push_children_deferred(&cells);
         let inner = self.arena.push_node(CompactNode::Array {
             col_aligns,
             cells,
@@ -743,7 +743,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut cells: Vec<NodeId> = Vec::new();
         for (val, cond) in &rows {
             for &cell in &[*val, *cond] {
-                let span = self.arena.push_children(&[cell]);
+                let span = self.arena.push_children_deferred(&[cell]);
                 cells.push(self.arena.push_node(CompactNode::Row(span)));
             }
         }
@@ -753,8 +753,8 @@ impl<'a> MathmlCompactParser<'a> {
                     .push_node(CompactNode::ColAlign(crate::ast::ColumnAlign::Left))
             })
             .collect();
-        let col_aligns = self.arena.push_children(&col_aligns);
-        let cells = self.arena.push_children(&cells);
+        let col_aligns = self.arena.push_children_deferred(&col_aligns);
+        let cells = self.arena.push_children_deferred(&cells);
         let inner = self.arena.push_node(CompactNode::Array {
             col_aligns,
             cells,
@@ -768,7 +768,7 @@ impl<'a> MathmlCompactParser<'a> {
         // Left brace, no right.
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
-        let content = self.arena.push_children(&[inner]);
+        let content = self.arena.push_children_deferred(&[inner]);
         Ok(self.arena.push_node(CompactNode::Fenced {
             open,
             close,

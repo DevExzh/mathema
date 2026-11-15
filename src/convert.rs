@@ -37,7 +37,7 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
         compact.expr.roots,
         config.effective_max_depth(),
     )?;
-    normalize_compact_expr(&mut compact.expr);
+    normalize_compact_expr(&mut compact.expr)?;
     write_compact(&compact.expr, to, config)
 }
 
@@ -407,7 +407,7 @@ fn finish_mtef(
         compact.expr.roots,
         config.effective_max_depth(),
     )?;
-    normalize_compact_expr(&mut compact.expr);
+    normalize_compact_expr(&mut compact.expr)?;
     Ok(ConvertResult {
         compact,
         config: *config,

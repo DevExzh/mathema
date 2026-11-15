@@ -19,11 +19,11 @@ fn round_trip_simple() {
     ];
     for input in &cases {
         let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
-        normalize_compact_expr(&mut r1.expr);
+        normalize_compact_expr(&mut r1.expr).unwrap();
         let out1 = LatexWriter::write_compact(&r1.expr, &config).unwrap();
 
         let mut r2 = LatexReader::parse_compact(&out1, &config).unwrap();
-        normalize_compact_expr(&mut r2.expr);
+        normalize_compact_expr(&mut r2.expr).unwrap();
         let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
 
         assert_eq!(out1, out2, "round-trip failed for input: {input}");
@@ -44,11 +44,11 @@ fn round_trip_spacing() {
     ];
     for input in &cases {
         let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
-        normalize_compact_expr(&mut r1.expr);
+        normalize_compact_expr(&mut r1.expr).unwrap();
         let out1 = LatexWriter::write_compact(&r1.expr, &config).unwrap();
 
         let mut r2 = LatexReader::parse_compact(&out1, &config).unwrap();
-        normalize_compact_expr(&mut r2.expr);
+        normalize_compact_expr(&mut r2.expr).unwrap();
         let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
 
         assert_eq!(out1, out2, "spacing round-trip failed for input: {input}");
@@ -61,11 +61,11 @@ fn round_trip_scaled_delimiters() {
     let cases = ["\\big(", "\\Big[", "\\bigg|", "\\Bigg)"];
     for input in &cases {
         let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
-        normalize_compact_expr(&mut r1.expr);
+        normalize_compact_expr(&mut r1.expr).unwrap();
         let out1 = LatexWriter::write_compact(&r1.expr, &config).unwrap();
 
         let mut r2 = LatexReader::parse_compact(&out1, &config).unwrap();
-        normalize_compact_expr(&mut r2.expr);
+        normalize_compact_expr(&mut r2.expr).unwrap();
         let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
 
         assert_eq!(
@@ -81,11 +81,11 @@ fn round_trip_command_spacing() {
     // \nabla followed by a plain letter needs space separation
     let input = "\\nabla p";
     let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
-    normalize_compact_expr(&mut r1.expr);
+    normalize_compact_expr(&mut r1.expr).unwrap();
     let out1 = LatexWriter::write_compact(&r1.expr, &config).unwrap();
 
     let mut r2 = LatexReader::parse_compact(&out1, &config).unwrap();
-    normalize_compact_expr(&mut r2.expr);
+    normalize_compact_expr(&mut r2.expr).unwrap();
     let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
 
     assert_eq!(out1, out2, "command spacing round-trip failed");
@@ -140,11 +140,11 @@ fn navier_stokes_round_trip() {
     let config = Config::default();
     let input = "\\rho \\left( \\frac{\\partial \\mathbf{v}}{\\partial t} + \\mathbf{v} \\cdot \\nabla \\mathbf{v} \\right) = -\\nabla p + \\mu \\nabla^2 \\mathbf{v} + \\mathbf{f}";
     let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
-    normalize_compact_expr(&mut r1.expr);
+    normalize_compact_expr(&mut r1.expr).unwrap();
     let out1 = LatexWriter::write_compact(&r1.expr, &config).unwrap();
 
     let mut r2 = LatexReader::parse_compact(&out1, &config).unwrap();
-    normalize_compact_expr(&mut r2.expr);
+    normalize_compact_expr(&mut r2.expr).unwrap();
     let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
 
     assert_eq!(out1, out2, "Navier-Stokes round-trip not idempotent");
@@ -172,11 +172,11 @@ fn unicode_commands_round_trip() {
     ];
     for input in &cases {
         let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
-        normalize_compact_expr(&mut r1.expr);
+        normalize_compact_expr(&mut r1.expr).unwrap();
         let out1 = LatexWriter::write_compact(&r1.expr, &config).unwrap();
 
         let mut r2 = LatexReader::parse_compact(&out1, &config).unwrap();
-        normalize_compact_expr(&mut r2.expr);
+        normalize_compact_expr(&mut r2.expr).unwrap();
         let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
 
         assert_eq!(out1, out2, "unicode command round-trip failed for: {input}");
@@ -1046,7 +1046,7 @@ fn fuzz_repro_roundtrip_misc() {
         let Ok(mut r1) = LatexReader::parse_compact(input, &config) else {
             continue;
         };
-        normalize_compact_expr(&mut r1.expr);
+        normalize_compact_expr(&mut r1.expr).unwrap();
         let Ok(out1) = LatexWriter::write_compact(&r1.expr, &config) else {
             continue;
         };
@@ -1057,7 +1057,7 @@ fn fuzz_repro_roundtrip_misc() {
                  write1: {out1:?}"
             );
         };
-        normalize_compact_expr(&mut r2.expr);
+        normalize_compact_expr(&mut r2.expr).unwrap();
         let Ok(out2) = LatexWriter::write_compact(&r2.expr, &config) else {
             panic!(
                 "round-trip failed: second write panicked.\n\

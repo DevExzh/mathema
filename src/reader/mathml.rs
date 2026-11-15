@@ -49,7 +49,8 @@ impl MathReader for MathmlReader {
         match parser.parse_root() {
             Ok(ids) => {
                 let display = parser.display.unwrap_or(config.display);
-                let roots = parser.arena.push_children(&ids);
+                parser.arena.check_lists()?;
+                let roots = parser.arena.push_children(&ids)?;
                 Ok(CompactParseResult::new(CompactExpr {
                     arena: parser.arena,
                     roots,
@@ -284,7 +285,7 @@ impl<'a> MathmlCompactParser<'a> {
         if ids.len() == 1 {
             ids[0]
         } else {
-            let span = self.arena.push_children(ids);
+            let span = self.arena.push_children_deferred(ids);
             self.arena.push_node(CompactNode::Row(span))
         }
     }
@@ -340,7 +341,7 @@ impl<'a> MathmlCompactParser<'a> {
                     && style != TextStyle::Italic
                 {
                     let inner = self.arena.push_node(CompactNode::Identifier(sid));
-                    let span = self.arena.push_children(&[inner]);
+                    let span = self.arena.push_children_deferred(&[inner]);
                     return Ok(self.arena.push_node(CompactNode::Styled(style, span)));
                 }
                 Ok(self.arena.push_node(CompactNode::Identifier(sid)))
@@ -386,7 +387,7 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "mrow" => {
                 let children = self.parse_children(name)?;
-                let span = self.arena.push_children(&children);
+                let span = self.arena.push_children_deferred(&children);
                 Ok(self.arena.push_node(CompactNode::Row(span)))
             },
             "mfrac" => {
@@ -485,7 +486,7 @@ impl<'a> MathmlCompactParser<'a> {
                 let open = get_attr(start, "open").unwrap_or_else(|| "(".into());
                 let close = get_attr(start, "close").unwrap_or_else(|| ")".into());
                 let children = self.parse_children(name)?;
-                let content = self.arena.push_children(&children);
+                let content = self.arena.push_children_deferred(&children);
                 let open_sid = self.arena.push_str(&open);
                 let close_sid = self.arena.push_str(&close);
                 Ok(self.arena.push_node(CompactNode::Fenced {
@@ -506,12 +507,12 @@ impl<'a> MathmlCompactParser<'a> {
                             .push_node(CompactNode::ColAlign(ColumnAlign::Center)),
                     );
                 }
-                let col_aligns = self.arena.push_children(&align_ids);
+                let col_aligns = self.arena.push_children_deferred(&align_ids);
 
                 let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
                 for row in &rows {
                     for cell_children in row {
-                        let span = self.arena.push_children(cell_children);
+                        let span = self.arena.push_children_deferred(cell_children);
                         cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
                     }
                     // Pad short rows
@@ -519,7 +520,7 @@ impl<'a> MathmlCompactParser<'a> {
                         cell_ids.push(self.empty_row());
                     }
                 }
-                let cells = self.arena.push_children(&cell_ids);
+                let cells = self.arena.push_children_deferred(&cell_ids);
 
                 Ok(self.arena.push_node(CompactNode::Array {
                     col_aligns,
@@ -590,7 +591,7 @@ impl<'a> MathmlCompactParser<'a> {
                 if let Some(variant) = mathvariant
                     && let Some(style) = mathvariant_to_style(&variant)
                 {
-                    let span = self.arena.push_children(&children);
+                    let span = self.arena.push_children_deferred(&children);
                     return Ok(self.arena.push_node(CompactNode::Styled(style, span)));
                 }
                 Ok(self.flatten_ids(&children))
