@@ -90,6 +90,39 @@ pub enum Error {
         /// The configured byte limit that was exceeded.
         limit: usize,
     },
+
+    /// Parsing stopped because the input needed more of a bounded resource
+    /// than the [`Config`] allows (see [`LimitKind`]).
+    #[error("{kind} limit of {limit} exceeded")]
+    LimitExceeded {
+        /// Which configured limit was exceeded.
+        kind: LimitKind,
+        /// The configured value of that limit.
+        limit: usize,
+    },
+}
+
+/// A resource limit that readers enforce while parsing untrusted input.
+///
+/// Reported by [`Error::LimitExceeded`]. The input-size limit has its own
+/// variant, [`Error::InputTooLarge`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LimitKind {
+    /// The number of AST nodes (or input records) a single parse may create;
+    /// see [`Config::max_nodes`].
+    Nodes,
+    /// The structural nesting depth of the input; see [`Config::max_depth`].
+    Depth,
+}
+
+impl std::fmt::Display for LimitKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            LimitKind::Nodes => "node count",
+            LimitKind::Depth => "nesting depth",
+        })
+    }
 }
 
 // `quick_xml` is an implementation detail of the MathML/OMML readers. Convert
@@ -224,8 +257,17 @@ pub enum Strictness {
 /// that would otherwise be fully tokenized and parsed.
 pub const DEFAULT_MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 
+/// Default upper bound on the number of AST nodes a single parse may create.
+/// Real formulas need a few thousand at most.
+pub const DEFAULT_MAX_NODES: usize = 1_000_000;
+
+/// Default upper bound on the structural nesting depth of parsed input. It is
+/// also the ceiling: the AST validators reject trees nested more deeply than
+/// [`MAX_AST_DEPTH`](crate::ast::MAX_AST_DEPTH), so larger values have no effect.
+pub const DEFAULT_MAX_DEPTH: usize = crate::ast::MAX_AST_DEPTH;
+
 /// Configuration for readers and writers.
-// Both fields are `Copy`, so deriving `Copy` avoids unnecessary `.clone()` calls
+// All fields are `Copy`, so deriving `Copy` avoids unnecessary `.clone()` calls
 // across all `from_*_with` conversion functions.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -238,6 +280,17 @@ pub struct Config {
     /// Maximum accepted input size in bytes. `None` disables the limit.
     /// Defaults to [`DEFAULT_MAX_INPUT_BYTES`].
     pub max_input_bytes: Option<usize>,
+    /// Maximum number of AST nodes (and, for binary formats, input records) a
+    /// single parse may create. `None` disables the limit. Exceeding it fails
+    /// with [`Error::LimitExceeded`] and [`LimitKind::Nodes`].
+    /// Defaults to [`DEFAULT_MAX_NODES`]. Currently enforced by the MTEF reader.
+    pub max_nodes: Option<usize>,
+    /// Maximum structural nesting depth of the input, in the reader's own
+    /// structural units (for MTEF: nested object lists). Exceeding it fails
+    /// with [`Error::LimitExceeded`] and [`LimitKind::Depth`]. Values above
+    /// [`DEFAULT_MAX_DEPTH`] are clamped to it. Currently enforced by the MTEF
+    /// reader; the other readers use a fixed depth of the same size.
+    pub max_depth: usize,
 }
 
 impl Default for Config {
@@ -246,6 +299,8 @@ impl Default for Config {
             strictness: Strictness::Strict,
             display: DisplayStyle::Block,
             max_input_bytes: Some(DEFAULT_MAX_INPUT_BYTES),
+            max_nodes: Some(DEFAULT_MAX_NODES),
+            max_depth: DEFAULT_MAX_DEPTH,
         }
     }
 }
@@ -273,20 +328,46 @@ impl Config {
         self
     }
 
+    /// Builder: set the maximum number of AST nodes a parse may create
+    /// (`None` disables the limit).
+    #[must_use]
+    pub fn with_max_nodes(mut self, max_nodes: Option<usize>) -> Self {
+        self.max_nodes = max_nodes;
+        self
+    }
+
+    /// Builder: set the maximum structural nesting depth (clamped to
+    /// [`DEFAULT_MAX_DEPTH`]).
+    #[must_use]
+    pub fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
     /// Return an error if `input` exceeds the configured `max_input_bytes`.
     ///
     /// Called at reader entry points so oversized inputs are rejected before
     /// any tokenization or parsing work is done.
     pub fn check_input_size(&self, input: &str) -> Result<()> {
+        self.check_input_len(input.len())
+    }
+
+    /// Return an error if an input of `len` bytes exceeds `max_input_bytes`.
+    /// The byte-slice counterpart of [`check_input_size`](Self::check_input_size).
+    pub fn check_input_len(&self, len: usize) -> Result<()> {
         if let Some(limit) = self.max_input_bytes
-            && input.len() > limit
+            && len > limit
         {
-            return Err(Error::InputTooLarge {
-                size: input.len(),
-                limit,
-            });
+            return Err(Error::InputTooLarge { size: len, limit });
         }
         Ok(())
+    }
+
+    /// The effective nesting-depth limit: [`max_depth`](Self::max_depth)
+    /// clamped to [`DEFAULT_MAX_DEPTH`].
+    #[must_use]
+    pub fn effective_max_depth(&self) -> usize {
+        self.max_depth.min(DEFAULT_MAX_DEPTH)
     }
 }
 

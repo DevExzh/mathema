@@ -68,7 +68,7 @@ pub use convert::{
     from_unicode_math_with,
 };
 pub use error::{
-    Config, Diagnostic, DiagnosticKind, Error, Format, ParseResult, Result, Strictness,
+    Config, Diagnostic, DiagnosticKind, Error, Format, LimitKind, ParseResult, Result, Strictness,
 };
 pub use reader::omml::{OmmlJustification, OmmlParagraph};
 #[cfg(feature = "raster")]
