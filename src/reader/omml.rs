@@ -176,12 +176,14 @@ impl MathReader for OmmlReader {
                 };
                 let roots = parser.single_expression(doc)?;
                 let Parser { arena, diags, .. } = parser;
+                arena.check_limits()?;
                 Ok(CompactParseResult::with_diagnostics(
                     CompactExpr::new(arena, roots, display),
                     diags,
                 ))
             },
-            Err(e) if config.strictness == Strictness::Lenient => {
+            // Resource limits apply in every mode.
+            Err(e) if config.strictness == Strictness::Lenient && !is_limit(&e) => {
                 let mut diags = parser.diags;
                 diags.push(warning(format!("OMML parse error (recovered): {e}")));
                 Ok(CompactParseResult::with_diagnostics(
@@ -218,6 +220,7 @@ impl OmmlReader {
                 for eq in doc.equations {
                     let mut arena = eq.arena.unwrap_or_default();
                     let roots = checked_span(&mut arena, &eq.ids)?;
+                    arena.check_limits()?;
                     equations.push(CompactExpr::new(arena, roots, display));
                 }
                 Ok(OmmlParagraph {
@@ -226,7 +229,8 @@ impl OmmlReader {
                     diagnostics: parser.diags,
                 })
             },
-            Err(e) if config.strictness == Strictness::Lenient => {
+            // Resource limits apply in every mode.
+            Err(e) if config.strictness == Strictness::Lenient && !is_limit(&e) => {
                 let mut diagnostics = parser.diags;
                 diagnostics.push(warning(format!("OMML parse error (recovered): {e}")));
                 Ok(OmmlParagraph {
@@ -365,6 +369,11 @@ fn omml_err(message: impl Into<String>) -> Error {
     Error::OmmlParse {
         message: message.into(),
     }
+}
+
+/// Whether `e` reports a resource limit, which Lenient mode must not hide.
+fn is_limit(e: &Error) -> bool {
+    matches!(e, Error::LimitExceeded { .. } | Error::InputTooLarge { .. })
 }
 
 /// Push `ids` as a child span, refusing spans the arena cannot index.

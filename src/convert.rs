@@ -317,6 +317,7 @@ pub fn from_latex(input: &str) -> Result<ConvertResult> {
 /// Parse LaTeX with custom configuration.
 pub fn from_latex_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let compact = LatexReader::parse_compact(input, config)?;
+    check_depth(&compact, config)?;
     Ok(ConvertResult {
         compact,
         config: *config,
@@ -332,6 +333,7 @@ pub fn from_mathml(input: &str) -> Result<ConvertResult> {
 /// Parse MathML with custom configuration.
 pub fn from_mathml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let compact = MathmlReader::parse_compact(input, config)?;
+    check_depth(&compact, config)?;
     Ok(ConvertResult {
         compact,
         config: *config,
@@ -347,6 +349,7 @@ pub fn from_omml(input: &str) -> Result<ConvertResult> {
 /// Parse OMML with custom configuration.
 pub fn from_omml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let compact = OmmlReader::parse_compact(input, config)?;
+    check_depth(&compact, config)?;
     Ok(ConvertResult {
         compact,
         config: *config,
@@ -396,17 +399,22 @@ pub fn from_mtef_bytes_with(bytes: &[u8], config: &Config) -> Result<ConvertResu
     finish_mtef(compact, info, config)
 }
 
+/// Refuse trees deeper than [`Config::max_depth`] before handing them out.
+fn check_depth(compact: &CompactParseResult, config: &Config) -> Result<()> {
+    crate::ast::validate_compact_depth_with(
+        &compact.expr.arena,
+        compact.expr.roots,
+        config.effective_max_depth(),
+    )
+}
+
 /// Apply the checks and normalization [`convert_with`] applies.
 fn finish_mtef(
     mut compact: CompactParseResult,
     mtef: Option<MtefInfo>,
     config: &Config,
 ) -> Result<ConvertResult> {
-    crate::ast::validate_compact_depth_with(
-        &compact.expr.arena,
-        compact.expr.roots,
-        config.effective_max_depth(),
-    )?;
+    check_depth(&compact, config)?;
     normalize_compact_expr(&mut compact.expr)?;
     Ok(ConvertResult {
         compact,
@@ -423,6 +431,7 @@ pub fn from_unicode_math(input: &str) -> Result<ConvertResult> {
 /// Parse UnicodeMath with custom configuration.
 pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertResult> {
     let compact = UnicodeMathReader::parse_compact(input, config)?;
+    check_depth(&compact, config)?;
     Ok(ConvertResult {
         compact,
         config: *config,
