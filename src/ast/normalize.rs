@@ -233,15 +233,19 @@ pub(crate) fn is_limit_function(name: &str) -> bool {
     )
 }
 
-/// Whether a node takes limits: a big operator, or a function name such as
-/// lim. Mirrors `takes_limits` for compact nodes.
+/// Whether a function name such as sin or lim is spelled `name`.
+fn is_function_name(name: &str) -> bool {
+    is_limit_function(name) || crate::unicode::symbols::is_operator_command(name)
+}
+
+/// Whether a node takes a script that follows it: a big operator (as its
+/// limit) or a function name (as its limit or its script). Mirrors
+/// `takes_limits` for compact nodes.
 fn takes_limits_math(node: &MathNode) -> bool {
     match node {
         MathNode::Symbol(SymbolKind::LargeOp, _) => true,
-        MathNode::Operator(attr) => {
-            attr.limit_style == LimitStyle::AboveBelow || is_limit_function(&attr.name)
-        },
-        MathNode::Identifier(name) | MathNode::Symbol(_, name) => is_limit_function(name),
+        MathNode::Operator(_) => true,
+        MathNode::Identifier(name) | MathNode::Symbol(_, name) => is_function_name(name),
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
             ..
@@ -763,9 +767,21 @@ fn normalize_compact_node(
                     pre_sub: sub.unwrap_or(NodeId::NONE),
                     pre_sup: sup.unwrap_or(NodeId::NONE),
                 },
-                (Some(sub), Some(sup)) => CompactNode::SubSup { base, sub, sup },
-                (Some(sub), None) => CompactNode::Subscript { base, sub },
-                (None, Some(sup)) => CompactNode::Superscript { base, sup },
+                // An effectively empty base (a zero-width space, an empty
+                // row) is the empty row an empty-base script has.
+                (Some(sub), Some(sup)) => CompactNode::SubSup {
+                    base: arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    sub,
+                    sup,
+                },
+                (Some(sub), None) => CompactNode::Subscript {
+                    base: arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    sub,
+                },
+                (None, Some(sup)) => CompactNode::Superscript {
+                    base: arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    sup,
+                },
             };
             *arena.node_mut(id) = replacement;
         },
@@ -1074,17 +1090,17 @@ fn empty_base_scripts(arena: &AstArena, id: NodeId) -> Option<(NodeId, NodeId)> 
     }
 }
 
-/// Whether a node takes limits: a big operator, or a function name such as
-/// lim.
+/// Whether a node takes a script that follows it: a big operator (as its
+/// limit) or a function name (as its limit or its script).
 pub(crate) fn takes_limits(arena: &AstArena, node: CompactNode) -> bool {
     match node {
         CompactNode::Symbol(SymbolKind::LargeOp, _) => true,
-        CompactNode::Operator { name, limits } => {
-            limits == LimitStyle::AboveBelow || is_limit_function(arena.str_val(name))
-        },
-        // MathML writes function names as `<mi>lim</mi>` or `<mo>lim</mo>`.
+        // Function names take the script as their limit (lim) or as an
+        // ordinary script (`\sin {}^2 x` is sin squared).
+        CompactNode::Operator { .. } => true,
+        // MathML writes function names as `<mi>lim</mi>` or `<mo>sin</mo>`.
         CompactNode::Identifier(name) | CompactNode::Symbol(_, name) => {
-            is_limit_function(arena.str_val(name))
+            is_function_name(arena.str_val(name))
         },
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
@@ -1095,7 +1111,7 @@ pub(crate) fn takes_limits(arena: &AstArena, node: CompactNode) -> bool {
 }
 
 /// Whether a node can be the base of leading scripts.
-fn can_take_prescripts(node: CompactNode) -> bool {
+pub(crate) fn can_take_prescripts(node: CompactNode) -> bool {
     !matches!(
         node,
         CompactNode::PreScripts { .. }
