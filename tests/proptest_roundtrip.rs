@@ -455,7 +455,6 @@ proptest! {
     /// MTEF: the writer emits hex, the reader parses it; write→parse→write must
     /// be stable (idempotent) despite MTEF being a lossy target.
     #[test]
-    #[ignore = "the MTEF writer does not yet write the MTEF 5 template layout (script bases before the template, radicand before the root index)"]
     fn mtef_roundtrip_idempotent(expr in arb_roundtrip_expr()) {
         let config = Config::default();
         if let Ok(mtef1) = MtefWriter::write(&expr, &config)
@@ -468,16 +467,17 @@ proptest! {
         }
     }
 
-    /// MTEF writer output must always be readable in Lenient mode (the writer
-    /// does not yet emit the closing END record or the MTEF 5 template layout
-    /// that Strict mode requires), and reading it must never panic.
+    /// MTEF writer output must always be readable, in Strict mode too, and
+    /// reading it must never panic.
     #[test]
-    fn mtef_writer_output_reads_leniently(expr in arb_roundtrip_expr()) {
+    fn mtef_writer_output_reads_in_both_modes(expr in arb_roundtrip_expr()) {
         let config = Config::default();
         let lenient = Config::default().with_strictness(mathema::Strictness::Lenient);
         if let Ok(hex) = MtefWriter::write(&expr, &config) {
             let parsed = MtefReader::parse(&hex, &lenient);
             prop_assert!(parsed.is_ok(), "lenient read failed: {parsed:?}\n  mtef: {hex}");
+            let strict = MtefReader::parse(&hex, &config);
+            prop_assert!(strict.is_ok(), "strict read failed: {strict:?}\n  mtef: {hex}");
             let bytes: Vec<u8> = (0..hex.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())

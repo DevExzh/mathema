@@ -678,11 +678,9 @@ fn builder_api_unicode_math_roundtrip() {
 // =========================================================================
 // MTEF cross-format tests
 //
-// The MTEF writer omits the END record that closes the equation, which only
-// Lenient mode accepts, so its output is read back leniently.
+// Output of the MTEF writer is read back in Strict mode.
 fn from_writer(mtef: &str, to: Format) -> mathema::Result<String> {
-    let config = Config::default().with_strictness(Strictness::Lenient);
-    convert_with(mtef, Format::Mtef, to, &config)
+    convert_with(mtef, Format::Mtef, to, &Config::default())
 }
 // =========================================================================
 
@@ -712,7 +710,6 @@ fn latex_to_mtef_sqrt() {
 }
 
 #[test]
-#[ignore = "the MTEF writer does not yet write the MTEF 5 template layout (script bases before the template, radicand before the root index)"]
 fn latex_to_mtef_superscript() {
     let mtef = convert("x^2", Format::LaTeX, Format::Mtef).unwrap();
     assert!(

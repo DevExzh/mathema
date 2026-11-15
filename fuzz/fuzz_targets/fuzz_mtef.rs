@@ -18,5 +18,13 @@ fuzz_target!(|data: &[u8]| {
     let lenient = config.with_strictness(Strictness::Lenient);
     if let Ok(result) = mathema::from_mtef_bytes_with(data, &lenient) {
         let _ = result.to_latex();
+        // Whatever was decoded must be writable as MTEF 5 and MTEF 3, and the
+        // writer's output must read back in Strict mode.
+        for version in [mathema::MtefVersion::V5, mathema::MtefVersion::V3] {
+            let options = mathema::MtefWriteOptions::new(version);
+            if let Ok(bytes) = result.to_mtef_bytes(&options) {
+                assert!(mathema::from_mtef_bytes(&bytes).is_ok());
+            }
+        }
     }
 });
