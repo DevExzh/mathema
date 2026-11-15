@@ -457,29 +457,7 @@ pub(super) const LONG_DIVISION: &str = "\u{27CC}";
 
 /// Function names whose scripts MathType places with the limit template
 /// (`tmLIM`), under and over the name in display style.
-pub(super) fn is_limit_function(name: &str) -> bool {
-    matches!(
-        name,
-        "lim"
-            | "liminf"
-            | "limsup"
-            | "lim inf"
-            | "lim sup"
-            | "max"
-            | "min"
-            | "sup"
-            | "inf"
-            | "det"
-            | "gcd"
-            | "Pr"
-            | "argmax"
-            | "argmin"
-            | "arg max"
-            | "arg min"
-            | "inj lim"
-            | "proj lim"
-    )
-}
+pub(super) use crate::ast::normalize::is_limit_function;
 
 /// Integral signs, whose limits default to the integral-style placement.
 pub(super) fn is_integral(op: char) -> bool {

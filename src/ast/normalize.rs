@@ -77,10 +77,19 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
         merged_ids.push(node);
     }
 
-    // Phase 4: an empty-base script is a leading script of the next node
-    // (see `normalize_compact_span`).
-    let mut coalesced: Vec<MathNode> = Vec::with_capacity(merged_ids.len());
-    for node in merged_ids.into_iter().rev() {
+    // Phase 4: an empty-base script is a limit of a big operator before it,
+    // else a leading script of the next node (see `normalize_compact_span`).
+    let mut with_limits: Vec<MathNode> = Vec::with_capacity(merged_ids.len());
+    for node in merged_ids {
+        if is_empty_base_script_math(&node) && with_limits.last().is_some_and(takes_limits_math) {
+            let prev = with_limits.pop().unwrap_or(MathNode::Row(Vec::new()));
+            with_limits.push(make_script_with_base_math(prev, node));
+            continue;
+        }
+        with_limits.push(node);
+    }
+    let mut coalesced: Vec<MathNode> = Vec::with_capacity(with_limits.len());
+    for node in with_limits.into_iter().rev() {
         if is_empty_base_script_math(&node)
             && coalesced.last().is_some_and(|next| {
                 can_take_prescripts_math(next) && !is_empty_base_script_math(next)
@@ -197,6 +206,50 @@ fn make_script_with_base_math(base: MathNode, script: MathNode) -> MathNode {
     }
 }
 
+/// Function names whose scripts are limits, set under the name in display
+/// style (UTN #28 lists det, gcd, inf, lim, lim inf, lim sup, max, min, Pr
+/// and sup).
+pub(crate) fn is_limit_function(name: &str) -> bool {
+    matches!(
+        name,
+        "lim"
+            | "liminf"
+            | "limsup"
+            | "lim inf"
+            | "lim sup"
+            | "max"
+            | "min"
+            | "sup"
+            | "inf"
+            | "det"
+            | "gcd"
+            | "Pr"
+            | "argmax"
+            | "argmin"
+            | "arg max"
+            | "arg min"
+            | "inj lim"
+            | "proj lim"
+    )
+}
+
+/// Whether a node takes limits: a big operator, or a function name such as
+/// lim. Mirrors `takes_limits` for compact nodes.
+fn takes_limits_math(node: &MathNode) -> bool {
+    match node {
+        MathNode::Symbol(SymbolKind::LargeOp, _) => true,
+        MathNode::Operator(attr) => {
+            attr.limit_style == LimitStyle::AboveBelow || is_limit_function(&attr.name)
+        },
+        MathNode::Identifier(name) | MathNode::Symbol(_, name) => is_limit_function(name),
+        MathNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            ..
+        } => true,
+        _ => false,
+    }
+}
+
 /// Whether a node can be the base of leading scripts. Mirrors
 /// `can_take_prescripts` for compact nodes.
 fn can_take_prescripts_math(node: &MathNode) -> bool {
@@ -243,8 +296,24 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
             }
             // Empty-base scripts become leading scripts of the next element;
             // middle delimiters are not elements and break the sequence.
-            let mut coalesced: Vec<FencedItem> = Vec::with_capacity(content.len());
-            for item in content.drain(..).rev() {
+            let mut with_limits: Vec<FencedItem> = Vec::with_capacity(content.len());
+            for item in content.drain(..) {
+                match item {
+                    FencedItem::Element(node)
+                        if is_empty_base_script_math(&node)
+                            && matches!(with_limits.last(), Some(FencedItem::Element(prev)) if takes_limits_math(prev)) =>
+                    {
+                        let Some(FencedItem::Element(prev)) = with_limits.pop() else {
+                            unreachable!()
+                        };
+                        with_limits
+                            .push(FencedItem::Element(make_script_with_base_math(prev, node)));
+                    },
+                    other => with_limits.push(other),
+                }
+            }
+            let mut coalesced: Vec<FencedItem> = Vec::with_capacity(with_limits.len());
+            for item in with_limits.into_iter().rev() {
                 match item {
                     FencedItem::Element(node)
                         if is_empty_base_script_math(&node)
@@ -507,9 +576,24 @@ fn normalize_compact_span(
     // an MTEF script template with tvSU_PRECEDES, MathML `mprescripts`,
     // OMML `m:sPre`): make it a leading script of the next node. Scripts the
     // LaTeX parser left without a base after white space (`| '`) are
-    // attached to the preceding atom by the parser itself.
+    // attached to the preceding atom by the parser itself. After a big
+    // operator or a function that takes limits the script is its limit
+    // (`<mo>∫</mo><msub><mrow/><mi>C</mi></msub>`, as TeX-to-MathML
+    // converters write `\int_C`).
+    let mut with_limits: SmallVec<[NodeId; 8]> = SmallVec::new();
+    for &id in &merged_ids {
+        if is_empty_base_script(arena, id)
+            && let Some(&prev_id) = with_limits.last()
+            && takes_limits(arena, *arena.node(prev_id))
+        {
+            with_limits.pop();
+            with_limits.push(make_script_with_base(arena, prev_id, id));
+            continue;
+        }
+        with_limits.push(id);
+    }
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &id in merged_ids.iter().rev() {
+    for &id in with_limits.iter().rev() {
         if let Some(&next_id) = coalesced.last()
             && let Some((sub, sup)) = empty_base_scripts(arena, id)
             && can_take_prescripts(*arena.node(next_id))
@@ -987,6 +1071,26 @@ fn empty_base_scripts(arena: &AstArena, id: NodeId) -> Option<(NodeId, NodeId)> 
         CompactNode::Superscript { sup, .. } => Some((NodeId::NONE, sup)),
         CompactNode::SubSup { sub, sup, .. } => Some((sub, sup)),
         _ => None,
+    }
+}
+
+/// Whether a node takes limits: a big operator, or a function name such as
+/// lim.
+pub(crate) fn takes_limits(arena: &AstArena, node: CompactNode) -> bool {
+    match node {
+        CompactNode::Symbol(SymbolKind::LargeOp, _) => true,
+        CompactNode::Operator { name, limits } => {
+            limits == LimitStyle::AboveBelow || is_limit_function(arena.str_val(name))
+        },
+        // MathML writes function names as `<mi>lim</mi>` or `<mo>lim</mo>`.
+        CompactNode::Identifier(name) | CompactNode::Symbol(_, name) => {
+            is_limit_function(arena.str_val(name))
+        },
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            ..
+        } => true,
+        _ => false,
     }
 }
 
