@@ -25,7 +25,7 @@ let umath  = result.to_unicode_math().unwrap();
 | MathML | Yes (Presentation + Content) | Yes (Presentation only) |
 | Office MathML (OMML) | Yes | Yes |
 | UnicodeMath | Yes | Yes |
-| MathType (MTEF 3 and 5) | Yes (binary or hex; bare or OLE `Equation Native`) | Yes (hex) |
+| MathType (MTEF 3 and 5) | Yes (binary or hex; bare or OLE `Equation Native`) | Yes (MTEF 3 or 5; binary or hex; bare or OLE `Equation Native`) |
 | SVG | -- | Yes (`render`) |
 | PNG | -- | Yes (`raster`) |
 | JPEG | -- | Yes (`raster`) |
@@ -37,7 +37,9 @@ let umath  = result.to_unicode_math().unwrap();
 > (MTEF 5) equations, with or without the OLE `Equation Native` header, and
 > `ConvertResult::mtef_info` reports which one the input was. MathType's
 > typesetting data (fonts, sizes, nudges, colours, tab stops) has no place in
-> the AST and is not kept.
+> the AST and is not kept. `ConvertResult::to_mtef_bytes` writes MTEF 5 or
+> MTEF 3; `MtefWriteOptions::from_info(result.mtef_info())` writes an
+> equation back as the same kind of object it was read from.
 
 ## CLI
 

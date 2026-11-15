@@ -14,7 +14,7 @@ use crate::reader::unicode_math::UnicodeMathReader;
 use crate::writer::Writer;
 use crate::writer::latex::LatexWriter;
 use crate::writer::mathml::MathmlWriter;
-use crate::writer::mtef::MtefWriter;
+use crate::writer::mtef::{MtefWriteOptions, MtefWriter};
 use crate::writer::omml::OmmlWriter;
 use crate::writer::unicode_math::UnicodeMathWriter;
 
@@ -138,9 +138,48 @@ impl ConvertResult {
         OmmlWriter::write_with_options(&self.compact.expr, &self.config, options)
     }
 
-    /// Serialize the parsed expression to MTEF (hex-encoded MathType bytes).
+    /// Serialize the parsed expression to MTEF 5, hex-encoded: the bytes
+    /// [`to_mtef_bytes`](Self::to_mtef_bytes) returns with the default
+    /// [`MtefWriteOptions`].
     pub fn to_mtef(&self) -> Result<String> {
         MtefWriter::write_compact(&self.compact.expr, &self.config)
+    }
+
+    /// Serialize the parsed expression to binary MTEF.
+    ///
+    /// `options` selects MTEF 5 (MathType, the default) or MTEF 3 (Equation
+    /// Editor 3.x) and whether to add the OLE `Equation Native` header. To
+    /// write an equation read from MTEF back as the same kind of object, use
+    /// [`MtefWriteOptions::from_info`] with [`mtef_info`](Self::mtef_info).
+    ///
+    /// ```
+    /// use mathema::MtefWriteOptions;
+    ///
+    /// let result = mathema::from_latex(r"\sqrt{x}").unwrap();
+    /// let bytes = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    /// let back = mathema::from_mtef_bytes(&bytes).unwrap();
+    /// assert_eq!(back.to_latex().unwrap(), r"\sqrt{x}");
+    ///
+    /// // Keep the version and product of an equation read from MTEF.
+    /// let options = back.mtef_info().map(MtefWriteOptions::from_info).unwrap_or_default();
+    /// assert_eq!(back.to_mtef_bytes(&options).unwrap(), bytes);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// See [`MtefWriter::write_bytes`].
+    pub fn to_mtef_bytes(&self, options: &MtefWriteOptions) -> Result<Vec<u8>> {
+        MtefWriter::write_bytes(&self.compact.expr, &self.config, options)
+    }
+
+    /// Serialize to binary MTEF, also returning writer-side loss
+    /// diagnostics. See [`to_mtef_bytes`](Self::to_mtef_bytes) and
+    /// [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
+    pub fn to_mtef_bytes_with_diagnostics(
+        &self,
+        options: &MtefWriteOptions,
+    ) -> Result<(Vec<u8>, Vec<crate::error::Diagnostic>)> {
+        MtefWriter::write_bytes_with_diagnostics(&self.compact.expr, &self.config, options)
     }
 
     /// Serialize to MTEF using the given configuration.

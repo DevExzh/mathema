@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Available through `OmmlWriter::write_with_options` and
   `ConvertResult::to_omml_with_options`.
 
+- **Binary MTEF output:** `ConvertResult::to_mtef_bytes` /
+  `to_mtef_bytes_with_diagnostics` and `MtefWriter::write_bytes` write MTEF 5
+  (MathType, `Equation.DSMT4`) or MTEF 3 (Equation Editor 3.x,
+  `Equation.3`), optionally with the 28-byte OLE `EQNOLEFILEHDR`.
+  `MtefWriteOptions` selects the version and the header's product identity;
+  `MtefWriteOptions::from_info` keeps the kind of an equation read from MTEF.
 - **Binary MTEF input:** `from_mtef_bytes` / `from_mtef_bytes_with` read bare
   MTEF data or an OLE `Equation Native` stream (the 28-byte `EQNOLEFILEHDR` is
   detected and validated) and apply the same depth check and normalization as
@@ -32,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validators now report `LimitExceeded` instead of `Unsupported`.
 
 ### Changed
+
+- MTEF writer rewritten to follow `MTEFv5.md` and `MTEFv3.md` and the layout
+  MathType and Equation Editor write: header, MathType's default encoding,
+  font and EQN_PREFS definitions (MTEF 5), typesize records where the size
+  changes, script templates after their base, roots with the radicand before
+  the index, big operators with main, lower and upper slots, the 0x10 / 0x20
+  limit bits and their operator characters, fence, arrow and accent
+  characters after template slots, piles and matrices, embellishments, and
+  the final END. Its output reads back in Strict mode; `to_mtef` still
+  returns MTEF 5 as hex.
 
 - **Breaking: list builders are fallible.** `AstArena::push_children`,
   `CompactExpr::from_math_expr`, `CompactParseResult::from_parse_result` and
