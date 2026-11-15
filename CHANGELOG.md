@@ -27,8 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a warning. Valid properties without an AST equivalent, including host
   run properties such as `w:sz` or `a:latin`, are dropped with an `Info`
   diagnostic naming them. Element nesting, child counts and matrix sizes are
-  bounded, and the padding of short matrix rows is limited across the whole
-  input in proportion to its length.
+  bounded, and the padding of short matrix rows and declared columns beyond
+  the widest row are limited across the whole input in proportion to its
+  length.
 - **The OMML reader keeps more structure.** `m:eqArr` reads as an `Array`
   with `add_jot`: `&` alignment points in its rows become right/left
   alternating columns, rows without them a single centred column; `m:box` as a `MathAtom` (`Op` with `m:opEmu`);
@@ -48,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellations hide the box sides. Color is written only into the host run
   properties and never into `m:rPr`; without a host dialect it is reported as
   lost. Loss diagnostics now come from the writer itself.
+- **`#RRGGBB` colors reach LaTeX** as `\textcolor[HTML]{RRGGBB}` instead of
+  being dropped during normalization.
 - **The LaTeX and MTEF writers drop invisible operators** (U+2061–U+2064)
   instead of emitting them as raw characters.
 

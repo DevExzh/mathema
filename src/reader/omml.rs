@@ -2016,22 +2016,28 @@ impl<'i> Parser<'i> {
             align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
         }
         let col_aligns = checked_span(&mut self.arena, &align_ids)?;
+        // Nodes not backed by input: padding cells of short rows and
+        // declared column alignments beyond the widest row. Both draw on one
+        // budget for the whole input.
         let read: usize = rows.iter().map(|r| r.len()).sum();
         let padding = rows.len() * ncols - read;
-        if padding > self.padding_budget {
+        let extra = padding + ncols.saturating_sub(widest.max(1));
+        if extra > self.padding_budget {
             return Err(omml_err(format!(
-                "short matrix rows need {padding} padding cells, more than the {} \
-                 the input size allows",
+                "a matrix needs {extra} padding cells and column alignments, more than \
+                 the {} the input size allows",
                 self.padding_budget
             )));
         }
-        self.padding_budget -= padding;
-        // Every padding cell refers to one shared empty row of this matrix.
-        let empty = self.empty_row();
+        self.padding_budget -= extra;
+        // Each padding cell is its own node, so editing one in place cannot
+        // change the others.
         let mut cells: Vec<NodeId> = Vec::with_capacity(rows.len() * ncols);
         for row in &rows {
             cells.extend_from_slice(row);
-            cells.extend(std::iter::repeat_n(empty, ncols - row.len()));
+            for _ in row.len()..ncols {
+                cells.push(self.empty_row());
+            }
         }
         let cells = checked_span(&mut self.arena, &cells)?;
         Ok(self.arena.push_node(CompactNode::Array {

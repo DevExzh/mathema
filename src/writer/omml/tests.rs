@@ -497,3 +497,24 @@ fn aligned_equation_array_writes_ampersand_alignment_points() {
     let latex = crate::writer::latex::LatexWriter::write_compact(&back.expr, &config).unwrap();
     assert!(!latex.contains("\\&"), "{latex}");
 }
+
+#[test]
+fn trailing_alignment_point_survives_the_round_trip() {
+    let config = Config::default();
+    let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:eqArr><m:e><m:r><m:t>&amp;x&amp;</m:t></m:r></m:e><m:e><m:r><m:t>&amp;</m:t></m:r></m:e></m:eqArr></m:oMath>"#;
+    let first = OmmlReader::parse_compact(input, &config).unwrap();
+    let out = OmmlWriter::write_compact(&first.expr, &config).unwrap();
+    assert!(
+        out.contains("<m:eqArr><m:e><m:r><m:t>&amp;</m:t></m:r><m:r><m:t>x</m:t></m:r><m:r><m:t>&amp;</m:t></m:r></m:e>"),
+        "{out}"
+    );
+    let second = OmmlReader::parse_compact(&out, &config).unwrap();
+    assert_eq!(first.expr.to_math_expr(), second.expr.to_math_expr());
+}
+
+#[test]
+fn omml_color_reaches_latex_as_html_color() {
+    let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><m:r><w:rPr><w:color w:val="C00000"/></w:rPr><m:t>e</m:t></m:r></m:oMath>"#;
+    let latex = crate::convert(input, crate::Format::Omml, crate::Format::LaTeX).unwrap();
+    assert!(latex.contains(r"\textcolor[HTML]{C00000}{e}"), "{latex}");
+}

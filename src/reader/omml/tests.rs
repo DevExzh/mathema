@@ -958,3 +958,46 @@ fn equation_array_ampersands_are_alignment_points() {
         other => panic!("expected an aligned equation array, got {other:?}"),
     }
 }
+
+#[test]
+fn declared_matrix_columns_draw_on_the_padding_budget() {
+    // 257 column groups of 255 columns each and no rows.
+    let mc = r#"<m:mc><m:mcPr><m:count m:val="255"/></m:mcPr></m:mc>"#;
+    let matrix = format!(
+        "<m:m><m:mPr><m:mcs>{}</m:mcs></m:mPr></m:m>",
+        mc.repeat(257)
+    );
+    let input = omath(&matrix.repeat(312));
+    assert!(input.len() <= crate::error::DEFAULT_MAX_INPUT_BYTES);
+    assert!(strict_err(&input).contains("column alignments"));
+    // Declared columns that rows actually use cost nothing extra.
+    let used = omath(
+        r#"<m:m><m:mPr><m:mcs><m:mc><m:mcPr><m:count m:val="2"/></m:mcPr></m:mc></m:mcs></m:mPr><m:mr><m:e/><m:e/></m:mr></m:m>"#,
+    );
+    assert!(OmmlReader::parse(&used, &Config::default()).is_ok());
+}
+
+#[test]
+fn padding_cells_are_separate_nodes() {
+    use crate::reader::Reader as _;
+    let input = omath(&format!(
+        "<m:m><m:mr><m:e/><m:e/><m:e/></m:mr><m:mr><m:e>{}</m:e></m:mr></m:m>",
+        run("a")
+    ));
+    let mut expr = OmmlReader::parse_compact(&input, &Config::default())
+        .unwrap()
+        .expr;
+    let root = expr.arena.children(expr.roots)[0];
+    let CompactNode::Array { cells, .. } = *expr.arena.node(root) else {
+        panic!("expected an array");
+    };
+    let cells: Vec<NodeId> = expr.arena.children(cells).to_vec();
+    // Row 2 is [a, pad, pad]: edit the first padding cell in place.
+    let (pad1, pad2) = (cells[4], cells[5]);
+    assert_ne!(pad1, pad2);
+    let x = expr.arena.push_str("x");
+    let ident = expr.arena.push_node(CompactNode::Identifier(x));
+    let span = expr.arena.push_children(&[ident]);
+    *expr.arena.node_mut(pad1) = CompactNode::Row(span);
+    assert!(matches!(*expr.arena.node(pad2), CompactNode::Row(s) if s.is_empty()));
+}

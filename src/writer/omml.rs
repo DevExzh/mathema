@@ -659,10 +659,6 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn is_empty_cell(&self, id: NodeId) -> bool {
-        matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
-    }
-
     fn node(&mut self, id: NodeId, fmt: Fmt) {
         match *self.arena.node(id) {
             CompactNode::Number(sid) => self.leaf(sid, Leaf::Number, fmt),
@@ -1133,12 +1129,10 @@ impl<'a> Emitter<'a> {
                 self.buf.push_str("<m:e></m:e>");
             }
             for row in cell_ids.chunks(ncols) {
-                let used = row
-                    .iter()
-                    .rposition(|&c| !self.is_empty_cell(c))
-                    .map_or(0, |i| i + 1);
+                // Every cell is written, empty ones too, so a trailing `&`
+                // survives the round trip.
                 self.open("m:e");
-                for (i, &cell) in row[..used].iter().enumerate() {
+                for (i, &cell) in row.iter().enumerate() {
                     if i > 0 {
                         self.buf.push_str("<m:r><m:t>&amp;</m:t></m:r>");
                     }
