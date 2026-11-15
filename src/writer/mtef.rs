@@ -502,6 +502,11 @@ fn write_char_with_embell(
     ch: char,
     embell: Option<u8>,
 ) -> Result<()> {
+    // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064) only mark
+    // structure and have no MathType glyph.
+    if matches!(ch, '\u{2061}'..='\u{2064}') {
+        return Ok(());
+    }
     let code = u16::try_from(u32::from(ch)).map_err(|_| {
         crate::error::Error::Unsupported(format!(
             "character U+{:04X} exceeds MTEF 16-bit encoding limit",
