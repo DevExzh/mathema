@@ -39,7 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AstArena::MAX_CHILDREN` (65 535) children with `LimitKind::ListLength`.
   Parsers that cannot return an error where they build a list use
   `AstArena::push_children_deferred` and report it through
-  `AstArena::check_lists`.
+  `AstArena::check_limits`, which also reports `LimitKind::ArenaSize` when
+  nodes, child references or string bytes would outgrow 32-bit indices.
+- `from_latex_with`, `from_mathml_with`, `from_omml_with` and
+  `from_unicode_math_with` now check `Config::max_depth`.
 - **The OMML reader is strict.** In Strict mode malformed XML (mismatched or
   missing end tags, unclosed comments, truncated input, undeclared entities,
   duplicate attributes), unknown math elements, invalid property values and
@@ -88,6 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Normalization merged runs of letters, digits or text quadratically (65 000
+  letters used about 2 GB) and 32-bit string offsets could wrap; runs are now
+  merged in linear time and arena growth past 32 bits is refused.
+- Lenient OMML reported resource limits as an empty result with a warning;
+  limits now fail in every mode.
 - Lists longer than 65 535 nodes were silently truncated by every reader
   and by normalization (for example two OMML `m:e` of 40 000 runs flattened
   into one delimiter): they are now refused with `LimitKind::ListLength`.
