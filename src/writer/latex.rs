@@ -1010,24 +1010,38 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Color { color, content } => {
             let color_str = arena.str_val(color);
+            // `#RRGGBB` (as read from OMML or `[HTML]`) uses xcolor's HTML model.
+            let html = color_str
+                .strip_prefix('#')
+                .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()));
             // A malformed color argument may contain characters that cannot be
             // written verbatim inside \textcolor{...} without breaking brace
             // balance or being re-interpreted as special LaTeX tokens. In those
             // cases the color cannot round-trip, so emit only the content.
-            if color_str.chars().any(|c| {
-                matches!(
-                    c,
-                    '{' | '}' | '\\' | '~' | '#' | '$' | '%' | '&' | '^' | '_'
-                )
-            }) {
+            if html.is_none()
+                && color_str.chars().any(|c| {
+                    matches!(
+                        c,
+                        '{' | '}' | '\\' | '~' | '#' | '$' | '%' | '&' | '^' | '_'
+                    )
+                })
+            {
                 if let CompactNode::Row(span) = *arena.node(content) {
                     write_nodes(buf, arena, span);
                 } else {
                     write_node(buf, arena, content);
                 }
             } else {
-                buf.push_str("\\textcolor{");
-                buf.push_str(color_str);
+                match html {
+                    Some(hex) => {
+                        buf.push_str("\\textcolor[HTML]{");
+                        buf.push_str(hex);
+                    },
+                    None => {
+                        buf.push_str("\\textcolor{");
+                        buf.push_str(color_str);
+                    },
+                }
                 buf.push_str("}{");
                 // The outer braces already group the content; if it is a Row,
                 // write its children directly to avoid double-bracing (e.g.

@@ -856,6 +856,13 @@ fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> NodeId {
 /// Such wrappers are dropped during writing, so the normalizer flattens them
 /// early so spacing decisions see the wrapped content.
 fn is_unwritable_color(color: &str) -> bool {
+    // `#RRGGBB` is written as `\textcolor[HTML]{RRGGBB}`.
+    if color
+        .strip_prefix('#')
+        .is_some_and(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return false;
+    }
     color.chars().any(|c| {
         matches!(
             c,
