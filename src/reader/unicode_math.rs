@@ -162,11 +162,61 @@ impl CompactParser {
         }
         self.depth += 1;
         let result = (|| {
+            if (input.starts_with("(_") || input.starts_with("(^"))
+                && let Ok(found) = self.parse_prescripts(input)
+            {
+                return Ok(found);
+            }
             let (input, base) = self.parse_atom(input)?;
             self.parse_scripts(input, base)
         })();
         self.depth = self.depth.saturating_sub(1);
         result
+    }
+
+    /// UTN #28 section 3.3: `(_c^b)a` gives the base `a` the leading
+    /// subscript `c` and superscript `b`; either script may be left out
+    /// (`(_1^)F`).
+    fn parse_prescripts<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let fail =
+            |input| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
+        let mut rest = input.strip_prefix('(').ok_or_else(|| fail(input))?;
+        let mut script =
+            |rest: &mut &'a str,
+             mark: char|
+             -> std::result::Result<NodeId, nom::Err<nom::error::Error<&'a str>>> {
+                let Some(after) = rest.strip_prefix(mark) else {
+                    return Ok(NodeId::NONE);
+                };
+                if after.starts_with(')') || after.starts_with('^') {
+                    *rest = after;
+                    return Ok(NodeId::NONE);
+                }
+                // A script that is only a space (`(_ ^v)L`).
+                let spaces = after.len() - after.trim_start_matches([' ', '\u{00A0}']).len();
+                if spaces > 0 && after[spaces..].starts_with([')', '^']) {
+                    *rest = &after[spaces..];
+                    return Ok(self
+                        .arena
+                        .push_node(CompactNode::Space(Rational::new(1, 4))));
+                }
+                let (after, id) = self.parse_script_arg(after)?;
+                *rest = after;
+                Ok(id)
+            };
+        let pre_sub = script(&mut rest, '_')?;
+        let pre_sup = script(&mut rest, '^')?;
+        let rest = rest.strip_prefix(')').ok_or_else(|| fail(rest))?;
+        if pre_sub.is_none() && pre_sup.is_none() {
+            return Err(fail(input));
+        }
+        let (rest, base) = self.parse_element(rest)?;
+        let id = self.arena.push_node(CompactNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        });
+        Ok((rest, id))
     }
 
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {

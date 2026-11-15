@@ -160,7 +160,8 @@ fn write_node(out: &mut String, node: &MathNode) {
             pre_sub,
             pre_sup,
         } => {
-            // UnicodeMath doesn't have direct prescripts; approximate
+            // UTN #28 section 3.3: `(_sub^sup)base`.
+            out.push('(');
             if let Some(sub) = pre_sub {
                 out.push('_');
                 write_script_arg(out, sub);
@@ -169,6 +170,7 @@ fn write_node(out: &mut String, node: &MathNode) {
                 out.push('^');
                 write_script_arg(out, sup);
             }
+            out.push(')');
             write_node(out, base);
         },
 
@@ -478,6 +480,8 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             pre_sub,
             pre_sup,
         } => {
+            // UTN #28 section 3.3: `(_sub^sup)base`.
+            out.push('(');
             if pre_sub.is_some() {
                 out.push('_');
                 write_script_arg_c(out, arena, pre_sub);
@@ -486,6 +490,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
                 out.push('^');
                 write_script_arg_c(out, arena, pre_sup);
             }
+            out.push(')');
             write_node_c(out, arena, base);
         },
 
