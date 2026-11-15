@@ -49,7 +49,7 @@ impl MathReader for MathmlReader {
         match parser.parse_root() {
             Ok(ids) => {
                 let display = parser.display.unwrap_or(config.display);
-                parser.arena.check_lists()?;
+                parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
                 Ok(CompactParseResult::new(CompactExpr {
                     arena: parser.arena,

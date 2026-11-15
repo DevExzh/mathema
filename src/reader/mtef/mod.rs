@@ -118,6 +118,7 @@ impl MtefReader {
             Ok(roots) => {
                 let mut arena = decoder.arena;
                 let roots = arena.push_children(&roots)?;
+                arena.check_limits()?;
                 let expr = CompactExpr {
                     arena,
                     roots,

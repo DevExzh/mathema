@@ -1,7 +1,7 @@
 use smallvec::SmallVec;
 
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 
 /// Normalize a math expression in place.
@@ -365,10 +365,12 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
 ///
 /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
 /// [`LimitKind::ListLength`](crate::LimitKind::ListLength) when flattening
-/// nested rows would give one node more children than the arena can store.
+/// nested rows would give one node more children than the arena can store,
+/// or [`LimitKind::ArenaSize`](crate::LimitKind::ArenaSize) when the arena
+/// would outgrow its 32-bit indices.
 pub fn normalize_compact_expr(expr: &mut CompactExpr) -> crate::error::Result<()> {
     expr.roots = normalize_compact_span(&mut expr.arena, expr.roots, 0)?;
-    Ok(())
+    expr.arena.check_limits()
 }
 
 /// Normalize a span of child nodes. Returns a (possibly new) span.
@@ -446,42 +448,7 @@ fn normalize_compact_span(
         .collect();
 
     // Phase 3: merge adjacent Text nodes with the same style.
-    let mut merged: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &id in &splayed {
-        let node = *arena.node(id);
-        if let CompactNode::Text(style, sid) = node
-            && let Some(&prev_id) = merged.last()
-            && let CompactNode::Text(prev_style, prev_sid) = *arena.node(prev_id)
-            && prev_style == style
-        {
-            let prev_s = arena.str_val(prev_sid).to_owned();
-            let cur_s = arena.str_val(sid);
-            let combined = format!("{prev_s}{cur_s}");
-            let new_sid = arena.push_str(&combined);
-            *arena.node_mut(prev_id) = CompactNode::Text(style, new_sid);
-            continue;
-        }
-        merged.push(id);
-    }
-
     // Phase 3b: merge adjacent Number nodes.
-    let mut final_nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &id in &merged {
-        let node = *arena.node(id);
-        if let CompactNode::Number(sid) = node
-            && let Some(&prev_id) = final_nodes.last()
-            && let CompactNode::Number(prev_sid) = *arena.node(prev_id)
-        {
-            let prev_s = arena.str_val(prev_sid).to_owned();
-            let cur_s = arena.str_val(sid);
-            let combined = format!("{prev_s}{cur_s}");
-            let new_sid = arena.push_str(&combined);
-            *arena.node_mut(prev_id) = CompactNode::Number(new_sid);
-            continue;
-        }
-        final_nodes.push(id);
-    }
-
     // Phase 3c: merge adjacent ASCII Identifier nodes.  In math mode a run of
     // ASCII letters is a single multi-letter identifier, but the parser emits
     // each letter as its own node.  Coalescing them keeps the writer from
@@ -490,24 +457,23 @@ fn normalize_compact_span(
     // identifiers are not merged because the LaTeX writer may emit the first
     // character as a `\command`, which cannot absorb subsequent characters
     // stably.
-    let mut merged_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &id in &final_nodes {
-        let node = *arena.node(id);
-        if let CompactNode::Identifier(sid) = node
-            && let Some(&prev_id) = merged_ids.last()
-            && let CompactNode::Identifier(prev_sid) = *arena.node(prev_id)
-            && arena.str_val(prev_sid).is_ascii()
-            && arena.str_val(sid).is_ascii()
-        {
-            let prev_s = arena.str_val(prev_sid).to_owned();
-            let cur_s = arena.str_val(sid);
-            let combined = format!("{prev_s}{cur_s}");
-            let new_sid = arena.push_str(&combined);
-            *arena.node_mut(prev_id) = CompactNode::Identifier(new_sid);
-            continue;
-        }
-        merged_ids.push(id);
-    }
+    //
+    // Each run is collected first and its string interned once, so merging
+    // stays linear in the length of the run.
+    let merged = merge_runs(arena, &splayed, |_, node| match node {
+        CompactNode::Text(style, sid) => Some((MergeKind::Text(style), sid)),
+        _ => None,
+    });
+    let final_nodes = merge_runs(arena, &merged, |_, node| match node {
+        CompactNode::Number(sid) => Some((MergeKind::Number, sid)),
+        _ => None,
+    });
+    let merged_ids = merge_runs(arena, &final_nodes, |arena, node| match node {
+        CompactNode::Identifier(sid) if arena.str_val(sid).is_ascii() => {
+            Some((MergeKind::Identifier, sid))
+        },
+        _ => None,
+    });
 
     // Phase 4: attach empty-base scripts to the preceding atom.  In TeX a
     // sub/superscript marker immediately after an atom belongs to that atom;
@@ -528,6 +494,56 @@ fn normalize_compact_span(
     }
 
     arena.push_children(&coalesced)
+}
+
+/// The node kinds whose adjacent runs normalization merges.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MergeKind {
+    Text(TextStyle),
+    Number,
+    Identifier,
+}
+
+/// Merge each run of adjacent nodes that `key` gives the same kind into the
+/// run's first node, interning the run's string once.
+fn merge_runs(
+    arena: &mut AstArena,
+    ids: &[NodeId],
+    key: impl Fn(&AstArena, CompactNode) -> Option<(MergeKind, StrId)>,
+) -> SmallVec<[NodeId; 8]> {
+    let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+    let mut i = 0;
+    while i < ids.len() {
+        let first = ids[i];
+        let Some((kind, first_sid)) = key(arena, *arena.node(first)) else {
+            out.push(first);
+            i += 1;
+            continue;
+        };
+        let mut end = i + 1;
+        while end < ids.len()
+            && matches!(key(arena, *arena.node(ids[end])), Some((k, _)) if k == kind)
+        {
+            end += 1;
+        }
+        if end - i > 1 {
+            let mut combined = String::from(arena.str_val(first_sid));
+            for &id in &ids[i + 1..end] {
+                if let Some((_, sid)) = key(arena, *arena.node(id)) {
+                    combined.push_str(arena.str_val(sid));
+                }
+            }
+            let sid = arena.push_str(&combined);
+            *arena.node_mut(first) = match kind {
+                MergeKind::Text(style) => CompactNode::Text(style, sid),
+                MergeKind::Number => CompactNode::Number(sid),
+                MergeKind::Identifier => CompactNode::Identifier(sid),
+            };
+        }
+        out.push(first);
+        i = end;
+    }
+    out
 }
 
 /// Normalize a single compact node. May replace it in-place via `arena.node_mut`.

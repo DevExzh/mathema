@@ -61,7 +61,7 @@ impl Reader for UnicodeMathReader {
         let mut parser = CompactParser::new();
         match parser.parse_expr_list(input) {
             Ok(ids) => {
-                parser.arena.check_lists()?;
+                parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
                 Ok(CompactParseResult::new(CompactExpr::new(
                     parser.arena,

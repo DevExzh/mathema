@@ -429,7 +429,7 @@ impl CompactExpr {
             root_ids.push(push_math_node(&mut arena, node));
         }
         let roots = arena.push_children(&root_ids)?;
-        arena.check_lists()?;
+        arena.check_limits()?;
         Ok(Self {
             arena,
             roots,

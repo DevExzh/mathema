@@ -575,12 +575,14 @@ pub fn validate_compact_depth(
 /// Validate compact AST nesting depth against `limit` (clamped to
 /// [`MAX_AST_DEPTH`]). A root node is at depth 0; a tree whose deepest node
 /// lies below `limit` fails with [`crate::Error::LimitExceeded`] and
-/// [`crate::LimitKind::Depth`].
+/// [`crate::LimitKind::Depth`]. An arena that refused a list or outgrew its
+/// indices fails with the corresponding [`crate::LimitKind`].
 pub fn validate_compact_depth_with(
     arena: &arena::AstArena,
     roots: compact::NodeSpan,
     limit: usize,
 ) -> crate::error::Result<()> {
+    arena.check_limits()?;
     let limit = limit.min(MAX_AST_DEPTH);
     for &id in arena.children(roots) {
         check_compact_depth(arena, id, 0, limit)?;

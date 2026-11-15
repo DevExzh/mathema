@@ -117,6 +117,10 @@ pub enum LimitKind {
     /// The number of children of one AST node, which the arena stores in 16
     /// bits (see `AstArena::MAX_CHILDREN`); not configurable.
     ListLength,
+    /// The size of the AST arena: nodes, child references and string bytes
+    /// are indexed with 32 bits (see `AstArena::MAX_ENTRIES`); not
+    /// configurable.
+    ArenaSize,
 }
 
 impl std::fmt::Display for LimitKind {
@@ -125,6 +129,7 @@ impl std::fmt::Display for LimitKind {
             LimitKind::Nodes => "node count",
             LimitKind::Depth => "nesting depth",
             LimitKind::ListLength => "list length",
+            LimitKind::ArenaSize => "arena size",
         })
     }
 }
@@ -300,7 +305,7 @@ pub struct Config {
     /// are clamped. Unlike the other limits it cannot be disabled, because the
     /// writers and renderers walk the tree recursively. Enforced while nodes
     /// are built by the MTEF reader, and on every parsed tree by
-    /// [`convert_with`](crate::convert_with) and the `from_mtef*` functions.
+    /// [`convert_with`](crate::convert_with) and the `from_*` functions.
     pub max_depth: usize,
 }
 

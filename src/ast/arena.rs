@@ -18,8 +18,14 @@ pub struct AstArena {
     /// Always has one more entry than the number of interned strings.
     str_starts: Vec<u32>,
     /// Set when [`push_children_deferred`](Self::push_children_deferred)
-    /// refused a list; reported by [`check_lists`](Self::check_lists).
+    /// refused a list; reported by [`check_limits`](Self::check_limits).
     list_overflow: bool,
+    /// Set when [`push_node`](Self::push_node) or [`push_str`](Self::push_str)
+    /// refused to grow past the 32-bit index space; reported by
+    /// [`check_limits`](Self::check_limits).
+    size_overflow: bool,
+    /// [`MAX_ENTRIES`](Self::MAX_ENTRIES), lowered by tests.
+    entry_limit: usize,
 }
 
 impl AstArena {
@@ -32,6 +38,8 @@ impl AstArena {
             strings: Vec::new(),
             str_starts: vec![0],
             list_overflow: false,
+            size_overflow: false,
+            entry_limit: Self::MAX_ENTRIES,
         }
     }
 
@@ -47,28 +55,49 @@ impl AstArena {
             strings: Vec::with_capacity(strings),
             str_starts,
             list_overflow: false,
+            size_overflow: false,
+            entry_limit: Self::MAX_ENTRIES,
         }
     }
 
     // ── Safe builder API ───────────────────────────────────────────────
 
+    /// The most nodes, child references or string bytes an arena can hold:
+    /// they are indexed with 32 bits.
+    pub const MAX_ENTRIES: usize = u32::MAX as usize - 1;
+
     /// Push a node into the arena and return its `NodeId`.
+    ///
+    /// An arena that already holds [`MAX_ENTRIES`](Self::MAX_ENTRIES) nodes
+    /// stores nothing, returns the id of its last node and remembers the
+    /// failure, which [`check_limits`](Self::check_limits) reports.
     #[inline]
     pub fn push_node(&mut self, node: CompactNode) -> NodeId {
         let id = self.nodes.len();
-        debug_assert!(id < u32::MAX as usize, "arena node overflow");
+        if id >= self.entry_limit {
+            self.size_overflow = true;
+            return NodeId::new((id - 1) as u32);
+        }
         self.nodes.push(node);
         NodeId::new(id as u32)
     }
 
     /// Intern a string and return its `StrId`.
+    ///
+    /// When the string data would grow past
+    /// [`MAX_ENTRIES`](Self::MAX_ENTRIES) bytes, an empty string is interned
+    /// instead and the failure is remembered for
+    /// [`check_limits`](Self::check_limits).
     #[inline]
     pub fn push_str(&mut self, s: &str) -> StrId {
         let id = self.str_starts.len() - 1;
-        debug_assert!(id < u32::MAX as usize, "arena string overflow");
-        self.strings.extend_from_slice(s.as_bytes());
+        if self.strings.len() + s.len() > self.entry_limit || id >= self.entry_limit {
+            self.size_overflow = true;
+        } else {
+            self.strings.extend_from_slice(s.as_bytes());
+        }
         self.str_starts.push(self.strings.len() as u32);
-        StrId::new(id as u32)
+        StrId::new(id.min(self.entry_limit) as u32)
     }
 
     /// The most children one node can hold (a span length is 16 bits).
@@ -91,7 +120,12 @@ impl AstArena {
             });
         };
         let start = self.children.len();
-        debug_assert!(start < u32::MAX as usize, "arena children overflow");
+        if start + ids.len() > self.entry_limit {
+            return Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ArenaSize,
+                limit: self.entry_limit,
+            });
+        }
         self.children.extend_from_slice(ids);
         Ok(NodeSpan::new(start as u32, len))
     }
@@ -100,11 +134,18 @@ impl AstArena {
     /// that cannot return an error at the point of the call (parser
     /// combinators, recursive conversions). A list that is too long is not
     /// stored: the span is empty and the arena remembers the failure, which
-    /// [`check_lists`](Self::check_lists) reports. Every builder that uses
-    /// this must call `check_lists` before handing the arena out.
+    /// [`check_limits`](Self::check_limits) reports. Every builder that uses
+    /// this must call `check_limits` before handing the arena out.
     pub fn push_children_deferred(&mut self, ids: &[NodeId]) -> NodeSpan {
         match self.push_children(ids) {
             Ok(span) => span,
+            Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ArenaSize,
+                ..
+            }) => {
+                self.size_overflow = true;
+                NodeSpan::EMPTY
+            },
             Err(_) => {
                 self.list_overflow = true;
                 NodeSpan::EMPTY
@@ -113,13 +154,23 @@ impl AstArena {
     }
 
     /// Report a list refused by
-    /// [`push_children_deferred`](Self::push_children_deferred).
+    /// [`push_children_deferred`](Self::push_children_deferred), or a node or
+    /// string refused by [`push_node`](Self::push_node) or
+    /// [`push_str`](Self::push_str). Every builder must call this before
+    /// handing the arena out.
     ///
     /// # Errors
     ///
     /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
+    /// [`LimitKind::ArenaSize`](crate::LimitKind::ArenaSize) or
     /// [`LimitKind::ListLength`](crate::LimitKind::ListLength).
-    pub fn check_lists(&self) -> crate::error::Result<()> {
+    pub fn check_limits(&self) -> crate::error::Result<()> {
+        if self.size_overflow {
+            return Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ArenaSize,
+                limit: self.entry_limit,
+            });
+        }
         if self.list_overflow {
             return Err(crate::error::Error::LimitExceeded {
                 kind: crate::error::LimitKind::ListLength,
@@ -237,6 +288,65 @@ impl Default for AstArena {
 
 #[cfg(test)]
 mod tests {
+    use crate::error::{Error, LimitKind};
+
+    fn small_arena(limit: usize) -> AstArena {
+        AstArena {
+            entry_limit: limit,
+            ..AstArena::new()
+        }
+    }
+
+    #[test]
+    fn string_growth_past_the_limit_is_refused() {
+        let mut arena = small_arena(8);
+        let a = arena.push_str("abcde");
+        let b = arena.push_str("fghij");
+        assert_eq!(arena.str_val(a), "abcde");
+        assert_eq!(arena.str_val(b), "");
+        assert!(matches!(
+            arena.check_limits(),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ArenaSize,
+                limit: 8
+            })
+        ));
+    }
+
+    #[test]
+    fn node_growth_past_the_limit_is_refused() {
+        let mut arena = small_arena(2);
+        let first = arena.push_node(CompactNode::Newline);
+        let second = arena.push_node(CompactNode::Newline);
+        let third = arena.push_node(CompactNode::Newline);
+        assert_ne!(first, second);
+        assert_eq!(third, second);
+        assert_eq!(arena.node_count(), 2);
+        assert!(matches!(
+            arena.check_limits(),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ArenaSize,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn child_growth_past_the_limit_is_refused() {
+        let mut arena = small_arena(3);
+        let id = arena.push_node(CompactNode::Newline);
+        assert!(arena.push_children(&[id, id]).is_ok());
+        assert!(matches!(
+            arena.push_children(&[id, id]),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ArenaSize,
+                ..
+            })
+        ));
+        assert!(arena.push_children_deferred(&[id, id]).is_empty());
+        assert!(arena.check_limits().is_err());
+    }
+
     use super::*;
     use crate::ast::FractionKind;
     use crate::ast::compact::CompactNode;

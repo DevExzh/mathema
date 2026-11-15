@@ -1043,7 +1043,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             } else {
                 ids
             };
-            parser.arena.check_lists()?;
+            parser.arena.check_limits()?;
             let roots = parser.arena.push_children(&ids)?;
             let display = if parser.display_override {
                 DisplayStyle::Block
@@ -1082,7 +1082,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 } else {
                     result_ids
                 };
-                parser.arena.check_lists()?;
+                parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&result_ids)?;
                 let display = if parser.display_override {
                     DisplayStyle::Block
@@ -1112,7 +1112,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 } else {
                     ids
                 };
-                parser.arena.check_lists()?;
+                parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
                 let display = if parser.display_override {
                     DisplayStyle::Block
