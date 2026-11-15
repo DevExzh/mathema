@@ -650,6 +650,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             pre_sub,
             pre_sup,
         } => {
+            // After a big operator (`\int`) the parser would take `{}` as
+            // the operator's body; group the scripts with their base.
+            let grouped = ends_with_nary_command(buf);
+            if grouped {
+                buf.push('{');
+            }
             // The base follows the scripts directly, so a script is always
             // braced: `{}^{6}6`, not `{}^66`.
             buf.push_str("{}");
@@ -662,6 +668,9 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 }
             }
             write_node(buf, arena, base);
+            if grouped {
+                buf.push('}');
+            }
         },
 
         CompactNode::Overscript {
@@ -1150,6 +1159,21 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
 }
 
 #[inline]
+/// Whether `buf` ends with a big-operator command such as `\int` (possibly
+/// followed by `\limits` or `\nolimits`).
+fn ends_with_nary_command(buf: &str) -> bool {
+    let trimmed = buf.trim_end();
+    let trimmed = trimmed
+        .strip_suffix("\\limits")
+        .or_else(|| trimmed.strip_suffix("\\nolimits"))
+        .unwrap_or(trimmed);
+    let name_start = trimmed
+        .rfind(|c: char| !c.is_ascii_alphabetic())
+        .map_or(0, |i| i + 1);
+    trimmed[..name_start].ends_with('\\')
+        && crate::unicode::symbols::is_nary_command(&trimmed[name_start..])
+}
+
 fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
     let s = arena.str_val(sid);
     let ch = s.chars().next().unwrap_or('?');
@@ -1159,6 +1183,20 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
     if matches!(s, "\u{2061}" | "\u{2062}" | "\u{2063}" | "\u{2064}") {
         if !buf.is_empty() && !buf.ends_with(' ') {
             buf.push(' ');
+        }
+        return;
+    }
+    // A word such as `<mo>lim</mo>` is a function name: `\lim` when LaTeX
+    // has the command, else `\operatorname{…}` (writing only its first
+    // letter would lose the rest).
+    if s.chars().count() > 1 && s.chars().all(char::is_alphabetic) {
+        if crate::unicode::symbols::is_operator_command(s) {
+            buf.push('\\');
+            buf.push_str(s);
+        } else {
+            buf.push_str("\\operatorname{");
+            buf.push_str(s);
+            buf.push('}');
         }
         return;
     }
