@@ -468,6 +468,25 @@ proptest! {
         }
     }
 
+    /// MTEF writer output must always be readable in Lenient mode (the writer
+    /// does not yet emit the closing END record or the MTEF 5 template layout
+    /// that Strict mode requires), and reading it must never panic.
+    #[test]
+    fn mtef_writer_output_reads_leniently(expr in arb_roundtrip_expr()) {
+        let config = Config::default();
+        let lenient = Config::default().with_strictness(mathema::Strictness::Lenient);
+        if let Ok(hex) = MtefWriter::write(&expr, &config) {
+            let parsed = MtefReader::parse(&hex, &lenient);
+            prop_assert!(parsed.is_ok(), "lenient read failed: {parsed:?}\n  mtef: {hex}");
+            let bytes: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            let _ = mathema::from_mtef_bytes_with(&bytes, &lenient);
+            let _ = mathema::from_mtef_bytes(&bytes);
+        }
+    }
+
     // NOTE: there is intentionally no `unicode_math_roundtrip_idempotent` here.
     // UnicodeMath is a *linear* notation and the writer does not fully
     // parenthesize fraction/script operands, so siblings like `a^b/c` are

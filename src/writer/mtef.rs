@@ -1133,7 +1133,13 @@ mod tests {
         let expr = MathExpr::inline(vec![node]);
         let config = Config::default();
         let hex = MtefWriter::write(&expr, &config).unwrap();
-        MtefReader::parse(&hex, &config).unwrap().expr
+        MtefReader::parse(&hex, &lenient()).unwrap().expr
+    }
+
+    /// The writer omits the END record that closes the equation, which only
+    /// Lenient mode accepts.
+    fn lenient() -> Config {
+        Config::default().with_strictness(crate::error::Strictness::Lenient)
     }
 
     fn write_hex(node: MathNode) -> String {
@@ -1334,7 +1340,7 @@ mod tests {
             crate::reader::latex::LatexReader::parse_compact("\\textcolor{red}{x}", &config)
                 .unwrap();
         let hex = MtefWriter::write_compact(&result.expr, &config).unwrap();
-        let expr = MtefReader::parse(&hex, &config).unwrap().expr;
+        let expr = MtefReader::parse(&hex, &lenient()).unwrap().expr;
         let flat = format!("{:?}", expr.nodes);
         assert!(flat.contains("\"x\""), "lost colored content: {flat}");
     }

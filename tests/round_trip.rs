@@ -7,7 +7,8 @@ use mathema::writer::mathml::MathmlWriter;
 use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
 use mathema::{
-    Config, Format, Strictness, convert, from_latex, from_mathml, from_omml, from_unicode_math,
+    Config, Format, Strictness, convert, convert_with, from_latex, from_mathml, from_omml,
+    from_unicode_math,
 };
 
 /// Helper: parse LaTeX, write LaTeX, verify structural equivalence.
@@ -676,6 +677,13 @@ fn builder_api_unicode_math_roundtrip() {
 
 // =========================================================================
 // MTEF cross-format tests
+//
+// The MTEF writer omits the END record that closes the equation, which only
+// Lenient mode accepts, so its output is read back leniently.
+fn from_writer(mtef: &str, to: Format) -> mathema::Result<String> {
+    let config = Config::default().with_strictness(Strictness::Lenient);
+    convert_with(mtef, Format::Mtef, to, &config)
+}
 // =========================================================================
 
 #[test]
@@ -688,7 +696,7 @@ fn latex_to_mtef_and_back() {
         "MTEF fraction should use records5 tmFRACT selector 11, got: {mtef}"
     );
     // Convert back
-    let latex = convert(&mtef, Format::Mtef, Format::LaTeX).unwrap();
+    let latex = from_writer(&mtef, Format::LaTeX).unwrap();
     assert!(latex.contains("\\frac"));
 }
 
@@ -699,7 +707,7 @@ fn latex_to_mtef_sqrt() {
         mtef.contains("03000a00"),
         "MTEF sqrt should use records5 tmROOT selector 10, got: {mtef}"
     );
-    let latex = convert(&mtef, Format::Mtef, Format::LaTeX).unwrap();
+    let latex = from_writer(&mtef, Format::LaTeX).unwrap();
     assert!(latex.contains("\\sqrt"));
 }
 
@@ -711,7 +719,7 @@ fn latex_to_mtef_superscript() {
         mtef.contains("03001c00"),
         "MTEF superscript should use records5 tmSUP selector 28, got: {mtef}"
     );
-    let mathml = convert(&mtef, Format::Mtef, Format::MathML).unwrap();
+    let mathml = from_writer(&mtef, Format::MathML).unwrap();
     assert!(mathml.contains("<msup>"));
 }
 
@@ -726,7 +734,7 @@ fn latex_to_mtef_xrightarrow_preserves_labels_and_uses_real_arrow_template() {
         !top_only.contains("030013"),
         "MTEF xrightarrow must not use invented selector 19 bytes, got: {top_only}"
     );
-    let latex = convert(&top_only, Format::Mtef, Format::LaTeX).unwrap();
+    let latex = from_writer(&top_only, Format::LaTeX).unwrap();
     assert!(
         latex.contains('f'),
         "MTEF arrow template should preserve overscript label, got: {latex}"
@@ -737,7 +745,7 @@ fn latex_to_mtef_xrightarrow_preserves_labels_and_uses_real_arrow_template() {
         top_bottom.contains("03000e2c"),
         "MTEF xrightarrow with labels should use tmARROW selector 14 with top/bottom/right variation, got: {top_bottom}"
     );
-    let latex = convert(&top_bottom, Format::Mtef, Format::LaTeX).unwrap();
+    let latex = from_writer(&top_bottom, Format::LaTeX).unwrap();
     assert!(
         latex.contains('f') && latex.contains('g'),
         "MTEF arrow template should preserve both labels, got: {latex}"
