@@ -323,12 +323,41 @@ fn border_box() {
 }
 
 #[test]
-fn phantom() {
+fn phantom_content_is_shown_unless_show_is_off() {
+    // m:show defaults to on: a bare m:phant just shows its content.
     let node = parse_one(&omath(&format!(
         "<m:phant><m:e>{}</m:e></m:phant>",
         run("x")
     )));
+    assert_eq!(node, id("x"));
+    let node = parse_one(&omath(&format!(
+        r#"<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{}</m:e></m:phant>"#,
+        run("x")
+    )));
     assert!(matches!(node, MathNode::Phantom(_, PhantomKind::Full)));
+}
+
+#[test]
+fn word_smash_round_trips_visible() {
+    use crate::writer::Writer as _;
+    // Word writes \smash as zeroAsc + zeroDesc with no m:show.
+    let input = omath(&format!(
+        r#"<m:phant><m:phantPr><m:zeroAsc m:val="on"/><m:zeroDesc m:val="on"/></m:phantPr><m:e>{}</m:e></m:phant>"#,
+        run("x")
+    ));
+    let node = parse_one(&input);
+    assert_eq!(
+        node,
+        MathNode::Phantom(Box::new(id("x")), PhantomKind::SmashBoth)
+    );
+    let expr = MathExpr::inline(vec![node.clone()]);
+    let omml = crate::writer::omml::OmmlWriter::write(&expr, &Config::default()).unwrap();
+    assert!(!omml.contains("m:show"), "{omml}");
+    assert!(
+        omml.contains(r#"<m:phantPr><m:zeroAsc m:val="1"/><m:zeroDesc m:val="1"/></m:phantPr>"#),
+        "{omml}"
+    );
+    assert_eq!(parse_one(&omml), node);
 }
 
 #[test]
@@ -831,4 +860,101 @@ fn hidden_limit_content_is_dropped_with_a_note() {
             .iter()
             .any(|d| d.message.contains("hidden"))
     );
+}
+
+#[test]
+fn nary_without_operator_character_is_not_an_integral() {
+    let input = omath(&format!(
+        r#"<m:nary><m:naryPr><m:chr m:val=""/></m:naryPr><m:sub>{}</m:sub><m:sup/><m:e>{}</m:e></m:nary>"#,
+        run("i"),
+        run("a")
+    ));
+    assert!(strict_err(&input).contains("operator character"));
+    let result = lenient(&input);
+    assert!(result.has_warnings());
+    assert!(!format!("{:?}", result.expr.nodes).contains('\u{222B}'));
+    assert!(
+        matches!(&result.expr.nodes[..], [MathNode::Row(r)] if matches!(r[0], MathNode::Subscript { .. }))
+    );
+}
+
+#[test]
+fn matrix_padding_is_bounded_over_the_whole_input() {
+    // One 255-cell row plus 255 one-cell rows pads 64,770 cells.
+    let matrix = format!(
+        "<m:m><m:mr>{}</m:mr>{}</m:m>",
+        "<m:e/>".repeat(255),
+        "<m:mr><m:e/></m:mr>".repeat(255)
+    );
+    // A single such matrix fits the minimum budget ...
+    let result = OmmlReader::parse(&omath(&matrix), &Config::default()).unwrap();
+    assert!(matches!(&result.expr.nodes[..], [MathNode::Array { rows, .. }] if rows.len() == 256));
+    // ... but repeating it cannot multiply memory: the budget is shared by
+    // the whole input and scales with its length.
+    let input = omath(&matrix.repeat(40));
+    assert!(input.len() / 4 < 2 * 64_770);
+    assert!(strict_err(&input).contains("padding"));
+}
+
+#[test]
+fn host_run_properties_without_an_ast_home_are_reported() {
+    let input = format!(
+        r#"<m:oMath {NS} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><m:r><w:rPr><w:vanish/><w:sz w:val="28"/><w:highlight w:val="yellow"/></w:rPr><m:t>x</m:t></m:r><m:r><a:rPr sz="2400" i="1"><a:latin typeface="Cambria Math"/></a:rPr><m:t>y</m:t></m:r></m:oMath>"#
+    );
+    let result = OmmlReader::parse(&input, &Config::default()).unwrap();
+    for name in [
+        "<w:vanish>",
+        "<w:sz>",
+        "<w:highlight>",
+        "a:rPr@sz",
+        "<a:latin>",
+    ] {
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::Info && d.message.contains(name)),
+            "{name}: {:?}",
+            result.diagnostics
+        );
+    }
+}
+
+#[test]
+fn move_range_anchors_are_skipped() {
+    let input = format!(
+        r#"<m:oMath {NS} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:moveToRangeStart w:id="1" w:name="m"/>{}<w:moveToRangeEnd w:id="1"/><w:moveFromRangeStart w:id="2" w:name="n"/><w:moveFromRangeEnd w:id="2"/></m:oMath>"#,
+        run("x")
+    );
+    assert_eq!(parse_one(&input), id("x"));
+}
+
+#[test]
+fn equation_array_ampersands_are_alignment_points() {
+    let input = omath(&format!(
+        "<m:eqArr><m:e>{}</m:e><m:e>{}</m:e></m:eqArr>",
+        run("x&amp;=1"),
+        run("y+z&amp;=2")
+    ));
+    match parse_one(&input) {
+        MathNode::Array {
+            columns,
+            rows,
+            add_jot,
+            ..
+        } => {
+            assert!(add_jot);
+            assert_eq!(columns, vec![ColumnAlign::Right, ColumnAlign::Left]);
+            assert_eq!(rows[0][0], vec![id("x")]);
+            assert_eq!(
+                rows[0][1],
+                vec![
+                    MathNode::Symbol(SymbolKind::Relation, "=".into()),
+                    MathNode::Number("1".into())
+                ]
+            );
+            assert_eq!(rows[1].len(), 2);
+        },
+        other => panic!("expected an aligned equation array, got {other:?}"),
+    }
 }

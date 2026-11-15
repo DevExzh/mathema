@@ -638,11 +638,29 @@ impl<'a> Emitter<'a> {
     /// Write an array cell (a `Row` of the cell's nodes).
     fn cell(&mut self, id: NodeId, fmt: Fmt) {
         self.open("m:e");
+        self.cell_content(id, fmt);
+        self.close("m:e");
+    }
+
+    fn cell_content(&mut self, id: NodeId, fmt: Fmt) {
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.children(span, fmt),
             _ => self.node(id, fmt),
         }
-        self.close("m:e");
+    }
+
+    /// Whether a cell has a top-level `&` symbol.
+    fn has_ampersand(&self, id: NodeId) -> bool {
+        let arena = self.arena;
+        let is_amp = |id: NodeId| matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "&");
+        match *arena.node(id) {
+            CompactNode::Row(span) => arena.children(span).iter().any(|&c| is_amp(c)),
+            _ => is_amp(id),
+        }
+    }
+
+    fn is_empty_cell(&self, id: NodeId) -> bool {
+        matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
     fn node(&mut self, id: NodeId, fmt: Fmt) {
@@ -827,9 +845,12 @@ impl<'a> Emitter<'a> {
             ),
             CompactNode::Phantom(content, kind) => {
                 let (show, zero_wid, zero_asc, zero_desc) = phantom_pr_flags(kind);
+                // m:show defaults to on; write it only to hide the content.
                 self.open("m:phant");
                 self.open("m:phantPr");
-                self.val("m:show", if show { "1" } else { "0" });
+                if !show {
+                    self.val("m:show", "0");
+                }
                 if zero_wid {
                     self.on("m:zeroWid");
                 }
@@ -1095,14 +1116,40 @@ impl<'a> Emitter<'a> {
         let cell_ids = arena.children(cells);
         let ncols = usize::from(num_cols.max(1));
         let centred = aligns.iter().all(|&a| a == ColumnAlign::Center);
-        if add_jot && ncols == 1 && centred {
-            // A single centred column with equation spacing is m:eqArr.
+        // Right/left alternating columns are an aligned equation array.
+        let aligned = ncols >= 2
+            && aligns.len() == ncols
+            && aligns.iter().enumerate().all(|(i, &a)| {
+                a == if i % 2 == 0 {
+                    ColumnAlign::Right
+                } else {
+                    ColumnAlign::Left
+                }
+            });
+        if add_jot && ((ncols == 1 && centred) || aligned) {
+            // m:eqArr: one m:e per row, cells joined by `&` alignment points.
             self.open("m:eqArr");
             if cell_ids.is_empty() {
                 self.buf.push_str("<m:e></m:e>");
             }
-            for &cell in cell_ids {
-                self.cell(cell, fmt);
+            for row in cell_ids.chunks(ncols) {
+                let used = row
+                    .iter()
+                    .rposition(|&c| !self.is_empty_cell(c))
+                    .map_or(0, |i| i + 1);
+                self.open("m:e");
+                for (i, &cell) in row[..used].iter().enumerate() {
+                    if i > 0 {
+                        self.buf.push_str("<m:r><m:t>&amp;</m:t></m:r>");
+                    }
+                    if self.has_ampersand(cell) {
+                        self.loss(
+                            "a literal & in an equation array reads back as an alignment point",
+                        );
+                    }
+                    self.cell_content(cell, fmt);
+                }
+                self.close("m:e");
             }
             self.close("m:eqArr");
             return;

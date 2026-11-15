@@ -50,6 +50,11 @@ const DML_NAMESPACES: [&str; 2] = [
 /// [`MAX_AST_DEPTH`] nested objects while bounding recursion.
 const MAX_XML_DEPTH: u32 = 2 * MAX_AST_DEPTH as u32 + 16;
 
+/// Padding cells always allowed, however small the input; above this the
+/// budget is a quarter of the input length, so padding cannot outgrow the
+/// cells actually read by more than a constant factor.
+const MIN_PADDING_BUDGET: usize = 65_536;
+
 /// U+2061 FUNCTION APPLICATION. `m:func` is represented as
 /// `Row[name, U+2061, argument]`, the same invisible operator MathML uses.
 pub(crate) const FUNCTION_APPLICATION: &str = "\u{2061}";
@@ -341,6 +346,9 @@ struct Parser<'i> {
     strict: bool,
     split_arenas: bool,
     depth: u32,
+    /// Remaining number of padding cells that short matrix rows may add,
+    /// summed over the whole input (see `build_array`).
+    padding_budget: usize,
     diags: Vec<Diagnostic>,
     seen: HashSet<String>,
 }
@@ -421,6 +429,7 @@ impl<'i> Parser<'i> {
             strict: config.strictness == Strictness::Strict,
             split_arenas,
             depth: 0,
+            padding_budget: (input.len() / 4).max(MIN_PADDING_BUDGET),
             diags: Vec::new(),
             seen: HashSet::new(),
         }
@@ -1019,7 +1028,8 @@ impl<'i> Parser<'i> {
             Ns::Wml => match el.local() {
                 // Annotation anchors carry no content (ECMA-376 §17.13).
                 "bookmarkStart" | "bookmarkEnd" | "proofErr" | "permStart" | "permEnd"
-                | "commentRangeStart" | "commentRangeEnd" => self.skip(),
+                | "commentRangeStart" | "commentRangeEnd" | "moveFromRangeStart"
+                | "moveFromRangeEnd" | "moveToRangeStart" | "moveToRangeEnd" => self.skip(),
                 // Inserted or moved-here content stays (§17.13.5).
                 "ins" | "moveTo" => self.math_content("w:ins", out),
                 "del" | "moveFrom" => {
@@ -1164,12 +1174,21 @@ impl<'i> Parser<'i> {
         })
     }
 
+    /// Note a host run property the AST cannot hold.
+    fn drop_host_property(&mut self, name: &str) {
+        self.info(format!(
+            "host run property {name} has no equivalent in the AST and was dropped"
+        ));
+    }
+
     /// `w:rPr`: keep bold, italic and color; other host formatting (fonts,
-    /// sizes, languages) does not belong to the equation and is ignored.
+    /// sizes, highlighting, ...) is dropped with a note per property.
     fn wml_run_props(&mut self, host: &mut HostRunProps) -> Result<()> {
         while let Some(child) = self.next_child("w:rPr")? {
             if child.ns != Ns::Wml {
+                let name = child.qname().to_owned();
                 self.skip()?;
+                self.drop_host_property(&format!("<{name}>"));
                 continue;
             }
             match child.local() {
@@ -1186,7 +1205,11 @@ impl<'i> Parser<'i> {
                         },
                     };
                 },
-                _ => self.skip()?,
+                _ => {
+                    let name = child.qname().to_owned();
+                    self.skip()?;
+                    self.drop_host_property(&format!("<{name}>"));
+                },
             }
         }
         Ok(())
@@ -1197,6 +1220,17 @@ impl<'i> Parser<'i> {
         let xsd_bool = |v: Option<String>| matches!(v.as_deref(), Some("1" | "true"));
         host.bold = xsd_bool(self.attr(el, "b")?);
         host.italic = xsd_bool(self.attr(el, "i")?);
+        let mut dropped: SmallVec<[String; 4]> = SmallVec::new();
+        for attr in el.start.attributes() {
+            let attr = attr.map_err(|e| self.xml_err(e))?;
+            let key = attr.key.into_inner();
+            if !matches!(key, "b" | "i") && !key.starts_with("xmlns") {
+                dropped.push(key.to_owned());
+            }
+        }
+        for key in dropped {
+            self.drop_host_property(&format!("a:rPr@{key}"));
+        }
         while let Some(child) = self.next_child("a:rPr")? {
             if child.ns == Ns::Dml && child.local() == "solidFill" {
                 while let Some(color) = self.next_child("a:solidFill")? {
@@ -1216,7 +1250,9 @@ impl<'i> Parser<'i> {
                     }
                 }
             } else {
+                let name = child.qname().to_owned();
                 self.skip()?;
+                self.drop_host_property(&format!("<{name}>"));
             }
         }
         Ok(())
@@ -1654,15 +1690,49 @@ impl<'i> Parser<'i> {
                 },
                 (Ns::Math, "e") => {
                     let ids = self.arg("m:e")?;
-                    let span = checked_span(&mut self.arena, &ids)?;
-                    rows.push(smallvec::smallvec![
-                        self.arena.push_node(CompactNode::Row(span))
-                    ]);
+                    // `&` in a row's text marks an alignment point (the
+                    // convention Word uses for equation arrays): split the
+                    // row into cells at each one.
+                    let mut cells: SmallVec<[NodeId; 4]> = SmallVec::new();
+                    let mut start = 0;
+                    for end in 0..=ids.len() {
+                        if end == ids.len() || self.is_alignment_mark(ids[end]) {
+                            let span = checked_span(&mut self.arena, &ids[start..end])?;
+                            cells.push(self.arena.push_node(CompactNode::Row(span)));
+                            start = end + 1;
+                        }
+                    }
+                    rows.push(cells);
                 },
                 _ => self.unknown(&c, "m:eqArr")?,
             }
         }
-        self.build_array(rows, Vec::new(), true)
+        // Aligned columns alternate right- and left-aligned, as in amsmath's
+        // `aligned`; without alignment points the rows are centred.
+        let widest = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let columns = if widest > 1 {
+            (0..widest)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        ColumnAlign::Right
+                    } else {
+                        ColumnAlign::Left
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.build_array(rows, columns, true)
+    }
+
+    /// A top-level `&` symbol (possibly colored) in an equation-array row.
+    fn is_alignment_mark(&self, id: NodeId) -> bool {
+        let id = match *self.arena.node(id) {
+            CompactNode::Color { content, .. } => content,
+            _ => id,
+        };
+        matches!(*self.arena.node(id), CompactNode::Symbol(_, sid) if self.arena.str_val(sid) == "&")
     }
 
     /// `m:f` (§22.1.2.36): `fPr{type}`, `num`, `den`.
@@ -1946,12 +2016,22 @@ impl<'i> Parser<'i> {
             align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
         }
         let col_aligns = checked_span(&mut self.arena, &align_ids)?;
+        let read: usize = rows.iter().map(|r| r.len()).sum();
+        let padding = rows.len() * ncols - read;
+        if padding > self.padding_budget {
+            return Err(omml_err(format!(
+                "short matrix rows need {padding} padding cells, more than the {} \
+                 the input size allows",
+                self.padding_budget
+            )));
+        }
+        self.padding_budget -= padding;
+        // Every padding cell refers to one shared empty row of this matrix.
+        let empty = self.empty_row();
         let mut cells: Vec<NodeId> = Vec::with_capacity(rows.len() * ncols);
         for row in &rows {
             cells.extend_from_slice(row);
-            for _ in row.len()..ncols {
-                cells.push(self.empty_row());
-            }
+            cells.extend(std::iter::repeat_n(empty, ncols - row.len()));
         }
         let cells = checked_span(&mut self.arena, &cells)?;
         Ok(self.arena.push_node(CompactNode::Array {
@@ -1969,7 +2049,7 @@ impl<'i> Parser<'i> {
     /// `m:nary` (§22.1.2.70): `naryPr{chr, limLoc, grow, subHide, supHide}`,
     /// `sub`, `sup`, `e`. Default operator: U+222B INTEGRAL.
     fn nary(&mut self) -> Result<NodeId> {
-        let mut op = '\u{222B}';
+        let mut op = Some('\u{222B}');
         let mut limits = LimitStyle::Default;
         let (mut sub_hide, mut sup_hide) = (false, false);
         let (mut sub, mut sup, mut body) = (None, None, None);
@@ -1980,12 +2060,8 @@ impl<'i> Parser<'i> {
                     if self.once_props(&mut seen_pr, "naryPr", "m:nary")? {
                         self.props("m:naryPr", &[], |p, c| {
                             match c.local() {
-                                "chr" => {
-                                    match p.char_val(c)?.and_then(|s| s.chars().next()) {
-                                        Some(ch) => op = ch,
-                                        None => p.info("an n-ary operator without a character was read as an integral".into()),
-                                    }
-                                },
+                                // An empty value means no operator character.
+                                "chr" => op = p.char_val(c)?.and_then(|s| s.chars().next()),
                                 "limLoc" => {
                                     limits = match p.leaf(c)?.as_deref() {
                                         Some("undOvr") => LimitStyle::AboveBelow,
@@ -2027,6 +2103,26 @@ impl<'i> Parser<'i> {
         let body = self.or_empty(body);
         let sub = self.limit_slot(sub, sub_hide, "lower");
         let sup = self.limit_slot(sup, sup_hide, "upper");
+        let Some(op) = op else {
+            // The AST's n-ary node needs an operator character. Lenient mode
+            // keeps the limits as scripts on an empty base before the body.
+            self.recover(
+                "an n-ary object without an operator character cannot be represented".into(),
+            )?;
+            let base = self.empty_row();
+            let scripts = match (sub.is_some(), sup.is_some()) {
+                (true, true) => Some(CompactNode::SubSup { base, sub, sup }),
+                (true, false) => Some(CompactNode::Subscript { base, sub }),
+                (false, true) => Some(CompactNode::Superscript { base, sup }),
+                (false, false) => None,
+            };
+            let mut ids = Ids::new();
+            if let Some(node) = scripts {
+                ids.push(self.arena.push_node(node));
+            }
+            ids.push(body);
+            return self.group(&ids);
+        };
         Ok(self.arena.push_node(CompactNode::Nary {
             op,
             sub,
@@ -2054,7 +2150,9 @@ impl<'i> Parser<'i> {
     /// `m:phant` (§22.1.2.81): `phantPr{show, zeroWid, zeroAsc, zeroDesc,
     /// transp}`, `e`.
     fn phantom(&mut self) -> Result<NodeId> {
-        let mut flags = [false; 4]; // show, zeroWid, zeroAsc, zeroDesc
+        // show, zeroWid, zeroAsc, zeroDesc. Content is shown unless m:show is
+        // turned off: Word writes \smash as zeroAsc + zeroDesc without m:show.
+        let mut flags = [true, false, false, false];
         let mut content = None;
         let mut seen_pr = false;
         while let Some(c) = self.next_child("m:phant")? {
@@ -2083,6 +2181,14 @@ impl<'i> Parser<'i> {
         }
         let content = self.or_empty(content);
         let [show, zero_wid, zero_asc, zero_desc] = flags;
+        if show && !zero_asc && !zero_desc {
+            // Visible content with its height and depth kept: only a zero
+            // width could make this differ from the plain content.
+            if zero_wid {
+                self.info("a visible zero-width phantom was read as its plain content".into());
+            }
+            return Ok(content);
+        }
         let kind = phantom_kind_from_flags(show, zero_wid, zero_asc, zero_desc);
         if crate::writer::omml::phantom_pr_flags(kind) != (show, zero_wid, zero_asc, zero_desc) {
             self.info(format!(
@@ -2297,7 +2403,6 @@ fn phantom_kind_from_flags(
         match (zero_asc, zero_desc) {
             (true, false) => PhantomKind::SmashTop,
             (false, true) => PhantomKind::SmashBottom,
-            // Both zeroed, or (degenerate) nothing zeroed: smash both.
             _ => PhantomKind::SmashBoth,
         }
     } else if zero_wid && !zero_asc && !zero_desc {

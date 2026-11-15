@@ -24,26 +24,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing end tags, unclosed comments, truncated input, undeclared entities,
   duplicate attributes), unknown math elements, invalid property values and
   duplicated arguments are errors naming the element. Lenient mode skips them
-  with a warning. Valid properties without an AST equivalent are dropped with
-  an `Info` diagnostic. Element nesting, child counts and matrix sizes are
-  bounded.
-- **The OMML reader keeps more structure.** `m:eqArr` reads as a one-column
-  `Array` with `add_jot`; `m:box` as a `MathAtom` (`Op` with `m:opEmu`);
+  with a warning. Valid properties without an AST equivalent, including host
+  run properties such as `w:sz` or `a:latin`, are dropped with an `Info`
+  diagnostic naming them. Element nesting, child counts and matrix sizes are
+  bounded, and the padding of short matrix rows is limited across the whole
+  input in proportion to its length.
+- **The OMML reader keeps more structure.** `m:eqArr` reads as an `Array`
+  with `add_jot`: `&` alignment points in its rows become right/left
+  alternating columns, rows without them a single centred column; `m:box` as a `MathAtom` (`Op` with `m:opEmu`);
   `m:nor` runs as `Text` with their whitespace; `m:func` as
   `Row[name, U+2061, argument]` (a plain `sin` run stays an operator);
   explicit `m:sty="p"` as upright `Styled`; `w:color` and DrawingML
   `a:solidFill` as color; math alphanumeric letters (as PowerPoint stores
   them) as base letters with a style. On/off properties without a value now
-  mean "on", and the `m:bar` and `m:d` defaults follow the schema.
+  mean "on", `m:phant` content is shown unless `m:show` is off (so Word's
+  `\smash` stays visible), an empty `m:nary` character is refused instead of
+  becoming an integral, and the `m:bar` and `m:d` defaults follow the schema.
 - **The OMML writer output follows the schema.** `m:scr` precedes `m:sty`,
   `m:dPr` children are in schema order, required arguments are always
-  present, `m:eqArr` and `m:box` are written back, operators are plain
+  present, `m:eqArr` (with `&` alignment points for aligned columns) and
+  `m:box` are written back, `m:show` is written only to hide phantom content, operators are plain
   upright runs, text keeps its whitespace (`xml:space="preserve"`), and
   cancellations hide the box sides. Color is written only into the host run
   properties and never into `m:rPr`; without a host dialect it is reported as
   lost. Loss diagnostics now come from the writer itself.
-- **The LaTeX writer drops invisible operators** (U+2061–U+2064) instead of
-  emitting them as raw characters.
+- **The LaTeX and MTEF writers drop invisible operators** (U+2061–U+2064)
+  instead of emitting them as raw characters.
 
 ### Fixed
 

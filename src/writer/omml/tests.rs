@@ -297,7 +297,7 @@ fn sqrt_has_hidden_empty_degree() {
 }
 
 #[test]
-fn phantom_writes_explicit_show() {
+fn phantom_writes_show_off_only_when_hidden() {
     let out = write(MathNode::Phantom(Box::new(id("x")), PhantomKind::Full));
     assert!(
         out.contains(r#"<m:phant><m:phantPr><m:show m:val="0"/></m:phantPr>"#),
@@ -476,4 +476,24 @@ fn array_rows_wider_than_the_column_list_stay_one_row() {
     });
     assert_eq!(out.matches("<m:mr>").count(), 1, "{out}");
     assert_eq!(out.matches("<m:e>").count(), 2, "{out}");
+}
+
+#[test]
+fn aligned_equation_array_writes_ampersand_alignment_points() {
+    let config = Config::default();
+    let expr = crate::reader::latex::LatexReader::parse_compact(
+        r"\begin{aligned} x &= 1 \\ y + z &= 2 \end{aligned}",
+        &config,
+    )
+    .unwrap()
+    .expr;
+    let out = OmmlWriter::write_compact(&expr, &config).unwrap();
+    assert!(out.contains("<m:eqArr><m:e>"), "{out}");
+    assert_eq!(out.matches("<m:t>&amp;</m:t>").count(), 2, "{out}");
+    assert!(!out.contains("<m:m>"), "{out}");
+    let back = OmmlReader::parse_compact(&out, &config).unwrap();
+    assert_eq!(OmmlWriter::write_compact(&back.expr, &config).unwrap(), out);
+    // And it reads back as LaTeX alignment, not an escaped ampersand.
+    let latex = crate::writer::latex::LatexWriter::write_compact(&back.expr, &config).unwrap();
+    assert!(!latex.contains("\\&"), "{latex}");
 }
