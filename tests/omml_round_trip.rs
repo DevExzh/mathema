@@ -636,23 +636,65 @@ fn structural_check_rejects_known_schema_violations() {
     }
 }
 
+/// Remove DrawingML `a:rPr` elements (they never nest).
+fn strip_drawing_run_properties(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(start) = rest.find("<a:rPr") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let open_end = tail.find('>').expect("tag is closed");
+        rest = if tail[..open_end].ends_with('/') {
+            &tail[open_end + 1..]
+        } else {
+            let close = tail.find("</a:rPr>").expect("a:rPr is closed");
+            &tail[close + "</a:rPr>".len()..]
+        };
+    }
+    out.push_str(rest);
+    out
+}
+
+#[test]
+fn drawing_dialect_is_schema_shaped_without_its_run_properties() {
+    let config = Config::default();
+    let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::DrawingMl);
+    for name in ["word_paragraph.omml", "powerpoint_paragraph.omml"] {
+        let para = OmmlReader::parse_paragraph(&fixture(name), &config).unwrap();
+        let (out, _) = OmmlWriter::write_paragraph(&para, &config, &options).unwrap();
+        assert!(out.contains("<a:rPr"), "{name}: {out}");
+        let stripped = strip_drawing_run_properties(&out);
+        assert!(!stripped.contains("a:rPr"));
+        // With a:rPr gone, only the schema's own content models remain.
+        check_schema(&stripped);
+    }
+}
+
 // ── Optional XSD validation ─────────────────────────────────────────────
 
-/// Validate writer output with `xmllint --schema` against the OMML schema in
-/// `docs/specs/OMML.xsd`. Skipped (with a note) when `xmllint` or the schema
-/// is not available. The schema imports two documents that are not part of
-/// it; minimal stand-ins declaring only what it references are generated.
+/// Validate writer output with `xmllint --schema` against the OMML schema
+/// (ECMA-376 Part 1, Annex A, `shared-math.xsd`), which is not distributed
+/// with this crate. Run it with:
+///
+/// ```text
+/// MATHEMA_OMML_XSD=/path/to/OMML.xsd cargo test --test omml_round_trip -- --ignored
+/// ```
+///
+/// The schema imports two documents that are not part of it; minimal
+/// stand-ins declaring only what it references are generated. DrawingML
+/// output is validated with its `a:rPr` elements removed, since the schema
+/// only allows WordprocessingML run properties there.
 #[test]
+#[ignore = "needs xmllint and MATHEMA_OMML_XSD pointing at the OMML schema"]
 fn writer_output_validates_against_omml_xsd() {
-    let xsd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/specs/OMML.xsd");
+    let xsd = std::env::var_os("MATHEMA_OMML_XSD")
+        .map(std::path::PathBuf::from)
+        .expect("set MATHEMA_OMML_XSD to the path of the OMML schema");
     let have_xmllint = std::process::Command::new("xmllint")
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success());
-    if !have_xmllint || !xsd.exists() {
-        eprintln!("skipped: needs xmllint and docs/specs/OMML.xsd");
-        return;
-    }
+    assert!(have_xmllint, "xmllint is not installed");
     let dir = std::env::temp_dir().join(format!("mathema-omml-xsd-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let schema = std::fs::read_to_string(&xsd).unwrap().replace(
@@ -672,12 +714,11 @@ fn writer_output_validates_against_omml_xsd() {
         "plurimath_047_nary_eqarr.omml",
     ] {
         let para = OmmlReader::parse_paragraph(&fixture(name), &config).unwrap();
-        for options in &dialects()[..2] {
-            outputs.push(
-                OmmlWriter::write_paragraph(&para, &config, options)
-                    .unwrap()
-                    .0,
-            );
+        for options in &dialects() {
+            let out = OmmlWriter::write_paragraph(&para, &config, options)
+                .unwrap()
+                .0;
+            outputs.push(strip_drawing_run_properties(&out));
         }
     }
     for (i, xml) in outputs.iter().enumerate() {
