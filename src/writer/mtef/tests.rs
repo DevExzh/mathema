@@ -247,8 +247,9 @@ fn v3() -> MtefWriteOptions {
 fn v5_body(data: &[u8]) -> &[u8] {
     let key_end = 5 + data[5..].iter().position(|&b| b == 0).unwrap();
     let body = &data[key_end + 2..];
-    assert_eq!(&body[..V5_PRELUDE.len()], V5_PRELUDE);
-    &body[V5_PRELUDE.len()..]
+    let prelude = [V5_DEFINITIONS, V5_PREFERENCES, far_east_style(false)].concat();
+    assert_eq!(&body[..prelude.len()], prelude.as_slice());
+    &body[prelude.len()..]
 }
 
 #[test]
@@ -555,4 +556,153 @@ fn every_node_kind_reads_back_in_strict_mode() {
             crate::from_mtef_bytes(&data).unwrap_or_else(|e| panic!("{latex}: {e}"));
         }
     }
+}
+
+/// Read without normalization, which keeps leading scripts on their base.
+fn raw(data: &[u8]) -> MathExpr {
+    MtefReader::parse_bytes(data, &Config::default())
+        .unwrap()
+        .expr
+}
+
+fn leading_script_count(data: &[u8]) -> usize {
+    // TMPL, options 0, tmSUB/tmSUP/tmSUBSUP, tvSU_PRECEDES.
+    data.windows(4)
+        .filter(|w| w[0] == 3 && w[1] == 0 && (27..=29).contains(&w[2]) && w[3] == 1)
+        .count()
+}
+
+#[test]
+fn leading_scripts_keep_their_base_and_variation() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mtef-writer");
+    for name in [
+        "upstream-v5-leading-scripts.bin",
+        "upstream-v5-leading-scripts-sums.bin",
+    ] {
+        let original = std::fs::read(dir.join(name)).unwrap();
+        let before = raw(&original);
+        let compact = CompactExpr::from_math_expr(&before).unwrap();
+        let written =
+            MtefWriter::write_bytes(&compact, &Config::default(), &MtefWriteOptions::default())
+                .unwrap();
+        // The same meaning: every leading script still precedes the same base.
+        assert_eq!(raw(&written), before, "{name}");
+        assert_eq!(
+            leading_script_count(&written),
+            leading_script_count(&original),
+            "{name}"
+        );
+        assert!(leading_script_count(&written) >= 4, "{name}");
+    }
+}
+
+#[test]
+fn empty_base_scripts_precede_the_next_item() {
+    // `x={}^{14}_{6}C`: the scripts belong to C, written directly before it
+    // with tvSU_PRECEDES and no space, as MathType writes them.
+    for (latex, base) in [
+        (r"x={}^{14}_{6}C", "C"),
+        (r"a{}^2b", "b"),
+        (r"1+{}^2L", "L"),
+    ] {
+        let result = crate::from_latex(latex).unwrap();
+        for options in [MtefWriteOptions::default(), v3()] {
+            let data = result.to_mtef_bytes(&options).unwrap();
+            let text = format!("{:?}", raw(&data).nodes);
+            assert!(
+                text.contains(&format!("PreScripts {{ base: Identifier(\"{base}\")")),
+                "{latex}: {text}"
+            );
+            assert!(
+                !data.windows(4).any(|w| w == [0x02, 0x00, 0x98, 0x01]),
+                "{latex}"
+            );
+        }
+    }
+}
+
+#[test]
+fn zero_denominator_space_is_refused_or_dropped() {
+    let expr = MathExpr::inline(vec![
+        MathNode::Identifier("a".into()),
+        MathNode::Space(Rational { num: 1, den: 0 }),
+        MathNode::Identifier("b".into()),
+    ]);
+    assert!(matches!(
+        MtefWriter::write(&expr, &Config::default()),
+        Err(Error::Unsupported(_))
+    ));
+    let compact = CompactExpr::from_math_expr(&expr).unwrap();
+    let lenient = Config::default().with_strictness(Strictness::Lenient);
+    let (data, diagnostics) =
+        MtefWriter::write_bytes_with_diagnostics(&compact, &lenient, &MtefWriteOptions::default())
+            .unwrap();
+    assert!(!diagnostics.is_empty());
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        "ab"
+    );
+}
+
+#[test]
+fn control_characters_are_refused_or_replaced() {
+    let result = crate::from_latex("\\text{a\u{0}b}").unwrap();
+    let options = MtefWriteOptions::default();
+    assert!(matches!(
+        result.to_mtef_bytes(&options),
+        Err(Error::Unsupported(_))
+    ));
+    let lenient = Config::default().with_strictness(Strictness::Lenient);
+    let (data, diagnostics) =
+        MtefWriter::write_bytes_with_diagnostics(result.compact_expr(), &lenient, &options)
+            .unwrap();
+    assert!(!diagnostics.is_empty());
+    let back = crate::from_mtef_bytes(&data).unwrap();
+    assert!(back.to_latex().unwrap().contains('\u{FFFD}'));
+}
+
+#[test]
+fn far_east_text_uses_its_style_and_font() {
+    let data = bytes(r"\text{中文}x", &MtefWriteOptions::default());
+    // ENCODING_DEF WinAllCodePages, FONT_DEF 5 and the fnTEXT_FE style.
+    let fe = [
+        V5_DEFINITIONS,
+        V5_FAR_EAST_DEFINITIONS,
+        V5_PREFERENCES,
+        far_east_style(true),
+    ]
+    .concat();
+    let key_end = 5 + data[5..].iter().position(|&b| b == 0).unwrap();
+    assert_eq!(&data[key_end + 2..key_end + 2 + fe.len()], fe.as_slice());
+    // 中 in typeface 12.
+    assert!(data.windows(5).any(|w| w == [0x02, 0x00, 0x8C, 0x2D, 0x4E]));
+    let back = crate::from_mtef_bytes(&data).unwrap();
+    assert_eq!(back.to_latex().unwrap(), r"\text{中文}x");
+    // MTEF 3 uses the style too; text without CJK keeps the plain prelude.
+    assert!(
+        bytes(r"\text{中}", &v3())
+            .windows(4)
+            .any(|w| w == [0x02, 0x8C, 0x2D, 0x4E])
+    );
+    v5_body(&bytes(r"\text{ab}", &MtefWriteOptions::default()));
+}
+
+#[test]
+fn pile_in_a_template_slot_is_written_as_a_pile() {
+    let data = bytes(r"\lim_{\substack{n \to \infty \\ x \to 0}} f", &v3());
+    // tmLIM, the main slot, SUB, then PILE (tag 4) directly as the lower slot.
+    let lim = data.windows(3).position(|w| w == [0x03, 39, 1]).unwrap();
+    let after = &data[lim..];
+    let sub = after.iter().position(|&b| b == 0x0B).unwrap();
+    assert_eq!(after[sub + 1], 0x04, "{after:02x?}");
+}
+
+#[test]
+fn adjacent_texts_are_written_stably() {
+    let result = crate::from_latex(r"\text{abc}\text{def}").unwrap();
+    let first = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    let back = crate::from_mtef_bytes(&first).unwrap();
+    let second = back.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(back.to_latex().unwrap(), r"\text{abcdef}");
 }

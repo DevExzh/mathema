@@ -137,6 +137,11 @@ pub(super) struct Encoder<'a> {
     open: Vec<(bool, usize)>,
     /// Set when the object lists nest deeper than the reader accepts.
     too_deep: bool,
+    /// Set when Far East text was written (MTEF 5 then defines its font).
+    pub(super) far_east: bool,
+    /// The item count when the innermost `Styled` node began: its own
+    /// letters continue one run and need no separator.
+    styled_start: Option<usize>,
     /// The style of an enclosing `Styled` node.
     style: Option<TextStyle>,
 }
@@ -160,6 +165,8 @@ impl<'a> Encoder<'a> {
             items: 0,
             open: Vec::new(),
             too_deep: false,
+            far_east: false,
+            styled_start: None,
             style: None,
         }
     }
@@ -279,6 +286,13 @@ impl<'a> Encoder<'a> {
     fn slot(&mut self, size: Size, id: Option<NodeId>) -> Result<()> {
         match id {
             None => self.null_line(size),
+            // A slot holding only a one-column array is the PILE itself, as
+            // Equation Editor and MathType write it.
+            Some(id) if self.is_pile(self.unwrap_row(id)) => {
+                self.enter()?;
+                self.pile(self.unwrap_row(id), size)?;
+                self.depth -= 1;
+            },
             Some(id) => {
                 self.need(size);
                 self.tag(LINE, 0);
@@ -309,6 +323,17 @@ impl<'a> Encoder<'a> {
     }
 
     fn code(&mut self, ch: char) -> Result<u16> {
+        // The reader refuses control characters other than white space.
+        if ch.is_control() && !ch.is_whitespace() {
+            if self.strict {
+                return Err(Error::Unsupported(format!(
+                    "the control character U+{:04X} cannot be written in MTEF",
+                    u32::from(ch)
+                )));
+            }
+            self.lose("control characters cannot be written in MTEF; U+FFFD was written instead");
+            return Ok(0xFFFD);
+        }
         match u16::try_from(u32::from(ch)) {
             Ok(code) => Ok(code),
             Err(_) if self.strict => Err(Error::Unsupported(format!(
@@ -389,7 +414,15 @@ impl<'a> Encoder<'a> {
         run: Option<Run>,
         func_start: bool,
     ) -> Result<()> {
-        if run.is_some() && run == self.last_run {
+        // Adjacent numbers and texts are one node after normalization too, so
+        // only function names and styled runs need separating here; a number
+        // or text that is a script base is separated by `scripts`.
+        let inside_styled = matches!(run, Some(Run::Styled(_)))
+            && self.styled_start.is_some_and(|start| self.items > start);
+        if matches!(run, Some(Run::Function | Run::Styled(_)))
+            && run == self.last_run
+            && !inside_styled
+        {
             self.space_code(size, chars::SPACE_ZERO)?;
         }
         self.glyph(size, glyph, func_start, &[])?;
@@ -444,6 +477,19 @@ impl<'a> Encoder<'a> {
                 self.enter()?;
                 self.long_division(size, dividend, None)?;
                 self.depth -= 1;
+                i += 2;
+                continue;
+            }
+            // An empty-base script before another node is a script that
+            // precedes that node: MathType writes it with tvSU_PRECEDES
+            // directly before the node it belongs to.
+            if let (Some(&next), Some((sub, sup))) =
+                (ids.get(i + 1), self.empty_base_scripts(ids[i]))
+            {
+                self.enter()?;
+                self.script_template(size, sub, sup, true)?;
+                self.depth -= 1;
+                self.node(next, size)?;
                 i += 2;
                 continue;
             }
@@ -665,6 +711,12 @@ impl<'a> Encoder<'a> {
     /// The glyph for one character of a leaf, and the run it continues.
     fn leaf_glyph(&mut self, kind: Leaf, ch: char) -> Result<(Glyph, Option<Run>)> {
         Ok(match kind {
+            // Equation Editor and MathType put CJK text in the Far East text
+            // style, whose font has the glyphs.
+            Leaf::Text if chars::is_far_east(ch) => {
+                self.far_east = true;
+                (Glyph::new(chars::FN_TEXT_FE, ch), Some(Run::Text))
+            },
             Leaf::Text => (Glyph::new(FN_TEXT, ch), Some(Run::Text)),
             Leaf::Operator => (
                 Glyph::new(FN_FUNCTION, ch),
@@ -736,14 +788,25 @@ impl<'a> Encoder<'a> {
             self.lose("MTEF has no italic math alphabet; italic letters were written as variables");
         }
         let outer = self.style.replace(style);
+        let outer_start = self.styled_start.replace(self.items);
         let result = self.list(span, size);
         self.style = outer;
+        self.styled_start = outer_start;
         result
     }
 
     /// Space as MathType space characters: the widths MathType offers, from
     /// widest to narrowest, in 36ths of an em.
     fn space(&mut self, size: Size, width: Rational) -> Result<()> {
+        if width.den == 0 {
+            if self.strict {
+                return Err(Error::Unsupported(
+                    "a space whose width has a zero denominator cannot be written".into(),
+                ));
+            }
+            self.lose("a space with a zero-denominator width was dropped");
+            return Ok(());
+        }
         if width.num < 0 {
             self.lose("MTEF has no negative space; it was dropped");
             return Ok(());
@@ -915,6 +978,16 @@ impl<'a> Encoder<'a> {
                 }
             },
             _ => {},
+        }
+        // A number or text base must not join the number or text before it,
+        // or the script would take both as its base.
+        let joins = match *self.arena.node(base) {
+            CompactNode::Number(_) => matches!(self.last_run, Some(Run::Number(_))),
+            CompactNode::Text(..) => self.last_run == Some(Run::Text),
+            _ => false,
+        };
+        if joins {
+            self.space_code(size, chars::SPACE_ZERO)?;
         }
         let before = self.items;
         if !self.is_empty(base) {
@@ -1713,6 +1786,17 @@ impl<'a> Encoder<'a> {
     }
 
     // ── Queries ────────────────────────────────────────────────────────
+
+    /// The scripts of a script node whose base is empty.
+    fn empty_base_scripts(&self, id: NodeId) -> Option<(Option<NodeId>, Option<NodeId>)> {
+        let (base, sub, sup) = match *self.arena.node(id) {
+            CompactNode::Subscript { base, sub } => (base, Some(sub), None),
+            CompactNode::Superscript { base, sup } => (base, None, Some(sup)),
+            CompactNode::SubSup { base, sub, sup } => (base, Some(sub), Some(sup)),
+            _ => return None,
+        };
+        self.is_empty(self.unwrap_row(base)).then_some((sub, sup))
+    }
 
     /// The node a row of exactly one node holds, through nested rows.
     fn unwrap_row(&self, mut id: NodeId) -> NodeId {

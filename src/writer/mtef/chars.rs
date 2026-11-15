@@ -19,6 +19,7 @@ pub(super) const FN_SYMBOL: i32 = 6;
 pub(super) const FN_VECTOR: i32 = 7;
 pub(super) const FN_NUMBER: i32 = 8;
 pub(super) const FN_MTEXTRA: i32 = 11;
+pub(super) const FN_TEXT_FE: i32 = 12;
 /// `fnEXPAND`: the stretchy characters a template stores after its slots.
 pub(super) const FN_EXPAND: i32 = 22;
 pub(super) const FN_SPACE: i32 = 24;
@@ -50,6 +51,21 @@ impl Glyph {
     }
 }
 
+/// Characters of the CJK scripts and their punctuation and full-width forms,
+/// which the applications write in the Far East text style.
+pub(super) fn is_far_east(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{1100}'..='\u{11FF}'
+            | '\u{2E80}'..='\u{9FFF}'
+            | '\u{A960}'..='\u{A97F}'
+            | '\u{AC00}'..='\u{D7FF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{FE30}'..='\u{FE4F}'
+            | '\u{FF00}'..='\u{FFEF}'
+    )
+}
+
 /// Inverse of an 8-bit font encoding, sorted by character.
 fn inverse(decode: fn(u8) -> Option<char>) -> Vec<(char, u8)> {
     let mut table: Vec<(char, u8)> = Vec::new();
@@ -77,17 +93,23 @@ pub(super) fn symbol_position(ch: char) -> Option<u8> {
     lookup(TABLE.get_or_init(|| inverse(symbol_font_char)), ch)
 }
 
-/// The position of `ch` in the MT Extra font encoding.
+/// The position of `ch` in the MT Extra font, for the characters whose
+/// position real equations written by MathType confirm (the reader's table).
+/// Other MT Extra characters are written with their MTCode only, which the
+/// specification allows.
 pub(super) fn mt_extra_position(ch: char) -> Option<u8> {
-    static TABLE: OnceLock<Vec<(char, u8)>> = OnceLock::new();
-    lookup(
-        TABLE.get_or_init(|| {
-            let mut table: Vec<(char, u8)> =
-                MT_EXTRA_CONFIRMED.iter().map(|&(p, c)| (c, p)).collect();
-            table.sort_unstable();
-            table
-        }),
+    MT_EXTRA_CONFIRMED
+        .iter()
+        .find(|&&(_, c)| c == ch)
+        .map(|&(position, _)| position)
+}
+
+/// Characters Equation Editor and MathType give the MT Extra style even
+/// where no font position is known for them.
+fn is_mt_extra_style(ch: char) -> bool {
+    matches!(
         ch,
+        '\u{2218}' | '\u{2235}' | '\u{2113}' | '\u{2213}' | '\u{22F0}' | '\u{210F}'
     )
 }
 
@@ -134,8 +156,7 @@ pub(super) fn symbol_glyph(ch: char) -> Glyph {
     if let Some(position) = mt_extra_position(ch) {
         return Glyph::at(FN_MTEXTRA, ch, position);
     }
-    // Equation Editor writes the ring operator in the MT Extra style.
-    if ch == '\u{2218}' {
+    if is_mt_extra_style(ch) {
         return Glyph::new(FN_MTEXTRA, ch);
     }
     Glyph::new(FN_SYMBOL, ch)
@@ -480,7 +501,7 @@ pub(super) fn v5_big_operator(op: char) -> Option<(u8, u16, &'static [Glyph])> {
     const CCW_LOOP: Glyph = Glyph::at(FN_MTEXTRA, '\u{EE00}', 0x69);
     const SUM: Glyph = Glyph::at(FN_SYMBOL, '\u{2211}', 0xE5);
     const PROD: Glyph = Glyph::at(FN_SYMBOL, '\u{220F}', 0xD5);
-    const COPROD: Glyph = Glyph::new(FN_MTEXTRA, '\u{2210}');
+    const COPROD: Glyph = Glyph::at(FN_MTEXTRA, '\u{2210}', 0x43);
     const UNION: Glyph = Glyph::at(FN_MTEXTRA, '\u{222A}', 0x55);
     const INTER: Glyph = Glyph::at(FN_MTEXTRA, '\u{2229}', 0x49);
     const INT1: &[Glyph] = &[INT];
@@ -636,7 +657,6 @@ mod tests {
         assert_eq!(symbol_position('\u{2212}'), Some(0x2D));
         assert_eq!(symbol_position('\u{222B}'), Some(0xF2));
         assert_eq!(symbol_position('\u{00AE}'), Some(0xD2));
-        assert_eq!(mt_extra_position('\u{22EF}'), Some(0x4C));
         assert_eq!(symbol_position('x'), None);
     }
 
@@ -644,10 +664,7 @@ mod tests {
     fn glyph_styles_follow_the_applications() {
         assert_eq!(symbol_glyph('('), Glyph::new(FN_FUNCTION, '('));
         assert_eq!(symbol_glyph('+'), Glyph::at(FN_SYMBOL, '+', 0x2B));
-        assert_eq!(
-            symbol_glyph('\u{22EF}'),
-            Glyph::at(FN_MTEXTRA, '\u{22EF}', 0x4C)
-        );
+        assert_eq!(symbol_glyph('\u{2235}'), Glyph::new(FN_MTEXTRA, '\u{2235}'));
         assert_eq!(identifier_glyph('x'), Glyph::new(FN_VARIABLE, 'x'));
         assert_eq!(
             identifier_glyph('\u{03C0}'),
@@ -656,6 +673,34 @@ mod tests {
         assert_eq!(
             identifier_glyph('\u{0394}'),
             Glyph::at(FN_UCGREEK, '\u{0394}', 0x44)
+        );
+    }
+
+    #[test]
+    fn mt_extra_positions_are_the_ones_mathtype_writes() {
+        // Pairs found in equations written by MathType 5 and 6.
+        for (ch, position) in [
+            ('\u{22EF}', 0x4C),
+            ('\u{22EE}', 0x4D),
+            ('\u{22F1}', 0x4F),
+            ('\u{2026}', 0x4B),
+            ('\u{2210}', 0x43),
+            ('\u{222A}', 0x55),
+            ('\u{2229}', 0x49),
+        ] {
+            assert_eq!(
+                mt_extra_position(ch),
+                Some(position),
+                "U+{:04X}",
+                u32::from(ch)
+            );
+        }
+        // No position without a real file showing it.
+        assert_eq!(mt_extra_position('\u{2113}'), None);
+        assert_eq!(mt_extra_position('\u{22F0}'), None);
+        assert_eq!(
+            symbol_glyph('\u{22EF}'),
+            Glyph::at(FN_MTEXTRA, '\u{22EF}', 0x4C)
         );
     }
 

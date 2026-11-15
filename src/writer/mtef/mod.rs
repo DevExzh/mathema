@@ -165,6 +165,11 @@ const OLE_HEADER_VERSION: u32 = 0x0002_0000;
 const OLE_CLIPBOARD_FORMAT_V3: u16 = 0xC16D;
 const OLE_CLIPBOARD_FORMAT_V5: u16 = 0xC295;
 
+/// The fnTEXT_FE style definition: unused (0), or font 5 plain.
+fn far_east_style(far_east: bool) -> &'static [u8] {
+    if far_east { &[5, 0] } else { &[0] }
+}
+
 /// The definitions and preferences MathType 5 and 6 write in front of every
 /// equation with their default settings ("Define Sizes", "Define Spacing",
 /// "Define Styles"): the WinAllBasicCodePages encoding, the fonts Times New
@@ -173,7 +178,7 @@ const OLE_CLIPBOARD_FORMAT_V5: u16 = 0xC295;
 /// the 30 default spacing values and the default style-to-font table
 /// (MTEFv5.md "ENCODING_DEF", "FONT_DEF", "EQN_PREFS", "Dimension arrays").
 #[rustfmt::skip]
-const V5_PRELUDE: &[u8] = &[
+const V5_DEFINITIONS: &[u8] = &[
     // ENCODING_DEF 5: "WinAllBasicCodePages".
     0x13, b'W', b'i', b'n', b'A', b'l', b'l', b'B', b'a', b's', b'i', b'c',
     b'C', b'o', b'd', b'e', b'P', b'a', b'g', b'e', b's', 0,
@@ -186,6 +191,21 @@ const V5_PRELUDE: &[u8] = &[
     0x11, 5, b'C', b'o', b'u', b'r', b'i', b'e', b'r', b' ', b'N', b'e', b'w', 0,
     // FONT_DEF 4: encoding 4 (MTExtra), "MT Extra".
     0x11, 4, b'M', b'T', b' ', b'E', b'x', b't', b'r', b'a', 0,
+];
+
+/// The definitions MathType adds when an equation holds Far East text: the
+/// WinAllCodePages encoding (ENCODING_DEF 6) and a Far East font (FONT_DEF
+/// 5). MathType writes the font's name in the system code page (宋体 on a
+/// Chinese system); the writer uses its code-page-independent name.
+#[rustfmt::skip]
+const V5_FAR_EAST_DEFINITIONS: &[u8] = &[
+    0x13, b'W', b'i', b'n', b'A', b'l', b'l', b'C', b'o', b'd', b'e', b'P',
+    b'a', b'g', b'e', b's', 0,
+    0x11, 6, b'S', b'i', b'm', b'S', b'u', b'n', 0,
+];
+
+#[rustfmt::skip]
+const V5_PREFERENCES: &[u8] = &[
     // EQN_PREFS, options 0.
     0x12, 0x00,
     // Sizes: 8 dimensions.
@@ -198,8 +218,9 @@ const V5_PRELUDE: &[u8] = &[
     0xf4, 0x10, 0x0f, 0x40, 0xf4, 0x8f, 0x41, 0x7f, 0x48, 0xf4, 0x10, 0x0f,
     0x41, 0x2a, 0x5f, 0x44, 0x5f, 0x45, 0xf4, 0x5f, 0x45, 0xf4, 0x5f, 0x41,
     0x0f,
-    // Styles: 12 definitions (font, character style); fnTEXT_FE unused.
-    0x0c, 1, 0, 1, 0, 1, 2, 2, 2, 2, 0, 2, 0, 1, 1, 1, 0, 3, 0, 1, 0, 4, 0, 0,
+    // Styles: 12 definitions (font, character style), fnTEXT to fnMTEXTRA;
+    // the twelfth, fnTEXT_FE, follows (see `far_east_style`).
+    0x0c, 1, 0, 1, 0, 1, 2, 2, 2, 2, 0, 2, 0, 1, 1, 1, 0, 3, 0, 1, 0, 4, 0,
 ];
 
 impl MtefWriter {
@@ -253,7 +274,8 @@ impl MtefWriter {
         let body = std::mem::take(&mut encoder.out);
         let diagnostics = std::mem::take(&mut encoder.diagnostics);
 
-        let mut mtef = Vec::with_capacity(body.len() + V5_PRELUDE.len() + 16);
+        let far_east = encoder.far_east;
+        let mut mtef = Vec::with_capacity(body.len() + 256);
         // Header (MTEFv5.md "Header record", MTEFv3.md "MTEF header").
         mtef.push(if v5 { 5 } else { 3 });
         // Platform: Windows, whose encodings the writer uses.
@@ -269,7 +291,12 @@ impl MtefWriter {
             mtef.extend(options.application_key.bytes().filter(|&b| b != 0));
             mtef.push(0);
             mtef.push(u8::from(expr.display == DisplayStyle::Inline));
-            mtef.extend_from_slice(V5_PRELUDE);
+            mtef.extend_from_slice(V5_DEFINITIONS);
+            if far_east {
+                mtef.extend_from_slice(V5_FAR_EAST_DEFINITIONS);
+            }
+            mtef.extend_from_slice(V5_PREFERENCES);
+            mtef.extend_from_slice(far_east_style(far_east));
         }
         mtef.extend_from_slice(&body);
 

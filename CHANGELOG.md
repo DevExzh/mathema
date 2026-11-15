@@ -46,8 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the index, big operators with main, lower and upper slots, the 0x10 / 0x20
   limit bits and their operator characters, fence, arrow and accent
   characters after template slots, piles and matrices, embellishments, and
-  the final END. Its output reads back in Strict mode; `to_mtef` still
-  returns MTEF 5 as hex.
+  the final END. Leading scripts are written before their base, Far East
+  text in the Far East text style with its font, and MT Extra font
+  positions only where real files confirm them. Its output reads back in
+  Strict mode; `to_mtef` still returns MTEF 5 as hex.
 
 - **Breaking: list builders are fallible.** `AstArena::push_children`,
   `CompactExpr::from_math_expr`, `CompactParseResult::from_parse_result` and
