@@ -338,6 +338,7 @@ fn mtef_output_of_empty_base_scripts_is_stable() {
         "x^{2}_{3} '",
         r"\sin {}^2 x",
         "x{}^2",
+        r"\operatorname*{foo}{}_x f",
     ] {
         for version in [mathema::MtefVersion::V5, mathema::MtefVersion::V3] {
             let options = MtefWriteOptions::new(version);
@@ -349,4 +350,53 @@ fn mtef_output_of_empty_base_scripts_is_stable() {
             assert_eq!(first, second, "{input} ({version:?})");
         }
     }
+}
+
+/// LaTeX names only the function commands LaTeX and amsmath define.
+#[test]
+fn latex_function_names_use_real_commands() {
+    for (latex, expected) in [
+        (r"\lcm(a,b)", r"\operatorname{lcm}"),
+        (r"\sgn x", r"\operatorname{sgn}"),
+        (r"\argmax_x f", r"\operatorname*{argmax}"),
+        (r"\sin x", r"\sin"),
+    ] {
+        let written = convert(latex, Format::LaTeX, Format::LaTeX).unwrap();
+        assert!(written.contains(expected), "{latex}: {written}");
+        assert_eq!(
+            convert(&written, Format::LaTeX, Format::LaTeX).unwrap(),
+            written,
+            "{latex}"
+        );
+    }
+}
+
+/// An explicit leading script after a function name stays on its base.
+#[test]
+fn leading_script_after_a_function_name_keeps_its_base() {
+    let mathml = "<math><mo>sin</mo><mmultiscripts><mi>x</mi><mprescripts/><none/><mn>2</mn></mmultiscripts></math>";
+    let result = from_mathml(mathml).unwrap();
+    assert_eq!(bases(&normalized(&result)).len(), 1);
+    for format in [
+        Format::LaTeX,
+        Format::Omml,
+        Format::Mtef,
+        Format::UnicodeMath,
+    ] {
+        let written = convert(mathml, Format::MathML, format).unwrap();
+        let back = convert(&written, format, Format::MathML).unwrap();
+        assert!(
+            back.contains("mprescripts"),
+            "{format:?}: {written} -> {back}"
+        );
+    }
+}
+
+/// Symbol commands inside `\text` keep their characters.
+#[test]
+fn symbol_commands_in_text_are_kept() {
+    assert_eq!(
+        convert(r"\text{\int}", Format::LaTeX, Format::LaTeX).unwrap(),
+        r"\text{∫}"
+    );
 }

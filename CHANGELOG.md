@@ -119,7 +119,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stays its limit, as one after a function name (`\sin {}^2 x`) stays its
   script.
 - The LaTeX writer wrote a word symbol such as MathML `<mo>lim</mo>` as its
-  first letter; it now writes `\lim` or `\operatorname{…}`.
+  first letter; it now writes the LaTeX command for the names LaTeX and
+  amsmath define (`\lim`) and `\operatorname{…}` (`\operatorname*{…}` for
+  limit-taking names) otherwise, also for names such as lcm that have no
+  command.
+- `\text{\int}` lost its content; symbol commands in text keep their
+  characters.
 - UnicodeMath writes leading scripts as `(_sub^sup)base` (UTN #28 section
   3.3) and reads that form back; they were written as postscripts of the
   item before.

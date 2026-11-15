@@ -212,8 +212,14 @@ fn clean_text_content(raw: &str) -> String {
                             let ch = raw[i..].chars().next().unwrap();
                             out.push(ch);
                             i += ch.len_utf8();
+                        } else if let Some(ch) =
+                            crate::unicode::symbols::latex_to_unicode(&raw[start..i])
+                        {
+                            // A symbol command (`\int`, `\alpha`) keeps its
+                            // character rather than vanishing from the text.
+                            out.push(ch);
                         }
-                        // Otherwise silently drop the command name
+                        // Otherwise drop the command name.
                     },
                 }
             },

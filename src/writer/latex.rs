@@ -464,16 +464,8 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Identifier(sid) => write_identifier(buf, arena, sid),
 
-        CompactNode::Operator { name, .. } => {
-            let name_str = arena.str_val(name);
-            if is_operator_command(name_str) {
-                buf.push('\\');
-                buf.push_str(name_str);
-            } else {
-                buf.push_str("\\operatorname{");
-                buf.push_str(name_str);
-                buf.push('}');
-            }
+        CompactNode::Operator { name, limits } => {
+            write_operator_name(buf, arena.str_val(name), limits == LimitStyle::AboveBelow);
         },
 
         CompactNode::Symbol(kind, sid) => write_symbol(buf, arena, kind, sid),
@@ -651,8 +643,10 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             pre_sup,
         } => {
             // After a big operator (`\int`) the parser would take `{}` as
-            // the operator's body; group the scripts with their base.
-            let grouped = ends_with_nary_command(buf);
+            // its body, and after a function name (`\sin`) normalization would
+            // give the function the scripts; group the scripts with their
+            // base.
+            let grouped = ends_with_script_taker(buf);
             if grouped {
                 buf.push('{');
             }
@@ -1159,9 +1153,67 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
 }
 
 #[inline]
-/// Whether `buf` ends with a big-operator command such as `\int` (possibly
+/// The function names LaTeX and amsmath define as commands.
+fn is_latex_operator_command(name: &str) -> bool {
+    matches!(
+        name,
+        "arccos"
+            | "arcsin"
+            | "arctan"
+            | "arg"
+            | "cos"
+            | "cosh"
+            | "cot"
+            | "coth"
+            | "csc"
+            | "deg"
+            | "det"
+            | "dim"
+            | "exp"
+            | "gcd"
+            | "hom"
+            | "inf"
+            | "ker"
+            | "lg"
+            | "lim"
+            | "liminf"
+            | "limsup"
+            | "ln"
+            | "log"
+            | "max"
+            | "min"
+            | "Pr"
+            | "sec"
+            | "sin"
+            | "sinh"
+            | "sup"
+            | "tan"
+            | "tanh"
+    )
+}
+
+/// A function name: its LaTeX command when one exists, else
+/// `\operatorname{…}`, or `\operatorname*{…}` for one whose scripts are
+/// limits (`argmax`).
+fn write_operator_name(buf: &mut String, name: &str, limits_above_below: bool) {
+    if is_latex_operator_command(name) {
+        buf.push('\\');
+        buf.push_str(name);
+    } else if limits_above_below || crate::ast::normalize::is_limit_function(name) {
+        buf.push_str("\\operatorname*{");
+        buf.push_str(name);
+        buf.push('}');
+    } else {
+        buf.push_str("\\operatorname{");
+        buf.push_str(name);
+        buf.push('}');
+    }
+}
+
+/// Whether `buf` ends with a big-operator command such as `\int`, a function
+/// name such as `\sin` or `\operatorname{rank}` (possibly
 /// followed by `\limits` or `\nolimits`).
-fn ends_with_nary_command(buf: &str) -> bool {
+fn ends_with_script_taker(buf: &str) -> bool {
     let trimmed = buf.trim_end();
     let trimmed = trimmed
         .strip_suffix("\\limits")
@@ -1171,7 +1223,19 @@ fn ends_with_nary_command(buf: &str) -> bool {
     // character boundary, whatever precedes it).
     let before = trimmed.trim_end_matches(|c: char| c.is_ascii_alphabetic());
     let name = &trimmed[before.len()..];
-    before.ends_with('\\') && crate::unicode::symbols::is_nary_command(name)
+    if before.ends_with('\\')
+        && (crate::unicode::symbols::is_nary_command(name) || is_operator_command(name))
+    {
+        return true;
+    }
+    // `\operatorname{rank}` / `\operatorname*{argmax}`.
+    trimmed.strip_suffix('}').is_some_and(|inner| {
+        inner.rfind('{').is_some_and(|open| {
+            let head = &inner[..open];
+            !inner[open + 1..].contains(['{', '}'])
+                && (head.ends_with("\\operatorname") || head.ends_with("\\operatorname*"))
+        })
+    })
 }
 
 fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
@@ -1190,14 +1254,7 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
     // has the command, else `\operatorname{…}` (writing only its first
     // letter would lose the rest).
     if s.chars().count() > 1 && s.chars().all(char::is_alphabetic) {
-        if crate::unicode::symbols::is_operator_command(s) {
-            buf.push('\\');
-            buf.push_str(s);
-        } else {
-            buf.push_str("\\operatorname{");
-            buf.push_str(s);
-            buf.push('}');
-        }
+        write_operator_name(buf, s, false);
         return;
     }
     // Math minus sign → ASCII hyphen-minus for LaTeX output
