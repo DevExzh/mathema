@@ -921,7 +921,10 @@ fn superscript() -> Vec<u8> {
 fn script_chains_are_bounded_by_the_ast_depth() {
     // Every superscript template wraps the item before it, so a run of them
     // in one line nests without nesting object lists.
-    let chain: Vec<u8> = cat(&[&c5(0, 3, 'x'), &superscript().repeat(30_000)]);
+    // 30 000 templates overflowed the stack before the bound existed; under
+    // Miri a chain just past the limit exercises the same check in seconds.
+    let length = if cfg!(miri) { 200 } else { 30_000 };
+    let chain: Vec<u8> = cat(&[&c5(0, 3, 'x'), &superscript().repeat(length)]);
     let data = eq5(&chain);
     assert!(data.len() < 500 * 1024);
     for result in [
@@ -956,7 +959,7 @@ fn script_chains_are_bounded_by_the_ast_depth() {
 #[test]
 fn embellishment_chains_are_bounded_by_the_ast_depth() {
     let mut chain = c5(0x01, 3, 'x');
-    for _ in 0..1000 {
+    for _ in 0..if cfg!(miri) { 200 } else { 1000 } {
         chain.extend_from_slice(&[0x06, 0, 2]);
     }
     chain.push(0);
