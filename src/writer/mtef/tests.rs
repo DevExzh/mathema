@@ -578,6 +578,7 @@ fn leading_scripts_keep_their_base_and_variation() {
     for name in [
         "upstream-v5-leading-scripts.bin",
         "upstream-v5-leading-scripts-sums.bin",
+        "upstream-v5-leading-space-script.bin",
     ] {
         let original = std::fs::read(dir.join(name)).unwrap();
         let before = raw(&original);
@@ -705,4 +706,34 @@ fn adjacent_texts_are_written_stably() {
     let second = back.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
     assert_eq!(first, second);
     assert_eq!(back.to_latex().unwrap(), r"\text{abcdef}");
+}
+
+#[test]
+fn trailing_empty_base_script_is_written_stably() {
+    // Not normalized: `x{}^2` reads back as x squared, as it normalizes.
+    let result = crate::from_latex("x{}^2").unwrap();
+    let first = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    let back = crate::from_mtef_bytes(&first).unwrap();
+    assert_eq!(back.to_latex().unwrap(), "x^{2}");
+    assert_eq!(
+        back.to_mtef_bytes(&MtefWriteOptions::default()).unwrap(),
+        first
+    );
+}
+
+#[test]
+fn leading_script_in_a_dirac_slot_precedes_its_base() {
+    let data = bytes(
+        r"\left\langle {}^2 b \middle| c \right\rangle",
+        &MtefWriteOptions::default(),
+    );
+    assert_eq!(leading_script_count(&data), 1);
+}
+
+#[test]
+fn cjk_variables_use_the_far_east_style() {
+    let result = crate::from_mathml("<math><mi>中</mi><mo>=</mo><mn>1</mn></math>").unwrap();
+    let data = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    assert!(data.windows(5).any(|w| w == [0x02, 0x00, 0x8C, 0x2D, 0x4E]));
+    assert!(crate::from_mtef_bytes(&data).is_ok());
 }

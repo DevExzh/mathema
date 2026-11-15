@@ -4,7 +4,7 @@
 
 use mathema::{
     Format, MathNode, MtefWriteOptions, convert, from_latex, from_mathml, from_mtef_bytes,
-    from_omml,
+    from_omml, from_unicode_math,
 };
 
 /// The base of the first leading-script node, as LaTeX.
@@ -67,6 +67,7 @@ fn latex_leading_scripts_belong_to_what_follows() {
         (r"1+{}^2L", "L"),
         (r"a{}^2b", "b"),
         (r"{}_1^2X", "X"),
+        (r"x^2{}^3y", "y"),
     ] {
         let expr = from_latex(latex).unwrap().expr();
         let mut compact = from_latex(latex).unwrap().compact_expr().clone();
@@ -79,7 +80,13 @@ fn latex_leading_scripts_belong_to_what_follows() {
             "{latex}: {expr:?} -> {normalized:?}"
         );
         // Unchanged across conversion to every format and back.
-        for format in [Format::LaTeX, Format::MathML, Format::Omml, Format::Mtef] {
+        for format in [
+            Format::LaTeX,
+            Format::MathML,
+            Format::Omml,
+            Format::Mtef,
+            Format::UnicodeMath,
+        ] {
             let written = convert(latex, Format::LaTeX, format).unwrap();
             let back = convert(&written, format, Format::LaTeX).unwrap();
             let again = from_latex(&back).unwrap();
@@ -117,7 +124,13 @@ fn mathml_and_omml_leading_scripts_keep_their_base() {
             "{format:?}: {:?}",
             result.expr()
         );
-        for to in [Format::LaTeX, Format::MathML, Format::Omml, Format::Mtef] {
+        for to in [
+            Format::LaTeX,
+            Format::MathML,
+            Format::Omml,
+            Format::Mtef,
+            Format::UnicodeMath,
+        ] {
             let written = convert(input, format, to).unwrap();
             let back = convert(&written, to, Format::MathML).unwrap();
             assert!(
@@ -136,6 +149,7 @@ fn mtef_leading_scripts_survive_read_and_write() {
     for name in [
         "upstream-v5-leading-scripts.bin",
         "upstream-v5-leading-scripts-sums.bin",
+        "upstream-v5-leading-space-script.bin",
     ] {
         let original = std::fs::read(dir.join(name)).unwrap();
         let count = |data: &[u8]| {
@@ -152,5 +166,61 @@ fn mtef_leading_scripts_survive_read_and_write() {
         let back = from_mtef_bytes(&written).unwrap();
         assert_eq!(bases(&back.expr()), expected, "{name}");
         assert_eq!(back.expr(), result.expr(), "{name}");
+        // And through UnicodeMath (`(_b^a)c`); the other files use notation
+        // the UnicodeMath reader does not read back (primes as `^'`).
+        if name != "upstream-v5-leading-scripts.bin" {
+            continue;
+        }
+        let unicode = result.to_unicode_math().unwrap();
+        let reread = from_unicode_math(&unicode).unwrap();
+        let mut compact = reread.compact_expr().clone();
+        mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        assert_eq!(
+            bases(&compact.to_math_expr()).len(),
+            expected.len(),
+            "{name}: {unicode}"
+        );
     }
+}
+
+#[test]
+fn unicode_math_leading_scripts_use_the_parenthesized_form() {
+    // UTN #28 section 3.3: `(_c^b)a`.
+    let written = convert(r"x={}^{14}_{6}C", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert_eq!(written, "x=(_6^14)C");
+    let back = from_unicode_math(&written).unwrap();
+    assert_eq!(
+        bases(&back.expr()),
+        vec![format!("{:?}", MathNode::Identifier("C".into()))]
+    );
+    let half = from_unicode_math("(_1^)F_1").unwrap();
+    assert_eq!(bases(&half.expr()).len(), 1, "{:?}", half.expr());
+}
+
+/// A script after a big operator is its limit, as TeX-to-MathML converters
+/// write `\int_C`: `<mo>∫</mo><msub><mrow/><mi>C</mi></msub>`.
+#[test]
+fn empty_base_script_after_a_big_operator_is_its_limit() {
+    let normalized = |mathml: &str| {
+        let mut compact = from_mathml(mathml).unwrap().compact_expr().clone();
+        mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        compact.to_math_expr()
+    };
+    let integral = "<math><mo>∫</mo><msub><mrow/><mi>C</mi></msub><mrow><mo>(</mo><mi>z</mi><mo>)</mo></mrow></math>";
+    assert!(bases(&normalized(integral)).is_empty());
+    assert_eq!(
+        convert(integral, Format::MathML, Format::LaTeX).unwrap(),
+        r"{\int}_C(z)"
+    );
+    let power =
+        "<math><mo>∫</mo><msub><mrow/><mi>C</mi></msub><msup><mi>z</mi><mi>n</mi></msup></math>";
+    assert!(bases(&normalized(power)).is_empty());
+    assert!(
+        convert(power, Format::MathML, Format::LaTeX)
+            .unwrap()
+            .starts_with(r"{\int}_C")
+    );
+    let lim =
+        "<math><mi>lim</mi><msub><mrow/><mi>n</mi></msub><msup><mi>a</mi><mi>n</mi></msup></math>";
+    assert!(bases(&normalized(lim)).is_empty());
 }

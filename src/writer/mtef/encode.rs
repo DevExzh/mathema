@@ -20,6 +20,7 @@ use super::chars::{
 };
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
+use crate::ast::normalize::{can_carry_script, takes_limits};
 use crate::ast::{
     AccentPosition, ColumnAlign, FractionKind, LimitStyle, Rational, StrokeKind, TextStyle,
 };
@@ -467,6 +468,10 @@ impl<'a> Encoder<'a> {
 
     fn list(&mut self, span: NodeSpan, size: Size) -> Result<()> {
         let ids: SmallVec<[NodeId; 8]> = self.arena.children(span).into();
+        self.list_ids(&ids, size)
+    }
+
+    fn list_ids(&mut self, ids: &[NodeId], size: Size) -> Result<()> {
         let mut i = 0;
         while i < ids.len() {
             // A long division without a quotient reads back as the bracket
@@ -480,18 +485,37 @@ impl<'a> Encoder<'a> {
                 i += 2;
                 continue;
             }
-            // An empty-base script before another node is a script that
-            // precedes that node: MathType writes it with tvSU_PRECEDES
-            // directly before the node it belongs to.
-            if let (Some(&next), Some((sub, sup))) =
-                (ids.get(i + 1), self.empty_base_scripts(ids[i]))
-            {
-                self.enter()?;
-                self.script_template(size, sub, sup, true)?;
-                self.depth -= 1;
-                self.node(next, size)?;
-                i += 2;
-                continue;
+            // An empty-base script means what normalization makes of it: a
+            // limit of a big operator before it, a leading script of the
+            // node after it (written as MathType does, with tvSU_PRECEDES
+            // directly before that node), or with nothing after it a script
+            // of the node before it.
+            if let Some((sub, sup)) = self.empty_base_scripts(ids[i]) {
+                let prev = i.checked_sub(1).map(|p| *self.arena.node(ids[p]));
+                let next = ids
+                    .get(i + 1)
+                    .copied()
+                    .filter(|&n| self.empty_base_scripts(n).is_none());
+                let after_prev = match (prev, next) {
+                    (Some(prev), _) if takes_limits(self.arena, prev) => true,
+                    (Some(prev), None) => can_carry_script(prev),
+                    _ => false,
+                };
+                if after_prev {
+                    self.enter()?;
+                    self.script_template(size, sub, sup, false)?;
+                    self.depth -= 1;
+                    i += 1;
+                    continue;
+                }
+                if let Some(next) = next {
+                    self.enter()?;
+                    self.script_template(size, sub, sup, true)?;
+                    self.depth -= 1;
+                    self.node(next, size)?;
+                    i += 2;
+                    continue;
+                }
             }
             self.node(ids[i], size)?;
             i += 1;
@@ -732,6 +756,11 @@ impl<'a> Encoder<'a> {
                 _ => (Glyph::new(FN_NUMBER, ch), Some(Run::Number(FN_NUMBER))),
             },
             Leaf::Number => (chars::symbol_glyph(ch), None),
+            // CJK letters need the Far East font, as in text.
+            Leaf::Identifier if chars::is_far_east(ch) => {
+                self.far_east = true;
+                (Glyph::new(chars::FN_TEXT_FE, ch), Some(Run::Text))
+            },
             Leaf::Identifier if ch.is_alphabetic() => self.styled_letter(ch)?,
             Leaf::Identifier => (chars::identifier_glyph(ch), None),
         })
@@ -1624,9 +1653,7 @@ impl<'a> Encoder<'a> {
             if present {
                 self.need(size);
                 self.tag(LINE, 0);
-                for &id in part {
-                    self.node(id, size)?;
-                }
+                self.list_ids(part, size)?;
                 self.end();
             } else {
                 self.null_line(size);

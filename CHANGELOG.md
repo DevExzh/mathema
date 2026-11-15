@@ -114,7 +114,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scripts on `=`, and MathML `mprescripts`, OMML `m:sPre` and MTEF leading
   scripts moved the same way). An empty-base script now becomes a leading
   script of the node after it; a script the LaTeX parser finds without a base
-  after white space (`x '`) still attaches to the atom before it.
+  after white space (`x '`) still attaches to the atom before it, and one
+  after a big operator or a limit function (`<mo>∫</mo><msub><mrow/><mi>C</mi></msub>`)
+  stays its limit.
+- UnicodeMath writes leading scripts as `(_sub^sup)base` (UTN #28 section
+  3.3) and reads that form back; they were written as postscripts of the
+  item before.
 
 - Normalization merged runs of letters, digits or text quadratically (65 000
   letters used about 2 GB) and 32-bit string offsets could wrap; runs are now
