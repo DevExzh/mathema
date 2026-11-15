@@ -116,7 +116,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   script of the node after it; a script the LaTeX parser finds without a base
   after white space (`x '`) still attaches to the atom before it, and one
   after a big operator or a limit function (`<mo>∫</mo><msub><mrow/><mi>C</mi></msub>`)
-  stays its limit.
+  stays its limit, as one after a function name (`\sin {}^2 x`) stays its
+  script.
+- The LaTeX writer wrote a word symbol such as MathML `<mo>lim</mo>` as its
+  first letter; it now writes `\lim` or `\operatorname{…}`.
 - UnicodeMath writes leading scripts as `(_sub^sup)base` (UTN #28 section
   3.3) and reads that form back; they were written as postscripts of the
   item before.

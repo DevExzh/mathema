@@ -20,7 +20,7 @@ use super::chars::{
 };
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
-use crate::ast::normalize::{can_carry_script, takes_limits};
+use crate::ast::normalize::{can_carry_script, can_take_prescripts, takes_limits};
 use crate::ast::{
     AccentPosition, ColumnAlign, FractionKind, LimitStyle, Rational, StrokeKind, TextStyle,
 };
@@ -486,41 +486,52 @@ impl<'a> Encoder<'a> {
                 continue;
             }
             // An empty-base script means what normalization makes of it: a
-            // limit of a big operator before it, a leading script of the
-            // node after it (written as MathType does, with tvSU_PRECEDES
-            // directly before that node), or with nothing after it a script
-            // of the node before it.
-            if let Some((sub, sup)) = self.empty_base_scripts(ids[i]) {
-                let prev = i.checked_sub(1).map(|p| *self.arena.node(ids[p]));
-                let next = ids
-                    .get(i + 1)
-                    .copied()
-                    .filter(|&n| self.empty_base_scripts(n).is_none());
-                let after_prev = match (prev, next) {
-                    (Some(prev), _) if takes_limits(self.arena, prev) => true,
-                    (Some(prev), None) => can_carry_script(prev),
-                    _ => false,
-                };
-                if after_prev {
-                    self.enter()?;
-                    self.script_template(size, sub, sup, false)?;
-                    self.depth -= 1;
-                    i += 1;
-                    continue;
-                }
-                if let Some(next) = next {
-                    self.enter()?;
-                    self.script_template(size, sub, sup, true)?;
-                    self.depth -= 1;
-                    self.node(next, size)?;
-                    i += 2;
-                    continue;
-                }
+            // limit or script of a big operator or function name before it,
+            // a leading script of the node after it (written as MathType
+            // does, with tvSU_PRECEDES directly before that node), or with
+            // nothing after it a script of the node before it.
+            if let Some(&script) = ids.get(i + 1)
+                && let Some((sub, sup)) = self.empty_base_scripts(script)
+                && self.attaches_to_previous(ids, i + 1)
+            {
+                self.enter()?;
+                self.scripts(size, ids[i], sub, sup)?;
+                self.depth -= 1;
+                i += 2;
+                continue;
+            }
+            if let Some((sub, sup)) = self.empty_base_scripts(ids[i])
+                && let Some(next) = self.prescript_target(ids, i)
+            {
+                self.enter()?;
+                self.script_template(size, sub, sup, true)?;
+                self.depth -= 1;
+                self.node(next, size)?;
+                i += 2;
+                continue;
             }
             self.node(ids[i], size)?;
             i += 1;
         }
         Ok(())
+    }
+
+    /// The node after the empty-base script at `i` that takes it as a
+    /// leading script, as normalization decides.
+    fn prescript_target(&self, ids: &[NodeId], i: usize) -> Option<NodeId> {
+        ids.get(i + 1).copied().filter(|&next| {
+            self.empty_base_scripts(next).is_none() && can_take_prescripts(*self.arena.node(next))
+        })
+    }
+
+    /// Whether normalization attaches the empty-base script at `i` to the
+    /// node before it.
+    fn attaches_to_previous(&self, ids: &[NodeId], i: usize) -> bool {
+        let Some(&prev) = i.checked_sub(1).and_then(|p| ids.get(p)) else {
+            return false;
+        };
+        let prev = *self.arena.node(prev);
+        takes_limits(self.arena, prev) || (i + 1 == ids.len() && can_carry_script(prev))
     }
 
     // ── Nodes ──────────────────────────────────────────────────────────

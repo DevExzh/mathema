@@ -224,3 +224,126 @@ fn empty_base_script_after_a_big_operator_is_its_limit() {
         "<math><mi>lim</mi><msub><mrow/><mi>n</mi></msub><msup><mi>a</mi><mi>n</mi></msup></math>";
     assert!(bases(&normalized(lim)).is_empty());
 }
+
+fn normalized(result: &mathema::ConvertResult) -> mathema::MathExpr {
+    let mut compact = result.compact_expr().clone();
+    mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+    compact.to_math_expr()
+}
+
+/// A script after a function name is that function's script (or limit).
+#[test]
+fn empty_base_script_after_a_function_name_is_its_script() {
+    let latex = [
+        r"\sin {}^2 x",
+        r"\log {}_2 x",
+        r"\operatorname{rank} {}_x f",
+        r"\lim {}_n a",
+    ];
+    for input in latex {
+        let result = from_latex(input).unwrap();
+        assert!(bases(&normalized(&result)).is_empty(), "{input}");
+        for format in [
+            Format::LaTeX,
+            Format::MathML,
+            Format::Omml,
+            Format::Mtef,
+            Format::UnicodeMath,
+        ] {
+            let written = convert(input, Format::LaTeX, format).unwrap();
+            let back = convert(&written, format, Format::MathML).unwrap();
+            assert!(
+                !back.contains("mprescripts"),
+                "{input} via {format:?}: {back}"
+            );
+        }
+    }
+    let mathml = [
+        "<math><mi>sin</mi><msup><mrow/><mn>2</mn></msup><mi>x</mi></math>",
+        "<math><mo>log</mo><msub><mrow/><mn>2</mn></msub><mi>x</mi></math>",
+    ];
+    for input in mathml {
+        assert!(
+            bases(&normalized(&from_mathml(input).unwrap())).is_empty(),
+            "{input}"
+        );
+        let omml = convert(input, Format::MathML, Format::Omml).unwrap();
+        assert!(!omml.contains("m:sPre"), "{input}: {omml}");
+        assert!(
+            bases(&normalized(&from_omml(&omml).unwrap())).is_empty(),
+            "{omml}"
+        );
+    }
+    let omml = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:func><m:fName><m:r><m:t>sin</m:t></m:r></m:fName><m:e><m:r><m:t>x</m:t></m:r></m:e></m:func></m:oMath>"#;
+    assert!(
+        convert(omml, Format::Omml, Format::LaTeX)
+            .unwrap()
+            .contains("sin")
+    );
+}
+
+/// A word written as one MathML operator is kept whole.
+#[test]
+fn operator_words_are_written_whole_in_latex() {
+    let cases = [
+        (
+            "<math><msub><mo>lim</mo><mi>n</mi></msub><mi>a</mi></math>",
+            r"\lim",
+        ),
+        ("<math><mo>lim</mo><mi>a</mi></math>", r"\lim a"),
+        (
+            "<math><mo>rank</mo><mi>A</mi></math>",
+            r"\operatorname{rank}A",
+        ),
+    ];
+    for (mathml, expected) in cases {
+        let latex = convert(mathml, Format::MathML, Format::LaTeX).unwrap();
+        assert!(latex.contains(expected), "{mathml}: {latex}");
+        // Reading the LaTeX back keeps the word.
+        let back = convert(&latex, Format::LaTeX, Format::LaTeX).unwrap();
+        let word = if expected.contains("rank") {
+            r"\operatorname{rank}"
+        } else {
+            r"\lim"
+        };
+        assert!(back.contains(word), "{mathml}: {back}");
+        assert_eq!(
+            convert(&back, Format::LaTeX, Format::LaTeX).unwrap(),
+            back,
+            "{mathml}"
+        );
+    }
+}
+
+/// A leading script after a big operator keeps its base in LaTeX.
+#[test]
+fn leading_script_after_an_integral_keeps_its_base_in_latex() {
+    let mathml = "<math><mo>∫</mo><mmultiscripts><mi>f</mi><mprescripts/><mi>C</mi><none/></mmultiscripts></math>";
+    let latex = convert(mathml, Format::MathML, Format::LaTeX).unwrap();
+    assert_eq!(latex, r"\int{{}_{C}f}");
+    assert_eq!(bases(&normalized(&from_latex(&latex).unwrap())).len(), 1);
+}
+
+/// Writing a parsed but not normalized expression gives the bytes its
+/// re-read writes.
+#[test]
+fn mtef_output_of_empty_base_scripts_is_stable() {
+    for input in [
+        r"\lim {}_x f",
+        "x^2 ^3",
+        "{}^2{}^3x",
+        "x^{2}_{3} '",
+        r"\sin {}^2 x",
+        "x{}^2",
+    ] {
+        for version in [mathema::MtefVersion::V5, mathema::MtefVersion::V3] {
+            let options = MtefWriteOptions::new(version);
+            let first = from_latex(input).unwrap().to_mtef_bytes(&options).unwrap();
+            let second = from_mtef_bytes(&first)
+                .unwrap()
+                .to_mtef_bytes(&options)
+                .unwrap();
+            assert_eq!(first, second, "{input} ({version:?})");
+        }
+    }
+}
