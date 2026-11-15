@@ -1,479 +1,197 @@
-use quick_xml::Writer;
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
-use std::io::Cursor;
+//! OMML (Office Math Markup Language) writer.
+//!
+//! Serializes the shared AST as the math markup of ECMA-376 Part 1, §22.1.
+//! Output follows the element order and required children of the schema in
+//! ECMA-376 Part 1, Annex A (`shared-math.xsd`), declares every namespace
+//! prefix it uses, and writes default-valued properties only where the
+//! reader needs them to tell constructs apart.
+//!
+//! Formatting that OMML keeps outside the math properties (color, and bold
+//! or italic on normal text) belongs to the host document's run properties.
+//! [`OmmlOptions::run_properties`] selects the host dialect: none (the
+//! default; such formatting is dropped with a diagnostic), WordprocessingML
+//! (`w:rPr`) or DrawingML (`a:rPr`).
+
+use std::collections::HashSet;
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
+use crate::reader::omml::{FUNCTION_APPLICATION, MATH_SPACES, OmmlJustification, OmmlParagraph};
 use crate::writer::Writer as MathWriter;
 
-const NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+const MATH_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+const WML_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const DML_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
 
-/// Match the OMML reader's text normalization so write/read cycles stabilize.
+/// The host document's run-property dialect, used for formatting that OMML
+/// stores outside `m:rPr` (ECMA-376 Part 1, §22.1.2.91: a math run may carry
+/// the host's run properties after `m:rPr`).
 ///
-/// A non-breaking-space placeholder represents `Space` and `Rule` nodes
-/// and must remain intact.
-fn trim_omml_text(text: &str) -> &str {
-    if text == "\u{00A0}" {
-        text
-    } else {
-        text.trim()
+/// ```
+/// use mathema::{OmmlOptions, OmmlRunProperties};
+/// let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::WordprocessingMl);
+/// assert_eq!(options.run_properties, OmmlRunProperties::WordprocessingMl);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum OmmlRunProperties {
+    /// Pure OMML: no host run properties. Color and bold or italic normal
+    /// text are dropped with a diagnostic.
+    #[default]
+    None,
+    /// WordprocessingML (Word): `w:rPr` after `m:rPr`, `w` namespace
+    /// declared on the root element.
+    WordprocessingMl,
+    /// DrawingML (PowerPoint): `a:rPr` after `m:rPr`, `a` namespace declared
+    /// on the root element.
+    DrawingMl,
+}
+
+/// Options for [`OmmlWriter::write_with_options`].
+///
+/// ```
+/// use mathema::{OmmlJustification, OmmlOptions, OmmlRunProperties};
+/// use mathema::writer::omml::OmmlWriter;
+///
+/// let result = mathema::from_latex(r"\textcolor{red}{x}").unwrap();
+/// let options = OmmlOptions::default()
+///     .with_run_properties(OmmlRunProperties::WordprocessingMl)
+///     .with_display_block(Some(OmmlJustification::Left));
+/// let (omml, _diagnostics) = result.to_omml_with_options(&options).unwrap();
+/// assert!(omml.starts_with("<m:oMathPara"));
+/// assert!(omml.contains(r#"<m:jc m:val="left"/>"#));
+/// assert!(omml.contains(r#"<w:color w:val="FF0000"/>"#));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct OmmlOptions {
+    /// Host run-property dialect (default: [`OmmlRunProperties::None`]).
+    pub run_properties: OmmlRunProperties,
+    /// Wrap the equation in a display-math paragraph (`m:oMathPara`)
+    /// instead of writing a bare `m:oMath` (default: `false`).
+    pub display_block: bool,
+    /// Justification written as `m:oMathParaPr/m:jc` when
+    /// [`display_block`](Self::display_block) is set.
+    pub justification: Option<OmmlJustification>,
+}
+
+impl OmmlOptions {
+    /// Builder: set the host run-property dialect.
+    #[must_use]
+    pub fn with_run_properties(mut self, run_properties: OmmlRunProperties) -> Self {
+        self.run_properties = run_properties;
+        self
+    }
+
+    /// Builder: write a display block (`m:oMathPara`) with an optional
+    /// justification.
+    #[must_use]
+    pub fn with_display_block(mut self, justification: Option<OmmlJustification>) -> Self {
+        self.display_block = true;
+        self.justification = justification;
+        self
     }
 }
 
-/// Classifies a compact node that the OMML writer cannot fully represent.
-fn omml_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
-    match node {
-        // Color is preserved as a WML run property when it resolves to RGB;
-        // only report loss when the color string cannot be resolved.
-        CompactNode::Color { color, .. } => {
-            if crate::css_colors::resolve_named_or_hex(arena.str_val(*color)).is_some() {
-                None
-            } else {
-                Some(
-                    "OMML output could not resolve the color value; only the content is written"
-                        .into(),
-                )
-            }
-        },
-        CompactNode::MathChoice { .. } => {
-            Some("OMML output keeps only the display-style branch of \\mathchoice".into())
-        },
-        CompactNode::MathAtom { .. } => {
-            Some("OMML output does not preserve the math atom spacing class".into())
-        },
-        CompactNode::Rule { .. } => {
-            Some("OMML cannot represent a rule (\\rule/\\hline); written as a space".into())
-        },
-        CompactNode::Scaled { .. } => {
-            Some("OMML output does not preserve the \\scalebox factor".into())
-        },
-        CompactNode::RaiseBox { .. } => {
-            Some("OMML output does not preserve the \\raisebox shift".into())
-        },
-        _ => None,
-    }
-}
-
+/// Writer for OMML output.
 pub struct OmmlWriter;
 
 impl MathWriter for OmmlWriter {
-    fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
-        let mut w = Writer::new(Cursor::new(Vec::with_capacity(512)));
-        let mut math = BytesStart::new("m:oMath");
-        math.push_attribute(("xmlns:m", NS));
-        w.write_event(Event::Start(math)).map_err(io_err)?;
-        for node in &expr.nodes {
-            write_node(&mut w, node)?;
-        }
-        w.write_event(Event::End(BytesEnd::new("m:oMath")))
-            .map_err(io_err)?;
-        let buf = w.into_inner().into_inner();
-        String::from_utf8(buf).map_err(|e| {
-            crate::error::Error::Unsupported(format!("OMML output contained invalid UTF-8: {e}"))
-        })
+    fn write(expr: &MathExpr, config: &Config) -> Result<String> {
+        Self::write_compact(&CompactExpr::from_math_expr(expr), config)
+    }
+
+    fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
+        Self::write_with_options(expr, config, &OmmlOptions::default()).map(|(s, _)| s)
     }
 
     fn write_compact_with_diagnostics(
         expr: &CompactExpr,
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        let out = Self::write_compact(expr, config)?;
-        let diags = super::collect_loss_diagnostics(expr, omml_loss);
-        Ok((out, diags))
+        Self::write_with_options(expr, config, &OmmlOptions::default())
     }
+}
 
-    fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
-        let arena = &expr.arena;
-        let mut buf = String::with_capacity(512);
-        buf.push_str("<m:oMath xmlns:m=\"");
-        buf.push_str(NS);
-        buf.push_str("\">");
-        for &root_id in arena.children(expr.roots) {
-            write_node_cf(&mut buf, arena, root_id);
+impl OmmlWriter {
+    /// Write `expr` as OMML with the given options, returning the markup and
+    /// a diagnostic for every piece of information OMML cannot hold.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the expression nests deeper than [`MAX_AST_DEPTH`].
+    pub fn write_with_options(
+        expr: &CompactExpr,
+        _config: &Config,
+        options: &OmmlOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+        let mut e = Emitter::new(&expr.arena, options.run_properties);
+        if options.display_block {
+            e.open_root("m:oMathPara");
+            e.paragraph_props(options.justification);
+            e.buf.push_str("<m:oMath>");
+        } else {
+            e.open_root("m:oMath");
         }
-        buf.push_str("</m:oMath>");
-        Ok(buf)
+        e.seq(expr.arena.children(expr.roots), Fmt::default());
+        e.buf.push_str("</m:oMath>");
+        if options.display_block {
+            e.buf.push_str("</m:oMathPara>");
+        }
+        Ok((e.buf, e.diags))
     }
-}
 
-type XmlW = Writer<Cursor<Vec<u8>>>;
-
-fn io_err(e: std::io::Error) -> crate::error::Error {
-    crate::error::Error::Io(e)
-}
-
-fn write_node(w: &mut XmlW, node: &MathNode) -> Result<()> {
-    match node {
-        MathNode::Number(s) => write_run(w, s, None),
-        MathNode::Identifier(s) => write_run(w, s, Some("i")),
-        MathNode::Operator(attr) => write_func_or_operator(w, attr),
-        MathNode::Symbol(kind, s) => {
-            if *kind == SymbolKind::LargeOp {
-                // Large operators should ideally be in nary, but as a fallback
-                write_run(w, s, None)
-            } else {
-                write_run(w, s, None)
-            }
-        },
-        MathNode::Text(_, s) => write_run(w, s, Some("p")),
-        MathNode::Space(_) | MathNode::Rule { .. } => {
-            // OMML doesn't have explicit space elements; use a text run
-            write_run(w, "\u{00A0}", None)
-        },
-
-        MathNode::Row(children) => {
-            for child in children {
-                write_node(w, child)?;
-            }
-            Ok(())
-        },
-
-        MathNode::Fenced {
-            open,
-            close,
-            content,
-        } => {
-            start(w, "m:d")?;
-            // Properties
-            start(w, "m:dPr")?;
-            write_val_elem(w, "m:begChr", open)?;
-            write_val_elem(w, "m:endChr", close)?;
-            if let Some(separator) = fenced_separator(content) {
-                write_val_elem(w, "m:sepChr", separator)?;
-            }
-            end(w, "m:dPr")?;
-            // Content elements
-            for item in content {
-                match item {
-                    FencedItem::Element(node) => {
-                        start(w, "m:e")?;
-                        write_node(w, node)?;
-                        end(w, "m:e")?;
-                    },
-                    FencedItem::Middle(_) => {
-                        // OMML uses separator in dPr, not inline. Skip for now.
-                    },
-                }
-            }
-            end(w, "m:d")
-        },
-
-        MathNode::Subscript { base, sub } => {
-            start(w, "m:sSub")?;
-            write_e(w, base)?;
-            start(w, "m:sub")?;
-            write_node(w, sub)?;
-            end(w, "m:sub")?;
-            end(w, "m:sSub")
-        },
-
-        MathNode::Superscript { base, sup } => {
-            start(w, "m:sSup")?;
-            write_e(w, base)?;
-            start(w, "m:sup")?;
-            write_node(w, sup)?;
-            end(w, "m:sup")?;
-            end(w, "m:sSup")
-        },
-
-        MathNode::SubSup { base, sub, sup } => {
-            start(w, "m:sSubSup")?;
-            write_e(w, base)?;
-            start(w, "m:sub")?;
-            write_node(w, sub)?;
-            end(w, "m:sub")?;
-            start(w, "m:sup")?;
-            write_node(w, sup)?;
-            end(w, "m:sup")?;
-            end(w, "m:sSubSup")
-        },
-
-        MathNode::PreScripts {
-            base,
-            pre_sub,
-            pre_sup,
-        } => {
-            start(w, "m:sPre")?;
-            start(w, "m:sub")?;
-            if let Some(s) = pre_sub {
-                write_node(w, s)?;
-            }
-            end(w, "m:sub")?;
-            start(w, "m:sup")?;
-            if let Some(s) = pre_sup {
-                write_node(w, s)?;
-            }
-            end(w, "m:sup")?;
-            write_e(w, base)?;
-            end(w, "m:sPre")
-        },
-
-        MathNode::Overscript {
-            base,
-            over,
-            movable_limits,
-        } => {
-            if *movable_limits {
-                start(w, "m:limUpp")?;
-                write_e(w, base)?;
-                start(w, "m:lim")?;
-                write_node(w, over)?;
-                end(w, "m:lim")?;
-                end(w, "m:limUpp")
-            } else {
-                // Use bar for overline, groupChr for braces
-                if is_line_symbol(over) {
-                    start(w, "m:bar")?;
-                    start(w, "m:barPr")?;
-                    write_val_elem(w, "m:pos", "top")?;
-                    end(w, "m:barPr")?;
-                    write_e(w, base)?;
-                    end(w, "m:bar")
-                } else {
-                    start(w, "m:groupChr")?;
-                    start(w, "m:groupChrPr")?;
-                    let chr_str = extract_symbol_text(over);
-                    write_val_elem(w, "m:chr", &chr_str)?;
-                    write_val_elem(w, "m:pos", "top")?;
-                    end(w, "m:groupChrPr")?;
-                    write_e(w, base)?;
-                    end(w, "m:groupChr")
-                }
-            }
-        },
-
-        MathNode::Underscript {
-            base,
-            under,
-            movable_limits,
-        } => {
-            if *movable_limits {
-                start(w, "m:limLow")?;
-                write_e(w, base)?;
-                start(w, "m:lim")?;
-                write_node(w, under)?;
-                end(w, "m:lim")?;
-                end(w, "m:limLow")
-            } else {
-                if is_line_symbol(under) {
-                    start(w, "m:bar")?;
-                    start(w, "m:barPr")?;
-                    write_val_elem(w, "m:pos", "bot")?;
-                    end(w, "m:barPr")?;
-                    write_e(w, base)?;
-                    end(w, "m:bar")
-                } else {
-                    start(w, "m:groupChr")?;
-                    start(w, "m:groupChrPr")?;
-                    let chr_str = extract_symbol_text(under);
-                    write_val_elem(w, "m:chr", &chr_str)?;
-                    write_val_elem(w, "m:pos", "bot")?;
-                    end(w, "m:groupChrPr")?;
-                    write_e(w, base)?;
-                    end(w, "m:groupChr")
-                }
-            }
-        },
-
-        MathNode::UnderOver {
-            base,
-            under,
-            over,
-            movable_limits: _,
-        } => {
-            // Nest limLow inside limUpp
-            start(w, "m:limUpp")?;
-            start(w, "m:e")?;
-            start(w, "m:limLow")?;
-            write_e(w, base)?;
-            start(w, "m:lim")?;
-            write_node(w, under)?;
-            end(w, "m:lim")?;
-            end(w, "m:limLow")?;
-            end(w, "m:e")?;
-            start(w, "m:lim")?;
-            write_node(w, over)?;
-            end(w, "m:lim")?;
-            end(w, "m:limUpp")
-        },
-
-        MathNode::Fraction { kind, num, den } => {
-            start(w, "m:f")?;
-            let type_val = match kind {
-                FractionKind::Normal | FractionKind::Display => "bar",
-                FractionKind::NoBar => "noBar",
-                FractionKind::Skewed => "skw",
-                FractionKind::Inline => "lin",
-            };
-            start(w, "m:fPr")?;
-            write_val_elem(w, "m:type", type_val)?;
-            end(w, "m:fPr")?;
-            start(w, "m:num")?;
-            write_node(w, num)?;
-            end(w, "m:num")?;
-            start(w, "m:den")?;
-            write_node(w, den)?;
-            end(w, "m:den")?;
-            end(w, "m:f")
-        },
-
-        MathNode::Sqrt(inner) => {
-            start(w, "m:rad")?;
-            start(w, "m:radPr")?;
-            write_val_elem(w, "m:degHide", "1")?;
-            end(w, "m:radPr")?;
-            start(w, "m:deg")?;
-            end(w, "m:deg")?;
-            write_e(w, inner)?;
-            end(w, "m:rad")
-        },
-
-        MathNode::Root { index, radicand } => {
-            start(w, "m:rad")?;
-            start(w, "m:deg")?;
-            write_node(w, index)?;
-            end(w, "m:deg")?;
-            write_e(w, radicand)?;
-            end(w, "m:rad")
-        },
-
-        MathNode::Nary {
-            op,
-            sub,
-            sup,
-            body,
-            limits,
-        } => {
-            start(w, "m:nary")?;
-            start(w, "m:naryPr")?;
-            write_val_elem(w, "m:chr", &op.to_string())?;
-            let lim_loc = match limits {
-                LimitStyle::AboveBelow => "undOvr",
-                LimitStyle::SubSup => "subSup",
-                LimitStyle::Default => "undOvr",
-            };
-            write_val_elem(w, "m:limLoc", lim_loc)?;
-            if sub.is_none() {
-                write_val_elem(w, "m:subHide", "1")?;
-            }
-            if sup.is_none() {
-                write_val_elem(w, "m:supHide", "1")?;
-            }
-            end(w, "m:naryPr")?;
-            start(w, "m:sub")?;
-            if let Some(s) = sub {
-                write_node(w, s)?;
-            }
-            end(w, "m:sub")?;
-            start(w, "m:sup")?;
-            if let Some(s) = sup {
-                write_node(w, s)?;
-            }
-            end(w, "m:sup")?;
-            write_e(w, body)?;
-            end(w, "m:nary")
-        },
-
-        MathNode::Accent { base, accent, .. } => {
-            start(w, "m:acc")?;
-            start(w, "m:accPr")?;
-            write_val_elem(w, "m:chr", &accent.to_string())?;
-            end(w, "m:accPr")?;
-            write_e(w, base)?;
-            end(w, "m:acc")
-        },
-
-        MathNode::Array { columns, rows, .. } => {
-            start(w, "m:m")?;
-            write_matrix_props(w, columns)?;
-            for row in rows {
-                start(w, "m:mr")?;
-                for cell in row {
-                    start(w, "m:e")?;
-                    for node in cell {
-                        write_node(w, node)?;
-                    }
-                    end(w, "m:e")?;
-                }
-                end(w, "m:mr")?;
-            }
-            end(w, "m:m")
-        },
-
-        MathNode::Phantom(inner, kind) => {
-            start(w, "m:phant")?;
-            write_phantom_pr(w, *kind)?;
-            write_e(w, inner)?;
-            end(w, "m:phant")
-        },
-
-        MathNode::Boxed { content: inner, .. } => {
-            start(w, "m:borderBox")?;
-            write_e(w, inner)?;
-            end(w, "m:borderBox")
-        },
-
-        MathNode::Cancel { stroke, content } => {
-            // OMML represents cancellation as borderBox strike properties.
-            start(w, "m:borderBox")?;
-            start(w, "m:borderBoxPr")?;
-            write_cancel_strike_props(w, *stroke)?;
-            end(w, "m:borderBoxPr")?;
-            write_e(w, content)?;
-            end(w, "m:borderBox")
-        },
-
-        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
-            write_node(w, content)
-        },
-
-        MathNode::Styled(style, children) => {
-            let (sty, scr) = decompose_style(*style);
-            for child in children {
-                match child {
-                    MathNode::Identifier(s) | MathNode::Number(s) => {
-                        write_styled_run(w, s, sty, scr)?;
-                    },
-                    MathNode::Text(_, s) => {
-                        write_styled_run(w, s, sty, scr)?;
-                    },
-                    _ => write_node(w, child)?,
-                }
-            }
-            Ok(())
-        },
-        MathNode::MathChoice { display, .. } => {
-            // OMML doesn't have mathchoice; output the display branch
-            write_node(w, display)
-        },
-        MathNode::MathAtom { content, .. } => write_node(w, content),
+    /// Write a display-math paragraph (`m:oMathPara`) holding one `m:oMath`
+    /// per equation. The paragraph's justification wins over
+    /// `options.justification`; `options.display_block` is ignored.
+    ///
+    /// ```
+    /// use mathema::{Config, OmmlOptions};
+    /// use mathema::reader::omml::OmmlReader;
+    /// use mathema::writer::omml::OmmlWriter;
+    ///
+    /// let omml = r#"<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMathParaPr><m:jc m:val="right"/></m:oMathParaPr><m:oMath><m:r><m:t>a</m:t></m:r></m:oMath><m:oMath><m:r><m:t>b</m:t></m:r></m:oMath></m:oMathPara>"#;
+    /// let config = Config::default();
+    /// let para = OmmlReader::parse_paragraph(omml, &config).unwrap();
+    /// let (out, _) = OmmlWriter::write_paragraph(&para, &config, &OmmlOptions::default()).unwrap();
+    /// assert_eq!(out, omml);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Fails when an equation nests deeper than [`MAX_AST_DEPTH`].
+    pub fn write_paragraph(
+        paragraph: &OmmlParagraph,
+        _config: &Config,
+        options: &OmmlOptions,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let empty = AstArena::new();
+        let mut e = Emitter::new(&empty, options.run_properties);
+        e.open_root("m:oMathPara");
+        e.paragraph_props(paragraph.justification.or(options.justification));
+        for eq in &paragraph.equations {
+            crate::ast::validate_compact_depth(&eq.arena, eq.roots)?;
+            e.arena = &eq.arena;
+            e.buf.push_str("<m:oMath>");
+            e.seq(eq.arena.children(eq.roots), Fmt::default());
+            e.buf.push_str("</m:oMath>");
+        }
+        if paragraph.equations.is_empty() {
+            // CT_OMathPara requires at least one m:oMath.
+            e.buf.push_str("<m:oMath></m:oMath>");
+        }
+        e.buf.push_str("</m:oMathPara>");
+        Ok((e.buf, e.diags))
     }
-}
-
-// --- XML helpers ---
-
-fn start(w: &mut XmlW, tag: &str) -> Result<()> {
-    w.write_event(Event::Start(BytesStart::new(tag)))
-        .map_err(io_err)
-}
-
-fn end(w: &mut XmlW, tag: &str) -> Result<()> {
-    w.write_event(Event::End(BytesEnd::new(tag)))
-        .map_err(io_err)
-}
-
-fn write_val_elem(w: &mut XmlW, tag: &str, val: &str) -> Result<()> {
-    let mut elem = BytesStart::new(tag);
-    elem.push_attribute(("m:val", val));
-    w.write_event(Event::Empty(elem)).map_err(io_err)
 }
 
 /// Map a [`PhantomKind`] to OMML `phantPr` flags
 /// `(show, zero_wid, zero_asc, zero_desc)`, where `show` is whether the
 /// content is visible (`\smash` family) versus invisible (`\phantom` family).
-fn phantom_pr_flags(kind: PhantomKind) -> (bool, bool, bool, bool) {
+pub(crate) fn phantom_pr_flags(kind: PhantomKind) -> (bool, bool, bool, bool) {
     match kind {
         // Invisible, all dimensions kept.
         PhantomKind::Full => (false, false, false, false),
@@ -490,103 +208,7 @@ fn phantom_pr_flags(kind: PhantomKind) -> (bool, bool, bool, bool) {
     }
 }
 
-/// Emit an OMML `<m:phantPr>` element describing `kind`. `show` is written
-/// explicitly so the subtype round-trips regardless of reader defaults.
-fn write_phantom_pr(w: &mut XmlW, kind: PhantomKind) -> Result<()> {
-    let (show, zero_wid, zero_asc, zero_desc) = phantom_pr_flags(kind);
-    start(w, "m:phantPr")?;
-    write_val_elem(w, "m:show", if show { "1" } else { "0" })?;
-    if zero_wid {
-        write_val_elem(w, "m:zeroWid", "1")?;
-    }
-    if zero_asc {
-        write_val_elem(w, "m:zeroAsc", "1")?;
-    }
-    if zero_desc {
-        write_val_elem(w, "m:zeroDesc", "1")?;
-    }
-    end(w, "m:phantPr")
-}
-
-fn fenced_separator(content: &[FencedItem]) -> Option<&str> {
-    content.iter().find_map(|item| match item {
-        FencedItem::Middle(separator) => Some(separator.as_str()),
-        FencedItem::Element(_) => None,
-    })
-}
-
-fn write_matrix_props(w: &mut XmlW, columns: &[ColumnAlign]) -> Result<()> {
-    if columns.is_empty() {
-        return Ok(());
-    }
-    start(w, "m:mPr")?;
-    start(w, "m:mcs")?;
-    for column in columns {
-        start(w, "m:mc")?;
-        start(w, "m:mcPr")?;
-        write_val_elem(w, "m:count", "1")?;
-        write_val_elem(w, "m:mcJc", column_align_val(*column))?;
-        end(w, "m:mcPr")?;
-        end(w, "m:mc")?;
-    }
-    end(w, "m:mcs")?;
-    end(w, "m:mPr")
-}
-
-fn write_cancel_strike_props(w: &mut XmlW, stroke: StrokeKind) -> Result<()> {
-    match stroke {
-        StrokeKind::Forward => write_val_elem(w, "m:strikeBLTR", "1"),
-        StrokeKind::Backward => write_val_elem(w, "m:strikeTLBR", "1"),
-        StrokeKind::Cross => {
-            write_val_elem(w, "m:strikeBLTR", "1")?;
-            write_val_elem(w, "m:strikeTLBR", "1")
-        },
-        StrokeKind::Horizontal => write_val_elem(w, "m:strikeH", "1"),
-        StrokeKind::Vertical => write_val_elem(w, "m:strikeV", "1"),
-    }
-}
-
-fn column_align_val(align: ColumnAlign) -> &'static str {
-    match align {
-        ColumnAlign::Left => "left",
-        ColumnAlign::Center => "center",
-        ColumnAlign::Right => "right",
-    }
-}
-
-fn write_run(w: &mut XmlW, text: &str, style: Option<&str>) -> Result<()> {
-    start(w, "m:r")?;
-    if let Some(sty) = style {
-        start(w, "m:rPr")?;
-        write_val_elem(w, "m:sty", sty)?;
-        end(w, "m:rPr")?;
-    }
-    start(w, "m:t")?;
-    let text = trim_omml_text(text);
-    w.write_event(Event::Text(BytesText::new(text)))
-        .map_err(io_err)?;
-    end(w, "m:t")?;
-    end(w, "m:r")
-}
-
-/// Write a run with both sty and optional scr attributes.
-fn write_styled_run(w: &mut XmlW, text: &str, sty: &str, scr: Option<&str>) -> Result<()> {
-    start(w, "m:r")?;
-    start(w, "m:rPr")?;
-    write_val_elem(w, "m:sty", sty)?;
-    if let Some(s) = scr {
-        write_val_elem(w, "m:scr", s)?;
-    }
-    end(w, "m:rPr")?;
-    start(w, "m:t")?;
-    let text = trim_omml_text(text);
-    w.write_event(Event::Text(BytesText::new(text)))
-        .map_err(io_err)?;
-    end(w, "m:t")?;
-    end(w, "m:r")
-}
-
-/// Decompose a TextStyle into OMML (sty, scr) pair.
+/// Decompose a [`TextStyle`] into OMML `(sty, scr)` values.
 fn decompose_style(style: TextStyle) -> (&'static str, Option<&'static str>) {
     match style {
         TextStyle::Normal => ("p", None),
@@ -606,1299 +228,936 @@ fn decompose_style(style: TextStyle) -> (&'static str, Option<&'static str>) {
     }
 }
 
-fn write_e(w: &mut XmlW, node: &MathNode) -> Result<()> {
-    start(w, "m:e")?;
-    write_node(w, node)?;
-    end(w, "m:e")
-}
-
-fn write_func_or_operator(w: &mut XmlW, attr: &OperatorAttr) -> Result<()> {
-    start(w, "m:func")?;
-    start(w, "m:fName")?;
-    write_run(w, &attr.name, Some("p"))?;
-    end(w, "m:fName")?;
-    start(w, "m:e")?;
-    end(w, "m:e")?;
-    end(w, "m:func")
-}
-
-fn is_line_symbol(node: &MathNode) -> bool {
-    matches!(node, MathNode::Symbol(_, s) if s == "\u{203E}")
-}
-
-fn extract_symbol_text(node: &MathNode) -> String {
-    match node {
-        MathNode::Symbol(_, s) => s.to_owned(),
-        _ => "\u{23DF}".to_owned(),
+fn column_align_val(align: ColumnAlign) -> &'static str {
+    match align {
+        ColumnAlign::Left => "left",
+        ColumnAlign::Center => "center",
+        ColumnAlign::Right => "right",
     }
 }
 
-// --- Compact arena helpers (legacy quick_xml path, kept for reference) ---
-
-#[allow(dead_code)]
-fn write_node_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
-    match *arena.node(id) {
-        CompactNode::Number(sid) => write_run_c(w, arena, sid, None),
-        CompactNode::Identifier(sid) => write_run_c(w, arena, sid, Some("i")),
-        CompactNode::Operator { name, .. } => write_func_or_operator_c(w, arena, name),
-        CompactNode::Symbol(_kind, sid) => write_run_c(w, arena, sid, None),
-        CompactNode::Text(_, sid) => write_run_c(w, arena, sid, Some("p")),
-        CompactNode::Space(_) => write_run(w, "\u{00A0}", None),
-
-        CompactNode::Row(span) => {
-            for &child_id in arena.children(span) {
-                write_node_c(w, arena, child_id)?;
-            }
-            Ok(())
-        },
-
-        CompactNode::Fenced {
-            open,
-            close,
-            content,
-        } => {
-            start(w, "m:d")?;
-            start(w, "m:dPr")?;
-            write_val_elem(w, "m:begChr", arena.str_val(open))?;
-            write_val_elem(w, "m:endChr", arena.str_val(close))?;
-            if let Some(separator) = compact_fenced_separator(arena, content) {
-                write_val_elem(w, "m:sepChr", separator)?;
-            }
-            end(w, "m:dPr")?;
-            for &child_id in arena.children(content) {
-                match *arena.node(child_id) {
-                    CompactNode::Middle(_) => {
-                        // OMML uses separator in dPr, not inline. Skip for now.
-                    },
-                    _ => {
-                        start(w, "m:e")?;
-                        write_node_c(w, arena, child_id)?;
-                        end(w, "m:e")?;
-                    },
-                }
-            }
-            end(w, "m:d")
-        },
-
-        CompactNode::Subscript { base, sub } => {
-            start(w, "m:sSub")?;
-            write_e_c(w, arena, base)?;
-            start(w, "m:sub")?;
-            write_node_c(w, arena, sub)?;
-            end(w, "m:sub")?;
-            end(w, "m:sSub")
-        },
-
-        CompactNode::Superscript { base, sup } => {
-            start(w, "m:sSup")?;
-            write_e_c(w, arena, base)?;
-            start(w, "m:sup")?;
-            write_node_c(w, arena, sup)?;
-            end(w, "m:sup")?;
-            end(w, "m:sSup")
-        },
-
-        CompactNode::SubSup { base, sub, sup } => {
-            start(w, "m:sSubSup")?;
-            write_e_c(w, arena, base)?;
-            start(w, "m:sub")?;
-            write_node_c(w, arena, sub)?;
-            end(w, "m:sub")?;
-            start(w, "m:sup")?;
-            write_node_c(w, arena, sup)?;
-            end(w, "m:sup")?;
-            end(w, "m:sSubSup")
-        },
-
-        CompactNode::PreScripts {
-            base,
-            pre_sub,
-            pre_sup,
-        } => {
-            start(w, "m:sPre")?;
-            start(w, "m:sub")?;
-            if pre_sub.is_some() {
-                write_node_c(w, arena, pre_sub)?;
-            }
-            end(w, "m:sub")?;
-            start(w, "m:sup")?;
-            if pre_sup.is_some() {
-                write_node_c(w, arena, pre_sup)?;
-            }
-            end(w, "m:sup")?;
-            write_e_c(w, arena, base)?;
-            end(w, "m:sPre")
-        },
-
-        CompactNode::Overscript {
-            base,
-            over,
-            movable_limits,
-        } => {
-            if movable_limits {
-                start(w, "m:limUpp")?;
-                write_e_c(w, arena, base)?;
-                start(w, "m:lim")?;
-                write_node_c(w, arena, over)?;
-                end(w, "m:lim")?;
-                end(w, "m:limUpp")
-            } else {
-                if is_line_symbol_c(arena, over) {
-                    start(w, "m:bar")?;
-                    start(w, "m:barPr")?;
-                    write_val_elem(w, "m:pos", "top")?;
-                    end(w, "m:barPr")?;
-                    write_e_c(w, arena, base)?;
-                    end(w, "m:bar")
-                } else {
-                    start(w, "m:groupChr")?;
-                    start(w, "m:groupChrPr")?;
-                    let chr_str = extract_symbol_text_c(arena, over);
-                    write_val_elem(w, "m:chr", &chr_str)?;
-                    write_val_elem(w, "m:pos", "top")?;
-                    end(w, "m:groupChrPr")?;
-                    write_e_c(w, arena, base)?;
-                    end(w, "m:groupChr")
-                }
-            }
-        },
-
-        CompactNode::Underscript {
-            base,
-            under,
-            movable_limits,
-        } => {
-            if movable_limits {
-                start(w, "m:limLow")?;
-                write_e_c(w, arena, base)?;
-                start(w, "m:lim")?;
-                write_node_c(w, arena, under)?;
-                end(w, "m:lim")?;
-                end(w, "m:limLow")
-            } else {
-                if is_line_symbol_c(arena, under) {
-                    start(w, "m:bar")?;
-                    start(w, "m:barPr")?;
-                    write_val_elem(w, "m:pos", "bot")?;
-                    end(w, "m:barPr")?;
-                    write_e_c(w, arena, base)?;
-                    end(w, "m:bar")
-                } else {
-                    start(w, "m:groupChr")?;
-                    start(w, "m:groupChrPr")?;
-                    let chr_str = extract_symbol_text_c(arena, under);
-                    write_val_elem(w, "m:chr", &chr_str)?;
-                    write_val_elem(w, "m:pos", "bot")?;
-                    end(w, "m:groupChrPr")?;
-                    write_e_c(w, arena, base)?;
-                    end(w, "m:groupChr")
-                }
-            }
-        },
-
-        CompactNode::UnderOver {
-            base,
-            under,
-            over,
-            movable_limits: _,
-        } => {
-            start(w, "m:limUpp")?;
-            start(w, "m:e")?;
-            start(w, "m:limLow")?;
-            write_e_c(w, arena, base)?;
-            start(w, "m:lim")?;
-            write_node_c(w, arena, under)?;
-            end(w, "m:lim")?;
-            end(w, "m:limLow")?;
-            end(w, "m:e")?;
-            start(w, "m:lim")?;
-            write_node_c(w, arena, over)?;
-            end(w, "m:lim")?;
-            end(w, "m:limUpp")
-        },
-
-        CompactNode::Fraction { kind, num, den } => {
-            start(w, "m:f")?;
-            let type_val = match kind {
-                FractionKind::Normal | FractionKind::Display => "bar",
-                FractionKind::NoBar => "noBar",
-                FractionKind::Skewed => "skw",
-                FractionKind::Inline => "lin",
-            };
-            start(w, "m:fPr")?;
-            write_val_elem(w, "m:type", type_val)?;
-            end(w, "m:fPr")?;
-            start(w, "m:num")?;
-            write_node_c(w, arena, num)?;
-            end(w, "m:num")?;
-            start(w, "m:den")?;
-            write_node_c(w, arena, den)?;
-            end(w, "m:den")?;
-            end(w, "m:f")
-        },
-
-        CompactNode::Sqrt(inner) => {
-            start(w, "m:rad")?;
-            start(w, "m:radPr")?;
-            write_val_elem(w, "m:degHide", "1")?;
-            end(w, "m:radPr")?;
-            start(w, "m:deg")?;
-            end(w, "m:deg")?;
-            write_e_c(w, arena, inner)?;
-            end(w, "m:rad")
-        },
-
-        CompactNode::Root { index, radicand } => {
-            start(w, "m:rad")?;
-            start(w, "m:deg")?;
-            write_node_c(w, arena, index)?;
-            end(w, "m:deg")?;
-            write_e_c(w, arena, radicand)?;
-            end(w, "m:rad")
-        },
-
-        CompactNode::Nary {
-            op,
-            sub,
-            sup,
-            body,
-            limits,
-        } => {
-            start(w, "m:nary")?;
-            start(w, "m:naryPr")?;
-            write_val_elem(w, "m:chr", &op.to_string())?;
-            let lim_loc = match limits {
-                LimitStyle::AboveBelow => "undOvr",
-                LimitStyle::SubSup => "subSup",
-                LimitStyle::Default => "undOvr",
-            };
-            write_val_elem(w, "m:limLoc", lim_loc)?;
-            if sub.is_none() {
-                write_val_elem(w, "m:subHide", "1")?;
-            }
-            if sup.is_none() {
-                write_val_elem(w, "m:supHide", "1")?;
-            }
-            end(w, "m:naryPr")?;
-            start(w, "m:sub")?;
-            if sub.is_some() {
-                write_node_c(w, arena, sub)?;
-            }
-            end(w, "m:sub")?;
-            start(w, "m:sup")?;
-            if sup.is_some() {
-                write_node_c(w, arena, sup)?;
-            }
-            end(w, "m:sup")?;
-            write_e_c(w, arena, body)?;
-            end(w, "m:nary")
-        },
-
-        CompactNode::Accent { base, accent, .. } => {
-            start(w, "m:acc")?;
-            start(w, "m:accPr")?;
-            write_val_elem(w, "m:chr", &accent.to_string())?;
-            end(w, "m:accPr")?;
-            write_e_c(w, arena, base)?;
-            end(w, "m:acc")
-        },
-
-        CompactNode::Array {
-            col_aligns,
-            cells,
-            num_cols,
-            ..
-        } => {
-            start(w, "m:m")?;
-            write_matrix_props_c(w, arena, col_aligns)?;
-            let cell_ids = arena.children(cells);
-            let nc = num_cols as usize;
-            for chunk in cell_ids.chunks(nc.max(1)) {
-                start(w, "m:mr")?;
-                for &cell_id in chunk {
-                    start(w, "m:e")?;
-                    // Each cell is a Row node wrapping the cell contents
-                    match *arena.node(cell_id) {
-                        CompactNode::Row(span) => {
-                            for &child_id in arena.children(span) {
-                                write_node_c(w, arena, child_id)?;
-                            }
-                        },
-                        _ => {
-                            write_node_c(w, arena, cell_id)?;
-                        },
-                    }
-                    end(w, "m:e")?;
-                }
-                end(w, "m:mr")?;
-            }
-            end(w, "m:m")
-        },
-
-        CompactNode::Phantom(inner, kind) => {
-            start(w, "m:phant")?;
-            write_phantom_pr(w, kind)?;
-            write_e_c(w, arena, inner)?;
-            end(w, "m:phant")
-        },
-
-        CompactNode::Boxed { content: inner, .. } => {
-            start(w, "m:borderBox")?;
-            write_e_c(w, arena, inner)?;
-            end(w, "m:borderBox")
-        },
-
-        CompactNode::Cancel { stroke, content } => {
-            start(w, "m:borderBox")?;
-            start(w, "m:borderBoxPr")?;
-            write_cancel_strike_props(w, stroke)?;
-            end(w, "m:borderBoxPr")?;
-            write_e_c(w, arena, content)?;
-            end(w, "m:borderBox")
-        },
-
-        CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
-            write_node_c(w, arena, content)
-        },
-
-        CompactNode::Styled(style, span) => {
-            let (sty, scr) = decompose_style(style);
-            for &child_id in arena.children(span) {
-                match *arena.node(child_id) {
-                    CompactNode::Identifier(sid) | CompactNode::Number(sid) => {
-                        write_styled_run_c(w, arena, sid, sty, scr)?;
-                    },
-                    CompactNode::Text(_, sid) => {
-                        write_styled_run_c(w, arena, sid, sty, scr)?;
-                    },
-                    _ => write_node_c(w, arena, child_id)?,
-                }
-            }
-            Ok(())
-        },
-
-        // Color: OMML has no direct color support, just write the content
-        CompactNode::Color { content, .. } => write_node_c(w, arena, content),
-
-        CompactNode::MathChoice { display, .. } => write_node_c(w, arena, display),
-
-        CompactNode::MathAtom { content, .. } => write_node_c(w, arena, content),
-
-        CompactNode::Rule { .. } => write_run(w, "\u{00A0}", None),
-
-        // Helper nodes that should not normally appear at the top level
-        CompactNode::Middle(_)
-        | CompactNode::ColAlign(_)
-        | CompactNode::StyleSwitch(_)
-        | CompactNode::SizeScale(_)
-        | CompactNode::Newline => Ok(()),
-    }
+/// Formatting inherited from enclosing `Styled` and `Color` nodes.
+#[derive(Clone, Copy, Default)]
+struct Fmt {
+    style: Option<TextStyle>,
+    color: Option<[u8; 3]>,
 }
 
-#[allow(dead_code)]
-fn write_run_c(w: &mut XmlW, arena: &AstArena, sid: StrId, style: Option<&str>) -> Result<()> {
-    write_run(w, arena.str_val(sid), style)
+/// Leaf kinds written as math runs.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leaf {
+    Number,
+    Identifier,
+    Operator,
+    Symbol,
 }
 
-#[allow(dead_code)]
-fn write_styled_run_c(
-    w: &mut XmlW,
-    arena: &AstArena,
-    sid: StrId,
-    sty: &str,
-    scr: Option<&str>,
-) -> Result<()> {
-    write_styled_run(w, arena.str_val(sid), sty, scr)
+struct Emitter<'a> {
+    buf: String,
+    arena: &'a AstArena,
+    host: OmmlRunProperties,
+    diags: Vec<Diagnostic>,
+    seen: HashSet<String>,
 }
 
-#[allow(dead_code)]
-fn write_e_c(w: &mut XmlW, arena: &AstArena, id: NodeId) -> Result<()> {
-    start(w, "m:e")?;
-    write_node_c(w, arena, id)?;
-    end(w, "m:e")
-}
-
-#[allow(dead_code)]
-fn write_matrix_props_c(w: &mut XmlW, arena: &AstArena, col_aligns: NodeSpan) -> Result<()> {
-    let ids = arena.children(col_aligns);
-    if ids.is_empty() {
-        return Ok(());
-    }
-    start(w, "m:mPr")?;
-    start(w, "m:mcs")?;
-    for &id in ids {
-        if let CompactNode::ColAlign(column) = *arena.node(id) {
-            start(w, "m:mc")?;
-            start(w, "m:mcPr")?;
-            write_val_elem(w, "m:count", "1")?;
-            write_val_elem(w, "m:mcJc", column_align_val(column))?;
-            end(w, "m:mcPr")?;
-            end(w, "m:mc")?;
+impl<'a> Emitter<'a> {
+    fn new(arena: &'a AstArena, host: OmmlRunProperties) -> Self {
+        Self {
+            buf: String::with_capacity(512),
+            arena,
+            host,
+            diags: Vec::new(),
+            seen: HashSet::new(),
         }
     }
-    end(w, "m:mcs")?;
-    end(w, "m:mPr")
-}
 
-#[allow(dead_code)]
-fn write_func_or_operator_c(w: &mut XmlW, arena: &AstArena, name: StrId) -> Result<()> {
-    start(w, "m:func")?;
-    start(w, "m:fName")?;
-    write_run(w, arena.str_val(name), Some("p"))?;
-    end(w, "m:fName")?;
-    start(w, "m:e")?;
-    end(w, "m:e")?;
-    end(w, "m:func")
-}
-
-fn is_line_symbol_c(arena: &AstArena, id: NodeId) -> bool {
-    matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{203E}")
-}
-
-fn extract_symbol_text_c(arena: &AstArena, id: NodeId) -> String {
-    match *arena.node(id) {
-        CompactNode::Symbol(_, sid) => arena.str_val(sid).to_owned(),
-        _ => "\u{23DF}".to_owned(),
-    }
-}
-
-// ── Fast direct-string compact OMML writer (bypasses quick_xml) ─────
-
-/// Escape XML special characters in text content.
-#[inline]
-fn xml_esc(buf: &mut String, s: &str) {
-    if !s
-        .bytes()
-        .any(|b| matches!(b, b'<' | b'>' | b'&' | b'"' | b'\''))
-    {
-        buf.push_str(s);
-        return;
-    }
-    for ch in s.chars() {
-        match ch {
-            '<' => buf.push_str("&lt;"),
-            '>' => buf.push_str("&gt;"),
-            '&' => buf.push_str("&amp;"),
-            '"' => buf.push_str("&quot;"),
-            '\'' => buf.push_str("&apos;"),
-            _ => buf.push(ch),
+    fn loss(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        if self.seen.insert(message.clone()) {
+            self.diags.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message,
+                span: None,
+            });
         }
     }
-}
 
-#[inline]
-fn f_start(buf: &mut String, tag: &str) {
-    buf.push('<');
-    buf.push_str(tag);
-    buf.push('>');
-}
+    // ── XML primitives ──────────────────────────────────────────────────
 
-#[inline]
-fn f_end(buf: &mut String, tag: &str) {
-    buf.push_str("</");
-    buf.push_str(tag);
-    buf.push('>');
-}
-
-#[inline]
-fn f_val_elem(buf: &mut String, tag: &str, val: &str) {
-    buf.push('<');
-    buf.push_str(tag);
-    buf.push_str(" m:val=\"");
-    xml_esc(buf, val);
-    buf.push_str("\"/>");
-}
-
-/// Buffered-writer equivalent of [`write_phantom_pr`].
-fn f_write_phantom_pr(buf: &mut String, kind: PhantomKind) {
-    let (show, zero_wid, zero_asc, zero_desc) = phantom_pr_flags(kind);
-    f_start(buf, "m:phantPr");
-    f_val_elem(buf, "m:show", if show { "1" } else { "0" });
-    if zero_wid {
-        f_val_elem(buf, "m:zeroWid", "1");
+    fn open_root(&mut self, tag: &str) {
+        self.buf.push('<');
+        self.buf.push_str(tag);
+        self.buf.push_str(" xmlns:m=\"");
+        self.buf.push_str(MATH_NS);
+        self.buf.push('"');
+        match self.host {
+            OmmlRunProperties::None => {},
+            OmmlRunProperties::WordprocessingMl => {
+                self.buf.push_str(" xmlns:w=\"");
+                self.buf.push_str(WML_NS);
+                self.buf.push('"');
+            },
+            OmmlRunProperties::DrawingMl => {
+                self.buf.push_str(" xmlns:a=\"");
+                self.buf.push_str(DML_NS);
+                self.buf.push('"');
+            },
+        }
+        self.buf.push('>');
     }
-    if zero_asc {
-        f_val_elem(buf, "m:zeroAsc", "1");
-    }
-    if zero_desc {
-        f_val_elem(buf, "m:zeroDesc", "1");
-    }
-    f_end(buf, "m:phantPr");
-}
 
-fn compact_fenced_separator(arena: &AstArena, content: NodeSpan) -> Option<&str> {
-    arena
-        .children(content)
-        .iter()
-        .find_map(|&child_id| match *arena.node(child_id) {
-            CompactNode::Middle(sid) => Some(arena.str_val(sid)),
+    fn paragraph_props(&mut self, jc: Option<OmmlJustification>) {
+        if let Some(jc) = jc {
+            self.buf.push_str("<m:oMathParaPr>");
+            self.val("m:jc", jc.as_omml());
+            self.buf.push_str("</m:oMathParaPr>");
+        }
+    }
+
+    fn open(&mut self, tag: &str) {
+        self.buf.push('<');
+        self.buf.push_str(tag);
+        self.buf.push('>');
+    }
+
+    fn close(&mut self, tag: &str) {
+        self.buf.push_str("</");
+        self.buf.push_str(tag);
+        self.buf.push('>');
+    }
+
+    /// `<tag m:val="val"/>`.
+    fn val(&mut self, tag: &str, val: &str) {
+        self.buf.push('<');
+        self.buf.push_str(tag);
+        self.buf.push_str(" m:val=\"");
+        self.attr_text(val);
+        self.buf.push_str("\"/>");
+    }
+
+    fn on(&mut self, tag: &str) {
+        self.val(tag, "1");
+    }
+
+    /// Escape character data; characters XML 1.0 cannot carry are dropped.
+    fn text(&mut self, s: &str) {
+        for ch in s.chars() {
+            match ch {
+                '<' => self.buf.push_str("&lt;"),
+                '>' => self.buf.push_str("&gt;"),
+                '&' => self.buf.push_str("&amp;"),
+                // A literal CR would be normalized to LF by the reader.
+                '\r' => self.buf.push_str("&#13;"),
+                c if is_xml_char(c) => self.buf.push(c),
+                _ => self.loss("a character that XML cannot represent was dropped"),
+            }
+        }
+    }
+
+    fn attr_text(&mut self, s: &str) {
+        for ch in s.chars() {
+            match ch {
+                '<' => self.buf.push_str("&lt;"),
+                '>' => self.buf.push_str("&gt;"),
+                '&' => self.buf.push_str("&amp;"),
+                '"' => self.buf.push_str("&quot;"),
+                // Attribute-value normalization would turn these into spaces.
+                '\t' => self.buf.push_str("&#9;"),
+                '\n' => self.buf.push_str("&#10;"),
+                '\r' => self.buf.push_str("&#13;"),
+                c if is_xml_char(c) => self.buf.push(c),
+                _ => self.loss("a character that XML cannot represent was dropped"),
+            }
+        }
+    }
+
+    /// A `CT_Char` value: at most one character.
+    fn char_val(&mut self, tag: &str, s: &str, what: &str) {
+        let mut chars = s.chars();
+        if let (Some(first), Some(_)) = (chars.next(), chars.next()) {
+            self.loss(format!(
+                "OMML {what} holds one character; only {first:?} of {s:?} was written"
+            ));
+            let mut tmp = [0u8; 4];
+            self.val(tag, first.encode_utf8(&mut tmp));
+        } else {
+            self.val(tag, s);
+        }
+    }
+
+    // ── Runs ────────────────────────────────────────────────────────────
+
+    /// `<m:r>` with math properties `(scr, sty)` or `nor`, host properties
+    /// and text.
+    fn run(&mut self, text: &str, sty: Option<&str>, scr: Option<&str>, nor: bool, host: Host) {
+        let sanitized: String;
+        let text = if text.chars().all(is_xml_char) {
+            text
+        } else {
+            self.loss("a character that XML cannot represent was dropped");
+            sanitized = text.chars().filter(|&c| is_xml_char(c)).collect();
+            if sanitized.is_empty() {
+                return;
+            }
+            &sanitized
+        };
+        self.open("m:r");
+        if nor || sty.is_some() || scr.is_some() {
+            // CT_RPR: lit?, (nor | (scr?, sty?)), brk?, aln?
+            self.open("m:rPr");
+            if nor {
+                self.buf.push_str("<m:nor/>");
+            } else {
+                if let Some(scr) = scr {
+                    self.val("m:scr", scr);
+                }
+                if let Some(sty) = sty {
+                    self.val("m:sty", sty);
+                }
+            }
+            self.close("m:rPr");
+        }
+        self.host_props(host);
+        if text.contains([' ', '\t', '\n', '\r']) {
+            self.buf.push_str("<m:t xml:space=\"preserve\">");
+        } else {
+            self.open("m:t");
+        }
+        self.text(text);
+        self.close("m:t");
+        self.close("m:r");
+    }
+
+    fn host_props(&mut self, host: Host) {
+        if !host.bold && !host.italic && host.color.is_none() {
+            return;
+        }
+        match self.host {
+            OmmlRunProperties::None => {
+                if host.color.is_some() {
+                    self.loss(
+                        "run color needs host run properties (OmmlRunProperties::WordprocessingMl \
+                         or DrawingMl) and was dropped",
+                    );
+                }
+                if host.bold || host.italic {
+                    self.loss(
+                        "bold or italic normal text needs host run properties \
+                         (OmmlRunProperties::WordprocessingMl or DrawingMl) and was dropped",
+                    );
+                }
+            },
+            OmmlRunProperties::WordprocessingMl => {
+                // CT_RPr child order: b, i, ..., color (ECMA-376 §17.3.2.28).
+                self.open("w:rPr");
+                if host.bold {
+                    self.buf.push_str("<w:b/>");
+                }
+                if host.italic {
+                    self.buf.push_str("<w:i/>");
+                }
+                if let Some([r, g, b]) = host.color {
+                    self.buf
+                        .push_str(&format!("<w:color w:val=\"{r:02X}{g:02X}{b:02X}\"/>"));
+                }
+                self.close("w:rPr");
+            },
+            OmmlRunProperties::DrawingMl => {
+                self.buf.push_str("<a:rPr");
+                if host.bold {
+                    self.buf.push_str(" b=\"1\"");
+                }
+                if host.italic {
+                    self.buf.push_str(" i=\"1\"");
+                }
+                match host.color {
+                    Some([r, g, b]) => self.buf.push_str(&format!(
+                        "><a:solidFill><a:srgbClr val=\"{r:02X}{g:02X}{b:02X}\"/></a:solidFill></a:rPr>"
+                    )),
+                    None => self.buf.push_str("/>"),
+                }
+            },
+        }
+    }
+
+    fn leaf(&mut self, sid: StrId, kind: Leaf, fmt: Fmt) {
+        let arena = self.arena;
+        let text = arena.str_val(sid);
+        let style = match fmt.style {
+            Some(TextStyle::Italic) if kind != Leaf::Operator => None,
+            other => other,
+        };
+        let (sty, scr) = match (kind, style) {
+            (Leaf::Identifier, None) => {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    // A single letter is math italic by default.
+                    (Some(c), None) if c.is_alphabetic() => (None, None),
+                    _ => (Some("i"), None),
+                }
+            },
+            (Leaf::Operator, None) => (Some("p"), None),
+            (Leaf::Number | Leaf::Symbol, None | Some(TextStyle::Normal)) => (None, None),
+            (_, Some(st)) => {
+                let (sty, scr) = decompose_style(st);
+                (Some(sty), scr)
+            },
+        };
+        let host = Host {
+            color: fmt.color,
+            ..Host::default()
+        };
+        self.run(text, sty, scr, false, host);
+    }
+
+    fn text_node(&mut self, own: TextStyle, sid: StrId, fmt: Fmt) {
+        let arena = self.arena;
+        let text = arena.str_val(sid);
+        if text.is_empty() {
+            return;
+        }
+        let style = if own == TextStyle::Normal {
+            fmt.style.unwrap_or(TextStyle::Normal)
+        } else {
+            own
+        };
+        if text.chars().all(char::is_whitespace) {
+            // Whitespace reads back the same from a math run.
+            let host = Host {
+                color: fmt.color,
+                ..Host::default()
+            };
+            self.run(text, None, None, false, host);
+            return;
+        }
+        let (bold, italic) = match style {
+            TextStyle::Normal => (false, false),
+            TextStyle::Bold => (true, false),
+            TextStyle::Italic => (false, true),
+            TextStyle::BoldItalic => (true, true),
+            other => {
+                self.loss(format!(
+                    "normal text cannot carry the {other:?} math style; written as plain text"
+                ));
+                (false, false)
+            },
+        };
+        self.run(
+            text,
+            None,
+            None,
+            true,
+            Host {
+                bold,
+                italic,
+                color: fmt.color,
+            },
+        );
+    }
+
+    fn space(&mut self, width: Rational) {
+        if width.num == 0 {
+            return;
+        }
+        if width.num < 0 {
+            self.loss("OMML cannot represent negative space; it was dropped");
+            return;
+        }
+        let exact = MATH_SPACES
+            .iter()
+            .find(|&&(_, n, d)| Rational::new(n, d) == width)
+            .map(|&(c, _, _)| c);
+        let text: String = match exact {
+            Some(c) => c.to_string(),
+            None if width.den == 1 => "\u{2003}".repeat(width.num.min(64) as usize),
+            None => {
+                let target = width.as_f64();
+                let (c, _, _) = MATH_SPACES
+                    .iter()
+                    .copied()
+                    .min_by(|a, b| {
+                        let da = (f64::from(a.1) / f64::from(a.2) - target).abs();
+                        let db = (f64::from(b.1) / f64::from(b.2) - target).abs();
+                        da.total_cmp(&db)
+                    })
+                    .expect("table is not empty");
+                self.loss(format!(
+                    "space of {width} em has no exact Unicode space; written as the nearest one"
+                ));
+                c.to_string()
+            },
+        };
+        self.run(&text, None, None, false, Host::default());
+    }
+
+    // ── Structure ───────────────────────────────────────────────────────
+
+    /// Write a sequence of siblings; `[name, U+2061, argument]` becomes
+    /// `m:func`.
+    fn seq(&mut self, ids: &[NodeId], fmt: Fmt) {
+        let mut i = 0;
+        while i < ids.len() {
+            if i + 1 < ids.len() && self.is_apply(ids[i + 1]) {
+                self.open("m:func");
+                self.open("m:fName");
+                self.node(ids[i], fmt);
+                self.close("m:fName");
+                self.open("m:e");
+                if let Some(&arg) = ids.get(i + 2) {
+                    self.node(arg, fmt);
+                }
+                self.close("m:e");
+                self.close("m:func");
+                i += 3;
+            } else {
+                self.node(ids[i], fmt);
+                i += 1;
+            }
+        }
+    }
+
+    fn is_apply(&self, id: NodeId) -> bool {
+        matches!(*self.arena.node(id), CompactNode::Symbol(_, sid)
+            if self.arena.str_val(sid) == FUNCTION_APPLICATION)
+    }
+
+    /// Write `<tag>` + node + `</tag>`; `NONE` gives an empty argument.
+    fn arg(&mut self, tag: &str, id: NodeId, fmt: Fmt) {
+        self.open(tag);
+        if id.is_some() {
+            self.node(id, fmt);
+        }
+        self.close(tag);
+    }
+
+    fn children(&mut self, span: NodeSpan, fmt: Fmt) {
+        let arena = self.arena;
+        self.seq(arena.children(span), fmt);
+    }
+
+    /// Write an array cell (a `Row` of the cell's nodes).
+    fn cell(&mut self, id: NodeId, fmt: Fmt) {
+        self.open("m:e");
+        match *self.arena.node(id) {
+            CompactNode::Row(span) => self.children(span, fmt),
+            _ => self.node(id, fmt),
+        }
+        self.close("m:e");
+    }
+
+    fn node(&mut self, id: NodeId, fmt: Fmt) {
+        match *self.arena.node(id) {
+            CompactNode::Number(sid) => self.leaf(sid, Leaf::Number, fmt),
+            CompactNode::Identifier(sid) => self.leaf(sid, Leaf::Identifier, fmt),
+            CompactNode::Operator { name, .. } => self.leaf(name, Leaf::Operator, fmt),
+            CompactNode::Symbol(_, sid) => self.leaf(sid, Leaf::Symbol, fmt),
+            CompactNode::Text(style, sid) => self.text_node(style, sid, fmt),
+            CompactNode::Space(width) => self.space(width),
+            CompactNode::Row(span) => self.children(span, fmt),
+            CompactNode::Fenced {
+                open,
+                close,
+                content,
+            } => self.fenced(open, close, content, fmt),
+            CompactNode::Subscript { base, sub } => {
+                self.open("m:sSub");
+                self.arg("m:e", base, fmt);
+                self.arg("m:sub", sub, fmt);
+                self.close("m:sSub");
+            },
+            CompactNode::Superscript { base, sup } => {
+                self.open("m:sSup");
+                self.arg("m:e", base, fmt);
+                self.arg("m:sup", sup, fmt);
+                self.close("m:sSup");
+            },
+            CompactNode::SubSup { base, sub, sup } => {
+                self.open("m:sSubSup");
+                self.arg("m:e", base, fmt);
+                self.arg("m:sub", sub, fmt);
+                self.arg("m:sup", sup, fmt);
+                self.close("m:sSubSup");
+            },
+            CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            } => {
+                self.open("m:sPre");
+                self.arg("m:sub", pre_sub, fmt);
+                self.arg("m:sup", pre_sup, fmt);
+                self.arg("m:e", base, fmt);
+                self.close("m:sPre");
+            },
+            CompactNode::Overscript {
+                base,
+                over,
+                movable_limits,
+            } => self.over_under(base, over, movable_limits, true, fmt),
+            CompactNode::Underscript {
+                base,
+                under,
+                movable_limits,
+            } => self.over_under(base, under, movable_limits, false, fmt),
+            CompactNode::UnderOver {
+                base, under, over, ..
+            } => {
+                self.open("m:limUpp");
+                self.open("m:e");
+                self.open("m:limLow");
+                self.arg("m:e", base, fmt);
+                self.arg("m:lim", under, fmt);
+                self.close("m:limLow");
+                self.close("m:e");
+                self.arg("m:lim", over, fmt);
+                self.close("m:limUpp");
+            },
+            CompactNode::Fraction { kind, num, den } => {
+                self.open("m:f");
+                let ty = match kind {
+                    FractionKind::Normal => None,
+                    FractionKind::Display => {
+                        self.loss("OMML has no display-style fraction; written as a bar fraction");
+                        None
+                    },
+                    FractionKind::NoBar => Some("noBar"),
+                    FractionKind::Skewed => Some("skw"),
+                    FractionKind::Inline => Some("lin"),
+                };
+                if let Some(ty) = ty {
+                    self.open("m:fPr");
+                    self.val("m:type", ty);
+                    self.close("m:fPr");
+                }
+                self.arg("m:num", num, fmt);
+                self.arg("m:den", den, fmt);
+                self.close("m:f");
+            },
+            CompactNode::Sqrt(radicand) => {
+                self.open("m:rad");
+                self.open("m:radPr");
+                self.on("m:degHide");
+                self.close("m:radPr");
+                self.buf.push_str("<m:deg/>");
+                self.arg("m:e", radicand, fmt);
+                self.close("m:rad");
+            },
+            CompactNode::Root { index, radicand } => {
+                self.open("m:rad");
+                self.arg("m:deg", index, fmt);
+                self.arg("m:e", radicand, fmt);
+                self.close("m:rad");
+            },
+            CompactNode::Nary {
+                op,
+                sub,
+                sup,
+                body,
+                limits,
+            } => {
+                // CT_NaryPr: chr, limLoc, grow, subHide, supHide.
+                self.open("m:nary");
+                self.open("m:naryPr");
+                let mut tmp = [0u8; 4];
+                self.val("m:chr", op.encode_utf8(&mut tmp));
+                match limits {
+                    LimitStyle::AboveBelow => self.val("m:limLoc", "undOvr"),
+                    LimitStyle::SubSup => self.val("m:limLoc", "subSup"),
+                    LimitStyle::Default => {},
+                }
+                if sub.is_none() {
+                    self.on("m:subHide");
+                }
+                if sup.is_none() {
+                    self.on("m:supHide");
+                }
+                self.close("m:naryPr");
+                self.arg("m:sub", sub, fmt);
+                self.arg("m:sup", sup, fmt);
+                self.arg("m:e", body, fmt);
+                self.close("m:nary");
+            },
+            CompactNode::Accent {
+                base,
+                accent,
+                position,
+                wide,
+            } => {
+                let mut tmp = [0u8; 4];
+                let chr = accent.encode_utf8(&mut tmp);
+                if wide {
+                    self.loss(
+                        "OMML accents stretch on their own; the wide-accent flag is not kept",
+                    );
+                }
+                if position == AccentPosition::Below {
+                    self.loss("OMML accents sit above the base; a below accent was written as a group character");
+                    self.open("m:groupChr");
+                    self.open("m:groupChrPr");
+                    self.val("m:chr", chr);
+                    self.val("m:pos", "bot");
+                    self.close("m:groupChrPr");
+                    self.arg("m:e", base, fmt);
+                    self.close("m:groupChr");
+                } else {
+                    self.open("m:acc");
+                    self.open("m:accPr");
+                    self.val("m:chr", chr);
+                    self.close("m:accPr");
+                    self.arg("m:e", base, fmt);
+                    self.close("m:acc");
+                }
+            },
+            CompactNode::Array {
+                col_aligns,
+                cells,
+                num_cols,
+                arraystretch_pct,
+                add_jot,
+                col_seps,
+                row_seps,
+                ..
+            } => self.array(
+                col_aligns,
+                cells,
+                num_cols,
+                add_jot,
+                arraystretch_pct != 100 || col_seps != 0 || row_seps != 0,
+                fmt,
+            ),
+            CompactNode::Phantom(content, kind) => {
+                let (show, zero_wid, zero_asc, zero_desc) = phantom_pr_flags(kind);
+                self.open("m:phant");
+                self.open("m:phantPr");
+                self.val("m:show", if show { "1" } else { "0" });
+                if zero_wid {
+                    self.on("m:zeroWid");
+                }
+                if zero_asc {
+                    self.on("m:zeroAsc");
+                }
+                if zero_desc {
+                    self.on("m:zeroDesc");
+                }
+                self.close("m:phantPr");
+                self.arg("m:e", content, fmt);
+                self.close("m:phant");
+            },
+            CompactNode::Boxed {
+                content,
+                bg_color,
+                border_color,
+            } => {
+                if !self.arena.str_val(bg_color).is_empty()
+                    || !self.arena.str_val(border_color).is_empty()
+                {
+                    self.loss("OMML boxes have no background or border color; colors dropped");
+                }
+                // A visible box around a cancellation is one m:borderBox.
+                let (strikes, inner) = self.strike_chain(content);
+                self.open("m:borderBox");
+                if strikes != [false; 4] {
+                    self.open("m:borderBoxPr");
+                    self.strike_props(strikes);
+                    self.close("m:borderBoxPr");
+                }
+                self.arg("m:e", inner, fmt);
+                self.close("m:borderBox");
+            },
+            CompactNode::Cancel { .. } => {
+                let (strikes, inner) = self.strike_chain(id);
+                // CT_BorderBoxPr: hideTop, hideBot, hideLeft, hideRight,
+                // strikeH, strikeV, strikeBLTR, strikeTLBR.
+                self.open("m:borderBox");
+                self.open("m:borderBoxPr");
+                self.on("m:hideTop");
+                self.on("m:hideBot");
+                self.on("m:hideLeft");
+                self.on("m:hideRight");
+                self.strike_props(strikes);
+                self.close("m:borderBoxPr");
+                self.arg("m:e", inner, fmt);
+                self.close("m:borderBox");
+            },
+            CompactNode::Scaled { content, .. } => {
+                self.loss("OMML output does not preserve the \\scalebox factor");
+                self.node(content, fmt);
+            },
+            CompactNode::RaiseBox { content, .. } => {
+                self.loss("OMML output does not preserve the \\raisebox shift");
+                self.node(content, fmt);
+            },
+            CompactNode::Styled(style, span) => self.children(
+                span,
+                Fmt {
+                    style: Some(style),
+                    ..fmt
+                },
+            ),
+            CompactNode::Color { color, content } => {
+                let resolved = crate::css_colors::resolve_named_or_hex(self.arena.str_val(color));
+                if resolved.is_none() {
+                    self.loss(
+                        "OMML output could not resolve the color value; only the content is written",
+                    );
+                }
+                self.node(
+                    content,
+                    Fmt {
+                        color: resolved.or(fmt.color),
+                        ..fmt
+                    },
+                );
+            },
+            CompactNode::MathChoice { display, .. } => {
+                self.loss("OMML output keeps only the display-style branch of \\mathchoice");
+                self.node(display, fmt);
+            },
+            CompactNode::MathAtom { atom_type, content } => match atom_type {
+                MathAtomType::Ord => {
+                    self.open("m:box");
+                    self.arg("m:e", content, fmt);
+                    self.close("m:box");
+                },
+                MathAtomType::Op => {
+                    self.open("m:box");
+                    self.open("m:boxPr");
+                    self.on("m:opEmu");
+                    self.close("m:boxPr");
+                    self.arg("m:e", content, fmt);
+                    self.close("m:box");
+                },
+                _ => {
+                    self.loss("OMML output does not preserve the math atom spacing class");
+                    self.node(content, fmt);
+                },
+            },
+            CompactNode::Rule { .. } => {
+                self.loss("OMML cannot represent a rule (\\rule/\\hline); written as a space");
+                self.run("\u{00A0}", None, None, false, Host::default());
+            },
+            CompactNode::Middle(sid) => {
+                self.loss("a stray middle delimiter was written as a plain symbol");
+                self.leaf(sid, Leaf::Symbol, fmt);
+            },
+            CompactNode::Newline => {
+                self.loss("OMML output does not preserve line breaks inside an equation")
+            },
+            CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {
+                self.loss("OMML output does not preserve math style or size switches")
+            },
+            CompactNode::ColAlign(_) => {},
+        }
+    }
+
+    fn fenced(&mut self, open: StrId, close: StrId, content: NodeSpan, fmt: Fmt) {
+        let arena = self.arena;
+        let mut segments: Vec<Vec<NodeId>> = vec![Vec::new()];
+        let mut separator: Option<&str> = None;
+        for &child in arena.children(content) {
+            if let CompactNode::Middle(sid) = *arena.node(child) {
+                let sep = arena.str_val(sid);
+                match separator {
+                    None => separator = Some(sep),
+                    Some(first) if first != sep => self.loss(
+                        "OMML delimiters have one separator character; later separators were \
+                         written as the first one",
+                    ),
+                    Some(_) => {},
+                }
+                segments.push(Vec::new());
+            } else if let Some(last) = segments.last_mut() {
+                last.push(child);
+            }
+        }
+        let (open, close) = (arena.str_val(open), arena.str_val(close));
+        self.open("m:d");
+        // CT_DPr: begChr, sepChr, endChr. Defaults: "(", "|", ")".
+        let sep = separator.filter(|&s| s != "|");
+        if open != "(" || close != ")" || sep.is_some() {
+            self.open("m:dPr");
+            if open != "(" {
+                self.char_val("m:begChr", open, "delimiter");
+            }
+            if let Some(sep) = sep {
+                self.char_val("m:sepChr", sep, "delimiter");
+            }
+            if close != ")" {
+                self.char_val("m:endChr", close, "delimiter");
+            }
+            self.close("m:dPr");
+        }
+        for segment in &segments {
+            self.open("m:e");
+            self.seq(segment, fmt);
+            self.close("m:e");
+        }
+        self.close("m:d");
+    }
+
+    fn over_under(&mut self, base: NodeId, script: NodeId, movable: bool, top: bool, fmt: Fmt) {
+        let (limit_tag, pos) = if top {
+            ("m:limUpp", "top")
+        } else {
+            ("m:limLow", "bot")
+        };
+        let arena = self.arena;
+        let symbol = match *arena.node(script) {
+            CompactNode::Symbol(_, sid) => Some(arena.str_val(sid)),
             _ => None,
-        })
-}
-
-fn f_matrix_props(buf: &mut String, arena: &AstArena, col_aligns: NodeSpan) {
-    let ids = arena.children(col_aligns);
-    if ids.is_empty() {
-        return;
-    }
-    f_start(buf, "m:mPr");
-    f_start(buf, "m:mcs");
-    for &id in ids {
-        if let CompactNode::ColAlign(column) = *arena.node(id) {
-            f_start(buf, "m:mc");
-            f_start(buf, "m:mcPr");
-            f_val_elem(buf, "m:count", "1");
-            f_val_elem(buf, "m:mcJc", column_align_val(column));
-            f_end(buf, "m:mcPr");
-            f_end(buf, "m:mc");
+        };
+        match symbol {
+            Some("\u{203E}") if !movable => {
+                self.open("m:bar");
+                self.open("m:barPr");
+                self.val("m:pos", pos);
+                self.close("m:barPr");
+                self.arg("m:e", base, fmt);
+                self.close("m:bar");
+            },
+            Some(chr) if !movable && chr.chars().count() <= 1 => {
+                // CT_GroupChrPr: chr, pos, vertJc.
+                self.open("m:groupChr");
+                self.open("m:groupChrPr");
+                self.val("m:chr", chr);
+                self.val("m:pos", pos);
+                self.close("m:groupChrPr");
+                self.arg("m:e", base, fmt);
+                self.close("m:groupChr");
+            },
+            _ => {
+                if !movable {
+                    self.loss(
+                        "OMML has no fixed over/under script for general content; written as a limit",
+                    );
+                }
+                self.open(limit_tag);
+                self.arg("m:e", base, fmt);
+                self.arg("m:lim", script, fmt);
+                self.close(limit_tag);
+            },
         }
     }
-    f_end(buf, "m:mcs");
-    f_end(buf, "m:mPr");
-}
 
-fn f_cancel_strike_props(buf: &mut String, stroke: StrokeKind) {
-    match stroke {
-        StrokeKind::Forward => f_val_elem(buf, "m:strikeBLTR", "1"),
-        StrokeKind::Backward => f_val_elem(buf, "m:strikeTLBR", "1"),
-        StrokeKind::Cross => {
-            f_val_elem(buf, "m:strikeBLTR", "1");
-            f_val_elem(buf, "m:strikeTLBR", "1");
-        },
-        StrokeKind::Horizontal => f_val_elem(buf, "m:strikeH", "1"),
-        StrokeKind::Vertical => f_val_elem(buf, "m:strikeV", "1"),
-    }
-}
-
-#[inline]
-fn f_run(buf: &mut String, text: &str, style: Option<&str>, color: Option<&str>) {
-    f_start(buf, "m:r");
-    if style.is_some() || color.is_some() {
-        f_start(buf, "m:rPr");
-        if let Some(sty) = style {
-            f_val_elem(buf, "m:sty", sty);
+    /// Collect the strike flags of a chain of nested `Cancel` nodes
+    /// (`[H, V, BLTR, TLBR]`) and return the innermost content.
+    fn strike_chain(&self, mut id: NodeId) -> ([bool; 4], NodeId) {
+        let mut strikes = [false; 4];
+        while let CompactNode::Cancel { stroke, content } = *self.arena.node(id) {
+            match stroke {
+                StrokeKind::Horizontal => strikes[0] = true,
+                StrokeKind::Vertical => strikes[1] = true,
+                StrokeKind::Forward => strikes[2] = true,
+                StrokeKind::Backward => strikes[3] = true,
+                StrokeKind::Cross => {
+                    strikes[2] = true;
+                    strikes[3] = true;
+                },
+            }
+            id = content;
         }
-        if let Some(c) = color {
-            f_color_elem(buf, c);
+        (strikes, id)
+    }
+
+    fn strike_props(&mut self, strikes: [bool; 4]) {
+        for (on, tag) in
+            strikes
+                .into_iter()
+                .zip(["m:strikeH", "m:strikeV", "m:strikeBLTR", "m:strikeTLBR"])
+        {
+            if on {
+                self.on(tag);
+            }
         }
-        f_end(buf, "m:rPr");
     }
-    f_start(buf, "m:t");
-    xml_esc(buf, trim_omml_text(text));
-    f_end(buf, "m:t");
-    f_end(buf, "m:r");
-}
 
-/// Emit a WordprocessingML run color property `<w:color w:val="RRGGBB"/>`,
-/// the OMML-compatible way to carry a run's text color. `hex` is a validated
-/// 6-digit RRGGBB value, so it needs no XML escaping.
-#[inline]
-fn f_color_elem(buf: &mut String, hex: &str) {
-    buf.push_str("<w:color w:val=\"");
-    buf.push_str(hex);
-    buf.push_str("\"/>");
-}
-
-#[inline]
-fn f_styled_run(buf: &mut String, text: &str, sty: &str, scr: Option<&str>, color: Option<&str>) {
-    f_start(buf, "m:r");
-    f_start(buf, "m:rPr");
-    f_val_elem(buf, "m:sty", sty);
-    if let Some(s) = scr {
-        f_val_elem(buf, "m:scr", s);
-    }
-    if let Some(c) = color {
-        f_color_elem(buf, c);
-    }
-    f_end(buf, "m:rPr");
-    f_start(buf, "m:t");
-    xml_esc(buf, trim_omml_text(text));
-    f_end(buf, "m:t");
-    f_end(buf, "m:r");
-}
-
-#[inline]
-fn f_e(buf: &mut String, arena: &AstArena, id: NodeId, color: Option<&str>) {
-    f_start(buf, "m:e");
-    write_node_cf_colored(buf, arena, id, color);
-    f_end(buf, "m:e");
-}
-
-/// Entry point for the fast compact OMML writer; no active run color.
-fn write_node_cf(buf: &mut String, arena: &AstArena, id: NodeId) {
-    write_node_cf_colored(buf, arena, id, None);
-}
-
-/// Compact OMML writer carrying an optional active run color (`RRGGBB`). The
-/// color, when present, is emitted as a WML run property on every run produced
-/// for this subtree, which is how OMML represents `\textcolor`/`\color`.
-fn write_node_cf_colored(buf: &mut String, arena: &AstArena, id: NodeId, color: Option<&str>) {
-    match *arena.node(id) {
-        CompactNode::Number(sid) => f_run(buf, arena.str_val(sid), None, color),
-        CompactNode::Identifier(sid) => f_run(buf, arena.str_val(sid), Some("i"), color),
-        CompactNode::Operator { name, .. } => {
-            f_start(buf, "m:func");
-            f_start(buf, "m:fName");
-            f_run(buf, arena.str_val(name), Some("p"), color);
-            f_end(buf, "m:fName");
-            f_start(buf, "m:e");
-            f_end(buf, "m:e");
-            f_end(buf, "m:func");
-        },
-        CompactNode::Symbol(_kind, sid) => f_run(buf, arena.str_val(sid), None, color),
-        CompactNode::Text(_, sid) => f_run(buf, arena.str_val(sid), Some("p"), color),
-        CompactNode::Space(_) => f_run(buf, "\u{00A0}", None, color),
-
-        CompactNode::Row(span) => {
-            for &child_id in arena.children(span) {
-                write_node_cf_colored(buf, arena, child_id, color);
+    fn array(
+        &mut self,
+        col_aligns: NodeSpan,
+        cells: NodeSpan,
+        num_cols: u16,
+        add_jot: bool,
+        spacing_lost: bool,
+        fmt: Fmt,
+    ) {
+        let arena = self.arena;
+        let aligns: Vec<ColumnAlign> = arena
+            .children(col_aligns)
+            .iter()
+            .filter_map(|&id| match *arena.node(id) {
+                CompactNode::ColAlign(a) => Some(a),
+                _ => None,
+            })
+            .collect();
+        if spacing_lost {
+            self.loss("OMML output does not preserve array row stretch or rules");
+        }
+        let cell_ids = arena.children(cells);
+        let ncols = usize::from(num_cols.max(1));
+        let centred = aligns.iter().all(|&a| a == ColumnAlign::Center);
+        if add_jot && ncols == 1 && centred {
+            // A single centred column with equation spacing is m:eqArr.
+            self.open("m:eqArr");
+            if cell_ids.is_empty() {
+                self.buf.push_str("<m:e></m:e>");
             }
-        },
-
-        CompactNode::Fenced {
-            open,
-            close,
-            content,
-        } => {
-            f_start(buf, "m:d");
-            f_start(buf, "m:dPr");
-            f_val_elem(buf, "m:begChr", arena.str_val(open));
-            f_val_elem(buf, "m:endChr", arena.str_val(close));
-            if let Some(separator) = compact_fenced_separator(arena, content) {
-                f_val_elem(buf, "m:sepChr", separator);
+            for &cell in cell_ids {
+                self.cell(cell, fmt);
             }
-            f_end(buf, "m:dPr");
-            for &child_id in arena.children(content) {
-                if matches!(*arena.node(child_id), CompactNode::Middle(_)) {
-                    continue;
+            self.close("m:eqArr");
+            return;
+        }
+        self.open("m:m");
+        if !aligns.is_empty() {
+            // CT_MPr: ..., mcs. Equal neighbouring columns share one m:mc
+            // (count is ST_Integer255).
+            self.open("m:mPr");
+            self.open("m:mcs");
+            let mut i = 0;
+            while i < aligns.len() {
+                let mut count = 1;
+                while i + count < aligns.len() && aligns[i + count] == aligns[i] && count < 255 {
+                    count += 1;
                 }
-                f_start(buf, "m:e");
-                write_node_cf_colored(buf, arena, child_id, color);
-                f_end(buf, "m:e");
+                self.open("m:mc");
+                self.open("m:mcPr");
+                self.val("m:count", &count.to_string());
+                self.val("m:mcJc", column_align_val(aligns[i]));
+                self.close("m:mcPr");
+                self.close("m:mc");
+                i += count;
             }
-            f_end(buf, "m:d");
-        },
-
-        CompactNode::Subscript { base, sub } => {
-            f_start(buf, "m:sSub");
-            f_e(buf, arena, base, color);
-            f_start(buf, "m:sub");
-            write_node_cf_colored(buf, arena, sub, color);
-            f_end(buf, "m:sub");
-            f_end(buf, "m:sSub");
-        },
-
-        CompactNode::Superscript { base, sup } => {
-            f_start(buf, "m:sSup");
-            f_e(buf, arena, base, color);
-            f_start(buf, "m:sup");
-            write_node_cf_colored(buf, arena, sup, color);
-            f_end(buf, "m:sup");
-            f_end(buf, "m:sSup");
-        },
-
-        CompactNode::SubSup { base, sub, sup } => {
-            f_start(buf, "m:sSubSup");
-            f_e(buf, arena, base, color);
-            f_start(buf, "m:sub");
-            write_node_cf_colored(buf, arena, sub, color);
-            f_end(buf, "m:sub");
-            f_start(buf, "m:sup");
-            write_node_cf_colored(buf, arena, sup, color);
-            f_end(buf, "m:sup");
-            f_end(buf, "m:sSubSup");
-        },
-
-        CompactNode::PreScripts {
-            base,
-            pre_sub,
-            pre_sup,
-        } => {
-            f_start(buf, "m:sPre");
-            f_start(buf, "m:sub");
-            if pre_sub.is_some() {
-                write_node_cf_colored(buf, arena, pre_sub, color);
+            self.close("m:mcs");
+            self.close("m:mPr");
+        }
+        if cell_ids.is_empty() {
+            // CT_M needs one m:mr, and CT_MR one m:e.
+            self.buf.push_str("<m:mr><m:e></m:e></m:mr>");
+        }
+        for row in cell_ids.chunks(ncols) {
+            self.open("m:mr");
+            for &cell in row {
+                self.cell(cell, fmt);
             }
-            f_end(buf, "m:sub");
-            f_start(buf, "m:sup");
-            if pre_sup.is_some() {
-                write_node_cf_colored(buf, arena, pre_sup, color);
-            }
-            f_end(buf, "m:sup");
-            f_e(buf, arena, base, color);
-            f_end(buf, "m:sPre");
-        },
-
-        CompactNode::Overscript {
-            base,
-            over,
-            movable_limits,
-        } => {
-            if movable_limits {
-                f_start(buf, "m:limUpp");
-                f_e(buf, arena, base, color);
-                f_start(buf, "m:lim");
-                write_node_cf_colored(buf, arena, over, color);
-                f_end(buf, "m:lim");
-                f_end(buf, "m:limUpp");
-            } else if is_line_symbol_c(arena, over) {
-                f_start(buf, "m:bar");
-                f_start(buf, "m:barPr");
-                f_val_elem(buf, "m:pos", "top");
-                f_end(buf, "m:barPr");
-                f_e(buf, arena, base, color);
-                f_end(buf, "m:bar");
-            } else {
-                f_start(buf, "m:groupChr");
-                f_start(buf, "m:groupChrPr");
-                let chr_str = extract_symbol_text_c(arena, over);
-                f_val_elem(buf, "m:chr", &chr_str);
-                f_val_elem(buf, "m:pos", "top");
-                f_end(buf, "m:groupChrPr");
-                f_e(buf, arena, base, color);
-                f_end(buf, "m:groupChr");
-            }
-        },
-
-        CompactNode::Underscript {
-            base,
-            under,
-            movable_limits,
-        } => {
-            if movable_limits {
-                f_start(buf, "m:limLow");
-                f_e(buf, arena, base, color);
-                f_start(buf, "m:lim");
-                write_node_cf_colored(buf, arena, under, color);
-                f_end(buf, "m:lim");
-                f_end(buf, "m:limLow");
-            } else if is_line_symbol_c(arena, under) {
-                f_start(buf, "m:bar");
-                f_start(buf, "m:barPr");
-                f_val_elem(buf, "m:pos", "bot");
-                f_end(buf, "m:barPr");
-                f_e(buf, arena, base, color);
-                f_end(buf, "m:bar");
-            } else {
-                f_start(buf, "m:groupChr");
-                f_start(buf, "m:groupChrPr");
-                let chr_str = extract_symbol_text_c(arena, under);
-                f_val_elem(buf, "m:chr", &chr_str);
-                f_val_elem(buf, "m:pos", "bot");
-                f_end(buf, "m:groupChrPr");
-                f_e(buf, arena, base, color);
-                f_end(buf, "m:groupChr");
-            }
-        },
-
-        CompactNode::UnderOver {
-            base,
-            under,
-            over,
-            movable_limits: _,
-        } => {
-            f_start(buf, "m:limUpp");
-            f_start(buf, "m:e");
-            f_start(buf, "m:limLow");
-            f_e(buf, arena, base, color);
-            f_start(buf, "m:lim");
-            write_node_cf_colored(buf, arena, under, color);
-            f_end(buf, "m:lim");
-            f_end(buf, "m:limLow");
-            f_end(buf, "m:e");
-            f_start(buf, "m:lim");
-            write_node_cf_colored(buf, arena, over, color);
-            f_end(buf, "m:lim");
-            f_end(buf, "m:limUpp");
-        },
-
-        CompactNode::Fraction { kind, num, den } => {
-            let type_val = match kind {
-                FractionKind::Normal | FractionKind::Display => "bar",
-                FractionKind::NoBar => "noBar",
-                FractionKind::Skewed => "skw",
-                FractionKind::Inline => "lin",
-            };
-            f_start(buf, "m:f");
-            f_start(buf, "m:fPr");
-            f_val_elem(buf, "m:type", type_val);
-            f_end(buf, "m:fPr");
-            f_start(buf, "m:num");
-            write_node_cf_colored(buf, arena, num, color);
-            f_end(buf, "m:num");
-            f_start(buf, "m:den");
-            write_node_cf_colored(buf, arena, den, color);
-            f_end(buf, "m:den");
-            f_end(buf, "m:f");
-        },
-
-        CompactNode::Sqrt(inner) => {
-            f_start(buf, "m:rad");
-            f_start(buf, "m:radPr");
-            f_val_elem(buf, "m:degHide", "1");
-            f_end(buf, "m:radPr");
-            f_start(buf, "m:deg");
-            f_end(buf, "m:deg");
-            f_e(buf, arena, inner, color);
-            f_end(buf, "m:rad");
-        },
-
-        CompactNode::Root { index, radicand } => {
-            f_start(buf, "m:rad");
-            f_start(buf, "m:deg");
-            write_node_cf_colored(buf, arena, index, color);
-            f_end(buf, "m:deg");
-            f_e(buf, arena, radicand, color);
-            f_end(buf, "m:rad");
-        },
-
-        CompactNode::Nary {
-            op,
-            sub,
-            sup,
-            body,
-            limits,
-        } => {
-            let lim_loc = match limits {
-                LimitStyle::AboveBelow => "undOvr",
-                LimitStyle::SubSup => "subSup",
-                LimitStyle::Default => "undOvr",
-            };
-            f_start(buf, "m:nary");
-            f_start(buf, "m:naryPr");
-            // Write op char
-            let mut char_buf = [0u8; 4];
-            let op_str = op.encode_utf8(&mut char_buf);
-            f_val_elem(buf, "m:chr", op_str);
-            f_val_elem(buf, "m:limLoc", lim_loc);
-            if sub.is_none() {
-                f_val_elem(buf, "m:subHide", "1");
-            }
-            if sup.is_none() {
-                f_val_elem(buf, "m:supHide", "1");
-            }
-            f_end(buf, "m:naryPr");
-            f_start(buf, "m:sub");
-            if sub.is_some() {
-                write_node_cf_colored(buf, arena, sub, color);
-            }
-            f_end(buf, "m:sub");
-            f_start(buf, "m:sup");
-            if sup.is_some() {
-                write_node_cf_colored(buf, arena, sup, color);
-            }
-            f_end(buf, "m:sup");
-            f_e(buf, arena, body, color);
-            f_end(buf, "m:nary");
-        },
-
-        CompactNode::Accent { base, accent, .. } => {
-            f_start(buf, "m:acc");
-            f_start(buf, "m:accPr");
-            let mut char_buf = [0u8; 4];
-            let acc_str = accent.encode_utf8(&mut char_buf);
-            f_val_elem(buf, "m:chr", acc_str);
-            f_end(buf, "m:accPr");
-            f_e(buf, arena, base, color);
-            f_end(buf, "m:acc");
-        },
-
-        CompactNode::Array {
-            col_aligns,
-            cells,
-            num_cols,
-            ..
-        } => {
-            let cell_ids = arena.children(cells);
-            let nc = num_cols as usize;
-            f_start(buf, "m:m");
-            f_matrix_props(buf, arena, col_aligns);
-            for chunk in cell_ids.chunks(nc.max(1)) {
-                f_start(buf, "m:mr");
-                for &cell_id in chunk {
-                    f_start(buf, "m:e");
-                    match *arena.node(cell_id) {
-                        CompactNode::Row(span) => {
-                            for &child_id in arena.children(span) {
-                                write_node_cf_colored(buf, arena, child_id, color);
-                            }
-                        },
-                        _ => write_node_cf_colored(buf, arena, cell_id, color),
-                    }
-                    f_end(buf, "m:e");
-                }
-                f_end(buf, "m:mr");
-            }
-            f_end(buf, "m:m");
-        },
-
-        CompactNode::Phantom(inner, kind) => {
-            f_start(buf, "m:phant");
-            f_write_phantom_pr(buf, kind);
-            f_e(buf, arena, inner, color);
-            f_end(buf, "m:phant");
-        },
-
-        CompactNode::Boxed { content: inner, .. } => {
-            f_start(buf, "m:borderBox");
-            f_e(buf, arena, inner, color);
-            f_end(buf, "m:borderBox");
-        },
-
-        CompactNode::Cancel { stroke, content } => {
-            f_start(buf, "m:borderBox");
-            f_start(buf, "m:borderBoxPr");
-            f_cancel_strike_props(buf, stroke);
-            f_end(buf, "m:borderBoxPr");
-            f_e(buf, arena, content, color);
-            f_end(buf, "m:borderBox");
-        },
-
-        CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
-            write_node_cf_colored(buf, arena, content, color)
-        },
-
-        CompactNode::Styled(style, span) => {
-            let (sty, scr) = decompose_style(style);
-            for &child_id in arena.children(span) {
-                match *arena.node(child_id) {
-                    CompactNode::Identifier(sid) | CompactNode::Number(sid) => {
-                        f_styled_run(buf, arena.str_val(sid), sty, scr, color);
-                    },
-                    CompactNode::Text(_, sid) => {
-                        f_styled_run(buf, arena.str_val(sid), sty, scr, color);
-                    },
-                    _ => write_node_cf_colored(buf, arena, child_id, color),
-                }
-            }
-        },
-
-        CompactNode::Color {
-            color: color_sid,
-            content,
-        } => {
-            // Resolve the (CSS-name or `#rrggbb`) color to an OMML `RRGGBB`
-            // value. An inner color overrides an outer one; an unresolvable
-            // color leaves the active color unchanged so content still renders.
-            let resolved = crate::css_colors::resolve_named_or_hex(arena.str_val(color_sid))
-                .map(|rgb| format!("{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2]));
-            let inner = resolved.as_deref().or(color);
-            write_node_cf_colored(buf, arena, content, inner);
-        },
-
-        CompactNode::MathChoice { display, .. } => {
-            write_node_cf_colored(buf, arena, display, color)
-        },
-
-        CompactNode::MathAtom { content, .. } => write_node_cf_colored(buf, arena, content, color),
-
-        CompactNode::Rule { .. } => f_run(buf, "\u{00A0}", None, color),
-
-        CompactNode::Middle(_)
-        | CompactNode::ColAlign(_)
-        | CompactNode::StyleSwitch(_)
-        | CompactNode::SizeScale(_)
-        | CompactNode::Newline => {},
+            self.close("m:mr");
+        }
+        self.close("m:m");
     }
+}
+
+/// Host-side run formatting for one run.
+#[derive(Clone, Copy, Default)]
+struct Host {
+    bold: bool,
+    italic: bool,
+    color: Option<[u8; 3]>,
+}
+
+/// XML 1.0 `Char` production (XML 1.0 §2.2).
+fn is_xml_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}')
+        || c >= '\u{10000}'
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn write(node: MathNode) -> String {
-        let expr = MathExpr::inline(vec![node]);
-        let config = Config::default();
-        OmmlWriter::write(&expr, &config).unwrap()
-    }
-
-    fn write_compact(node: MathNode) -> String {
-        let expr = MathExpr::inline(vec![node]);
-        let compact = CompactExpr::from_math_expr(&expr);
-        let config = Config::default();
-        OmmlWriter::write_compact(&compact, &config).unwrap()
-    }
-
-    #[test]
-    fn number() {
-        let output = write(MathNode::Number("42".into()));
-        assert!(output.contains("<m:t>42</m:t>"));
-    }
-
-    #[test]
-    fn identifier() {
-        let output = write(MathNode::Identifier("x".into()));
-        assert!(output.contains("<m:t>x</m:t>"));
-    }
-
-    #[test]
-    fn run_text_is_trimmed_consistently_in_both_writers() {
-        let node = MathNode::Text(TextStyle::Normal, "  x  ".into());
-        for output in [write(node.clone()), write_compact(node)] {
-            assert!(output.contains("<m:t>x</m:t>"), "{output}");
-            assert!(!output.contains("<m:t>  x  </m:t>"), "{output}");
-        }
-    }
-
-    #[test]
-    fn escaped_text_preserves_adjacent_newlines_across_round_trip() {
-        use crate::ast::normalize::normalize_compact_expr;
-        use crate::reader::Reader;
-        use crate::reader::omml::OmmlReader;
-
-        let config = Config::default();
-        let node = MathNode::Text(TextStyle::Normal, "x'\nM".into());
-        let mut first = CompactExpr::from_math_expr(&MathExpr::inline(vec![node]));
-        normalize_compact_expr(&mut first);
-        let out1 = OmmlWriter::write_compact(&first, &config).unwrap();
-
-        let mut second = OmmlReader::parse_compact(&out1, &config).unwrap().expr;
-        normalize_compact_expr(&mut second);
-        let out2 = OmmlWriter::write_compact(&second, &config).unwrap();
-
-        assert_eq!(out1, out2);
-    }
-
-    #[test]
-    fn fraction() {
-        let output = write(MathNode::Fraction {
-            kind: FractionKind::Normal,
-            num: Box::new(MathNode::Number("1".into())),
-            den: Box::new(MathNode::Number("2".into())),
-        });
-        assert!(output.contains("<m:f>"));
-        assert!(output.contains("<m:num>"));
-        assert!(output.contains("<m:den>"));
-    }
-
-    #[test]
-    fn subscript() {
-        let output = write(MathNode::Subscript {
-            base: Box::new(MathNode::Identifier("x".into())),
-            sub: Box::new(MathNode::Number("2".into())),
-        });
-        assert!(output.contains("<m:sSub>"));
-    }
-
-    #[test]
-    fn sqrt() {
-        let output = write(MathNode::Sqrt(Box::new(MathNode::Number("2".into()))));
-        assert!(output.contains("<m:rad>"));
-        assert!(output.contains("degHide"));
-    }
-
-    #[test]
-    fn nary_sum() {
-        let output = write(MathNode::Nary {
-            op: '\u{2211}',
-            sub: Some(Box::new(MathNode::Number("0".into()))),
-            sup: Some(Box::new(MathNode::Identifier("n".into()))),
-            body: Box::new(MathNode::Identifier("i".into())),
-            limits: LimitStyle::AboveBelow,
-        });
-        assert!(output.contains("<m:nary>"));
-        assert!(output.contains("\u{2211}"));
-    }
-
-    #[test]
-    fn delimiter() {
-        let output = write(MathNode::Fenced {
-            open: "(".into(),
-            close: ")".into(),
-            content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
-        });
-        assert!(output.contains("<m:d>"));
-        assert!(output.contains("begChr"));
-    }
-
-    #[test]
-    fn fenced_middle_writes_separator_property() {
-        let output = write_compact(MathNode::Fenced {
-            open: "[".into(),
-            close: "]".into(),
-            content: vec![
-                FencedItem::Element(MathNode::Identifier("a".into())),
-                FencedItem::Middle(";".into()),
-                FencedItem::Element(MathNode::Identifier("b".into())),
-            ],
-        });
-        assert!(output.contains("<m:sepChr m:val=\";\"/>"), "{output}");
-        assert_eq!(output.matches("<m:e>").count(), 2, "{output}");
-    }
-
-    #[test]
-    fn special_delimiter_attributes_are_escaped_in_both_writers() {
-        let node = MathNode::Fenced {
-            open: "<&".into(),
-            close: "\"&".into(),
-            content: vec![
-                FencedItem::Element(MathNode::Identifier("a".into())),
-                FencedItem::Middle("&\"<".into()),
-                FencedItem::Element(MathNode::Identifier("b".into())),
-            ],
-        };
-        for output in [write(node.clone()), write_compact(node)] {
-            assert!(
-                output.contains("<m:begChr m:val=\"&lt;&amp;\"/>"),
-                "{output}"
-            );
-            assert!(
-                output.contains("<m:endChr m:val=\"&quot;&amp;\"/>"),
-                "{output}"
-            );
-            assert!(
-                output.contains("<m:sepChr m:val=\"&amp;&quot;&lt;\"/>"),
-                "{output}"
-            );
-        }
-    }
-
-    #[test]
-    fn compact_rule_matches_noncompact_placeholder_output() {
-        let node = MathNode::Rule {
-            width: Rational::new(1, 1),
-            height: Rational::new(1, 1),
-            lift: Rational::zero(),
-        };
-        let noncompact = write(node.clone());
-        let compact = write_compact(node);
-        assert!(noncompact.contains("<m:t>\u{00A0}</m:t>"), "{noncompact}");
-        assert_eq!(compact, noncompact);
-    }
-
-    #[test]
-    fn array_columns_write_mcs_alignment() {
-        let output = write_compact(MathNode::Array {
-            columns: vec![ColumnAlign::Left, ColumnAlign::Right],
-            rows: vec![vec![
-                vec![MathNode::Identifier("a".into())],
-                vec![MathNode::Identifier("b".into())],
-            ]],
-            arraystretch: None,
-            add_jot: false,
-        });
-        assert!(output.contains("<m:mPr>"), "{output}");
-        assert!(output.contains("<m:mcs>"), "{output}");
-        assert!(output.contains("<m:mcJc m:val=\"left\"/>"), "{output}");
-        assert!(output.contains("<m:mcJc m:val=\"right\"/>"), "{output}");
-    }
-
-    #[test]
-    fn cancel_stroke_variants_write_matching_strikes() {
-        let cases = [
-            (StrokeKind::Forward, vec!["m:strikeBLTR"]),
-            (StrokeKind::Backward, vec!["m:strikeTLBR"]),
-            (StrokeKind::Cross, vec!["m:strikeBLTR", "m:strikeTLBR"]),
-            (StrokeKind::Horizontal, vec!["m:strikeH"]),
-            (StrokeKind::Vertical, vec!["m:strikeV"]),
-        ];
-        for (stroke, expected_props) in cases {
-            let output = write_compact(MathNode::Cancel {
-                stroke,
-                content: Box::new(MathNode::Identifier("x".into())),
-            });
-            for prop in expected_props {
-                assert!(output.contains(prop), "{stroke:?} missing {prop}: {output}");
-            }
-        }
-    }
-
-    #[test]
-    fn accent() {
-        let output = write(MathNode::Accent {
-            base: Box::new(MathNode::Identifier("x".into())),
-            accent: '\u{0302}',
-            position: AccentPosition::Above,
-            wide: false,
-        });
-        assert!(output.contains("<m:acc>"));
-    }
-
-    #[test]
-    fn phantom() {
-        let output = write(MathNode::Phantom(
-            Box::new(MathNode::Identifier("x".into())),
-            PhantomKind::Full,
-        ));
-        assert!(output.contains("<m:phant>"));
-        // Full phantom: invisible (show off), no dimensions zeroed.
-        assert!(output.contains("<m:phantPr>"), "{output}");
-        assert!(output.contains(r#"<m:show m:val="0"/>"#), "{output}");
-        assert!(!output.contains("zeroWid"), "{output}");
-    }
-
-    #[test]
-    fn phantom_subtypes_emit_phant_pr() {
-        let cases = [
-            (PhantomKind::Vertical, r#"<m:show m:val="0"/>"#, "zeroWid"),
-            (PhantomKind::Horizontal, r#"<m:show m:val="0"/>"#, "zeroAsc"),
-            (PhantomKind::SmashBoth, r#"<m:show m:val="1"/>"#, "zeroDesc"),
-            (PhantomKind::SmashTop, r#"<m:show m:val="1"/>"#, "zeroAsc"),
-            (
-                PhantomKind::SmashBottom,
-                r#"<m:show m:val="1"/>"#,
-                "zeroDesc",
-            ),
-        ];
-        for (kind, show, flag) in cases {
-            let output = write(MathNode::Phantom(
-                Box::new(MathNode::Identifier("x".into())),
-                kind,
-            ));
-            assert!(output.contains(show), "{kind:?} missing {show}: {output}");
-            assert!(output.contains(flag), "{kind:?} missing {flag}: {output}");
-        }
-    }
-
-    #[test]
-    fn boxed() {
-        let output = write(MathNode::Boxed {
-            content: Box::new(MathNode::Number("1".into())),
-            bg_color: None,
-            border_color: None,
-        });
-        assert!(output.contains("<m:borderBox>"));
-    }
-
-    #[test]
-    fn textcolor_emits_run_color_and_keeps_content() {
-        use crate::reader::Reader;
-        let config = Config::default();
-        // `\textcolor{red}{x}` lowers to a Color node wrapping `x`.
-        let result =
-            crate::reader::latex::LatexReader::parse_compact("\\textcolor{red}{x}", &config)
-                .unwrap();
-        let (output, diags) =
-            OmmlWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
-        // red → FF0000 as an OMML run color property, and the content survives.
-        assert!(output.contains("FF0000"), "{output}");
-        assert!(output.contains("<w:color w:val=\"FF0000\"/>"), "{output}");
-        assert!(output.contains("<m:t>x</m:t>"), "{output}");
-        // A resolvable color is preserved, so no color-loss diagnostic.
-        assert!(
-            !diags.iter().any(|d| d.message.contains("color")),
-            "unexpected color-loss diagnostic: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn unresolvable_color_keeps_content_and_warns() {
-        use crate::error::DiagnosticKind;
-        use crate::reader::Reader;
-        let config = Config::default();
-        // An unknown color name cannot be resolved to RGB.
-        let result =
-            crate::reader::latex::LatexReader::parse_compact("\\textcolor{notacolor}{y}", &config)
-                .unwrap();
-        let (output, diags) =
-            OmmlWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
-        assert!(output.contains("<m:t>y</m:t>"), "{output}");
-        assert!(!output.contains("<w:color"), "{output}");
-        assert!(
-            diags
-                .iter()
-                .any(|d| d.kind == DiagnosticKind::Warning && d.message.contains("color")),
-            "expected a color-loss warning, got {diags:?}"
-        );
-    }
-}
+mod tests;

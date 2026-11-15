@@ -9,6 +9,7 @@ use mathema::writer::mathml::MathmlWriter;
 use mathema::writer::mtef::MtefWriter;
 use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
+use mathema::{OmmlOptions, OmmlRunProperties};
 
 fn compact(tex: &str) -> mathema::CompactExpr {
     LatexReader::parse_compact(tex, &Config::default())
@@ -31,20 +32,26 @@ fn mathml_reports_mathchoice_loss() {
 }
 
 #[test]
-fn omml_preserves_color_without_loss() {
-    // OMML can express run color, so `\color` is preserved (no loss diagnostic)
-    // and the resolved hex appears in the output.
+fn omml_reports_color_loss_without_host_run_properties() {
+    // OMML keeps run color in the host's run properties, never in `m:rPr`.
+    // Pure OMML (the default) has none, so the color is reported as lost.
     let expr = compact(r"\color{red}{x}");
     let (out, diags) =
         OmmlWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    assert!(has_warning(&diags, "color"), "{diags:?}");
     assert!(
-        !has_warning(&diags, "color"),
-        "OMML preserves color, so no color-loss warning expected: {diags:?}"
+        out.contains("<m:t>x</m:t>"),
+        "content must be preserved: {out}"
     );
-    assert!(
-        out.to_uppercase().contains("FF0000"),
-        "expected the resolved red color in OMML output: {out}"
-    );
+}
+
+#[test]
+fn omml_preserves_color_in_host_run_properties() {
+    let expr = compact(r"\color{red}{x}");
+    let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::WordprocessingMl);
+    let (out, diags) = OmmlWriter::write_with_options(&expr, &Config::default(), &options).unwrap();
+    assert!(!has_warning(&diags, "color"), "{diags:?}");
+    assert!(out.contains(r#"<w:color w:val="FF0000"/>"#), "{out}");
 }
 
 #[test]
@@ -136,10 +143,16 @@ fn convert_result_surfaces_writer_diagnostics() {
     let (_, diags) = r.to_unicode_math_with_diagnostics().unwrap();
     assert!(has_warning(&diags, "box"), "unicode: {diags:?}");
 
-    // OMML preserves color, so it surfaces no color diagnostic.
+    // OMML keeps color only in host run properties: lost by default,
+    // preserved with a host dialect.
     let r = mathema::from_latex(r"\color{red}{x}").unwrap();
-    assert!(!has_warning(
+    assert!(has_warning(
         &r.to_omml_with_diagnostics().unwrap().1,
+        "color"
+    ));
+    let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::DrawingMl);
+    assert!(!has_warning(
+        &r.to_omml_with_options(&options).unwrap().1,
         "color"
     ));
 

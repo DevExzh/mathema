@@ -115,6 +115,24 @@ impl ConvertResult {
         OmmlWriter::write_compact(&self.compact.expr, config)
     }
 
+    /// Serialize to OMML with writer options (host run-property dialect,
+    /// display block and justification), also returning writer-side loss
+    /// diagnostics.
+    ///
+    /// ```
+    /// use mathema::{OmmlOptions, OmmlRunProperties};
+    /// let result = mathema::from_latex(r"\textcolor{blue}{y}").unwrap();
+    /// let options = OmmlOptions::default().with_run_properties(OmmlRunProperties::DrawingMl);
+    /// let (omml, _) = result.to_omml_with_options(&options).unwrap();
+    /// assert!(omml.contains(r#"<a:srgbClr val="0000FF"/>"#));
+    /// ```
+    pub fn to_omml_with_options(
+        &self,
+        options: &crate::writer::omml::OmmlOptions,
+    ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        OmmlWriter::write_with_options(&self.compact.expr, &self.config, options)
+    }
+
     /// Serialize the parsed expression to MTEF (hex-encoded MathType bytes).
     pub fn to_mtef(&self) -> Result<String> {
         MtefWriter::write_compact(&self.compact.expr, &self.config)

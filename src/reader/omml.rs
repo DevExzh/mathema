@@ -1,5 +1,24 @@
-use quick_xml::Reader;
-use quick_xml::events::Event;
+//! OMML (Office Math Markup Language) reader.
+//!
+//! Parses the math markup of ECMA-376 Part 1, §22.1 (`m:oMathPara` /
+//! `m:oMath` and the math objects they contain) into the shared AST. Element
+//! and property names, defaults and child order follow the schema in
+//! ECMA-376 Part 1, Annex A (`shared-math.xsd`).
+//!
+//! In [`Strictness::Strict`] mode the reader refuses malformed XML, unknown
+//! math elements, invalid property values and duplicated arguments. In
+//! [`Strictness::Lenient`] mode it skips what it cannot use and reports a
+//! [`Diagnostic`] for each recovery. Properties that are valid OMML but have
+//! no home in the AST (for example `m:grow` or `m:eqArrPr` spacing) are
+//! dropped in both modes with an [`DiagnosticKind::Info`] diagnostic.
+
+use std::borrow::Cow;
+use std::collections::HashSet;
+
+use quick_xml::NsReader;
+use quick_xml::XmlVersion;
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::ResolveResult;
 use smallvec::SmallVec;
 
 use crate::ast::arena::AstArena;
@@ -10,14 +29,129 @@ use crate::error::{
 };
 use crate::reader::Reader as MathReader;
 
-/// Resolve a `&name;` or `&#...;` general entity reference into its replacement.
-fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> String {
-    let name = r.as_ref();
-    crate::unicode::resolve_entity(name)
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|| format!("&{name};"))
+/// Transitional and Strict (ISO/IEC 29500) namespace URIs of the math markup.
+const MATH_NAMESPACES: [&str; 2] = [
+    "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    "http://purl.oclc.org/ooxml/officeDocument/math",
+];
+/// Namespace URIs of WordprocessingML, the host markup of Word documents.
+const WML_NAMESPACES: [&str; 2] = [
+    "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "http://purl.oclc.org/ooxml/wordprocessingml/main",
+];
+/// Namespace URIs of DrawingML, the host markup of PowerPoint text.
+const DML_NAMESPACES: [&str; 2] = [
+    "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "http://purl.oclc.org/ooxml/drawingml/main",
+];
+
+/// Maximum element nesting accepted by the reader. Every math object uses two
+/// XML levels (the object and its argument), so this admits roughly
+/// [`MAX_AST_DEPTH`] nested objects while bounding recursion.
+const MAX_XML_DEPTH: u32 = 2 * MAX_AST_DEPTH as u32 + 16;
+
+/// U+2061 FUNCTION APPLICATION. `m:func` is represented as
+/// `Row[name, U+2061, argument]`, the same invisible operator MathML uses.
+pub(crate) const FUNCTION_APPLICATION: &str = "\u{2061}";
+
+/// Horizontal justification of a display-math paragraph (`m:jc`, the
+/// `ST_Jc` simple type of ECMA-376 Part 1, §22.1.3.4).
+///
+/// ```
+/// use mathema::OmmlJustification;
+/// assert_eq!(OmmlJustification::from_omml("centerGroup"), Some(OmmlJustification::CenterGroup));
+/// assert_eq!(OmmlJustification::Left.as_omml(), "left");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OmmlJustification {
+    /// Every equation is left-aligned.
+    Left,
+    /// Every equation is right-aligned.
+    Right,
+    /// Every equation is centred on its own.
+    Center,
+    /// The equations are left-aligned to each other and centred as a group
+    /// (the default when `m:jc` is absent).
+    CenterGroup,
 }
 
+impl OmmlJustification {
+    /// Parse an `ST_Jc` attribute value.
+    #[must_use]
+    pub fn from_omml(value: &str) -> Option<Self> {
+        match value {
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "center" => Some(Self::Center),
+            "centerGroup" => Some(Self::CenterGroup),
+            _ => None,
+        }
+    }
+
+    /// The `ST_Jc` attribute value for this justification.
+    #[must_use]
+    pub fn as_omml(self) -> &'static str {
+        match self {
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Center => "center",
+            Self::CenterGroup => "centerGroup",
+        }
+    }
+}
+
+/// A display-math paragraph (`m:oMathPara`) read equation by equation.
+///
+/// A math paragraph may hold several `m:oMath` equations that share one
+/// justification. [`OmmlReader::parse`] can only return one expression and
+/// stacks such equations into a single-column array; this type keeps each
+/// equation separate so a document can be read, edited and written back with
+/// [`OmmlWriter::write_paragraph`](crate::writer::omml::OmmlWriter::write_paragraph).
+///
+/// ```
+/// use mathema::{Config, OmmlJustification};
+/// use mathema::reader::omml::OmmlReader;
+///
+/// let omml = r#"<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+///   <m:oMathParaPr><m:jc m:val="left"/></m:oMathParaPr>
+///   <m:oMath><m:r><m:t>a</m:t></m:r></m:oMath>
+///   <m:oMath><m:r><m:t>b</m:t></m:r></m:oMath>
+/// </m:oMathPara>"#;
+/// let para = OmmlReader::parse_paragraph(omml, &Config::default()).unwrap();
+/// assert_eq!(para.equations.len(), 2);
+/// assert_eq!(para.justification, Some(OmmlJustification::Left));
+/// ```
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct OmmlParagraph {
+    /// The paragraph justification from `m:oMathParaPr/m:jc`, if present.
+    pub justification: Option<OmmlJustification>,
+    /// The equations of the paragraph, in document order.
+    pub equations: Vec<CompactExpr>,
+    /// Non-fatal diagnostics collected while reading.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl OmmlParagraph {
+    /// Create a paragraph holding `equations` with no justification.
+    #[must_use]
+    pub fn new(equations: Vec<CompactExpr>) -> Self {
+        Self {
+            justification: None,
+            equations,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Builder: set the paragraph justification.
+    #[must_use]
+    pub fn with_justification(mut self, justification: Option<OmmlJustification>) -> Self {
+        self.justification = justification;
+        self
+    }
+}
+
+/// Reader for OMML input.
 pub struct OmmlReader;
 
 impl MathReader for OmmlReader {
@@ -27,506 +161,2005 @@ impl MathReader for OmmlReader {
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         config.check_input_size(input)?;
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            return Ok(CompactParseResult::new(CompactExpr::new(
-                AstArena::new(),
-                NodeSpan::EMPTY,
-                config.display,
-            )));
-        }
-        let parser_result = OmmlCompactParser::new(trimmed);
-        let mut parser = match parser_result {
-            Ok(p) => p,
-            Err(e) => {
-                if config.strictness == Strictness::Lenient {
-                    return Ok(CompactParseResult::with_diagnostics(
-                        CompactExpr::new(AstArena::new(), NodeSpan::EMPTY, config.display),
-                        vec![Diagnostic {
-                            kind: DiagnosticKind::Warning,
-                            message: format!("OMML initialization failed (recovered): {e}"),
-                            span: None,
-                        }],
-                    ));
-                }
-                return Err(e);
-            },
-        };
-        match parser.parse_root() {
-            Ok(ids) => {
-                let roots = parser.arena.push_children(&ids);
-                Ok(CompactParseResult::new(CompactExpr {
-                    arena: parser.arena,
-                    roots,
-                    display: config.display,
-                }))
-            },
-            Err(e) => {
-                if config.strictness == Strictness::Lenient {
-                    Ok(CompactParseResult::with_diagnostics(
-                        CompactExpr {
-                            arena: parser.arena,
-                            roots: NodeSpan::EMPTY,
-                            display: config.display,
-                        },
-                        vec![Diagnostic {
-                            kind: DiagnosticKind::Warning,
-                            message: format!("OMML parse error (recovered): {e}"),
-                            span: None,
-                        }],
-                    ))
+        let mut parser = Parser::new(strip_bom(input), config, false);
+        match parser.parse_document() {
+            Ok(doc) => {
+                let display = if doc.paragraph {
+                    DisplayStyle::Block
                 } else {
-                    Err(e)
-                }
+                    config.display
+                };
+                let roots = parser.single_expression(doc)?;
+                let Parser { arena, diags, .. } = parser;
+                Ok(CompactParseResult::with_diagnostics(
+                    CompactExpr::new(arena, roots, display),
+                    diags,
+                ))
             },
+            Err(e) if config.strictness == Strictness::Lenient => {
+                let mut diags = parser.diags;
+                diags.push(warning(format!("OMML parse error (recovered): {e}")));
+                Ok(CompactParseResult::with_diagnostics(
+                    CompactExpr::new(AstArena::new(), NodeSpan::EMPTY, config.display),
+                    diags,
+                ))
+            },
+            Err(e) => Err(e),
         }
     }
 }
 
-const MAX_PARSE_DEPTH: u32 = 128;
-
-struct OmmlCompactParser<'a> {
-    reader: Reader<&'a [u8]>,
-    arena: AstArena,
-    depth: u32,
+impl OmmlReader {
+    /// Parse OMML into a paragraph of separate equations, keeping the
+    /// `m:oMathPara` justification. A bare `m:oMath` (or an OMML fragment)
+    /// yields a paragraph with one equation and no justification.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`OmmlReader::parse`]: in Strict mode malformed XML, unknown
+    /// math elements and invalid values are errors. In Lenient mode a fatal
+    /// XML error yields an empty paragraph with a warning.
+    pub fn parse_paragraph(input: &str, config: &Config) -> Result<OmmlParagraph> {
+        config.check_input_size(input)?;
+        let mut parser = Parser::new(strip_bom(input), config, true);
+        match parser.parse_document() {
+            Ok(doc) => {
+                let display = if doc.paragraph {
+                    DisplayStyle::Block
+                } else {
+                    config.display
+                };
+                let mut equations = Vec::with_capacity(doc.equations.len());
+                for eq in doc.equations {
+                    let mut arena = eq.arena.unwrap_or_default();
+                    let roots = checked_span(&mut arena, &eq.ids)?;
+                    equations.push(CompactExpr::new(arena, roots, display));
+                }
+                Ok(OmmlParagraph {
+                    justification: doc.justification,
+                    equations,
+                    diagnostics: parser.diags,
+                })
+            },
+            Err(e) if config.strictness == Strictness::Lenient => {
+                let mut diagnostics = parser.diags;
+                diagnostics.push(warning(format!("OMML parse error (recovered): {e}")));
+                Ok(OmmlParagraph {
+                    justification: None,
+                    equations: Vec::new(),
+                    diagnostics,
+                })
+            },
+            Err(e) => Err(e),
+        }
+    }
 }
 
-impl<'a> OmmlCompactParser<'a> {
-    fn new(input: &'a str) -> Result<Self> {
-        let mut reader = Reader::from_str(input);
-        // Preserve text until the complete `<m:t>` value has been assembled.
-        // Trimming individual XML text events loses whitespace next to entity
-        // references because quick-xml reports those as separate events.
-        reader.config_mut().trim_text(false);
-        Ok(Self {
+// ── Parser state ────────────────────────────────────────────────────────
+
+/// Namespace class of an element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ns {
+    Math,
+    Wml,
+    Dml,
+    Other,
+}
+
+/// A start tag together with its namespace class.
+struct Elem<'i> {
+    ns: Ns,
+    start: BytesStart<'i>,
+}
+
+impl Elem<'_> {
+    fn local(&self) -> &str {
+        self.start.local_name().into_inner()
+    }
+
+    fn qname(&self) -> &str {
+        self.start.name().into_inner()
+    }
+
+    fn is_math(&self, local: &str) -> bool {
+        self.ns == Ns::Math && self.local() == local
+    }
+}
+
+/// One step of the XML event stream, after comments and processing
+/// instructions are dropped and entity references are resolved.
+enum Item<'i> {
+    Start(Elem<'i>),
+    End,
+    Text(Cow<'i, str>),
+    Eof,
+}
+
+/// One equation being collected. In paragraph mode every equation owns its
+/// arena; otherwise all equations share the parser's arena.
+struct Equation {
+    arena: Option<AstArena>,
+    ids: SmallVec<[NodeId; 8]>,
+    fragment: bool,
+}
+
+#[derive(Default)]
+struct Document {
+    equations: Vec<Equation>,
+    justification: Option<OmmlJustification>,
+    paragraph: bool,
+}
+
+/// Math run properties (`m:rPr`, `CT_RPR`).
+#[derive(Default)]
+struct MathRunProps {
+    lit: bool,
+    nor: bool,
+    scr: Option<&'static str>,
+    sty: Option<&'static str>,
+}
+
+impl MathRunProps {
+    /// The explicit style of the run, or `None` when neither `m:sty` nor a
+    /// non-roman `m:scr` is given (the math-italic default then applies).
+    fn style(&self) -> Option<TextStyle> {
+        let scr = self.scr.filter(|&s| s != "roman");
+        if self.sty.is_none() && scr.is_none() {
+            return None;
+        }
+        Some(combine_omml_style(
+            self.sty.unwrap_or("p"),
+            scr.unwrap_or("roman"),
+        ))
+    }
+}
+
+/// Host run properties (`w:rPr` or `a:rPr`) that the AST can hold.
+#[derive(Default)]
+struct HostRunProps {
+    bold: bool,
+    italic: bool,
+    color: Option<[u8; 3]>,
+}
+
+impl HostRunProps {
+    fn text_style(&self) -> TextStyle {
+        match (self.bold, self.italic) {
+            (true, true) => TextStyle::BoldItalic,
+            (true, false) => TextStyle::Bold,
+            (false, true) => TextStyle::Italic,
+            (false, false) => TextStyle::Normal,
+        }
+    }
+}
+
+type Ids = SmallVec<[NodeId; 8]>;
+
+struct Parser<'i> {
+    reader: NsReader<&'i [u8]>,
+    arena: AstArena,
+    strict: bool,
+    split_arenas: bool,
+    depth: u32,
+    diags: Vec<Diagnostic>,
+    seen: HashSet<String>,
+}
+
+fn warning(message: String) -> Diagnostic {
+    Diagnostic {
+        kind: DiagnosticKind::Warning,
+        message,
+        span: None,
+    }
+}
+
+fn omml_err(message: impl Into<String>) -> Error {
+    Error::OmmlParse {
+        message: message.into(),
+    }
+}
+
+/// Push `ids` as a child span, refusing spans the arena cannot index.
+fn checked_span(arena: &mut AstArena, ids: &[NodeId]) -> Result<NodeSpan> {
+    if ids.len() > u16::MAX as usize {
+        return Err(omml_err(format!(
+            "an OMML element has {} children; at most {} are supported",
+            ids.len(),
+            u16::MAX
+        )));
+    }
+    Ok(arena.push_children(ids))
+}
+
+fn is_xml_whitespace(s: &str) -> bool {
+    s.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+}
+
+/// XML 1.0 `Char` production (XML 1.0 §2.2).
+fn is_xml_char(c: char) -> bool {
+    matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}')
+        || c >= '\u{10000}'
+}
+
+fn classify_ns(res: &ResolveResult<'_>, prefix: Option<&str>) -> Ns {
+    let by_uri = |uri: &str| {
+        if MATH_NAMESPACES.contains(&uri) {
+            Ns::Math
+        } else if WML_NAMESPACES.contains(&uri) {
+            Ns::Wml
+        } else if DML_NAMESPACES.contains(&uri) {
+            Ns::Dml
+        } else {
+            Ns::Other
+        }
+    };
+    match res {
+        ResolveResult::Bound(ns) => by_uri(ns.into_inner()),
+        // Fragments copied out of a document often lose their namespace
+        // declarations; fall back to the conventional prefixes.
+        ResolveResult::Unknown(_) => match prefix {
+            Some("m") => Ns::Math,
+            Some("w") => Ns::Wml,
+            Some("a") => Ns::Dml,
+            _ => Ns::Other,
+        },
+        ResolveResult::Unbound => Ns::Math,
+    }
+}
+
+impl<'i> Parser<'i> {
+    fn new(input: &'i str, config: &Config, split_arenas: bool) -> Self {
+        let mut reader = NsReader::from_str(input);
+        let cfg = reader.config_mut();
+        cfg.trim_text(false);
+        cfg.expand_empty_elements = true;
+        cfg.check_end_names = true;
+        cfg.check_comments = true;
+        Self {
             reader,
             arena: AstArena::new(),
+            strict: config.strictness == Strictness::Strict,
+            split_arenas,
             depth: 0,
-        })
+            diags: Vec::new(),
+            seen: HashSet::new(),
+        }
     }
+
+    // ── Diagnostics ─────────────────────────────────────────────────────
+
+    fn note(&mut self, kind: DiagnosticKind, message: String) {
+        if self.seen.insert(message.clone()) {
+            self.diags.push(Diagnostic {
+                kind,
+                message,
+                span: None,
+            });
+        }
+    }
+
+    fn info(&mut self, message: String) {
+        self.note(DiagnosticKind::Info, message);
+    }
+
+    /// Strict: fail with `message`. Lenient: record it as a warning.
+    fn recover(&mut self, message: String) -> Result<()> {
+        if self.strict {
+            Err(omml_err(message))
+        } else {
+            self.note(DiagnosticKind::Warning, format!("{message} (recovered)"));
+            Ok(())
+        }
+    }
+
+    // ── Event stream ────────────────────────────────────────────────────
+
+    fn xml_err(&self, e: impl std::fmt::Display) -> Error {
+        omml_err(format!(
+            "malformed XML near byte {}: {e}",
+            self.reader.buffer_position()
+        ))
+    }
+
+    fn next_item(&mut self) -> Result<Item<'i>> {
+        loop {
+            let read = self.reader.read_resolved_event();
+            let (ns, event) = match read {
+                Ok((res, event)) => {
+                    let ns = match &event {
+                        Event::Start(s) => {
+                            classify_ns(&res, s.name().prefix().map(|p| p.into_inner()))
+                        },
+                        _ => Ns::Other,
+                    };
+                    (ns, event)
+                },
+                Err(e) => return Err(self.xml_err(e)),
+            };
+            match event {
+                Event::Start(start) => {
+                    self.depth += 1;
+                    if self.depth > MAX_XML_DEPTH {
+                        return Err(omml_err(format!(
+                            "maximum nesting depth ({MAX_XML_DEPTH}) exceeded"
+                        )));
+                    }
+                    // Validate every attribute (syntax, duplicates, entity
+                    // references) so malformed tags are not silently accepted.
+                    let mut bad_char = false;
+                    for attr in start.attributes() {
+                        let attr = attr.map_err(|e| self.xml_err(e))?;
+                        let value = attr
+                            .normalized_value(XmlVersion::Implicit1_0)
+                            .map_err(|e| self.xml_err(e))?;
+                        bad_char |= !value.chars().all(is_xml_char);
+                    }
+                    if bad_char {
+                        self.recover(format!(
+                            "an attribute of <{}> holds a character that XML does not allow",
+                            start.name().into_inner()
+                        ))?;
+                    }
+                    return Ok(Item::Start(Elem { ns, start }));
+                },
+                Event::End(_) => {
+                    self.depth = self.depth.saturating_sub(1);
+                    return Ok(Item::End);
+                },
+                Event::Empty(_) => {
+                    // `expand_empty_elements` reports `<a/>` as start + end.
+                    return Err(omml_err("internal error: unexpanded empty element"));
+                },
+                Event::Text(t) => return self.checked_text(t.xml10_content()),
+                Event::CData(c) => return self.checked_text(c.xml10_content()),
+                Event::GeneralRef(r) => {
+                    let name = r.into_inner();
+                    let text = self.resolve_reference(&name)?;
+                    return Ok(Item::Text(Cow::Owned(text)));
+                },
+                Event::Comment(_) | Event::PI(_) | Event::Decl(_) => continue,
+                Event::DocType(_) => {
+                    self.recover("a document type declaration is not allowed in OMML".into())?;
+                    continue;
+                },
+                Event::Eof => {
+                    if self.depth != 0 {
+                        return Err(omml_err("unexpected end of input inside an element"));
+                    }
+                    return Ok(Item::Eof);
+                },
+            }
+        }
+    }
+
+    /// Refuse characters outside the XML 1.0 `Char` production (such as
+    /// NUL); Lenient mode drops them.
+    fn checked_text(&mut self, text: Cow<'i, str>) -> Result<Item<'i>> {
+        if text.chars().all(is_xml_char) {
+            return Ok(Item::Text(text));
+        }
+        self.recover("text holds a character that XML does not allow; it was dropped".into())?;
+        Ok(Item::Text(Cow::Owned(
+            text.chars().filter(|&c| is_xml_char(c)).collect(),
+        )))
+    }
+
+    /// Resolve `&name;`: the five predefined XML entities and character
+    /// references (XML 1.0 §4.1, §4.6). Other names are undeclared entities.
+    fn resolve_reference(&mut self, name: &str) -> Result<String> {
+        if let Some(num) = name.strip_prefix('#') {
+            let cp = match num.strip_prefix('x') {
+                Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                None => num.parse::<u32>().ok(),
+            };
+            return match cp.and_then(char::from_u32).filter(|&c| is_xml_char(c)) {
+                Some(c) => Ok(c.to_string()),
+                None => Err(omml_err(format!(
+                    "character reference &{name}; is not a valid XML character"
+                ))),
+            };
+        }
+        let predefined = match name {
+            "lt" => Some("<"),
+            "gt" => Some(">"),
+            "amp" => Some("&"),
+            "apos" => Some("'"),
+            "quot" => Some("\""),
+            _ => None,
+        };
+        if let Some(s) = predefined {
+            return Ok(s.to_owned());
+        }
+        if !self.strict
+            && let Some(s) = crate::unicode::resolve_entity(name)
+        {
+            self.note(
+                DiagnosticKind::Warning,
+                format!("undeclared entity &{name}; resolved as a MathML entity (recovered)"),
+            );
+            return Ok(s.into_owned());
+        }
+        Err(omml_err(format!("undeclared entity reference &{name};")))
+    }
+
+    /// The next child element of the element named `parent`, or `None` at
+    /// its end tag. Text between elements must be whitespace.
+    fn next_child(&mut self, parent: &str) -> Result<Option<Elem<'i>>> {
+        loop {
+            match self.next_item()? {
+                Item::Start(e) => return Ok(Some(e)),
+                Item::End => return Ok(None),
+                Item::Text(t) => {
+                    if !is_xml_whitespace(&t) {
+                        self.recover(format!("unexpected text {:?} in <{parent}>", truncate(&t)))?;
+                    }
+                },
+                Item::Eof => {
+                    return Err(omml_err(format!("unexpected end of input in <{parent}>")));
+                },
+            }
+        }
+    }
+
+    /// Consume the rest of an element that was just opened.
+    fn skip(&mut self) -> Result<()> {
+        let mut depth = 1u32;
+        while depth > 0 {
+            match self.next_item()? {
+                Item::Start(_) => depth += 1,
+                Item::End => depth -= 1,
+                Item::Text(_) => {},
+                Item::Eof => return Err(omml_err("unexpected end of input")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle an element that is not allowed where it occurs.
+    fn unknown(&mut self, el: &Elem<'_>, parent: &str) -> Result<()> {
+        let message = format!("unsupported element <{}> in <{parent}>", el.qname());
+        if self.strict {
+            return Err(omml_err(message));
+        }
+        self.skip()?;
+        self.note(DiagnosticKind::Warning, format!("skipped {message}"));
+        Ok(())
+    }
+
+    /// Skip a valid property that the AST cannot hold, noting the loss.
+    fn drop_property(&mut self, el: &Elem<'_>, parent: &str) -> Result<()> {
+        let message = format!(
+            "<{}> in <{parent}> has no equivalent in the AST and was dropped",
+            el.qname()
+        );
+        self.skip()?;
+        self.info(message);
+        Ok(())
+    }
+
+    // ── Attribute and property helpers ──────────────────────────────────
+
+    /// The value of the attribute whose local name is `local` (any prefix).
+    fn attr(&self, el: &Elem<'_>, local: &str) -> Result<Option<String>> {
+        for attr in el.start.attributes() {
+            let attr = attr.map_err(|e| self.xml_err(e))?;
+            let key = attr.key;
+            if key.local_name().into_inner() == local
+                && key.prefix().is_none_or(|p| p.into_inner() != "xmlns")
+            {
+                let value = attr
+                    .normalized_value(XmlVersion::Implicit1_0)
+                    .map_err(|e| self.xml_err(e))?;
+                return Ok(Some(value.into_owned()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read a property element that carries only `val` and no content.
+    fn leaf(&mut self, el: &Elem<'_>) -> Result<Option<String>> {
+        let val = self.attr(el, "val")?;
+        let name = el.qname().to_owned();
+        while let Some(child) = self.next_child(&name)? {
+            self.unknown(&child, &name)?;
+        }
+        Ok(val)
+    }
+
+    /// Report an invalid attribute value; Lenient mode uses `fallback`.
+    fn bad_value<T>(&mut self, el: &Elem<'_>, value: &str, fallback: T) -> Result<T> {
+        self.recover(format!("invalid value {value:?} for <{}>", el.qname()))?;
+        Ok(fallback)
+    }
+
+    /// `ST_OnOff`: absent `val` means on.
+    fn on_off(&mut self, el: &Elem<'_>) -> Result<bool> {
+        match self.leaf(el)?.as_deref() {
+            None | Some("1" | "on" | "true") => Ok(true),
+            Some("0" | "off" | "false") => Ok(false),
+            Some(other) => self.bad_value(el, other, true),
+        }
+    }
+
+    /// `CT_Char`: at most one character; the empty string means "none".
+    fn char_val(&mut self, el: &Elem<'_>) -> Result<Option<String>> {
+        let Some(val) = self.leaf(el)? else {
+            return self
+                .recover(format!("<{}> requires a val attribute", el.qname()))
+                .map(|()| None);
+        };
+        let mut chars = val.chars();
+        match (chars.next(), chars.next()) {
+            (_, None) => Ok(Some(val)),
+            (Some(first), Some(_)) => self.bad_value(el, &val, Some(first.to_string())),
+            (None, Some(_)) => unreachable!("a second char implies a first"),
+        }
+    }
+
+    /// Parse a property element (`m:fPr`, `m:naryPr`, ...). `handle` returns
+    /// `true` for the children it consumed; `m:ctrlPr` (formatting of the
+    /// control character) is skipped, names in `dropped` are valid but
+    /// unrepresentable, and anything else is unknown.
+    fn props(
+        &mut self,
+        name: &'static str,
+        dropped: &[&str],
+        mut handle: impl FnMut(&mut Self, &Elem<'i>) -> Result<bool>,
+    ) -> Result<()> {
+        while let Some(child) = self.next_child(name)? {
+            if child.ns == Ns::Math {
+                if handle(self, &child)? {
+                    continue;
+                }
+                if child.local() == "ctrlPr" {
+                    self.skip()?;
+                    continue;
+                }
+                if dropped.contains(&child.local()) {
+                    self.drop_property(&child, name)?;
+                    continue;
+                }
+            }
+            self.unknown(&child, name)?;
+        }
+        Ok(())
+    }
+
+    /// Store `id` into an argument slot, refusing duplicates.
+    fn set_once(
+        &mut self,
+        slot: &mut Option<NodeId>,
+        id: NodeId,
+        child: &str,
+        parent: &str,
+    ) -> Result<()> {
+        if slot.is_some() {
+            return self.recover(format!(
+                "duplicate <m:{child}> in <{parent}>; the later one was ignored"
+            ));
+        }
+        *slot = Some(id);
+        Ok(())
+    }
+
+    fn once_props(&mut self, seen: &mut bool, child: &str, parent: &str) -> Result<bool> {
+        if *seen {
+            self.recover(format!("duplicate <m:{child}> in <{parent}>"))?;
+            self.skip()?;
+            return Ok(false);
+        }
+        *seen = true;
+        Ok(true)
+    }
+
+    // ── Arena helpers ───────────────────────────────────────────────────
 
     fn empty_row(&mut self) -> NodeId {
         self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
     }
 
-    fn flatten_ids(&mut self, ids: &[NodeId]) -> NodeId {
+    fn group(&mut self, ids: &[NodeId]) -> Result<NodeId> {
         if ids.len() == 1 {
-            ids[0]
+            Ok(ids[0])
         } else {
-            let span = self.arena.push_children(ids);
-            self.arena.push_node(CompactNode::Row(span))
+            let span = checked_span(&mut self.arena, ids)?;
+            Ok(self.arena.push_node(CompactNode::Row(span)))
         }
     }
 
-    fn is_empty_row_id(&self, id: NodeId) -> bool {
+    fn or_empty(&mut self, id: Option<NodeId>) -> NodeId {
+        match id {
+            Some(id) => id,
+            None => self.empty_row(),
+        }
+    }
+
+    fn is_empty_row(&self, id: NodeId) -> bool {
         matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
-    fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
+    fn symbol(&mut self, kind: SymbolKind, s: &str) -> NodeId {
+        let sid = self.arena.push_str(s);
+        self.arena.push_node(CompactNode::Symbol(kind, sid))
+    }
+
+    // ── Document level ──────────────────────────────────────────────────
+
+    fn begin_equation(&mut self, fragment: bool, doc: &mut Document) {
+        let arena = if self.split_arenas {
+            Some(std::mem::take(&mut self.arena))
+        } else {
+            None
+        };
+        // The previous arena (if any) is stashed in the new equation slot and
+        // swapped back in `end_equation`.
+        doc.equations.push(Equation {
+            arena,
+            ids: SmallVec::new(),
+            fragment,
+        });
+    }
+
+    fn end_equation(&mut self, doc: &mut Document) {
+        if self.split_arenas
+            && let Some(eq) = doc.equations.last_mut()
+            && let Some(outer) = eq.arena.take()
+        {
+            eq.arena = Some(std::mem::replace(&mut self.arena, outer));
+        }
+    }
+
+    fn parse_document(&mut self) -> Result<Document> {
+        let mut doc = Document::default();
+        let mut open_fragment = false;
         loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    if name == "oMathPara" || name == "oMath" {
-                        return self.parse_children(&name);
-                    } else {
-                        let id = self.parse_element_by_name(&name, &e)?;
-                        let mut nodes: SmallVec<[NodeId; 8]> = smallvec::smallvec![id];
-                        nodes.extend(self.collect_remaining()?);
-                        return Ok(nodes);
+            match self.next_item()? {
+                Item::Eof => break,
+                Item::Text(t) => {
+                    if !is_xml_whitespace(&t) {
+                        self.recover(format!(
+                            "unexpected text {:?} outside an equation",
+                            truncate(&t)
+                        ))?;
                     }
                 },
-                Ok(Event::Eof) => return Ok(SmallVec::new()),
-                Ok(_) => continue,
-                Err(e) => {
-                    return Err(Error::OmmlParse {
-                        message: format!("OMML XML error: {e}"),
-                    });
-                },
+                Item::End => return Err(omml_err("unexpected end tag at top level")),
+                Item::Start(el) => self.top_element(el, &mut doc, &mut open_fragment)?,
             }
+        }
+        if open_fragment {
+            self.end_equation(&mut doc);
+        }
+        Ok(doc)
+    }
+
+    fn top_element(
+        &mut self,
+        el: Elem<'i>,
+        doc: &mut Document,
+        open_fragment: &mut bool,
+    ) -> Result<()> {
+        let is_container = el.is_math("oMathPara") || el.is_math("oMath");
+        if *open_fragment && (is_container || el.ns != Ns::Math) {
+            self.end_equation(doc);
+            *open_fragment = false;
+        }
+        if el.is_math("oMathPara") {
+            if doc.paragraph {
+                self.recover("more than one <m:oMathPara> in the input".into())?;
+            }
+            doc.paragraph = true;
+            return self.math_paragraph(doc);
+        }
+        if el.is_math("oMath") {
+            self.begin_equation(false, doc);
+            let mut ids = Ids::new();
+            self.math_content("m:oMath", &mut ids)?;
+            if let Some(eq) = doc.equations.last_mut() {
+                eq.ids = ids;
+            }
+            self.end_equation(doc);
+            return Ok(());
+        }
+        if el.is_math("mathPr") {
+            // Document-wide math settings (`m:mathPr`, §22.1.2.62).
+            return self.drop_property(&el, "the input");
+        }
+        if el.ns == Ns::Math {
+            // A bare math object: read it as part of an equation fragment.
+            if !*open_fragment {
+                self.begin_equation(true, doc);
+                *open_fragment = true;
+            }
+            let mut ids = Ids::new();
+            self.math_element(el, "the input", &mut ids)?;
+            if let Some(eq) = doc.equations.last_mut() {
+                debug_assert!(eq.fragment);
+                eq.ids.extend(ids);
+            }
+            return Ok(());
+        }
+        let message = format!(
+            "unsupported root element <{}>; expected <m:oMathPara> or <m:oMath>",
+            el.qname()
+        );
+        if self.strict {
+            return Err(omml_err(message));
+        }
+        // Lenient: look through foreign wrappers (for example `a14:m`).
+        self.note(
+            DiagnosticKind::Warning,
+            format!("{message} (descended into it)"),
+        );
+        let name = el.qname().to_owned();
+        while let Some(child) = self.next_child(&name)? {
+            self.top_element(child, doc, open_fragment)?;
+        }
+        if *open_fragment {
+            self.end_equation(doc);
+            *open_fragment = false;
+        }
+        Ok(())
+    }
+
+    fn math_paragraph(&mut self, doc: &mut Document) -> Result<()> {
+        let mut seen_pr = false;
+        while let Some(child) = self.next_child("m:oMathPara")? {
+            if child.is_math("oMathParaPr") {
+                if !self.once_props(&mut seen_pr, "oMathParaPr", "m:oMathPara")? {
+                    continue;
+                }
+                let mut jc = None;
+                self.props("m:oMathParaPr", &[], |p, c| {
+                    if c.local() != "jc" {
+                        return Ok(false);
+                    }
+                    jc = match p.leaf(c)? {
+                        None => None,
+                        Some(v) => match OmmlJustification::from_omml(&v) {
+                            Some(j) => Some(j),
+                            None => p.bad_value(c, &v, None)?,
+                        },
+                    };
+                    Ok(true)
+                })?;
+                doc.justification = jc;
+            } else if child.is_math("oMath") {
+                self.begin_equation(false, doc);
+                let mut ids = Ids::new();
+                self.math_content("m:oMath", &mut ids)?;
+                if let Some(eq) = doc.equations.last_mut() {
+                    eq.ids = ids;
+                }
+                self.end_equation(doc);
+            } else {
+                self.unknown(&child, "m:oMathPara")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Combine the equations of a non-paragraph parse into one root span.
+    fn single_expression(&mut self, doc: Document) -> Result<NodeSpan> {
+        if let Some(jc) = doc.justification
+            && jc != OmmlJustification::CenterGroup
+        {
+            self.info(format!(
+                "math paragraph justification {:?} is not represented in a single expression; \
+                 use OmmlReader::parse_paragraph to keep it",
+                jc.as_omml()
+            ));
+        }
+        match doc.equations.len() {
+            0 => Ok(NodeSpan::EMPTY),
+            1 => {
+                let ids = &doc.equations[0].ids;
+                checked_span(&mut self.arena, ids)
+            },
+            n => {
+                self.info(format!(
+                    "{n} equations of a math paragraph were stacked into one array; \
+                     use OmmlReader::parse_paragraph to keep them separate"
+                ));
+                let mut rows = Vec::with_capacity(n);
+                for eq in &doc.equations {
+                    let span = checked_span(&mut self.arena, &eq.ids)?;
+                    rows.push(smallvec::smallvec![
+                        self.arena.push_node(CompactNode::Row(span))
+                    ]);
+                }
+                let array = self.build_array(rows, Vec::new(), true)?;
+                checked_span(&mut self.arena, &[array])
+            },
         }
     }
 
-    fn collect_remaining(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
-        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
+    // ── Math content ────────────────────────────────────────────────────
+
+    /// Parse the math elements (`EG_OMathElements`) of `parent` up to its
+    /// end tag.
+    fn math_content(&mut self, parent: &'static str, out: &mut Ids) -> Result<()> {
+        while let Some(child) = self.next_child(parent)? {
+            self.math_element(child, parent, out)?;
+        }
+        Ok(())
+    }
+
+    /// Parse one element of `EG_OMathElements` (the math objects and the
+    /// WordprocessingML paragraph content allowed among them).
+    fn math_element(&mut self, el: Elem<'i>, parent: &'static str, out: &mut Ids) -> Result<()> {
+        match el.ns {
+            Ns::Math => {
+                let id = match el.local() {
+                    "r" => return self.run(out),
+                    "acc" => self.accent()?,
+                    "bar" => self.bar()?,
+                    "box" => self.boxed()?,
+                    "borderBox" => self.border_box()?,
+                    "d" => self.delimiter()?,
+                    "eqArr" => self.eq_array()?,
+                    "f" => self.fraction()?,
+                    "func" => self.func()?,
+                    "groupChr" => self.group_chr()?,
+                    "limLow" => self.limit(false)?,
+                    "limUpp" => self.limit(true)?,
+                    "m" => self.matrix()?,
+                    "nary" => self.nary()?,
+                    "phant" => self.phantom()?,
+                    "rad" => self.radical()?,
+                    "sPre" => self.pre_scripts()?,
+                    "sSub" => self.scripts("m:sSub", "sSubPr", false, true)?,
+                    "sSup" => self.scripts("m:sSup", "sSupPr", true, false)?,
+                    "sSubSup" => self.scripts("m:sSubSup", "sSubSupPr", true, true)?,
+                    _ => return self.unknown(&el, parent),
+                };
+                out.push(id);
+                Ok(())
+            },
+            Ns::Wml => match el.local() {
+                // Annotation anchors carry no content (ECMA-376 §17.13).
+                "bookmarkStart" | "bookmarkEnd" | "proofErr" | "permStart" | "permEnd"
+                | "commentRangeStart" | "commentRangeEnd" => self.skip(),
+                // Inserted or moved-here content stays (§17.13.5).
+                "ins" | "moveTo" => self.math_content("w:ins", out),
+                "del" | "moveFrom" => {
+                    self.skip()?;
+                    self.info("deleted tracked-change content in an equation was skipped".into());
+                    Ok(())
+                },
+                "r" => self.wml_run(out),
+                _ => self.unknown(&el, parent),
+            },
+            _ => self.unknown(&el, parent),
+        }
+    }
+
+    /// Parse an argument (`CT_OMathArg`) and return its nodes.
+    fn arg(&mut self, name: &'static str) -> Result<Ids> {
+        let mut out = Ids::new();
+        let mut seen_pr = false;
+        while let Some(child) = self.next_child(name)? {
+            if child.is_math("argPr") {
+                if self.once_props(&mut seen_pr, "argPr", name)? {
+                    self.props("m:argPr", &["argSz"], |_, _| Ok(false))?;
+                }
+            } else if child.is_math("ctrlPr") {
+                self.skip()?;
+            } else {
+                self.math_element(child, name, &mut out)?;
+            }
+        }
+        Ok(out)
+    }
+
+    fn arg_id(&mut self, name: &'static str) -> Result<NodeId> {
+        let ids = self.arg(name)?;
+        self.group(&ids)
+    }
+
+    // ── Runs ────────────────────────────────────────────────────────────
+
+    fn run(&mut self, out: &mut Ids) -> Result<()> {
+        let mut props = MathRunProps::default();
+        let mut host = HostRunProps::default();
+        let mut text = String::new();
+        let (mut seen_mpr, mut seen_hpr) = (false, false);
+        while let Some(child) = self.next_child("m:r")? {
+            match (child.ns, child.local()) {
+                (Ns::Math, "rPr") => {
+                    if self.once_props(&mut seen_mpr, "rPr", "m:r")? {
+                        self.math_run_props(&mut props)?;
+                    }
+                },
+                (Ns::Math, "t") => self.text_content(&child, &mut text)?,
+                (Ns::Wml, "rPr") => {
+                    if self.once_props(&mut seen_hpr, "rPr", "m:r")? {
+                        self.wml_run_props(&mut host)?;
+                    }
+                },
+                (Ns::Dml, "rPr") => {
+                    if self.once_props(&mut seen_hpr, "rPr", "m:r")? {
+                        self.dml_run_props(&child, &mut host)?;
+                    }
+                },
+                _ => self.unknown(&child, "m:r")?,
+            }
+        }
+        if props.lit {
+            self.info("<m:lit> (literal operator text) has no equivalent in the AST".into());
+        }
+        self.emit_run(&text, &props, &host, out)
+    }
+
+    /// A WordprocessingML run inside an equation: plain (non-math) text.
+    fn wml_run(&mut self, out: &mut Ids) -> Result<()> {
+        let mut host = HostRunProps::default();
+        let mut text = String::new();
+        let mut seen_pr = false;
+        while let Some(child) = self.next_child("w:r")? {
+            match (child.ns, child.local()) {
+                (Ns::Wml, "rPr") => {
+                    if self.once_props(&mut seen_pr, "rPr", "w:r")? {
+                        self.wml_run_props(&mut host)?;
+                    }
+                },
+                (Ns::Wml, "t") => self.text_content(&child, &mut text)?,
+                _ => self.unknown(&child, "w:r")?,
+            }
+        }
+        let props = MathRunProps {
+            nor: true,
+            ..MathRunProps::default()
+        };
+        self.emit_run(&text, &props, &host, out)
+    }
+
+    fn text_content(&mut self, el: &Elem<'_>, text: &mut String) -> Result<()> {
+        let name = el.qname().to_owned();
         loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    nodes.push(self.parse_element_by_name(&name, &e)?);
-                },
-                Ok(Event::Eof) | Ok(Event::End(_)) => break,
-                _ => continue,
+            match self.next_item()? {
+                Item::Text(t) => text.push_str(&t),
+                Item::Start(child) => self.unknown(&child, &name)?,
+                Item::End => return Ok(()),
+                Item::Eof => return Err(omml_err(format!("unexpected end of input in <{name}>"))),
             }
         }
-        Ok(nodes)
     }
 
-    fn parse_children(&mut self, parent_tag: &str) -> Result<SmallVec<[NodeId; 8]>> {
-        self.depth += 1;
-        if self.depth > MAX_PARSE_DEPTH {
-            return Err(Error::OmmlParse {
-                message: format!(
-                    "maximum nesting depth ({MAX_PARSE_DEPTH}) exceeded in <{parent_tag}>"
-                ),
+    fn math_run_props(&mut self, props: &mut MathRunProps) -> Result<()> {
+        self.props("m:rPr", &["brk"], |p, c| {
+            match c.local() {
+                "lit" => props.lit = p.on_off(c)?,
+                "nor" => props.nor = p.on_off(c)?,
+                "aln" => {
+                    if p.on_off(c)? {
+                        p.info("<m:aln> (alignment point) has no equivalent in the AST".into());
+                    }
+                },
+                "sty" => {
+                    props.sty = match p.leaf(c)?.as_deref() {
+                        None => None,
+                        Some("p") => Some("p"),
+                        Some("b") => Some("b"),
+                        Some("i") => Some("i"),
+                        Some("bi") => Some("bi"),
+                        Some(other) => p.bad_value(c, other, None)?,
+                    }
+                },
+                "scr" => {
+                    props.scr = match p.leaf(c)?.as_deref() {
+                        None => None,
+                        Some("roman") => Some("roman"),
+                        Some("script") => Some("script"),
+                        Some("fraktur") => Some("fraktur"),
+                        Some("double-struck") => Some("double-struck"),
+                        Some("sans-serif") => Some("sans-serif"),
+                        Some("monospace") => Some("monospace"),
+                        Some(other) => p.bad_value(c, other, None)?,
+                    }
+                },
+                _ => return Ok(false),
+            }
+            Ok(true)
+        })
+    }
+
+    /// `w:rPr`: keep bold, italic and color; other host formatting (fonts,
+    /// sizes, languages) does not belong to the equation and is ignored.
+    fn wml_run_props(&mut self, host: &mut HostRunProps) -> Result<()> {
+        while let Some(child) = self.next_child("w:rPr")? {
+            if child.ns != Ns::Wml {
+                self.skip()?;
+                continue;
+            }
+            match child.local() {
+                "b" => host.bold = self.on_off(&child)?,
+                "i" => host.italic = self.on_off(&child)?,
+                "color" => {
+                    let val = self.attr(&child, "val")?;
+                    self.skip()?;
+                    host.color = match val.as_deref() {
+                        None | Some("auto") => None,
+                        Some(hex) => match parse_hex_color(hex) {
+                            Some(rgb) => Some(rgb),
+                            None => self.bad_value(&child, hex, None)?,
+                        },
+                    };
+                },
+                _ => self.skip()?,
+            }
+        }
+        Ok(())
+    }
+
+    /// `a:rPr` (DrawingML text run properties, ECMA-376 §21.1.2.3.9).
+    fn dml_run_props(&mut self, el: &Elem<'_>, host: &mut HostRunProps) -> Result<()> {
+        let xsd_bool = |v: Option<String>| matches!(v.as_deref(), Some("1" | "true"));
+        host.bold = xsd_bool(self.attr(el, "b")?);
+        host.italic = xsd_bool(self.attr(el, "i")?);
+        while let Some(child) = self.next_child("a:rPr")? {
+            if child.ns == Ns::Dml && child.local() == "solidFill" {
+                while let Some(color) = self.next_child("a:solidFill")? {
+                    let value = match (color.ns, color.local()) {
+                        (Ns::Dml, "srgbClr") => self.attr(&color, "val")?,
+                        (Ns::Dml, "sysClr") => self.attr(&color, "lastClr")?,
+                        _ => None,
+                    };
+                    self.skip()?;
+                    match value.as_deref().map(|v| (v, parse_hex_color(v))) {
+                        Some((_, Some(rgb))) => host.color = Some(rgb),
+                        Some((v, None)) => host.color = self.bad_value(&color, v, None)?,
+                        None => self.info(format!(
+                            "run color <{}> cannot be resolved to RGB and was dropped",
+                            color.qname()
+                        )),
+                    }
+                }
+            } else {
+                self.skip()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_run(
+        &mut self,
+        text: &str,
+        props: &MathRunProps,
+        host: &HostRunProps,
+        out: &mut Ids,
+    ) -> Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        let mut ids = Ids::new();
+        if props.nor {
+            let sid = self.arena.push_str(text);
+            ids.push(
+                self.arena
+                    .push_node(CompactNode::Text(host.text_style(), sid)),
+            );
+        } else {
+            self.tokenize(text, props.style(), &mut ids)?;
+        }
+        match host.color {
+            // One wrapper per token, matching the writer's one run per token.
+            Some([r, g, b]) => {
+                let color = self.arena.push_str(&format!("#{r:02X}{g:02X}{b:02X}"));
+                for content in ids {
+                    out.push(self.arena.push_node(CompactNode::Color { color, content }));
+                }
+            },
+            None => out.extend(ids),
+        }
+        Ok(())
+    }
+
+    /// Split the text of a math run into numbers, letter runs, symbols and
+    /// spaces. Mathematical alphanumeric characters (U+1D400 block, as
+    /// written by PowerPoint) are decoded into a base letter plus a style.
+    fn tokenize(&mut self, text: &str, style: Option<TextStyle>, out: &mut Ids) -> Result<()> {
+        let chars: Vec<(char, char, Option<TextStyle>)> = text
+            .chars()
+            .map(
+                |c| match crate::unicode::unstyled_char(c).or_else(|| unstyled_greek(c)) {
+                    Some((base, st)) => (c, base, Some(st)),
+                    None => (c, c, None),
+                },
+            )
+            .collect();
+        let mut i = 0;
+        let mut buf = String::new();
+        while i < chars.len() {
+            let (orig, base, cstyle) = chars[i];
+            if let Some(width) = space_width(orig) {
+                out.push(self.arena.push_node(CompactNode::Space(width)));
+                i += 1;
+            } else if orig.is_whitespace() {
+                buf.clear();
+                while i < chars.len()
+                    && chars[i].0.is_whitespace()
+                    && space_width(chars[i].0).is_none()
+                {
+                    buf.push(chars[i].0);
+                    i += 1;
+                }
+                let sid = self.arena.push_str(&buf);
+                out.push(
+                    self.arena
+                        .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                );
+            } else if base.is_ascii_digit() {
+                buf.clear();
+                while i < chars.len() {
+                    let (_, b, st) = chars[i];
+                    let digit = b.is_ascii_digit() && st == cstyle;
+                    let sep = matches!(b, '.' | ',')
+                        && chars
+                            .get(i + 1)
+                            .is_some_and(|&(_, nb, nst)| nb.is_ascii_digit() && nst == cstyle);
+                    if !(digit || sep) {
+                        break;
+                    }
+                    buf.push(b);
+                    i += 1;
+                }
+                let sid = self.arena.push_str(&buf);
+                let number = self.arena.push_node(CompactNode::Number(sid));
+                let id = match cstyle.or(style) {
+                    None | Some(TextStyle::Normal) => number,
+                    Some(st) => self.styled(st, number)?,
+                };
+                out.push(id);
+            } else if base.is_alphabetic() {
+                buf.clear();
+                while i < chars.len() && chars[i].1.is_alphabetic() && chars[i].2 == cstyle {
+                    buf.push(chars[i].1);
+                    i += 1;
+                }
+                let id = self.letters(&buf, cstyle.or(style))?;
+                out.push(id);
+            } else {
+                let mut tmp = [0u8; 4];
+                let sym = self.symbol(classify_op_char(orig), orig.encode_utf8(&mut tmp));
+                let id = match style {
+                    None | Some(TextStyle::Normal | TextStyle::Italic) => sym,
+                    Some(st) => self.styled(st, sym)?,
+                };
+                out.push(id);
+                i += 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn styled(&mut self, style: TextStyle, id: NodeId) -> Result<NodeId> {
+        let span = checked_span(&mut self.arena, &[id])?;
+        Ok(self.arena.push_node(CompactNode::Styled(style, span)))
+    }
+
+    /// Classify a run of letters. Without an explicit style (math italic)
+    /// or with upright style, a known function name becomes an operator.
+    fn letters(&mut self, text: &str, style: Option<TextStyle>) -> Result<NodeId> {
+        let sid = self.arena.push_str(text);
+        let is_operator =
+            text.chars().count() > 1 && crate::unicode::symbols::is_operator_command(text);
+        match style {
+            None | Some(TextStyle::Normal) if is_operator => {
+                let limits = if crate::unicode::symbols::operator_has_limits(text) {
+                    LimitStyle::Default
+                } else {
+                    LimitStyle::SubSup
+                };
+                Ok(self
+                    .arena
+                    .push_node(CompactNode::Operator { name: sid, limits }))
+            },
+            None | Some(TextStyle::Italic) => {
+                Ok(self.arena.push_node(CompactNode::Identifier(sid)))
+            },
+            Some(st) => {
+                let ident = self.arena.push_node(CompactNode::Identifier(sid));
+                self.styled(st, ident)
+            },
+        }
+    }
+
+    // ── Math objects ────────────────────────────────────────────────────
+
+    /// `m:acc` (§22.1.2.1): `accPr{chr}`, `e`.
+    fn accent(&mut self) -> Result<NodeId> {
+        let mut chr = Some("\u{0302}".to_owned());
+        let mut base = None;
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:acc")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "accPr") => {
+                    if self.once_props(&mut seen_pr, "accPr", "m:acc")? {
+                        self.props("m:accPr", &[], |p, c| {
+                            if c.local() != "chr" {
+                                return Ok(false);
+                            }
+                            chr = p.char_val(c)?;
+                            Ok(true)
+                        })?;
+                    }
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut base, id, "e", "m:acc")?;
+                },
+                _ => self.unknown(&c, "m:acc")?,
+            }
+        }
+        let base = self.or_empty(base);
+        match chr.and_then(|s| s.chars().next()) {
+            Some(accent) => Ok(self.arena.push_node(CompactNode::Accent {
+                base,
+                accent,
+                position: AccentPosition::Above,
+                wide: false,
+            })),
+            None => Ok(base),
+        }
+    }
+
+    /// `m:bar` (§22.1.2.7): `barPr{pos}` (default `bot`), `e`.
+    fn bar(&mut self) -> Result<NodeId> {
+        let mut top = false;
+        let mut base = None;
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:bar")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "barPr") => {
+                    if self.once_props(&mut seen_pr, "barPr", "m:bar")? {
+                        self.props("m:barPr", &[], |p, c| {
+                            if c.local() != "pos" {
+                                return Ok(false);
+                            }
+                            top = p.top_bot(c, false)?;
+                            Ok(true)
+                        })?;
+                    }
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut base, id, "e", "m:bar")?;
+                },
+                _ => self.unknown(&c, "m:bar")?,
+            }
+        }
+        let base = self.or_empty(base);
+        let line = self.symbol(SymbolKind::Ordinary, "\u{203E}");
+        Ok(self.arena.push_node(if top {
+            CompactNode::Overscript {
+                base,
+                over: line,
+                movable_limits: false,
+            }
+        } else {
+            CompactNode::Underscript {
+                base,
+                under: line,
+                movable_limits: false,
+            }
+        }))
+    }
+
+    /// `ST_TopBot`; returns `true` for `top`.
+    fn top_bot(&mut self, el: &Elem<'_>, default_top: bool) -> Result<bool> {
+        match self.leaf(el)?.as_deref() {
+            Some("top") => Ok(true),
+            Some("bot") => Ok(false),
+            None => self
+                .recover(format!("<{}> requires a val attribute", el.qname()))
+                .map(|()| default_top),
+            Some(other) => self.bad_value(el, other, default_top),
+        }
+    }
+
+    /// `m:box` (§22.1.2.13): a grouped object, read as an ordinary atom, or
+    /// as an operator atom when `m:opEmu` is on.
+    fn boxed(&mut self) -> Result<NodeId> {
+        let mut op_emu = false;
+        let mut content = None;
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:box")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "boxPr") => {
+                    if self.once_props(&mut seen_pr, "boxPr", "m:box")? {
+                        self.props("m:boxPr", &["brk"], |p, c| {
+                            match c.local() {
+                                "opEmu" => op_emu = p.on_off(c)?,
+                                // On by default; turning it off cannot be kept.
+                                "noBreak" => {
+                                    if !p.on_off(c)? {
+                                        p.info("<m:noBreak m:val=\"off\"> in <m:boxPr> has no equivalent in the AST".into());
+                                    }
+                                },
+                                "diff" | "aln" => {
+                                    if p.on_off(c)? {
+                                        p.info(format!("<m:{}> in <m:boxPr> has no equivalent in the AST", c.local()));
+                                    }
+                                },
+                                _ => return Ok(false),
+                            }
+                            Ok(true)
+                        })?;
+                    }
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut content, id, "e", "m:box")?;
+                },
+                _ => self.unknown(&c, "m:box")?,
+            }
+        }
+        let content = self.or_empty(content);
+        let atom_type = if op_emu {
+            MathAtomType::Op
+        } else {
+            MathAtomType::Ord
+        };
+        Ok(self
+            .arena
+            .push_node(CompactNode::MathAtom { atom_type, content }))
+    }
+
+    /// `m:borderBox` (§22.1.2.11). Strikes over a box whose four sides are
+    /// hidden are a cancellation; strikes over a visible box are a
+    /// cancellation inside a box.
+    fn border_box(&mut self) -> Result<NodeId> {
+        let mut hide = [false; 4];
+        let mut strikes = [false; 4]; // H, V, BLTR, TLBR
+        let mut content = None;
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:borderBox")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "borderBoxPr") => {
+                    if self.once_props(&mut seen_pr, "borderBoxPr", "m:borderBox")? {
+                        self.props("m:borderBoxPr", &[], |p, c| {
+                            let slot = match c.local() {
+                                "hideTop" => &mut hide[0],
+                                "hideBot" => &mut hide[1],
+                                "hideLeft" => &mut hide[2],
+                                "hideRight" => &mut hide[3],
+                                "strikeH" => &mut strikes[0],
+                                "strikeV" => &mut strikes[1],
+                                "strikeBLTR" => &mut strikes[2],
+                                "strikeTLBR" => &mut strikes[3],
+                                _ => return Ok(false),
+                            };
+                            *slot = p.on_off(c)?;
+                            Ok(true)
+                        })?;
+                    }
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut content, id, "e", "m:borderBox")?;
+                },
+                _ => self.unknown(&c, "m:borderBox")?,
+            }
+        }
+        let mut node = self.or_empty(content);
+        let mut kinds: SmallVec<[StrokeKind; 3]> = SmallVec::new();
+        if strikes[2] && strikes[3] {
+            kinds.push(StrokeKind::Cross);
+        } else if strikes[2] {
+            kinds.push(StrokeKind::Forward);
+        } else if strikes[3] {
+            kinds.push(StrokeKind::Backward);
+        }
+        if strikes[0] {
+            kinds.push(StrokeKind::Horizontal);
+        }
+        if strikes[1] {
+            kinds.push(StrokeKind::Vertical);
+        }
+        for stroke in kinds {
+            node = self.arena.push_node(CompactNode::Cancel {
+                stroke,
+                content: node,
             });
         }
-        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    let id = self.parse_element_by_name(&name, &e)?;
-                    // Filter out empty rows from property elements
-                    if !self.is_empty_row_id(id) {
-                        nodes.push(id);
+        let all_hidden = hide.iter().all(|&h| h);
+        if !all_hidden {
+            if hide.iter().any(|&h| h) {
+                self.info(
+                    "partially hidden <m:borderBox> sides are not represented; read as a full box"
+                        .into(),
+                );
+            }
+            let empty = self.arena.push_str("");
+            node = self.arena.push_node(CompactNode::Boxed {
+                content: node,
+                bg_color: empty,
+                border_color: empty,
+            });
+        }
+        Ok(node)
+    }
+
+    /// `m:d` (§22.1.2.24): `dPr{begChr, sepChr, endChr, grow, shp}`, `e+`.
+    /// Defaults: `(`, `|`, `)`; an empty value means no character.
+    fn delimiter(&mut self) -> Result<NodeId> {
+        let mut open = "(".to_owned();
+        let mut close = ")".to_owned();
+        let mut sep = "|".to_owned();
+        let mut elements: SmallVec<[NodeId; 4]> = SmallVec::new();
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:d")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "dPr") => {
+                    if self.once_props(&mut seen_pr, "dPr", "m:d")? {
+                        self.props("m:dPr", &["shp"], |p, c| {
+                            let slot = match c.local() {
+                                "begChr" => &mut open,
+                                "endChr" => &mut close,
+                                "sepChr" => &mut sep,
+                                "grow" => {
+                                    if !p.on_off(c)? {
+                                        p.info("non-growing delimiters (<m:grow m:val=\"off\">) are not represented".into());
+                                    }
+                                    return Ok(true);
+                                },
+                                _ => return Ok(false),
+                            };
+                            *slot = p.char_val(c)?.unwrap_or_default();
+                            Ok(true)
+                        })?;
                     }
                 },
-                Ok(Event::Empty(_)) => {},
-                Ok(Event::Text(e)) => {
-                    let text = quick_xml::escape::unescape(e.as_ref())
-                        .unwrap_or_default()
-                        .to_string();
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        nodes.push(self.classify_run_text(trimmed));
-                    }
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    elements.push(id);
                 },
-                Ok(Event::GeneralRef(r)) => {
-                    let text = resolve_general_ref(&r);
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        nodes.push(self.classify_run_text(trimmed));
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    let name = local_name_end(&e);
-                    if name == parent_tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                Err(e) => {
-                    return Err(Error::OmmlParse {
-                        message: format!("OMML XML error in <{parent_tag}>: {e}"),
-                    });
-                },
-                _ => continue,
+                _ => self.unknown(&c, "m:d")?,
             }
         }
-        self.depth -= 1;
-        Ok(nodes)
-    }
-
-    fn parse_child_id(&mut self, parent_tag: &str) -> Result<NodeId> {
-        let children = self.parse_children(parent_tag)?;
-        Ok(self.flatten_ids(&children))
-    }
-
-    fn parse_element_by_name(
-        &mut self,
-        name: &str,
-        _start: &quick_xml::events::BytesStart<'_>,
-    ) -> Result<NodeId> {
-        match name {
-            "r" => self.parse_run(),
-            "f" => self.parse_fraction(),
-            "rad" => self.parse_radical(),
-            "sSub" => self.parse_ssub(),
-            "sSup" => self.parse_ssup(),
-            "sSubSup" => self.parse_ssubsup(),
-            "sPre" => self.parse_spre(),
-            "nary" => self.parse_nary(),
-            "acc" => self.parse_accent(),
-            "bar" => self.parse_bar(),
-            "d" => self.parse_delimiter(),
-            "m" => self.parse_matrix(),
-            "eqArr" => self.parse_eq_array(),
-            "func" => self.parse_func(),
-            "limLow" => self.parse_lim_low(),
-            "limUpp" => self.parse_lim_upp(),
-            "groupChr" => self.parse_group_chr(),
-
-            "box" | "boxedFormula" => self.parse_child_id(name),
-
-            "borderBox" => self.parse_border_box(),
-
-            "phant" => self.parse_phantom(),
-
-            "oMath" | "oMathPara" => {
-                let children = self.parse_children(name)?;
-                Ok(self.flatten_ids(&children))
-            },
-
-            // Property elements — skip contents, return empty
-            "fPr" | "radPr" | "sSubPr" | "sSupPr" | "sSubSupPr" | "sPrePr" | "naryPr" | "accPr"
-            | "barPr" | "dPr" | "mPr" | "eqArrPr" | "funcPr" | "limLowPr" | "limUppPr"
-            | "groupChrPr" | "boxPr" | "borderBoxPr" | "phantPr" | "rPr" | "ctrlPr" | "mathPr" => {
-                self.skip_element(name)?;
-                Ok(self.empty_row())
-            },
-
-            // Content containers
-            "e" | "num" | "den" | "deg" | "sub" | "sup" | "lim" | "fName" => {
-                let children = self.parse_children(name)?;
-                Ok(self.flatten_ids(&children))
-            },
-
-            "mr" => {
-                let children = self.parse_children(name)?;
-                Ok(self.flatten_ids(&children))
-            },
-
-            _ => {
-                let children = self.parse_children(name)?;
-                Ok(self.flatten_ids(&children))
-            },
+        let mut content: Ids = SmallVec::new();
+        let sep_sid = self.arena.push_str(&sep);
+        for (idx, &id) in elements.iter().enumerate() {
+            if idx > 0 {
+                content.push(self.arena.push_node(CompactNode::Middle(sep_sid)));
+            }
+            content.push(id);
         }
+        let content = checked_span(&mut self.arena, &content)?;
+        let open = self.arena.push_str(&open);
+        let close = self.arena.push_str(&close);
+        Ok(self.arena.push_node(CompactNode::Fenced {
+            open,
+            close,
+            content,
+        }))
     }
 
-    // --- Specific element parsers ---
-
-    fn parse_run(&mut self) -> Result<NodeId> {
-        let mut text = String::new();
-        let mut style = TextStyle::Normal;
-        let tag = "r";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "t" => {
-                            text = self.read_text_content("t")?;
-                        },
-                        "rPr" => {
-                            style = self.parse_run_properties()?;
-                        },
-                        _ => {
-                            self.skip_element(&name)?;
-                        },
+    /// `m:eqArr` (§22.1.2.34): a single-column, centred stack of equations,
+    /// read as an array with equation-array row spacing (`add_jot`).
+    fn eq_array(&mut self) -> Result<NodeId> {
+        let mut rows = Vec::new();
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:eqArr")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "eqArrPr") => {
+                    if self.once_props(&mut seen_pr, "eqArrPr", "m:eqArr")? {
+                        self.props(
+                            "m:eqArrPr",
+                            &["baseJc", "maxDist", "objDist", "rSpRule", "rSp"],
+                            |_, _| Ok(false),
+                        )?;
                     }
                 },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
+                (Ns::Math, "e") => {
+                    let ids = self.arg("m:e")?;
+                    let span = checked_span(&mut self.arena, &ids)?;
+                    rows.push(smallvec::smallvec![
+                        self.arena.push_node(CompactNode::Row(span))
+                    ]);
                 },
-                Ok(Event::Eof) => break,
-                _ => continue,
+                _ => self.unknown(&c, "m:eqArr")?,
             }
         }
-        Ok(self.classify_run_text_styled(text.trim(), style))
+        self.build_array(rows, Vec::new(), true)
     }
 
-    fn parse_run_properties(&mut self) -> Result<TextStyle> {
-        let mut sty = "p";
-        let mut scr = "roman";
-        let tag = "rPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(ev @ Event::Start(_)) | Ok(ev @ Event::Empty(_)) => {
-                    let (e, needs_skip) = match ev {
-                        Event::Start(e) => (e, true),
-                        Event::Empty(e) => (e, false),
-                        _ => unreachable!(),
-                    };
-                    let name = local_name(&e);
-                    if name == "sty"
-                        && let Some(val) = get_val_attr(&e)
-                    {
-                        sty = match val.as_str() {
-                            "p" => "p",
-                            "i" => "i",
-                            "b" => "b",
-                            "bi" => "bi",
-                            _ => "p",
-                        };
-                    } else if name == "scr"
-                        && let Some(val) = get_val_attr(&e)
-                    {
-                        scr = match val.as_str() {
-                            "roman" => "roman",
-                            "script" => "script",
-                            "fraktur" => "fraktur",
-                            "double-struck" => "double-struck",
-                            "sans-serif" => "sans-serif",
-                            "monospace" => "monospace",
-                            _ => "roman",
-                        };
-                    }
-                    if needs_skip {
-                        self.skip_element(&name)?;
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(combine_omml_style(sty, scr))
-    }
-
-    fn parse_fraction(&mut self) -> Result<NodeId> {
+    /// `m:f` (§22.1.2.36): `fPr{type}`, `num`, `den`.
+    fn fraction(&mut self) -> Result<NodeId> {
         let mut kind = FractionKind::Normal;
-        let mut num = NodeId::NONE;
-        let mut den = NodeId::NONE;
-        let tag = "f";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "fPr" => kind = self.parse_fraction_props()?,
-                        "num" => num = self.parse_child_id("num")?,
-                        "den" => den = self.parse_child_id("den")?,
-                        _ => self.skip_element(&name)?,
+        let (mut num, mut den) = (None, None);
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:f")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "fPr") => {
+                    if self.once_props(&mut seen_pr, "fPr", "m:f")? {
+                        self.props("m:fPr", &[], |p, c| {
+                            if c.local() != "type" {
+                                return Ok(false);
+                            }
+                            kind = match p.leaf(c)?.as_deref() {
+                                Some("bar") => FractionKind::Normal,
+                                Some("noBar") => FractionKind::NoBar,
+                                Some("skw") => FractionKind::Skewed,
+                                Some("lin") => FractionKind::Inline,
+                                Some(other) => p.bad_value(c, other, FractionKind::Normal)?,
+                                None => p
+                                    .recover("<m:type> requires a val attribute".into())
+                                    .map(|()| FractionKind::Normal)?,
+                            };
+                            Ok(true)
+                        })?;
                     }
                 },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
+                (Ns::Math, "num") => {
+                    let id = self.arg_id("m:num")?;
+                    self.set_once(&mut num, id, "num", "m:f")?;
                 },
-                Ok(Event::Eof) => break,
-                _ => continue,
+                (Ns::Math, "den") => {
+                    let id = self.arg_id("m:den")?;
+                    self.set_once(&mut den, id, "den", "m:f")?;
+                },
+                _ => self.unknown(&c, "m:f")?,
             }
         }
-        if num == NodeId::NONE {
-            num = self.empty_row();
-        }
-        if den == NodeId::NONE {
-            den = self.empty_row();
-        }
+        let num = self.or_empty(num);
+        let den = self.or_empty(den);
         Ok(self
             .arena
             .push_node(CompactNode::Fraction { kind, num, den }))
     }
 
-    fn parse_fraction_props(&mut self) -> Result<FractionKind> {
-        let mut kind = FractionKind::Normal;
-        let tag = "fPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    if name == "type"
-                        && let Some(val) = get_val_attr(&e)
-                    {
-                        kind = match val.as_str() {
-                            "bar" => FractionKind::Normal,
-                            "noBar" => FractionKind::NoBar,
-                            "skw" => FractionKind::Skewed,
-                            "lin" => FractionKind::Inline,
-                            _ => FractionKind::Normal,
-                        };
+    /// `m:func` (§22.1.2.39): `fName`, `e`, read as
+    /// `Row[name, U+2061, argument]`.
+    fn func(&mut self) -> Result<NodeId> {
+        let (mut name, mut arg) = (None, None);
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:func")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "funcPr") => {
+                    if self.once_props(&mut seen_pr, "funcPr", "m:func")? {
+                        self.props("m:funcPr", &[], |_, _| Ok(false))?;
                     }
                 },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
+                (Ns::Math, "fName") => {
+                    let id = self.arg_id("m:fName")?;
+                    self.set_once(&mut name, id, "fName", "m:func")?;
                 },
-                Ok(Event::Eof) => break,
-                _ => continue,
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut arg, id, "e", "m:func")?;
+                },
+                _ => self.unknown(&c, "m:func")?,
             }
         }
-        Ok(kind)
+        let name = self.or_empty(name);
+        let arg = self.or_empty(arg);
+        let apply = self.symbol(SymbolKind::Ordinary, FUNCTION_APPLICATION);
+        let span = checked_span(&mut self.arena, &[name, apply, arg])?;
+        Ok(self.arena.push_node(CompactNode::Row(span)))
     }
 
-    fn parse_radical(&mut self) -> Result<NodeId> {
-        let mut deg_hide = false;
-        let mut deg = NodeId::NONE;
-        let mut content = NodeId::NONE;
-        let tag = "rad";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "radPr" => deg_hide = self.parse_radical_props()?,
-                        "deg" => deg = self.parse_child_id("deg")?,
-                        "e" => content = self.parse_child_id("e")?,
-                        _ => self.skip_element(&name)?,
+    /// `m:groupChr` (§22.1.2.41): `groupChrPr{chr, pos, vertJc}`, `e`.
+    /// Defaults: U+23DF BOTTOM CURLY BRACKET, below the base.
+    fn group_chr(&mut self) -> Result<NodeId> {
+        let mut chr = "\u{23DF}".to_owned();
+        let mut top = false;
+        let mut base = None;
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:groupChr")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "groupChrPr") => {
+                    if self.once_props(&mut seen_pr, "groupChrPr", "m:groupChr")? {
+                        self.props("m:groupChrPr", &["vertJc"], |p, c| {
+                            match c.local() {
+                                "chr" => chr = p.char_val(c)?.unwrap_or_default(),
+                                "pos" => top = p.top_bot(c, false)?,
+                                _ => return Ok(false),
+                            }
+                            Ok(true)
+                        })?;
                     }
                 },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut base, id, "e", "m:groupChr")?;
                 },
-                Ok(Event::Eof) => break,
-                _ => continue,
+                _ => self.unknown(&c, "m:groupChr")?,
             }
         }
-        if content == NodeId::NONE {
-            content = self.empty_row();
-        }
-        if deg_hide || deg == NodeId::NONE || self.is_empty_row_id(deg) {
-            Ok(self.arena.push_node(CompactNode::Sqrt(content)))
+        let base = self.or_empty(base);
+        let sym = self.symbol(SymbolKind::Ordinary, &chr);
+        Ok(self.arena.push_node(if top {
+            CompactNode::Overscript {
+                base,
+                over: sym,
+                movable_limits: false,
+            }
         } else {
-            Ok(self.arena.push_node(CompactNode::Root {
-                index: deg,
-                radicand: content,
-            }))
-        }
-    }
-
-    fn parse_radical_props(&mut self) -> Result<bool> {
-        let mut deg_hide = false;
-        let tag = "radPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    if name == "degHide"
-                        && let Some(val) = get_val_attr(&e)
-                    {
-                        deg_hide = val == "1" || val == "on" || val == "true";
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
+            CompactNode::Underscript {
+                base,
+                under: sym,
+                movable_limits: false,
             }
-        }
-        Ok(deg_hide)
+        }))
     }
 
-    fn parse_ssub(&mut self) -> Result<NodeId> {
-        let (base, sub, _) = self.parse_script_element("sSub")?;
-        Ok(self.arena.push_node(CompactNode::Subscript { base, sub }))
-    }
-
-    fn parse_ssup(&mut self) -> Result<NodeId> {
-        let (base, _, sup) = self.parse_script_element("sSup")?;
-        Ok(self.arena.push_node(CompactNode::Superscript { base, sup }))
-    }
-
-    fn parse_ssubsup(&mut self) -> Result<NodeId> {
-        let (base, sub, sup) = self.parse_script_element("sSubSup")?;
-        Ok(self.arena.push_node(CompactNode::SubSup { base, sub, sup }))
-    }
-
-    fn parse_spre(&mut self) -> Result<NodeId> {
-        let (base, pre_sub, pre_sup) = self.parse_script_element("sPre")?;
-        let pre_sub = if self.is_empty_row_id(pre_sub) {
-            NodeId::NONE
+    /// `m:limLow` / `m:limUpp` (§22.1.2.54, §22.1.2.56): `e`, `lim`.
+    fn limit(&mut self, upper: bool) -> Result<NodeId> {
+        let (name, pr) = if upper {
+            ("m:limUpp", "limUppPr")
         } else {
-            pre_sub
+            ("m:limLow", "limLowPr")
         };
-        let pre_sup = if self.is_empty_row_id(pre_sup) {
-            NodeId::NONE
+        let (mut base, mut lim) = (None, None);
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child(name)? {
+            match (c.ns, c.local()) {
+                (Ns::Math, l) if l == pr => {
+                    if self.once_props(&mut seen_pr, pr, name)? {
+                        self.props(
+                            if upper { "m:limUppPr" } else { "m:limLowPr" },
+                            &[],
+                            |_, _| Ok(false),
+                        )?;
+                    }
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut base, id, "e", name)?;
+                },
+                (Ns::Math, "lim") => {
+                    let id = self.arg_id("m:lim")?;
+                    self.set_once(&mut lim, id, "lim", name)?;
+                },
+                _ => self.unknown(&c, name)?,
+            }
+        }
+        let base = self.or_empty(base);
+        let lim = self.or_empty(lim);
+        Ok(self.arena.push_node(if upper {
+            CompactNode::Overscript {
+                base,
+                over: lim,
+                movable_limits: true,
+            }
         } else {
-            pre_sup
-        };
+            CompactNode::Underscript {
+                base,
+                under: lim,
+                movable_limits: true,
+            }
+        }))
+    }
+
+    /// `m:m` (§22.1.2.60): `mPr{..., mcs}`, `mr+` of `e+`.
+    fn matrix(&mut self) -> Result<NodeId> {
+        let mut rows: Vec<SmallVec<[NodeId; 4]>> = Vec::new();
+        let mut columns: Vec<ColumnAlign> = Vec::new();
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:m")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "mPr") => {
+                    if self.once_props(&mut seen_pr, "mPr", "m:m")? {
+                        self.props(
+                            "m:mPr",
+                            &[
+                                "baseJc", "plcHide", "rSpRule", "cGpRule", "rSp", "cSp", "cGp",
+                            ],
+                            |p, c| {
+                                if c.local() != "mcs" {
+                                    return Ok(false);
+                                }
+                                columns = p.matrix_columns()?;
+                                Ok(true)
+                            },
+                        )?;
+                    }
+                },
+                (Ns::Math, "mr") => {
+                    let mut cells = SmallVec::new();
+                    while let Some(e) = self.next_child("m:mr")? {
+                        if e.is_math("e") {
+                            let ids = self.arg("m:e")?;
+                            let span = checked_span(&mut self.arena, &ids)?;
+                            cells.push(self.arena.push_node(CompactNode::Row(span)));
+                        } else {
+                            self.unknown(&e, "m:mr")?;
+                        }
+                    }
+                    rows.push(cells);
+                },
+                _ => self.unknown(&c, "m:m")?,
+            }
+        }
+        self.build_array(rows, columns, false)
+    }
+
+    /// `m:mcs` (§22.1.2.66): column groups `mc{mcPr{count, mcJc}}`.
+    fn matrix_columns(&mut self) -> Result<Vec<ColumnAlign>> {
+        let mut columns = Vec::new();
+        while let Some(mc) = self.next_child("m:mcs")? {
+            if !mc.is_math("mc") {
+                self.unknown(&mc, "m:mcs")?;
+                continue;
+            }
+            let mut count = 1usize;
+            let mut align = ColumnAlign::Center;
+            while let Some(pr) = self.next_child("m:mc")? {
+                if !pr.is_math("mcPr") {
+                    self.unknown(&pr, "m:mc")?;
+                    continue;
+                }
+                self.props("m:mcPr", &[], |p, c| {
+                    match c.local() {
+                        "count" => {
+                            // ST_Integer255: 1..=255.
+                            let v = p.leaf(c)?.unwrap_or_default();
+                            count = match v.parse::<usize>() {
+                                Ok(n @ 1..=255) => n,
+                                _ => p.bad_value(c, &v, 1)?,
+                            };
+                        },
+                        "mcJc" => {
+                            let v = p.leaf(c)?.unwrap_or_default();
+                            align = match v.as_str() {
+                                "left" | "inside" => ColumnAlign::Left,
+                                "right" | "outside" => ColumnAlign::Right,
+                                "center" => ColumnAlign::Center,
+                                other => p.bad_value(c, other, ColumnAlign::Center)?,
+                            };
+                        },
+                        _ => return Ok(false),
+                    }
+                    Ok(true)
+                })?;
+            }
+            if columns.len() + count > u16::MAX as usize {
+                return Err(omml_err("matrix declares too many columns"));
+            }
+            columns.extend(std::iter::repeat_n(align, count));
+        }
+        Ok(columns)
+    }
+
+    /// Build an `Array` from row-major cell `Row` ids. Short rows are padded;
+    /// the cell count is bounded by the arena's span limit.
+    fn build_array(
+        &mut self,
+        rows: Vec<SmallVec<[NodeId; 4]>>,
+        columns: Vec<ColumnAlign>,
+        eq_array: bool,
+    ) -> Result<NodeId> {
+        let widest = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let ncols = widest.max(columns.len()).max(1);
+        if rows.len().saturating_mul(ncols) > u16::MAX as usize {
+            return Err(omml_err(format!(
+                "matrix of {} rows and {ncols} columns exceeds the supported {} cells",
+                rows.len(),
+                u16::MAX
+            )));
+        }
+        let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
+        for idx in 0..ncols {
+            let align = columns.get(idx).copied().unwrap_or(ColumnAlign::Center);
+            align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
+        }
+        let col_aligns = checked_span(&mut self.arena, &align_ids)?;
+        let mut cells: Vec<NodeId> = Vec::with_capacity(rows.len() * ncols);
+        for row in &rows {
+            cells.extend_from_slice(row);
+            for _ in row.len()..ncols {
+                cells.push(self.empty_row());
+            }
+        }
+        let cells = checked_span(&mut self.arena, &cells)?;
+        Ok(self.arena.push_node(CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols: ncols as u16,
+            arraystretch_pct: 100,
+            add_jot: eq_array,
+            array_style: false,
+            col_seps: 0,
+            row_seps: 0,
+        }))
+    }
+
+    /// `m:nary` (§22.1.2.70): `naryPr{chr, limLoc, grow, subHide, supHide}`,
+    /// `sub`, `sup`, `e`. Default operator: U+222B INTEGRAL.
+    fn nary(&mut self) -> Result<NodeId> {
+        let mut op = '\u{222B}';
+        let mut limits = LimitStyle::Default;
+        let (mut sub_hide, mut sup_hide) = (false, false);
+        let (mut sub, mut sup, mut body) = (None, None, None);
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:nary")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "naryPr") => {
+                    if self.once_props(&mut seen_pr, "naryPr", "m:nary")? {
+                        self.props("m:naryPr", &[], |p, c| {
+                            match c.local() {
+                                "chr" => {
+                                    match p.char_val(c)?.and_then(|s| s.chars().next()) {
+                                        Some(ch) => op = ch,
+                                        None => p.info("an n-ary operator without a character was read as an integral".into()),
+                                    }
+                                },
+                                "limLoc" => {
+                                    limits = match p.leaf(c)?.as_deref() {
+                                        Some("undOvr") => LimitStyle::AboveBelow,
+                                        Some("subSup") => LimitStyle::SubSup,
+                                        Some(other) => p.bad_value(c, other, LimitStyle::Default)?,
+                                        None => p
+                                            .recover("<m:limLoc> requires a val attribute".into())
+                                            .map(|()| LimitStyle::Default)?,
+                                    };
+                                },
+                                "grow" => {
+                                    if p.on_off(c)? {
+                                        p.info("growing n-ary operators (<m:grow>) are not represented".into());
+                                    }
+                                },
+                                "subHide" => sub_hide = p.on_off(c)?,
+                                "supHide" => sup_hide = p.on_off(c)?,
+                                _ => return Ok(false),
+                            }
+                            Ok(true)
+                        })?;
+                    }
+                },
+                (Ns::Math, "sub") => {
+                    let id = self.arg_id("m:sub")?;
+                    self.set_once(&mut sub, id, "sub", "m:nary")?;
+                },
+                (Ns::Math, "sup") => {
+                    let id = self.arg_id("m:sup")?;
+                    self.set_once(&mut sup, id, "sup", "m:nary")?;
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut body, id, "e", "m:nary")?;
+                },
+                _ => self.unknown(&c, "m:nary")?,
+            }
+        }
+        let body = self.or_empty(body);
+        let sub = self.limit_slot(sub, sub_hide, "lower");
+        let sup = self.limit_slot(sup, sup_hide, "upper");
+        Ok(self.arena.push_node(CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        }))
+    }
+
+    /// A limit or degree slot: hidden or empty slots become `NONE`.
+    fn limit_slot(&mut self, id: Option<NodeId>, hidden: bool, what: &str) -> NodeId {
+        match id {
+            Some(id) if !self.is_empty_row(id) => {
+                if hidden {
+                    self.info(format!("hidden {what} limit content was dropped"));
+                    NodeId::NONE
+                } else {
+                    id
+                }
+            },
+            _ => NodeId::NONE,
+        }
+    }
+
+    /// `m:phant` (§22.1.2.81): `phantPr{show, zeroWid, zeroAsc, zeroDesc,
+    /// transp}`, `e`.
+    fn phantom(&mut self) -> Result<NodeId> {
+        let mut flags = [false; 4]; // show, zeroWid, zeroAsc, zeroDesc
+        let mut content = None;
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:phant")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "phantPr") => {
+                    if self.once_props(&mut seen_pr, "phantPr", "m:phant")? {
+                        self.props("m:phantPr", &["transp"], |p, c| {
+                            let slot = match c.local() {
+                                "show" => &mut flags[0],
+                                "zeroWid" => &mut flags[1],
+                                "zeroAsc" => &mut flags[2],
+                                "zeroDesc" => &mut flags[3],
+                                _ => return Ok(false),
+                            };
+                            *slot = p.on_off(c)?;
+                            Ok(true)
+                        })?;
+                    }
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut content, id, "e", "m:phant")?;
+                },
+                _ => self.unknown(&c, "m:phant")?,
+            }
+        }
+        let content = self.or_empty(content);
+        let [show, zero_wid, zero_asc, zero_desc] = flags;
+        let kind = phantom_kind_from_flags(show, zero_wid, zero_asc, zero_desc);
+        if crate::writer::omml::phantom_pr_flags(kind) != (show, zero_wid, zero_asc, zero_desc) {
+            self.info(format!(
+                "phantom flags (show={show}, zeroWid={zero_wid}, zeroAsc={zero_asc}, \
+                 zeroDesc={zero_desc}) were read as the closest phantom kind {kind:?}"
+            ));
+        }
+        Ok(self.arena.push_node(CompactNode::Phantom(content, kind)))
+    }
+
+    /// `m:rad` (§22.1.2.88): `radPr{degHide}`, `deg`, `e`.
+    fn radical(&mut self) -> Result<NodeId> {
+        let mut deg_hide = false;
+        let (mut deg, mut radicand) = (None, None);
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:rad")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "radPr") => {
+                    if self.once_props(&mut seen_pr, "radPr", "m:rad")? {
+                        self.props("m:radPr", &[], |p, c| {
+                            if c.local() != "degHide" {
+                                return Ok(false);
+                            }
+                            deg_hide = p.on_off(c)?;
+                            Ok(true)
+                        })?;
+                    }
+                },
+                (Ns::Math, "deg") => {
+                    let id = self.arg_id("m:deg")?;
+                    self.set_once(&mut deg, id, "deg", "m:rad")?;
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut radicand, id, "e", "m:rad")?;
+                },
+                _ => self.unknown(&c, "m:rad")?,
+            }
+        }
+        let radicand = self.or_empty(radicand);
+        let index = self.limit_slot(deg, deg_hide, "radical degree");
+        Ok(self.arena.push_node(if index.is_none() {
+            CompactNode::Sqrt(radicand)
+        } else {
+            CompactNode::Root { index, radicand }
+        }))
+    }
+
+    /// `m:sPre` (§22.1.2.99): `sub`, `sup`, `e`.
+    fn pre_scripts(&mut self) -> Result<NodeId> {
+        let (mut sub, mut sup, mut base) = (None, None, None);
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child("m:sPre")? {
+            match (c.ns, c.local()) {
+                (Ns::Math, "sPrePr") => {
+                    if self.once_props(&mut seen_pr, "sPrePr", "m:sPre")? {
+                        self.props("m:sPrePr", &[], |_, _| Ok(false))?;
+                    }
+                },
+                (Ns::Math, "sub") => {
+                    let id = self.arg_id("m:sub")?;
+                    self.set_once(&mut sub, id, "sub", "m:sPre")?;
+                },
+                (Ns::Math, "sup") => {
+                    let id = self.arg_id("m:sup")?;
+                    self.set_once(&mut sup, id, "sup", "m:sPre")?;
+                },
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut base, id, "e", "m:sPre")?;
+                },
+                _ => self.unknown(&c, "m:sPre")?,
+            }
+        }
+        let base = self.or_empty(base);
+        let pre_sub = self.limit_slot(sub, false, "");
+        let pre_sup = self.limit_slot(sup, false, "");
         Ok(self.arena.push_node(CompactNode::PreScripts {
             base,
             pre_sub,
@@ -534,1181 +2167,125 @@ impl<'a> OmmlCompactParser<'a> {
         }))
     }
 
-    fn parse_script_element(&mut self, tag: &str) -> Result<(NodeId, NodeId, NodeId)> {
-        let mut base = NodeId::NONE;
-        let mut sub = NodeId::NONE;
-        let mut sup = NodeId::NONE;
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "e" => base = self.parse_child_id("e")?,
-                        "sub" => sub = self.parse_child_id("sub")?,
-                        "sup" => sup = self.parse_child_id("sup")?,
-                        _ => self.skip_element(&name)?,
+    /// `m:sSub`, `m:sSup`, `m:sSubSup` (§22.1.2.101–105).
+    fn scripts(
+        &mut self,
+        name: &'static str,
+        pr: &'static str,
+        has_sup: bool,
+        has_sub: bool,
+    ) -> Result<NodeId> {
+        let (mut base, mut sub, mut sup) = (None, None, None);
+        let mut seen_pr = false;
+        while let Some(c) = self.next_child(name)? {
+            match (c.ns, c.local()) {
+                (Ns::Math, l) if l == pr => {
+                    if self.once_props(&mut seen_pr, pr, name)? {
+                        let pr_name = match pr {
+                            "sSubPr" => "m:sSubPr",
+                            "sSupPr" => "m:sSupPr",
+                            _ => "m:sSubSupPr",
+                        };
+                        self.props(pr_name, &["alnScr"], |_, _| Ok(false))?;
                     }
                 },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
+                (Ns::Math, "e") => {
+                    let id = self.arg_id("m:e")?;
+                    self.set_once(&mut base, id, "e", name)?;
                 },
-                Ok(Event::Eof) => break,
-                _ => continue,
+                (Ns::Math, "sub") if has_sub => {
+                    let id = self.arg_id("m:sub")?;
+                    self.set_once(&mut sub, id, "sub", name)?;
+                },
+                (Ns::Math, "sup") if has_sup => {
+                    let id = self.arg_id("m:sup")?;
+                    self.set_once(&mut sup, id, "sup", name)?;
+                },
+                _ => self.unknown(&c, name)?,
             }
         }
-        if base == NodeId::NONE {
-            base = self.empty_row();
-        }
-        if sub == NodeId::NONE {
-            sub = self.empty_row();
-        }
-        if sup == NodeId::NONE {
-            sup = self.empty_row();
-        }
-        Ok((base, sub, sup))
-    }
-
-    fn parse_nary(&mut self) -> Result<NodeId> {
-        let mut op = '\u{222B}';
-        let mut limits = LimitStyle::Default;
-        let mut sub_hide = false;
-        let mut sup_hide = false;
-        let mut sub = NodeId::NONE;
-        let mut sup = NodeId::NONE;
-        let mut body = NodeId::NONE;
-        let tag = "nary";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "naryPr" => {
-                            let props = self.parse_nary_props()?;
-                            op = props.0;
-                            limits = props.1;
-                            sub_hide = props.2;
-                            sup_hide = props.3;
-                        },
-                        "sub" => sub = self.parse_child_id("sub")?,
-                        "sup" => sup = self.parse_child_id("sup")?,
-                        "e" => body = self.parse_child_id("e")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if body == NodeId::NONE {
-            body = self.empty_row();
-        }
-        let sub_id = if sub_hide || sub == NodeId::NONE || self.is_empty_row_id(sub) {
-            NodeId::NONE
-        } else {
-            sub
-        };
-        let sup_id = if sup_hide || sup == NodeId::NONE || self.is_empty_row_id(sup) {
-            NodeId::NONE
-        } else {
-            sup
-        };
-        Ok(self.arena.push_node(CompactNode::Nary {
-            op,
-            sub: sub_id,
-            sup: sup_id,
-            body,
-            limits,
+        let base = self.or_empty(base);
+        let sub = self.or_empty(sub);
+        let sup = self.or_empty(sup);
+        Ok(self.arena.push_node(match (has_sub, has_sup) {
+            (true, true) => CompactNode::SubSup { base, sub, sup },
+            (true, false) => CompactNode::Subscript { base, sub },
+            _ => CompactNode::Superscript { base, sup },
         }))
-    }
-
-    fn parse_nary_props(&mut self) -> Result<(char, LimitStyle, bool, bool)> {
-        let mut chr = '\u{222B}';
-        let mut limits = LimitStyle::Default;
-        let mut sub_hide = false;
-        let mut sup_hide = false;
-        let tag = "naryPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "chr" => {
-                            if let Some(val) = get_val_attr(&e)
-                                && let Some(c) = val.chars().next()
-                            {
-                                chr = c;
-                            }
-                        },
-                        "limLoc" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                limits = match val.as_str() {
-                                    "undOvr" => LimitStyle::AboveBelow,
-                                    "subSup" => LimitStyle::SubSup,
-                                    _ => LimitStyle::Default,
-                                };
-                            }
-                        },
-                        "subHide" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                sub_hide = val == "1" || val == "on" || val == "true";
-                            }
-                        },
-                        "supHide" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                sup_hide = val == "1" || val == "on" || val == "true";
-                            }
-                        },
-                        _ => {},
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok((chr, limits, sub_hide, sup_hide))
-    }
-
-    fn parse_accent(&mut self) -> Result<NodeId> {
-        let mut accent_char = '\u{0302}';
-        let mut base = NodeId::NONE;
-        let tag = "acc";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "accPr" => accent_char = self.parse_accent_props()?,
-                        "e" => base = self.parse_child_id("e")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if base == NodeId::NONE {
-            base = self.empty_row();
-        }
-        Ok(self.arena.push_node(CompactNode::Accent {
-            base,
-            accent: accent_char,
-            position: AccentPosition::Above,
-            wide: false,
-        }))
-    }
-
-    fn parse_accent_props(&mut self) -> Result<char> {
-        let mut chr = '\u{0302}';
-        let tag = "accPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    if name == "chr"
-                        && let Some(val) = get_val_attr(&e)
-                        && let Some(c) = val.chars().next()
-                    {
-                        chr = c;
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(chr)
-    }
-
-    fn parse_bar(&mut self) -> Result<NodeId> {
-        let mut pos_top = true;
-        let mut base = NodeId::NONE;
-        let tag = "bar";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "barPr" => pos_top = self.parse_bar_props()?,
-                        "e" => base = self.parse_child_id("e")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if base == NodeId::NONE {
-            base = self.empty_row();
-        }
-        let line_sid = self.arena.push_str("\u{203E}");
-        let line = self
-            .arena
-            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, line_sid));
-        if pos_top {
-            Ok(self.arena.push_node(CompactNode::Overscript {
-                base,
-                over: line,
-                movable_limits: false,
-            }))
-        } else {
-            Ok(self.arena.push_node(CompactNode::Underscript {
-                base,
-                under: line,
-                movable_limits: false,
-            }))
-        }
-    }
-
-    fn parse_bar_props(&mut self) -> Result<bool> {
-        let mut top = true;
-        let tag = "barPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    if name == "pos"
-                        && let Some(val) = get_val_attr(&e)
-                    {
-                        top = val != "bot";
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(top)
-    }
-
-    fn parse_border_box(&mut self) -> Result<NodeId> {
-        let mut stroke = None;
-        let mut content = NodeId::NONE;
-        let tag = "borderBox";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "borderBoxPr" => stroke = self.parse_border_box_props()?,
-                        "e" => content = self.parse_child_id("e")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if content == NodeId::NONE {
-            content = self.empty_row();
-        }
-        if let Some(stroke) = stroke {
-            Ok(self
-                .arena
-                .push_node(CompactNode::Cancel { stroke, content }))
-        } else {
-            let empty = self.arena.push_str("");
-            Ok(self.arena.push_node(CompactNode::Boxed {
-                content,
-                bg_color: empty,
-                border_color: empty,
-            }))
-        }
-    }
-
-    fn parse_border_box_props(&mut self) -> Result<Option<StrokeKind>> {
-        let mut bltr = false;
-        let mut tlbr = false;
-        let mut horizontal = false;
-        let mut vertical = false;
-        let tag = "borderBoxPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    let enabled = omml_bool_attr(&e);
-                    match name.as_str() {
-                        "strikeBLTR" => bltr |= enabled,
-                        "strikeTLBR" => tlbr |= enabled,
-                        "strikeH" => horizontal |= enabled,
-                        "strikeV" => vertical |= enabled,
-                        _ => {},
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        let stroke = if bltr && tlbr {
-            Some(StrokeKind::Cross)
-        } else if bltr {
-            Some(StrokeKind::Forward)
-        } else if tlbr {
-            Some(StrokeKind::Backward)
-        } else if horizontal {
-            Some(StrokeKind::Horizontal)
-        } else if vertical {
-            Some(StrokeKind::Vertical)
-        } else {
-            None
-        };
-        Ok(stroke)
-    }
-
-    /// Parse `<m:phant>`, honoring `<m:phantPr>` so the phantom subtype
-    /// (`\phantom`/`\vphantom`/`\hphantom`/`\smash[...]`) round-trips instead
-    /// of collapsing to `PhantomKind::Full`.
-    fn parse_phantom(&mut self) -> Result<NodeId> {
-        // Defaults for a bare `<m:phant>` with no phantPr: invisible content
-        // with all dimensions kept, i.e. `\phantom` (PhantomKind::Full). This
-        // preserves the historical behavior for inputs that omit phantPr.
-        let mut show = false;
-        let mut zero_wid = false;
-        let mut zero_asc = false;
-        let mut zero_desc = false;
-        let mut content = NodeId::NONE;
-        let tag = "phant";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "phantPr" => {
-                            let (s, zw, za, zd) = self.parse_phantom_props()?;
-                            show = s;
-                            zero_wid = zw;
-                            zero_asc = za;
-                            zero_desc = zd;
-                        },
-                        "e" => content = self.parse_child_id("e")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if content == NodeId::NONE {
-            content = self.empty_row();
-        }
-        let kind = phantom_kind_from_flags(show, zero_wid, zero_asc, zero_desc);
-        Ok(self.arena.push_node(CompactNode::Phantom(content, kind)))
-    }
-
-    /// Read the `(show, zero_wid, zero_asc, zero_desc)` flags from a
-    /// `<m:phantPr>` element. `show` defaults to `false` (invisible) when the
-    /// `<m:show>` child is absent, matching the bare-`<m:phant>` convention.
-    fn parse_phantom_props(&mut self) -> Result<(bool, bool, bool, bool)> {
-        let mut show = false;
-        let mut zero_wid = false;
-        let mut zero_asc = false;
-        let mut zero_desc = false;
-        let tag = "phantPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    let enabled = omml_bool_attr(&e);
-                    match name.as_str() {
-                        "show" => show = enabled,
-                        "zeroWid" => zero_wid = enabled,
-                        "zeroAsc" => zero_asc = enabled,
-                        "zeroDesc" => zero_desc = enabled,
-                        _ => {},
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok((show, zero_wid, zero_asc, zero_desc))
-    }
-
-    fn parse_delimiter(&mut self) -> Result<NodeId> {
-        let mut open = "(".to_string();
-        let mut close = ")".to_string();
-        let mut separator = None;
-        let mut elements: SmallVec<[NodeId; 8]> = SmallVec::new();
-        let tag = "d";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "dPr" => {
-                            let (o, c, sep) = self.parse_delimiter_props()?;
-                            open = o;
-                            close = c;
-                            separator = sep;
-                        },
-                        "e" => {
-                            let id = self.parse_child_id("e")?;
-                            elements.push(id);
-                        },
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-
-        let mut content_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-        let sep_sid = separator.as_deref().map(|sep| self.arena.push_str(sep));
-        for (idx, &id) in elements.iter().enumerate() {
-            if idx > 0
-                && let Some(sid) = sep_sid
-            {
-                content_ids.push(self.arena.push_node(CompactNode::Middle(sid)));
-            }
-            content_ids.push(id);
-        }
-        let content = self.arena.push_children(&content_ids);
-        let open_sid = self.arena.push_str(&open);
-        let close_sid = self.arena.push_str(&close);
-        Ok(self.arena.push_node(CompactNode::Fenced {
-            open: open_sid,
-            close: close_sid,
-            content,
-        }))
-    }
-
-    fn parse_delimiter_props(&mut self) -> Result<(String, String, Option<String>)> {
-        let mut open = "(".to_string();
-        let mut close = ")".to_string();
-        let mut separator = None;
-        let tag = "dPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "begChr" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                open = val;
-                            }
-                        },
-                        "endChr" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                close = val;
-                            }
-                        },
-                        "sepChr" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                separator = Some(val);
-                            }
-                        },
-                        _ => {},
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok((open, close, separator))
-    }
-
-    fn parse_matrix(&mut self) -> Result<NodeId> {
-        let mut rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::new();
-        let mut column_aligns = Vec::new();
-        let tag = "m";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "mr" => rows.push(self.parse_matrix_row()?),
-                        "mPr" => column_aligns = self.parse_matrix_props()?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        let ncols = rows
-            .iter()
-            .map(|row| row.len())
-            .max()
-            .unwrap_or(0)
-            .max(column_aligns.len());
-        let num_cols = ncols.max(1) as u16;
-
-        let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-        for idx in 0..ncols {
-            let align = column_aligns
-                .get(idx)
-                .copied()
-                .unwrap_or(ColumnAlign::Center);
-            align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
-        }
-        let col_aligns = self.arena.push_children(&align_ids);
-
-        let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-        for row in &rows {
-            for cell_children in row {
-                let span = self.arena.push_children(cell_children);
-                cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
-            }
-            for _ in row.len()..(num_cols as usize) {
-                cell_ids.push(self.empty_row());
-            }
-        }
-        let cells = self.arena.push_children(&cell_ids);
-
-        Ok(self.arena.push_node(CompactNode::Array {
-            col_aligns,
-            cells,
-            num_cols,
-            arraystretch_pct: 100,
-            add_jot: false,
-            array_style: false,
-            col_seps: 0,
-            row_seps: 0,
-        }))
-    }
-
-    fn parse_matrix_props(&mut self) -> Result<Vec<ColumnAlign>> {
-        let mut columns = Vec::new();
-        let tag = "mPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "mcs" => columns = self.parse_matrix_columns()?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(columns)
-    }
-
-    fn parse_matrix_columns(&mut self) -> Result<Vec<ColumnAlign>> {
-        let mut columns = Vec::new();
-        let tag = "mcs";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "mc" => {
-                            let (count, align) = self.parse_matrix_column()?;
-                            columns.extend(std::iter::repeat_n(align, count.max(1)));
-                        },
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(columns)
-    }
-
-    fn parse_matrix_column(&mut self) -> Result<(usize, ColumnAlign)> {
-        let mut count = 1;
-        let mut align = ColumnAlign::Center;
-        let tag = "mc";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "mcPr" => {
-                            let props = self.parse_matrix_column_props()?;
-                            count = props.0;
-                            align = props.1;
-                        },
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok((count, align))
-    }
-
-    fn parse_matrix_column_props(&mut self) -> Result<(usize, ColumnAlign)> {
-        let mut count = 1;
-        let mut align = ColumnAlign::Center;
-        let tag = "mcPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "count" => {
-                            if let Some(val) = get_val_attr(&e)
-                                && let Ok(parsed) = val.parse::<usize>()
-                            {
-                                count = parsed;
-                            }
-                        },
-                        "mcJc" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                align = parse_column_align(&val);
-                            }
-                        },
-                        _ => {},
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok((count, align))
-    }
-
-    fn parse_matrix_row(&mut self) -> Result<Vec<SmallVec<[NodeId; 8]>>> {
-        let mut cells = Vec::new();
-        let tag = "mr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    if name == "e" {
-                        cells.push(self.parse_children("e")?);
-                    } else {
-                        self.skip_element(&name)?;
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(cells)
-    }
-
-    fn parse_eq_array(&mut self) -> Result<NodeId> {
-        let mut rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::new();
-        let tag = "eqArr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "e" => {
-                            let children = self.parse_children("e")?;
-                            rows.push(vec![children]);
-                        },
-                        "eqArrPr" => self.skip_element("eqArrPr")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-
-        let num_cols: u16 = 1;
-        let align_id = self
-            .arena
-            .push_node(CompactNode::ColAlign(ColumnAlign::Left));
-        let col_aligns = self.arena.push_children(&[align_id]);
-
-        let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-        for row in &rows {
-            for cell_children in row {
-                let span = self.arena.push_children(cell_children);
-                cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
-            }
-        }
-        let cells = self.arena.push_children(&cell_ids);
-
-        Ok(self.arena.push_node(CompactNode::Array {
-            col_aligns,
-            cells,
-            num_cols,
-            arraystretch_pct: 100,
-            add_jot: false,
-            array_style: false,
-            col_seps: 0,
-            row_seps: 0,
-        }))
-    }
-
-    fn parse_func(&mut self) -> Result<NodeId> {
-        let mut fname = NodeId::NONE;
-        let mut arg = NodeId::NONE;
-        let tag = "func";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "fName" => fname = self.parse_child_id("fName")?,
-                        "e" => arg = self.parse_child_id("e")?,
-                        "funcPr" => self.skip_element("funcPr")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if fname == NodeId::NONE {
-            fname = self.empty_row();
-        }
-        if arg == NodeId::NONE {
-            arg = self.empty_row();
-        }
-
-        // Check if function name is an operator
-        let op_name = self.extract_operator_name(fname);
-        if let Some(name) = op_name {
-            let sid = self.arena.push_str(&name);
-            let op = self.arena.push_node(CompactNode::Operator {
-                name: sid,
-                limits: LimitStyle::SubSup,
-            });
-            let span = self.arena.push_children(&[op, arg]);
-            Ok(self.arena.push_node(CompactNode::Row(span)))
-        } else {
-            let span = self.arena.push_children(&[fname, arg]);
-            Ok(self.arena.push_node(CompactNode::Row(span)))
-        }
-    }
-
-    fn parse_lim_low(&mut self) -> Result<NodeId> {
-        let mut base = NodeId::NONE;
-        let mut lim = NodeId::NONE;
-        let tag = "limLow";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "e" => base = self.parse_child_id("e")?,
-                        "lim" => lim = self.parse_child_id("lim")?,
-                        "limLowPr" => self.skip_element("limLowPr")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if base == NodeId::NONE {
-            base = self.empty_row();
-        }
-        if lim == NodeId::NONE {
-            lim = self.empty_row();
-        }
-        Ok(self.arena.push_node(CompactNode::Underscript {
-            base,
-            under: lim,
-            movable_limits: true,
-        }))
-    }
-
-    fn parse_lim_upp(&mut self) -> Result<NodeId> {
-        let mut base = NodeId::NONE;
-        let mut lim = NodeId::NONE;
-        let tag = "limUpp";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "e" => base = self.parse_child_id("e")?,
-                        "lim" => lim = self.parse_child_id("lim")?,
-                        "limUppPr" => self.skip_element("limUppPr")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if base == NodeId::NONE {
-            base = self.empty_row();
-        }
-        if lim == NodeId::NONE {
-            lim = self.empty_row();
-        }
-        Ok(self.arena.push_node(CompactNode::Overscript {
-            base,
-            over: lim,
-            movable_limits: true,
-        }))
-    }
-
-    fn parse_group_chr(&mut self) -> Result<NodeId> {
-        let mut chr = '\u{23DF}';
-        let mut pos_top = false;
-        let mut base = NodeId::NONE;
-        let tag = "groupChr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "groupChrPr" => {
-                            let (c, t) = self.parse_group_chr_props()?;
-                            chr = c;
-                            pos_top = t;
-                        },
-                        "e" => base = self.parse_child_id("e")?,
-                        _ => self.skip_element(&name)?,
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        if base == NodeId::NONE {
-            base = self.empty_row();
-        }
-        let mut buf = [0u8; 4];
-        let sym_str = chr.encode_utf8(&mut buf);
-        let sid = self.arena.push_str(sym_str);
-        let sym = self
-            .arena
-            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
-        if pos_top {
-            Ok(self.arena.push_node(CompactNode::Overscript {
-                base,
-                over: sym,
-                movable_limits: false,
-            }))
-        } else {
-            Ok(self.arena.push_node(CompactNode::Underscript {
-                base,
-                under: sym,
-                movable_limits: false,
-            }))
-        }
-    }
-
-    fn parse_group_chr_props(&mut self) -> Result<(char, bool)> {
-        let mut chr = '\u{23DF}';
-        let mut top = false;
-        let tag = "groupChrPr";
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                    let name = local_name(&e);
-                    match name.as_str() {
-                        "chr" => {
-                            if let Some(val) = get_val_attr(&e)
-                                && let Some(c) = val.chars().next()
-                            {
-                                chr = c;
-                            }
-                        },
-                        "pos" => {
-                            if let Some(val) = get_val_attr(&e) {
-                                top = val == "top";
-                            }
-                        },
-                        _ => {},
-                    }
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok((chr, top))
-    }
-
-    fn read_text_content(&mut self, tag_name: &str) -> Result<String> {
-        let mut text = String::new();
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Text(e)) => {
-                    text.push_str(&quick_xml::escape::unescape(e.as_ref()).unwrap_or_default());
-                },
-                Ok(Event::GeneralRef(r)) => {
-                    text.push_str(&resolve_general_ref(&r));
-                },
-                Ok(Event::End(e)) => {
-                    if local_name_end(&e) == tag_name {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(text)
-    }
-
-    fn skip_element(&mut self, _tag_name: &str) -> Result<()> {
-        let mut depth = 1u32;
-        loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(_)) => depth += 1,
-                Ok(Event::End(_)) => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                _ => continue,
-            }
-        }
-        Ok(())
-    }
-
-    // --- Text classification ---
-
-    fn classify_run_text(&mut self, text: &str) -> NodeId {
-        self.classify_run_text_styled(text, TextStyle::Normal)
-    }
-
-    fn classify_run_text_styled(&mut self, text: &str, style: TextStyle) -> NodeId {
-        if text.is_empty() {
-            return self.empty_row();
-        }
-        // Check if it's a number
-        if text
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
-            && text.chars().any(|c| c.is_ascii_digit())
-        {
-            let sid = self.arena.push_str(text);
-            return self.arena.push_node(CompactNode::Number(sid));
-        }
-        // Single character
-        if text.chars().count() == 1 {
-            let ch = text.chars().next().expect("count is 1");
-            return match classify_omml_char(ch) {
-                CharClass::Letter => {
-                    let sid = self.arena.push_str(text);
-                    if style != TextStyle::Normal && style != TextStyle::Italic {
-                        let inner = self.arena.push_node(CompactNode::Identifier(sid));
-                        let span = self.arena.push_children(&[inner]);
-                        self.arena.push_node(CompactNode::Styled(style, span))
-                    } else {
-                        self.arena.push_node(CompactNode::Identifier(sid))
-                    }
-                },
-                CharClass::Operator => {
-                    let sid = self.arena.push_str(text);
-                    self.arena
-                        .push_node(CompactNode::Symbol(classify_op_char(ch), sid))
-                },
-                CharClass::Digit => {
-                    let sid = self.arena.push_str(text);
-                    self.arena.push_node(CompactNode::Number(sid))
-                },
-            };
-        }
-        // Multi-character: likely an operator name or text
-        if style == TextStyle::Normal && crate::unicode::symbols::is_operator_command(text) {
-            let sid = self.arena.push_str(text);
-            return self.arena.push_node(CompactNode::Operator {
-                name: sid,
-                limits: if crate::unicode::symbols::operator_has_limits(text) {
-                    LimitStyle::Default
-                } else {
-                    LimitStyle::SubSup
-                },
-            });
-        }
-        let sid = self.arena.push_str(text);
-        if text.chars().all(char::is_alphabetic) && style != TextStyle::Normal {
-            let inner = self.arena.push_node(CompactNode::Identifier(sid));
-            if style == TextStyle::Italic {
-                inner
-            } else {
-                let span = self.arena.push_children(&[inner]);
-                self.arena.push_node(CompactNode::Styled(style, span))
-            }
-        } else if style != TextStyle::Normal {
-            let inner = self
-                .arena
-                .push_node(CompactNode::Text(TextStyle::Normal, sid));
-            let span = self.arena.push_children(&[inner]);
-            self.arena.push_node(CompactNode::Styled(style, span))
-        } else {
-            self.arena
-                .push_node(CompactNode::Text(TextStyle::Normal, sid))
-        }
-    }
-
-    fn extract_operator_name(&self, id: NodeId) -> Option<String> {
-        match *self.arena.node(id) {
-            CompactNode::Operator { name, .. } => Some(self.arena.str_val(name).to_owned()),
-            CompactNode::Text(_, sid) => {
-                let s = self.arena.str_val(sid);
-                let trimmed = s.trim();
-                if crate::unicode::symbols::is_operator_command(trimmed) {
-                    Some(trimmed.to_string())
-                } else {
-                    None
-                }
-            },
-            CompactNode::Row(span) => {
-                let children = self.arena.children(span);
-                if children.len() == 1 {
-                    self.extract_operator_name(children[0])
-                } else {
-                    None
-                }
-            },
-            _ => None,
-        }
     }
 }
 
-// --- Helpers ---
+// ── Helpers ─────────────────────────────────────────────────────────────
 
-fn local_name(e: &quick_xml::events::BytesStart<'_>) -> String {
-    let qname = e.name();
-    let local = qname.local_name();
-    local.as_ref().to_owned()
+/// Drop a leading U+FEFF byte-order mark, which XML 1.0 §4.3.3 allows
+/// before the document.
+fn strip_bom(input: &str) -> &str {
+    input.strip_prefix('\u{FEFF}').unwrap_or(input)
 }
 
-fn local_name_end(e: &quick_xml::events::BytesEnd<'_>) -> String {
-    let qname = e.name();
-    let local = qname.local_name();
-    local.as_ref().to_owned()
+fn truncate(s: &str) -> String {
+    s.chars().take(32).collect()
 }
 
-fn get_val_attr(e: &quick_xml::events::BytesStart<'_>) -> Option<String> {
-    e.attributes().flatten().find_map(|a| {
-        if a.key.local_name().as_ref() == "val" {
-            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                .ok()
-                .map(|value| value.into_owned())
-        } else {
-            None
-        }
-    })
+/// `ST_HexColor` RGB value (`RRGGBB`).
+fn parse_hex_color(hex: &str) -> Option<[u8; 3]> {
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
 }
 
-fn omml_bool_attr(e: &quick_xml::events::BytesStart<'_>) -> bool {
-    !matches!(get_val_attr(e).as_deref(), Some("0" | "off" | "false"))
+/// Decode a Greek letter from the Mathematical Alphanumeric Symbols block
+/// (Unicode 15, §22.2: five styled runs of 58 code points each, ordered
+/// capitals Α–Ω with ϴ in the gap after Ρ, ∇, small α–ω, then ∂ ϵ ϑ ϰ ϕ ϱ ϖ).
+fn unstyled_greek(c: char) -> Option<(char, TextStyle)> {
+    const BLOCKS: [(u32, TextStyle); 5] = [
+        (0x1D6A8, TextStyle::Bold),
+        (0x1D6E2, TextStyle::Italic),
+        (0x1D71C, TextStyle::BoldItalic),
+        (0x1D756, TextStyle::SansSerifBold),
+        (0x1D790, TextStyle::SansSerifBoldItalic),
+    ];
+    const TAIL: [char; 7] = [
+        '\u{2202}', '\u{03F5}', '\u{03D1}', '\u{03F0}', '\u{03D5}', '\u{03F1}', '\u{03D6}',
+    ];
+    let cp = c as u32;
+    let &(start, style) = BLOCKS
+        .iter()
+        .find(|&&(start, _)| (start..start + 58).contains(&cp))?;
+    let i = cp - start;
+    let base = match i {
+        17 => '\u{03F4}',
+        0..=24 => char::from_u32(0x0391 + i)?,
+        25 => '\u{2207}',
+        26..=50 => char::from_u32(0x03B1 + i - 26)?,
+        _ => TAIL[(i - 51) as usize],
+    };
+    base.is_alphabetic().then_some((base, style))
+}
+
+/// Widths, in em, of the Unicode spaces used for math spacing; the same
+/// table drives the writer, so explicit spaces round-trip.
+pub(crate) const MATH_SPACES: [(char, i32, u32); 7] = [
+    ('\u{200A}', 1, 18),  // hair space
+    ('\u{2009}', 3, 18),  // thin space
+    ('\u{205F}', 4, 18),  // medium mathematical space
+    ('\u{2005}', 5, 18),  // four-per-em space (thick math space)
+    ('\u{2004}', 6, 18),  // three-per-em space
+    ('\u{2002}', 9, 18),  // en space
+    ('\u{2003}', 18, 18), // em space
+];
+
+fn space_width(c: char) -> Option<Rational> {
+    MATH_SPACES
+        .iter()
+        .find(|&&(ch, _, _)| ch == c)
+        .map(|&(_, num, den)| Rational::new(num, den))
 }
 
 /// Map OMML `phantPr` flags to a [`PhantomKind`]. Inverse of the writer's
-/// `phantom_pr_flags`.
+/// `phantom_pr_flags` for the six representable combinations.
 fn phantom_kind_from_flags(
     show: bool,
     zero_wid: bool,
@@ -1732,33 +2309,11 @@ fn phantom_kind_from_flags(
     }
 }
 
-fn parse_column_align(value: &str) -> ColumnAlign {
-    match value {
-        "left" | "l" => ColumnAlign::Left,
-        "right" | "r" => ColumnAlign::Right,
-        _ => ColumnAlign::Center,
-    }
-}
-
-enum CharClass {
-    Letter,
-    Operator,
-    Digit,
-}
-
-fn classify_omml_char(ch: char) -> CharClass {
-    if ch.is_ascii_digit() {
-        CharClass::Digit
-    } else if ch.is_alphabetic() {
-        CharClass::Letter
-    } else {
-        CharClass::Operator
-    }
-}
-
 fn classify_op_char(ch: char) -> SymbolKind {
     match ch {
-        '+' | '-' | '*' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' => SymbolKind::BinaryOp,
+        '+' | '-' | '*' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2212}' | '\u{00B1}' => {
+            SymbolKind::BinaryOp
+        },
         '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' => SymbolKind::Relation,
         '(' | '[' | '{' | '\u{27E8}' => SymbolKind::Open,
         ')' | ']' | '}' | '\u{27E9}' => SymbolKind::Close,
@@ -1769,7 +2324,8 @@ fn classify_op_char(ch: char) -> SymbolKind {
     }
 }
 
-fn combine_omml_style(sty: &str, scr: &str) -> TextStyle {
+/// Combine `m:sty` and `m:scr` into a [`TextStyle`] (§22.1.2.90, §22.1.2.112).
+pub(crate) fn combine_omml_style(sty: &str, scr: &str) -> TextStyle {
     match scr {
         "script" => match sty {
             "b" | "bi" => TextStyle::BoldScript,
@@ -1797,274 +2353,4 @@ fn combine_omml_style(sty: &str, scr: &str) -> TextStyle {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(input: &str) -> Vec<MathNode> {
-        let config = Config::default();
-        OmmlReader::parse(input, &config).unwrap().expr.nodes
-    }
-
-    fn parse_one(input: &str) -> MathNode {
-        let nodes = parse(input);
-        if nodes.len() == 1 {
-            nodes.into_iter().next().unwrap()
-        } else {
-            MathNode::Row(nodes)
-        }
-    }
-
-    #[test]
-    fn simple_run_number() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>42</m:t></m:r></m:oMath>"#;
-        let node = parse_one(input);
-        assert_eq!(node, MathNode::Number("42".into()));
-    }
-
-    #[test]
-    fn simple_run_identifier() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>x</m:t></m:r></m:oMath>"#;
-        let node = parse_one(input);
-        assert_eq!(node, MathNode::Identifier("x".into()));
-    }
-
-    #[test]
-    fn fraction() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(
-            node,
-            MathNode::Fraction {
-                kind: FractionKind::Normal,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn subscript() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:sSub><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sub><m:r><m:t>i</m:t></m:r></m:sub></m:sSub></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Subscript { .. }));
-    }
-
-    #[test]
-    fn superscript() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Superscript { .. }));
-    }
-
-    #[test]
-    fn sqrt() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e><m:r><m:t>x</m:t></m:r></m:e></m:rad></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Sqrt(_)));
-    }
-
-    #[test]
-    fn delimiter() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:d><m:dPr><m:begChr m:val="("/><m:endChr m:val=")"/></m:dPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:d></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Fenced { .. }));
-    }
-
-    #[test]
-    fn delimiter_sep_chr_becomes_middle_item() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val="]"/><m:sepChr m:val=";"/></m:dPr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:d></m:oMath>"#;
-        let node = parse_one(input);
-        assert_eq!(
-            node,
-            MathNode::Fenced {
-                open: "[".into(),
-                close: "]".into(),
-                content: vec![
-                    FencedItem::Element(MathNode::Identifier("a".into())),
-                    FencedItem::Middle(";".into()),
-                    FencedItem::Element(MathNode::Identifier("b".into())),
-                ],
-            }
-        );
-    }
-
-    #[test]
-    fn delimiter_props_accept_alternate_prefix_and_unescape_values() {
-        let input = r#"<q:oMath xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/math"><q:d><q:dPr><q:begChr q:val="&lt;"/><q:endChr q:val="&gt;"/><q:sepChr q:val="&amp;"/></q:dPr><q:e><q:r><q:t>a</q:t></q:r></q:e><q:e><q:r><q:t>b</q:t></q:r></q:e></q:d></q:oMath>"#;
-        let node = parse_one(input);
-        assert_eq!(
-            node,
-            MathNode::Fenced {
-                open: "<".into(),
-                close: ">".into(),
-                content: vec![
-                    FencedItem::Element(MathNode::Identifier("a".into())),
-                    FencedItem::Middle("&".into()),
-                    FencedItem::Element(MathNode::Identifier("b".into())),
-                ],
-            }
-        );
-    }
-
-    #[test]
-    fn matrix_props_accept_alternate_value_prefix() {
-        let input = r#"<q:oMath xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/math"><q:m><q:mPr><q:mcs><q:mc><q:mcPr><q:count q:val="2"/><q:mcJc q:val="left"/></q:mcPr></q:mc></q:mcs></q:mPr><q:mr><q:e><q:r><q:t>a</q:t></q:r></q:e><q:e><q:r><q:t>b</q:t></q:r></q:e></q:mr></q:m></q:oMath>"#;
-        let node = parse_one(input);
-        match node {
-            MathNode::Array { columns, .. } => {
-                assert_eq!(columns, vec![ColumnAlign::Left, ColumnAlign::Left]);
-            },
-            other => panic!("expected matrix array, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn disabled_strike_with_alternate_value_prefix_stays_boxed() {
-        let input = r#"<q:oMath xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/math"><q:borderBox><q:borderBoxPr><q:strikeBLTR q:val="0"/></q:borderBoxPr><q:e><q:r><q:t>x</q:t></q:r></q:e></q:borderBox></q:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Boxed { .. }), "{node:?}");
-    }
-
-    #[test]
-    fn matrix_mcs_column_alignment_is_preserved() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:m><m:mPr><m:mcs><m:mc><m:mcPr><m:count m:val="1"/><m:mcJc m:val="left"/></m:mcPr></m:mc><m:mc><m:mcPr><m:count m:val="1"/><m:mcJc m:val="right"/></m:mcPr></m:mc></m:mcs></m:mPr><m:mr><m:e><m:r><m:t>a</m:t></m:r></m:e><m:e><m:r><m:t>b</m:t></m:r></m:e></m:mr></m:m></m:oMath>"#;
-        let node = parse_one(input);
-        match node {
-            MathNode::Array { columns, .. } => {
-                assert_eq!(columns, vec![ColumnAlign::Left, ColumnAlign::Right]);
-            },
-            other => panic!("expected matrix array, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn italic_multi_character_run_is_identifier() {
-        for text in ["abc", "Pr", "sin", "lim"] {
-            let input = format!(
-                r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:rPr><m:sty m:val="i"/></m:rPr><m:t>{text}</m:t></m:r></m:oMath>"#
-            );
-            let node = parse_one(&input);
-            assert_eq!(node, MathNode::Identifier(text.into()));
-        }
-    }
-
-    #[test]
-    fn border_box_strikes_become_cancel_strokes() {
-        let cases = [
-            ("strikeBLTR", StrokeKind::Forward),
-            ("strikeTLBR", StrokeKind::Backward),
-            ("strikeH", StrokeKind::Horizontal),
-            ("strikeV", StrokeKind::Vertical),
-        ];
-        for (strike, stroke) in cases {
-            let input = format!(
-                r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:borderBox><m:borderBoxPr><m:{strike} m:val="1"/></m:borderBoxPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:borderBox></m:oMath>"#
-            );
-            let node = parse_one(&input);
-            assert_eq!(
-                node,
-                MathNode::Cancel {
-                    stroke,
-                    content: Box::new(MathNode::Identifier("x".into())),
-                },
-                "{strike} should parse as {stroke:?} cancel"
-            );
-        }
-    }
-
-    #[test]
-    fn accent() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:acc><m:accPr><m:chr m:val="̂"/></m:accPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:acc></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Accent { .. }));
-    }
-
-    #[test]
-    fn empty_input() {
-        let config = Config::default();
-        let result = OmmlReader::parse("", &config).unwrap();
-        assert!(result.expr.nodes.is_empty());
-    }
-
-    #[test]
-    fn border_box() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:borderBox><m:e><m:r><m:t>x</m:t></m:r></m:e></m:borderBox></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Boxed { .. }));
-    }
-
-    #[test]
-    fn phantom() {
-        let input = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:phant><m:e><m:r><m:t>x</m:t></m:r></m:e></m:phant></m:oMath>"#;
-        let node = parse_one(input);
-        assert!(matches!(node, MathNode::Phantom(_, PhantomKind::Full)));
-    }
-
-    #[test]
-    fn phantom_subtypes_from_phant_pr() {
-        let wrap = |inner: &str| {
-            format!(
-                r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:phant><m:phantPr>{inner}</m:phantPr><m:e><m:r><m:t>x</m:t></m:r></m:e></m:phant></m:oMath>"#
-            )
-        };
-        let cases = [
-            (
-                r#"<m:show m:val="0"/><m:zeroWid m:val="1"/>"#,
-                PhantomKind::Vertical,
-            ),
-            (
-                r#"<m:show m:val="0"/><m:zeroAsc m:val="1"/><m:zeroDesc m:val="1"/>"#,
-                PhantomKind::Horizontal,
-            ),
-            (
-                r#"<m:show m:val="1"/><m:zeroAsc m:val="1"/><m:zeroDesc m:val="1"/>"#,
-                PhantomKind::SmashBoth,
-            ),
-            (
-                r#"<m:show m:val="1"/><m:zeroAsc m:val="1"/>"#,
-                PhantomKind::SmashTop,
-            ),
-            (
-                r#"<m:show m:val="1"/><m:zeroDesc m:val="1"/>"#,
-                PhantomKind::SmashBottom,
-            ),
-        ];
-        for (inner, expected) in cases {
-            let node = parse_one(&wrap(inner));
-            match node {
-                MathNode::Phantom(_, kind) => {
-                    assert_eq!(kind, expected, "phantPr {inner} -> {kind:?}")
-                },
-                other => panic!("expected Phantom, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn phantom_subtype_omml_round_trips() {
-        // Build each phantom kind, write to OMML, read it back, and confirm the
-        // subtype is preserved end-to-end.
-        use crate::writer::Writer as _;
-        for kind in [
-            PhantomKind::Full,
-            PhantomKind::Vertical,
-            PhantomKind::Horizontal,
-            PhantomKind::SmashBoth,
-            PhantomKind::SmashTop,
-            PhantomKind::SmashBottom,
-        ] {
-            let expr = crate::ast::MathExpr {
-                nodes: vec![MathNode::Phantom(
-                    Box::new(MathNode::Identifier("x".into())),
-                    kind,
-                )],
-                display: crate::ast::DisplayStyle::Inline,
-            };
-            let omml = crate::writer::omml::OmmlWriter::write(&expr, &Config::default()).unwrap();
-            let node = parse_one(&omml);
-            match node {
-                MathNode::Phantom(_, got) => assert_eq!(got, kind, "round-trip {kind:?}\n{omml}"),
-                other => panic!("expected Phantom for {kind:?}, got {other:?}"),
-            }
-        }
-    }
-}
+mod tests;

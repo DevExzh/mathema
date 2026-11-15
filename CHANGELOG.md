@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OMML paragraphs.** `OmmlReader::parse_paragraph` reads an `m:oMathPara`
+  as separate equations plus its `m:jc` justification (`OmmlParagraph`,
+  `OmmlJustification`); `OmmlWriter::write_paragraph` writes them back.
+- **OMML writer options.** `OmmlOptions` selects the host run-property
+  dialect (`OmmlRunProperties::None`, the default, `WordprocessingMl` or
+  `DrawingMl`) and an optional display block (`m:oMathPara` with `m:jc`).
+  Available through `OmmlWriter::write_with_options` and
+  `ConvertResult::to_omml_with_options`.
+
+### Changed
+
+- **The OMML reader is strict.** In Strict mode malformed XML (mismatched or
+  missing end tags, unclosed comments, truncated input, undeclared entities,
+  duplicate attributes), unknown math elements, invalid property values and
+  duplicated arguments are errors naming the element. Lenient mode skips them
+  with a warning. Valid properties without an AST equivalent are dropped with
+  an `Info` diagnostic. Element nesting, child counts and matrix sizes are
+  bounded.
+- **The OMML reader keeps more structure.** `m:eqArr` reads as a one-column
+  `Array` with `add_jot`; `m:box` as a `MathAtom` (`Op` with `m:opEmu`);
+  `m:nor` runs as `Text` with their whitespace; `m:func` as
+  `Row[name, U+2061, argument]` (a plain `sin` run stays an operator);
+  explicit `m:sty="p"` as upright `Styled`; `w:color` and DrawingML
+  `a:solidFill` as color; math alphanumeric letters (as PowerPoint stores
+  them) as base letters with a style. On/off properties without a value now
+  mean "on", and the `m:bar` and `m:d` defaults follow the schema.
+- **The OMML writer output follows the schema.** `m:scr` precedes `m:sty`,
+  `m:dPr` children are in schema order, required arguments are always
+  present, `m:eqArr` and `m:box` are written back, operators are plain
+  upright runs, text keeps its whitespace (`xml:space="preserve"`), and
+  cancellations hide the box sides. Color is written only into the host run
+  properties and never into `m:rPr`; without a host dialect it is reported as
+  lost. Loss diagnostics now come from the writer itself.
+- **The LaTeX writer drops invisible operators** (U+2061–U+2064) instead of
+  emitting them as raw characters.
+
+### Fixed
+
+- `CompactExpr::from_math_expr` no longer splits array rows that are wider
+  than the column-alignment list.
+
 ## [0.1.0] - 2026-06-19
 
 ### Security

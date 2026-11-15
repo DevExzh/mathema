@@ -70,6 +70,7 @@ pub use convert::{
 pub use error::{
     Config, Diagnostic, DiagnosticKind, Error, Format, ParseResult, Result, Strictness,
 };
+pub use reader::omml::{OmmlJustification, OmmlParagraph};
 #[cfg(feature = "raster")]
 pub use render::raster::{ImageFormat, RasterOptions, render_to_image};
 #[cfg(feature = "render")]
@@ -79,3 +80,4 @@ pub use render::{
     render_to_svg_standalone, render_to_svg_standalone_compact,
     render_to_svg_standalone_compact_arena,
 };
+pub use writer::omml::{OmmlOptions, OmmlRunProperties};
