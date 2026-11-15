@@ -746,17 +746,14 @@ fn data_after_the_equation() {
 }
 
 #[test]
-fn missing_final_end_is_tolerated_only_after_a_complete_line() {
+fn missing_final_end_is_refused_in_strict_mode() {
     let mut data = eq5(&c5(0, 3, 'x'));
     data.pop();
-    let result = MtefReader::parse_bytes(&data, &Config::default()).unwrap();
+    assert!(strict_error(&data).contains("without the END record"));
+    // Lenient mode keeps the complete line and warns.
+    let result = MtefReader::parse_bytes(&data, &lenient()).unwrap();
     assert_eq!(result.expr.nodes.len(), 1);
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|d| d.kind == DiagnosticKind::Info)
-    );
+    assert!(has_warning(&result, "without the END record"));
     data.pop();
     assert!(strict_error(&data).contains("missing its END"));
 }
@@ -909,4 +906,151 @@ fn control_characters_are_refused_in_strict_mode() {
     assert!(strict_error(&eq5(&c5(0, 3, '\u{1}'))).contains("control character"));
     let result = MtefReader::parse_bytes(&eq5(&c5(0, 3, '\u{1}')), &lenient()).unwrap();
     assert!(has_warning(&result, "control character"));
+}
+
+/// MTEF 5 superscript template with an empty-line superscript of `x`.
+fn superscript() -> Vec<u8> {
+    cat(&[
+        &[0x03, 0, 28, 0, 0, 0x01, 0x01],
+        &line5(&c5(0, 8, '2')),
+        &[0],
+    ])
+}
+
+#[test]
+fn script_chains_are_bounded_by_the_ast_depth() {
+    // Every superscript template wraps the item before it, so a run of them
+    // in one line nests without nesting object lists.
+    let chain: Vec<u8> = cat(&[&c5(0, 3, 'x'), &superscript().repeat(30_000)]);
+    let data = eq5(&chain);
+    assert!(data.len() < 500 * 1024);
+    for result in [
+        MtefReader::parse_bytes(&data, &Config::default()).map(|_| ()),
+        MtefReader::parse_bytes(&data, &lenient()).map(|_| ()),
+        crate::from_mtef_bytes(&data).map(|_| ()),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(Error::LimitExceeded {
+                    kind: LimitKind::Depth,
+                    limit: 128
+                })
+            ),
+            "{result:?}"
+        );
+    }
+    let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(matches!(
+        MtefReader::parse(&hex, &Config::default()),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::Depth,
+            ..
+        })
+    ));
+    // Up to the limit the chain decodes.
+    let short = eq5(&cat(&[&c5(0, 3, 'x'), &superscript().repeat(100)]));
+    assert!(crate::from_mtef_bytes(&short).is_ok());
+}
+
+#[test]
+fn embellishment_chains_are_bounded_by_the_ast_depth() {
+    let mut chain = c5(0x01, 3, 'x');
+    for _ in 0..1000 {
+        chain.extend_from_slice(&[0x06, 0, 2]);
+    }
+    chain.push(0);
+    assert!(matches!(
+        MtefReader::parse_bytes(&eq5(&chain), &Config::default()),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::Depth,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn ast_depth_limit_is_configurable() {
+    let data = eq5(&cat(&[&c5(0, 3, 'x'), &superscript().repeat(20)]));
+    assert!(crate::from_mtef_bytes(&data).is_ok());
+    let config = Config::default().with_max_depth(5);
+    assert!(matches!(
+        crate::from_mtef_bytes_with(&data, &config),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::Depth,
+            limit: 5
+        })
+    ));
+}
+
+#[test]
+fn long_lists_are_refused_not_truncated() {
+    // 70 000 characters in one line: more than a node can hold.
+    let content = c5(0, 3, 'x').repeat(70_000);
+    let data = eq5(&content);
+    for config in [Config::default(), lenient()] {
+        assert!(matches!(
+            MtefReader::parse_bytes(&data, &config),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ListLength,
+                limit: 65_535
+            })
+        ));
+    }
+    // Spaces and markers that produce no node still count as records.
+    let markers = c5(0, 23, '\u{EF00}').repeat(70_000);
+    assert!(matches!(
+        MtefReader::parse_bytes(&eq5(&markers), &Config::default()),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::ListLength,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn box_without_sides_is_its_content() {
+    let boxed = |var: u8| cat(&[&[0x03, 0, 37, var, 0], &line5(&c5(0, 3, 'x')), &[0]]);
+    assert_eq!(latex(&eq5(&boxed(0x1E))), r"\boxed{x}");
+    assert_eq!(latex(&eq5(&boxed(0))), "x");
+    let partial = MtefReader::parse_bytes(&eq5(&boxed(0x06)), &Config::default()).unwrap();
+    assert!(has_warning(&partial, "only some of its sides"));
+}
+
+#[test]
+fn empty_limit_lines_are_dropped() {
+    // tmLIM with an upper limit present but empty, as MathType 6 writes it.
+    let lim = cat(&[
+        &[0x03, 0, 23, 0x20, 0],
+        &line5(&cat(&[&c5(0, 3, 'C'), &c5(0, 3, 'D')])),
+        &[0x01, 0x01],
+        &line5(&[]),
+        &[0],
+    ]);
+    assert_eq!(latex(&eq5(&lim)), "CD");
+}
+
+#[test]
+fn partition_lines_beyond_the_ast_are_reported() {
+    // 1 x 40 matrix with a solid line before column 35.
+    let mut col_parts = [0u8; 11];
+    col_parts[35 / 4] = 1 << (2 * (35 % 4));
+    let cells: Vec<u8> = (0..40).flat_map(|_| line5(&c5(0, 3, 'a'))).collect();
+    let matrix = cat(&[&[0x05, 0, 0, 1, 1, 1, 40, 0], &col_parts, &cells, &[0]]);
+    let result = MtefReader::parse_bytes(&eq5(&matrix), &Config::default()).unwrap();
+    assert!(has_warning(&result, "partition line"));
+}
+
+#[test]
+fn arena_refuses_oversized_child_lists() {
+    let mut arena = crate::AstArena::new();
+    let ids = vec![crate::NodeId::NONE; crate::AstArena::MAX_CHILDREN + 1];
+    assert!(matches!(
+        arena.try_push_children(&ids),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::ListLength,
+            ..
+        })
+    ));
+    assert!(arena.try_push_children(&ids[1..]).is_ok());
 }

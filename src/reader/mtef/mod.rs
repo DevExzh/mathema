@@ -117,7 +117,7 @@ impl MtefReader {
         match outcome {
             Ok(roots) => {
                 let mut arena = decoder.arena;
-                let roots = arena.push_children(&roots);
+                let roots = arena.try_push_children(&roots)?;
                 let expr = CompactExpr {
                     arena,
                     roots,

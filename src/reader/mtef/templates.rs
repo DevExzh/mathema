@@ -60,8 +60,9 @@ pub(super) enum Desc {
     },
     /// StrikeBoxClass: one slot.
     Strike(StrokeKind),
-    /// TBoxBoxClass: one slot; `complete` when all four sides are drawn.
-    Box { complete: bool },
+    /// TBoxBoxClass: one slot; `sides` holds the `tvBX_LEFT`, `tvBX_RIGHT`,
+    /// `tvBX_TOP` and `tvBX_BOTTOM` bits (0x1E when all four are drawn).
+    Box { sides: u16 },
 }
 
 impl Desc {
@@ -371,9 +372,7 @@ pub(super) fn describe_v5(selector: u8, variation: u16) -> Option<Desc> {
             wide: false,
         },
         36 if var <= 7 => Desc::Strike(strike_stroke(var)),
-        37 if var <= 0x1F => Desc::Box {
-            complete: matches!(var & 0x1E, 0 | 0x1E),
-        },
+        37 if var <= 0x1F => Desc::Box { sides: var & 0x1E },
         _ => return None,
     };
     Some(desc)
@@ -441,7 +440,7 @@ impl Decoder<'_> {
     }
 
     fn fenced(&mut self, open: &str, close: &str, content: &[NodeId]) -> Result<NodeId> {
-        let content = self.arena.push_children(content);
+        let content = self.children(content)?;
         let open = self.arena.push_str(open);
         let close = self.arena.push_str(close);
         self.node(CompactNode::Fenced {
@@ -644,8 +643,9 @@ impl Decoder<'_> {
             },
             Desc::Limit => {
                 let base = self.take_or_empty(&mut slots, 0)?;
-                let lower = Self::take(&mut slots, 1);
-                let upper = Self::take(&mut slots, 2);
+                // An empty limit line draws nothing.
+                let lower = self.take_filled(&mut slots, 1);
+                let upper = self.take_filled(&mut slots, 2);
                 let id = if self.is_operator(base) {
                     // `lim`, `max`, ...: limits are the operator's scripts.
                     self.scripts(
@@ -748,9 +748,14 @@ impl Decoder<'_> {
                 let content = self.take_or_empty(&mut slots, 0)?;
                 Item::Node(self.node(CompactNode::Cancel { stroke, content })?)
             },
-            Desc::Box { complete } => {
+            Desc::Box { sides: 0 } => {
+                // No side is present (MTEFv5.md, tmBOX variations): nothing is
+                // drawn around the slot.
+                Item::Node(self.take_or_empty(&mut slots, 0)?)
+            },
+            Desc::Box { sides } => {
                 let content = self.take_or_empty(&mut slots, 0)?;
-                if !complete {
+                if sides != 0x1E {
                     self.warn(
                         start,
                         "box template draws only some of its sides; it was read as a full box",

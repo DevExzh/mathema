@@ -145,7 +145,8 @@ pub(super) struct Decoder<'a> {
     max_depth: usize,
     max_nodes: Option<usize>,
     depth: usize,
-    records: usize,
+    /// Height of every node in the arena, indexed by node id.
+    heights: Vec<u8>,
     pub(super) arena: AstArena,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) info: Option<MtefInfo>,
@@ -176,7 +177,7 @@ impl<'a> Decoder<'a> {
             max_depth: config.effective_max_depth(),
             max_nodes: config.max_nodes,
             depth: 0,
-            records: 0,
+            heights: Vec::new(),
             arena: AstArena::with_capacity(data.len().min(1 << 16) / 2, 0, 0),
             diagnostics: Vec::new(),
             info: None,
@@ -227,6 +228,8 @@ impl<'a> Decoder<'a> {
 
     // ── Limits ─────────────────────────────────────────────────────────
 
+    /// Bound the recursion over nested object lists. Lists nest at least as
+    /// deeply as the nodes built from them, so `max_depth` bounds both.
     fn enter(&mut self) -> Result<()> {
         self.depth += 1;
         if self.depth > self.max_depth {
@@ -238,18 +241,11 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    fn count_record(&mut self) -> Result<()> {
-        self.records += 1;
-        match self.max_nodes {
-            Some(limit) if self.records > limit => Err(Error::LimitExceeded {
-                kind: LimitKind::Nodes,
-                limit,
-            }),
-            _ => Ok(()),
-        }
-    }
-
-    /// Push an AST node, enforcing [`Config::max_nodes`].
+    /// Push an AST node, enforcing [`Config::max_nodes`] and
+    /// [`Config::max_depth`]: the node's height (0 for a leaf) is the depth of
+    /// its deepest descendant when it is a top-level node, and every node is
+    /// built before its parent, so checking heights here bounds the tree
+    /// however it is nested (script chains, embellishments, templates).
     pub(super) fn node(&mut self, node: CompactNode) -> Result<NodeId> {
         if let Some(limit) = self.max_nodes
             && self.arena.node_count() >= limit
@@ -259,7 +255,24 @@ impl<'a> Decoder<'a> {
                 limit,
             });
         }
+        let height = crate::ast::compact_children(&self.arena, &node)
+            .iter()
+            .map(|child| self.heights[child.index()] + 1)
+            .max()
+            .unwrap_or(0);
+        if usize::from(height) > self.max_depth {
+            return Err(Error::LimitExceeded {
+                kind: LimitKind::Depth,
+                limit: self.max_depth,
+            });
+        }
+        self.heights.push(height);
         Ok(self.arena.push_node(node))
+    }
+
+    /// Store a node's children, refusing more than a node can hold.
+    pub(super) fn children(&mut self, ids: &[NodeId]) -> Result<NodeSpan> {
+        self.arena.try_push_children(ids)
     }
 
     pub(super) fn str_node(
@@ -290,7 +303,7 @@ impl<'a> Decoder<'a> {
             [] => self.empty_row(),
             [id] => Ok(*id),
             _ => {
-                let span = self.arena.push_children(ids);
+                let span = self.children(ids)?;
                 self.node(CompactNode::Row(span))
             },
         }
@@ -301,7 +314,7 @@ impl<'a> Decoder<'a> {
         if matches!(self.arena.node(id), CompactNode::Row(_)) {
             Ok(id)
         } else {
-            let span = self.arena.push_children(&[id]);
+            let span = self.children(&[id])?;
             self.node(CompactNode::Row(span))
         }
     }
@@ -544,9 +557,9 @@ impl<'a> Decoder<'a> {
         self.parse_object_list(false)
     }
 
-    /// Read an object list. The equation's own list (`top`) may end with the
-    /// data instead of an END record once its LINE or PILE has been read
-    /// completely: nothing can follow it, so nothing is lost.
+    /// Read an object list. In Lenient mode the equation's own list (`top`)
+    /// may end with the data instead of an END record once its LINE or PILE
+    /// has been read completely.
     fn parse_object_list(&mut self, top: bool) -> Result<Vec<Item>> {
         self.enter()?;
         let mut items = Vec::new();
@@ -557,7 +570,12 @@ impl<'a> Decoder<'a> {
                         .iter()
                         .any(|item| matches!(item, Item::Line(_) | Item::Node(_)))
                 {
-                    self.note("MTEF data ends without the END record that closes the equation");
+                    // Real files always close the equation; Lenient mode
+                    // accepts the omission because nothing can follow.
+                    self.recover(
+                        self.pos,
+                        "MTEF data ends without the END record that closes the equation",
+                    )?;
                     break;
                 }
                 return Err(self.error_at(
@@ -570,7 +588,12 @@ impl<'a> Decoder<'a> {
             if rtype == END {
                 break;
             }
-            self.count_record()?;
+            if items.len() >= AstArena::MAX_CHILDREN {
+                return Err(Error::LimitExceeded {
+                    kind: LimitKind::ListLength,
+                    limit: AstArena::MAX_CHILDREN,
+                });
+            }
             self.parse_record(start, rtype, options, &mut items)?;
         }
         self.depth -= 1;
@@ -669,7 +692,7 @@ impl<'a> Decoder<'a> {
         }
         let items = self.parse_list()?;
         let ids = self.assemble_line(items)?;
-        let span = self.arena.push_children(&ids);
+        let span = self.children(&ids)?;
         Ok(Some(self.node(CompactNode::Row(span))?))
     }
 
@@ -971,8 +994,8 @@ impl<'a> Decoder<'a> {
             }
         }
         let align = self.node(CompactNode::ColAlign(column_align(halign)))?;
-        let col_aligns = self.arena.push_children(&[align]);
-        let cells = self.arena.push_children(&rows);
+        let col_aligns = self.children(&[align])?;
+        let cells = self.children(&rows)?;
         self.node(CompactNode::Array {
             col_aligns,
             cells,
@@ -1035,8 +1058,8 @@ impl<'a> Decoder<'a> {
         for _ in 0..num_cols {
             aligns.push(self.node(CompactNode::ColAlign(align))?);
         }
-        let col_aligns = self.arena.push_children(&aligns);
-        let cells = self.arena.push_children(&cells);
+        let col_aligns = self.children(&aligns)?;
+        let cells = self.children(&cells)?;
         self.node(CompactNode::Array {
             col_aligns,
             cells,
@@ -1051,17 +1074,33 @@ impl<'a> Decoder<'a> {
 
     /// Read `lines` two-bit partition styles; bit i of the result is set when
     /// line i is drawn (dashed and dotted lines become solid rules).
+    /// The AST records rules before the first 32 rows or columns only; a
+    /// drawn line beyond them is reported and dropped.
     fn partition_lines(&mut self, lines: usize) -> Result<u32> {
+        let start = self.pos;
         let bytes = lines.div_ceil(4);
         let mut mask = 0u32;
+        let mut dropped = 0usize;
         for byte_index in 0..bytes {
             let b = self.u8()?;
             for k in 0..4 {
                 let line = byte_index * 4 + k;
-                if line < lines && line < 32 && (b >> (2 * k)) & 0x3 != 0 {
-                    mask |= 1 << line;
+                if line < lines && (b >> (2 * k)) & 0x3 != 0 {
+                    if line < 32 {
+                        mask |= 1 << line;
+                    } else {
+                        dropped += 1;
+                    }
                 }
             }
+        }
+        if dropped > 0 {
+            self.warn(
+                start,
+                format!(
+                    "{dropped} matrix partition line(s) after the 32nd row or column were dropped"
+                ),
+            );
         }
         Ok(mask)
     }
@@ -1277,7 +1316,7 @@ impl<'a> Decoder<'a> {
                                 items.next();
                                 run.push(self.plain_char_node(ch)?);
                             }
-                            let span = self.arena.push_children(&run);
+                            let span = self.children(&run)?;
                             self.node(CompactNode::Styled(style, span))?
                         },
                         _ => self.glyph_node(&glyph, class)?,
@@ -1380,7 +1419,7 @@ impl<'a> Decoder<'a> {
             Class::Ident => self.char_node(ch, CompactNode::Identifier),
             Class::Styled(style) => {
                 let inner = self.plain_char_node(ch)?;
-                let span = self.arena.push_children(&[inner]);
+                let span = self.children(&[inner])?;
                 self.node(CompactNode::Styled(style, span))
             },
             Class::Symbol(kind) => self.char_node(ch, |s| CompactNode::Symbol(kind, s)),
