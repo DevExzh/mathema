@@ -32,7 +32,7 @@
 //! length in both modes. A stream that cannot be decoded at all yields an
 //! empty expression and a warning in Lenient mode.
 
-mod chars;
+pub(crate) mod chars;
 mod decode;
 mod info;
 mod templates;

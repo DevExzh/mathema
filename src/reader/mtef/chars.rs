@@ -69,7 +69,7 @@ pub(super) fn decode_font_position(code: u16, encoding: Encoding) -> Option<char
 }
 
 /// The Adobe Symbol font encoding, mapped to Unicode.
-pub(super) fn symbol_font_char(code: u8) -> Option<char> {
+pub(crate) fn symbol_font_char(code: u8) -> Option<char> {
     let c = match code {
         0x20 => ' ',
         0x21 => '!',
@@ -260,7 +260,7 @@ pub(super) fn symbol_font_char(code: u8) -> Option<char> {
 /// Positions that no such file confirms are not mapped; without an MTCode
 /// value they are reported as having no known equivalent. Private-use MTCode
 /// values are kept as MathType defines them (U+E98F becomes U+00B7 later).
-pub(super) const MT_EXTRA_CONFIRMED: [(u8, char); 14] = [
+pub(crate) const MT_EXTRA_CONFIRMED: [(u8, char); 14] = [
     (0x43, '\u{2210}'), // coproduct
     (0x44, '\u{019B}'), // lambda with stroke
     (0x49, '\u{2229}'), // intersection
@@ -349,7 +349,7 @@ pub(super) fn symbol_kind(ch: char) -> SymbolKind {
 }
 
 /// The negated form of a relation, used for the `embNOT` embellishment.
-pub(super) fn negated(ch: char) -> Option<char> {
+pub(crate) fn negated(ch: char) -> Option<char> {
     Some(match ch {
         '=' => '\u{2260}',
         '<' => '\u{226E}',
