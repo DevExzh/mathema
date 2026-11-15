@@ -32,7 +32,11 @@ pub fn convert(input: &str, from: Format, to: Format) -> Result<String> {
 /// Conversion with custom configuration.
 pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> Result<String> {
     let mut compact = parse_compact(input, from, config)?;
-    crate::ast::validate_compact_depth(&compact.expr.arena, compact.expr.roots)?;
+    crate::ast::validate_compact_depth_with(
+        &compact.expr.arena,
+        compact.expr.roots,
+        config.effective_max_depth(),
+    )?;
     normalize_compact_expr(&mut compact.expr);
     write_compact(&compact.expr, to, config)
 }
@@ -398,7 +402,11 @@ fn finish_mtef(
     mtef: Option<MtefInfo>,
     config: &Config,
 ) -> Result<ConvertResult> {
-    crate::ast::validate_compact_depth(&compact.expr.arena, compact.expr.roots)?;
+    crate::ast::validate_compact_depth_with(
+        &compact.expr.arena,
+        compact.expr.roots,
+        config.effective_max_depth(),
+    )?;
     normalize_compact_expr(&mut compact.expr);
     Ok(ConvertResult {
         compact,

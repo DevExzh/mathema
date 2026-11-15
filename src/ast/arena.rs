@@ -66,7 +66,37 @@ impl AstArena {
         StrId::new(id as u32)
     }
 
+    /// Push a contiguous span of child `NodeId`s, refusing more than
+    /// [`MAX_CHILDREN`](Self::MAX_CHILDREN) of them.
+    ///
+    /// Readers of untrusted input must use this instead of
+    /// [`push_children`](Self::push_children): a span stores its length in
+    /// 16 bits, so a longer list cannot be represented.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) with
+    /// [`LimitKind::ListLength`](crate::LimitKind::ListLength) when `ids` is
+    /// longer than [`MAX_CHILDREN`](Self::MAX_CHILDREN).
+    #[inline]
+    pub fn try_push_children(&mut self, ids: &[NodeId]) -> crate::error::Result<NodeSpan> {
+        if ids.len() > Self::MAX_CHILDREN {
+            return Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                limit: Self::MAX_CHILDREN,
+            });
+        }
+        Ok(self.push_children(ids))
+    }
+
+    /// The most children one node can hold (a span length is 16 bits).
+    pub const MAX_CHILDREN: usize = u16::MAX as usize;
+
     /// Push a contiguous span of child `NodeId`s and return the `NodeSpan`.
+    ///
+    /// The caller must keep `ids` within [`MAX_CHILDREN`](Self::MAX_CHILDREN);
+    /// a longer list is truncated in release builds. Use
+    /// [`try_push_children`](Self::try_push_children) for input-driven lists.
     #[inline]
     pub fn push_children(&mut self, ids: &[NodeId]) -> NodeSpan {
         let start = self.children.len();

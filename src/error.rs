@@ -109,11 +109,14 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum LimitKind {
-    /// The number of AST nodes (or input records) a single parse may create;
-    /// see [`Config::max_nodes`].
+    /// The number of AST nodes a single parse may create; see
+    /// [`Config::max_nodes`].
     Nodes,
-    /// The structural nesting depth of the input; see [`Config::max_depth`].
+    /// The nesting depth of the AST; see [`Config::max_depth`].
     Depth,
+    /// The number of children of one AST node, which the arena stores in 16
+    /// bits (see `AstArena::MAX_CHILDREN`); not configurable.
+    ListLength,
 }
 
 impl std::fmt::Display for LimitKind {
@@ -121,6 +124,7 @@ impl std::fmt::Display for LimitKind {
         f.write_str(match self {
             LimitKind::Nodes => "node count",
             LimitKind::Depth => "nesting depth",
+            LimitKind::ListLength => "list length",
         })
     }
 }
@@ -261,8 +265,8 @@ pub const DEFAULT_MAX_INPUT_BYTES: usize = 4 * 1024 * 1024;
 /// Real formulas need a few thousand at most.
 pub const DEFAULT_MAX_NODES: usize = 1_000_000;
 
-/// Default upper bound on the structural nesting depth of parsed input. It is
-/// also the ceiling: the AST validators reject trees nested more deeply than
+/// Default upper bound on the AST nesting depth. It is also the ceiling: the
+/// recursive writers and the AST validators only accept trees up to
 /// [`MAX_AST_DEPTH`](crate::ast::MAX_AST_DEPTH), so larger values have no effect.
 pub const DEFAULT_MAX_DEPTH: usize = crate::ast::MAX_AST_DEPTH;
 
@@ -280,16 +284,19 @@ pub struct Config {
     /// Maximum accepted input size in bytes. `None` disables the limit.
     /// Defaults to [`DEFAULT_MAX_INPUT_BYTES`].
     pub max_input_bytes: Option<usize>,
-    /// Maximum number of AST nodes (and, for binary formats, input records) a
-    /// single parse may create. `None` disables the limit. Exceeding it fails
-    /// with [`Error::LimitExceeded`] and [`LimitKind::Nodes`].
-    /// Defaults to [`DEFAULT_MAX_NODES`]. Currently enforced by the MTEF reader.
+    /// Maximum number of AST nodes a single parse may create. `None` disables
+    /// the limit. Exceeding it fails with [`Error::LimitExceeded`] and
+    /// [`LimitKind::Nodes`]. Defaults to [`DEFAULT_MAX_NODES`]. Currently
+    /// enforced by the MTEF reader.
     pub max_nodes: Option<usize>,
-    /// Maximum structural nesting depth of the input, in the reader's own
-    /// structural units (for MTEF: nested object lists). Exceeding it fails
-    /// with [`Error::LimitExceeded`] and [`LimitKind::Depth`]. Values above
-    /// [`DEFAULT_MAX_DEPTH`] are clamped to it. Currently enforced by the MTEF
-    /// reader; the other readers use a fixed depth of the same size.
+    /// Maximum AST nesting depth: a top-level node is at depth 0, its
+    /// children at depth 1, and so on. Exceeding it fails with
+    /// [`Error::LimitExceeded`] and [`LimitKind::Depth`]. Defaults to
+    /// [`DEFAULT_MAX_DEPTH`] (128), which is also the ceiling: larger values
+    /// are clamped. Unlike the other limits it cannot be disabled, because the
+    /// writers and renderers walk the tree recursively. Enforced while nodes
+    /// are built by the MTEF reader, and on every parsed tree by
+    /// [`convert_with`](crate::convert_with) and the `from_mtef*` functions.
     pub max_depth: usize,
 }
 
@@ -336,7 +343,7 @@ impl Config {
         self
     }
 
-    /// Builder: set the maximum structural nesting depth (clamped to
+    /// Builder: set the maximum AST nesting depth (clamped to
     /// [`DEFAULT_MAX_DEPTH`]).
     #[must_use]
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {
@@ -363,8 +370,8 @@ impl Config {
         Ok(())
     }
 
-    /// The effective nesting-depth limit: [`max_depth`](Self::max_depth)
-    /// clamped to [`DEFAULT_MAX_DEPTH`].
+    /// The effective AST depth limit: [`max_depth`](Self::max_depth) clamped
+    /// to [`DEFAULT_MAX_DEPTH`].
     #[must_use]
     pub fn effective_max_depth(&self) -> usize {
         self.max_depth.min(DEFAULT_MAX_DEPTH)
