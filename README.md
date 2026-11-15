@@ -25,13 +25,19 @@ let umath  = result.to_unicode_math().unwrap();
 | MathML | Yes (Presentation + Content) | Yes (Presentation only) |
 | Office MathML (OMML) | Yes | Yes |
 | UnicodeMath | Yes | Yes |
-| MathType (MTEF) | Yes | Yes |
+| MathType (MTEF 3 and 5) | Yes (binary or hex; bare or OLE `Equation Native`) | Yes (hex) |
 | SVG | -- | Yes (`render`) |
 | PNG | -- | Yes (`raster`) |
 | JPEG | -- | Yes (`raster`) |
 
 > **MathML note:** input accepts both Presentation and Content MathML (Content
 > is lowered to Presentation on read); output emits **Presentation MathML only**.
+
+> **MTEF note:** `from_mtef_bytes` reads Equation Editor 3 (MTEF 3) and MathType 4+
+> (MTEF 5) equations, with or without the OLE `Equation Native` header, and
+> `ConvertResult::mtef_info` reports which one the input was. MathType's
+> typesetting data (fonts, sizes, nudges, colours, tab stops) has no place in
+> the AST and is not kept.
 
 ## CLI
 

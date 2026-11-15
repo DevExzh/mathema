@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Available through `OmmlWriter::write_with_options` and
   `ConvertResult::to_omml_with_options`.
 
+- **Binary MTEF input:** `from_mtef_bytes` / `from_mtef_bytes_with` read bare
+  MTEF data or an OLE `Equation Native` stream (the 28-byte `EQNOLEFILEHDR` is
+  detected and validated) and apply the same depth check and normalization as
+  `convert`. `ConvertResult::mtef_info` returns an `MtefInfo` with the MTEF
+  version, platform, product and version, MTEF 5 application key and inline
+  flag, and the OLE header.
+- **Resource limits:** `Config::max_nodes` (AST nodes, default 1 000 000) and
+  `Config::max_depth` (AST depth, default and ceiling 128), with
+  `Error::LimitExceeded` and `LimitKind` naming the limit that was hit
+  (`Nodes`, `Depth`, or `ListLength` for a node with more than 65 535
+  children). The MTEF reader enforces them while it builds nodes; the depth
+  validators now report `LimitExceeded` instead of `Unsupported`.
+
 ### Changed
 
 - **The OMML reader is strict.** In Strict mode malformed XML (mismatched or
@@ -54,10 +67,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The LaTeX and MTEF writers drop invisible operators** (U+2061–U+2064)
   instead of emitting them as raw characters.
 
+- `from_mtef` / `from_mtef_with` (hex input) now go through the binary path
+  above, so they also accept `Equation Native` streams, normalize the AST and
+  report `mtef_info`.
+- MTEF reader rewritten to follow `MTEFv3.md` and `MTEFv5.md`: MTEF 3 and
+  MTEF 5 template selectors are decoded with their own tables, script
+  templates attach to the preceding item, function names become one operator,
+  text and digit runs become one node, and fences, roots, big operators with
+  limits (stored main, lower, upper), limit templates, matrices, piles,
+  embellishments, arrows, braces, intervals, Dirac brackets, strikes and boxes
+  map onto the AST. Fonts, sizes, nudges, rulers and colours are read and not
+  kept.
+
 ### Fixed
 
 - `CompactExpr::from_math_expr` no longer splits array rows that are wider
   than the column-alignment list.
+
+- MTEF 5 equations decoded to an empty expression: EQN_PREFS was read with
+  the wrong layout and definition records were given an options byte they do
+  not have.
+- MTEF 3 templates lost their structure: fence and operator characters after a
+  template's slots ended the parent line early, and MTEF 5 selector numbers
+  were applied to MTEF 3 data.
+- MTEF record layouts: SIZE, PILE, MATRIX, RULER, FONT, COLOR_DEF, CHAR and
+  MTEF 3 EMBELL (which carries a padding byte) are now read in full.
+- Strict mode refuses unknown records, templates, embellishments and
+  typefaces, truncated data, a missing final END and data after it instead of
+  skipping them; Lenient mode reports each recovery as a warning. The MTEF
+  writer does not yet write the final END, so its output reads in Lenient
+  mode only.
+
+### Security
+
+- A MATRIX record could make the MTEF reader allocate every declared cell
+  without reading input (a 128 KiB input used about 1.9 GB). Cells are now
+  only created for records that are present, and node count and nesting depth
+  are bounded by `Config`.
 
 ## [0.1.0] - 2026-06-19
 
