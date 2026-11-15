@@ -665,7 +665,10 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             }
             let col_aligns = arena.push_children(&align_ids);
 
-            let num_cols = columns.len().max(1) as u16;
+            // Rows may be wider than the column list; size by the widest so
+            // the row-major cell layout keeps every row intact.
+            let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
+            let num_cols = columns.len().max(widest).max(1) as u16;
 
             // Push cells flat (row-major). Each cell Vec<MathNode> becomes a Row node.
             let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
