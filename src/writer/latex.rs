@@ -650,14 +650,16 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             pre_sub,
             pre_sup,
         } => {
+            // The base follows the scripts directly, so a script is always
+            // braced: `{}^{6}6`, not `{}^66`.
             buf.push_str("{}");
-            if pre_sub.is_some() {
-                buf.push('_');
-                write_braced(buf, arena, pre_sub);
-            }
-            if pre_sup.is_some() {
-                buf.push('^');
-                write_braced(buf, arena, pre_sup);
+            for (mark, script) in [('_', pre_sub), ('^', pre_sup)] {
+                if script.is_some() {
+                    buf.push(mark);
+                    buf.push('{');
+                    write_wrapped_content(buf, arena, script);
+                    buf.push('}');
+                }
             }
             write_node(buf, arena, base);
         },

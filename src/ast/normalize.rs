@@ -77,20 +77,30 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
         merged_ids.push(node);
     }
 
-    // Phase 4: attach empty-base scripts to the preceding atom.
-    let mut coalesced = Vec::with_capacity(merged_ids.len());
-    for node in merged_ids {
+    // Phase 4: an empty-base script is a leading script of the next node
+    // (see `normalize_compact_span`).
+    let mut coalesced: Vec<MathNode> = Vec::with_capacity(merged_ids.len());
+    for node in merged_ids.into_iter().rev() {
         if is_empty_base_script_math(&node)
-            && let Some(prev) = coalesced.last()
-            && can_carry_script_math(prev)
+            && coalesced.last().is_some_and(|next| {
+                can_take_prescripts_math(next) && !is_empty_base_script_math(next)
+            })
         {
-            let prev = coalesced.pop().unwrap();
-            coalesced.push(make_script_with_base_math(prev, node));
+            let next = coalesced.pop().unwrap_or(MathNode::Row(Vec::new()));
+            coalesced.push(make_prescripts_math(node, next));
             continue;
         }
         coalesced.push(node);
     }
-
+    coalesced.reverse();
+    if coalesced.len() >= 2
+        && coalesced.last().is_some_and(is_empty_base_script_math)
+        && can_carry_script_math(&coalesced[coalesced.len() - 2])
+    {
+        let last = coalesced.pop().unwrap_or(MathNode::Row(Vec::new()));
+        let prev = coalesced.pop().unwrap_or(MathNode::Row(Vec::new()));
+        coalesced.push(make_script_with_base_math(prev, last));
+    }
     *nodes = coalesced;
 }
 
@@ -187,6 +197,27 @@ fn make_script_with_base_math(base: MathNode, script: MathNode) -> MathNode {
     }
 }
 
+/// Whether a node can be the base of leading scripts. Mirrors
+/// `can_take_prescripts` for compact nodes.
+fn can_take_prescripts_math(node: &MathNode) -> bool {
+    !matches!(node, MathNode::PreScripts { .. } | MathNode::Space(_))
+}
+
+/// Make an empty-base script a leading script of `base`.
+fn make_prescripts_math(script: MathNode, base: MathNode) -> MathNode {
+    let (pre_sub, pre_sup) = match script {
+        MathNode::Subscript { sub, .. } => (Some(sub), None),
+        MathNode::Superscript { sup, .. } => (None, Some(sup)),
+        MathNode::SubSup { sub, sup, .. } => (Some(sub), Some(sup)),
+        other => return MathNode::Row(vec![other, base]),
+    };
+    MathNode::PreScripts {
+        base: Box::new(base),
+        pre_sub,
+        pre_sup,
+    }
+}
+
 fn normalize_node_depth(node: &mut MathNode, depth: usize) {
     // Stop recursing if AST is pathologically deep
     if depth > super::MAX_AST_DEPTH {
@@ -210,28 +241,25 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
                     normalize_node_depth(n, d);
                 }
             }
-            // Coalesce empty-base scripts with the preceding element atom.
-            // Middle delimiters naturally break the sequence because they are
-            // not `Element` items.
+            // Empty-base scripts become leading scripts of the next element;
+            // middle delimiters are not elements and break the sequence.
             let mut coalesced: Vec<FencedItem> = Vec::with_capacity(content.len());
-            for item in content.drain(..) {
+            for item in content.drain(..).rev() {
                 match item {
-                    FencedItem::Element(node) if is_empty_base_script_math(&node) => {
-                        if let Some(FencedItem::Element(prev)) = coalesced.last()
-                            && can_carry_script_math(prev)
-                        {
-                            let FencedItem::Element(prev) = coalesced.pop().unwrap() else {
-                                unreachable!()
-                            };
-                            coalesced
-                                .push(FencedItem::Element(make_script_with_base_math(prev, node)));
-                            continue;
-                        }
-                        coalesced.push(FencedItem::Element(node));
+                    FencedItem::Element(node)
+                        if is_empty_base_script_math(&node)
+                            && matches!(coalesced.last(), Some(FencedItem::Element(next))
+                                if can_take_prescripts_math(next) && !is_empty_base_script_math(next)) =>
+                    {
+                        let Some(FencedItem::Element(next)) = coalesced.pop() else {
+                            unreachable!()
+                        };
+                        coalesced.push(FencedItem::Element(make_prescripts_math(node, next)));
                     },
                     other => coalesced.push(other),
                 }
             }
+            coalesced.reverse();
             *content = coalesced;
         },
 
@@ -475,22 +503,38 @@ fn normalize_compact_span(
         _ => None,
     });
 
-    // Phase 4: attach empty-base scripts to the preceding atom.  In TeX a
-    // sub/superscript marker immediately after an atom belongs to that atom;
-    // if the parser left it as a separate empty-base script node, rewrite it
-    // so the previous sibling becomes the base.  This prevents round-trip
-    // divergence such as `op^{\prime}` → `o{p}^{\prime}`.
+    // Phase 4: an empty-base script belongs to what follows it (`{}^{14}C`,
+    // an MTEF script template with tvSU_PRECEDES, MathML `mprescripts`,
+    // OMML `m:sPre`): make it a leading script of the next node. Scripts the
+    // LaTeX parser left without a base after white space (`| '`) are
+    // attached to the preceding atom by the parser itself.
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &id in &merged_ids {
-        if is_empty_base_script(arena, id)
-            && let Some(&prev_id) = coalesced.last()
-            && can_carry_script(*arena.node(prev_id))
+    for &id in merged_ids.iter().rev() {
+        if let Some(&next_id) = coalesced.last()
+            && let Some((sub, sup)) = empty_base_scripts(arena, id)
+            && can_take_prescripts(*arena.node(next_id))
+            && !is_empty_base_script(arena, next_id)
         {
             coalesced.pop();
-            coalesced.push(make_script_with_base(arena, prev_id, id));
+            coalesced.push(arena.push_node(CompactNode::PreScripts {
+                base: next_id,
+                pre_sub: sub,
+                pre_sup: sup,
+            }));
             continue;
         }
         coalesced.push(id);
+    }
+    coalesced.reverse();
+    // With nothing after it, a script belongs to the atom before it, as in
+    // TeX (`x'` written with white space or a group between).
+    if let [.., prev, last] = coalesced[..]
+        && is_empty_base_script(arena, last)
+        && can_carry_script(*arena.node(prev))
+    {
+        coalesced.pop();
+        coalesced.pop();
+        coalesced.push(make_script_with_base(arena, prev, last));
     }
 
     arena.push_children(&coalesced)
@@ -621,32 +665,25 @@ fn normalize_compact_node(
             if pre_sup.is_some() {
                 normalize_compact_node(arena, pre_sup, d)?;
             }
-            // The LaTeX writer cannot emit a prescript in a way that the
-            // parser reliably reconstructs as PreScripts; the usual source
-            // form is interpreted as an empty-base script followed by the
-            // base.  Normalize to that shape early so the output is stable.
-            let empty = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-            let script_id = match (pre_sub != NodeId::NONE, pre_sup != NodeId::NONE) {
-                (true, true) => arena.push_node(CompactNode::SubSup {
-                    base: empty,
-                    sub: pre_sub,
-                    sup: pre_sup,
-                }),
-                (true, false) => arena.push_node(CompactNode::Subscript {
-                    base: empty,
-                    sub: pre_sub,
-                }),
-                (false, true) => arena.push_node(CompactNode::Superscript {
-                    base: empty,
-                    sup: pre_sup,
-                }),
-                (false, false) => {
-                    *arena.node_mut(id) = *arena.node(base);
-                    return Ok(());
+            // Leading scripts stay leading scripts of their base. Without
+            // scripts the node is its base; without a base it is an
+            // empty-base script (one with nothing to precede).
+            let sub = (pre_sub.is_some() && !is_effectively_empty_node(arena, pre_sub))
+                .then_some(pre_sub);
+            let sup = (pre_sup.is_some() && !is_effectively_empty_node(arena, pre_sup))
+                .then_some(pre_sup);
+            let replacement = match (sub, sup) {
+                (None, None) => *arena.node(base),
+                _ if !is_effectively_empty_node(arena, base) => CompactNode::PreScripts {
+                    base,
+                    pre_sub: sub.unwrap_or(NodeId::NONE),
+                    pre_sup: sup.unwrap_or(NodeId::NONE),
                 },
+                (Some(sub), Some(sup)) => CompactNode::SubSup { base, sub, sup },
+                (Some(sub), None) => CompactNode::Subscript { base, sub },
+                (None, Some(sup)) => CompactNode::Superscript { base, sup },
             };
-            let span = arena.push_children(&[script_id, base])?;
-            *arena.node_mut(id) = CompactNode::Row(span);
+            *arena.node_mut(id) = replacement;
         },
 
         CompactNode::Overscript { base, over, .. } => {
@@ -921,7 +958,7 @@ fn is_empty_base_script(arena: &AstArena, id: NodeId) -> bool {
 /// serve as a stable base. Symbols are allowed: `=^{\prime}`, `+^{2}`,
 /// `)^{\prime}`, and `.*^{\prime}` are all valid TeX and round-trip stably
 /// when the empty-base script is attached to the preceding atom.
-fn can_carry_script(node: CompactNode) -> bool {
+pub(crate) fn can_carry_script(node: CompactNode) -> bool {
     !matches!(
         node,
         CompactNode::Subscript { .. }
@@ -939,7 +976,39 @@ fn can_carry_script(node: CompactNode) -> bool {
 
 /// Build a new script node whose base is `base` and whose sub/superscripts are
 /// taken from the empty-base script node `script_id`.
-fn make_script_with_base(arena: &mut AstArena, base: NodeId, script_id: NodeId) -> NodeId {
+/// The scripts (`NodeId::NONE` when absent) of a script node whose base is
+/// empty.
+fn empty_base_scripts(arena: &AstArena, id: NodeId) -> Option<(NodeId, NodeId)> {
+    if !is_empty_base_script(arena, id) {
+        return None;
+    }
+    match *arena.node(id) {
+        CompactNode::Subscript { sub, .. } => Some((sub, NodeId::NONE)),
+        CompactNode::Superscript { sup, .. } => Some((NodeId::NONE, sup)),
+        CompactNode::SubSup { sub, sup, .. } => Some((sub, sup)),
+        _ => None,
+    }
+}
+
+/// Whether a node can be the base of leading scripts.
+fn can_take_prescripts(node: CompactNode) -> bool {
+    !matches!(
+        node,
+        CompactNode::PreScripts { .. }
+            | CompactNode::Middle(_)
+            | CompactNode::ColAlign(_)
+            | CompactNode::StyleSwitch(_)
+            | CompactNode::SizeScale(_)
+            | CompactNode::Newline
+            | CompactNode::Space(_)
+    )
+}
+
+pub(crate) fn make_script_with_base(
+    arena: &mut AstArena,
+    base: NodeId,
+    script_id: NodeId,
+) -> NodeId {
     match *arena.node(script_id) {
         CompactNode::Subscript { sub, .. } => arena.push_node(CompactNode::Subscript { base, sub }),
         CompactNode::Superscript { sup, .. } => {

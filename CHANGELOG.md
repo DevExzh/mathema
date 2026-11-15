@@ -109,6 +109,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Leading scripts kept their base only until normalization, which attached
+  them to the atom before (`x={}^{14}_{6}C` became `x=^{14}_{6}`-style
+  scripts on `=`, and MathML `mprescripts`, OMML `m:sPre` and MTEF leading
+  scripts moved the same way). An empty-base script now becomes a leading
+  script of the node after it; a script the LaTeX parser finds without a base
+  after white space (`x '`) still attaches to the atom before it.
+
 - Normalization merged runs of letters, digits or text quadratically (65 000
   letters used about 2 GB) and 32-bit string offsets could wrap; runs are now
   merged in linear time and arena growth past 32 bits is refused.

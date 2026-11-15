@@ -1165,6 +1165,10 @@ pub(crate) struct LatexCompactParser {
     /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
     /// every braced group unless this flag is set.
     infix_marker_seen: bool,
+    /// Set by `parse_element` to the script it parsed when that script had no
+    /// base of its own (`^`, `_` or `'` after white space), which TeX attaches to the
+    /// preceding atom.
+    implicit_base_script: Option<NodeId>,
 }
 
 impl LatexCompactParser {
@@ -1185,6 +1189,7 @@ impl LatexCompactParser {
             rowcolors: None,
             paired_delims: HashMap::new(),
             infix_marker_seen: false,
+            implicit_base_script: None,
         }
     }
 
@@ -1973,7 +1978,7 @@ impl LatexCompactParser {
             }
             match self.parse_element(rest) {
                 Ok((r, id)) => {
-                    ids.push(id);
+                    self.push_element(&mut ids, id);
                     rest = r;
                 },
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
@@ -1983,13 +1988,37 @@ impl LatexCompactParser {
         Ok((rest, ids))
     }
 
+    /// Append a parsed element. A script with no base of its own belongs to
+    /// the preceding atom, as in TeX white space does not separate them; an
+    /// explicit empty group (`{}^2 L`) stays a base of its own.
+    fn push_element(&mut self, ids: &mut SmallVec<[NodeId; 8]>, id: NodeId) {
+        let implicit = self.implicit_base_script.take() == Some(id);
+        if implicit
+            && let Some(&prev) = ids.last()
+            && crate::ast::normalize::can_carry_script(*self.arena.node(prev))
+        {
+            ids.pop();
+            ids.push(crate::ast::normalize::make_script_with_base(
+                &mut self.arena,
+                prev,
+                id,
+            ));
+            return;
+        }
+        ids.push(id);
+    }
+
     /// Parse one element: an atom optionally followed by scripts.
     #[inline]
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         // Handle leading ^/_ /' with implicit empty base (e.g., {^3+1})
         if input.starts_with('^') || input.starts_with('_') || input.starts_with('\'') {
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-            return self.parse_scripts(input, base);
+            let result = self.parse_scripts(input, base);
+            if let Ok((_, id)) = result {
+                self.implicit_base_script = Some(id);
+            }
+            return result;
         }
         let (input, base) = self.parse_atom(input)?;
 
@@ -4550,7 +4579,7 @@ impl LatexCompactParser {
                 }
                 match self.parse_element(rest) {
                     Ok((r, id)) => {
-                        ids.push(id);
+                        self.push_element(&mut ids, id);
                         rest = r;
                     },
                     Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
