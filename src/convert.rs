@@ -8,7 +8,7 @@ use crate::error::{CompactParseResult, Config, Format, Result};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
 use crate::reader::mathml::MathmlReader;
-use crate::reader::mtef::MtefReader;
+use crate::reader::mtef::{MtefInfo, MtefReader};
 use crate::reader::omml::OmmlReader;
 use crate::reader::unicode_math::UnicodeMathReader;
 use crate::writer::Writer;
@@ -82,6 +82,7 @@ fn write_compact(
 pub struct ConvertResult {
     compact: CompactParseResult,
     config: Config,
+    mtef: Option<MtefInfo>,
 }
 
 impl ConvertResult {
@@ -283,6 +284,14 @@ impl ConvertResult {
         &self.compact.expr
     }
 
+    /// Header information of MTEF input: its format version, generating
+    /// product and platform, and the OLE header of an `Equation Native`
+    /// stream. `None` for other input formats.
+    #[must_use]
+    pub fn mtef_info(&self) -> Option<&MtefInfo> {
+        self.mtef.as_ref()
+    }
+
     /// Diagnostics collected while *parsing* the input (e.g. lenient-mode
     /// recovery warnings, and metadata-dropping macros such as `\href` /
     /// `\includegraphics`).
@@ -307,6 +316,7 @@ pub fn from_latex_with(input: &str, config: &Config) -> Result<ConvertResult> {
     Ok(ConvertResult {
         compact,
         config: *config,
+        mtef: None,
     })
 }
 
@@ -321,6 +331,7 @@ pub fn from_mathml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     Ok(ConvertResult {
         compact,
         config: *config,
+        mtef: None,
     })
 }
 
@@ -335,20 +346,64 @@ pub fn from_omml_with(input: &str, config: &Config) -> Result<ConvertResult> {
     Ok(ConvertResult {
         compact,
         config: *config,
+        mtef: None,
     })
 }
 
 /// Parse MTEF input (hex-encoded binary) into a reusable conversion result.
+///
+/// The bytes the hex string encodes are read like [`from_mtef_bytes`] reads
+/// them, including an `Equation Native` stream's OLE header.
 pub fn from_mtef(input: &str) -> Result<ConvertResult> {
     from_mtef_with(input, &Config::default())
 }
 
-/// Parse MTEF with custom configuration.
+/// Parse hex-encoded MTEF with custom configuration. See [`from_mtef`].
 pub fn from_mtef_with(input: &str, config: &Config) -> Result<ConvertResult> {
-    let compact = MtefReader::parse_compact(input, config)?;
+    let (compact, info) = MtefReader::parse_hex_with_info(input, config)?;
+    finish_mtef(compact, info, config)
+}
+
+/// Parse binary MTEF data into a reusable conversion result.
+///
+/// Accepts bare MTEF 3 (Equation Editor 3.x) or MTEF 5 (MathType 4 and later)
+/// data, or the contents of an OLE `Equation Native` stream, whose 28-byte
+/// `EQNOLEFILEHDR` is detected and validated. The result is normalized and
+/// depth-checked exactly as [`convert`] does, and
+/// [`ConvertResult::mtef_info`] reports the version and product the input
+/// declared.
+///
+/// ```
+/// // MTEF 5 written by MathType 6: the equation `x`.
+/// let mut mtef = vec![5, 1, 0, 6, 0];
+/// mtef.extend_from_slice(b"DSMT6\0");
+/// mtef.extend_from_slice(&[0x01, 0x0A, 0x01, 0x00, 0x02, 0x00, 0x83, b'x', 0x00, 0x00, 0x00]);
+/// let result = mathema::from_mtef_bytes(&mtef).unwrap();
+/// assert_eq!(result.to_latex().unwrap(), "x");
+/// assert_eq!(result.mtef_info().unwrap().application_key.as_deref(), Some("DSMT6"));
+/// ```
+pub fn from_mtef_bytes(bytes: &[u8]) -> Result<ConvertResult> {
+    from_mtef_bytes_with(bytes, &Config::default())
+}
+
+/// Parse binary MTEF data with custom configuration. See [`from_mtef_bytes`].
+pub fn from_mtef_bytes_with(bytes: &[u8], config: &Config) -> Result<ConvertResult> {
+    let (compact, info) = MtefReader::parse_bytes_with_info(bytes, config)?;
+    finish_mtef(compact, info, config)
+}
+
+/// Apply the checks and normalization [`convert_with`] applies.
+fn finish_mtef(
+    mut compact: CompactParseResult,
+    mtef: Option<MtefInfo>,
+    config: &Config,
+) -> Result<ConvertResult> {
+    crate::ast::validate_compact_depth(&compact.expr.arena, compact.expr.roots)?;
+    normalize_compact_expr(&mut compact.expr);
     Ok(ConvertResult {
         compact,
         config: *config,
+        mtef,
     })
 }
 
@@ -363,6 +418,7 @@ pub fn from_unicode_math_with(input: &str, config: &Config) -> Result<ConvertRes
     Ok(ConvertResult {
         compact,
         config: *config,
+        mtef: None,
     })
 }
 

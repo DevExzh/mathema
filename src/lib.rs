@@ -37,7 +37,9 @@
 //!
 //! Readers enforce [`Config::max_input_bytes`] (default 4 MiB) and layered parse
 //! and AST depth limits, so adversarial input is rejected rather than exhausting
-//! memory. See [`Error`] for the failure modes.
+//! memory. The MTEF reader also enforces [`Config::max_nodes`] and
+//! [`Config::max_depth`], failing with [`Error::LimitExceeded`]. See [`Error`]
+//! for the failure modes.
 
 #![deny(missing_docs)]
 
@@ -64,12 +66,13 @@ pub use ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 pub use ast::{MathExpr, MathNode};
 pub use convert::{
     ConvertResult, convert, convert_with, from_latex, from_latex_with, from_mathml,
-    from_mathml_with, from_mtef, from_mtef_with, from_omml, from_omml_with, from_unicode_math,
-    from_unicode_math_with,
+    from_mathml_with, from_mtef, from_mtef_bytes, from_mtef_bytes_with, from_mtef_with, from_omml,
+    from_omml_with, from_unicode_math, from_unicode_math_with,
 };
 pub use error::{
     Config, Diagnostic, DiagnosticKind, Error, Format, LimitKind, ParseResult, Result, Strictness,
 };
+pub use reader::mtef::{MtefInfo, MtefPlatform, MtefProduct, MtefVersion, OleHeader};
 pub use reader::omml::{OmmlJustification, OmmlParagraph};
 #[cfg(feature = "raster")]
 pub use render::raster::{ImageFormat, RasterOptions, render_to_image};
