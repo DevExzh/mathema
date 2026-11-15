@@ -253,32 +253,36 @@ pub(super) fn symbol_font_char(code: u8) -> Option<char> {
     Some(c)
 }
 
-/// The commonly used part of the MT Extra font encoding, mapped to Unicode.
+/// MT Extra font positions whose MTCode is confirmed by equations written by
+/// MathType 5 and 6, which store both the MTCode value and the 8-bit position
+/// of each MT Extra character (the upstream fixtures in `tests/fixtures/mtef/`
+/// and the equations they were taken from, and the document fixtures).
+/// Positions that no such file confirms are not mapped; without an MTCode
+/// value they are reported as having no known equivalent. Private-use MTCode
+/// values are kept as MathType defines them (U+E98F becomes U+00B7 later).
+pub(super) const MT_EXTRA_CONFIRMED: [(u8, char); 14] = [
+    (0x43, '\u{2210}'), // coproduct
+    (0x44, '\u{019B}'), // lambda with stroke
+    (0x49, '\u{2229}'), // intersection
+    (0x4B, '\u{2026}'), // horizontal ellipsis
+    (0x4C, '\u{22EF}'), // midline horizontal ellipsis
+    (0x4D, '\u{22EE}'), // vertical ellipsis
+    (0x4F, '\u{22F1}'), // down right diagonal ellipsis
+    (0x55, '\u{222A}'), // union
+    (0x67, '\u{E98F}'), // medium dot operator
+    (0x69, '\u{EE00}'),
+    (0x6A, '\u{EE01}'),
+    (0xD1, '\u{EE11}'), // integral loop glyphs
+    (0xD2, '\u{EE12}'),
+    (0xD3, '\u{EE13}'),
+];
+
+/// The MT Extra font encoding, as far as real files confirm it.
 fn mt_extra_char(code: u8) -> Option<char> {
-    let c = match code {
-        0x25 => '\u{2032}',
-        0x26 => '\u{2033}',
-        0x27 => '\u{2034}',
-        0x2C => '\u{22EF}',
-        0x4C => '\u{22EE}',
-        0x4D => '\u{22F0}',
-        0x4E => '\u{22F1}',
-        0x6C => '\u{2113}',
-        0x51 => '\u{2235}',
-        0x5C => '\u{2234}',
-        0x61 => '\u{2213}',
-        0x62 => '\u{2135}',
-        0x63 => '\u{2136}',
-        0x64 => '\u{2137}',
-        0x65 => '\u{2138}',
-        0x68 => '\u{210F}',
-        0x6E => '\u{2026}',
-        0x70 => '\u{2118}',
-        0x71 => '\u{2127}',
-        0x78 => '\u{22C5}',
-        _ => return None,
-    };
-    Some(c)
+    MT_EXTRA_CONFIRMED
+        .iter()
+        .find(|&&(position, _)| position == code)
+        .map(|&(_, ch)| ch)
 }
 
 /// Width, in em, of a MathType space character (typeface `fnSPACE` or the
@@ -381,6 +385,36 @@ mod tests {
         assert_eq!(symbol_font_char(0xD7), Some('\u{22C5}'));
         assert_eq!(symbol_font_char(0xC5), Some('\u{2295}'));
         assert_eq!(symbol_font_char(0x7F), None);
+    }
+
+    #[test]
+    fn mt_extra_positions_match_real_files() {
+        // Pairs of (8-bit position, MTCode) found together in CHAR records
+        // written by MathType 5 and 6.
+        for (position, ch) in [
+            (0x43, '\u{2210}'),
+            (0x44, '\u{019B}'),
+            (0x49, '\u{2229}'),
+            (0x4B, '\u{2026}'),
+            (0x4C, '\u{22EF}'),
+            (0x4D, '\u{22EE}'),
+            (0x4F, '\u{22F1}'),
+            (0x55, '\u{222A}'),
+            (0x67, '\u{E98F}'),
+            (0x69, '\u{EE00}'),
+            (0x6A, '\u{EE01}'),
+            (0xD1, '\u{EE11}'),
+            (0xD2, '\u{EE12}'),
+            (0xD3, '\u{EE13}'),
+        ] {
+            assert_eq!(
+                decode_font_position(position, Encoding::MtExtra),
+                Some(ch),
+                "{position:#04x}"
+            );
+        }
+        // Unconfirmed positions are not guessed.
+        assert_eq!(decode_font_position(0x4E, Encoding::MtExtra), None);
     }
 
     #[test]

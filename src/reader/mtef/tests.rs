@@ -1054,3 +1054,18 @@ fn arena_refuses_oversized_child_lists() {
     ));
     assert!(arena.push_children(&ids[1..]).is_ok());
 }
+
+#[test]
+fn mt_extra_font_positions_without_mtcode() {
+    // fnMTEXTRA characters written with only their 8-bit font position:
+    // midline, vertical and diagonal ellipses and the coproduct.
+    let content: Vec<u8> = [0x4C, 0x4D, 0x4F, 0x43]
+        .iter()
+        .flat_map(|&position| [0x02, 0x24, 128 + 11, position])
+        .collect();
+    let nodes = nodes(&eq5(&content));
+    let text = format!("{nodes:?}");
+    for ch in ['\u{22EF}', '\u{22EE}', '\u{22F1}', '\u{2210}'] {
+        assert!(text.contains(ch), "{ch:?} missing from {text}");
+    }
+}
