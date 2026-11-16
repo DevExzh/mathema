@@ -418,6 +418,8 @@ fn latex_leading_scripts_around_operators_are_stable() {
         "\\ce\u{2212}{_0d*_0H}",
         "'Pr\\SI{'y\"}",
         "'\\cot{^cot{{et}4}}",
+        "']_{7 .098}(]",
+        "]^\\si\r^\\si\r\u{202f}",
     ] {
         // The fuzz target's check: write, read, write again.
         let Ok(first) = convert(input, Format::LaTeX, Format::LaTeX) else {

@@ -1998,7 +1998,13 @@ impl LatexCompactParser {
     /// the preceding atom, as in TeX white space does not separate them; an
     /// explicit empty group (`{}^2 L`) stays a base of its own.
     fn push_element(&mut self, ids: &mut SmallVec<[NodeId; 8]>, id: NodeId) {
-        let implicit = self.implicit_base_script.take() == Some(id);
+        let implicit = self.implicit_base_script.take() == Some(id)
+            && matches!(
+                *self.arena.node(id),
+                CompactNode::Subscript { .. }
+                    | CompactNode::Superscript { .. }
+                    | CompactNode::SubSup { .. }
+            );
         if implicit
             && let Some(&prev) = ids.last()
             && crate::ast::normalize::can_carry_script(*self.arena.node(prev))

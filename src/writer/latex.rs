@@ -22,7 +22,11 @@ impl Writer for LatexWriter {
 }
 
 fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
-    let children = arena.children(span);
+    write_node_slice(buf, arena, arena.children(span));
+}
+
+/// Write a sequence of sibling nodes (see `write_nodes`).
+fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
     let mut i = 0;
     while i < children.len() {
         let id = children[i];
@@ -672,7 +676,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                     buf.push('}');
                 }
             }
-            write_node(buf, arena, base);
+            // The base is written as a sequence of one node, as in a row,
+            // so that its own scripts are braced as there.
+            match *arena.node(base) {
+                CompactNode::Row(span) => write_nodes(buf, arena, span),
+                _ => write_node_slice(buf, arena, &[base]),
+            }
             buf.push('}');
         },
 
