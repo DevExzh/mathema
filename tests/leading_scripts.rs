@@ -400,3 +400,23 @@ fn symbol_commands_in_text_are_kept() {
         r"\text{∫}"
     );
 }
+
+/// Leading scripts whose base is an operator without a body, and after a
+/// function-name identifier, keep their LaTeX shape on rewrite.
+#[test]
+fn latex_leading_scripts_around_operators_are_stable() {
+    for input in [
+        r"{}_w \int_q {} t",
+        r"{}_w\int{}\int_q x",
+        r"{}_w \sum_{i} {} a",
+        "sec{'e}",
+    ] {
+        let first = convert(input, Format::LaTeX, Format::LaTeX).unwrap();
+        let second = convert(&first, Format::LaTeX, Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{input}");
+    }
+    assert_eq!(
+        convert("sec{'e}", Format::LaTeX, Format::LaTeX).unwrap(),
+        "sec{{}^{\\prime}e}"
+    );
+}

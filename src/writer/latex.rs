@@ -3,7 +3,7 @@ use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::unicode::fonts::style_to_latex_font;
-use crate::unicode::symbols::{is_operator_command, nary_op_to_latex, unicode_to_latex};
+use crate::unicode::symbols::{nary_op_to_latex, unicode_to_latex};
 use crate::writer::Writer;
 
 pub struct LatexWriter;
@@ -107,16 +107,37 @@ fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
         if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
             let next = children.get(i + 1).copied();
             write_script_node_with_next(buf, arena, id, next);
+        } else if i > 0
+            && matches!(*arena.node(id), CompactNode::PreScripts { .. })
+            && crate::ast::normalize::takes_limits(arena, *arena.node(children[i - 1]))
+        {
+            // After a big operator or a function name normalization would give
+            // the previous node the scripts (as its limit or script), and after
+            // `\int` the parser would take `{}` as the body: group the leading
+            // scripts with their base.
+            buf.push('{');
+            write_node(buf, arena, id);
+            buf.push('}');
         } else {
             write_node(buf, arena, id);
             // An empty-body nary operator followed by another node needs an
             // explicit `{}` body, otherwise the next node would be re-parsed as
             // the operator's body.
-            if i + 1 < children.len() && is_empty_body_nary(arena, id) {
+            if i + 1 < children.len() && ends_with_empty_body_nary(arena, id) {
                 buf.push_str("{}");
             }
         }
         i += 1;
+    }
+}
+
+/// True if the node is, or its LaTeX ends with, a Nary operator with an
+/// effectively empty body (a leading script's base is written last), so
+/// that the next sibling would be read as its body.
+fn ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::PreScripts { base, .. } => ends_with_empty_body_nary(arena, base),
+        _ => is_empty_body_nary(arena, id),
     }
 }
 
@@ -642,14 +663,6 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             pre_sub,
             pre_sup,
         } => {
-            // After a big operator (`\int`) the parser would take `{}` as
-            // its body, and after a function name (`\sin`) normalization would
-            // give the function the scripts; group the scripts with their
-            // base.
-            let grouped = ends_with_script_taker(buf);
-            if grouped {
-                buf.push('{');
-            }
             // The base follows the scripts directly, so a script is always
             // braced: `{}^{6}6`, not `{}^66`.
             buf.push_str("{}");
@@ -662,9 +675,6 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 }
             }
             write_node(buf, arena, base);
-            if grouped {
-                buf.push('}');
-            }
         },
 
         CompactNode::Overscript {
@@ -1208,34 +1218,6 @@ fn write_operator_name(buf: &mut String, name: &str, limits_above_below: bool) {
         buf.push_str(name);
         buf.push('}');
     }
-}
-
-/// Whether `buf` ends with a big-operator command such as `\int`, a function
-/// name such as `\sin` or `\operatorname{rank}` (possibly
-/// followed by `\limits` or `\nolimits`).
-fn ends_with_script_taker(buf: &str) -> bool {
-    let trimmed = buf.trim_end();
-    let trimmed = trimmed
-        .strip_suffix("\\limits")
-        .or_else(|| trimmed.strip_suffix("\\nolimits"))
-        .unwrap_or(trimmed);
-    // The command name is the trailing run of ASCII letters (split at a
-    // character boundary, whatever precedes it).
-    let before = trimmed.trim_end_matches(|c: char| c.is_ascii_alphabetic());
-    let name = &trimmed[before.len()..];
-    if before.ends_with('\\')
-        && (crate::unicode::symbols::is_nary_command(name) || is_operator_command(name))
-    {
-        return true;
-    }
-    // `\operatorname{rank}` / `\operatorname*{argmax}`.
-    trimmed.strip_suffix('}').is_some_and(|inner| {
-        inner.rfind('{').is_some_and(|open| {
-            let head = &inner[..open];
-            !inner[open + 1..].contains(['{', '}'])
-                && (head.ends_with("\\operatorname") || head.ends_with("\\operatorname*"))
-        })
-    })
 }
 
 fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
