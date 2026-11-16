@@ -70,54 +70,46 @@ fn fuzzer_inputs_parse_quickly_with_a_typed_result() {
     }
 }
 
-/// Best of several runs, to keep scheduler noise out of the ratio.
-fn best_time(input: &str) -> (Duration, usize) {
-    let config = Config::default();
-    let mut best = Duration::MAX;
-    let mut nodes = 0;
-    for _ in 0..5 {
-        let start = Instant::now();
-        let parsed = UnicodeMathReader::parse_compact(input, &config).unwrap();
-        best = best.min(start.elapsed());
-        nodes = parsed.expr.arena.node_count();
-    }
-    (best, nodes)
-}
-
-fn assert_linear(name: &str, unit: &str, prefix: &str, suffix: &str, count: usize) {
-    let build = |n: usize| format!("{prefix}{}{suffix}", unit.repeat(n));
-    let (small_time, small_nodes) = best_time(&build(count));
-    let (large_time, large_nodes) = best_time(&build(2 * count));
-    // Doubling the input doubles the nodes built (failed alternatives
-    // included) and roughly doubles the time.
-    assert!(
-        large_nodes <= small_nodes * 2 + 16,
-        "{name}: {small_nodes} -> {large_nodes} nodes"
-    );
-    assert!(
-        large_time.as_secs_f64() <= small_time.as_secs_f64() * 3.0 + 0.005,
-        "{name}: {small_time:?} -> {large_time:?}"
-    );
-}
+/// Generous bound for a few megabytes of hostile input in an unoptimized
+/// build; quadratic behaviour takes minutes. (Exact work bounds are unit
+/// tests of the parser, which counts its steps.)
+const LARGE_INPUT_BUDGET: Duration = Duration::from_secs(20);
 
 #[test]
-fn parse_time_scales_linearly() {
-    // Well-formed scripts, fractions and groups.
-    assert_linear("well-formed", "(a_i+b^2)/c ", "", "", 2_000);
-    // Unclosed groups under n-ary scripts. In a matrix each failed element is
-    // skipped one character at a time, so every offset inside the unclosed
-    // groups is reached again.
-    assert_linear(
-        "unclosed in matrix",
-        &format!("{}#", "x\u{2211}^(n(ln".repeat(12)),
-        "\u{25A0}(",
-        ")",
-        200,
-    );
-    // Unclosed radicand groups.
-    assert_linear("unclosed radicands", "\u{221A}(a+", "", "", 60);
-    // A run of dots is not a number; inside a matrix every suffix is retried.
-    assert_linear("dots in matrix", ".", "\u{25A0}(", ")", 100_000);
+fn large_hostile_inputs_parse_within_budget() {
+    let nested_matrices = "\u{25A0}(".repeat(126);
+    let cases = [
+        format!("{nested_matrices}{}", "#".repeat(1 << 20)),
+        format!("{nested_matrices}{}", ". ".repeat(1 << 19)),
+        format!("\u{25A0}({}", ".".repeat(1 << 20)),
+        format!(
+            "\u{25A0}({})",
+            format!("{}#", "x\u{2211}^(n(ln".repeat(12)).repeat(5_000)
+        ),
+        "\u{221A}(a+".repeat(200_000),
+        "(a_i+b^2)/c ".repeat(50_000),
+    ];
+    for input in &cases {
+        for strictness in [Strictness::Strict, Strictness::Lenient] {
+            let config = Config::default().with_strictness(strictness);
+            let start = Instant::now();
+            let result = UnicodeMathReader::parse(input, &config);
+            let elapsed = start.elapsed();
+            assert!(
+                elapsed < LARGE_INPUT_BUDGET,
+                "{strictness:?}, {} bytes starting {:?}: {elapsed:?}",
+                input.len(),
+                input.chars().take(8).collect::<String>()
+            );
+            assert!(
+                matches!(
+                    result,
+                    Ok(_) | Err(Error::UnicodeMathParse { .. } | Error::LimitExceeded { .. })
+                ),
+                "{result:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -146,9 +138,12 @@ fn node_limit_is_enforced() {
 #[test]
 fn nodes_of_failed_alternatives_count_towards_the_node_limit() {
     // Each `(xxxxxxxx#` is parsed, fails at `#` and is then read again in
-    // the matrix cell; the discarded nodes still count.
+    // the matrix cell (Lenient mode skips the `(` and the `#`); the discarded
+    // nodes still count.
     let input = format!("\u{25A0}({})", "(xxxxxxxx#".repeat(1_000));
-    let config = Config::default().with_max_nodes(Some(10_000));
+    let config = Config::default()
+        .with_strictness(Strictness::Lenient)
+        .with_max_nodes(Some(10_000));
     assert!(matches!(
         UnicodeMathReader::parse(&input, &config),
         Err(Error::LimitExceeded {

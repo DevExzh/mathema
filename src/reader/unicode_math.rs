@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use nom::IResult;
 use nom::bytes::complete::{tag, take_while1};
 use nom::character::complete::satisfy;
@@ -51,6 +49,7 @@ impl Reader for UnicodeMathReader {
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         config.check_input_size(input)?;
+        let lead = input.len() - input.trim_start().len();
         let input = input.trim();
         if input.is_empty() {
             return Ok(CompactParseResult::new(CompactExpr::new(
@@ -59,16 +58,15 @@ impl Reader for UnicodeMathReader {
                 DisplayStyle::Inline,
             )));
         }
-        let mut parser = CompactParser::new(input, config);
+        let mut parser = CompactParser::new(input, lead, config);
         match parser.parse_expr_list(input) {
             Ok(ids) => {
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
-                Ok(CompactParseResult::new(CompactExpr::new(
-                    parser.arena,
-                    roots,
-                    DisplayStyle::Inline,
-                )))
+                Ok(CompactParseResult::with_diagnostics(
+                    CompactExpr::new(parser.arena, roots, DisplayStyle::Inline),
+                    parser.diagnostics,
+                ))
             },
             // Resource limits hold in every mode.
             Err(e @ Error::LimitExceeded { .. }) => Err(e),
@@ -105,26 +103,30 @@ impl Reader for UnicodeMathReader {
 // * Whether an atom (or a bracket group) starting at a given offset fails
 //   does not depend on how it was reached, so each failure is recorded by
 //   offset and never recomputed (see `memo_failure`).
-// * Every `nom::Err::Failure` means a resource limit was hit. It aborts the
-//   whole parse: nothing catches it to try another alternative.
+// * A matrix skips what it cannot parse in Lenient mode. A walk over matrix
+//   content that reaches the end of the input without `)` fails, and so does
+//   any walk that reaches one of its positions later (it follows the same
+//   path), so those positions are recorded too.
+// * Every `nom::Err::Failure` aborts the whole parse (a resource limit, or a
+//   Strict error that no alternative can recover from): nothing catches it
+//   to try another alternative.
 //
 // Nodes built by failed alternatives stay in the arena as garbage, so the
-// node limit counts every node the parse creates.
-
-/// A recorded failure: the atom or group at an offset failed, and while
-/// parsing it the element nesting reached `depth_span` levels below the
-/// depth at which it started (0 when no element was entered).
-type DepthSpan = u32;
+// node limit counts every node the parse creates. Diagnostics recorded by a
+// failed alternative are dropped with it.
 
 struct CompactParser {
     arena: AstArena,
     /// Byte length of the whole (trimmed) input. Every slice the parser sees
     /// is a suffix of it, so `source_len - rest.len()` is the offset of `rest`.
     source_len: usize,
+    /// Leading whitespace trimmed from the input, added to reported offsets.
+    lead: usize,
+    strictness: Strictness,
     /// Current element nesting depth.
     depth: u32,
     /// Deepest element nesting entered by the attempt in progress, plus one
-    /// (0 when none); see [`DepthSpan`].
+    /// (0 when none).
     deepest: u32,
     /// Element nesting limit ([`Config::effective_max_depth`]). Each nested
     /// element is a child of the node that contains it, so a deeper nesting
@@ -132,13 +134,23 @@ struct CompactParser {
     max_depth: u32,
     /// [`Config::max_nodes`].
     max_nodes: Option<usize>,
-    /// The limit that aborted the parse, if any.
-    limit: Option<Error>,
-    /// Offsets at which an atom or a bracket group is known to fail. One map
-    /// serves both: an atom at a bracket fails exactly when its group fails.
-    failed: HashMap<u32, DepthSpan>,
+    /// The error that aborted the parse, if any.
+    abort: Option<Error>,
+    /// Per byte offset: 0 when the atom or bracket group there is not known
+    /// to fail, otherwise one more than the number of element nesting levels
+    /// its failed attempt entered (at most `max_depth + 2`, so it fits a byte).
+    /// One table serves both: an atom at a bracket fails exactly when its
+    /// group fails. Allocated on the first failure.
+    failed: Vec<u8>,
+    /// Bit per byte offset: a matrix content walk from there fails.
+    dead_walk: Vec<u64>,
     /// Byte range of a run of `.` that is known not to start a number.
     dot_run: (usize, usize),
+    /// Lenient recoveries, in input order.
+    diagnostics: Vec<Diagnostic>,
+    /// Units of work done, for tests of the parser's complexity.
+    #[cfg(test)]
+    steps: usize,
 }
 
 /// Try a parse method; propagate `Failure`, ignore `Error`, try next.
@@ -158,7 +170,7 @@ fn parse_error(input: &str, kind: nom::error::ErrorKind) -> nom::Err<nom::error:
     nom::Err::Error(nom::error::Error::new(input, kind))
 }
 
-fn limit_failure(input: &str) -> nom::Err<nom::error::Error<&str>> {
+fn abort_failure(input: &str) -> nom::Err<nom::error::Error<&str>> {
     nom::Err::Failure(nom::error::Error::new(
         input,
         nom::error::ErrorKind::TooLarge,
@@ -166,18 +178,40 @@ fn limit_failure(input: &str) -> nom::Err<nom::error::Error<&str>> {
 }
 
 impl CompactParser {
-    fn new(source: &str, config: &Config) -> Self {
+    fn new(source: &str, lead: usize, config: &Config) -> Self {
         Self {
             arena: AstArena::new(),
             source_len: source.len(),
+            lead,
+            strictness: config.strictness,
             depth: 0,
             deepest: 0,
-            max_depth: u32::try_from(config.effective_max_depth()).unwrap_or(u32::MAX),
+            // `effective_max_depth` is at most `DEFAULT_MAX_DEPTH` (128), so
+            // a recorded depth span stays below 255.
+            max_depth: u32::try_from(config.effective_max_depth())
+                .unwrap_or(u32::MAX)
+                .min(250),
             max_nodes: config.max_nodes,
-            limit: None,
-            failed: HashMap::new(),
+            abort: None,
+            failed: Vec::new(),
+            dead_walk: Vec::new(),
             dot_run: (0, 0),
+            diagnostics: Vec::new(),
+            #[cfg(test)]
+            steps: 0,
         }
+    }
+
+    /// Count `units` of work (only in tests).
+    #[inline]
+    #[cfg_attr(not(test), allow(clippy::unused_self))]
+    fn tick(&mut self, units: usize) {
+        #[cfg(test)]
+        {
+            self.steps += units;
+        }
+        #[cfg(not(test))]
+        let _ = units;
     }
 
     fn offset(&self, rest: &str) -> usize {
@@ -191,9 +225,9 @@ impl CompactParser {
         let id = self.arena.push_node(node);
         if let Some(limit) = self.max_nodes
             && self.arena.node_count() > limit
-            && self.limit.is_none()
+            && self.abort.is_none()
         {
-            self.limit = Some(Error::LimitExceeded {
+            self.abort = Some(Error::LimitExceeded {
                 kind: LimitKind::Nodes,
                 limit,
             });
@@ -202,8 +236,8 @@ impl CompactParser {
     }
 
     fn depth_limit(&mut self) {
-        if self.limit.is_none() {
-            self.limit = Some(Error::LimitExceeded {
+        if self.abort.is_none() {
+            self.abort = Some(Error::LimitExceeded {
                 kind: LimitKind::Depth,
                 limit: self.max_depth as usize,
             });
@@ -215,13 +249,14 @@ impl CompactParser {
         &mut self,
         input: &'a str,
     ) -> std::result::Result<(), nom::Err<nom::error::Error<&'a str>>> {
-        if self.limit.is_some() {
-            return Err(limit_failure(input));
+        self.tick(1);
+        if self.abort.is_some() {
+            return Err(abort_failure(input));
         }
         self.deepest = self.deepest.max(self.depth + 1);
         if self.depth > self.max_depth {
             self.depth_limit();
-            return Err(limit_failure(input));
+            return Err(abort_failure(input));
         }
         self.depth += 1;
         Ok(())
@@ -238,30 +273,35 @@ impl CompactParser {
         input: &'a str,
         parse: impl FnOnce(&mut Self, &'a str) -> IResult<&'a str, T>,
     ) -> IResult<&'a str, T> {
-        let Ok(offset) = u32::try_from(self.offset(input)) else {
-            return parse(self, input);
-        };
-        if let Some(&span) = (!self.failed.is_empty())
-            .then(|| self.failed.get(&offset))
-            .flatten()
+        self.tick(1);
+        let offset = self.offset(input);
+        if let Some(&recorded) = self.failed.get(offset)
+            && recorded > 0
         {
+            let span = u32::from(recorded) - 1;
             if span > 0 {
                 // The attempt entered elements down to `depth + span - 1`.
                 let deepest = self.depth + span;
                 self.deepest = self.deepest.max(deepest);
                 if deepest - 1 > self.max_depth {
                     self.depth_limit();
-                    return Err(limit_failure(input));
+                    return Err(abort_failure(input));
                 }
             }
             return Err(parse_error(input, nom::error::ErrorKind::Alt));
         }
         let outer = std::mem::take(&mut self.deepest);
+        let diagnostics = self.diagnostics.len();
         let result = parse(self, input);
         let span = self.deepest.saturating_sub(self.depth);
         self.deepest = self.deepest.max(outer);
         if matches!(result, Err(nom::Err::Error(_))) {
-            self.failed.insert(offset, span);
+            self.diagnostics.truncate(diagnostics);
+            if self.failed.is_empty() {
+                self.failed = vec![0; self.source_len + 1];
+            }
+            // `span <= max_depth + 2 <= 252`; see `new`.
+            self.failed[offset] = u8::try_from(span + 1).unwrap_or(u8::MAX);
         }
         result
     }
@@ -284,7 +324,7 @@ impl CompactParser {
                 },
                 Err(nom::Err::Failure(_)) => {
                     return Err(self
-                        .limit
+                        .abort
                         .take()
                         .unwrap_or_else(|| Error::UnicodeMathParse {
                             message: "UnicodeMath parse error".into(),
@@ -297,8 +337,8 @@ impl CompactParser {
             let sid = self.arena.push_str(remaining.trim());
             ids.push(self.push_node(CompactNode::Text(TextStyle::Normal, sid)));
         }
-        if let Some(limit) = self.limit.take() {
-            return Err(limit);
+        if let Some(error) = self.abort.take() {
+            return Err(error);
         }
         Ok(ids)
     }
@@ -484,6 +524,7 @@ impl CompactParser {
             let mut remaining = content;
             let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
             loop {
+                this.tick(1);
                 if remaining.starts_with(close) {
                     break;
                 }
@@ -651,42 +692,119 @@ impl CompactParser {
         Ok((input, content))
     }
 
+    fn is_dead_walk(&self, offset: usize) -> bool {
+        self.dead_walk
+            .get(offset / 64)
+            .is_some_and(|word| word & (1 << (offset % 64)) != 0)
+    }
+
+    /// Record that matrix content walks from `offsets` fail.
+    fn mark_dead_walks(&mut self, offsets: &[u32]) {
+        if self.dead_walk.is_empty() {
+            self.dead_walk = vec![0; self.source_len / 64 + 1];
+        }
+        for &offset in offsets {
+            let offset = offset as usize;
+            self.dead_walk[offset / 64] |= 1 << (offset % 64);
+        }
+    }
+
+    /// Handle content of a matrix that does not start an element: refuse it
+    /// in Strict mode, skip it in Lenient mode (extending the run of skipped
+    /// text that starts at `skipped`). Returns the input after it.
+    fn skip_in_matrix<'a>(
+        &mut self,
+        remaining: &'a str,
+        skipped: &mut Option<usize>,
+    ) -> std::result::Result<&'a str, nom::Err<nom::error::Error<&'a str>>> {
+        let offset = self.offset(remaining);
+        let character = remaining.chars().next().unwrap_or_default();
+        if self.strictness == Strictness::Strict {
+            if self.abort.is_none() {
+                self.abort = Some(Error::UnicodeMathParse {
+                    message: format!(
+                        "unexpected {character:?} at byte {} in a matrix",
+                        self.lead + offset
+                    ),
+                });
+            }
+            return Err(abort_failure(remaining));
+        }
+        skipped.get_or_insert(offset);
+        Ok(&remaining[character.len_utf8()..])
+    }
+
+    /// Report the run of skipped matrix content from `skipped` to `end`.
+    fn report_skipped(&mut self, skipped: &mut Option<usize>, end: usize) {
+        let Some(start) = skipped.take() else {
+            return;
+        };
+        let source_start = self.lead + start;
+        let source_end = self.lead + end;
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: format!(
+                "skipped matrix content that is not UnicodeMath at bytes {source_start}..{source_end}"
+            ),
+            span: Some(crate::error::Span::new(source_start, source_end)),
+        });
+    }
+
     fn parse_matrix_content<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let mut rows: Vec<Vec<SmallVec<[NodeId; 4]>>> = Vec::new();
         let mut current_row: Vec<SmallVec<[NodeId; 4]>> = Vec::new();
         let mut current_cell: SmallVec<[NodeId; 4]> = SmallVec::new();
 
         let mut remaining = input;
+        // Loop positions of this walk, recorded as failing if it fails.
+        let mut walk: Vec<u32> = Vec::new();
+        let mut skipped: Option<usize> = None;
         loop {
-            if remaining.is_empty() || remaining.starts_with(')') {
+            self.tick(1);
+            let offset = self.offset(remaining);
+            if remaining.is_empty() || self.is_dead_walk(offset) {
+                // No closing `)`: the matrix fails, and so does any later
+                // walk that reaches one of these positions.
+                self.mark_dead_walks(&walk);
+                return Err(parse_error(remaining, nom::error::ErrorKind::Char));
+            }
+            if let Ok(offset) = u32::try_from(offset) {
+                walk.push(offset);
+            }
+            if remaining.starts_with(')') {
                 break;
             }
+            if let Some(rest) = remaining.strip_prefix(|c: char| c.is_whitespace()) {
+                // Whitespace separates operands; it is not content.
+                self.report_skipped(&mut skipped, offset);
+                remaining = rest;
+                continue;
+            }
             if remaining.starts_with('@') {
+                self.report_skipped(&mut skipped, offset);
                 current_row.push(std::mem::take(&mut current_cell));
                 rows.push(std::mem::take(&mut current_row));
                 remaining = &remaining[1..];
                 continue;
             }
             if remaining.starts_with('&') {
+                self.report_skipped(&mut skipped, offset);
                 current_row.push(std::mem::take(&mut current_cell));
                 remaining = &remaining[1..];
                 continue;
             }
             match self.parse_element(remaining) {
                 Ok((rest, id)) => {
+                    self.report_skipped(&mut skipped, offset);
                     current_cell.push(id);
                     remaining = rest;
                 },
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => {
-                    // Skip one char
-                    remaining = &remaining[remaining
-                        .char_indices()
-                        .nth(1)
-                        .map_or(remaining.len(), |(i, _)| i)..];
-                },
+                Err(_) => remaining = self.skip_in_matrix(remaining, &mut skipped)?,
             }
         }
+        let end = self.offset(remaining);
+        self.report_skipped(&mut skipped, end);
         // Finalize
         if !current_cell.is_empty() || !current_row.is_empty() {
             current_row.push(current_cell);
@@ -738,6 +856,7 @@ impl CompactParser {
         }
         let rest = &input['"'.len_utf8()..];
         let (rest, text) = take_while1(|c: char| c != '"')(rest)?;
+        self.tick(text.len());
         if !rest.starts_with('"') {
             return Err(nom::Err::Error(nom::error::Error::new(
                 rest,
@@ -815,6 +934,7 @@ impl CompactParser {
             return Err(parse_error(input, nom::error::ErrorKind::Digit));
         }
         let (rest, num) = take_while1(|c: char| c.is_ascii_digit() || c == '.')(input)?;
+        self.tick(num.len());
         if num.chars().all(|c| c == '.') {
             self.dot_run = (offset, offset + num.len());
             return Err(parse_error(input, nom::error::ErrorKind::Digit));
@@ -1120,14 +1240,14 @@ mod tests {
         // abort exactly when re-parsing it would cross the depth limit.
         let source = "(((x";
         let config = Config::default().with_max_depth(10);
-        let mut parser = CompactParser::new(source, &config);
+        let mut parser = CompactParser::new(source, 0, &config);
         assert!(matches!(parser.parse_atom(source), Err(nom::Err::Error(_))));
-        assert_eq!(parser.failed.get(&0), Some(&3));
+        assert_eq!(parser.failed.first(), Some(&4), "span 3, stored plus one");
         let nodes = parser.arena.node_count();
         // Deepest element at 8 + 2 = 10: within the limit.
         parser.depth = 8;
         assert!(matches!(parser.parse_atom(source), Err(nom::Err::Error(_))));
-        assert!(parser.limit.is_none());
+        assert!(parser.abort.is_none());
         assert_eq!(parser.arena.node_count(), nodes, "not re-parsed");
         // Deepest element at 9 + 2 = 11: past the limit.
         parser.depth = 9;
@@ -1136,12 +1256,119 @@ mod tests {
             Err(nom::Err::Failure(_))
         ));
         assert!(matches!(
-            parser.limit,
+            parser.abort,
             Some(Error::LimitExceeded {
                 kind: LimitKind::Depth,
                 limit: 10
             })
         ));
+    }
+
+    /// Work done to parse `input`, counted by the parser.
+    fn steps(input: &str, strictness: Strictness) -> usize {
+        let config = Config::default().with_strictness(strictness);
+        let mut parser = CompactParser::new(input, 0, &config);
+        let _ = parser.parse_expr_list(input);
+        parser.steps
+    }
+
+    /// The cases below need at most 6; re-walking nested matrices needed
+    /// hundreds.
+    const STEPS_PER_BYTE: usize = 16;
+
+    /// Doubling the repeated part of the input at most doubles the work.
+    fn assert_linear(name: &str, prefix: &str, unit: &str, count: usize, strictness: Strictness) {
+        let build = |n: usize| format!("{prefix}{}", unit.repeat(n));
+        let small = steps(&build(count), strictness);
+        let large_input = build(2 * count);
+        let large = steps(&large_input, strictness);
+        // Each byte is visited a bounded number of times, however deep the
+        // nesting of the constructs around it.
+        assert!(
+            large <= STEPS_PER_BYTE * large_input.len(),
+            "{name} ({strictness:?}): {large} steps for {} bytes",
+            large_input.len()
+        );
+        assert!(
+            large <= 2 * small,
+            "{name} ({strictness:?}): {small} -> {large} steps"
+        );
+        // Strict mode may refuse the input at once; Lenient reads it all.
+        if strictness == Strictness::Lenient {
+            assert!(small >= count, "{name}: {small} steps");
+        }
+    }
+
+    #[test]
+    fn work_is_linear_in_the_input() {
+        let nested_matrices = "\u{25A0}(".repeat(126);
+        let unclosed_in_matrix = format!("{}#", "x\u{2211}^(n(ln".repeat(12));
+        let cases: [(&str, &str, &str, usize); 8] = [
+            ("well-formed", "", "(a_i+b^2)/c ", 500),
+            ("unclosed radicands", "", "\u{221A}(a+", 60),
+            ("unclosed n-ary scripts", "", "\u{2211}^(n(l", 60),
+            ("unclosed in matrix", "\u{25A0}(", &unclosed_in_matrix, 50),
+            ("dots in matrix", "\u{25A0}(", ".", 5_000),
+            ("nested matrices, junk tail", &nested_matrices, "#", 5_000),
+            ("nested matrices, dot tail", &nested_matrices, ". ", 5_000),
+            ("nested matrices, letters", &nested_matrices, "x", 5_000),
+        ];
+        for (name, prefix, unit, count) in cases {
+            for strictness in [Strictness::Strict, Strictness::Lenient] {
+                assert_linear(name, prefix, unit, count, strictness);
+            }
+        }
+    }
+
+    fn parse_with(input: &str, strictness: Strictness) -> Result<ParseResult> {
+        UnicodeMathReader::parse(input, &Config::default().with_strictness(strictness))
+    }
+
+    #[test]
+    fn strict_matrix_refuses_content_it_cannot_parse() {
+        for (input, offset, character) in [
+            ("\u{25A0}(a#b)", 5, '#'),
+            ("\u{25A0}(a(b&c)", 5, '('),
+            ("  \u{25A0}(a&b@c^)", 11, '^'),
+        ] {
+            match parse_with(input, Strictness::Strict) {
+                Err(Error::UnicodeMathParse { message }) => assert_eq!(
+                    message,
+                    format!("unexpected {character:?} at byte {offset} in a matrix"),
+                    "{input}"
+                ),
+                other => panic!("{input}: {other:?}"),
+            }
+        }
+        // Whitespace is not content.
+        let nodes = parse("\u{25A0}(a & b @ c & d)");
+        assert!(
+            matches!(&nodes[0], MathNode::Array { rows, .. } if rows.len() == 2 && rows[0].len() == 2),
+            "{nodes:?}"
+        );
+    }
+
+    #[test]
+    fn lenient_matrix_reports_each_skipped_run() {
+        let result = parse_with("\u{25A0}(a##b&c#)", Strictness::Lenient).unwrap();
+        assert!(matches!(&result.expr.nodes[0], MathNode::Array { .. }));
+        let spans: Vec<_> = result
+            .diagnostics
+            .iter()
+            .map(|d| {
+                assert_eq!(d.kind, DiagnosticKind::Warning);
+                d.span.map(|s| (s.start, s.end))
+            })
+            .collect();
+        assert_eq!(spans, [Some((5, 7)), Some((10, 11))]);
+    }
+
+    #[test]
+    fn skips_in_a_discarded_matrix_are_not_reported() {
+        // The unclosed `(` makes the group around the matrix fail, so the
+        // matrix is not part of the result and nothing of it was skipped.
+        let result = parse_with("(\u{25A0}(a#b)", Strictness::Lenient).unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 
     #[test]
