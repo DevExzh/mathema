@@ -1249,9 +1249,16 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
         write_operator_name(buf, s, false);
         return;
     }
-    // Math minus sign → ASCII hyphen-minus for LaTeX output
+    // Math minus sign → ASCII hyphen-minus for LaTeX output. A literal
+    // Unicode minus can arrive as an Ordinary symbol (the ASCII `-` parser
+    // maps to BinaryOp), so retain that class explicitly; otherwise a run
+    // such as `−-B` would write as `-- B` and reparse with two BinaryOps.
     if ch == '\u{2212}' {
-        buf.push('-');
+        if kind == SymbolKind::Ordinary {
+            buf.push_str("\\mathord{-}");
+        } else {
+            buf.push('-');
+        }
         return;
     }
     // ASCII symbols are written directly
@@ -1661,6 +1668,25 @@ mod tests {
     fn named_operator() {
         let output = roundtrip("\\sin");
         assert_eq!(output, "\\sin");
+    }
+
+    #[test]
+    fn unicode_minus_preserves_ordinary_class() {
+        let first = roundtrip("\u{2212}-B");
+        let second = roundtrip(&first);
+        assert_eq!(first, r"\mathord{-}- B");
+        assert_eq!(first, second);
+
+        // A standalone Unicode minus remains stable, while ASCII minus keeps
+        // its normal binary-operator spelling.
+        assert_eq!(roundtrip("\u{2212}"), r"\mathord{-}");
+        assert_eq!(roundtrip("--B"), "- - B");
+
+        // Text-mode dash ligatures continue to use their existing canonical
+        // Unicode spelling; the math-minus fix must not affect text content.
+        let text_first = roundtrip(r"\text{−--}");
+        assert_eq!(text_first, r"\text{−–}");
+        assert_eq!(text_first, roundtrip(&text_first));
     }
 
     #[test]

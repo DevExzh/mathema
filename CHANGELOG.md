@@ -143,6 +143,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whitespace or merge adjacent identifiers on a second write; the writer uses
   a stable zero-width `\mathord{}` atom to preserve their ordinary-token
   boundary.
+- Literal Unicode minus signs retain their ordinary class when adjacent to
+  ASCII minus operators, so LaTeX round-trips do not change `−-B` into a
+  different binary-operator sequence.
 - `\text{\int}` lost its content; symbol commands in text keep their
   characters.
 - UnicodeMath writes leading scripts as `(_sub^sup)base` (UTN #28 section
