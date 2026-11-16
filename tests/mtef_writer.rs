@@ -341,3 +341,38 @@ fn written_output_always_reads_back() {
         }
     }
 }
+
+/// The read-back check ignores the caller's input-size limit, which is for
+/// reading, not writing.
+#[test]
+fn read_back_check_ignores_the_input_size_limit() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/mtef-writer/fuzz-nested-piles.bin");
+    let data = std::fs::read(path).unwrap();
+    let lenient = mathema::Config::default().with_strictness(mathema::Strictness::Lenient);
+    let result = mathema::from_mtef_bytes_with(&data, &lenient).unwrap();
+    let compact = result.compact_expr();
+    let small = lenient.with_max_input_bytes(Some(100));
+    for version in [MtefVersion::V5, MtefVersion::V3] {
+        let written = mathema::writer::mtef::MtefWriter::write_bytes(
+            compact,
+            &small,
+            &MtefWriteOptions::new(version),
+        );
+        match written {
+            Ok(bytes) => {
+                from_mtef_bytes(&bytes).unwrap();
+            },
+            Err(err) => assert!(
+                matches!(
+                    err,
+                    mathema::Error::LimitExceeded {
+                        kind: mathema::LimitKind::Depth,
+                        ..
+                    }
+                ),
+                "{err}"
+            ),
+        }
+    }
+}

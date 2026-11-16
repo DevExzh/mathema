@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Available through `OmmlWriter::write_with_options` and
   `ConvertResult::to_omml_with_options`.
 
+- `Error::MtefWrite`: the MTEF writer refuses output its reader would not
+  read back (a writer defect) instead of returning it.
 - **Binary MTEF output:** `ConvertResult::to_mtef_bytes` /
   `to_mtef_bytes_with_diagnostics` and `MtefWriter::write_bytes` write MTEF 5
   (MathType, `Equation.DSMT4`) or MTEF 3 (Equation Editor 3.x,

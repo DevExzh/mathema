@@ -53,6 +53,17 @@ pub enum Error {
         message: String,
     },
 
+    /// The MTEF writer produced data its own reader does not read back with
+    /// the caller's limits. The writer refuses such output instead of
+    /// returning it; this indicates a writer defect and is worth reporting.
+    /// (Output that only exceeds the caller's depth or node limits is
+    /// [`Error::LimitExceeded`] instead.)
+    #[error("MTEF write error: {message}")]
+    MtefWrite {
+        /// Human-readable description, including the reader's error.
+        message: String,
+    },
+
     /// A UnicodeMath string could not be parsed.
     #[error("UnicodeMath parse error: {message}")]
     UnicodeMathParse {

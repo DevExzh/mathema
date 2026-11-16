@@ -243,8 +243,11 @@ impl MtefWriter {
     ///
     /// # Errors
     ///
-    /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) when the AST is
-    /// deeper than [`Config::max_depth`] or larger than [`Config::max_nodes`];
+    /// [`Error::LimitExceeded`](crate::Error::LimitExceeded) when the AST, or
+    /// the AST the reader rebuilds from the output, is deeper than
+    /// [`Config::max_depth`] or larger than [`Config::max_nodes`];
+    /// [`Error::MtefWrite`](crate::Error::MtefWrite) if the output would not
+    /// read back for any other reason (a writer defect);
     /// [`Error::Unsupported`](crate::Error::Unsupported) for an array with
     /// more than 255 rows or columns, and in Strict mode for a character
     /// outside the Basic Multilingual Plane (Lenient mode writes U+FFFD and
@@ -303,15 +306,19 @@ impl MtefWriter {
         // The reader rebuilds the AST with rows around slots and cells, so it
         // can nest deeper than the AST written. Read the output back with the
         // same limits so that a successful write is always readable.
-        let check = config.with_strictness(crate::error::Strictness::Strict);
+        // The input-size limit is for what a caller reads, not for what is
+        // written, so the check reads without it.
+        let mut check = config.with_strictness(crate::error::Strictness::Strict);
+        check.max_input_bytes = None;
         match crate::reader::mtef::MtefReader::parse_bytes_compact(&mtef, &check) {
-            // The input-size limit is for what a caller reads, not writes.
-            Ok(_) | Err(crate::error::Error::InputTooLarge { .. }) => {},
+            Ok(_) => {},
             Err(limit @ crate::error::Error::LimitExceeded { .. }) => return Err(limit),
             Err(other) => {
-                return Err(crate::error::Error::Unsupported(format!(
-                    "the MTEF written for this expression does not read back: {other}"
-                )));
+                return Err(crate::error::Error::MtefWrite {
+                    message: format!(
+                        "the MTEF written for this expression does not read back: {other}"
+                    ),
+                });
             },
         }
 

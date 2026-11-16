@@ -467,13 +467,20 @@ proptest! {
         }
     }
 
-    /// MTEF writer output must always be readable, in Strict mode too, and
-    /// reading it must never panic.
+    /// MTEF writer output must always be readable, in Strict mode too, the
+    /// writer must never refuse its own output, and reading must never panic.
     #[test]
     fn mtef_writer_output_reads_in_both_modes(expr in arb_roundtrip_expr()) {
         let config = Config::default();
         let lenient = Config::default().with_strictness(mathema::Strictness::Lenient);
-        if let Ok(hex) = MtefWriter::write(&expr, &config) {
+        let written = MtefWriter::write(&expr, &config);
+        // The writer refuses output that would not read back; that refusal
+        // must never happen (the caller's own limits may still apply).
+        prop_assert!(
+            !matches!(written, Err(mathema::Error::MtefWrite { .. })),
+            "writer output does not read back: {written:?}"
+        );
+        if let Ok(hex) = written {
             let parsed = MtefReader::parse(&hex, &lenient);
             prop_assert!(parsed.is_ok(), "lenient read failed: {parsed:?}\n  mtef: {hex}");
             let strict = MtefReader::parse(&hex, &config);

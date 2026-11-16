@@ -22,8 +22,13 @@ fuzz_target!(|data: &[u8]| {
         // writer's output must read back in Strict mode.
         for version in [mathema::MtefVersion::V5, mathema::MtefVersion::V3] {
             let options = mathema::MtefWriteOptions::new(version);
-            if let Ok(bytes) = result.to_mtef_bytes(&options) {
-                assert!(mathema::from_mtef_bytes(&bytes).is_ok());
+            match result.to_mtef_bytes(&options) {
+                Ok(bytes) => assert!(mathema::from_mtef_bytes(&bytes).is_ok()),
+                // Output that would not read back for a reason other than the
+                // caller's limits is a writer defect.
+                Err(err @ mathema::Error::MtefWrite { .. }) => panic!("{err}"),
+                // The caller's limits, unrepresentable content.
+                Err(_) => {},
             }
         }
     }

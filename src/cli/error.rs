@@ -81,6 +81,7 @@ impl CliError {
             mathema::Error::MathmlParse { message } => CliError::Conversion(message),
             mathema::Error::OmmlParse { message } => CliError::Conversion(message),
             mathema::Error::MtefParse { message } => CliError::Conversion(message),
+            mathema::Error::MtefWrite { message } => CliError::Conversion(message),
             mathema::Error::UnicodeMathParse { message } => CliError::Conversion(message),
             mathema::Error::Xml { message } => CliError::Conversion(message),
             mathema::Error::Render { message } => CliError::Render(message),
