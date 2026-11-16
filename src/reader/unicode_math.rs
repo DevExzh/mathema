@@ -159,8 +159,9 @@ struct CompactParser {
     dead_walk: Vec<u64>,
     /// Byte range of a run of `.` that is known not to start a number.
     dot_run: (usize, usize),
-    /// Matrices of the result that skipped content (Lenient mode), in input
-    /// order. Formatted into diagnostics only once the parse succeeded.
+    /// Matrices of the result that skipped content (Lenient mode), in the
+    /// order they were completed (a nested matrix before the one around it).
+    /// Formatted into diagnostics only once the parse succeeded.
     matrix_skips: Vec<MatrixSkips>,
     /// Matrix cells created but not yet stored as nodes; they count towards
     /// [`Config::max_nodes`] as soon as they are created.
@@ -742,12 +743,17 @@ impl CompactParser {
 
     /// Warnings for the skipped matrix content of the result, at most
     /// [`MAX_SKIP_WARNINGS`] plus a summary.
-    fn skip_diagnostics(&self) -> Vec<Diagnostic> {
+    fn skip_diagnostics(&mut self) -> Vec<Diagnostic> {
+        // Report in input order.
+        self.matrix_skips.sort_unstable_by_key(|skip| skip.start);
         let lead = self.lead;
-        let warning = |message: String, start: usize, end: usize| Diagnostic {
-            kind: DiagnosticKind::Warning,
-            message,
-            span: Some(crate::error::Span::new(lead + start, lead + end)),
+        let warning = |message: String, start: usize, end: usize| {
+            debug_assert!(start <= end, "skip span {start}..{end}");
+            Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message,
+                span: Some(crate::error::Span::new(lead + start, lead + end)),
+            }
         };
         let mut diagnostics: Vec<Diagnostic> = self
             .matrix_skips
@@ -768,17 +774,20 @@ impl CompactParser {
             })
             .collect();
         if let Some(rest) = self.matrix_skips.get(MAX_SKIP_WARNINGS..)
-            && let (Some(first), Some(last)) = (rest.first(), rest.last())
+            && let Some(first) = rest.first()
         {
+            // Sorted by start; a nested matrix may end after a later one.
+            let start = first.start;
+            let end = rest.iter().map(|skip| skip.end).max().unwrap_or(start);
             diagnostics.push(warning(
                 format!(
                     "skipped content in {} more matrices at bytes {}..{}",
                     rest.len(),
-                    lead + first.start,
-                    lead + last.end
+                    lead + start,
+                    lead + end
                 ),
-                first.start,
-                last.end,
+                start,
+                end,
             ));
         }
         diagnostics
@@ -1492,6 +1501,39 @@ mod tests {
                 .message
                 .starts_with("skipped 200000 run(s)")
         );
+    }
+
+    #[test]
+    fn skip_warnings_are_in_input_order_with_ordered_spans() {
+        // The inner matrix is completed, and recorded, before the outer one.
+        for count in [1, MAX_SKIP_WARNINGS] {
+            let input = format!("{}\u{25A0}(#\u{25A0}(b#))", "\u{25A0}(a#)".repeat(count));
+            let result = parse_with(&input, Strictness::Lenient).unwrap();
+            let spans: Vec<(usize, usize)> = result
+                .diagnostics
+                .iter()
+                .map(|d| d.span.map(|s| (s.start, s.end)).unwrap())
+                .collect();
+            // One warning per matrix, the last two summed up past the cap.
+            let expected = if count == MAX_SKIP_WARNINGS {
+                count + 1
+            } else {
+                count + 2
+            };
+            assert_eq!(spans.len(), expected, "{spans:?}");
+            for &(start, end) in &spans {
+                assert!(start <= end && end <= input.len(), "{spans:?}");
+                // Callers may slice the input with the span.
+                let _ = &input[start..end];
+            }
+            assert!(spans.windows(2).all(|w| w[0].0 <= w[1].0), "{spans:?}");
+            let outer = input.len() - "\u{25A0}(#\u{25A0}(b#))".len();
+            let last = *spans.last().unwrap();
+            if count == MAX_SKIP_WARNINGS {
+                // The summary covers both remaining matrices.
+                assert_eq!(last, (outer + 4, input.len() - 2));
+            }
+        }
     }
 
     #[test]
