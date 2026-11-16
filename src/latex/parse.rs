@@ -474,15 +474,41 @@ fn centernot_precomposed(ch: char) -> Option<char> {
     })
 }
 
-fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
+/// Parse an array preamble into its column alignments and separator mask.
+///
+/// The alignment list is stored in an arena span whose length is a `u16`.
+/// Check each append and repetition before allocating or iterating so a
+/// compact input such as `*{usize::MAX}{c}` cannot consume unbounded CPU or
+/// memory while constructing a preamble that could never be represented.
+fn parse_column_spec(spec: &str) -> Result<(SmallVec<[ColumnAlign; 4]>, u32)> {
+    parse_column_spec_at_depth(spec, 0)
+}
+
+fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[ColumnAlign; 4]>, u32)> {
+    if depth >= MAX_PARSE_DEPTH {
+        return Err(Error::LimitExceeded {
+            kind: crate::error::LimitKind::Depth,
+            limit: MAX_PARSE_DEPTH as usize,
+        });
+    }
     let mut result = SmallVec::new();
     let mut seps: u32 = 0;
     let mut chars = spec.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
-            'l' => result.push(ColumnAlign::Left),
-            'c' => result.push(ColumnAlign::Center),
-            'r' => result.push(ColumnAlign::Right),
+            'l' | 'c' | 'r' => {
+                if result.len() == AstArena::MAX_CHILDREN {
+                    return Err(Error::LimitExceeded {
+                        kind: crate::error::LimitKind::ListLength,
+                        limit: AstArena::MAX_CHILDREN,
+                    });
+                }
+                result.push(match c {
+                    'l' => ColumnAlign::Left,
+                    'c' => ColumnAlign::Center,
+                    _ => ColumnAlign::Right,
+                });
+            },
             '|' => {
                 // Set separator bit at current column boundary.
                 // Position = number of alignment columns seen so far.
@@ -502,24 +528,61 @@ fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
                         }
                         n_str.push(ch);
                     }
-                    let n: usize = n_str.trim().parse().unwrap_or(1);
+                    let count_text = n_str.trim();
+                    let n = match count_text.parse::<usize>() {
+                        Ok(n) => n,
+                        Err(_)
+                            if !count_text.is_empty()
+                                && count_text.bytes().all(|b| b.is_ascii_digit()) =>
+                        {
+                            return Err(Error::LimitExceeded {
+                                kind: crate::error::LimitKind::ListLength,
+                                limit: AstArena::MAX_CHILDREN,
+                            });
+                        },
+                        // Keep the parser's existing recovery for a malformed
+                        // non-numeric repeat count (`*{foo}{c}`).
+                        Err(_) => 1,
+                    };
                     if chars.peek() == Some(&'{') {
                         chars.next(); // consume '{'
                         let mut pattern = String::new();
-                        let mut depth = 1u32;
+                        let mut brace_depth = 1u32;
                         for ch in chars.by_ref() {
                             if ch == '{' {
-                                depth += 1;
+                                brace_depth += 1;
                             }
                             if ch == '}' {
-                                depth -= 1;
-                                if depth == 0 {
+                                brace_depth -= 1;
+                                if brace_depth == 0 {
                                     break;
                                 }
                             }
                             pattern.push(ch);
                         }
-                        let (sub, _sub_seps) = parse_column_spec(&pattern);
+                        let (sub, _sub_seps) = parse_column_spec_at_depth(&pattern, depth + 1)?;
+                        let repeated = sub.len().checked_mul(n).ok_or(Error::LimitExceeded {
+                            kind: crate::error::LimitKind::ListLength,
+                            limit: AstArena::MAX_CHILDREN,
+                        })?;
+                        let total = result
+                            .len()
+                            .checked_add(repeated)
+                            .ok_or(Error::LimitExceeded {
+                                kind: crate::error::LimitKind::ListLength,
+                                limit: AstArena::MAX_CHILDREN,
+                            })?;
+                        if total > AstArena::MAX_CHILDREN {
+                            return Err(Error::LimitExceeded {
+                                kind: crate::error::LimitKind::ListLength,
+                                limit: AstArena::MAX_CHILDREN,
+                            });
+                        }
+                        // An empty pattern has no columns; skip the loop
+                        // entirely so even a huge repetition count is O(1).
+                        if sub.is_empty() {
+                            continue;
+                        }
                         for _ in 0..n {
                             result.extend_from_slice(&sub);
                         }
@@ -528,7 +591,7 @@ fn parse_column_spec(spec: &str) -> (SmallVec<[ColumnAlign; 4]>, u32) {
             _ => {}, // skip :, @{}, and other decorations
         }
     }
-    (result, seps)
+    Ok((result, seps))
 }
 
 /// True if `input` begins with a `\cr` row separator (not `\cross` etc.).
@@ -1041,6 +1104,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
     let mut parser = LatexCompactParser::with_capacity(processed.len());
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
+            if let Some(error) = parser.abort.take() {
+                return Err(error);
+            }
             let ids = parser.resolve_infix_fraction(ids);
             let ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
                 ids.into_iter()
@@ -1063,6 +1129,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             ))
         },
         Ok((rest, ids)) => {
+            if let Some(error) = parser.abort.take() {
+                return Err(error);
+            }
             let start = processed.len().saturating_sub(rest.len());
             let end = processed.len();
             if config.strictness == Strictness::Strict {
@@ -1078,6 +1147,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 }];
                 let mut result_ids = ids;
                 let recovered = parser.parse_lenient_remainder(rest, &mut diagnostics);
+                if let Some(error) = parser.abort.take() {
+                    return Err(error);
+                }
                 result_ids.extend(recovered);
                 let result_ids = parser.resolve_infix_fraction(result_ids);
                 let result_ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
@@ -1103,9 +1175,15 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             }
         },
         Err(ref e) => {
+            if let Some(error) = parser.abort.take() {
+                return Err(error);
+            }
             if config.strictness == Strictness::Lenient {
                 let mut diagnostics = Vec::new();
                 let ids = parser.parse_lenient_remainder(&processed, &mut diagnostics);
+                if let Some(error) = parser.abort.take() {
+                    return Err(error);
+                }
                 diagnostics.push(Diagnostic {
                     kind: DiagnosticKind::Warning,
                     message: format!("parse error (recovered): {e}"),
@@ -1151,6 +1229,11 @@ pub fn parse(input: &str, config: &Config) -> Result<ParseResult> {
 pub(crate) struct LatexCompactParser {
     pub(crate) arena: AstArena,
     depth: u32,
+    /// A typed resource error raised by a parser helper that communicates
+    /// through nom's error channel. Resource failures must remain fatal in
+    /// lenient mode; recovering by treating the input as text would defeat
+    /// the configured bound.
+    abort: Option<Error>,
     /// Set to `true` when `\displaystyle` is encountered at the top level.
     pub(crate) display_override: bool,
     /// User-defined colors registered via `\definecolor`/`\colorlet`,
@@ -1189,6 +1272,7 @@ impl LatexCompactParser {
         Self {
             arena: AstArena::with_capacity(est_nodes, est_children, est_strings),
             depth: 0,
+            abort: None,
             display_override: false,
             colors: HashMap::new(),
             diagnostics: Vec::new(),
@@ -5388,7 +5472,16 @@ impl LatexCompactParser {
                         // Extract `>{\columncolor{..}}` column backgrounds and
                         // strip them so the alignment spec parses cleanly.
                         let (cleaned, col_bg) = self.extract_column_colors(spec);
-                        let (aligns, col_seps) = parse_column_spec(&cleaned);
+                        let (aligns, col_seps) = match parse_column_spec(&cleaned) {
+                            Ok(parsed) => parsed,
+                            Err(error) => {
+                                self.abort = Some(error);
+                                return Err(nom::Err::Failure(nom::error::Error::new(
+                                    input,
+                                    nom::error::ErrorKind::TooLarge,
+                                )));
+                            },
+                        };
                         // LaTeX `array` adds `\arraycolsep` on both outer edges
                         // unless the preamble suppresses it with a leading `@{}`
                         // (as in `@{}cc@{}`).
@@ -6782,6 +6875,9 @@ impl LatexCompactParser {
     ) -> SmallVec<[NodeId; 8]> {
         let mut ids = SmallVec::new();
         while !input.is_empty() {
+            if self.abort.is_some() {
+                break;
+            }
             match self.parse_node_list(input) {
                 Ok(("", parsed)) => {
                     ids.extend(parsed);

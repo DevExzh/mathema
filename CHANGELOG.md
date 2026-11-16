@@ -121,6 +121,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- LaTeX array preambles no longer expand an unbounded `*{n}{pattern}` repeat;
+  oversized, overflowing, or deeply nested specifications fail promptly with
+  a typed resource-limit error in both strict and lenient modes.
 - Leading scripts kept their base only until normalization, which attached
   them to the atom before (`x={}^{14}_{6}C` became `x=^{14}_{6}`-style
   scripts on `=`, and MathML `mprescripts`, OMML `m:sPre` and MTEF leading
