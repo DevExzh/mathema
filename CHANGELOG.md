@@ -94,6 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lost. Loss diagnostics now come from the writer itself.
 - **`#RRGGBB` colors reach LaTeX** as `\textcolor[HTML]{RRGGBB}` instead of
   being dropped during normalization.
+- **UnicodeMath matrices no longer drop content silently.** Strict mode
+  refuses content of a `■(…)` matrix that is not an element (for example the
+  `#` in `■(a#b)` or an unclosed `(`), naming the character and its byte
+  offset; Lenient mode still skips it and reports each skipped run as a
+  warning with its span. Whitespace between cells is still ignored.
 - **The LaTeX and MTEF writers drop invisible operators** (U+2061–U+2064)
   instead of emitting them as raw characters.
 
@@ -165,7 +170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The UnicodeMath reader backtracked exponentially: an unclosed bracket under
   a script, n-ary operator, radical or matrix was parsed again by every
   fallback at every nesting level (an 830-byte input used 10 GB and nested
-  box operators could overflow the stack). It now parses in linear time and
+  box operators could overflow the stack), and every enclosing unclosed
+  matrix re-read the rest of the input (126 nested `■(` before 2 MB took
+  18 s). It now parses in linear time and
   enforces `Config::max_nodes` and `Config::max_depth`, failing with
   `Error::LimitExceeded` in Strict and Lenient mode; nesting that used to fail
   with `Error::UnicodeMathParse` now reports `LimitKind::Depth`.
