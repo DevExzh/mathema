@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use nom::IResult;
 use nom::bytes::complete::{tag, take_while1};
 use nom::character::complete::satisfy;
@@ -7,13 +9,12 @@ use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::*;
 use crate::error::{
-    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
+    CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, LimitKind, ParseResult, Result,
+    Strictness,
 };
 use crate::reader::Reader;
 
 pub struct UnicodeMathReader;
-
-const MAX_PARSE_DEPTH: u32 = 128;
 
 /// Maximum bytes to scan for a matching `)` in script and radical arguments.
 ///
@@ -58,7 +59,7 @@ impl Reader for UnicodeMathReader {
                 DisplayStyle::Inline,
             )));
         }
-        let mut parser = CompactParser::new();
+        let mut parser = CompactParser::new(input, config);
         match parser.parse_expr_list(input) {
             Ok(ids) => {
                 parser.arena.check_limits()?;
@@ -69,6 +70,8 @@ impl Reader for UnicodeMathReader {
                     DisplayStyle::Inline,
                 )))
             },
+            // Resource limits hold in every mode.
+            Err(e @ Error::LimitExceeded { .. }) => Err(e),
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let mut arena = AstArena::new();
@@ -92,10 +95,50 @@ impl Reader for UnicodeMathReader {
 }
 
 // ── Compact parser ────────────────────────────────────────────────────
+//
+// The parser is a recursive descent with ordered alternatives: when one
+// alternative fails, the next is tried at the same position. Without care
+// this backtracking is exponential in the nesting depth (an unclosed `(` is
+// parsed in full, fails, and is parsed again by the next alternative or by
+// the caller's fallback, at every level). Two rules keep it linear:
+//
+// * Whether an atom (or a bracket group) starting at a given offset fails
+//   does not depend on how it was reached, so each failure is recorded by
+//   offset and never recomputed (see `memo_failure`).
+// * Every `nom::Err::Failure` means a resource limit was hit. It aborts the
+//   whole parse: nothing catches it to try another alternative.
+//
+// Nodes built by failed alternatives stay in the arena as garbage, so the
+// node limit counts every node the parse creates.
+
+/// A recorded failure: the atom or group at an offset failed, and while
+/// parsing it the element nesting reached `depth_span` levels below the
+/// depth at which it started (0 when no element was entered).
+type DepthSpan = u32;
 
 struct CompactParser {
     arena: AstArena,
+    /// Byte length of the whole (trimmed) input. Every slice the parser sees
+    /// is a suffix of it, so `source_len - rest.len()` is the offset of `rest`.
+    source_len: usize,
+    /// Current element nesting depth.
     depth: u32,
+    /// Deepest element nesting entered by the attempt in progress, plus one
+    /// (0 when none); see [`DepthSpan`].
+    deepest: u32,
+    /// Element nesting limit ([`Config::effective_max_depth`]). Each nested
+    /// element is a child of the node that contains it, so a deeper nesting
+    /// would exceed the AST depth limit anyway.
+    max_depth: u32,
+    /// [`Config::max_nodes`].
+    max_nodes: Option<usize>,
+    /// The limit that aborted the parse, if any.
+    limit: Option<Error>,
+    /// Offsets at which an atom or a bracket group is known to fail. One map
+    /// serves both: an atom at a bracket fails exactly when its group fails.
+    failed: HashMap<u32, DepthSpan>,
+    /// Byte range of a run of `.` that is known not to start a number.
+    dot_run: (usize, usize),
 }
 
 /// Try a parse method; propagate `Failure`, ignore `Error`, try next.
@@ -111,12 +154,116 @@ macro_rules! try_alt {
     }
 }
 
+fn parse_error(input: &str, kind: nom::error::ErrorKind) -> nom::Err<nom::error::Error<&str>> {
+    nom::Err::Error(nom::error::Error::new(input, kind))
+}
+
+fn limit_failure(input: &str) -> nom::Err<nom::error::Error<&str>> {
+    nom::Err::Failure(nom::error::Error::new(
+        input,
+        nom::error::ErrorKind::TooLarge,
+    ))
+}
+
 impl CompactParser {
-    fn new() -> Self {
+    fn new(source: &str, config: &Config) -> Self {
         Self {
             arena: AstArena::new(),
+            source_len: source.len(),
             depth: 0,
+            deepest: 0,
+            max_depth: u32::try_from(config.effective_max_depth()).unwrap_or(u32::MAX),
+            max_nodes: config.max_nodes,
+            limit: None,
+            failed: HashMap::new(),
+            dot_run: (0, 0),
         }
+    }
+
+    fn offset(&self, rest: &str) -> usize {
+        self.source_len - rest.len()
+    }
+
+    /// Push a node, enforcing [`Config::max_nodes`]. Past the limit the node
+    /// is still stored (callers need an id) but the parse is aborted at the
+    /// next element.
+    fn push_node(&mut self, node: CompactNode) -> NodeId {
+        let id = self.arena.push_node(node);
+        if let Some(limit) = self.max_nodes
+            && self.arena.node_count() > limit
+            && self.limit.is_none()
+        {
+            self.limit = Some(Error::LimitExceeded {
+                kind: LimitKind::Nodes,
+                limit,
+            });
+        }
+        id
+    }
+
+    fn depth_limit(&mut self) {
+        if self.limit.is_none() {
+            self.limit = Some(Error::LimitExceeded {
+                kind: LimitKind::Depth,
+                limit: self.max_depth as usize,
+            });
+        }
+    }
+
+    /// Enter one level of element nesting, or abort past the depth limit.
+    fn enter<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> std::result::Result<(), nom::Err<nom::error::Error<&'a str>>> {
+        if self.limit.is_some() {
+            return Err(limit_failure(input));
+        }
+        self.deepest = self.deepest.max(self.depth + 1);
+        if self.depth > self.max_depth {
+            self.depth_limit();
+            return Err(limit_failure(input));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Run `parse` at `input`, or fail at once if it is known to fail there.
+    ///
+    /// `parse` must depend only on the input from `input` on: a recorded
+    /// `Error` is then returned again, and re-running it would only matter
+    /// if it now hit the depth limit, which the recorded depth span decides
+    /// without re-running it.
+    fn memo_failure<'a, T>(
+        &mut self,
+        input: &'a str,
+        parse: impl FnOnce(&mut Self, &'a str) -> IResult<&'a str, T>,
+    ) -> IResult<&'a str, T> {
+        let Ok(offset) = u32::try_from(self.offset(input)) else {
+            return parse(self, input);
+        };
+        if let Some(&span) = (!self.failed.is_empty())
+            .then(|| self.failed.get(&offset))
+            .flatten()
+        {
+            if span > 0 {
+                // The attempt entered elements down to `depth + span - 1`.
+                let deepest = self.depth + span;
+                self.deepest = self.deepest.max(deepest);
+                if deepest - 1 > self.max_depth {
+                    self.depth_limit();
+                    return Err(limit_failure(input));
+                }
+            }
+            return Err(parse_error(input, nom::error::ErrorKind::Alt));
+        }
+        let outer = std::mem::take(&mut self.deepest);
+        let result = parse(self, input);
+        let span = self.deepest.saturating_sub(self.depth);
+        self.deepest = self.deepest.max(outer);
+        if matches!(result, Err(nom::Err::Error(_))) {
+            self.failed.insert(offset, span);
+        }
+        result
     }
 
     fn parse_expr_list(&mut self, input: &str) -> Result<SmallVec<[NodeId; 8]>> {
@@ -136,31 +283,28 @@ impl CompactParser {
                     remaining = rest;
                 },
                 Err(nom::Err::Failure(_)) => {
-                    return Err(Error::UnicodeMathParse {
-                        message: "UnicodeMath parse error".into(),
-                    });
+                    return Err(self
+                        .limit
+                        .take()
+                        .unwrap_or_else(|| Error::UnicodeMathParse {
+                            message: "UnicodeMath parse error".into(),
+                        }));
                 },
                 Err(_) => break,
             }
         }
         if !remaining.trim().is_empty() {
             let sid = self.arena.push_str(remaining.trim());
-            ids.push(
-                self.arena
-                    .push_node(CompactNode::Text(TextStyle::Normal, sid)),
-            );
+            ids.push(self.push_node(CompactNode::Text(TextStyle::Normal, sid)));
+        }
+        if let Some(limit) = self.limit.take() {
+            return Err(limit);
         }
         Ok(ids)
     }
 
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        if self.depth >= MAX_PARSE_DEPTH {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
-        }
-        self.depth += 1;
+        self.enter(input)?;
         let result = (|| {
             if (input.starts_with("(_") || input.starts_with("(^"))
                 && let Ok(found) = self.parse_prescripts(input)
@@ -170,7 +314,7 @@ impl CompactParser {
             let (input, base) = self.parse_atom(input)?;
             self.parse_scripts(input, base)
         })();
-        self.depth = self.depth.saturating_sub(1);
+        self.depth -= 1;
         result
     }
 
@@ -248,7 +392,7 @@ impl CompactParser {
                 if let Some(rest) = input.strip_prefix('/') {
                     match self.parse_script_arg(rest) {
                         Ok((rest, den)) => {
-                            let id = self.arena.push_node(CompactNode::Fraction {
+                            let id = self.push_node(CompactNode::Fraction {
                                 kind: FractionKind::Normal,
                                 num: base,
                                 den,
@@ -263,15 +407,15 @@ impl CompactParser {
                 }
             },
             (Some(sub), None) => {
-                let id = self.arena.push_node(CompactNode::Subscript { base, sub });
+                let id = self.push_node(CompactNode::Subscript { base, sub });
                 Ok((input, id))
             },
             (None, Some(sup)) => {
-                let id = self.arena.push_node(CompactNode::Superscript { base, sup });
+                let id = self.push_node(CompactNode::Superscript { base, sup });
                 Ok((input, id))
             },
             (Some(sub), Some(sup)) => {
-                let id = self.arena.push_node(CompactNode::SubSup { base, sub, sup });
+                let id = self.push_node(CompactNode::SubSup { base, sub, sup });
                 Ok((input, id))
             },
         }
@@ -284,12 +428,13 @@ impl CompactParser {
         // wrapping invertible (otherwise re-reading would nest a literal Fenced
         // and the next write would double the parentheses).
         if input.starts_with('(') && matching_paren_end(input).is_some() {
-            if let Ok((rest, id)) = self.parse_absorbing_paren_group(input) {
-                return Ok((rest, id));
+            match self.parse_absorbing_paren_group(input) {
+                Ok(r) => return Ok(r),
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                // The group's content does not parse: fall back to a literal
+                // token, which `(` is not, so the argument is missing.
+                Err(_) => return self.parse_single_char_node(input),
             }
-            // A balanced argument can still fail at the configured parse-depth
-            // limit. Consume one literal token rather than rescanning its suffix.
-            return self.parse_single_char_node(input);
         }
         try_alt!(self, input, parse_group, parse_single_char_node);
         Err(nom::Err::Error(nom::error::Error::new(
@@ -302,37 +447,14 @@ impl CompactParser {
     /// (the parentheses are absorbed as a grouping delimiter, not kept as a
     /// literal `Fenced`).
     fn parse_absorbing_paren_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        if !input.starts_with('(') {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Char,
-            )));
-        }
-        let mut remaining = &input['('.len_utf8()..];
-        let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
-        loop {
-            if remaining.starts_with(')') {
-                break;
-            }
-            match self.parse_element(remaining) {
-                Ok((rest, id)) => {
-                    children.push(id);
-                    remaining = rest;
-                },
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => break,
-            }
-        }
-        // Require a closing paren; otherwise this is not a balanced group and the
-        // caller should fall back to literal handling.
-        let (remaining, _) = satisfy(|c| c == ')')(remaining)?;
+        let (remaining, children) = self.parse_delimited(input, '(', ')')?;
         // An empty `()` has no sensible "inner content"; keep it as a literal
         // empty fence so it is not silently dropped.
         if children.is_empty() {
             let open = self.arena.push_str("(");
             let close = self.arena.push_str(")");
             let content_span = self.arena.push_children_deferred(&[]);
-            let id = self.arena.push_node(CompactNode::Fenced {
+            let id = self.push_node(CompactNode::Fenced {
                 open,
                 close,
                 content: content_span,
@@ -343,7 +465,51 @@ impl CompactParser {
         Ok((remaining, content_id))
     }
 
+    /// Parse the elements between `open` and the matching `close`.
+    ///
+    /// Fails with `Error` unless `input` starts with `open` and its elements
+    /// are followed by `close`. The outcome depends only on `input`, so a
+    /// failure is recorded and not recomputed: the same group is otherwise
+    /// re-parsed by every fallback that reaches its offset.
+    fn parse_delimited<'a>(
+        &mut self,
+        input: &'a str,
+        open: char,
+        close: char,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        let Some(content) = input.strip_prefix(open) else {
+            return Err(parse_error(input, nom::error::ErrorKind::Char));
+        };
+        self.memo_failure(input, |this, _| {
+            let mut remaining = content;
+            let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
+            loop {
+                if remaining.starts_with(close) {
+                    break;
+                }
+                match this.parse_element(remaining) {
+                    Ok((rest, id)) => {
+                        children.push(id);
+                        remaining = rest;
+                    },
+                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                    Err(_) => break,
+                }
+            }
+            // Require the closing delimiter; otherwise this is not a balanced
+            // group and the caller falls back to literal handling.
+            let (remaining, _) = satisfy(|c| c == close)(remaining)?;
+            Ok((remaining, children))
+        })
+    }
+
+    /// Parse one atom. Whether an atom fails at an offset depends only on
+    /// the input from there on, so failures are recorded by offset.
     fn parse_atom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        self.memo_failure(input, Self::parse_atom_alternatives)
+    }
+
+    fn parse_atom_alternatives<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         try_alt!(
             self,
             input,
@@ -383,7 +549,11 @@ impl CompactParser {
             },
         };
         let rest = chars.as_str();
-        let (rest, content) = self.parse_atom(rest)?;
+        // The content is a child of the box, one level deeper.
+        self.enter(rest)?;
+        let content = self.parse_atom(rest);
+        self.depth -= 1;
+        let (rest, content) = content?;
         let node = if is_box {
             let empty = self.arena.push_str("");
             CompactNode::Boxed {
@@ -394,7 +564,7 @@ impl CompactParser {
         } else {
             CompactNode::Phantom(content, PhantomKind::Full)
         };
-        Ok((rest, self.arena.push_node(node)))
+        Ok((rest, self.push_node(node)))
     }
 
     fn parse_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -417,108 +587,36 @@ impl CompactParser {
             ids[0]
         } else {
             let span = self.arena.push_children_deferred(ids);
-            self.arena.push_node(CompactNode::Row(span))
+            self.push_node(CompactNode::Row(span))
         }
     }
 
     fn parse_paren_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        if !input.starts_with('(') {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Char,
-            )));
-        }
-        let mut remaining = &input['('.len_utf8()..];
-        let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
-        loop {
-            if remaining.starts_with(')') {
-                break;
-            }
-            match self.parse_element(remaining) {
-                Ok((rest, id)) => {
-                    children.push(id);
-                    remaining = rest;
-                },
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => break,
-            }
-        }
-        let (remaining, _) = satisfy(|c| c == ')')(remaining)?;
-        let content_id = self.flatten_single(&children);
-        let open = self.arena.push_str("(");
-        let close = self.arena.push_str(")");
-        let content_span = self.arena.push_children_deferred(&[content_id]);
-        let id = self.arena.push_node(CompactNode::Fenced {
-            open,
-            close,
-            content: content_span,
-        });
-        Ok((remaining, id))
+        self.parse_fenced_group(input, '(', ')')
     }
 
     fn parse_bracket_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        if !input.starts_with('[') {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Char,
-            )));
-        }
-        let mut remaining = &input['['.len_utf8()..];
-        let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
-        loop {
-            if remaining.starts_with(']') {
-                break;
-            }
-            match self.parse_element(remaining) {
-                Ok((rest, id)) => {
-                    children.push(id);
-                    remaining = rest;
-                },
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => break,
-            }
-        }
-        let (remaining, _) = satisfy(|c| c == ']')(remaining)?;
-        let content_id = self.flatten_single(&children);
-        let open = self.arena.push_str("[");
-        let close = self.arena.push_str("]");
-        let content_span = self.arena.push_children_deferred(&[content_id]);
-        let id = self.arena.push_node(CompactNode::Fenced {
-            open,
-            close,
-            content: content_span,
-        });
-        Ok((remaining, id))
+        self.parse_fenced_group(input, '[', ']')
     }
 
     fn parse_brace_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        if !input.starts_with('{') {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Char,
-            )));
-        }
-        let mut remaining = &input['{'.len_utf8()..];
-        let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
-        loop {
-            if remaining.starts_with('}') {
-                break;
-            }
-            match self.parse_element(remaining) {
-                Ok((rest, id)) => {
-                    children.push(id);
-                    remaining = rest;
-                },
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => break,
-            }
-        }
-        let (remaining, _) = satisfy(|c| c == '}')(remaining)?;
+        self.parse_fenced_group(input, '{', '}')
+    }
+
+    /// Parse a bracket group kept as a literal `Fenced` node.
+    fn parse_fenced_group<'a>(
+        &mut self,
+        input: &'a str,
+        open: char,
+        close: char,
+    ) -> IResult<&'a str, NodeId> {
+        let (remaining, children) = self.parse_delimited(input, open, close)?;
         let content_id = self.flatten_single(&children);
-        let open = self.arena.push_str("{");
-        let close = self.arena.push_str("}");
+        let mut buf = [0_u8; 4];
+        let open = self.arena.push_str(open.encode_utf8(&mut buf));
+        let close = self.arena.push_str(close.encode_utf8(&mut buf));
         let content_span = self.arena.push_children_deferred(&[content_id]);
-        let id = self.arena.push_node(CompactNode::Fenced {
+        let id = self.push_node(CompactNode::Fenced {
             open,
             close,
             content: content_span,
@@ -529,7 +627,7 @@ impl CompactParser {
     fn parse_sqrt<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = satisfy(|c| c == '\u{221A}')(input)?; // √
         let (input, content) = self.parse_script_arg(input)?;
-        let id = self.arena.push_node(CompactNode::Sqrt(content));
+        let id = self.push_node(CompactNode::Sqrt(content));
         Ok((input, id))
     }
 
@@ -537,8 +635,8 @@ impl CompactParser {
         let (input, _) = satisfy(|c| c == '\u{221B}')(input)?; // ∛
         let (input, content) = self.parse_script_arg(input)?;
         let s = self.arena.push_str("3");
-        let index = self.arena.push_node(CompactNode::Number(s));
-        let id = self.arena.push_node(CompactNode::Root {
+        let index = self.push_node(CompactNode::Number(s));
+        let id = self.push_node(CompactNode::Root {
             index,
             radicand: content,
         });
@@ -579,6 +677,7 @@ impl CompactParser {
                     current_cell.push(id);
                     remaining = rest;
                 },
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
                 Err(_) => {
                     // Skip one char
                     remaining = &remaining[remaining
@@ -599,10 +698,7 @@ impl CompactParser {
         // Column alignments
         let mut col_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
         for _ in 0..num_cols {
-            col_ids.push(
-                self.arena
-                    .push_node(CompactNode::ColAlign(ColumnAlign::Center)),
-            );
+            col_ids.push(self.push_node(CompactNode::ColAlign(ColumnAlign::Center)));
         }
         let col_aligns = self.arena.push_children_deferred(&col_ids);
 
@@ -611,16 +707,16 @@ impl CompactParser {
         for row in &rows {
             for cell in row {
                 let span = self.arena.push_children_deferred(cell);
-                cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
+                cell_ids.push(self.push_node(CompactNode::Row(span)));
             }
             // Pad short rows
             for _ in row.len()..(num_cols as usize) {
-                cell_ids.push(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
+                cell_ids.push(self.push_node(CompactNode::Row(NodeSpan::EMPTY)));
             }
         }
         let cells = self.arena.push_children_deferred(&cell_ids);
 
-        let id = self.arena.push_node(CompactNode::Array {
+        let id = self.push_node(CompactNode::Array {
             col_aligns,
             cells,
             num_cols,
@@ -650,9 +746,7 @@ impl CompactParser {
         }
         let rest = &rest['"'.len_utf8()..];
         let sid = self.arena.push_str(text);
-        let id = self
-            .arena
-            .push_node(CompactNode::Text(TextStyle::Normal, sid));
+        let id = self.push_node(CompactNode::Text(TextStyle::Normal, sid));
         Ok((rest, id))
     }
 
@@ -685,13 +779,13 @@ impl CompactParser {
         let input = input.trim_start();
 
         let (input, body) = if input.is_empty() {
-            let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            let row_id = self.push_node(CompactNode::Row(NodeSpan::EMPTY));
             (input, row_id)
         } else {
             match self.parse_script_arg(input) {
                 Ok((rest, id)) => (rest, id),
                 Err(_) => {
-                    let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                    let row_id = self.push_node(CompactNode::Row(NodeSpan::EMPTY));
                     (input, row_id)
                 },
             }
@@ -703,7 +797,7 @@ impl CompactParser {
             LimitStyle::AboveBelow
         };
 
-        let id = self.arena.push_node(CompactNode::Nary {
+        let id = self.push_node(CompactNode::Nary {
             op,
             sub,
             sup,
@@ -714,15 +808,19 @@ impl CompactParser {
     }
 
     fn parse_number<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Every suffix of a run of dots is also a run of dots, so once a run
+        // is rejected its suffixes are rejected without rescanning it.
+        let offset = self.offset(input);
+        if (self.dot_run.0..self.dot_run.1).contains(&offset) {
+            return Err(parse_error(input, nom::error::ErrorKind::Digit));
+        }
         let (rest, num) = take_while1(|c: char| c.is_ascii_digit() || c == '.')(input)?;
         if num.chars().all(|c| c == '.') {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Digit,
-            )));
+            self.dot_run = (offset, offset + num.len());
+            return Err(parse_error(input, nom::error::ErrorKind::Digit));
         }
         let sid = self.arena.push_str(num);
-        let id = self.arena.push_node(CompactNode::Number(sid));
+        let id = self.push_node(CompactNode::Number(sid));
         Ok((rest, id))
     }
 
@@ -742,7 +840,7 @@ impl CompactParser {
                     "lim" | "liminf" | "limsup" | "sup" | "inf" | "max" | "min"
                 );
                 let name = self.arena.push_str(op);
-                let id = self.arena.push_node(CompactNode::Operator {
+                let id = self.push_node(CompactNode::Operator {
                     name,
                     limits: if has_limits {
                         LimitStyle::AboveBelow
@@ -769,7 +867,7 @@ impl CompactParser {
             rest
         };
         let sid = self.arena.push_str(&ch.to_string());
-        let id = self.arena.push_node(CompactNode::Symbol(kind, sid));
+        let id = self.push_node(CompactNode::Symbol(kind, sid));
         Ok((rest, id))
     }
 
@@ -779,7 +877,7 @@ impl CompactParser {
                 input,
             )?;
         let sid = self.arena.push_str(&ch.to_string());
-        let id = self.arena.push_node(CompactNode::Identifier(sid));
+        let id = self.push_node(CompactNode::Identifier(sid));
         Ok((rest, id))
     }
 
@@ -1013,6 +1111,37 @@ mod tests {
     fn operator() {
         let nodes = parse("sin x");
         assert!(matches!(&nodes[0], MathNode::Operator(_)));
+    }
+
+    #[test]
+    fn recorded_failure_still_reports_the_depth_limit() {
+        // `(((x` fails (no closing parens) after entering elements at 3
+        // depths: its start and 2 levels below. Reached again deeper, a recorded failure must
+        // abort exactly when re-parsing it would cross the depth limit.
+        let source = "(((x";
+        let config = Config::default().with_max_depth(10);
+        let mut parser = CompactParser::new(source, &config);
+        assert!(matches!(parser.parse_atom(source), Err(nom::Err::Error(_))));
+        assert_eq!(parser.failed.get(&0), Some(&3));
+        let nodes = parser.arena.node_count();
+        // Deepest element at 8 + 2 = 10: within the limit.
+        parser.depth = 8;
+        assert!(matches!(parser.parse_atom(source), Err(nom::Err::Error(_))));
+        assert!(parser.limit.is_none());
+        assert_eq!(parser.arena.node_count(), nodes, "not re-parsed");
+        // Deepest element at 9 + 2 = 11: past the limit.
+        parser.depth = 9;
+        assert!(matches!(
+            parser.parse_atom(source),
+            Err(nom::Err::Failure(_))
+        ));
+        assert!(matches!(
+            parser.limit,
+            Some(Error::LimitExceeded {
+                kind: LimitKind::Depth,
+                limit: 10
+            })
+        ));
     }
 
     #[test]
