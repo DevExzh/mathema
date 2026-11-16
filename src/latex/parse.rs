@@ -5355,11 +5355,12 @@ impl LatexCompactParser {
                         .push_node(CompactNode::Styled(style, content_span)),
                 ))
             },
-            Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
-            Err(_) => Ok((
-                input,
-                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-            )),
+            // A failed scoped parse must not return the same input slice with
+            // a successful empty node: enclosing parse paths would repeatedly
+            // retry it without making progress and grow the arena until OOM.
+            // Propagate both recoverable and hard failures; lenient top-level
+            // recovery will consume the offending text one character at a time.
+            Err(error) => Err(error),
         }
     }
 

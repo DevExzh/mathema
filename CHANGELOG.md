@@ -122,6 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Malformed old-style LaTeX font switches (`\\rm`, `\\sf`, and related
+  commands) no longer retry an unconsumed scoped argument until the AST grows
+  without bound; recoverable failures now reach lenient recovery.
 - LaTeX array preambles no longer expand an unbounded `*{n}{pattern}` repeat;
   oversized, overflowing, or deeply nested specifications fail promptly with
   a typed resource-limit error in both strict and lenient modes.
