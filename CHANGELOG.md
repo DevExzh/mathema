@@ -94,11 +94,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lost. Loss diagnostics now come from the writer itself.
 - **`#RRGGBB` colors reach LaTeX** as `\textcolor[HTML]{RRGGBB}` instead of
   being dropped during normalization.
-- **UnicodeMath matrices no longer drop content silently.** Strict mode
-  refuses content of a `■(…)` matrix that is not an element (for example the
-  `#` in `■(a#b)` or an unclosed `(`), naming the character and its byte
-  offset; Lenient mode still skips it and reports each skipped run as a
-  warning with its span. Whitespace between cells is still ignored.
+- **UnicodeMath matrices no longer drop content silently.** In Strict mode a
+  `■(…)` matrix with content that is not an element (for example the `#` in
+  `■(a#b)` or an unclosed `(`) is not read as a matrix, so the input from
+  there on is kept as text, like other content the reader cannot parse.
+  Lenient mode still skips such content and reports it with one warning per
+  matrix (the number of skipped runs and their span), at most 32 warnings
+  plus a summary. Whitespace between cells is still ignored. Matrix cells
+  count towards `Config::max_nodes` as they are read, and a matrix whose
+  padded rows would exceed 65 535 cells is refused with
+  `LimitKind::ListLength`.
 - **The LaTeX and MTEF writers drop invisible operators** (U+2061–U+2064)
   instead of emitting them as raw characters.
 
