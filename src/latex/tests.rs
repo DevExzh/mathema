@@ -957,6 +957,7 @@ fn fuzz_repro_roundtrip_misc() {
     // "'/\n'" triggered a prime-handling regression, "^$" is an empty-base
     // superscript with a special char, and "26$\n \n'1" mixes $/newline/primes.
     for input in [
+        "A\u{2062}",
         "±|@",
         "×x",
         "≤x",

@@ -1232,12 +1232,14 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
     let s = arena.str_val(sid);
     let ch = s.chars().next().unwrap_or('?');
     // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064 INVISIBLE
-    // PLUS) only mark structure; LaTeX has no glyph for them. A space keeps
-    // the neighbouring tokens apart (`sin x`, not `sinx`).
+    // PLUS) have no glyph or width in LaTeX. Emit an empty ordinary atom
+    // rather than a literal space: source whitespace is discarded by the
+    // parser, so `A\u{2062}B` would otherwise become `AB` on a second
+    // parse/write pass. `\\mathord{}` is zero width and keeps the original
+    // ordinary-token boundary, including when the operator is leading or
+    // trailing.
     if matches!(s, "\u{2061}" | "\u{2062}" | "\u{2063}" | "\u{2064}") {
-        if !buf.is_empty() && !buf.ends_with(' ') {
-            buf.push(' ');
-        }
+        buf.push_str("\\mathord{}");
         return;
     }
     // A word such as `<mo>lim</mo>` is a function name: `\lim` when LaTeX
@@ -1659,6 +1661,36 @@ mod tests {
     fn named_operator() {
         let output = roundtrip("\\sin");
         assert_eq!(output, "\\sin");
+    }
+
+    #[test]
+    fn invisible_operators_use_stable_zero_width_boundaries() {
+        for invisible in ['\u{2061}', '\u{2062}', '\u{2063}', '\u{2064}'] {
+            for input in [
+                format!("A{invisible}"),
+                format!("A{invisible}B"),
+                format!(r"\sin{invisible}x"),
+            ] {
+                let first = roundtrip(&input);
+                let second = roundtrip(&first);
+                assert_eq!(
+                    first, second,
+                    "invisible operator was not stable: {input:?}"
+                );
+            }
+        }
+
+        // A trailing invisible operator must not leave whitespace that is
+        // trimmed before the next parse/write pass.
+        assert_eq!(roundtrip("A\u{2062}"), r"A\mathord{}");
+        assert_eq!(roundtrip("\u{2062}A"), r"\mathord{}A");
+        assert_eq!(roundtrip("\u{2062}"), r"\mathord{}");
+        // A middle invisible operator must keep adjacent identifiers from
+        // merging into one token while remaining zero width.
+        assert_eq!(roundtrip("A\u{2062}B"), r"A\mathord{}B");
+        // Scripts on an invisible atom must not attach to the preceding
+        // identifier when the output is parsed again.
+        assert_eq!(roundtrip("A\u{2062}^2"), r"A{\mathord{}}^{2}");
     }
 
     #[test]

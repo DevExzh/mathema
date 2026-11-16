@@ -138,6 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   amsmath define (`\lim`) and `\operatorname{…}` (`\operatorname*{…}` for
   limit-taking names) otherwise, also for names such as lcm that have no
   command.
+- LaTeX invisible operators (U+2061–U+2064) no longer leave a trailing
+  whitespace or merge adjacent identifiers on a second write; the writer uses
+  a stable zero-width `\mathord{}` atom to preserve their ordinary-token
+  boundary.
 - `\text{\int}` lost its content; symbol commands in text keep their
   characters.
 - UnicodeMath writes leading scripts as `(_sub^sup)base` (UTN #28 section

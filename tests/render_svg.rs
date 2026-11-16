@@ -33,6 +33,17 @@ fn assert_valid_svg(svg: &str, label: &str) {
     assert!(svg.contains("viewBox"), "{label}: missing viewBox");
 }
 
+#[test]
+fn invisible_operator_latex_boundary_is_zero_width() {
+    let with_invisible = render_latex("A\u{2062}B");
+    let with_mathord = render_latex(r"A\mathord{}B");
+    assert_eq!(
+        viewbox_values(&with_invisible),
+        viewbox_values(&with_mathord),
+        "the LaTeX round-trip boundary must not alter invisible-times layout"
+    );
+}
+
 /// The legacy heap layout engine and the production arena engine must render
 /// every corpus formula to **byte-identical** SVG. This is the precondition for
 /// retiring the legacy engine: since the two now agree everywhere,
