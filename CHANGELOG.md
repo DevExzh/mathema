@@ -162,6 +162,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without reading input (a 128 KiB input used about 1.9 GB). Cells are now
   only created for records that are present, and node count and nesting depth
   are bounded by `Config`.
+- The UnicodeMath reader backtracked exponentially: an unclosed bracket under
+  a script, n-ary operator, radical or matrix was parsed again by every
+  fallback at every nesting level (an 830-byte input used 10 GB and nested
+  box operators could overflow the stack). It now parses in linear time and
+  enforces `Config::max_nodes` and `Config::max_depth`, failing with
+  `Error::LimitExceeded` in Strict and Lenient mode; nesting that used to fail
+  with `Error::UnicodeMathParse` now reports `LimitKind::Depth`.
 
 ## [0.1.0] - 2026-06-19
 

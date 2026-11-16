@@ -307,7 +307,7 @@ pub struct Config {
     /// Maximum number of AST nodes a single parse may create. `None` disables
     /// the limit. Exceeding it fails with [`Error::LimitExceeded`] and
     /// [`LimitKind::Nodes`]. Defaults to [`DEFAULT_MAX_NODES`]. Currently
-    /// enforced by the MTEF reader.
+    /// enforced by the MTEF and UnicodeMath readers.
     pub max_nodes: Option<usize>,
     /// Maximum AST nesting depth: a top-level node is at depth 0, its
     /// children at depth 1, and so on. Exceeding it fails with
@@ -315,7 +315,7 @@ pub struct Config {
     /// [`DEFAULT_MAX_DEPTH`] (128), which is also the ceiling: larger values
     /// are clamped. Unlike the other limits it cannot be disabled, because the
     /// writers and renderers walk the tree recursively. Enforced while nodes
-    /// are built by the MTEF reader, and on every parsed tree by
+    /// are built by the MTEF and UnicodeMath readers, and on every parsed tree by
     /// [`convert_with`](crate::convert_with) and the `from_*` functions.
     pub max_depth: usize,
 }
