@@ -95,7 +95,12 @@ fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
         }
 
         if i > 0 {
+            // A leading-script group is always set off by a space, so that the
+            // spacing does not depend on how the node before is classified
+            // (a minus read back as a binary operator gets one anyway).
             let space = needs_space(arena, children.get(i - 1).copied(), id)
+                || (matches!(*arena.node(id), CompactNode::PreScripts { .. })
+                    && !buf.ends_with(' '))
                 || (buf_ends_with_letter_command(buf) && node_starts_with_ascii_letter(arena, id));
             if space {
                 buf.push(' ');
@@ -107,17 +112,6 @@ fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
         if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
             let next = children.get(i + 1).copied();
             write_script_node_with_next(buf, arena, id, next);
-        } else if i > 0
-            && matches!(*arena.node(id), CompactNode::PreScripts { .. })
-            && crate::ast::normalize::takes_limits(arena, *arena.node(children[i - 1]))
-        {
-            // After a big operator or a function name normalization would give
-            // the previous node the scripts (as its limit or script), and after
-            // `\int` the parser would take `{}` as the body: group the leading
-            // scripts with their base.
-            buf.push('{');
-            write_node(buf, arena, id);
-            buf.push('}');
         } else {
             write_node(buf, arena, id);
             // An empty-body nary operator followed by another node needs an
@@ -663,9 +657,13 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             pre_sub,
             pre_sup,
         } => {
-            // The base follows the scripts directly, so a script is always
-            // braced: `{}^{6}6`, not `{}^66`.
-            buf.push_str("{}");
+            // A leading script is written as a group with its base,
+            // `{{}^{14}_{6}C}`, so that reading it back cannot attach the
+            // scripts to the node before (a function name, a big operator),
+            // let `\int` take `{}` as its body, or join the base with the node
+            // after. The base follows the scripts directly, so a script is
+            // always braced: `{}^{6}6`, not `{}^66`.
+            buf.push_str("{{}");
             for (mark, script) in [('_', pre_sub), ('^', pre_sup)] {
                 if script.is_some() {
                     buf.push(mark);
@@ -675,6 +673,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 }
             }
             write_node(buf, arena, base);
+            buf.push('}');
         },
 
         CompactNode::Overscript {

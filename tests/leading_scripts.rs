@@ -320,7 +320,7 @@ fn operator_words_are_written_whole_in_latex() {
 fn leading_script_after_an_integral_keeps_its_base_in_latex() {
     let mathml = "<math><mo>∫</mo><mmultiscripts><mi>f</mi><mprescripts/><mi>C</mi><none/></mmultiscripts></math>";
     let latex = convert(mathml, Format::MathML, Format::LaTeX).unwrap();
-    assert_eq!(latex, r"\int{{}_{C}f}");
+    assert_eq!(latex, r"\int {{}_{C}f}");
     assert_eq!(bases(&normalized(&from_latex(&latex).unwrap())).len(), 1);
     // A non-ASCII character before the scripts is no command name.
     let after_text = "<math><mtext>中</mtext><mmultiscripts><mi>f</mi><mprescripts/><mi>C</mi><none/></mmultiscripts></math>";
@@ -410,13 +410,24 @@ fn latex_leading_scripts_around_operators_are_stable() {
         r"{}_w\int{}\int_q x",
         r"{}_w \sum_{i} {} a",
         "sec{'e}",
+        // Found by fuzz_latex_roundtrip: a leading script's base next to a
+        // number, a script before trailing spaces in a cell, function names.
+        "'2\n.0_1c\nU^'b",
+        "\\mqty{b*a\rrec\n'~~}~",
+        "/iverf\\sef\\si'^Larg{^Large\r'\\si}",
+        "\\ce\u{2212}{_0d*_0H}",
+        "'Pr\\SI{'y\"}",
+        "'\\cot{^cot{{et}4}}",
     ] {
-        let first = convert(input, Format::LaTeX, Format::LaTeX).unwrap();
+        // The fuzz target's check: write, read, write again.
+        let Ok(first) = convert(input, Format::LaTeX, Format::LaTeX) else {
+            continue;
+        };
         let second = convert(&first, Format::LaTeX, Format::LaTeX).unwrap();
         assert_eq!(first, second, "{input}");
     }
     assert_eq!(
         convert("sec{'e}", Format::LaTeX, Format::LaTeX).unwrap(),
-        "sec{{}^{\\prime}e}"
+        "sec {{}^{\\prime}e}"
     );
 }

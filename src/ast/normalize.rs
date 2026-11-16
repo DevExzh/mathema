@@ -102,13 +102,17 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
         coalesced.push(node);
     }
     coalesced.reverse();
-    if coalesced.len() >= 2
-        && coalesced.last().is_some_and(is_empty_base_script_math)
-        && can_carry_script_math(&coalesced[coalesced.len() - 2])
+    let content_end = coalesced
+        .iter()
+        .rposition(|node| !matches!(node, MathNode::Space(_)))
+        .map_or(0, |i| i + 1);
+    if content_end >= 2
+        && is_empty_base_script_math(&coalesced[content_end - 1])
+        && can_carry_script_math(&coalesced[content_end - 2])
     {
-        let last = coalesced.pop().unwrap_or(MathNode::Row(Vec::new()));
-        let prev = coalesced.pop().unwrap_or(MathNode::Row(Vec::new()));
-        coalesced.push(make_script_with_base_math(prev, last));
+        let last = coalesced.remove(content_end - 1);
+        let prev = std::mem::replace(&mut coalesced[content_end - 2], MathNode::Row(Vec::new()));
+        coalesced[content_end - 2] = make_script_with_base_math(prev, last);
     }
     *nodes = coalesced;
 }
@@ -614,15 +618,20 @@ fn normalize_compact_span(
         coalesced.push(id);
     }
     coalesced.reverse();
-    // With nothing after it, a script belongs to the atom before it, as in
-    // TeX (`x'` written with white space or a group between).
-    if let [.., prev, last] = coalesced[..]
-        && is_empty_base_script(arena, last)
-        && can_carry_script(*arena.node(prev))
+    // With nothing but space after it, a script belongs to the atom before
+    // it, as in TeX (`x'` written with white space or a group between).
+    let content_end = coalesced
+        .iter()
+        .rposition(|&id| !is_blank(*arena.node(id)))
+        .map_or(0, |i| i + 1);
+    if content_end >= 2
+        && is_empty_base_script(arena, coalesced[content_end - 1])
+        && can_carry_script(*arena.node(coalesced[content_end - 2]))
     {
-        coalesced.pop();
-        coalesced.pop();
-        coalesced.push(make_script_with_base(arena, prev, last));
+        let (prev, last) = (coalesced[content_end - 2], coalesced[content_end - 1]);
+        let joined = make_script_with_base(arena, prev, last);
+        coalesced.remove(content_end - 1);
+        coalesced[content_end - 2] = joined;
     }
 
     arena.push_children(&coalesced)
@@ -1108,6 +1117,11 @@ pub(crate) fn takes_limits(arena: &AstArena, node: CompactNode) -> bool {
         } => true,
         _ => false,
     }
+}
+
+/// A node that only spaces (white space or a line break).
+pub(crate) fn is_blank(node: CompactNode) -> bool {
+    matches!(node, CompactNode::Space(_) | CompactNode::Newline)
 }
 
 /// Whether a node can be the base of leading scripts.

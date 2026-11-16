@@ -20,7 +20,7 @@ use super::chars::{
 };
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
-use crate::ast::normalize::{can_carry_script, can_take_prescripts, takes_limits};
+use crate::ast::normalize::{can_carry_script, can_take_prescripts, is_blank, takes_limits};
 use crate::ast::{
     AccentPosition, ColumnAlign, FractionKind, LimitStyle, Rational, StrokeKind, TextStyle,
 };
@@ -531,7 +531,10 @@ impl<'a> Encoder<'a> {
             return false;
         };
         let prev = *self.arena.node(prev);
-        takes_limits(self.arena, prev) || (i + 1 == ids.len() && can_carry_script(prev))
+        let trailing = ids[i + 1..]
+            .iter()
+            .all(|&id| is_blank(*self.arena.node(id)));
+        takes_limits(self.arena, prev) || (trailing && can_carry_script(prev))
     }
 
     // ── Nodes ──────────────────────────────────────────────────────────
