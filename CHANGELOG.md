@@ -104,8 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   count towards `Config::max_nodes` as they are read, and a matrix whose
   padded rows would exceed 65 535 cells is refused with
   `LimitKind::ListLength`.
-- **The LaTeX and MTEF writers drop invisible operators** (U+2061–U+2064)
-  instead of emitting them as raw characters.
+- **Invisible operators** (U+2061–U+2064) are written as zero-width
+  `\\mathord{}` atoms in LaTeX and dropped in MTEF instead of being emitted
+  as raw characters.
 
 - `from_mtef` / `from_mtef_with` (hex input) now go through the binary path
   above, so they also accept `Equation Native` streams, normalize the AST and
@@ -138,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   amsmath define (`\lim`) and `\operatorname{…}` (`\operatorname*{…}` for
   limit-taking names) otherwise, also for names such as lcm that have no
   command.
-- LaTeX invisible operators (U+2061–U+2064) no longer leave a trailing
+- LaTeX invisible operators (U+2061–U+2064) no longer leave trailing
   whitespace or merge adjacent identifiers on a second write; the writer uses
   a stable zero-width `\mathord{}` atom to preserve their ordinary-token
   boundary.
