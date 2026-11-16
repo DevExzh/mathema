@@ -63,9 +63,10 @@ impl Reader for UnicodeMathReader {
             Ok(ids) => {
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
+                let diagnostics = parser.skip_diagnostics();
                 Ok(CompactParseResult::with_diagnostics(
                     CompactExpr::new(parser.arena, roots, DisplayStyle::Inline),
-                    parser.diagnostics,
+                    diagnostics,
                 ))
             },
             // Resource limits hold in every mode.
@@ -104,16 +105,28 @@ impl Reader for UnicodeMathReader {
 //   does not depend on how it was reached, so each failure is recorded by
 //   offset and never recomputed (see `memo_failure`).
 // * A matrix skips what it cannot parse in Lenient mode. A walk over matrix
-//   content that reaches the end of the input without `)` fails, and so does
-//   any walk that reaches one of its positions later (it follows the same
-//   path), so those positions are recorded too.
-// * Every `nom::Err::Failure` aborts the whole parse (a resource limit, or a
-//   Strict error that no alternative can recover from): nothing catches it
-//   to try another alternative.
+//   content that fails (at the end of the input without `)`, or in Strict
+//   mode at content it cannot parse) makes any walk that reaches one of its
+//   positions later fail too (it follows the same path), so those positions
+//   are recorded.
+// * Every `nom::Err::Failure` means a resource limit was hit. It aborts the
+//   whole parse: nothing catches it to try another alternative.
 //
 // Nodes built by failed alternatives stay in the arena as garbage, so the
-// node limit counts every node the parse creates. Diagnostics recorded by a
-// failed alternative are dropped with it.
+// node limit counts every node the parse creates. Skips recorded by a failed
+// alternative are dropped with it.
+
+/// Matrix content skipped in Lenient mode: `runs` runs of characters between
+/// byte offsets `start` and `end` of one matrix.
+struct MatrixSkips {
+    start: usize,
+    end: usize,
+    runs: usize,
+}
+
+/// At most this many matrices get their own skip warning; the rest are
+/// summed up in one more.
+const MAX_SKIP_WARNINGS: usize = 32;
 
 struct CompactParser {
     arena: AstArena,
@@ -146,8 +159,12 @@ struct CompactParser {
     dead_walk: Vec<u64>,
     /// Byte range of a run of `.` that is known not to start a number.
     dot_run: (usize, usize),
-    /// Lenient recoveries, in input order.
-    diagnostics: Vec<Diagnostic>,
+    /// Matrices of the result that skipped content (Lenient mode), in input
+    /// order. Formatted into diagnostics only once the parse succeeded.
+    matrix_skips: Vec<MatrixSkips>,
+    /// Matrix cells created but not yet stored as nodes; they count towards
+    /// [`Config::max_nodes`] as soon as they are created.
+    pending_cells: usize,
     /// Units of work done, for tests of the parser's complexity.
     #[cfg(test)]
     steps: usize,
@@ -196,7 +213,8 @@ impl CompactParser {
             failed: Vec::new(),
             dead_walk: Vec::new(),
             dot_run: (0, 0),
-            diagnostics: Vec::new(),
+            matrix_skips: Vec::new(),
+            pending_cells: 0,
             #[cfg(test)]
             steps: 0,
         }
@@ -223,8 +241,21 @@ impl CompactParser {
     /// next element.
     fn push_node(&mut self, node: CompactNode) -> NodeId {
         let id = self.arena.push_node(node);
+        self.check_node_count(0);
+        id
+    }
+
+    /// Abort if the nodes built, the pending matrix cells and `more` nodes
+    /// about to be built exceed [`Config::max_nodes`]. Returns whether the
+    /// parse is aborted.
+    fn check_node_count(&mut self, more: usize) -> bool {
         if let Some(limit) = self.max_nodes
-            && self.arena.node_count() > limit
+            && self
+                .arena
+                .node_count()
+                .saturating_add(self.pending_cells)
+                .saturating_add(more)
+                > limit
             && self.abort.is_none()
         {
             self.abort = Some(Error::LimitExceeded {
@@ -232,7 +263,7 @@ impl CompactParser {
                 limit,
             });
         }
-        id
+        self.abort.is_some()
     }
 
     fn depth_limit(&mut self) {
@@ -291,12 +322,12 @@ impl CompactParser {
             return Err(parse_error(input, nom::error::ErrorKind::Alt));
         }
         let outer = std::mem::take(&mut self.deepest);
-        let diagnostics = self.diagnostics.len();
+        let skips = self.matrix_skips.len();
         let result = parse(self, input);
         let span = self.deepest.saturating_sub(self.depth);
         self.deepest = self.deepest.max(outer);
         if matches!(result, Err(nom::Err::Error(_))) {
-            self.diagnostics.truncate(diagnostics);
+            self.matrix_skips.truncate(skips);
             if self.failed.is_empty() {
                 self.failed = vec![0; self.source_len + 1];
             }
@@ -709,45 +740,56 @@ impl CompactParser {
         }
     }
 
-    /// Handle content of a matrix that does not start an element: refuse it
-    /// in Strict mode, skip it in Lenient mode (extending the run of skipped
-    /// text that starts at `skipped`). Returns the input after it.
-    fn skip_in_matrix<'a>(
-        &mut self,
-        remaining: &'a str,
-        skipped: &mut Option<usize>,
-    ) -> std::result::Result<&'a str, nom::Err<nom::error::Error<&'a str>>> {
-        let offset = self.offset(remaining);
-        let character = remaining.chars().next().unwrap_or_default();
-        if self.strictness == Strictness::Strict {
-            if self.abort.is_none() {
-                self.abort = Some(Error::UnicodeMathParse {
-                    message: format!(
-                        "unexpected {character:?} at byte {} in a matrix",
-                        self.lead + offset
+    /// Warnings for the skipped matrix content of the result, at most
+    /// [`MAX_SKIP_WARNINGS`] plus a summary.
+    fn skip_diagnostics(&self) -> Vec<Diagnostic> {
+        let lead = self.lead;
+        let warning = |message: String, start: usize, end: usize| Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message,
+            span: Some(crate::error::Span::new(lead + start, lead + end)),
+        };
+        let mut diagnostics: Vec<Diagnostic> = self
+            .matrix_skips
+            .iter()
+            .take(MAX_SKIP_WARNINGS)
+            .map(|skip| {
+                warning(
+                    format!(
+                        "skipped {} run(s) of matrix content that is not UnicodeMath \
+                         at bytes {}..{}",
+                        skip.runs,
+                        lead + skip.start,
+                        lead + skip.end
                     ),
-                });
-            }
-            return Err(abort_failure(remaining));
+                    skip.start,
+                    skip.end,
+                )
+            })
+            .collect();
+        if let Some(rest) = self.matrix_skips.get(MAX_SKIP_WARNINGS..)
+            && let (Some(first), Some(last)) = (rest.first(), rest.last())
+        {
+            diagnostics.push(warning(
+                format!(
+                    "skipped content in {} more matrices at bytes {}..{}",
+                    rest.len(),
+                    lead + first.start,
+                    lead + last.end
+                ),
+                first.start,
+                last.end,
+            ));
         }
-        skipped.get_or_insert(offset);
-        Ok(&remaining[character.len_utf8()..])
+        diagnostics
     }
 
-    /// Report the run of skipped matrix content from `skipped` to `end`.
-    fn report_skipped(&mut self, skipped: &mut Option<usize>, end: usize) {
-        let Some(start) = skipped.take() else {
-            return;
-        };
-        let source_start = self.lead + start;
-        let source_end = self.lead + end;
-        self.diagnostics.push(Diagnostic {
-            kind: DiagnosticKind::Warning,
-            message: format!(
-                "skipped matrix content that is not UnicodeMath at bytes {source_start}..{source_end}"
-            ),
-            span: Some(crate::error::Span::new(source_start, source_end)),
-        });
+    /// Start a new matrix cell, counting it towards the node limit. Returns
+    /// whether the parse is aborted.
+    fn add_cell(&mut self, cells: &mut usize) -> bool {
+        *cells += 1;
+        self.pending_cells += 1;
+        self.check_node_count(0)
     }
 
     fn parse_matrix_content<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -758,7 +800,16 @@ impl CompactParser {
         let mut remaining = input;
         // Loop positions of this walk, recorded as failing if it fails.
         let mut walk: Vec<u32> = Vec::new();
-        let mut skipped: Option<usize> = None;
+        // Cells created by this walk, pending until the matrix is built.
+        let mut cells = 0_usize;
+        // Lenient skips: runs, first and last offset, and whether the
+        // previous position was skipped.
+        let mut skips = MatrixSkips {
+            start: 0,
+            end: 0,
+            runs: 0,
+        };
+        let mut in_run = false;
         loop {
             self.tick(1);
             let offset = self.offset(remaining);
@@ -774,41 +825,78 @@ impl CompactParser {
             if remaining.starts_with(')') {
                 break;
             }
+            let mut skipped = false;
             if let Some(rest) = remaining.strip_prefix(|c: char| c.is_whitespace()) {
                 // Whitespace separates operands; it is not content.
-                self.report_skipped(&mut skipped, offset);
                 remaining = rest;
-                continue;
-            }
-            if remaining.starts_with('@') {
-                self.report_skipped(&mut skipped, offset);
+            } else if remaining.starts_with('@') {
                 current_row.push(std::mem::take(&mut current_cell));
                 rows.push(std::mem::take(&mut current_row));
                 remaining = &remaining[1..];
-                continue;
-            }
-            if remaining.starts_with('&') {
-                self.report_skipped(&mut skipped, offset);
+                if self.add_cell(&mut cells) {
+                    return Err(abort_failure(remaining));
+                }
+            } else if remaining.starts_with('&') {
                 current_row.push(std::mem::take(&mut current_cell));
                 remaining = &remaining[1..];
-                continue;
+                if self.add_cell(&mut cells) {
+                    return Err(abort_failure(remaining));
+                }
+            } else {
+                match self.parse_element(remaining) {
+                    Ok((rest, id)) => {
+                        current_cell.push(id);
+                        remaining = rest;
+                    },
+                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                    Err(_) if self.strictness == Strictness::Strict => {
+                        // Strict mode does not drop content: the matrix fails
+                        // like any other construct, and the caller keeps the
+                        // input (as text at the top level).
+                        self.mark_dead_walks(&walk);
+                        return Err(parse_error(remaining, nom::error::ErrorKind::Char));
+                    },
+                    Err(_) => {
+                        let character = remaining.chars().next().unwrap_or_default();
+                        remaining = &remaining[character.len_utf8()..];
+                        if !in_run {
+                            if skips.runs == 0 {
+                                skips.start = offset;
+                            }
+                            skips.runs += 1;
+                        }
+                        skips.end = self.offset(remaining);
+                        skipped = true;
+                    },
+                }
             }
-            match self.parse_element(remaining) {
-                Ok((rest, id)) => {
-                    self.report_skipped(&mut skipped, offset);
-                    current_cell.push(id);
-                    remaining = rest;
-                },
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => remaining = self.skip_in_matrix(remaining, &mut skipped)?,
-            }
+            in_run = skipped;
         }
-        let end = self.offset(remaining);
-        self.report_skipped(&mut skipped, end);
         // Finalize
         if !current_cell.is_empty() || !current_row.is_empty() {
             current_row.push(current_cell);
             rows.push(current_row);
+        }
+        // The cells become nodes below; padding short rows adds more. Refuse
+        // a matrix whose padded cells exceed what one node can hold before
+        // building any of them.
+        self.pending_cells -= cells;
+        let widest = rows.iter().map(Vec::len).max().unwrap_or(1);
+        let padded = rows.len().saturating_mul(widest);
+        if padded > AstArena::MAX_CHILDREN || widest > AstArena::MAX_CHILDREN {
+            if self.abort.is_none() {
+                self.abort = Some(Error::LimitExceeded {
+                    kind: LimitKind::ListLength,
+                    limit: AstArena::MAX_CHILDREN,
+                });
+            }
+            return Err(abort_failure(remaining));
+        }
+        if self.check_node_count(padded + widest + 1) {
+            return Err(abort_failure(remaining));
+        }
+        if skips.runs > 0 {
+            self.matrix_skips.push(skips);
         }
 
         let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(1) as u16;
@@ -1324,21 +1412,40 @@ mod tests {
         UnicodeMathReader::parse(input, &Config::default().with_strictness(strictness))
     }
 
+    /// The text of every `Text` node, concatenated.
+    fn text_of(nodes: &[MathNode]) -> String {
+        nodes
+            .iter()
+            .filter_map(|n| match n {
+                MathNode::Text(_, s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
-    fn strict_matrix_refuses_content_it_cannot_parse() {
-        for (input, offset, character) in [
-            ("\u{25A0}(a#b)", 5, '#'),
-            ("\u{25A0}(a(b&c)", 5, '('),
-            ("  \u{25A0}(a&b@c^)", 11, '^'),
+    fn strict_matrix_keeps_content_it_cannot_parse_as_text() {
+        // The matrix fails like any other construct, so nothing is dropped:
+        // the rest of the input from the matrix on is kept as text.
+        for (input, text) in [
+            ("\u{25A0}(a#b)", "\u{25A0}(a#b)"),
+            ("\u{25A0}(a(b&c)", "\u{25A0}(a(b&c)"),
+            ("x+\u{25A0}(a#b", "\u{25A0}(a#b"),
+            ("(\u{25A0}(a#b)", "(\u{25A0}(a#b)"),
+            ("!\u{25A0}(#", "\u{25A0}(#"),
         ] {
-            match parse_with(input, Strictness::Strict) {
-                Err(Error::UnicodeMathParse { message }) => assert_eq!(
-                    message,
-                    format!("unexpected {character:?} at byte {offset} in a matrix"),
-                    "{input}"
-                ),
-                other => panic!("{input}: {other:?}"),
-            }
+            let result = parse_with(input, Strictness::Strict).unwrap();
+            assert!(
+                !result
+                    .expr
+                    .nodes
+                    .iter()
+                    .any(|n| matches!(n, MathNode::Array { .. })),
+                "{input}: {:?}",
+                result.expr.nodes
+            );
+            assert_eq!(text_of(&result.expr.nodes), text, "{input}");
+            assert!(result.diagnostics.is_empty());
         }
         // Whitespace is not content.
         let nodes = parse("\u{25A0}(a & b @ c & d)");
@@ -1349,18 +1456,42 @@ mod tests {
     }
 
     #[test]
-    fn lenient_matrix_reports_each_skipped_run() {
-        let result = parse_with("\u{25A0}(a##b&c#)", Strictness::Lenient).unwrap();
-        assert!(matches!(&result.expr.nodes[0], MathNode::Array { .. }));
-        let spans: Vec<_> = result
-            .diagnostics
-            .iter()
-            .map(|d| {
-                assert_eq!(d.kind, DiagnosticKind::Warning);
-                d.span.map(|s| (s.start, s.end))
-            })
-            .collect();
-        assert_eq!(spans, [Some((5, 7)), Some((10, 11))]);
+    fn lenient_matrix_reports_its_skipped_runs_once() {
+        let result = parse_with("x \u{25A0}(a##b&c#)", Strictness::Lenient).unwrap();
+        assert!(matches!(&result.expr.nodes[1], MathNode::Array { .. }));
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let warning = &result.diagnostics[0];
+        assert_eq!(warning.kind, DiagnosticKind::Warning);
+        assert_eq!(warning.span.map(|s| (s.start, s.end)), Some((7, 13)));
+        assert!(
+            warning.message.starts_with("skipped 2 run(s)"),
+            "{}",
+            warning.message
+        );
+    }
+
+    #[test]
+    fn lenient_skip_warnings_are_capped() {
+        let input = "\u{25A0}(a#)".repeat(MAX_SKIP_WARNINGS + 10);
+        let result = parse_with(&input, Strictness::Lenient).unwrap();
+        assert_eq!(result.diagnostics.len(), MAX_SKIP_WARNINGS + 1);
+        let summary = result.diagnostics.last().unwrap();
+        assert!(
+            summary
+                .message
+                .starts_with("skipped content in 10 more matrices"),
+            "{}",
+            summary.message
+        );
+        // Millions of skipped runs in one matrix make one warning.
+        let input = format!("\u{25A0}({})", "# ".repeat(200_000));
+        let result = parse_with(&input, Strictness::Lenient).unwrap();
+        assert_eq!(result.diagnostics.len(), 1);
+        assert!(
+            result.diagnostics[0]
+                .message
+                .starts_with("skipped 200000 run(s)")
+        );
     }
 
     #[test]
@@ -1369,6 +1500,54 @@ mod tests {
         // matrix is not part of the result and nothing of it was skipped.
         let result = parse_with("(\u{25A0}(a#b)", Strictness::Lenient).unwrap();
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    #[test]
+    fn matrix_cells_count_towards_the_node_limit() {
+        let config = |strictness| {
+            Config::default()
+                .with_strictness(strictness)
+                .with_max_nodes(Some(1_000))
+        };
+        let cells = format!("\u{25A0}({})", "&".repeat(5_000));
+        let nested = format!("{}{}", "\u{25A0}(".repeat(126), "&".repeat(5_000));
+        for input in [&cells, &nested] {
+            for strictness in [Strictness::Strict, Strictness::Lenient] {
+                let mut parser = CompactParser::new(input, 0, &config(strictness));
+                assert!(matches!(
+                    parser.parse_expr_list(input),
+                    Err(Error::LimitExceeded {
+                        kind: LimitKind::Nodes,
+                        limit: 1_000
+                    })
+                ));
+                // Refused once the limit was reached, not at the end.
+                assert!(parser.steps < 2_000, "{}", parser.steps);
+            }
+        }
+    }
+
+    #[test]
+    fn padding_short_matrix_rows_is_bounded() {
+        // One wide row and many short ones would pad rows × columns cells.
+        let input = format!("\u{25A0}({}{})", "&".repeat(300), "@x".repeat(300));
+        let unlimited = Config::default().with_max_nodes(None);
+        assert!(matches!(
+            UnicodeMathReader::parse(&input, &unlimited),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ListLength,
+                ..
+            })
+        ));
+        let input = format!("\u{25A0}({}{})", "&".repeat(30), "@x".repeat(30));
+        assert!(matches!(
+            UnicodeMathReader::parse(&input, &Config::default().with_max_nodes(Some(500))),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::Nodes,
+                limit: 500
+            })
+        ));
+        assert!(UnicodeMathReader::parse(&input, &Config::default()).is_ok());
     }
 
     #[test]
