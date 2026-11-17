@@ -388,7 +388,20 @@ impl<'a> MathmlCompactParser<'a> {
             "mrow" => {
                 let children = self.parse_children(name)?;
                 let span = self.arena.push_children_deferred(&children);
-                Ok(self.arena.push_node(CompactNode::Row(span)))
+                let row = self.arena.push_node(CompactNode::Row(span));
+                let mode = get_attr(start, "data-mathema-reflect");
+                let reflected = match get_attr(start, "style") {
+                    Some(style) => has_horizontal_reflection(&style),
+                    None => matches!(mode.as_deref(), Some("text" | "math")),
+                };
+                if reflected {
+                    Ok(self.arena.push_node(CompactNode::Reflect {
+                        content: row,
+                        text_mode: mode.as_deref() == Some("text"),
+                    }))
+                } else {
+                    Ok(row)
+                }
             },
             "mfrac" => {
                 let children = self.parse_children(name)?;
@@ -542,7 +555,9 @@ impl<'a> MathmlCompactParser<'a> {
             "menclose" => {
                 let notation = get_attr(start, "notation").unwrap_or_default();
                 let id = self.parse_child_id(name)?;
-                if notation.contains("box") || notation.contains("roundedbox") {
+                if notation.split_whitespace().any(|n| n == "actuarial") {
+                    Ok(self.arena.push_node(CompactNode::Actuarial(id)))
+                } else if notation.contains("box") || notation.contains("roundedbox") {
                     let empty = self.arena.push_str("");
                     Ok(self.arena.push_node(CompactNode::Boxed {
                         content: id,
@@ -934,6 +949,39 @@ impl<'a> MathmlCompactParser<'a> {
 // ---------------------------------------------------------------------------
 // Helpers (no arena access needed)
 // ---------------------------------------------------------------------------
+
+/// Read the supported, single horizontal CSS transform. Other declarations
+/// (such as CSS variables) are not transforms on this element.
+fn has_horizontal_reflection(style: &str) -> bool {
+    let mut reflected = false;
+    let mut important = false;
+    for declaration in style.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if !property.trim().eq_ignore_ascii_case("transform") {
+            continue;
+        }
+        let (value, priority) = match value.rsplit_once('!') {
+            Some((value, priority)) if priority.trim().eq_ignore_ascii_case("important") => {
+                (value, true)
+            },
+            _ => (value, false),
+        };
+        if important && !priority {
+            continue;
+        }
+        important = priority;
+        reflected = value
+            .trim()
+            .strip_suffix(')')
+            .and_then(|v| v.split_once('('))
+            .is_some_and(|(name, arg)| {
+                name.eq_ignore_ascii_case("scaleX") && arg.trim().parse::<f64>() == Ok(-1.0)
+            });
+    }
+    reflected
+}
 
 fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> {
     start

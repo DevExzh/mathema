@@ -547,18 +547,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 // not appear in the content.
                 write_verb(buf, s);
             } else {
-                let cmd = match style {
-                    TextStyle::Bold => "textbf",
-                    TextStyle::Italic => "textit",
-                    TextStyle::Monospace => "texttt",
-                    TextStyle::SansSerif => "textsf",
-                    _ => "text",
-                };
-                buf.push('\\');
-                buf.push_str(cmd);
-                buf.push('{');
-                write_text_content(buf, s);
-                buf.push('}');
+                write_styled_text(buf, style, s);
             }
         },
 
@@ -1005,6 +994,22 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 write_wrapped_content(buf, arena, inner);
                 buf.push('}');
             }
+        },
+        CompactNode::Actuarial(inner) => {
+            buf.push_str("\\angl{");
+            write_hbox_content(buf, arena, inner);
+            buf.push('}');
+        },
+
+        CompactNode::Reflect { content, text_mode } => {
+            if text_mode {
+                buf.push_str(r"\reflectbox{");
+                write_hbox_content(buf, arena, content);
+            } else {
+                buf.push_str(r"\mathreflectbox{");
+                write_box_math(buf, arena, &[content]);
+            }
+            buf.push('}');
         },
 
         CompactNode::Cancel { stroke, content } => {
@@ -1511,6 +1516,70 @@ fn write_wrapped_content(buf: &mut String, arena: &AstArena, content: NodeId) {
     }
 }
 
+fn write_box_math(buf: &mut String, arena: &AstArena, nodes: &[NodeId]) {
+    if let [only] = nodes
+        && let CompactNode::Row(span) = *arena.node(*only)
+    {
+        write_nodes(buf, arena, span);
+    } else {
+        write_node_slice(buf, arena, nodes, false);
+    }
+}
+
+/// Emit upright text directly in a text box and keep math runs in inline math mode.
+fn write_hbox_content(buf: &mut String, arena: &AstArena, id: NodeId) {
+    let one = [id];
+    let children = match *arena.node(id) {
+        CompactNode::Row(span) => arena.children(span),
+        _ => &one,
+    };
+    let mut rest = children;
+    while let Some((&first, tail)) = rest.split_first() {
+        if let CompactNode::Text(style, sid) = *arena.node(first) {
+            if style == TextStyle::Normal {
+                let text = arena.str_val(sid);
+                if text.starts_with(['-', '\'', '`'])
+                    && text.chars().next().is_some_and(|c| buf.ends_with(c))
+                {
+                    buf.push_str("{}");
+                }
+                write_text_content(buf, text);
+            } else {
+                write_styled_text(buf, style, arena.str_val(sid));
+            }
+            rest = tail;
+        } else if matches!(
+            *arena.node(first),
+            CompactNode::Reflect {
+                text_mode: true,
+                ..
+            }
+        ) {
+            write_node(buf, arena, first);
+            rest = tail;
+        } else {
+            let n = rest
+                .iter()
+                .take_while(|&&id| {
+                    !matches!(
+                        *arena.node(id),
+                        CompactNode::Text(..)
+                            | CompactNode::Reflect {
+                                text_mode: true,
+                                ..
+                            }
+                    )
+                })
+                .count();
+            let (math, tail) = rest.split_at(n);
+            buf.push('$');
+            write_box_math(buf, arena, math);
+            buf.push('$');
+            rest = tail;
+        }
+    }
+}
+
 /// Write a node inside a pair of braces, always keeping the braces. Unlike
 /// `write_braced`, this never unwraps a single-child Row, so it is safe for
 /// stand-alone empty-base scripts whose arguments must stay isolated from the
@@ -1542,6 +1611,28 @@ fn write_verb(buf: &mut String, content: &str) {
     buf.push(delim);
     buf.push_str(content);
     buf.push(delim);
+}
+
+fn write_styled_text(buf: &mut String, style: TextStyle, text: &str) {
+    use TextStyle::*;
+    let wrappers: &[&str] = match style {
+        Bold => &[r"\textbf{"],
+        Italic => &[r"\textit{"],
+        BoldItalic => &[r"\textbf{", r"\textit{"],
+        Monospace => &[r"\texttt{"],
+        SansSerif => &[r"\textsf{"],
+        SansSerifBold => &[r"\textsf{", r"\textbf{"],
+        SansSerifItalic => &[r"\textsf{", r"\textit{"],
+        SansSerifBoldItalic => &[r"\textsf{", r"\textbf{", r"\textit{"],
+        _ => &[r"\text{"],
+    };
+    for wrapper in wrappers {
+        buf.push_str(wrapper);
+    }
+    write_text_content(buf, text);
+    for _ in wrappers {
+        buf.push('}');
+    }
 }
 
 /// Write decoded text so that text-mode syntax and ligatures cannot change it.
@@ -2408,5 +2499,89 @@ mod tests {
             first,
             crate::from_latex(&first).unwrap().to_latex().unwrap()
         );
+    }
+
+    #[test]
+    fn reflected_math_groups_have_stable_latex_spelling() {
+        for input in [r"\reflectbox{$x^2$}", r"\mathreflectbox{\frac{a}{b}}"] {
+            let first = roundtrip(input);
+            let command = if input.starts_with(r"\reflectbox") {
+                r"\reflectbox{"
+            } else {
+                r"\mathreflectbox{"
+            };
+            assert!(first.starts_with(command), "{first:?}");
+            assert_eq!(first, roundtrip(&first));
+        }
+    }
+
+    #[test]
+    fn reflection_keeps_the_argument_mode_and_inline_math() {
+        for (input, expected) in [
+            (r"\reflectbox{abc}", r"\reflectbox{abc}"),
+            (r"\reflectbox{$x^2$}", r"\reflectbox{$x^{2}$}"),
+            (
+                r"\reflectbox{pay \$5 or $x^2$}",
+                r"\reflectbox{pay \$5 or $x^{2}$}",
+            ),
+            (
+                r"\reflectbox{a\reflectbox{b}c}",
+                r"\reflectbox{a\reflectbox{b}c}",
+            ),
+            (r"\mathreflectbox{x^2}", r"\mathreflectbox{x^{2}}"),
+            (r"\mathreflectbox λ", r"\mathreflectbox{\lambda}"),
+        ] {
+            let first = crate::from_latex(input).unwrap();
+            assert_eq!(first.to_latex().unwrap(), expected, "{input}");
+            let second = crate::from_latex(expected).unwrap();
+            assert_eq!(
+                second.to_mathml().unwrap(),
+                first.to_mathml().unwrap(),
+                "{input}"
+            );
+        }
+        assert!(crate::from_latex(r"\reflectbox{x^2}").is_err());
+    }
+
+    #[test]
+    fn reflected_mathml_requires_an_actual_transform() {
+        for (style, reflected) in [
+            ("transform: scaleX( -1.0 )", true),
+            ("--note: scaleX(-1)", false),
+            ("transform:scaleX(-1) rotate(90deg)", false),
+            ("transform:scaleX(-1);transform:none", false),
+            ("transform:scaleX(-1) !important; transform:none", true),
+        ] {
+            let ml = format!(r#"<math><mrow style="{style}"><mi>x</mi></mrow></math>"#);
+            let tex = crate::convert(&ml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+            assert_eq!(
+                tex.contains(r"\mathreflectbox"),
+                reflected,
+                "{style}: {tex}"
+            );
+        }
+    }
+
+    #[test]
+    fn reflected_modes_round_trip_through_mathml_metadata() {
+        for (input, mode, command) in [
+            (r"\reflectbox{abc}", "text", r"\reflectbox{"),
+            (r"\mathreflectbox{x^2}", "math", r"\mathreflectbox{"),
+        ] {
+            let mathml =
+                crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+            assert!(mathml.contains(&format!("data-mathema-reflect=\"{mode}\"")));
+            let latex =
+                crate::convert(&mathml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+            assert!(latex.starts_with(command), "{latex:?}");
+            assert_eq!(
+                latex,
+                crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap()
+            );
+        }
+        let style_only = r#"<math><mrow style="display:inline-block; transform:scaleX(-1)"><mi>x</mi></mrow></math>"#;
+        let latex =
+            crate::convert(style_only, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+        assert!(latex.starts_with(r"\mathreflectbox{"), "{latex:?}");
     }
 }

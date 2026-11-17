@@ -1,3 +1,5 @@
+mod hbox;
+
 use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::char;
@@ -3091,6 +3093,7 @@ impl LatexCompactParser {
                     }),
                 ))
             },
+            "reflectbox" | "mathreflectbox" => self.parse_reflect(input, name == "reflectbox"),
             "cancel" => self.parse_cancel(input, StrokeKind::Forward),
             "bcancel" => self.parse_cancel(input, StrokeKind::Backward),
             "xcancel" => self.parse_cancel(input, StrokeKind::Cross),
@@ -3531,30 +3534,20 @@ impl LatexCompactParser {
 
             // --- Actuarial angle notation ---
             "angl" | "angln" => {
-                // \angl{n} → n with angle bracket — render as content with right angle bar
-                let (input, _) = ws(input)?;
-                if input.starts_with('{') {
-                    let (input, content_id) = self.parse_braced_group(input)?;
-                    // Emit content with an overline to approximate the actuarial angle
-                    let line_sid = self.arena.push_str("\u{203E}");
-                    let line_id = self
+                // \angl{n} is the actuarial angle enclosure: a top and right
+                // rule around the argument.
+                if name == "angln" {
+                    let n = self.arena.push_str("n");
+                    let content_id = self
                         .arena
-                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, line_sid));
-                    Ok((
+                        .push_node(CompactNode::Text(TextStyle::Normal, n));
+                    return Ok((
                         input,
-                        self.arena.push_node(CompactNode::Overscript {
-                            base: content_id,
-                            over: line_id,
-                            movable_limits: false,
-                        }),
-                    ))
-                } else {
-                    // No argument — just emit empty
-                    Ok((
-                        input,
-                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-                    ))
+                        self.arena.push_node(CompactNode::Actuarial(content_id)),
+                    ));
                 }
+                let (rest, content) = self.parse_hbox_argument(input)?;
+                Ok((rest, self.arena.push_node(CompactNode::Actuarial(content))))
             },
 
             // --- Phase angle ---
@@ -3733,6 +3726,19 @@ impl LatexCompactParser {
         }
     }
 
+    fn parse_reflect<'a>(&mut self, input: &'a str, text_mode: bool) -> IResult<&'a str, NodeId> {
+        let (rest, content) = if text_mode {
+            self.parse_hbox_argument(input)?
+        } else {
+            self.parse_required_group(input)?
+        };
+        Ok((
+            rest,
+            self.arena
+                .push_node(CompactNode::Reflect { content, text_mode }),
+        ))
+    }
+
     /// Parse a single unbraced TeX token: one letter, one digit, one symbol, or a command.
     fn parse_single_token<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         match input.as_bytes().first() {
@@ -3749,6 +3755,7 @@ impl LatexCompactParser {
                 Ok((&input[1..], self.arena.push_node(CompactNode::Number(sid))))
             },
             Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
+            Some(&b) if !b.is_ascii() => self.parse_atom(input),
             _ => Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Alt,
@@ -4068,14 +4075,20 @@ impl LatexCompactParser {
         let invalid_arg =
             || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
         let braced = input.starts_with('{');
-        let (rest, raw) = if braced {
-            super::mhchem::capture_braced(input)
-        } else {
-            super::split_token(input).filter(|(_, token)| {
-                !token.starts_with(['}', '&', '$', '#', '^', '_']) && *token != r"\\"
-            })
+        let (rest, raw) = hbox::argument(input)?;
+        if !braced && matches!(raw, "$" | r"\\") {
+            return Err(invalid_arg());
         }
-        .ok_or_else(invalid_arg)?;
+        // Text groups can contain local font changes and inline math.
+        if braced && raw.contains(['\\', '$']) {
+            let mut nodes = SmallVec::new();
+            self.hbox_runs(raw, style, false, &mut nodes)?;
+            if !nodes.is_empty() {
+                let content = self.flatten_single(&nodes);
+                self.ensure_node_budget(rest)?;
+                return Ok((rest, content));
+            }
+        }
         let text = clean_text_content(raw);
         if !braced && text.is_empty() {
             return Err(invalid_arg());

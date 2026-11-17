@@ -578,6 +578,21 @@ fn emit_box_embedded(
             let cy = y - child.dy * em;
             emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
         },
+        BoxKind::Reflected { child } => {
+            svg.push_str(r#"<g transform="translate("#);
+            push_f3(svg, x + layout.width * em);
+            svg.push_str(",0) scale(-1,1)>");
+            emit_box_embedded(
+                svg,
+                &child.layout,
+                child.dx * em,
+                y - child.dy * em,
+                em,
+                options,
+                glyphs,
+            );
+            svg.push_str("</g>");
+        },
     }
 }
 
@@ -949,6 +964,13 @@ fn emit_box_arena_embedded(
             let sw = 0.04 * em; // proportional stroke width
             push_boxed_rect(svg, x, ry, w_px, h_px, stroke_color, fill_color, sw);
             emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
+        },
+        ArenaBoxKind::Reflected { child } => {
+            svg.push_str(r#"<g transform="translate("#);
+            push_f3(svg, x + layout.width * em);
+            svg.push_str(",0) scale(-1,1)>");
+            emit_box_arena_embedded(svg, arena, *child, 0.0, y, em, options, glyphs);
+            svg.push_str("</g>");
         },
     }
 }

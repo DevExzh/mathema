@@ -881,6 +881,15 @@ impl<'a> Emitter<'a> {
                 self.arg("m:e", inner, fmt);
                 self.close("m:borderBox");
             },
+            CompactNode::Actuarial(content) => {
+                self.open("m:borderBox");
+                self.open("m:borderBoxPr");
+                self.on("m:hideBot");
+                self.on("m:hideLeft");
+                self.close("m:borderBoxPr");
+                self.arg("m:e", content, fmt);
+                self.close("m:borderBox");
+            },
             CompactNode::Cancel { .. } => {
                 let (strikes, inner) = self.strike_chain(id);
                 // CT_BorderBoxPr: hideTop, hideBot, hideLeft, hideRight,
@@ -964,6 +973,10 @@ impl<'a> Emitter<'a> {
                 self.loss("OMML output does not preserve math style or size switches")
             },
             CompactNode::ColAlign(_) => {},
+            CompactNode::Reflect { content, .. } => {
+                self.loss("OMML cannot represent horizontal reflection; the content was written");
+                self.node(content, fmt);
+            },
         }
     }
 

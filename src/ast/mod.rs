@@ -37,7 +37,7 @@ pub enum DisplayStyle {
     Inline,
 }
 
-/// The core math AST node. 30 variants covering the union of all target formats.
+/// The core math AST node. 31 variants covering the union of all target formats.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -200,6 +200,13 @@ pub enum MathNode {
     // === Decorators ===
     /// Invisible but occupies space (kind controls which dimensions to keep)
     Phantom(Box<MathNode>, PhantomKind),
+    /// Content reflected horizontally around its vertical centerline.
+    Reflect {
+        /// Reflected content.
+        content: Box<MathNode>,
+        /// Whether the wrapper uses LaTeX's text/hbox mode.
+        text_mode: bool,
+    },
     /// Visible filled rectangle: `\rule[lift]{width}{height}`.
     Rule {
         /// Rectangle width.
@@ -218,6 +225,8 @@ pub enum MathNode {
         /// Optional border color (`\fcolorbox`).
         border_color: Option<String>,
     },
+    /// Actuarial angle enclosure with a top and right rule.
+    Actuarial(Box<MathNode>),
     /// Strikethrough/cancellation
     Cancel {
         /// Direction/shape of the cancellation stroke.
@@ -655,7 +664,10 @@ pub(crate) fn compact_children(
         CompactNode::Root { index, radicand } => [index, radicand].into_iter().for_each(push),
         CompactNode::Nary { sub, sup, body, .. } => [sub, sup, body].into_iter().for_each(push),
         CompactNode::Accent { base, .. } => push(base),
-        CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => push(inner),
+        CompactNode::Phantom(inner, _)
+        | CompactNode::Boxed { content: inner, .. }
+        | CompactNode::Actuarial(inner) => push(inner),
+        CompactNode::Reflect { content: inner, .. } => push(inner),
         CompactNode::Cancel { content, .. }
         | CompactNode::Scaled { content, .. }
         | CompactNode::RaiseBox { content, .. }
@@ -772,9 +784,10 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             }
             Ok(())
         },
-        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
-            check_node_depth(inner, d)
-        },
+        MathNode::Phantom(inner, _)
+        | MathNode::Boxed { content: inner, .. }
+        | MathNode::Actuarial(inner) => check_node_depth(inner, d),
+        MathNode::Reflect { content: inner, .. } => check_node_depth(inner, d),
         MathNode::Cancel { content, .. }
         | MathNode::Scaled { content, .. }
         | MathNode::RaiseBox { content, .. } => check_node_depth(content, d),

@@ -176,7 +176,7 @@ fn strip_comments(input: &str) -> String {
 /// If `input[start..]` begins `\verb` or `\verb*` followed by a delimiter,
 /// return the byte index just past the matching closing delimiter. Verbatim
 /// segments must not be altered by comment stripping or macro expansion.
-fn find_verb_end(input: &str, start: usize) -> Option<usize> {
+pub(super) fn find_verb_end(input: &str, start: usize) -> Option<usize> {
     if !input[start..].starts_with("\\verb") {
         return None;
     }
@@ -538,7 +538,9 @@ impl Preprocessor {
                         changed = true;
                         continue;
                     }
-                } else if super::text_style(name).is_some() {
+                } else if super::text_style(name).is_some()
+                    || matches!(name, "angl" | "reflectbox" | "mathreflectbox")
+                {
                     // A native text command takes its argument before expansion.
                     // Group a bare macro token so its replacement stays in text mode.
                     let arg = cmd_rest.trim_start_matches(|c: char| c.is_ascii_whitespace());

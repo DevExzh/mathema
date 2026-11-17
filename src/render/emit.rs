@@ -207,6 +207,12 @@ fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
             let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
             (cmin.min(x), cmax.max(x + layout.width))
         },
+        BoxKind::Reflected { child } => {
+            let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
+            let left = x + layout.width - (cmax - x);
+            let right = x + layout.width - (cmin - x);
+            (left, right)
+        },
 
         BoxKind::Kern | BoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
     }
@@ -241,6 +247,12 @@ fn compute_x_bounds_arena(arena: &LayoutArena, id: LayoutBoxId, x: f64) -> (f64,
         ArenaBoxKind::Boxed { child, padding, .. } => {
             let (cmin, cmax) = compute_x_bounds_arena(arena, *child, x + padding);
             (cmin.min(x), cmax.max(x + layout.width))
+        },
+        ArenaBoxKind::Reflected { child } => {
+            let (cmin, cmax) = compute_x_bounds_arena(arena, *child, x);
+            let left = x + layout.width - (cmax - x);
+            let right = x + layout.width - (cmin - x);
+            (left, right)
         },
 
         ArenaBoxKind::Kern | ArenaBoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
@@ -615,6 +627,20 @@ fn emit_box(
             let cy = y - child.dy * em;
             emit_box(svg, &child.layout, cx, cy, em, attrs);
         },
+        BoxKind::Reflected { child } => {
+            svg.push_str(r#"<g transform="translate("#);
+            push_f3(svg, x + layout.width * em);
+            svg.push_str(",0) scale(-1,1)>");
+            emit_box(
+                svg,
+                &child.layout,
+                child.dx * em,
+                y - child.dy * em,
+                em,
+                attrs,
+            );
+            svg.push_str("</g>");
+        },
     }
 }
 
@@ -973,6 +999,13 @@ fn emit_box_arena(
             // Content — arena version stores child without position offset,
             // so we must apply padding here (heap version stored dx=padding in PositionedBox)
             emit_box_arena(svg, arena, *child, x + padding * em, y, em, attrs);
+        },
+        ArenaBoxKind::Reflected { child } => {
+            svg.push_str(r#"<g transform="translate("#);
+            push_f3(svg, x + layout.width * em);
+            svg.push_str(",0) scale(-1,1)>");
+            emit_box_arena(svg, arena, *child, 0.0, y, em, attrs);
+            svg.push_str("</g>");
         },
     }
 }

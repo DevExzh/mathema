@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- LaTeX actuarial-angle notation (angl and angln) keeps its top and right
+  enclosure through the AST, MathML, OMML, MTEF v5, SVG, and raster output.
+
 ### Added
 
 - **OMML paragraphs.** `OmmlReader::parse_paragraph` reads an `m:oMathPara`
@@ -42,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of `Unsupported`. LaTeX proof-tree, XY-diagram and `numcases` builders stop
   promptly when the node limit is reached instead of recovering into more
   nodes.
+- LaTeX `\reflectbox` and `\mathreflectbox` preserve an explicit horizontal
+  reflection through the AST and SVG/raster renderers. MathML uses a
+  `data-mathema-reflect` marker with a CSS `scaleX(-1)` style so mathema can
+  read its own output back.
 
 ### Changed
 
