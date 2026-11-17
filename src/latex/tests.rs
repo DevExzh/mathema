@@ -222,29 +222,29 @@ fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
 }
 
 #[test]
-fn centernot_overlays_stay_grouped_from_nary_and_ordinary_symbols() {
+fn negated_operators_preserve_bounds_bodies_and_following_operands() {
     let config = Config::default();
     for input in [
         r"\centernot{\intop}t",
         r"\centernot\intop t",
+        r"\centernot{\int_0^1}t",
+        r"\centernot{\int\limits_a^b}t",
+        r"\centernot{\int\nolimits_a^b x}t",
+        r"\centernot\sum t",
+        r"\centernot{\sum_{i=0}^n x}t",
         r"\centernot{\alpha}t",
         r"\not=",
         r"\not\in",
     ] {
-        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
-        normalize_compact_expr(&mut parsed.expr).unwrap();
-        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
-        if input.contains("intop") {
-            assert!(
-                first.starts_with(r"\centernot{\intop}"),
-                "scalar integral overlay was not kept as intop: {first:?}"
-            );
-        }
-
-        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
-        normalize_compact_expr(&mut reparsed.expr).unwrap();
-        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
-        assert_eq!(first, second, "negated expression changed: {input:?}");
+        let original = crate::from_latex(input).unwrap();
+        let first = original.to_latex().unwrap();
+        let reparsed = crate::from_latex(&first).unwrap();
+        assert_eq!(
+            original.to_mathml().unwrap(),
+            reparsed.to_mathml().unwrap(),
+            "{input:?} wrote {first:?}"
+        );
+        assert_eq!(first, reparsed.to_latex().unwrap(), "{input:?}");
     }
 
     let precomposed = r"m\centernot{=}";

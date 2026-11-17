@@ -44,19 +44,10 @@ fn write_node_slice(
     while i < children.len() {
         let id = children[i];
 
-        // A negation overlay is stored as adjacent base and combining-solidus
-        // nodes after row normalization. Keep the pair in one argument so a
-        // large-operator command cannot absorb the slash as its body.
-        if i + 1 < children.len()
-            && is_large_operator_overlay_base(arena, id)
-            && is_combining_slash(arena, children[i + 1])
-        {
-            let output_start = buf.len();
-            buf.push_str("\\centernot{");
-            write_centernot_base(buf, arena, id);
-            buf.push('}');
-            ends_with_command =
-                appended_ends_with_letter_command(buf, output_start, ends_with_command);
+        if let Some(cmd) = scalar_negation_command(arena, &children[i..]) {
+            buf.push_str("\\centernot\\");
+            buf.push_str(cmd);
+            ends_with_command = true;
             i += 2;
             continue;
         }
@@ -573,54 +564,29 @@ fn write_math_leaf_segment(buf: &mut String, s: &str, kind: MathLeafKind) {
     }
 }
 
-fn centernot_base(arena: &AstArena, span: NodeSpan) -> Option<NodeId> {
-    let children = arena.children(span);
-    if children.len() != 2 {
+/// An unbraced centernot argument is one TeX token. Bracing a scalar large
+/// operator would turn it into an n-ary expression with a body on reparse.
+fn scalar_negation_command(arena: &AstArena, children: &[NodeId]) -> Option<&'static str> {
+    let &[base, slash, ..] = children else {
+        return None;
+    };
+    let CompactNode::Symbol(SymbolKind::Ordinary, mark) = *arena.node(slash) else {
+        return None;
+    };
+    let CompactNode::Symbol(SymbolKind::LargeOp, symbol) = *arena.node(base) else {
+        return None;
+    };
+    if arena.str_val(mark) != "\u{0338}" {
         return None;
     }
-    matches!(
-        *arena.node(children[1]),
-        CompactNode::Symbol(SymbolKind::Ordinary, sid)
-            if arena.str_val(sid) == "\u{0338}"
-    )
-    .then_some(children[0])
-    .filter(|&base| is_large_operator_overlay_base(arena, base))
-}
-
-fn is_combining_slash(arena: &AstArena, id: NodeId) -> bool {
-    matches!(
-        *arena.node(id),
-        CompactNode::Symbol(SymbolKind::Ordinary, sid)
-            if arena.str_val(sid) == "\u{0338}"
-    )
-}
-
-fn is_large_operator_overlay_base(arena: &AstArena, id: NodeId) -> bool {
-    match *arena.node(id) {
-        CompactNode::Symbol(SymbolKind::LargeOp, _) | CompactNode::Nary { .. } => true,
-        CompactNode::MathAtom { content, .. } => is_large_operator_overlay_base(arena, content),
-        CompactNode::Row(span) => {
-            let children = arena.children(span);
-            children.len() == 1 && is_large_operator_overlay_base(arena, children[0])
-        },
-        _ => false,
+    let glyph = arena.str_val(symbol);
+    let ch = glyph.chars().next()?;
+    if glyph.len() != ch.len_utf8() {
+        return None;
     }
-}
-
-fn write_centernot_base(buf: &mut String, arena: &AstArena, id: NodeId) {
-    let scalar_integral = match *arena.node(id) {
-        CompactNode::Symbol(SymbolKind::LargeOp, sid) if arena.str_val(sid) == "\u{222B}" => true,
-        CompactNode::Nary {
-            op: '\u{222B}',
-            body,
-            ..
-        } => is_empty_body(arena, body),
-        _ => false,
-    };
-    if scalar_integral {
-        buf.push_str("\\intop");
-    } else {
-        write_wrapped_content(buf, arena, id);
+    match ch {
+        '∫' => Some("intop"),
+        _ => nary_op_to_latex(ch),
     }
 }
 
@@ -678,17 +644,18 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Space(r) => write_space(buf, r),
 
         CompactNode::Row(span) => {
-            if let Some(base) = centernot_base(arena, span) {
-                buf.push_str("\\centernot{");
-                write_centernot_base(buf, arena, base);
-                buf.push('}');
+            let children = arena.children(span);
+            if children.len() == 2
+                && let Some(cmd) = scalar_negation_command(arena, children)
+            {
+                buf.push_str("\\centernot\\");
+                buf.push_str(cmd);
                 return;
             }
             if is_idotsint_row(arena, id) {
                 write_idotsint(buf);
                 return;
             }
-            let children = arena.children(span);
             if children.len() == 1 {
                 // Single-child Row: emit without braces to keep output canonical.
                 // This avoids `{11}` vs `11` round-trip divergence.

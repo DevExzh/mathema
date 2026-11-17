@@ -170,9 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Operator names escape LaTeX comment and grouping characters, including
   percent signs, braces, and literal backslashes. Unclosed operator-name
   arguments now fail instead of consuming the remainder of the input.
-- Combining-solidus negation overlays are emitted as grouped centernot
-  expressions, so large-operator commands such as \int cannot absorb the
-  overlay or the following sibling as their body.
+- Negating a scalar large operator keeps the following operand separate on
+  LaTeX round-trip. Negated integrals retain their bounds and bodies.
 
 - Malformed old-style LaTeX font switches (`\\rm`, `\\sf`, and related
   commands) no longer retry an unconsumed scoped argument until the AST grows
