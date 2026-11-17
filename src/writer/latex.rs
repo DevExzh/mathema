@@ -1219,25 +1219,28 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
 }
 
 fn write_identifier_text(buf: &mut String, s: &str) {
-    let mut chars = s.chars();
-    let Some(first) = chars.next() else {
+    if !s.chars().any(|ch| unicode_to_latex(ch).is_some()) {
+        buf.push_str(s);
         return;
-    };
-    if let Some(cmd) = unicode_to_latex(first) {
-        buf.push('\\');
-        buf.push_str(cmd);
-        let tail = chars.as_str();
-        if !tail.is_empty() {
-            // A command name consumes following ASCII letters. A literal
-            // source space terminates it and is ignored by the math parser,
-            // keeping the output stable when the identifier is reparsed.
-            if tail.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) {
+    }
+
+    // Translate every mapped character in a mixed identifier. A command word
+    // consumes following ASCII letters, so insert an ignored source space
+    // before an unmapped ASCII word character; another backslash already
+    // terminates a preceding command naturally.
+    let mut previous_was_command = false;
+    for ch in s.chars() {
+        if let Some(cmd) = unicode_to_latex(ch) {
+            buf.push('\\');
+            buf.push_str(cmd);
+            previous_was_command = true;
+        } else {
+            if previous_was_command && ch.is_ascii_alphabetic() {
                 buf.push(' ');
             }
-            buf.push_str(tail);
+            buf.push(ch);
+            previous_was_command = false;
         }
-    } else {
-        buf.push_str(s);
     }
 }
 
@@ -2011,6 +2014,10 @@ mod tests {
             (
                 "<math><mi>α\u{2004}beta</mi></math>",
                 r"\alpha\mkern6mu beta",
+            ),
+            (
+                "<math><mi>α\u{2004}βγ</mi></math>",
+                r"\alpha\mkern6mu \beta\gamma",
             ),
             ("<math><mi>αx</mi></math>", r"\alpha x"),
         ];
