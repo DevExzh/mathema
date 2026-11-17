@@ -149,6 +149,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Literal Unicode minus signs retain their ordinary class when adjacent to
   ASCII minus operators, so LaTeX round-trips do not change `−-B` into a
   different binary-operator sequence.
+- Text daggers in math expressions keep their ordinary spacing through LaTeX
+  conversion. The writer uses `\dag` and `\ddag` for the ordinary forms and
+  `\dagger` and `\ddagger` for the binary operators.
 - Literal backslash symbols are written as `\textbackslash` rather than a raw
   backslash that could become a newline or control space when followed by
   another command.

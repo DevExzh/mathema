@@ -1275,8 +1275,13 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
         }
         return;
     }
-    // Try unicode -> latex command
-    if let Some(cmd) = unicode_to_latex(ch) {
+    // The same dagger glyph has ordinary and binary TeX commands.
+    let command = match (kind, ch) {
+        (SymbolKind::Ordinary, '†') => Some("dag"),
+        (SymbolKind::Ordinary, '‡') => Some("ddag"),
+        _ => unicode_to_latex(ch),
+    };
+    if let Some(cmd) = command {
         buf.push('\\');
         buf.push_str(cmd);
         return;
@@ -1688,6 +1693,24 @@ mod tests {
         let text_first = roundtrip(r"\text{−--}");
         assert_eq!(text_first, r"\text{−–}");
         assert_eq!(text_first, roundtrip(&text_first));
+    }
+
+    #[test]
+    fn dagger_commands_preserve_math_class() {
+        for (ordinary, text, binary) in [
+            (r"\dag", r"\textdagger", r"\dagger"),
+            (r"\ddag", r"\textdaggerdbl", r"\ddagger"),
+        ] {
+            for (input, expected) in [
+                (format!("a{text}*b"), format!("a{ordinary}* b")),
+                (format!("a{ordinary}*b"), format!("a{ordinary}* b")),
+                (format!("a{binary}*b"), format!("a{binary} * b")),
+            ] {
+                let first = roundtrip(&input);
+                assert_eq!(first, expected);
+                assert_eq!(roundtrip(&first), first);
+            }
+        }
     }
 
     #[test]
