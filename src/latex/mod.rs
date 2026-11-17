@@ -1,4 +1,5 @@
 pub mod error;
+mod macro_args;
 pub mod mhchem;
 pub mod packages;
 pub mod parse;

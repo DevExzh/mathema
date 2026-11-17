@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::macro_args::{self, ParameterText};
 use super::mhchem::capture_braced as scan_braced;
 use super::packages;
 
@@ -17,6 +18,10 @@ struct MacroDef {
     param_count: u8,
     optional_default: Option<String>,
     body: String,
+    /// Primitive definitions retain token-aware parameter delimiters.  The
+    /// older fields above remain for `\newcommand` and builtin fixed-arity
+    /// macros, which have no prefix/delimited parameter text.
+    parameter_text: Option<ParameterText>,
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +292,7 @@ impl Preprocessor {
                     param_count,
                     optional_default: None,
                     body: body.to_owned(),
+                    parameter_text: None,
                 },
             );
         }
@@ -391,6 +397,7 @@ impl Preprocessor {
                 param_count,
                 optional_default,
                 body: body.to_owned(),
+                parameter_text: None,
             },
         );
         Some(rest)
@@ -398,37 +405,22 @@ impl Preprocessor {
 
     /// Parse `\def\name#1#2{body}`. Count `#n` params between name and `{`.
     fn parse_def_cmd<'a>(&mut self, s: &'a str) -> Option<&'a str> {
-        let rest = s.strip_prefix("\\def")?;
-        let (rest, name) = scan_command(rest)?;
-        let name = name.to_owned();
-
-        // Count #n parameters between name and opening {
-        let mut r = rest;
-        let mut param_count: u8 = 0;
-        loop {
-            let trimmed = skip_ws(r);
-            if let Some(after_hash) = trimmed.strip_prefix('#')
-                && let Some(d) = after_hash.chars().next()
-                && d.is_ascii_digit()
-            {
-                param_count += 1;
-                r = &after_hash[d.len_utf8()..];
-                continue;
-            }
-            break;
-        }
-
-        let (rest, body) = scan_braced(r)?;
-
+        let parsed = match macro_args::parse_definition(s) {
+            Ok(Some(parsed)) if !parsed.global => parsed,
+            Ok(Some(_)) | Ok(None) | Err(_) => return None,
+        };
+        let name = parsed.name.strip_prefix('\\')?.to_owned();
+        let param_count = parsed.parameter_text.parameter_count();
         self.macros.insert(
             name,
             MacroDef {
                 param_count,
                 optional_default: None,
-                body: body.to_owned(),
+                body: parsed.body.to_owned(),
+                parameter_text: Some(parsed.parameter_text),
             },
         );
-        Some(rest)
+        Some(parsed.rest)
     }
 
     /// Parse `\newenvironment{name}[n]{begin}{end}`. Skip optional `*` and `[n]`.
@@ -544,7 +536,20 @@ impl Preprocessor {
             {
                 let name = &command[1..];
                 if let Some(def) = self.macros.get(name) {
-                    if let Some((rest, args)) = consume_args(cmd_rest, def) {
+                    if let Some(parameter_text) = &def.parameter_text {
+                        if let Ok(consumed) =
+                            macro_args::consume_arguments(cmd_rest, parameter_text)
+                        {
+                            out.push_str(&macro_args::substitute(
+                                &def.body,
+                                &consumed.arguments,
+                                parameter_text.terminal_open(),
+                            ));
+                            s = consumed.rest;
+                            changed = true;
+                            continue;
+                        }
+                    } else if let Some((rest, args)) = consume_args(cmd_rest, def) {
                         out.push_str(&substitute(&def.body, &args));
                         s = rest;
                         changed = true;
@@ -895,6 +900,32 @@ mod tests {
     fn expand_def_with_param() {
         let result = preprocess("\\def\\bold#1{\\mathbf{#1}}\\bold{x}");
         assert_eq!(result, "\\mathbf{x}");
+    }
+
+    #[test]
+    fn expand_def_with_prefix_and_delimited_argument() {
+        let result = preprocess(r"\def\foo|#1||{#1}\foo| x {y} ||");
+        assert_eq!(result, " x {y} ");
+    }
+
+    #[test]
+    fn expand_def_with_delimited_then_single_token_argument() {
+        let result = preprocess(r"\def\foo#1|#2{#1+#2}\foo 1 2 |34");
+        assert_eq!(result, " 1 2 +34");
+    }
+
+    #[test]
+    fn expand_def_terminal_hash_opening_brace() {
+        let result = preprocess(r"\def\foo#1#{#1}\foo1^{23}");
+        assert_eq!(result, "{1^23}");
+    }
+
+    #[test]
+    fn expand_def_does_not_match_control_word_prefix() {
+        let result = preprocess(r"\def\foo\bar#1{#1}\foo\barX");
+        assert_eq!(result, r"\foo\barX");
+        let result = preprocess(r"\def\foo\bar#1{#1}\foo\bar X");
+        assert_eq!(result, "X");
     }
 
     #[test]
