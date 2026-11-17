@@ -342,35 +342,7 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
             atom_type: MathAtomType::Rel | MathAtomType::Bin,
             ..
         } => true,
-        // After an identifier written as \command, space before plain ASCII letter
-        CompactNode::Identifier(sid) => {
-            let s = arena.str_val(sid);
-            let ch = s.chars().next().unwrap_or('?');
-            if unicode_to_latex(ch).is_some() {
-                curr_starts_with_ascii_letter(arena, curr)
-            } else {
-                false
-            }
-        },
-        // After a non-ASCII symbol written as \command
-        CompactNode::Symbol(_, sid) => {
-            let s = arena.str_val(sid);
-            let ch = s.chars().next().unwrap_or('?');
-            !ch.is_ascii()
-                && unicode_to_latex(ch).is_some()
-                && curr_starts_with_ascii_letter(arena, curr)
-        },
-        _ => false,
-    }
-}
-
-fn curr_starts_with_ascii_letter(arena: &AstArena, id: NodeId) -> bool {
-    match *arena.node(id) {
-        CompactNode::Identifier(sid) => {
-            let s = arena.str_val(sid);
-            let ch = s.chars().next().unwrap_or('?');
-            ch.is_ascii_alphabetic() && unicode_to_latex(ch).is_none()
-        },
+        // Control words are separated using the emitted buffer in write_node_slice.
         _ => false,
     }
 }
@@ -2046,6 +2018,8 @@ mod tests {
                 r"\alpha\mkern6mu \beta\gamma",
             ),
             ("<math><mi>αx</mi></math>", r"\alpha x"),
+            ("<math><mi>αx</mi><mi>y</mi></math>", r"\alpha xy"),
+            ("<math><mi>aβ</mi><mi>y</mi></math>", r"a\beta y"),
         ];
         for (input, expected) in cases {
             let first = crate::convert(input, crate::Format::MathML, crate::Format::LaTeX)
