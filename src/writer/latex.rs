@@ -1310,6 +1310,10 @@ fn write_space(buf: &mut String, r: Rational) {
     // to ensure round-trip idempotency.
     if r == Rational::new(-3, 18) {
         buf.push_str("\\!");
+    } else if r == Rational::new(-4, 18) {
+        buf.push_str("\\negmedspace ");
+    } else if r == Rational::new(-5, 18) {
+        buf.push_str("\\negthickspace ");
     } else if r == Rational::new(3, 18) {
         buf.push_str("\\,");
     } else if r == Rational::new(4, 18) {

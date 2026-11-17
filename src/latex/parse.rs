@@ -2669,7 +2669,7 @@ impl LatexCompactParser {
             },
             ',' => CompactNode::Space(Rational::new(3, 18)),
             ';' => CompactNode::Space(Rational::new(5, 18)),
-            ':' => CompactNode::Space(Rational::new(4, 18)),
+            ':' | '>' => CompactNode::Space(Rational::new(4, 18)),
             '!' => CompactNode::Space(Rational::new(-3, 18)),
             '\\' => {
                 // Consume optional [dimension] after \\ (e.g. \\[1ex])
@@ -3533,20 +3533,23 @@ impl LatexCompactParser {
 
     /// Handle commands that produce a single node without consuming further input.
     fn try_leaf_command(&mut self, name: &str) -> Option<NodeId> {
+        let mut space = |num, den| {
+            Some(
+                self.arena
+                    .push_node(CompactNode::Space(Rational::new(num, den))),
+            )
+        };
         match name {
             // Spacing
-            "quad" => Some(
-                self.arena
-                    .push_node(CompactNode::Space(Rational::new(1, 1))),
-            ),
-            "qquad" => Some(
-                self.arena
-                    .push_node(CompactNode::Space(Rational::new(2, 1))),
-            ),
-            "enspace" => Some(
-                self.arena
-                    .push_node(CompactNode::Space(Rational::new(1, 2))),
-            ),
+            "quad" => space(1, 1),
+            "qquad" => space(2, 1),
+            "enspace" | "enskip" => space(1, 2),
+            "thinspace" => space(3, 18),
+            "medspace" => space(4, 18),
+            "thickspace" => space(5, 18),
+            "negthinspace" => space(-3, 18),
+            "negmedspace" => space(-4, 18),
+            "negthickspace" => space(-5, 18),
             // Style commands — emit StyleSwitch nodes that the layout engine uses
             // to change the math style for subsequent siblings in the same row.
             "displaystyle" => {

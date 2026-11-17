@@ -56,6 +56,33 @@ fn round_trip_spacing() {
 }
 
 #[test]
+fn math_spacing_aliases_preserve_their_width() {
+    use crate::ast::{MathNode, Rational};
+    let config = Config::default();
+    for (source, mu, canonical) in [
+        (r"\>", 4, r"\:"),
+        (r"\thinspace", 3, r"\,"),
+        (r"\medspace", 4, r"\:"),
+        (r"\thickspace", 5, r"\;"),
+        (r"\negthinspace", -3, r"\!"),
+        (r"\negmedspace", -4, r"\negmedspace "),
+        (r"\negthickspace", -5, r"\negthickspace "),
+        (r"\enskip", 9, r"\enspace "),
+    ] {
+        let input = format!("a{source} b");
+        let parsed = LatexReader::parse(&input, &config).unwrap().expr;
+        assert_eq!(
+            parsed.nodes[1],
+            MathNode::Space(Rational::new(mu, 18)),
+            "{source}"
+        );
+        let output = LatexWriter::write(&parsed, &config).unwrap();
+        assert_eq!(output, format!("a{canonical}b"));
+        assert_eq!(LatexReader::parse(&output, &config).unwrap().expr, parsed);
+    }
+}
+
+#[test]
 fn round_trip_scaled_delimiters() {
     let config = Config::default();
     let cases = ["\\big(", "\\Big[", "\\bigg|", "\\Bigg)"];
