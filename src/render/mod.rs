@@ -75,7 +75,7 @@ where
 /// Options controlling SVG rendering output.
 #[derive(Debug, Clone)]
 pub struct RenderOptions {
-    /// Base font size in pixels (default: 16.0).
+    /// Base font size in pixels. Must be finite and positive (default: 16.0).
     pub font_size_px: f64,
     /// Whether to render in display mode. If None, uses MathExpr.display.
     pub display_mode: Option<bool>,
@@ -143,7 +143,7 @@ pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String>
 /// over arena lifetime (e.g. cross-thread batching) can manage their own arena
 /// via [`render_to_svg_compact_arena`].
 pub fn render_to_svg_compact(expr: &CompactExpr, options: &RenderOptions) -> Result<String> {
-    with_pooled_arena(|layout_arena| render_to_svg_compact_arena(expr, options, layout_arena))
+    render_compact_svg(expr, options, None, emit::emit_svg_arena)
 }
 
 /// Render a compact expression to SVG using arena-based layout (zero heap alloc in layout pass).
@@ -151,6 +151,15 @@ pub fn render_to_svg_compact_arena(
     expr: &CompactExpr,
     options: &RenderOptions,
     layout_arena: &mut arena::LayoutArena,
+) -> Result<String> {
+    render_compact_svg(expr, options, Some(layout_arena), emit::emit_svg_arena)
+}
+
+fn render_compact_svg(
+    expr: &CompactExpr,
+    options: &RenderOptions,
+    arena: Option<&mut arena::LayoutArena>,
+    emit: impl FnOnce(&arena::LayoutArena, arena::LayoutBoxId, &RenderOptions) -> String,
 ) -> Result<String> {
     options.validate()?;
     crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
@@ -162,10 +171,15 @@ pub fn render_to_svg_compact_arena(
     } else {
         style::MathStyle::Text
     };
-    let builder = layout::LayoutBuilder::new(style, options);
-    layout_arena.clear();
-    let root = builder.layout(layout_arena, expr);
-    Ok(emit::emit_svg_arena(layout_arena, root, options))
+    let render = |arena: &mut arena::LayoutArena| {
+        arena.clear();
+        let root = layout::LayoutBuilder::new(style, options).layout(arena, expr);
+        Ok(emit(arena, root, options))
+    };
+    match arena {
+        Some(arena) => render(arena),
+        None => with_pooled_arena(render),
+    }
 }
 
 /// Render a math expression to a standalone SVG with embedded font glyph paths.
@@ -200,9 +214,7 @@ pub fn render_to_svg_standalone_compact(
     expr: &CompactExpr,
     options: &RenderOptions,
 ) -> Result<String> {
-    with_pooled_arena(|layout_arena| {
-        render_to_svg_standalone_compact_arena(expr, options, layout_arena)
-    })
+    render_compact_svg(expr, options, None, emit_standalone_svg)
 }
 
 /// Render a compact expression to standalone SVG using arena-based layout.
@@ -212,29 +224,20 @@ pub fn render_to_svg_standalone_compact_arena(
     options: &RenderOptions,
     layout_arena: &mut arena::LayoutArena,
 ) -> Result<String> {
-    options.validate()?;
-    crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
-    let style = if options
-        .display_mode
-        .unwrap_or(expr.display == DisplayStyle::Block)
-    {
-        style::MathStyle::Display
-    } else {
-        style::MathStyle::Text
-    };
-    let builder = layout::LayoutBuilder::new(style, options);
-    layout_arena.clear();
-    let root = builder.layout(layout_arena, expr);
+    render_compact_svg(expr, options, Some(layout_arena), emit_standalone_svg)
+}
+
+#[cfg(feature = "render")]
+fn emit_standalone_svg(
+    layout_arena: &arena::LayoutArena,
+    root: arena::LayoutBoxId,
+    options: &RenderOptions,
+) -> String {
     let chars = subset::collect_chars_arena(layout_arena, root);
     let mut glyphs = subset::build_glyph_set(&chars);
     let variant_ids = subset::collect_variants_arena(layout_arena, root);
     subset::add_variants(&mut glyphs, &variant_ids);
-    Ok(svg_writer::emit_svg_with_fonts_arena(
-        layout_arena,
-        root,
-        options,
-        &glyphs,
-    ))
+    svg_writer::emit_svg_with_fonts_arena(layout_arena, root, options, &glyphs)
 }
 
 #[cfg(test)]
@@ -292,6 +295,24 @@ mod integration_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn invalid_svg_options_preserve_the_callers_layout() {
+        use crate::reader::Reader;
+        let expr = crate::reader::latex::LatexReader::parse_compact("x", &Default::default())
+            .unwrap()
+            .expr;
+        let mut arena = arena::LayoutArena::new();
+        let previous = arena.alloc(arena::ArenaLayoutBox::kern(7.0));
+        let options = RenderOptions {
+            font_size_px: 0.0,
+            ..Default::default()
+        };
+
+        assert!(render_to_svg_compact_arena(&expr, &options, &mut arena).is_err());
+        assert!(render_to_svg_standalone_compact_arena(&expr, &options, &mut arena).is_err());
+        assert_eq!(arena.get(previous).width, 7.0);
     }
 }
 

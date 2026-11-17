@@ -66,7 +66,7 @@ pub struct RasterOptions {
     pub render: RenderOptions,
     /// Output image format.
     pub format: ImageFormat,
-    /// DPI scale factor. 1.0 = 96 DPI, 2.0 = Retina/192 DPI.
+    /// Finite, positive DPI scale factor. 1.0 = 96 DPI, 2.0 = Retina/192 DPI.
     pub scale: f64,
     /// Background color as RGBA. `None` = transparent (PNG) or white (JPEG).
     pub background: Option<[u8; 4]>,
