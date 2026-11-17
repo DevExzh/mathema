@@ -48,126 +48,74 @@ pub(crate) fn expansion_work_cap(input_len: usize) -> usize {
 /// macros are present. Expansion errors identify whether output bytes, token
 /// work, or recursive depth stopped the traversal.
 pub fn preprocess_cow(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
-    if !needs_preprocessing(input) {
-        return Ok(Cow::Borrowed(input));
+    let (source, needs_expansion) = prepare_source(input);
+    if needs_expansion {
+        Ok(Cow::Owned(ordered_stream::expand(&source)?))
+    } else {
+        Ok(source)
     }
-    let stripped = strip_comments(input);
-    // A comments-only change still needs an owned result, but does not need to
-    // seed the macro table or walk a token queue.
-    if !needs_expansion_processing(&stripped) {
-        return Ok(Cow::Owned(stripped));
-    }
-    // Definitions are processed while walking the token stream.  In
-    // particular, a definition inside a group must not leak into text before
-    // it or after the group closes.  The ordered stream also owns expansion
-    // caps and verbatim opacity guarantees.
-    Ok(Cow::Owned(ordered_stream::expand(&stripped)?))
 }
 
-/// Fast-path check: does the input contain any syntax we need to process?
-fn needs_preprocessing(input: &str) -> bool {
-    input.contains('%') || needs_expansion_processing(input)
-}
-
-fn needs_expansion_processing(input: &str) -> bool {
-    input.contains("\\newcommand")
-        || input.contains("\\renewcommand")
-        || input.contains("\\providecommand")
-        || input.contains("\\def")
-        || input.contains("\\gdef")
-        || input.contains("\\edef")
-        || input.contains("\\xdef")
-        || input.contains("\\let")
-        || input.contains("\\futurelet")
-        || input.contains("\\expandafter")
-        || input.contains("\\@firstoftwo")
-        || input.contains("\\@secondoftwo")
-        || input.contains("\\@ifstar")
-        || input.contains("\\@ifnextchar")
-        || input.contains("\\TextOrMath")
-        || input.contains("\\noexpand")
-        || input.contains("\\global")
-        || input.contains("\\long")
-        || input.contains("\\protected")
-        || input.contains("\\newenvironment")
-        || uses_builtin_macro(input)
-}
-
-/// Scan `input` for any `\command` that is a registered builtin (package)
-/// macro. Returns on the first hit. Plain formulas — even those that use core
-/// commands like `\frac` or `\alpha` — return `false` and stay zero-copy.
-fn uses_builtin_macro(input: &str) -> bool {
-    let mut s = input;
-    while let Some(pos) = s.find('\\') {
-        // A verbatim block owns everything through its closing delimiter.
-        // Commands-looking text in that block must not trigger the
-        // preprocessor's slow path or be considered for macro expansion.
-        let command_start = &s[pos..];
-        if let Some(end) = find_verb_end(command_start, 0) {
-            s = &command_start[end..];
-            continue;
-        }
-        let after = &s[pos + 1..];
-        let name_len = super::control_word_len(after);
-        if name_len > 0 && packages::is_builtin_macro_name(&after[..name_len]) {
-            return true;
-        }
-        // Advance past this backslash (and any command/escaped char) to avoid
-        // re-finding the same `\`.
-        let skip = if name_len > 0 {
-            name_len
-        } else {
-            after.chars().next().map_or(0, char::len_utf8)
-        };
-        if skip == 0 {
-            break;
-        }
-        s = &after[skip..];
-    }
-    false
-}
-
-// ---------------------------------------------------------------------------
-// Comment stripping and verbatim boundaries
-// ---------------------------------------------------------------------------
-
-fn strip_comments(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0;
-    let mut prev_was_backslash = false;
-
-    while i < input.len() {
-        // Verbatim content must be copied unchanged, including `%` characters.
-        if input.as_bytes().get(i) == Some(&b'\\')
-            && let Some(end) = find_verb_end(input, i)
-        {
-            out.push_str(&input[i..end]);
-            i = end;
-            prev_was_backslash = false;
-            continue;
-        }
-
-        let ch = input[i..].chars().next().unwrap();
-        let ch_len = ch.len_utf8();
-        if ch == '%' && !prev_was_backslash {
-            // Skip until end of line.
-            i += ch_len;
-            while i < input.len() {
-                let c = input[i..].chars().next().unwrap();
-                i += c.len_utf8();
-                if c == '\n' {
-                    out.push(c);
-                    break;
-                }
+/// Locate expandable words and strip comments in one traversal. Only allocate
+/// a replacement string if a real comment, outside a verbatim block, is found.
+fn prepare_source(input: &str) -> (Cow<'_, str>, bool) {
+    let mut offset = 0;
+    let mut copy_from = 0;
+    let mut stripped: Option<String> = None;
+    let mut needs_expansion = false;
+    while let Some(pos) = input[offset..].find(['\\', '%']) {
+        let start = offset + pos;
+        let tail = &input[start..];
+        if tail.starts_with('%') {
+            stripped
+                .get_or_insert_with(|| String::with_capacity(input.len()))
+                .push_str(&input[copy_from..start]);
+            // Preserve the line ending for the parser's line-break handling.
+            let end = tail.find(['\r', '\n']).unwrap_or(tail.len());
+            copy_from = start + end;
+            offset = copy_from;
+        } else if let Some(end) = find_verb_end(input, start) {
+            offset = end;
+        } else if let Some((rest, token)) = super::split_token(tail) {
+            let name = &token[1..];
+            if !needs_expansion {
+                needs_expansion = matches!(
+                    name,
+                    "newcommand"
+                        | "renewcommand"
+                        | "providecommand"
+                        | "def"
+                        | "gdef"
+                        | "edef"
+                        | "xdef"
+                        | "let"
+                        | "futurelet"
+                        | "expandafter"
+                        | "noexpand"
+                        | "global"
+                        | "long"
+                        | "protected"
+                        | "@firstoftwo"
+                        | "@secondoftwo"
+                        | "@ifstar"
+                        | "@ifnextchar"
+                        | "TextOrMath"
+                        | "newenvironment"
+                ) || packages::is_builtin_macro_name(name);
             }
-            prev_was_backslash = false;
-            continue;
+            offset = input.len() - rest.len();
+        } else {
+            break; // A final backslash is left for the parser to diagnose.
         }
-        out.push(ch);
-        prev_was_backslash = ch == '\\' && !prev_was_backslash;
-        i += ch_len;
     }
-    out
+    let source = match stripped {
+        Some(mut out) => {
+            out.push_str(&input[copy_from..]);
+            Cow::Owned(out)
+        },
+        None => Cow::Borrowed(input),
+    };
+    (source, needs_expansion)
 }
 
 /// If `input[start..]` begins `\verb` or `\verb*` followed by a delimiter,
@@ -209,6 +157,19 @@ mod tests {
     }
 
     // --- Comment stripping ---
+
+    #[test]
+    fn processing_only_runs_for_actual_control_words_and_comments() {
+        for untouched in [r"\definite x", r"\verb|\def\x{%}|", r"\%x"] {
+            assert!(
+                matches!(preprocess_cow(untouched), Ok(Cow::Borrowed(_))),
+                "{untouched}"
+            );
+        }
+        assert_eq!(expanded("a% skipped\rb"), "a\rb");
+        assert_eq!(expanded("a% skipped\r\nb"), "a\r\nb");
+        assert_eq!(expanded("a% \\gdef\\x{discarded}\nb"), "a\nb");
+    }
 
     #[test]
     fn strip_simple_comment() {
