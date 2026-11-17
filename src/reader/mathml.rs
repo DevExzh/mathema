@@ -1,6 +1,7 @@
 use quick_xml::Reader;
 use quick_xml::events::{BytesText, Event};
 use smallvec::SmallVec;
+use std::collections::HashMap;
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
@@ -87,6 +88,7 @@ struct MathmlCompactParser<'a> {
     arena: AstArena,
     display: Option<DisplayStyle>,
     depth: u32,
+    movable_limit_operators: HashMap<NodeId, bool>,
 }
 
 impl<'a> MathmlCompactParser<'a> {
@@ -104,6 +106,7 @@ impl<'a> MathmlCompactParser<'a> {
             arena: AstArena::with_capacity(est_nodes, est_nodes, input.len() / 4),
             display: None,
             depth: 0,
+            movable_limit_operators: HashMap::new(),
         })
     }
 
@@ -373,7 +376,13 @@ impl<'a> MathmlCompactParser<'a> {
                 let text = self.read_text_content(name)?;
                 let kind = classify_mo(&text);
                 let sid = self.arena.push_str(&text);
-                Ok(self.arena.push_node(CompactNode::Symbol(kind, sid)))
+                let id = self.arena.push_node(CompactNode::Symbol(kind, sid));
+                if let Some(value) = get_attr(start, "movablelimits")
+                    && matches!(value.as_str(), "true" | "false")
+                {
+                    self.movable_limit_operators.insert(id, value == "true");
+                }
+                Ok(id)
             },
             "mtext" => {
                 let mathvariant = get_attr(start, "mathvariant")
@@ -482,6 +491,18 @@ impl<'a> MathmlCompactParser<'a> {
                         }));
                     }
                 }
+                if movable && let Some((op, moves_limits)) = self.limit_operator(base) {
+                    return Ok(self.make_nary(
+                        op,
+                        NodeId::NONE,
+                        over,
+                        if moves_limits {
+                            LimitStyle::Default
+                        } else {
+                            LimitStyle::AboveBelow
+                        },
+                    ));
+                }
                 Ok(self.arena.push_node(CompactNode::Overscript {
                     base,
                     over,
@@ -503,6 +524,18 @@ impl<'a> MathmlCompactParser<'a> {
                         wide: false,
                     }));
                 }
+                if !is_accent && let Some((op, moves_limits)) = self.limit_operator(base) {
+                    return Ok(self.make_nary(
+                        op,
+                        under,
+                        NodeId::NONE,
+                        if moves_limits {
+                            LimitStyle::Default
+                        } else {
+                            LimitStyle::AboveBelow
+                        },
+                    ));
+                }
                 Ok(self.arena.push_node(CompactNode::Underscript {
                     base,
                     under,
@@ -513,6 +546,18 @@ impl<'a> MathmlCompactParser<'a> {
                 let movable = get_attr(start, "accent").as_deref() != Some("true");
                 let children = self.parse_children(name)?;
                 let (base, under, over) = self.three_child_ids(children);
+                if movable && let Some((op, moves_limits)) = self.limit_operator(base) {
+                    return Ok(self.make_nary(
+                        op,
+                        under,
+                        over,
+                        if moves_limits {
+                            LimitStyle::Default
+                        } else {
+                            LimitStyle::AboveBelow
+                        },
+                    ));
+                }
                 Ok(self.arena.push_node(CompactNode::UnderOver {
                     base,
                     under,
@@ -798,6 +843,42 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn is_empty_row_id(&self, id: NodeId) -> bool {
         matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
+    }
+
+    fn limit_operator(&self, id: NodeId) -> Option<(char, bool)> {
+        match *self.arena.node(id) {
+            CompactNode::Symbol(SymbolKind::LargeOp, sid) => self
+                .movable_limit_operators
+                .get(&id)
+                .copied()
+                .and_then(|movable| {
+                    self.arena
+                        .str_val(sid)
+                        .chars()
+                        .next()
+                        .map(|op| (op, movable))
+                }),
+            CompactNode::Row(span) => {
+                let children = self.arena.children(span);
+                if children.len() == 1 {
+                    self.limit_operator(children[0])
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        }
+    }
+
+    fn make_nary(&mut self, op: char, sub: NodeId, sup: NodeId, limits: LimitStyle) -> NodeId {
+        let body = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        self.arena.push_node(CompactNode::Nary {
+            op,
+            sub,
+            sup,
+            body,
+            limits,
+        })
     }
 
     fn optional_script_id(&self, id: Option<&NodeId>) -> NodeId {
@@ -1237,6 +1318,40 @@ mod tests {
     fn subsup() {
         let node = parse_one("<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup></math>");
         assert!(matches!(node, MathNode::SubSup { .. }));
+    }
+
+    #[test]
+    fn movable_under_over_large_operator_round_trips_as_default_nary() {
+        let node = parse_one(
+            "<math><munderover><mo movablelimits=\"true\">∑</mo><mi>i</mi><mi>n</mi></munderover><mi>x</mi></math>",
+        );
+        let MathNode::Row(nodes) = node else {
+            panic!("expected operator and body row");
+        };
+        let MathNode::Nary {
+            op,
+            sub,
+            sup,
+            limits,
+            ..
+        } = &nodes[0]
+        else {
+            panic!("expected default n-ary operator");
+        };
+        assert_eq!(*op, '∑');
+        assert!(sub.is_some() && sup.is_some());
+        assert_eq!(*limits, LimitStyle::Default);
+    }
+
+    #[test]
+    fn fixed_under_over_large_operator_round_trips_as_forced_limits() {
+        let node = parse_one(
+            "<math><munderover><mo movablelimits=\"false\">∑</mo><mi>i</mi><mi>n</mi></munderover></math>",
+        );
+        let MathNode::Nary { limits, .. } = node else {
+            panic!("expected forced n-ary operator");
+        };
+        assert_eq!(limits, LimitStyle::AboveBelow);
     }
 
     #[test]

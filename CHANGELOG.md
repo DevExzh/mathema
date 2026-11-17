@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MathML output preserves TeX's movable default limits. Sum and product-family
+  operators use movable under/over elements, while integral-family operators
+  keep side limits and explicit `\limits`/`\nolimits` remain distinct.
 - LaTeX macro expansion now charges queued replacements, discarded selector
   branches, macro-body evaluation and token processing against a work budget.
   Queue accounting follows consumed and rolled-back source tokens without
