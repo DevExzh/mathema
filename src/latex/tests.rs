@@ -75,6 +75,53 @@ fn actuarial_angle_preserves_enclosure_and_argument_boundaries() {
 }
 
 #[test]
+fn actuarial_text_boxes_keep_mixed_content_and_inline_math() {
+    for (input, fragments) in [
+        (
+            r"\angl{term $x^2$ costs \$5}",
+            vec!["<mtext>term </mtext>", "<msup>", "<mtext> costs $5</mtext>"],
+        ),
+        (
+            r"\angl{term \(x+y\) due}",
+            vec!["<mtext>term </mtext>", "<mi>x</mi>", "<mtext> due</mtext>"],
+        ),
+        (
+            r"\angl{\textbf{a\textit{b}}\{\%}",
+            vec!["<mtext>a</mtext>", "<mtext>b</mtext>", "{%"],
+        ),
+    ] {
+        let parsed = crate::from_latex(input).unwrap();
+        let first = parsed.to_latex().unwrap();
+        let second = crate::from_latex(&first).unwrap();
+        assert_eq!(first, second.to_latex().unwrap(), "{input}");
+        let ml = parsed.to_mathml().unwrap();
+        assert_eq!(ml, second.to_mathml().unwrap(), "{input}");
+        for fragment in fragments {
+            assert!(ml.contains(fragment), "{input}: missing {fragment} in {ml}");
+        }
+    }
+    assert_eq!(
+        crate::from_latex(r"\def\term{end value}\angl\term")
+            .unwrap()
+            .to_latex()
+            .unwrap(),
+        r"\angl{end value}"
+    );
+    let styled = crate::from_latex(r"\angl{\textbf{a\textit{b}}}")
+        .unwrap()
+        .to_latex()
+        .unwrap();
+    assert_eq!(styled, r"\angl{\textbf{a}\textbf{\textit{b}}}");
+    for invalid in [
+        r"\angl{x^2}",
+        r"\angl{missing $end}",
+        r"\angl{lost\unknown}",
+    ] {
+        assert!(crate::from_latex(invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
 fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
     let config = Config::default();
     let mathml = crate::convert_with(

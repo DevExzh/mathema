@@ -526,18 +526,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 // not appear in the content.
                 write_verb(buf, s);
             } else {
-                let cmd = match style {
-                    TextStyle::Bold => "textbf",
-                    TextStyle::Italic => "textit",
-                    TextStyle::Monospace => "texttt",
-                    TextStyle::SansSerif => "textsf",
-                    _ => "text",
-                };
-                buf.push('\\');
-                buf.push_str(cmd);
-                buf.push('{');
-                write_text_content(buf, s);
-                buf.push('}');
+                write_styled_text(buf, style, s);
             }
         },
 
@@ -984,17 +973,18 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
         CompactNode::Actuarial(inner) => {
             buf.push_str("\\angl{");
-            write_actuarial_content(buf, arena, inner);
+            write_hbox_content(buf, arena, inner);
             buf.push('}');
         },
 
         CompactNode::Reflect { content, text_mode } => {
-            buf.push_str(if text_mode {
-                "\\reflectbox{"
+            if text_mode {
+                buf.push_str(r"\reflectbox{");
+                write_hbox_content(buf, arena, content);
             } else {
-                "\\mathreflectbox{"
-            });
-            write_reflect_content(buf, arena, content);
+                buf.push_str(r"\mathreflectbox{");
+                write_wrapped_content(buf, arena, content);
+            }
             buf.push('}');
         },
 
@@ -1489,59 +1479,43 @@ fn write_wrapped_content(buf: &mut String, arena: &AstArena, content: NodeId) {
     }
 }
 
-fn write_actuarial_content(buf: &mut String, arena: &AstArena, content: NodeId) {
-    match *arena.node(content) {
-        CompactNode::Text(_, sid) => buf.push_str(arena.str_val(sid)),
-        CompactNode::Row(span) => {
-            for &child in arena.children(span) {
-                write_actuarial_content(buf, arena, child);
+/// Emit upright text directly in a text box and keep math runs in inline math mode.
+fn write_hbox_content(buf: &mut String, arena: &AstArena, id: NodeId) {
+    let one = [id];
+    let children = match *arena.node(id) {
+        CompactNode::Row(span) => arena.children(span),
+        _ => &one,
+    };
+    let mut rest = children;
+    while let Some((&first, tail)) = rest.split_first() {
+        if let CompactNode::Text(style, sid) = *arena.node(first) {
+            if style == TextStyle::Normal {
+                let text = arena.str_val(sid);
+                if text.starts_with(['-', '\'', '`'])
+                    && text.chars().next().is_some_and(|c| buf.ends_with(c))
+                {
+                    buf.push_str("{}");
+                }
+                write_text_content(buf, text);
+            } else {
+                write_styled_text(buf, style, arena.str_val(sid));
             }
-        },
-        _ => write_wrapped_content(buf, arena, content),
-    }
-}
-
-/// Write reflected math content with the wrapper's closing brace providing a
-/// safe token boundary. This keeps simple script arguments unbraced while
-/// retaining grouping for compound arguments.
-fn write_reflect_content(buf: &mut String, arena: &AstArena, content: NodeId) {
-    if let CompactNode::Row(span) = *arena.node(content) {
-        for &child in arena.children(span) {
-            write_reflect_node(buf, arena, child);
+            rest = tail;
+        } else {
+            let n = rest
+                .iter()
+                .take_while(|&&id| !matches!(*arena.node(id), CompactNode::Text(..)))
+                .count();
+            let (math, tail) = rest.split_at(n);
+            buf.push('$');
+            if let [only] = math {
+                write_wrapped_content(buf, arena, *only);
+            } else {
+                write_node_slice(buf, arena, math);
+            }
+            buf.push('$');
+            rest = tail;
         }
-    } else {
-        write_reflect_node(buf, arena, content);
-    }
-}
-
-fn write_reflect_node(buf: &mut String, arena: &AstArena, id: NodeId) {
-    match *arena.node(id) {
-        CompactNode::Superscript { base, sup } => {
-            write_script_base(buf, arena, base);
-            buf.push('^');
-            write_reflect_arg(buf, arena, sup);
-        },
-        CompactNode::Subscript { base, sub } => {
-            write_script_base(buf, arena, base);
-            buf.push('_');
-            write_reflect_arg(buf, arena, sub);
-        },
-        CompactNode::SubSup { base, sub, sup } => {
-            write_script_base(buf, arena, base);
-            buf.push('_');
-            write_reflect_arg(buf, arena, sub);
-            buf.push('^');
-            write_reflect_arg(buf, arena, sup);
-        },
-        _ => write_node(buf, arena, id),
-    }
-}
-
-fn write_reflect_arg(buf: &mut String, arena: &AstArena, id: NodeId) {
-    if is_simple_token(arena, id) {
-        write_node(buf, arena, id);
-    } else {
-        write_braced(buf, arena, id);
     }
 }
 
@@ -1576,6 +1550,28 @@ fn write_verb(buf: &mut String, content: &str) {
     buf.push(delim);
     buf.push_str(content);
     buf.push(delim);
+}
+
+fn write_styled_text(buf: &mut String, style: TextStyle, text: &str) {
+    use TextStyle::*;
+    let wrappers: &[&str] = match style {
+        Bold => &[r"\textbf{"],
+        Italic => &[r"\textit{"],
+        BoldItalic => &[r"\textbf{", r"\textit{"],
+        Monospace => &[r"\texttt{"],
+        SansSerif => &[r"\textsf{"],
+        SansSerifBold => &[r"\textsf{", r"\textbf{"],
+        SansSerifItalic => &[r"\textsf{", r"\textit{"],
+        SansSerifBoldItalic => &[r"\textsf{", r"\textbf{", r"\textit{"],
+        _ => &[r"\text{"],
+    };
+    for wrapper in wrappers {
+        buf.push_str(wrapper);
+    }
+    write_text_content(buf, text);
+    for _ in wrappers {
+        buf.push('}');
+    }
 }
 
 /// Write decoded text so that text-mode syntax and ligatures cannot change it.
