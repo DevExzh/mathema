@@ -146,6 +146,9 @@ fn round_trip_script_base_tokens() {
             "'\u{211C}''\t|'",
             r"{{}^{\prime}\Re^{\prime\prime}}|^{\prime}",
         ),
+        ("-'", r"-^{\prime}"),
+        ("\u{2212}'", r"{\mathord{-}}^{\prime}"),
+        (r"\middle-'", r"-^{\prime}"),
         ("a/+_2'", r"a/ +_{2}^{\prime}"),
         ("a/d_2'", r"a/ d_{2}^{\prime}"),
     ];
@@ -1321,6 +1324,7 @@ fn fuzz_repro_roundtrip_misc() {
         "\\intop_\\t$ '",
         r"\\left\\{\\frac{a}{\\left\\langle \\brace \\right|}\\right\\}",
         "_'sTfc(\\middle~\\s-'",
+        " ' \\middle' oe~\\middle-' ' \\middle' oe \\middloe'",
         ";\\int\\pod \\int\\podop ",
         "$\\\\$\\\\$\\idotsint$\\\\$jitt",
         "\\text{\\fonment{e\\\t- *\\} '\\t& (*a\\ngln#}  (",

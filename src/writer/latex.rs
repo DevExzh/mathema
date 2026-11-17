@@ -1615,15 +1615,24 @@ fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
 }
 
 fn script_base_char(arena: &AstArena, id: NodeId) -> Option<char> {
-    let sid = match *arena.node(id) {
-        CompactNode::Identifier(sid) | CompactNode::Symbol(_, sid) => sid,
+    let (kind, sid) = match *arena.node(id) {
+        CompactNode::Identifier(sid) => (None, sid),
+        CompactNode::Symbol(kind, sid) => (Some(kind), sid),
         _ => return None,
     };
     let mut chars = arena.str_val(sid).chars();
     let (Some(ch), None) = (chars.next(), chars.next()) else {
         return None;
     };
-    Some(ch)
+    // The LaTeX spelling of a binary U+2212 is the ASCII hyphen-minus. Treat
+    // it as the emitted ASCII token when deciding whether a script base needs
+    // grouping; otherwise the first pass writes `{-}^{...}` while the parser
+    // turns that spelling back into U+2212 and the next pass changes shape.
+    if kind == Some(SymbolKind::BinaryOp) && ch == '\u{2212}' {
+        Some('-')
+    } else {
+        Some(ch)
+    }
 }
 
 /// Write one atomic base while preserving the canonical glyph spelling for the
@@ -1865,6 +1874,42 @@ mod tests {
         let text_first = roundtrip(r"\text{−--}");
         assert_eq!(text_first, r"\text{−–}");
         assert_eq!(text_first, roundtrip(&text_first));
+    }
+
+    #[test]
+    fn binary_minus_script_bases_use_one_canonical_spelling() {
+        for (input, expected) in [
+            ("-'", r"-^{\prime}"),
+            ("\u{2212}'", r"{\mathord{-}}^{\prime}"),
+            (r"\middle-'", r"-^{\prime}"),
+        ] {
+            let first = roundtrip(input);
+            assert_eq!(first, expected, "unexpected spelling for {input:?}");
+            assert_eq!(first, roundtrip(&first), "unstable spelling for {input:?}");
+        }
+
+        let mathml =
+            crate::from_mathml("<math><msup><mo>\u{2212}</mo><mo>\u{2032}</mo></msup></math>")
+                .unwrap();
+        let first = mathml.to_latex().unwrap();
+        assert_eq!(first, r"{\mathord{-}}^{\prime}");
+        assert_eq!(
+            first,
+            crate::from_latex(&first).unwrap().to_latex().unwrap()
+        );
+    }
+
+    #[test]
+    fn ordinary_minus_script_bases_keep_their_math_class() {
+        let config = Config::default();
+        let expr = MathExpr::inline(vec![MathNode::Superscript {
+            base: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "\u{2212}".into())),
+            sup: Box::new(MathNode::Number("2".into())),
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        assert_eq!(first, r"{\mathord{-}}^{2}");
+        assert_eq!(first, roundtrip(&first));
     }
 
     #[test]
