@@ -32,6 +32,9 @@ pub enum LatexParseError {
     #[error("macro expansion exceeded recursive depth limit ({limit})")]
     ExpansionDepthLimit { limit: usize },
 
+    #[error("arguments for macro '\\{command}' are missing or do not match its parameter text")]
+    MacroArguments { command: String },
+
     #[error("malformed \\{command}: {detail}")]
     MalformedDefinition { command: String, detail: String },
 }
@@ -47,7 +50,8 @@ impl LatexParseError {
             Self::ExpansionLimit { .. }
             | Self::ExpansionWorkLimit { .. }
             | Self::ExpansionDepthLimit { .. }
-            | Self::MalformedDefinition { .. } => None,
+            | Self::MalformedDefinition { .. }
+            | Self::MacroArguments { .. } => None,
         }
     }
 }

@@ -188,19 +188,7 @@ enum Mode {
 
 pub(crate) fn expand(input: &str) -> ExpansionResult<String> {
     let cap = expansion_cap(input.len());
-    let mut processor = Processor::new_with_limits(cap, expansion_work_cap(input.len()));
-    processor.seed_builtins();
-    let mut queue: VecDeque<Queued> = tokenize(input)
-        .into_iter()
-        .map(|token| Queued { token, depth: 0 })
-        .collect();
-    let mut output = Vec::new();
-    let result = processor.process_queue(&mut queue, &mut output, Mode::Normal);
-    // A transactional read stopped by the work budget can also look like a
-    // missing argument. Resource failures remain fatal in lenient mode.
-    processor.charge_work(0)?;
-    result?;
-    render_tokens_bounded(&output, cap)
+    Processor::new_with_limits(cap, expansion_work_cap(input.len())).expand_source(input)
 }
 
 pub(crate) struct Processor {
@@ -226,6 +214,21 @@ impl Processor {
             environment_scopes: 0,
             parser_environments: Vec::new(),
         }
+    }
+
+    fn expand_source(mut self, input: &str) -> ExpansionResult<String> {
+        self.seed_builtins();
+        let mut queue: VecDeque<Queued> = tokenize(input)
+            .into_iter()
+            .map(|token| Queued { token, depth: 0 })
+            .collect();
+        let mut output = Vec::new();
+        let result = self.process_queue(&mut queue, &mut output, Mode::Normal);
+        // A transactional read stopped by the work budget can also look like a
+        // missing argument. Resource failures remain fatal in lenient mode.
+        self.charge_work(0)?;
+        result?;
+        render_tokens_bounded(&output, self.cap)
     }
 
     fn seed_builtins(&mut self) {
@@ -401,7 +404,7 @@ impl Processor {
                 },
                 Token::ControlWord(name) => {
                     if name == "expandafter" {
-                        self.expandafter(queue, out, mode, depth)?;
+                        self.expandafter(queue, mode, depth)?;
                         continue;
                     }
                     if mode == Mode::Edef {
@@ -471,51 +474,60 @@ impl Processor {
         let Some(meaning) = self.lookup_macro_for_expansion(name)? else {
             return Ok(false);
         };
+        if self.expand_replacement(name, &meaning, queue, mode, depth)? {
+            return Ok(true);
+        }
+        match (mode, meaning) {
+            (Mode::Normal, Meaning::Token(token)) => {
+                self.emit_native(token, queue, out, mode, depth)?;
+            },
+            // A protected macro or a let copy of an unexpandable token retains
+            // its identity in an expanded definition.
+            _ => self.append(out, control_sequence_token(name))?,
+        }
+        Ok(true)
+    }
+
+    /// Put one expandable meaning on the front of the input. Both normal
+    /// expansion and expandafter must consume exactly the same arguments.
+    fn expand_replacement(
+        &mut self,
+        name: &str,
+        meaning: &Meaning,
+        queue: &mut VecDeque<Queued>,
+        mode: Mode,
+        depth: usize,
+    ) -> ExpansionResult<bool> {
+        if matches!(meaning, Meaning::Token(_))
+            || matches!(meaning, Meaning::Macro(def) if mode == Mode::Edef && def.protected)
+        {
+            return Ok(false);
+        }
         if depth >= MAX_EXPANSION_DEPTH {
             return Err(ExpansionFailure::Depth {
                 limit: MAX_EXPANSION_DEPTH,
             });
         }
-        match meaning {
-            Meaning::Selector(selector) => {
-                let Some(replacement) = selector.select(
+        let missing_argument = || ExpansionFailure::Arguments {
+            command: name.trim_start_matches('\0').into(),
+        };
+        let replacement = match meaning {
+            Meaning::Selector(selector) => selector
+                .select(
                     queue,
                     self.budget.clone(),
                     self.scopes.last().expect("global scope").input_mode == InputMode::Text,
-                ) else {
-                    return Ok(false);
-                };
-                self.prepend(queue, replacement, depth + 1)?;
-                Ok(true)
-            },
+                )
+                .ok_or_else(missing_argument)?,
             Meaning::Macro(def) => {
-                if mode == Mode::Edef && def.protected {
-                    self.append(out, Token::ControlWord(name.to_owned()))?;
-                    return Ok(true);
-                }
-                let Some(args) = consume_args(queue, &def, self.budget.clone()) else {
-                    return Ok(false);
-                };
-                let replacement = substitute(&def, &args, self.cap)?;
-                self.prepend(queue, replacement, depth + 1)?;
-                // In edef mode the newly enqueued body must be expanded by the
-                // same mode; the main loop carries that mode through naturally.
-                let _ = mode;
-                Ok(true)
+                let args =
+                    consume_args(queue, def, self.budget.clone()).ok_or_else(missing_argument)?;
+                substitute(def, &args, self.cap)?
             },
-            Meaning::Token(token) => {
-                if mode == Mode::Edef {
-                    // A `\let` token is unexpandable during an edef.  Keep
-                    // its control-sequence identity so a later redefinition
-                    // of the let target is still observed when the edef body
-                    // is invoked.
-                    self.append(out, Token::ControlWord(name.to_owned()))?;
-                    return Ok(true);
-                }
-                self.emit_native(token, queue, out, mode, depth)?;
-                Ok(true)
-            },
-        }
+            Meaning::Token(_) => unreachable!("unexpandable meaning checked above"),
+        };
+        self.prepend(queue, replacement, depth + 1)?;
+        Ok(true)
     }
 
     fn definition_command(
@@ -1033,7 +1045,6 @@ impl Processor {
     fn expandafter(
         &mut self,
         queue: &mut VecDeque<Queued>,
-        _out: &mut Vec<Token>,
         mode: Mode,
         depth: usize,
     ) -> ExpansionResult<()> {
@@ -1063,6 +1074,10 @@ impl Processor {
             });
         }
         match item.token {
+            Token::ControlWord(name) if name == "expandafter" => {
+                self.expandafter(queue, mode, item_depth + 1)?;
+                Ok(true)
+            },
             Token::ControlWord(name) if name == "noexpand" => {
                 let mut txn = QueueTxn::new(queue, self.budget.clone());
                 txn.skip_whitespace();
@@ -1108,68 +1123,16 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
         mode: Mode,
     ) -> ExpansionResult<bool> {
-        let Some(meaning) = self.lookup_macro_for_expansion(name)? else {
-            // Undefined and parser primitives are unexpandable; restore the
-            // token so the retained token remains immediately before it.
-            queue.push_front(Queued {
-                token: if let Some(symbol) = name.strip_prefix('\u{0}') {
-                    Token::ControlSymbol(symbol.chars().next().unwrap_or(' '))
-                } else {
-                    Token::ControlWord(name.to_owned())
-                },
-                depth,
-            });
-            return Ok(false);
-        };
-        match meaning {
-            Meaning::Selector(selector) => {
-                let Some(replacement) = selector.select(
-                    queue,
-                    self.budget.clone(),
-                    self.scopes.last().expect("global scope").input_mode == InputMode::Text,
-                ) else {
-                    queue.push_front(Queued {
-                        token: Token::ControlWord(name.to_owned()),
-                        depth,
-                    });
-                    return Ok(false);
-                };
-                self.prepend(queue, replacement, depth + 1)?;
-                Ok(true)
-            },
-            Meaning::Macro(def) => {
-                if mode == Mode::Edef && def.protected {
-                    queue.push_front(Queued {
-                        token: Token::ControlWord(name.to_owned()),
-                        depth,
-                    });
-                    return Ok(false);
-                }
-                let Some(args) = consume_args(queue, &def, self.budget.clone()) else {
-                    queue.push_front(Queued {
-                        token: Token::ControlWord(name.to_owned()),
-                        depth,
-                    });
-                    return Ok(false);
-                };
-                let replacement = substitute(&def, &args, self.cap)?;
-                self.prepend(queue, replacement, depth + 1)?;
-                Ok(true)
-            },
-            Meaning::Token(token) => {
-                let restored = if name.starts_with('\u{0}') {
-                    Token::ControlSymbol(name.chars().nth(1).unwrap_or(' '))
-                } else {
-                    Token::ControlWord(name.to_owned())
-                };
-                queue.push_front(Queued {
-                    token: restored,
-                    depth,
-                });
-                let _ = token;
-                Ok(false)
-            },
+        if let Some(meaning) = self.lookup_macro_for_expansion(name)?
+            && self.expand_replacement(name, &meaning, queue, mode, depth)?
+        {
+            return Ok(true);
         }
+        queue.push_front(Queued {
+            token: control_sequence_token(name),
+            depth,
+        });
+        Ok(false)
     }
 
     /// Return the ordinary `\noexpand` result. `None` means an empty input;
@@ -1710,6 +1673,14 @@ fn token_matches_parameter(token: &Token, expected: &str) -> bool {
     }
 }
 
+fn control_sequence_token(key: &str) -> Token {
+    if let Some(symbol) = key.strip_prefix('\0') {
+        Token::ControlSymbol(symbol.chars().next().expect("control symbol key"))
+    } else {
+        Token::ControlWord(key.to_owned())
+    }
+}
+
 fn control_key_symbol(symbol: char) -> String {
     // Word names are stored without a leading backslash.  A nonprinting
     // prefix keeps control-symbol meanings in the same map without colliding
@@ -1961,15 +1932,7 @@ mod tests {
     use super::*;
 
     fn expand_with_limits(input: &str, cap: usize, work_cap: usize) -> ExpansionResult<String> {
-        let mut processor = Processor::new_with_limits(cap, work_cap);
-        processor.seed_builtins();
-        let mut queue: VecDeque<Queued> = tokenize(input)
-            .into_iter()
-            .map(|token| Queued { token, depth: 0 })
-            .collect();
-        let mut output = Vec::new();
-        processor.process_queue(&mut queue, &mut output, Mode::Normal)?;
-        render_tokens_bounded(&output, cap)
+        Processor::new_with_limits(cap, work_cap).expand_source(input)
     }
 
     fn chained_name(index: usize) -> String {

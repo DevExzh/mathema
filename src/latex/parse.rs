@@ -1206,6 +1206,9 @@ fn expansion_error(failure: ExpansionFailure) -> Error {
         ExpansionFailure::OutputBytes { limit } => LatexParseError::ExpansionLimit { limit },
         ExpansionFailure::Work { limit } => LatexParseError::ExpansionWorkLimit { limit },
         ExpansionFailure::Depth { limit } => LatexParseError::ExpansionDepthLimit { limit },
+        ExpansionFailure::Arguments { command } => LatexParseError::MacroArguments {
+            command: command.into(),
+        },
         ExpansionFailure::Syntax { command, kind } => LatexParseError::MalformedDefinition {
             command: command.as_str().to_owned(),
             detail: kind.as_str().to_owned(),
@@ -1231,18 +1234,17 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let (processed, warning) = match preprocess_cow(trimmed) {
-        Ok(processed) => (processed, None),
-        Err(failure @ ExpansionFailure::Syntax { .. })
-            if config.strictness == Strictness::Lenient =>
-        {
-            (
+    let (processed, warning) =
+        match preprocess_cow(trimmed) {
+            Ok(processed) => (processed, None),
+            Err(
+                failure @ (ExpansionFailure::Syntax { .. } | ExpansionFailure::Arguments { .. }),
+            ) if config.strictness == Strictness::Lenient => (
                 std::borrow::Cow::Borrowed(trimmed),
                 Some(expansion_error(failure)),
-            )
-        },
-        Err(failure) => return Err(expansion_error(failure)),
-    };
+            ),
+            Err(failure) => return Err(expansion_error(failure)),
+        };
     let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
     if let Some(error) = warning {
         parser.warn(format!(

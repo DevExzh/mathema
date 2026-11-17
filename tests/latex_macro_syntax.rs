@@ -90,3 +90,28 @@ fn environment_arguments_bind_before_the_begin_code_runs() {
         );
     }
 }
+
+#[test]
+fn recognized_macros_and_selectors_require_their_arguments() {
+    for s in [
+        r"\def\f#1{#1}\f",
+        r"\def\f#1!{#1}\f{x}",
+        r"\@ifstar{yes}",
+        r"\text{\TextOrMath{text}}",
+    ] {
+        let err = LatexReader::parse(s, &Config::default()).unwrap_err();
+        assert!(
+            err.to_string().contains("arguments for macro"),
+            "{s}: {err}"
+        );
+        let recovered =
+            LatexReader::parse(s, &Config::default().with_strictness(Strictness::Lenient)).unwrap();
+        assert!(
+            recovered
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("arguments for macro")),
+            "{s}"
+        );
+    }
+}

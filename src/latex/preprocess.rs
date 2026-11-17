@@ -21,7 +21,7 @@ const EXPANSION_WORK_MULTIPLIER: usize = 128;
 const MIN_EXPANSION_WORK: usize = 1 << 20;
 
 /// Resource failure raised while expanding the ordered macro stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpansionFailure {
     /// Rendered or intermediate expansion bytes exceeded the output cap.
     OutputBytes { limit: usize },
@@ -29,6 +29,8 @@ pub enum ExpansionFailure {
     Work { limit: usize },
     /// A replacement chain exceeded the recursive expansion depth.
     Depth { limit: usize },
+    /// A defined macro or selector was invoked without matching arguments.
+    Arguments { command: Box<str> },
     /// A recognized declaration or assignment did not satisfy its grammar.
     Syntax {
         command: SyntaxCommand,
@@ -48,6 +50,7 @@ pub enum SyntaxCommand {
     Renewcommand,
     Providecommand,
     Newenvironment,
+    Begin,
     Global,
     Long,
     Protected,
@@ -67,6 +70,7 @@ impl SyntaxCommand {
             "renewcommand" => Self::Renewcommand,
             "providecommand" => Self::Providecommand,
             "newenvironment" => Self::Newenvironment,
+            "begin" => Self::Begin,
             "global" => Self::Global,
             "long" => Self::Long,
             "protected" => Self::Protected,
@@ -86,6 +90,7 @@ impl SyntaxCommand {
             Self::Renewcommand => "renewcommand",
             Self::Providecommand => "providecommand",
             Self::Newenvironment => "newenvironment",
+            Self::Begin => "begin",
             Self::Global => "global",
             Self::Long => "long",
             Self::Protected => "protected",
@@ -341,7 +346,10 @@ mod tests {
         assert_eq!(expanded(r"\def\foo#1|#2{#1+#2}\foo 1 2 |34"), " 1 2 +34");
         assert_eq!(expanded(r"\def\foo#1#{#1}\foo1^{23}"), "{1^23}");
         assert_eq!(expanded(r"\def\foo#1{\{#1\}}\foo{x}"), r"\{x\}");
-        assert_eq!(expanded(r"\def\foo\bar#1{#1}\foo\barX"), r"\foo\barX");
+        assert!(matches!(
+            preprocess_cow(r"\def\foo\bar#1{#1}\foo\barX"),
+            Err(ExpansionFailure::Arguments { .. })
+        ));
         assert_eq!(expanded(r"\def\foo\bar#1{#1}\foo\bar X"), "X");
         assert_eq!(expanded(r"\gdef\foo#1#2{(#1,#2)}\foo 1 2"), "(1,2)");
     }
