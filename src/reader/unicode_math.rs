@@ -508,7 +508,10 @@ impl CompactParser {
                 Err(_) => return self.parse_single_char_node(input),
             }
         }
-        try_alt!(self, input, parse_atom, parse_group, parse_single_char_node);
+        if input.starts_with(['▭', '⟡']) {
+            return self.parse_box_phantom(input);
+        }
+        try_alt!(self, input, parse_group, parse_single_char_node);
         Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
