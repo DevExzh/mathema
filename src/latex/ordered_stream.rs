@@ -10,7 +10,9 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::packages;
-use super::{expansion_cap, find_verb_end};
+use super::{
+    EXPANSION_WORK_MULTIPLIER, MIN_EXPANSION_WORK, expansion_cap, expansion_work_cap, find_verb_end,
+};
 use crate::latex::macro_args::{self, ParameterText};
 use crate::latex::text_style;
 
@@ -94,6 +96,19 @@ enum InputMode {
     ParenMath,
 }
 
+impl Meaning {
+    fn work_size(&self) -> usize {
+        match self {
+            Self::Macro(def) => def
+                .body
+                .iter()
+                .fold(0usize, |sum, token| sum.saturating_add(token.byte_len())),
+            Self::Token(token) => token.byte_len(),
+            Self::Selector(_) => 1,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct Scope {
     input_mode: InputMode,
@@ -109,13 +124,13 @@ enum Mode {
 
 pub(crate) fn expand(input: &str) -> Result<String, usize> {
     let cap = expansion_cap(input.len());
-    let mut processor = Processor::new(cap);
+    let mut processor = Processor::new_with_limits(cap, expansion_work_cap(input.len()));
     processor.seed_builtins();
     let mut queue: VecDeque<Queued> = tokenize(input)
         .into_iter()
         .map(|token| Queued { token, depth: 0 })
         .collect();
-    let mut output = Vec::with_capacity(input.len());
+    let mut output = Vec::new();
     processor.process_queue(&mut queue, &mut output, Mode::Normal)?;
     Ok(render_tokens(&output))
 }
@@ -123,6 +138,8 @@ pub(crate) fn expand(input: &str) -> Result<String, usize> {
 pub(crate) struct Processor {
     scopes: Vec<Scope>,
     cap: usize,
+    work_cap: usize,
+    work: usize,
     produced: usize,
     environment_scopes: usize,
     parser_environments: Vec<ArrayContext>,
@@ -130,9 +147,19 @@ pub(crate) struct Processor {
 
 impl Processor {
     pub(crate) fn new(cap: usize) -> Self {
+        Self::new_with_limits(
+            cap,
+            cap.saturating_mul(EXPANSION_WORK_MULTIPLIER)
+                .max(MIN_EXPANSION_WORK),
+        )
+    }
+
+    pub(crate) fn new_with_limits(cap: usize, work_cap: usize) -> Self {
         Self {
             scopes: vec![Scope::default()],
             cap,
+            work_cap,
+            work: 0,
             produced: 0,
             environment_scopes: 0,
             parser_environments: Vec::new(),
@@ -206,6 +233,23 @@ impl Processor {
             .find_map(|scope| scope.macros.get(name).cloned())
     }
 
+    fn lookup_macro_for_expansion(&mut self, name: &str) -> Result<Option<Meaning>, usize> {
+        let Some(work_size) = self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.macros.get(name).map(Meaning::work_size))
+        else {
+            return Ok(None);
+        };
+        self.charge_work(work_size)?;
+        Ok(self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.macros.get(name).cloned()))
+    }
+
     fn lookup_environment(&self, name: &str) -> Option<EnvDef> {
         self.scopes
             .iter()
@@ -214,12 +258,45 @@ impl Processor {
     }
 
     fn append(&mut self, out: &mut Vec<Token>, token: Token) -> Result<(), usize> {
+        self.charge_work(token.byte_len().saturating_add(1))?;
         let next = self.produced.saturating_add(token.byte_len());
         if next > self.cap {
             return Err(self.cap);
         }
         self.produced = next;
         out.push(token);
+        Ok(())
+    }
+
+    fn charge_work(&mut self, amount: usize) -> Result<(), usize> {
+        let next = self.work.saturating_add(amount);
+        if next > self.work_cap {
+            return Err(self.cap);
+        }
+        self.work = next;
+        Ok(())
+    }
+
+    fn charge_queue(&mut self, queue: &VecDeque<Queued>) -> Result<(), usize> {
+        let bytes = queue.iter().fold(0usize, |sum, item| {
+            sum.saturating_add(item.token.byte_len())
+        });
+        self.charge_work(bytes.saturating_add(queue.len()))
+    }
+
+    fn prepend(
+        &mut self,
+        queue: &mut VecDeque<Queued>,
+        tokens: Vec<Token>,
+        depth: usize,
+    ) -> Result<(), usize> {
+        let bytes = tokens
+            .iter()
+            .fold(0usize, |sum, token| sum.saturating_add(token.byte_len()));
+        self.charge_work(bytes.saturating_add(tokens.len()))?;
+        for token in tokens.into_iter().rev() {
+            queue.push_front(Queued { token, depth });
+        }
         Ok(())
     }
 
@@ -230,6 +307,12 @@ impl Processor {
         mode: Mode,
     ) -> Result<(), usize> {
         while let Some(Queued { token, depth }) = queue.pop_front() {
+            self.charge_work(
+                token
+                    .byte_len()
+                    .saturating_add(queue.len())
+                    .saturating_add(1),
+            )?;
             match token {
                 Token::BeginGroup => {
                     self.append(out, Token::BeginGroup)?;
@@ -330,22 +413,22 @@ impl Processor {
         out: &mut Vec<Token>,
         mode: Mode,
     ) -> Result<bool, usize> {
-        let Some(meaning) = self.lookup_macro(name) else {
+        let Some(meaning) = self.lookup_macro_for_expansion(name)? else {
             return Ok(false);
         };
         if depth >= MAX_EXPANSION_DEPTH {
-            self.append(out, Token::ControlWord(name.to_owned()))?;
-            return Ok(true);
+            return Err(self.cap);
         }
         match meaning {
             Meaning::Selector(selector) => {
+                self.charge_queue(queue)?;
                 let Some(replacement) = selector.select(
                     queue,
                     self.scopes.last().expect("global scope").input_mode == InputMode::Text,
                 ) else {
                     return Ok(false);
                 };
-                prepend(queue, replacement, depth + 1);
+                self.prepend(queue, replacement, depth + 1)?;
                 Ok(true)
             },
             Meaning::Macro(def) => {
@@ -353,11 +436,12 @@ impl Processor {
                     self.append(out, Token::ControlWord(name.to_owned()))?;
                     return Ok(true);
                 }
+                self.charge_queue(queue)?;
                 let Some(args) = consume_args(queue, &def) else {
                     return Ok(false);
                 };
                 let replacement = substitute(&def, &args, self.cap)?;
-                prepend(queue, replacement, depth + 1);
+                self.prepend(queue, replacement, depth + 1)?;
                 // In edef mode the newly enqueued body must be expanded by the
                 // same mode; the main loop carries that mode through naturally.
                 let _ = mode;
@@ -384,6 +468,7 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
     ) -> Result<bool, usize> {
         if matches!(name, "def" | "gdef" | "edef" | "xdef") {
+            self.charge_queue(queue)?;
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_def_txn(
                 name,
@@ -401,6 +486,7 @@ impl Processor {
             });
         }
         if name == "let" {
+            self.charge_queue(queue)?;
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_let_txn(false, &mut txn)?;
             return Ok(if result {
@@ -412,9 +498,11 @@ impl Processor {
             });
         }
         if name == "futurelet" {
+            self.charge_queue(queue)?;
             return self.parse_futurelet(queue, false);
         }
         if matches!(name, "newcommand" | "renewcommand" | "providecommand") {
+            self.charge_queue(queue)?;
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_newcommand_txn(name, &mut txn)?;
             return Ok(if result {
@@ -426,6 +514,7 @@ impl Processor {
             });
         }
         if name == "newenvironment" {
+            self.charge_queue(queue)?;
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_newenvironment_txn(&mut txn)?;
             return Ok(if result {
@@ -443,6 +532,7 @@ impl Processor {
         // Prefix parsing is transactional.  If the next command is not a
         // definition primitive, restoring it leaves `\global` in the output
         // for the strict parser to reject.
+        self.charge_queue(queue)?;
         let mut txn = QueueTxn::new(queue);
         let mut global = name == "global";
         let mut protected = name == "protected";
@@ -760,6 +850,7 @@ impl Processor {
         if name != "begin" && name != "end" {
             return Ok(false);
         }
+        self.charge_queue(queue)?;
         let mut txn = QueueTxn::new(queue);
         txn.skip_whitespace();
         let Some(group) = txn.pop_group() else {
@@ -776,7 +867,7 @@ impl Processor {
         if name == "begin" {
             self.push_scope();
             self.environment_scopes += 1;
-            prepend(queue, env.begin, depth + 1);
+            self.prepend(queue, env.begin, depth + 1)?;
         } else {
             if self.environment_scopes > 0 {
                 // The end body must run before the environment scope is
@@ -786,7 +877,7 @@ impl Processor {
                     depth,
                 });
             }
-            prepend(queue, env.end, depth + 1);
+            self.prepend(queue, env.end, depth + 1)?;
         }
         Ok(true)
     }
@@ -805,6 +896,7 @@ impl Processor {
         if name != "begin" && name != "end" {
             return Ok(false);
         }
+        self.charge_queue(queue)?;
         let mut txn = QueueTxn::new(queue);
         txn.skip_whitespace();
         let Some(group) = txn.pop_group() else {
@@ -963,6 +1055,10 @@ impl Processor {
     }
 
     fn expand_edef_body(&mut self, body: Vec<Token>) -> Result<Vec<Token>, usize> {
+        let body_bytes = body
+            .iter()
+            .fold(0usize, |sum, token| sum.saturating_add(token.byte_len()));
+        self.charge_work(body_bytes.saturating_add(body.len()))?;
         let initial_scopes = self.scopes.len();
         let mut queue: VecDeque<Queued> = body
             .into_iter()
@@ -1345,7 +1441,7 @@ fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> Result<Vec<Tok
         }
         i += 1;
     }
-    let mut out = Vec::with_capacity(def.body.len().saturating_add(args.len()));
+    let mut out = Vec::with_capacity(def.body.len().min(cap).min(4096));
     if def
         .parameter_text
         .as_ref()
@@ -1376,12 +1472,6 @@ fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> Result<Vec<Tok
         i += 1;
     }
     Ok(out)
-}
-
-fn prepend(queue: &mut VecDeque<Queued>, tokens: Vec<Token>, depth: usize) {
-    for token in tokens.into_iter().rev() {
-        queue.push_front(Queued { token, depth });
-    }
 }
 
 fn token_text(tokens: &[Token]) -> String {
@@ -1496,4 +1586,69 @@ fn render_tokens(tokens: &[Token]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand_with_limits(input: &str, cap: usize, work_cap: usize) -> Result<String, usize> {
+        let mut processor = Processor::new_with_limits(cap, work_cap);
+        processor.seed_builtins();
+        let mut queue: VecDeque<Queued> = tokenize(input)
+            .into_iter()
+            .map(|token| Queued { token, depth: 0 })
+            .collect();
+        let mut output = Vec::new();
+        processor.process_queue(&mut queue, &mut output, Mode::Normal)?;
+        Ok(render_tokens(&output))
+    }
+
+    fn chained_name(index: usize) -> String {
+        let mut n = index;
+        let mut suffix = String::new();
+        loop {
+            suffix.push((b'A' + (n % 26) as u8) as char);
+            n /= 26;
+            if n == 0 {
+                break;
+            }
+        }
+        format!("m{suffix}")
+    }
+
+    #[test]
+    fn expansion_depth_is_a_typed_failure() {
+        let mut input = String::new();
+        for index in 0..=MAX_EXPANSION_DEPTH {
+            let name = chained_name(index);
+            input.push_str("\\def\\");
+            input.push_str(&name);
+            input.push('{');
+            if index == MAX_EXPANSION_DEPTH {
+                input.push('x');
+            } else {
+                input.push('\\');
+                input.push_str(&chained_name(index + 1));
+            }
+            input.push('}');
+        }
+        input.push('\\');
+        input.push_str(&chained_name(0));
+
+        assert_eq!(expand_with_limits(&input, 4096, 1 << 20), Err(4096));
+    }
+
+    #[test]
+    fn discarded_selector_branches_consume_work_budget() {
+        let discarded = "a".repeat(512);
+        let input = format!(r"\@firstoftwo{{{discarded}}}{{x}}");
+        assert_eq!(expand_with_limits(&input, 4096, 128), Err(4096));
+    }
+
+    #[test]
+    fn reusable_macros_fit_a_small_work_budget() {
+        let input = r"\def\foo{xy}\foo+\foo";
+        assert_eq!(expand_with_limits(input, 128, 4096).unwrap(), "xy+xy");
+    }
 }

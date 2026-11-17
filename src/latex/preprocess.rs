@@ -14,9 +14,21 @@ mod ordered_stream;
 /// many bytes, so ordinary macro use is never penalized.
 const MIN_EXPANSION_CAP: usize = 1 << 20; // 1 MiB
 
+/// Work budget multiplier for token expansion. It accounts for queue scans,
+/// replacement construction and discarded branches in addition to rendered
+/// output bytes.
+const EXPANSION_WORK_MULTIPLIER: usize = 128;
+const MIN_EXPANSION_WORK: usize = 1 << 20;
+
 /// Maximum number of bytes macro expansion may produce for a given input.
 pub(super) fn expansion_cap(input_len: usize) -> usize {
     input_len.saturating_mul(64).max(MIN_EXPANSION_CAP)
+}
+
+pub(crate) fn expansion_work_cap(input_len: usize) -> usize {
+    input_len
+        .saturating_mul(EXPANSION_WORK_MULTIPLIER)
+        .max(MIN_EXPANSION_WORK)
 }
 
 /// Strip comments and expand definitions in the active ordered token stream.

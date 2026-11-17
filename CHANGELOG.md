@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- LaTeX macro expansion now charges queued replacements, discarded selector
+  branches, macro-body evaluation and token processing against a work budget.
+  Recursive expansion depth is a typed expansion error, and intermediate token
+  vectors avoid reserving their full source-byte length. Ordinary reusable
+  macros retain their existing behavior within the bounded budget.
+
 ### Added
 
 - LaTeX `\@binrel` applies the first argument's binary, relation, or ordinary
