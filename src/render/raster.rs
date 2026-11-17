@@ -248,6 +248,7 @@ fn rasterize_layout(root: &LayoutBox, options: &RasterOptions) -> Result<Vec<u8>
         root,
         padding + x_shift_px,
         baseline_y,
+        HorizontalTransform::identity(),
     );
 
     encode_image(&pixmap, options)
@@ -319,6 +320,7 @@ fn rasterize_layout_arena(
         root,
         padding + x_shift_px,
         baseline_y,
+        HorizontalTransform::identity(),
     );
 
     encode_image(&pixmap, options)
@@ -332,12 +334,48 @@ struct RasterCtx {
     glyph_rgba_buf: Vec<u8>,
 }
 
+/// Paint-time horizontal transform used by reflected boxes.
+///
+/// Coordinates passed through the layout tree stay in their original space;
+/// this affine map is applied only when a primitive is painted. Keeping the
+/// transform in the existing bounded target pixmap avoids allocating a second
+/// pixmap for every reflection (and preserves ink outside an arbitrary margin).
+#[derive(Clone, Copy)]
+struct HorizontalTransform {
+    sign: f64,
+    offset: f64,
+}
+
+impl HorizontalTransform {
+    const fn identity() -> Self {
+        Self {
+            sign: 1.0,
+            offset: 0.0,
+        }
+    }
+
+    #[inline]
+    fn map(self, x: f64) -> f64 {
+        self.sign * x + self.offset
+    }
+
+    /// Compose a reflection around the box `[origin, origin + width]`.
+    #[inline]
+    fn reflect(self, origin: f64, width: f64) -> Self {
+        Self {
+            sign: -self.sign,
+            offset: self.sign * (2.0 * origin + width) + self.offset,
+        }
+    }
+}
+
 fn emit_raster_box(
     pixmap: &mut Pixmap,
     ctx: &mut RasterCtx,
     layout: &LayoutBox,
     x: f64,
     y: f64, // baseline position (y-down)
+    xform: HorizontalTransform,
 ) {
     let em = ctx.em;
     let fg = ctx.fg;
@@ -358,7 +396,7 @@ fn emit_raster_box(
                     } else {
                         target_px
                     };
-                    draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                    draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y, xform);
                     true
                 } else {
                     false
@@ -368,7 +406,7 @@ fn emit_raster_box(
             };
             if !used_variant {
                 let font_size_px = (em * size).max(1.0) as f32;
-                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic, *font);
+                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic, *font, xform);
             }
         },
 
@@ -385,7 +423,7 @@ fn emit_raster_box(
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
                 let m = fonts_registry::text_metrics(ch, *italic, font);
-                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font);
+                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font, xform);
                 cx += m.width * size * em;
             }
         },
@@ -394,7 +432,7 @@ fn emit_raster_box(
             for child in children {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em; // dy positive = up in TeX, subtract for y-down
-                emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
+                emit_raster_box(pixmap, ctx, &child.layout, cx, cy, xform);
             }
         },
 
@@ -429,7 +467,14 @@ fn emit_raster_box(
                         &path,
                         &paint,
                         tiny_skia::FillRule::Winding,
-                        Transform::identity(),
+                        Transform::from_row(
+                            xform.sign as f32,
+                            0.0,
+                            0.0,
+                            1.0,
+                            xform.offset as f32,
+                            0.0,
+                        ),
                         None,
                     );
                 }
@@ -453,7 +498,7 @@ fn emit_raster_box(
                 } else {
                     em
                 };
-                draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y, xform);
                 true
             } else {
                 false
@@ -465,14 +510,15 @@ fn emit_raster_box(
                 // path, so tall surds/braces stay proportional like MathJax.
                 let box_top = y - layout.height * em;
                 let fill_h = layout.height + layout.depth;
-                let assembled = draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em);
+                let assembled =
+                    draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em, xform);
                 if assembled {
                     // rendered from assembly parts
                 } else if let Some(dp) =
                     super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
                 {
                     if let Some((path, is_fill)) = parse_svg_path_ex(&dp.path_data) {
-                        let tx = x as f32;
+                        let tx = xform.map(x) as f32;
                         let ty = (y - layout.height * em) as f32;
                         let scale = em as f32;
 
@@ -480,7 +526,8 @@ fn emit_raster_box(
                         paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                         paint.anti_alias = true;
 
-                        let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                        let transform =
+                            Transform::from_row(xform.sign as f32 * scale, 0.0, 0.0, scale, tx, ty);
                         if is_fill {
                             pixmap.fill_path(
                                 &path,
@@ -502,14 +549,24 @@ fn emit_raster_box(
                 } else {
                     // Final fallback: render as text glyph
                     let font_size_px = (target_height * em).max(1.0) as f32;
-                    draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false, FontId::Math);
+                    draw_glyph(
+                        pixmap,
+                        ctx,
+                        *ch,
+                        font_size_px,
+                        x,
+                        y,
+                        false,
+                        FontId::Math,
+                        xform,
+                    );
                 }
             }
         },
 
         BoxKind::SvgPath(path_data) => {
             if let Some((path, is_fill)) = parse_svg_path_ex(path_data) {
-                let tx = x as f32;
+                let tx = xform.map(x) as f32;
                 let ty = (y - layout.height * em) as f32;
                 let scale = em as f32;
 
@@ -517,7 +574,8 @@ fn emit_raster_box(
                 paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                 paint.anti_alias = true;
 
-                let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                let transform =
+                    Transform::from_row(xform.sign as f32 * scale, 0.0, 0.0, scale, tx, ty);
                 if is_fill {
                     pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
                 } else {
@@ -536,7 +594,7 @@ fn emit_raster_box(
             ctx.fg = new_fg;
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
+            emit_raster_box(pixmap, ctx, &child.layout, cx, cy, xform);
             ctx.fg = old_fg;
         },
 
@@ -557,7 +615,19 @@ fn emit_raster_box(
                     let rgb = parse_color(bg);
                     paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
                     paint.anti_alias = true;
-                    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                    pixmap.fill_rect(
+                        rect,
+                        &paint,
+                        Transform::from_row(
+                            xform.sign as f32,
+                            0.0,
+                            0.0,
+                            1.0,
+                            xform.offset as f32,
+                            0.0,
+                        ),
+                        None,
+                    );
                 }
             }
 
@@ -585,43 +655,25 @@ fn emit_raster_box(
                     width: (0.04 * em) as f32, // proportional to font size, matches SVG path
                     ..Stroke::default()
                 };
-                pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+                pixmap.stroke_path(
+                    &path,
+                    &paint,
+                    &stroke,
+                    Transform::from_row(xform.sign as f32, 0.0, 0.0, 1.0, xform.offset as f32, 0.0),
+                    None,
+                );
             }
 
             // Content
             let cx = x + child.dx * em;
             let cy = y - child.dy * em;
-            emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
+            emit_raster_box(pixmap, ctx, &child.layout, cx, cy, xform);
         },
         BoxKind::Reflected { child } => {
-            let margin = em.ceil().max(2.0);
-            let width = (layout.width * em + 2.0 * margin).ceil().max(1.0) as u32;
-            let height = ((layout.height + layout.depth) * em + 2.0 * margin)
-                .ceil()
-                .max(1.0) as u32;
-            if let Some(mut reflected) = Pixmap::new(width, height) {
-                let baseline = layout.height * em + margin;
-                emit_raster_box(
-                    &mut reflected,
-                    ctx,
-                    &child.layout,
-                    child.dx * em + margin,
-                    baseline - child.dy * em,
-                );
-                let transform = Transform::from_translate(
-                    (x + layout.width * em + margin) as f32,
-                    (y - layout.height * em - margin) as f32,
-                )
-                .pre_scale(-1.0, 1.0);
-                pixmap.draw_pixmap(
-                    0,
-                    0,
-                    reflected.as_ref(),
-                    &PixmapPaint::default(),
-                    transform,
-                    None,
-                );
-            }
+            let reflected = xform.reflect(x, layout.width * em);
+            let cx = x + child.dx * em;
+            let cy = y - child.dy * em;
+            emit_raster_box(pixmap, ctx, &child.layout, cx, cy, reflected);
         },
     }
 }
@@ -636,6 +688,7 @@ fn emit_raster_box_arena(
     id: LayoutBoxId,
     x: f64,
     y: f64, // baseline position (y-down)
+    xform: HorizontalTransform,
 ) {
     let em = ctx.em;
     let fg = ctx.fg;
@@ -657,7 +710,7 @@ fn emit_raster_box_arena(
                     } else {
                         target_px
                     };
-                    draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                    draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y, xform);
                     true
                 } else {
                     false
@@ -667,7 +720,7 @@ fn emit_raster_box_arena(
             };
             if !used_variant {
                 let font_size_px = (em * size).max(1.0) as f32;
-                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic, *font);
+                draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, *italic, *font, xform);
             }
         },
 
@@ -684,7 +737,7 @@ fn emit_raster_box_arena(
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
                 let m = fonts_registry::text_metrics(ch, *italic, font);
-                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font);
+                draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font, xform);
                 cx += m.width * size * em;
             }
         },
@@ -693,7 +746,7 @@ fn emit_raster_box_arena(
             for child in arena.children(*children) {
                 let cx = x + child.dx * em;
                 let cy = y - child.dy * em; // dy positive = up in TeX, subtract for y-down
-                emit_raster_box_arena(pixmap, ctx, arena, child.id, cx, cy);
+                emit_raster_box_arena(pixmap, ctx, arena, child.id, cx, cy, xform);
             }
         },
 
@@ -728,7 +781,14 @@ fn emit_raster_box_arena(
                         &path,
                         &paint,
                         tiny_skia::FillRule::Winding,
-                        Transform::identity(),
+                        Transform::from_row(
+                            xform.sign as f32,
+                            0.0,
+                            0.0,
+                            1.0,
+                            xform.offset as f32,
+                            0.0,
+                        ),
                         None,
                     );
                 }
@@ -752,7 +812,7 @@ fn emit_raster_box_arena(
                 } else {
                     em
                 };
-                draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y);
+                draw_glyph_variant(pixmap, fg, variant.glyph_id, font_size_px, x, y, xform);
                 true
             } else {
                 false
@@ -764,14 +824,15 @@ fn emit_raster_box_arena(
                 // path, so tall surds/braces stay proportional like MathJax.
                 let box_top = y - layout.height * em;
                 let fill_h = layout.height + layout.depth;
-                let assembled = draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em);
+                let assembled =
+                    draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em, xform);
                 if assembled {
                     // rendered from assembly parts
                 } else if let Some(dp) =
                     super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
                 {
                     if let Some((path, is_fill)) = parse_svg_path_ex(&dp.path_data) {
-                        let tx = x as f32;
+                        let tx = xform.map(x) as f32;
                         let ty = (y - layout.height * em) as f32;
                         let scale = em as f32;
 
@@ -779,7 +840,8 @@ fn emit_raster_box_arena(
                         paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                         paint.anti_alias = true;
 
-                        let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                        let transform =
+                            Transform::from_row(xform.sign as f32 * scale, 0.0, 0.0, scale, tx, ty);
                         if is_fill {
                             pixmap.fill_path(
                                 &path,
@@ -801,14 +863,24 @@ fn emit_raster_box_arena(
                 } else {
                     // Final fallback: render as text glyph
                     let font_size_px = (target_height * em).max(1.0) as f32;
-                    draw_glyph(pixmap, ctx, *ch, font_size_px, x, y, false, FontId::Math);
+                    draw_glyph(
+                        pixmap,
+                        ctx,
+                        *ch,
+                        font_size_px,
+                        x,
+                        y,
+                        false,
+                        FontId::Math,
+                        xform,
+                    );
                 }
             }
         },
 
         ArenaBoxKind::SvgPath(path_data) => {
             if let Some((path, is_fill)) = parse_svg_path_ex(path_data) {
-                let tx = x as f32;
+                let tx = xform.map(x) as f32;
                 let ty = (y - layout.height * em) as f32;
                 let scale = em as f32;
 
@@ -816,7 +888,8 @@ fn emit_raster_box_arena(
                 paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
                 paint.anti_alias = true;
 
-                let transform = Transform::from_translate(tx, ty).pre_scale(scale, scale);
+                let transform =
+                    Transform::from_row(xform.sign as f32 * scale, 0.0, 0.0, scale, tx, ty);
                 if is_fill {
                     pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, transform, None);
                 } else {
@@ -834,7 +907,7 @@ fn emit_raster_box_arena(
             let old_fg = ctx.fg;
             ctx.fg = new_fg;
             // Color child is rendered at same position (no dx/dy offset)
-            emit_raster_box_arena(pixmap, ctx, arena, *child, x, y);
+            emit_raster_box_arena(pixmap, ctx, arena, *child, x, y, xform);
             ctx.fg = old_fg;
         },
 
@@ -855,7 +928,19 @@ fn emit_raster_box_arena(
                     let rgb = parse_color(bg);
                     paint.set_color_rgba8(rgb[0], rgb[1], rgb[2], 255);
                     paint.anti_alias = true;
-                    pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+                    pixmap.fill_rect(
+                        rect,
+                        &paint,
+                        Transform::from_row(
+                            xform.sign as f32,
+                            0.0,
+                            0.0,
+                            1.0,
+                            xform.offset as f32,
+                            0.0,
+                        ),
+                        None,
+                    );
                 }
             }
 
@@ -883,36 +968,22 @@ fn emit_raster_box_arena(
                     width: (0.04 * em) as f32, // proportional to font size, matches SVG path
                     ..Stroke::default()
                 };
-                pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+                pixmap.stroke_path(
+                    &path,
+                    &paint,
+                    &stroke,
+                    Transform::from_row(xform.sign as f32, 0.0, 0.0, 1.0, xform.offset as f32, 0.0),
+                    None,
+                );
             }
 
             // Content — arena stores the child without a position offset, so we
             // apply the box padding here (heap version stored dx=padding).
-            emit_raster_box_arena(pixmap, ctx, arena, *child, x + padding * em, y);
+            emit_raster_box_arena(pixmap, ctx, arena, *child, x + padding * em, y, xform);
         },
         ArenaBoxKind::Reflected { child } => {
-            let margin = em.ceil().max(2.0);
-            let width = (layout.width * em + 2.0 * margin).ceil().max(1.0) as u32;
-            let height = ((layout.height + layout.depth) * em + 2.0 * margin)
-                .ceil()
-                .max(1.0) as u32;
-            if let Some(mut reflected) = Pixmap::new(width, height) {
-                let baseline = layout.height * em + margin;
-                emit_raster_box_arena(&mut reflected, ctx, arena, *child, margin, baseline);
-                let transform = Transform::from_translate(
-                    (x + layout.width * em + margin) as f32,
-                    (y - layout.height * em - margin) as f32,
-                )
-                .pre_scale(-1.0, 1.0);
-                pixmap.draw_pixmap(
-                    0,
-                    0,
-                    reflected.as_ref(),
-                    &PixmapPaint::default(),
-                    transform,
-                    None,
-                );
-            }
+            let reflected = xform.reflect(x, layout.width * em);
+            emit_raster_box_arena(pixmap, ctx, arena, *child, x, y, reflected);
         },
     }
 }
@@ -943,6 +1014,7 @@ fn draw_glyph(
     baseline_y: f64,
     italic: bool,
     font: FontId,
+    xform: HorizontalTransform,
 ) {
     if font_size_px < 0.5 {
         return;
@@ -999,7 +1071,7 @@ fn draw_glyph(
     // Position the glyph bitmap using sub-pixel coordinates for spacing accuracy.
     // fontdue metrics: ymin is y-up from baseline to bottom of glyph bounding box.
     // Keep fractional positions; tiny-skia's transform handles sub-pixel placement.
-    let gx = (x as f32) + metrics.xmin as f32;
+    let gx = x + metrics.xmin as f64;
     let gy = (baseline_y as f32) - metrics.ymin as f32 - metrics.height as f32;
 
     // Reuse the RGBA buffer from ctx to avoid per-glyph Pixmap allocation.
@@ -1008,8 +1080,17 @@ fn draw_glyph(
     let needed = (gw as usize) * (gh as usize) * 4;
     let buf = &mut ctx.glyph_rgba_buf;
     buf.resize(needed, 0);
+    let mirrored = xform.sign < 0.0;
+    let gw_usize = gw as usize;
     for (i, &coverage) in bitmap.iter().enumerate() {
-        let idx = i * 4;
+        let src_x = i % gw_usize;
+        let row = i / gw_usize;
+        let dst_x = if mirrored {
+            gw_usize - 1 - src_x
+        } else {
+            src_x
+        };
+        let idx = (row * gw_usize + dst_x) * 4;
         if idx + 3 < buf.len() {
             // Premultiplied RGBA: RGB values are pre-multiplied by alpha
             let a = coverage as u16;
@@ -1035,12 +1116,14 @@ fn draw_glyph(
         } else {
             0.0
         };
-        let transform = if skew != 0.0 {
-            let tx = gx - skew * (baseline_y as f32 - gy);
-            Transform::from_row(1.0, 0.0, skew, 1.0, tx, gy)
+        let effective_skew = if mirrored { -skew } else { skew };
+        let base_x = if mirrored {
+            xform.map(gx + gw as f64) as f32
         } else {
-            Transform::from_translate(gx, gy)
+            xform.map(gx) as f32
         };
+        let tx = base_x - effective_skew * (baseline_y as f32 - gy);
+        let transform = Transform::from_row(1.0, 0.0, effective_skew, 1.0, tx, gy);
         pixmap.draw_pixmap(0, 0, glyph_ref, &PixmapPaint::default(), transform, None);
     }
 }
@@ -1057,6 +1140,7 @@ fn draw_glyph_variant(
     font_size_px: f64,
     x: f64,
     baseline_y: f64,
+    xform: HorizontalTransform,
 ) {
     if font_size_px < 0.5 {
         return;
@@ -1081,11 +1165,11 @@ fn draw_glyph_variant(
     // Screen coordinates: y-down from top-left.
     // Transform: x' = x + du_x * scale, y' = baseline_y - du_y * scale
     let transform = Transform::from_row(
-        scale as f32,
+        xform.sign as f32 * scale as f32,
         0.0,
         0.0,
         -(scale as f32),
-        x as f32,
+        xform.map(x) as f32,
         baseline_y as f32,
     );
 
@@ -1100,6 +1184,7 @@ fn draw_glyph_variant(
 /// assembly parts. Fills the vertical span `[box_top, box_top + fill_height*em]`
 /// at horizontal position `x`. Returns `false` (drawing nothing) when the glyph
 /// has no assembly recipe, so the caller can fall back to a synthetic path.
+#[allow(clippy::too_many_arguments)]
 fn draw_vertical_assembly(
     pixmap: &mut Pixmap,
     fg: [u8; 3],
@@ -1108,6 +1193,7 @@ fn draw_vertical_assembly(
     box_top: f64,
     x: f64,
     em: f64,
+    xform: HorizontalTransform,
 ) -> bool {
     let Some(asm) = super::glyph_variants::vertical_assembly(ch, fill_height_em) else {
         return false;
@@ -1126,7 +1212,7 @@ fn draw_vertical_assembly(
     for p in &asm.placements {
         // Each part's baseline sits so its top ink aligns within the box.
         let baseline_y = box_top + (asm.ink_top_em - p.shift_em) * fs;
-        draw_glyph_variant(pixmap, fg, p.glyph_id, fs, x, baseline_y);
+        draw_glyph_variant(pixmap, fg, p.glyph_id, fs, x, baseline_y, xform);
     }
     true
 }
@@ -1998,6 +2084,90 @@ mod tests {
             }
         }
         assert!(ink > 0);
+    }
+
+    #[test]
+    fn reflected_offset_overlap_keeps_ink_on_heap_and_arena() {
+        let content = MathNode::Row(vec![
+            MathNode::Space(Rational::new(-1, 2)),
+            MathNode::Identifier("b".into()),
+            MathNode::Space(Rational::new(-1, 4)),
+            MathNode::Identifier("i".into()),
+        ]);
+        let plain_expr = MathExpr::inline(vec![content.clone()]);
+        let reflected_expr = MathExpr::inline(vec![MathNode::Reflect {
+            content: Box::new(content),
+            text_mode: false,
+        }]);
+        let options = RasterOptions::default();
+        let plain = Pixmap::decode_png(&render_to_image(&plain_expr, &options).unwrap()).unwrap();
+        let reflected_bytes = render_to_image(&reflected_expr, &options).unwrap();
+        let compact = CompactExpr::from_math_expr(&reflected_expr).unwrap();
+        let arena_bytes = render_to_image_compact(&compact, &options).unwrap();
+        assert_eq!(
+            reflected_bytes, arena_bytes,
+            "heap and arena reflection diverged"
+        );
+        let reflected = Pixmap::decode_png(&reflected_bytes).unwrap();
+        let plain_ink: usize = (0..plain.width())
+            .flat_map(|x| (0..plain.height()).map(move |y| (x, y)))
+            .filter(|&(x, y)| plain.pixel(x, y).is_some_and(|p| p.alpha() > 0))
+            .count();
+        let reflected_ink: usize = (0..reflected.width())
+            .flat_map(|x| (0..reflected.height()).map(move |y| (x, y)))
+            .filter(|&(x, y)| reflected.pixel(x, y).is_some_and(|p| p.alpha() > 0))
+            .count();
+        assert_eq!(
+            (plain.width(), plain.height()),
+            (reflected.width(), reflected.height()),
+            "reflection changed the bounded output geometry"
+        );
+        assert!(plain_ink > 0, "offset content should contain source ink");
+        assert!(
+            reflected_ink >= plain_ink.saturating_sub(2),
+            "reflected offset/overlap content lost ink: source={plain_ink}, reflected={reflected_ink}"
+        );
+    }
+
+    #[test]
+    fn reflected_rules_and_paths_paint_on_the_root_pixmap() {
+        let contents = [
+            MathNode::Rule {
+                width: Rational::new(1, 1),
+                height: Rational::new(1, 10),
+                lift: Rational::zero(),
+            },
+            MathNode::Cancel {
+                stroke: StrokeKind::Forward,
+                content: Box::new(MathNode::Identifier("x".into())),
+            },
+        ];
+        let options = RasterOptions::default();
+        for content in contents {
+            let plain_expr = MathExpr::inline(vec![content.clone()]);
+            let reflected_expr = MathExpr::inline(vec![MathNode::Reflect {
+                content: Box::new(content),
+                text_mode: false,
+            }]);
+            let plain = render_to_image(&plain_expr, &options).unwrap();
+            let reflected = render_to_image(&reflected_expr, &options).unwrap();
+            let compact = CompactExpr::from_math_expr(&reflected_expr).unwrap();
+            assert_eq!(
+                reflected,
+                render_to_image_compact(&compact, &options).unwrap(),
+                "heap and arena reflection diverged"
+            );
+            let plain = Pixmap::decode_png(&plain).unwrap();
+            let reflected = Pixmap::decode_png(&reflected).unwrap();
+            assert_eq!(plain.width(), reflected.width());
+            assert_eq!(plain.height(), reflected.height());
+            assert!(
+                (0..reflected.width())
+                    .flat_map(|x| (0..reflected.height()).map(move |y| (x, y)))
+                    .any(|(x, y)| reflected.pixel(x, y).is_some_and(|p| p.alpha() > 0)),
+                "reflected primitive lost all ink"
+            );
+        }
     }
 
     #[test]
