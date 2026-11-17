@@ -8,6 +8,9 @@ use crate::writer::Writer as MathWriter;
 /// round-trippably represent. UnicodeMath is a lossy linear notation.
 fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     match node {
+        CompactNode::Reflect { .. } => {
+            Some("UnicodeMath writes the content of a reflected box without mirroring it".into())
+        },
         CompactNode::Rule { .. } => {
             Some("UnicodeMath cannot represent a rule (\\rule/\\hline); it was dropped".into())
         },

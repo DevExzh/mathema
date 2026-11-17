@@ -559,50 +559,40 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "menclose" => {
                 let notation = get_attr(start, "notation").unwrap_or_default();
-                let id = self.parse_child_id(name)?;
-                if notation.split_whitespace().any(|n| n == "actuarial") {
+                let mut id = self.parse_child_id(name)?;
+                let has = |mark: &str| notation.split_ascii_whitespace().any(|n| n == mark);
+                let diagonal = match (has("updiagonalstrike"), has("downdiagonalstrike")) {
+                    (true, true) => Some(StrokeKind::Cross),
+                    (true, false) => Some(StrokeKind::Forward),
+                    (false, true) => Some(StrokeKind::Backward),
+                    (false, false) => None,
+                };
+                let strokes = [
+                    diagonal,
+                    has("horizontalstrike").then_some(StrokeKind::Horizontal),
+                    has("verticalstrike").then_some(StrokeKind::Vertical),
+                ];
+                let has_stroke = strokes.iter().any(Option::is_some);
+                for stroke in strokes.into_iter().flatten() {
+                    id = self.arena.push_node(CompactNode::Cancel {
+                        stroke,
+                        content: id,
+                    });
+                }
+                let top_right = has("actuarial") || (has("top") && has("right"));
+                let full_box =
+                    has("box") || has("roundedbox") || (top_right && has("bottom") && has("left"));
+                if top_right && !full_box {
                     Ok(self.arena.push_node(CompactNode::Actuarial(id)))
-                } else if notation.contains("box") || notation.contains("roundedbox") {
+                } else if full_box || !has_stroke {
                     let empty = self.arena.push_str("");
                     Ok(self.arena.push_node(CompactNode::Boxed {
                         content: id,
                         bg_color: empty,
                         border_color: empty,
-                    }))
-                } else if notation.contains("updiagonalstrike")
-                    && notation.contains("downdiagonalstrike")
-                {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Cross,
-                        content: id,
-                    }))
-                } else if notation.contains("updiagonalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Forward,
-                        content: id,
-                    }))
-                } else if notation.contains("downdiagonalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Backward,
-                        content: id,
-                    }))
-                } else if notation.contains("horizontalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Horizontal,
-                        content: id,
-                    }))
-                } else if notation.contains("verticalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Vertical,
-                        content: id,
                     }))
                 } else {
-                    let empty = self.arena.push_str("");
-                    Ok(self.arena.push_node(CompactNode::Boxed {
-                        content: id,
-                        bg_color: empty,
-                        border_color: empty,
-                    }))
+                    Ok(id)
                 }
             },
             "mstyle" => {

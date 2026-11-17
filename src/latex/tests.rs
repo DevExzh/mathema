@@ -79,15 +79,27 @@ fn actuarial_text_boxes_keep_mixed_content_and_inline_math() {
     for (input, fragments) in [
         (
             r"\angl{term $x^2$ costs \$5}",
-            vec!["<mtext>term </mtext>", "<msup>", "<mtext> costs $5</mtext>"],
+            vec![
+                "<mtext>term\u{a0}</mtext>",
+                "<msup>",
+                "<mtext>\u{a0}costs $5</mtext>",
+            ],
         ),
         (
             r"\angl{term \(x+y\) due}",
-            vec!["<mtext>term </mtext>", "<mi>x</mi>", "<mtext> due</mtext>"],
+            vec![
+                "<mtext>term\u{a0}</mtext>",
+                "<mi>x</mi>",
+                "<mtext>\u{a0}due</mtext>",
+            ],
         ),
         (
             r"\angl{\textbf{a\textit{b}}\{\%}",
-            vec!["<mtext>a</mtext>", "<mtext>b</mtext>", "{%"],
+            vec![
+                r#"<mtext mathvariant="bold">a</mtext>"#,
+                r#"<mtext mathvariant="bold-italic">b</mtext>"#,
+                "{%",
+            ],
         ),
     ] {
         let parsed = crate::from_latex(input).unwrap();
@@ -118,6 +130,17 @@ fn actuarial_text_boxes_keep_mixed_content_and_inline_math() {
         r"\angl{lost\unknown}",
     ] {
         assert!(crate::from_latex(invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn mathml_top_and_right_sides_keep_additional_strikes() {
+    for notation in ["right top", "actuarial"] {
+        let ml = format!(
+            r#"<math><menclose notation="{notation} updiagonalstrike"><mi>x</mi></menclose></math>"#
+        );
+        let tex = crate::convert(&ml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+        assert_eq!(tex, r"\angl{$\cancel{x}$}");
     }
 }
 
