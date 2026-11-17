@@ -1898,3 +1898,20 @@ fn vertical_bar_commands_work_as_middle_delimiters_and_preserve_atom_class() {
         assert_eq!(parsed.nodes, second.nodes, "{src} => {first}");
     }
 }
+
+#[test]
+fn script_grouping_follows_the_content_of_an_unwritable_color() {
+    for (source, canonical) in [
+        (r"a^{\color{bad^name}ױ{}}+b", "a^ױ+ b"),
+        (r"a_{\textcolor{bad_name}{\alpha}}b", r"a_\alpha b"),
+        (r"a^{\textcolor{bad_name}{2}}", "a^{2}"),
+        (r"a^{\textcolor{bad_name}{x+y}}", "a^{x+ y}"),
+        (r"a^{\textcolor{teal}{ױ}}", r"a^{\textcolor{teal}{ױ}}"),
+    ] {
+        let convert =
+            |tex| crate::convert(tex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let first = convert(source);
+        assert_eq!(first, canonical, "{source}");
+        assert_eq!(convert(&first), first);
+    }
+}

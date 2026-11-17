@@ -246,6 +246,7 @@ fn write_script_node_with_next(
 /// following `.` is not swallowed into a decimal literal and so that trailing
 /// vs. non-trailing position cannot change the bracing decision.
 fn write_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, _next: Option<NodeId>) {
+    let arg = written_script_content(arena, arg);
     if is_digit_sequence_script_arg(arena, arg) {
         buf.push('{');
         write_node(buf, arena, arg);
@@ -544,6 +545,26 @@ fn write_math_leaf_segment(buf: &mut String, s: &str, kind: MathLeafKind) {
         MathLeafKind::Number => buf.push_str(s),
         MathLeafKind::Identifier => write_identifier_text(buf, s),
         MathLeafKind::Symbol(symbol_kind) => write_symbol_text(buf, symbol_kind, s),
+    }
+}
+
+enum ColorArgument<'a> {
+    Html(&'a str),
+    Named(&'a str),
+}
+
+/// Colors containing TeX syntax cannot be emitted as a literal xcolor name.
+/// A hexadecimal RGB color has a separate, lossless xcolor spelling.
+fn latex_color(name: &str) -> Option<ColorArgument<'_>> {
+    if let Some(hex) = name.strip_prefix('#')
+        && hex.len() == 6
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        Some(ColorArgument::Html(hex))
+    } else if name.contains(['{', '}', '\\', '~', '#', '$', '%', '&', '^', '_']) {
+        None
+    } else {
+        Some(ColorArgument::Named(name))
     }
 }
 
@@ -1113,50 +1134,23 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Color { color, content } => {
-            let color_str = arena.str_val(color);
-            // `#RRGGBB` (as read from OMML or `[HTML]`) uses xcolor's HTML model.
-            let html = color_str
-                .strip_prefix('#')
-                .filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()));
-            // A malformed color argument may contain characters that cannot be
-            // written verbatim inside \textcolor{...} without breaking brace
-            // balance or being re-interpreted as special LaTeX tokens. In those
-            // cases the color cannot round-trip, so emit only the content.
-            if html.is_none()
-                && color_str.chars().any(|c| {
-                    matches!(
-                        c,
-                        '{' | '}' | '\\' | '~' | '#' | '$' | '%' | '&' | '^' | '_'
-                    )
-                })
-            {
-                if let CompactNode::Row(span) = *arena.node(content) {
-                    write_nodes(buf, arena, span);
-                } else {
-                    write_node(buf, arena, content);
-                }
-            } else {
-                match html {
-                    Some(hex) => {
-                        buf.push_str("\\textcolor[HTML]{");
-                        buf.push_str(hex);
-                    },
-                    None => {
-                        buf.push_str("\\textcolor{");
-                        buf.push_str(color_str);
-                    },
-                }
-                buf.push_str("}{");
-                // The outer braces already group the content; if it is a Row,
-                // write its children directly to avoid double-bracing (e.g.
-                // \textcolor{red}{lnc}).
-                if let CompactNode::Row(span) = *arena.node(content) {
-                    write_nodes(buf, arena, span);
-                } else {
-                    write_node(buf, arena, content);
-                }
-                buf.push('}');
+            match latex_color(arena.str_val(color)) {
+                Some(ColorArgument::Html(hex)) => {
+                    buf.push_str(r"\textcolor[HTML]{");
+                    buf.push_str(hex);
+                },
+                Some(ColorArgument::Named(name)) => {
+                    buf.push_str(r"\textcolor{");
+                    buf.push_str(name);
+                },
+                None => {
+                    write_wrapped_content(buf, arena, content);
+                    return;
+                },
             }
+            buf.push_str("}{");
+            write_wrapped_content(buf, arena, content);
+            buf.push('}');
         },
 
         // Helper nodes — should not appear as standalone roots, but handle gracefully
@@ -1787,24 +1781,16 @@ fn write_text_content(buf: &mut String, text: &str) {
 /// merge with the preceding output remain explicitly grouped.
 #[inline]
 fn write_script_base(buf: &mut String, arena: &AstArena, id: NodeId) {
+    let id = written_script_content(arena, id);
     if is_idotsint_row(arena, id) {
         write_idotsint(buf);
         return;
     }
-    let token = match *arena.node(id) {
-        CompactNode::Row(span) => {
-            let children = arena.children(span);
-            match children {
-                [child] if is_script_base_token(arena, *child) => Some(*child),
-                _ => None,
-            }
-        },
-        _ => is_script_base_token(arena, id).then_some(id),
-    };
-    let Some(token) = token else {
+    if !is_script_base_token(arena, id) {
         write_braced(buf, arena, id);
         return;
-    };
+    }
+    let token = id;
     let braced =
         script_base_needs_braces(arena, token) || would_merge_with_buffer(buf, arena, token);
     if braced {
@@ -1813,6 +1799,32 @@ fn write_script_base(buf: &mut String, arena: &AstArena, id: NodeId) {
     write_script_base_token(buf, arena, token);
     if braced {
         buf.push('}');
+    }
+}
+
+/// Choose braces for what the script will actually emit. Rows containing
+/// one significant child and colors the writer cannot spell are transparent.
+fn written_script_content(arena: &AstArena, mut id: NodeId) -> NodeId {
+    loop {
+        id = match *arena.node(id) {
+            CompactNode::Color { color, content }
+                if latex_color(arena.str_val(color)).is_none() =>
+            {
+                content
+            },
+            CompactNode::Row(span) => {
+                let mut children = arena
+                    .children(span)
+                    .iter()
+                    .copied()
+                    .filter(|&child| !is_empty_row(arena, child));
+                match (children.next(), children.next()) {
+                    (Some(only), None) => only,
+                    _ => return id,
+                }
+            },
+            _ => return id,
+        };
     }
 }
 
