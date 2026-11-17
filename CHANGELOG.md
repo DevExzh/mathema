@@ -36,8 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Config::max_depth` (AST depth, default and ceiling 128), with
   `Error::LimitExceeded` and `LimitKind` naming the limit that was hit
   (`Nodes`, `Depth`, or `ListLength` for a node with more than 65 535
-  children). The MTEF reader enforces them while it builds nodes; the depth
-  validators now report `LimitExceeded` instead of `Unsupported`.
+  children). The LaTeX, MTEF and UnicodeMath readers enforce the node limit
+  while they build nodes. MTEF and UnicodeMath enforce the depth limit while
+  they build nodes, and the depth validators now report `LimitExceeded` instead
+  of `Unsupported`.
 
 ### Changed
 
