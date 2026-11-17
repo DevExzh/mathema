@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(expanded(r"\def\hi{hello}\hi"), "hello");
         assert_eq!(expanded(r"\def\bold#1{\mathbf{#1}}\bold{x}"), r"\mathbf{x}");
         assert_eq!(expanded(r"\def\foo|#1||{#1}\foo| x {y} ||"), " x {y} ");
-        assert_eq!(expanded(r"\def\foo#1|#2{#1+#2}\foo 1 2 |34"), " 1 2 +34");
+        assert_eq!(expanded(r"\def\foo#1|#2{#1+#2}\foo 1 2 |34"), "1 2 +34");
         assert_eq!(expanded(r"\def\foo#1#{#1}\foo1^{23}"), "{1^23}");
         assert_eq!(expanded(r"\def\foo#1{\{#1\}}\foo{x}"), r"\{x\}");
         assert!(matches!(
@@ -388,7 +388,7 @@ mod tests {
         );
         assert_eq!(
             expanded(r"\newcommand{\a}{X}\newcommand{\b}{\a Y}\newcommand{\c}{\b Z}\c"),
-            "X Y Z"
+            "XYZ"
         );
         let cycle = r"\newcommand{\r}{\r}\r";
         assert_eq!(
@@ -409,7 +409,7 @@ mod tests {
     fn non_macro_and_native_content_is_preserved() {
         assert_eq!(
             expanded(r"\newcommand{\foo}{bar}\alpha + \foo"),
-            r"\alpha + bar"
+            r"\alpha+ bar"
         );
         assert_eq!(expanded(r"\verb@\ip!@"), r"\verb@\ip!@");
         assert_eq!(expanded(r"\verb*!\ip{!}!"), r"\verb*!\ip{!}!");
@@ -434,6 +434,26 @@ mod tests {
     #[test]
     fn definitions_take_effect_at_their_location() {
         assert_eq!(expanded(r"\foo\def\foo{a}\foo\def\foo{b}\foo"), r"\foo ab");
+    }
+
+    #[test]
+    fn text_distinguishes_source_delimiters_from_actual_replacement_spaces() {
+        for (source, expected) in [
+            (r"\def\word{abc}\text{\word def}", r"\text{abcdef}"),
+            (r"\def\word{abc}\text{\word{} def}", r"\text{abc def}"),
+            (r"\def\word{abc}\text{\word\ def}", r"\text{abc def}"),
+            (r"\def\f#1{#1 x}\text{\f\alpha}", r"\text{α x}"),
+            (r"\def\f#1{#1 x}\f\alpha", r"\alpha x"),
+            (r"\def\f{\alpha x}\text{\f}", r"\text{αx}"),
+            (r"\def\f{\alpha{} x}\text{\f}", r"\text{α x}"),
+            (
+                r"\def\q{x}\text{\verb|abc % Def |}",
+                r"\texttt{abc \% Def }",
+            ),
+        ] {
+            let xml = |s| crate::from_latex(s).unwrap().to_mathml().unwrap();
+            assert_eq!(xml(source), xml(expected), "{source}");
+        }
     }
 
     #[test]
@@ -466,7 +486,7 @@ mod tests {
         assert_eq!(expanded(r"\let\foo=x\edef\bar{\foo}\def\foo{y}\bar"), "y");
         assert_eq!(expanded(r"\let\foo=\alpha\foo x"), r"\alpha x");
         assert_eq!(expanded(r"\let\foo{\sqrt\foo1}"), r"\sqrt{1}");
-        assert_eq!(expanded(r"\let\equals==a\equals b"), "a= b");
+        assert_eq!(expanded(r"\let\equals==a\equals b"), "a=b");
         assert_eq!(
             expanded(r"\def\:{\let\space= }\: \text{\space}"),
             r"\text{ }"
@@ -503,7 +523,7 @@ mod tests {
             "x"
         );
         assert_eq!(expanded(r"\noexpand\foo y\def\foo{x}"), r"\foo y");
-        assert_eq!(expanded(r"\def\foo{x}\noexpand\foo y"), " y");
+        assert_eq!(expanded(r"\def\foo{x}\noexpand\foo y"), "y");
         assert_eq!(expanded(r"\noexpand\frac xy"), r"\frac xy");
         assert_eq!(expanded(r"\def\foo{x}\expandafter\foo\noexpand\foo"), "x");
         assert_eq!(expanded(r"\noexpand\def\foo{xy}\foo"), "xy");

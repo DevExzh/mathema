@@ -1206,6 +1206,18 @@ impl Processor {
             }
             // Only an actual separator in the current alignment ends a cell.
             // A separator inside a nested group belongs to the inner construct.
+            // A surviving space after a control word came from another
+            // token list, e.g. #1 followed by a space in a replacement. In a
+            // text argument it needs an explicit control space when the
+            // tokens are serialized, or the text lexer will swallow it.
+            if self.scopes.last().expect("global scope").input_mode == InputMode::Text
+                && matches!(token, Token::Char(' ' | '\t'))
+                && out
+                    .last()
+                    .is_some_and(|t| matches!(t, Token::ControlWord(_)))
+            {
+                return self.append(out, Token::ControlSymbol(' '));
+            }
             let cell_separator = matches!(token, Token::Char('&') | Token::ControlSymbol('\\'))
                 || matches!(&token, Token::ControlWord(name) if name == "cr");
             if cell_separator
@@ -1826,6 +1838,12 @@ fn tokenize(input: &str) -> Vec<Token> {
                     input[after..after + name_len].to_owned(),
                 ));
                 i = after + name_len;
+                // Horizontal source whitespace terminates a control word; it is
+                // not one of the replacement or argument tokens. Keep physical
+                // line endings for the parser's paragraph handling.
+                while matches!(input.as_bytes().get(i), Some(b' ' | b'\t')) {
+                    i += 1;
+                }
             } else {
                 tokens.push(Token::ControlSymbol(first));
                 i = after + first.len_utf8();
