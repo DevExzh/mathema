@@ -10,9 +10,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use super::packages;
-use super::{
-    EXPANSION_WORK_MULTIPLIER, MIN_EXPANSION_WORK, expansion_cap, expansion_work_cap, find_verb_end,
-};
+use super::{expansion_cap, expansion_work_cap, find_verb_end};
 use crate::latex::macro_args::{self, ParameterText};
 use crate::latex::text_style;
 
@@ -30,6 +28,10 @@ pub(crate) enum Token {
     ControlSymbol(char),
     Verbatim(String),
     EndEnvironment,
+    /// A token protected by ordinary `\noexpand`.  The protected token is
+    /// treated as `\relax` when it reaches the stream; this is distinct from
+    /// [`Frozen`], which preserves an unexpandable token's meaning.
+    NoExpand(Box<Token>),
     /// A frozen control-sequence token is emitted literally.  It carries the
     /// identity captured by `\let` or by ordinary `\noexpand` handling.
     Frozen(Box<Token>),
@@ -48,6 +50,7 @@ impl Token {
             Self::ControlSymbol(c) => c.len_utf8() + 1,
             Self::Verbatim(text) => text.len(),
             Self::EndEnvironment => 0,
+            Self::NoExpand(token) => token.byte_len(),
             Self::Frozen(token) => token.byte_len(),
         }
     }
@@ -146,14 +149,6 @@ pub(crate) struct Processor {
 }
 
 impl Processor {
-    pub(crate) fn new(cap: usize) -> Self {
-        Self::new_with_limits(
-            cap,
-            cap.saturating_mul(EXPANSION_WORK_MULTIPLIER)
-                .max(MIN_EXPANSION_WORK),
-        )
-    }
-
     pub(crate) fn new_with_limits(cap: usize, work_cap: usize) -> Self {
         Self {
             scopes: vec![Scope::default()],
@@ -330,6 +325,10 @@ impl Processor {
                     self.environment_scopes = self.environment_scopes.saturating_sub(1);
                 },
                 Token::ControlWord(name) => {
+                    if name == "expandafter" {
+                        self.expandafter(queue, out, mode, depth)?;
+                        continue;
+                    }
                     if mode == Mode::Edef {
                         if name == "noexpand" {
                             self.edef_noexpand(queue, out)?;
@@ -355,7 +354,7 @@ impl Processor {
                         continue;
                     }
                     if name == "noexpand" {
-                        self.noexpand(queue, out)?;
+                        self.noexpand(queue, out, depth)?;
                     } else if !self.expand_macro_from_queue(
                         &name,
                         depth,
@@ -397,6 +396,10 @@ impl Processor {
                         self.push_scope();
                     }
                 },
+                Token::NoExpand(_) => {
+                    // `\noexpand` makes an expandable control sequence act
+                    // like `\relax`; the token is intentionally discarded.
+                },
                 Token::Frozen(token) => {
                     self.emit_native(*token, queue, out, mode, depth)?;
                 },
@@ -417,6 +420,16 @@ impl Processor {
             return Ok(false);
         };
         if depth >= MAX_EXPANSION_DEPTH {
+            if let Meaning::Macro(def) = &meaning
+                && def.body.len() == 1
+                && matches!(&def.body[0], Token::ControlWord(body_name) if body_name == name)
+            {
+                // Preserve the historical finite result for the harmless
+                // identity macro (`\def\r{\r}`), while rejecting a long
+                // expansion chain with a typed resource error.
+                self.append(out, Token::ControlWord(name.to_owned()))?;
+                return Ok(true);
+            }
             return Err(self.cap);
         }
         match meaning {
@@ -704,7 +717,7 @@ impl Processor {
                 .unwrap_or_else(|| Meaning::Token(source.clone())),
             Token::ControlSymbol(symbol) => self
                 .lookup_macro(&control_key_symbol(*symbol))
-                .unwrap_or_else(|| Meaning::Token(Token::ControlSymbol(*symbol))),
+                .unwrap_or(Meaning::Token(Token::ControlSymbol(*symbol))),
             _ => Meaning::Token(source),
         };
         self.define_macro(target, meaning, global);
@@ -748,7 +761,7 @@ impl Processor {
                 .unwrap_or_else(|| Meaning::Token(source.clone())),
             Token::ControlSymbol(symbol) => self
                 .lookup_macro(&control_key_symbol(*symbol))
-                .unwrap_or_else(|| Meaning::Token(Token::ControlSymbol(*symbol))),
+                .unwrap_or(Meaning::Token(Token::ControlSymbol(*symbol))),
             _ => Meaning::Token(source),
         };
         self.define_macro(target, meaning, global);
@@ -944,6 +957,7 @@ impl Processor {
         &mut self,
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
+        depth: usize,
     ) -> Result<(), usize> {
         let mut txn = QueueTxn::new(queue);
         txn.skip_whitespace();
@@ -953,14 +967,193 @@ impl Processor {
             return Ok(());
         };
         txn.commit();
-        if let Token::ControlWord(name) = &token
-            && let Some(Meaning::Token(meaning)) = self.lookup_macro(name)
-        {
-            self.append(out, meaning)?;
-        } else {
-            self.append(out, Token::Frozen(Box::new(token)))?;
+        drop(txn);
+        if let Some(replacement) = self.noexpand_replacement(token)? {
+            match replacement {
+                Token::NoExpand(_) => {
+                    queue.push_front(Queued {
+                        token: replacement,
+                        depth,
+                    });
+                },
+                Token::Frozen(inner) => self.append(out, *inner)?,
+                token @ (Token::ControlWord(_) | Token::ControlSymbol(_)) => {
+                    queue.push_front(Queued { token, depth });
+                },
+                token => self.append(out, token)?,
+            }
         }
         Ok(())
+    }
+
+    /// Apply TeX's `\expandafter`: retain the first token, expand only the
+    /// immediately following expandable token once, then continue with the
+    /// retained token in front of that replacement.
+    fn expandafter(
+        &mut self,
+        queue: &mut VecDeque<Queued>,
+        _out: &mut Vec<Token>,
+        mode: Mode,
+        depth: usize,
+    ) -> Result<(), usize> {
+        self.charge_queue(queue)?;
+        let Some(first) = queue.pop_front() else {
+            return Ok(());
+        };
+        let _ = self.expand_one_after(queue, mode, depth)?;
+        queue.push_front(first);
+        Ok(())
+    }
+
+    fn expand_one_after(
+        &mut self,
+        queue: &mut VecDeque<Queued>,
+        mode: Mode,
+        depth: usize,
+    ) -> Result<bool, usize> {
+        let Some(item) = queue.pop_front() else {
+            return Ok(false);
+        };
+        let item_depth = item.depth.max(depth);
+        if item_depth >= MAX_EXPANSION_DEPTH {
+            queue.push_front(item);
+            return Ok(false);
+        }
+        match item.token {
+            Token::ControlWord(name) if name == "noexpand" => {
+                let mut txn = QueueTxn::new(queue);
+                txn.skip_whitespace();
+                let Some(token) = txn.pop() else {
+                    txn.rollback();
+                    drop(txn);
+                    queue.push_front(Queued {
+                        token: Token::ControlWord(name),
+                        depth: item.depth,
+                    });
+                    return Ok(false);
+                };
+                txn.commit();
+                drop(txn);
+                let Some(replacement) = self.noexpand_replacement(token.token)? else {
+                    return Ok(false);
+                };
+                queue.push_front(Queued {
+                    token: replacement,
+                    depth: item_depth + 1,
+                });
+                Ok(true)
+            },
+            Token::ControlWord(name) => self.expand_one_named(&name, item_depth, queue, mode),
+            Token::ControlSymbol(symbol) => {
+                let name = control_key_symbol(symbol);
+                self.expand_one_named(&name, item_depth, queue, mode)
+            },
+            token => {
+                queue.push_front(Queued {
+                    token,
+                    depth: item.depth,
+                });
+                Ok(false)
+            },
+        }
+    }
+
+    fn expand_one_named(
+        &mut self,
+        name: &str,
+        depth: usize,
+        queue: &mut VecDeque<Queued>,
+        mode: Mode,
+    ) -> Result<bool, usize> {
+        let Some(meaning) = self.lookup_macro_for_expansion(name)? else {
+            // Undefined and parser primitives are unexpandable; restore the
+            // token so the retained token remains immediately before it.
+            queue.push_front(Queued {
+                token: if let Some(symbol) = name.strip_prefix('\u{0}') {
+                    Token::ControlSymbol(symbol.chars().next().unwrap_or(' '))
+                } else {
+                    Token::ControlWord(name.to_owned())
+                },
+                depth,
+            });
+            return Ok(false);
+        };
+        match meaning {
+            Meaning::Selector(selector) => {
+                self.charge_queue(queue)?;
+                let Some(replacement) = selector.select(
+                    queue,
+                    self.scopes.last().expect("global scope").input_mode == InputMode::Text,
+                ) else {
+                    queue.push_front(Queued {
+                        token: Token::ControlWord(name.to_owned()),
+                        depth,
+                    });
+                    return Ok(false);
+                };
+                self.prepend(queue, replacement, depth + 1)?;
+                Ok(true)
+            },
+            Meaning::Macro(def) => {
+                if mode == Mode::Edef && def.protected {
+                    queue.push_front(Queued {
+                        token: Token::ControlWord(name.to_owned()),
+                        depth,
+                    });
+                    return Ok(false);
+                }
+                self.charge_queue(queue)?;
+                let Some(args) = consume_args(queue, &def) else {
+                    queue.push_front(Queued {
+                        token: Token::ControlWord(name.to_owned()),
+                        depth,
+                    });
+                    return Ok(false);
+                };
+                let replacement = substitute(&def, &args, self.cap)?;
+                self.prepend(queue, replacement, depth + 1)?;
+                Ok(true)
+            },
+            Meaning::Token(token) => {
+                let restored = if name.starts_with('\u{0}') {
+                    Token::ControlSymbol(name.chars().nth(1).unwrap_or(' '))
+                } else {
+                    Token::ControlWord(name.to_owned())
+                };
+                queue.push_front(Queued {
+                    token: restored,
+                    depth,
+                });
+                let _ = token;
+                Ok(false)
+            },
+        }
+    }
+
+    /// Return the ordinary `\noexpand` result. `None` means an empty input;
+    /// expandable control sequences become a relax-like marker, while
+    /// unexpandable meanings remain executable.
+    fn noexpand_replacement(&mut self, token: Token) -> Result<Option<Token>, usize> {
+        let Token::ControlWord(name) = &token else {
+            let Token::ControlSymbol(symbol) = &token else {
+                return Ok(Some(token));
+            };
+            let Some(meaning) = self.lookup_macro_for_expansion(&control_key_symbol(*symbol))?
+            else {
+                return Ok(Some(token));
+            };
+            return Ok(match meaning {
+                Meaning::Macro(_) | Meaning::Selector(_) => Some(Token::NoExpand(Box::new(token))),
+                Meaning::Token(meaning) => Some(Token::Frozen(Box::new(meaning))),
+            });
+        };
+        let Some(meaning) = self.lookup_macro_for_expansion(name)? else {
+            return Ok(Some(token));
+        };
+        Ok(match meaning {
+            Meaning::Macro(_) | Meaning::Selector(_) => Some(Token::NoExpand(Box::new(token))),
+            Meaning::Token(meaning) => Some(Token::Frozen(Box::new(meaning))),
+        })
     }
 
     fn edef_noexpand(
@@ -1244,6 +1437,7 @@ fn parameter_token(token: &Token) -> Option<macro_args::ParameterToken> {
         Token::ControlSymbol(symbol) => format!("\\{symbol}"),
         Token::Verbatim(text) => text.clone(),
         Token::EndEnvironment => return None,
+        Token::NoExpand(inner) => return parameter_token(inner),
         Token::Frozen(inner) => return parameter_token(inner),
     };
     Some(macro_args::ParameterToken::from_text(text))
@@ -1371,6 +1565,7 @@ fn token_matches_parameter(token: &Token, expected: &str) -> bool {
         },
         Token::Verbatim(text) => expected == text,
         Token::EndEnvironment => false,
+        Token::NoExpand(inner) => token_matches_parameter(inner, expected),
         Token::Frozen(inner) => token_matches_parameter(inner, expected),
     }
 }
@@ -1491,6 +1686,7 @@ fn token_text(tokens: &[Token]) -> String {
             },
             Token::Verbatim(text) => out.push_str(text),
             Token::EndEnvironment => {},
+            Token::NoExpand(inner) => out.push_str(&token_text(std::slice::from_ref(inner))),
             Token::Frozen(inner) => out.push_str(&token_text(std::slice::from_ref(inner))),
         }
     }
@@ -1573,6 +1769,10 @@ fn render_tokens(tokens: &[Token]) -> String {
                 previous_control_word = None;
             },
             Token::EndEnvironment => {},
+            Token::NoExpand(inner) => {
+                out.push_str(&render_tokens(std::slice::from_ref(inner)));
+                previous_control_word = None;
+            },
             Token::Frozen(inner) => {
                 if let Token::ControlWord(name) = inner.as_ref() {
                     out.push('\\');

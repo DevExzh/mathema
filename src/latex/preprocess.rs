@@ -68,6 +68,7 @@ fn needs_expansion_processing(input: &str) -> bool {
         || input.contains("\\xdef")
         || input.contains("\\let")
         || input.contains("\\futurelet")
+        || input.contains("\\expandafter")
         || input.contains("\\@firstoftwo")
         || input.contains("\\@secondoftwo")
         || input.contains("\\@ifstar")
@@ -384,6 +385,35 @@ mod tests {
             "[x]"
         );
         assert_eq!(expanded(r"\def\f#1{#1x}\f{\alpha}"), r"\alpha x");
+    }
+
+    #[test]
+    fn expandafter_expands_only_the_second_token_once() {
+        assert_eq!(expanded(r"\expandafter\foo\bar"), r"\foo\bar");
+    }
+
+    #[test]
+    fn expandafter_and_noexpand_match_tex_ordering() {
+        assert_eq!(
+            expanded(r"\def\foo#1#2{#1+#2}\def\bar{xy}\expandafter\foo\bar"),
+            "x+y"
+        );
+        assert_eq!(
+            expanded(r"\def\foo#1#2{#1+#2}\expandafter\foo\@firstoftwo{ab}{z}"),
+            "a+b"
+        );
+        assert_eq!(
+            expanded(r"\def\foo{x}\def\bar{\def\foo{y}}\expandafter\bar\foo"),
+            "x"
+        );
+        assert_eq!(expanded(r"\noexpand\foo y\def\foo{x}"), r"\foo y");
+        assert_eq!(expanded(r"\def\foo{x}\noexpand\foo y"), " y");
+        assert_eq!(expanded(r"\noexpand\frac xy"), r"\frac xy");
+        assert_eq!(expanded(r"\def\foo{x}\expandafter\foo\noexpand\foo"), "x");
+        assert_eq!(expanded(r"\noexpand\def\foo{xy}\foo"), "xy");
+        assert!(crate::from_latex(r"\def\foo{x}\noexpand\foo y").is_ok());
+        assert!(crate::from_latex(r"\noexpand\def\foo{xy}\foo").is_ok());
+        assert_eq!(expanded(r"\expandafter\foo\def\foo{x}"), r"\foo");
     }
 
     #[test]
