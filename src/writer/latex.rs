@@ -628,10 +628,10 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         // A command delimiter at the end of the previous child
                         // (e.g. an inner \right\rangle) would merge with a
                         // following plain letter. Insert a separator when needed.
+                        let output_start = buf.len();
                         if ends_with_command && node_starts_with_ascii_letter(arena, child_id) {
                             buf.push(' ');
                         }
-                        let output_start = buf.len();
                         write_node(buf, arena, child_id);
                         ends_with_command =
                             appended_ends_with_letter_command(buf, output_start, ends_with_command);
@@ -2100,19 +2100,44 @@ mod tests {
     #[test]
     fn control_word_boundaries_survive_empty_and_nested_rows() {
         let cases = [
-            "<math><mrow><mi>α</mi><mrow></mrow><mi>a</mi><mi>b</mi></mrow></math>",
-            "<math><mfenced><mi>α</mi><mrow><mi>a</mi><mi>b</mi></mrow></mfenced></math>",
+            (
+                "<math><mrow><mi>α</mi><mrow></mrow><mi>a</mi><mi>b</mi></mrow></math>",
+                r"\alpha ab",
+            ),
+            (
+                "<math><mfenced><mi>α</mi><mi>a</mi><mi>b</mi></mfenced></math>",
+                r"\left( \alpha ab \right)",
+            ),
+            (
+                "<math><mfenced><mi>α</mi><mrow><mi>a</mi><mi>b</mi></mrow></mfenced></math>",
+                r"\left( \alpha ab \right)",
+            ),
         ];
-        for input in cases {
+        for (input, expected) in cases {
             let first = crate::convert(input, crate::Format::MathML, crate::Format::LaTeX)
                 .expect("MathML input should convert");
             let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX)
                 .expect("LaTeX output should reparse");
             assert_eq!(first, second, "control-word boundary changed for {input}");
-            assert!(
-                first.contains(r"\alpha a"),
-                "missing separator in {first:?}"
-            );
+            assert_eq!(first, expected, "unexpected output for {input}");
+        }
+
+        for nodes in [
+            vec![
+                MathNode::Symbol(SymbolKind::Ordinary, "α".into()),
+                MathNode::Identifier("a".into()),
+                MathNode::Identifier("b".into()),
+            ],
+            vec![
+                MathNode::Symbol(SymbolKind::Ordinary, "α".into()),
+                MathNode::Row(vec![]),
+                MathNode::Identifier("a".into()),
+                MathNode::Identifier("b".into()),
+            ],
+        ] {
+            let expr = MathExpr::inline(nodes);
+            let output = LatexWriter::write(&expr, &Config::default()).unwrap();
+            assert_eq!(output, r"\alpha ab");
         }
     }
 
