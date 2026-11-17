@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- LaTeX script arguments reuse canonical token grouping for mapped Unicode
+  symbols, keeping preferred control words such as `\Re` stable across writes.
+
 - CLI parsing keeps LaTeX source whitespace intact, including a trailing `\ `
   control-space command, while retaining trimming for other input formats.
 

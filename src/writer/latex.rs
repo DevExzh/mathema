@@ -210,7 +210,11 @@ fn write_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, _next: Opti
         write_node(buf, arena, arg);
         buf.push('}');
     } else {
-        write_braced(buf, arena, arg);
+        // Use the same token spelling and grouping rules as a script base.
+        // In particular, an alphabetic Unicode symbol such as ℜ emits the
+        // preferred control word `\Re` without braces, while non-alphabetic
+        // symbols keep the braces needed to isolate their control words.
+        write_script_base(buf, arena, arg);
     }
 }
 
@@ -2276,5 +2280,52 @@ mod tests {
         let out2 = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
         assert_eq!(out1, "{}^{2}");
         assert_eq!(out1, out2);
+    }
+
+    #[test]
+    fn script_arguments_keep_preferred_command_grouping() {
+        for (input, expected) in [
+            ("x_\u{211C}", r"x_\Re"),
+            (r"x_\Re", r"x_\Re"),
+            ("x_\u{211C}b", r"x_\Re b"),
+        ] {
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+            assert_eq!(first, expected, "unexpected script argument for {input:?}");
+            assert_eq!(
+                first, second,
+                "script argument was not stable for {input:?}"
+            );
+        }
+
+        let input = "'_\u{211C}?'_\u{211C}";
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, r"{{}_{\Re}^{\prime}?_\Re^{\prime}}");
+        assert_eq!(first, second, "normalized script arguments were not stable");
+
+        let mathml =
+            crate::from_mathml("<math><msub><mi>x</mi><mo>\u{211C}</mo></msub></math>").unwrap();
+        let first = mathml.to_latex().unwrap();
+        assert_eq!(first, r"x_\Re");
+        assert_eq!(
+            first,
+            crate::from_latex(&first).unwrap().to_latex().unwrap()
+        );
+    }
+
+    #[test]
+    fn direct_ast_script_symbol_uses_preferred_command() {
+        let config = Config::default();
+        let expr = MathExpr::inline(vec![MathNode::Subscript {
+            base: Box::new(MathNode::Identifier("x".into())),
+            sub: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "\u{211C}".into())),
+        }]);
+        let first = LatexWriter::write(&expr, &config).unwrap();
+        assert_eq!(first, r"x_\Re");
+        assert_eq!(
+            first,
+            crate::from_latex(&first).unwrap().to_latex().unwrap()
+        );
     }
 }
