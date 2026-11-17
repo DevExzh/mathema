@@ -140,7 +140,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 .map_err(to_err)?;
             Ok(())
         },
-        MathNode::Text(_, s) => write_simple_element(w, "mtext", s),
+        MathNode::Text(style, s) => write_text(w, *style, s),
         MathNode::Space(r) => {
             let mut elem = BytesStart::new("mspace");
             let width = format!("{}em", r.as_f64());
@@ -584,6 +584,22 @@ fn write_simple_element(w: &mut XmlWriter, tag: &str, text: &str) -> Result<()> 
     Ok(())
 }
 
+fn write_text(w: &mut XmlWriter, style: TextStyle, text: &str) -> Result<()> {
+    let mut elem = BytesStart::new("mtext");
+    if style != TextStyle::Normal {
+        elem.push_attribute(("mathvariant", style_to_mathvariant(style)));
+    }
+    if text.chars().any(char::is_whitespace) {
+        elem.push_attribute(("xml:space", "preserve"));
+    }
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mtext")))
+        .map_err(to_err)?;
+    Ok(())
+}
+
 fn write_mi(w: &mut XmlWriter, s: &str) -> Result<()> {
     let mut elem = BytesStart::new("mi");
     // Single-letter identifiers are italic by default in MathML;
@@ -699,6 +715,22 @@ fn simple_element(buf: &mut String, tag: &str, text: &str) {
 }
 
 #[inline]
+fn write_text_fast(buf: &mut String, style: TextStyle, text: &str) {
+    buf.push_str("<mtext");
+    if style != TextStyle::Normal {
+        buf.push_str(" mathvariant=\"");
+        buf.push_str(style_to_mathvariant(style));
+        buf.push('"');
+    }
+    if text.chars().any(char::is_whitespace) {
+        buf.push_str(" xml:space=\"preserve\"");
+    }
+    buf.push('>');
+    xml_escape_into(buf, text);
+    buf.push_str("</mtext>");
+}
+
+#[inline]
 fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(sid) => simple_element(buf, "mn", arena.str_val(sid)),
@@ -716,7 +748,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             let s = arena.str_val(sid);
             write_mo_symbol_fast(buf, kind, s);
         },
-        CompactNode::Text(_, sid) => simple_element(buf, "mtext", arena.str_val(sid)),
+        CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
             use std::fmt::Write;
             let _ = write!(buf, "<mspace width=\"{}em\"/>", r.as_f64());
@@ -1173,6 +1205,7 @@ fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reader::Reader;
 
     fn write(node: MathNode) -> String {
         let expr = MathExpr::inline(vec![node]);
@@ -1190,6 +1223,56 @@ mod tests {
     fn identifier() {
         let output = write(MathNode::Identifier("x".into()));
         assert!(output.contains("<mi>x</mi>"));
+    }
+
+    #[test]
+    fn text_style_and_whitespace_round_trip_on_heap_and_compact_paths() {
+        let styles = [
+            TextStyle::Normal,
+            TextStyle::Bold,
+            TextStyle::Italic,
+            TextStyle::BoldItalic,
+            TextStyle::Monospace,
+            TextStyle::SansSerif,
+            TextStyle::SansSerifBold,
+            TextStyle::SansSerifItalic,
+            TextStyle::SansSerifBoldItalic,
+            TextStyle::DoubleStruck,
+            TextStyle::Script,
+            TextStyle::BoldScript,
+            TextStyle::Fraktur,
+            TextStyle::BoldFraktur,
+        ];
+        let config = Config::default();
+        for style in styles {
+            let expr = MathExpr::inline(vec![MathNode::Text(style, "  a < b  ".into())]);
+            let heap = MathmlWriter::write(&expr, &config).unwrap();
+            let compact_expr = CompactExpr::from_math_expr(&expr).unwrap();
+            let compact = MathmlWriter::write_compact(&compact_expr, &config).unwrap();
+            assert_eq!(heap, compact, "style: {style:?}");
+            assert!(heap.contains("xml:space=\"preserve\""));
+            if style == TextStyle::Normal {
+                assert!(heap.contains("<mtext xml:space=\"preserve\">"), "{heap}");
+            } else {
+                assert!(
+                    heap.contains(&format!("mathvariant=\"{}\"", style_to_mathvariant(style))),
+                    "style: {style:?}, output: {heap}"
+                );
+            }
+
+            let parsed = crate::reader::mathml::MathmlReader::parse(&heap, &config)
+                .unwrap()
+                .expr;
+            assert_eq!(parsed.nodes, expr.nodes, "style: {style:?}");
+        }
+    }
+
+    #[test]
+    fn text_without_whitespace_omits_xml_space_but_keeps_style() {
+        let expr = MathExpr::inline(vec![MathNode::Text(TextStyle::Bold, "hello".into())]);
+        let output = MathmlWriter::write(&expr, &Config::default()).unwrap();
+        assert!(output.contains("<mtext mathvariant=\"bold\">hello</mtext>"));
+        assert!(!output.contains("xml:space"));
     }
 
     #[test]
