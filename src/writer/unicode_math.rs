@@ -346,7 +346,11 @@ fn write_script_arg(out: &mut String, node: &MathNode) {
         MathNode::Fraction { .. }
         | MathNode::Subscript { .. }
         | MathNode::Superscript { .. }
-        | MathNode::SubSup { .. } => {
+        | MathNode::SubSup { .. }
+        | MathNode::Phantom(..)
+        | MathNode::Boxed { .. }
+        | MathNode::Actuarial { .. }
+        | MathNode::Reflect { .. } => {
             out.push('(');
             write_node(out, node);
             out.push(')');
@@ -719,7 +723,11 @@ fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Fraction { .. }
         | CompactNode::Subscript { .. }
         | CompactNode::Superscript { .. }
-        | CompactNode::SubSup { .. } => {
+        | CompactNode::SubSup { .. }
+        | CompactNode::Phantom(..)
+        | CompactNode::Boxed { .. }
+        | CompactNode::Actuarial { .. }
+        | CompactNode::Reflect { .. } => {
             out.push('(');
             write_node_c(out, arena, id);
             out.push(')');

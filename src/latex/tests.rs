@@ -134,6 +134,23 @@ fn actuarial_text_boxes_keep_mixed_content_and_inline_math() {
 }
 
 #[test]
+fn actuarial_unicode_math_script_round_trip_preserves_compound_operands() {
+    for input in [
+        r"a_{\angl n} + b^{\angl g}",
+        r"a_{\boxed{x}} + c_{\phantom{y}}",
+        r"a_{\angl n}z",
+    ] {
+        let unicode =
+            crate::convert(input, crate::Format::LaTeX, crate::Format::UnicodeMath).unwrap();
+        let latex =
+            crate::convert(&unicode, crate::Format::UnicodeMath, crate::Format::LaTeX).unwrap();
+        let unicode_again =
+            crate::convert(&latex, crate::Format::LaTeX, crate::Format::UnicodeMath).unwrap();
+        assert_eq!(unicode_again, unicode, "{input}: {unicode:?} -> {latex:?}");
+    }
+}
+
+#[test]
 fn mathml_top_and_right_sides_keep_additional_strikes() {
     for notation in ["right top", "actuarial"] {
         let ml = format!(
