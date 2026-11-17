@@ -98,6 +98,21 @@ fn ws(input: &str) -> IResult<&str, ()> {
     Ok((&input[skip..], ()))
 }
 
+/// Boundaries at which a scanner-level `\relax` leaves an empty unbraced
+/// script argument. The following token must remain for the enclosing parser
+/// (or for a complementary script) rather than escaping as a sibling.
+#[inline]
+fn script_argument_boundary(input: &str) -> bool {
+    input.is_empty()
+        || input.starts_with('}')
+        || input.starts_with('&')
+        || input.starts_with("\\\\")
+        || matches!(input.as_bytes().first(), Some(b'^' | b'_' | b'\''))
+        || strip_control_word(input, "end").is_some()
+        || strip_control_word(input, "right").is_some()
+        || strip_control_word(input, "middle").is_some()
+}
+
 /// Consume consecutive `\\limits` and `\\nolimits` modifiers after an
 /// operator. TeX permits repeated placement modifiers and the last modifier
 /// determines the operator's placement. A control-word boundary is required
@@ -2623,7 +2638,19 @@ impl LatexCompactParser {
 
     /// Parse a single script argument: either a single token or a braced group.
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, _) = ws(input)?;
+        let (mut input, _) = ws(input)?;
+        let mut skipped_relax = false;
+        while let Some(rest) = strip_control_word(input, "relax") {
+            skipped_relax = true;
+            let (rest, _) = ws(rest)?;
+            input = rest;
+        }
+        if skipped_relax && script_argument_boundary(input) {
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ));
+        }
         let (input, arg) = self.parse_atom(input)?;
         if self.check_node_limit() {
             return Err(nom::Err::Failure(nom::error::Error::new(

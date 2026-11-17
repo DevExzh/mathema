@@ -48,6 +48,88 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn relax_is_skipped_inside_unbraced_script_arguments() {
+    let config = Config::default();
+    let superscript = LatexReader::parse(r"x^\relax 2", &config).unwrap();
+    assert_eq!(superscript.expr.nodes.len(), 1);
+    assert!(matches!(
+        superscript.expr.nodes.first(),
+        Some(crate::ast::MathNode::Superscript { .. })
+    ));
+    let subscript = LatexReader::parse(r"x_\relax 2", &config).unwrap();
+    assert_eq!(subscript.expr.nodes.len(), 1);
+    assert!(matches!(
+        subscript.expr.nodes.first(),
+        Some(crate::ast::MathNode::Subscript { .. })
+    ));
+    for (input, expected) in [
+        (r"x^\relax 2", r"x^2"),
+        (r"x_\relax 2", r"x_2"),
+        (r"x^\relax\relax   2", r"x^2"),
+        (r"x_\relax\relax\ 2", r"x_\ 2"),
+    ] {
+        let actual =
+            crate::convert_with(input, crate::Format::LaTeX, crate::Format::LaTeX, &config)
+                .unwrap();
+        let want = crate::convert_with(
+            expected,
+            crate::Format::LaTeX,
+            crate::Format::LaTeX,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(actual, want, "{input}");
+    }
+}
+
+#[test]
+fn relax_script_boundaries_do_not_escape_groups_or_arrays() {
+    let config = Config::default();
+    for (input, expected) in [
+        (r"x^{\relax 2}", r"x^{2}"),
+        (r"{x^\relax}2", r"{x}2"),
+        (
+            r"\begin{matrix}x^\relax 2&y_\relax 3\end{matrix}",
+            r"\begin{matrix}x^2&y_3\end{matrix}",
+        ),
+    ] {
+        let actual =
+            crate::convert_with(input, crate::Format::LaTeX, crate::Format::LaTeX, &config)
+                .unwrap();
+        let want = crate::convert_with(
+            expected,
+            crate::Format::LaTeX,
+            crate::Format::LaTeX,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(actual, want, "{input}");
+    }
+}
+
+#[test]
+fn user_relax_shadowing_and_aliases_keep_their_meaning() {
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\def\relax{z}x^\relax 2", r"x^z2"),
+        (r"\let\r\relax x^\r 2", r"x^2"),
+        (r"x^\relax+2", r"x^+2"),
+    ] {
+        let actual =
+            crate::convert_with(input, crate::Format::LaTeX, crate::Format::LaTeX, &config)
+                .unwrap();
+        let want = crate::convert_with(
+            expected,
+            crate::Format::LaTeX,
+            crate::Format::LaTeX,
+            &config,
+        )
+        .unwrap();
+        assert_eq!(actual, want, "{input}");
+    }
+}
+
+#[test]
 fn actuarial_angle_preserves_enclosure_and_argument_boundaries() {
     let config = Config::default();
     for (input, expected) in [

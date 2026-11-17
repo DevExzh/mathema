@@ -2688,7 +2688,9 @@ mod tests {
             (r"x^{\relax}", "x"),
             (r"x_{\relax}", "x"),
             (r"\relax^2", r"{}^{2}"),
-            (r"x^\relax y", "xy"),
+            // Scanner-level \relax is skipped in an unbraced script argument;
+            // the following atom therefore remains the superscript.
+            (r"x^\relax y", "x^y"),
             (r"x^\relax_2", r"x_{2}"),
             (r"\text{a\relax b}", r"\text{ab}"),
             (r"\text{a \relax b}", r"\text{a b}"),
