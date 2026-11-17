@@ -27,7 +27,7 @@ use super::split_token;
 pub(crate) struct ParameterToken(String);
 
 impl ParameterToken {
-    fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -58,6 +58,14 @@ impl ParameterText {
     /// supplied by the invocation's remaining input.
     pub(crate) fn terminal_open(&self) -> bool {
         self.terminal_open
+    }
+
+    /// Token delimiters in definition order.  The first entry is the prefix
+    /// before `#1`; each subsequent entry terminates the corresponding
+    /// argument.  The stream preprocessor uses this view while retaining its
+    /// own continuation queue (which may contain replacement tokens).
+    pub(crate) fn delimiters(&self) -> &[Vec<ParameterToken>] {
+        &self.delimiters
     }
 }
 

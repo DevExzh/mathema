@@ -4,8 +4,6 @@ use super::macro_args::{self, ParameterText};
 use super::mhchem::capture_braced as scan_braced;
 use super::packages;
 
-#[path = "ordered.rs"]
-mod ordered;
 #[path = "ordered_stream.rs"]
 mod ordered_stream;
 
@@ -98,6 +96,7 @@ fn needs_preprocessing(input: &str) -> bool {
         || input.contains("\\edef")
         || input.contains("\\xdef")
         || input.contains("\\let")
+        || input.contains("\\futurelet")
         || input.contains("\\noexpand")
         || input.contains("\\global")
         || input.contains("\\long")
@@ -1117,6 +1116,14 @@ mod tests {
         assert_eq!(
             preprocess(r"\def\pick#1{[#1]}\def\alias{\pick}\alias{x}"),
             "[x]"
+        );
+    }
+
+    #[test]
+    fn futurelet_assigns_raw_next_token_and_keeps_it_in_stream() {
+        assert_eq!(
+            preprocess(r"\futurelet\foo\frac1{2+\foo}"),
+            r"\frac1{2+1}"
         );
     }
 }

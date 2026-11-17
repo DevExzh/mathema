@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::latex::macro_args::{self, ParameterText};
 use super::packages;
 use super::{expansion_cap, find_verb_end};
 use crate::latex::text_style;
@@ -56,6 +57,7 @@ struct MacroDef {
     param_count: u8,
     optional_default: Option<Vec<Token>>,
     body: Vec<Token>,
+    parameter_text: Option<ParameterText>,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +122,7 @@ impl Processor {
                     param_count,
                     optional_default: None,
                     body: tokenize(body),
+                    parameter_text: None,
                 }),
                 true,
             );
@@ -278,7 +281,7 @@ impl Processor {
                 let Some(args) = consume_args(queue, &def) else {
                     return Ok(false);
                 };
-                let replacement = substitute(&def.body, &args, self.cap)?;
+                let replacement = substitute(&def, &args, self.cap)?;
                 prepend(queue, replacement, depth + 1);
                 // In edef mode the newly enqueued body must be expanded by the
                 // same mode; the main loop carries that mode through naturally.
@@ -326,6 +329,9 @@ impl Processor {
             let result = self.parse_let_txn(false, &mut txn)?;
             return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
         }
+        if name == "futurelet" {
+            return self.parse_futurelet(queue, false);
+        }
         if matches!(name, "newcommand" | "renewcommand" | "providecommand") {
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_newcommand_txn(name, &mut txn)?;
@@ -365,7 +371,7 @@ impl Processor {
             txn.rollback();
             return Ok(false);
         };
-        if matches!(command.as_str(), "def" | "gdef" | "edef" | "xdef") {
+            if matches!(command.as_str(), "def" | "gdef" | "edef" | "xdef") {
             txn.pop();
             let result = self.parse_def_txn(
                 &command,
@@ -378,6 +384,11 @@ impl Processor {
         if command == "let" {
             txn.pop();
             let result = self.parse_let_txn(true, &mut txn)?;
+            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+        }
+        if command == "futurelet" {
+            txn.pop();
+            let result = self.parse_futurelet_txn(false, &mut txn)?;
             return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
         }
         // TeX permits a macro expanding to `\def` after a prefix.
@@ -410,30 +421,27 @@ impl Processor {
         let Some(target) = txn.pop_control_word() else {
             return Ok(false);
         };
-        let mut count = 0u8;
+        txn.skip_whitespace();
+        let mut parameter_tokens = Vec::new();
         loop {
-            txn.skip_whitespace();
             let Some(hash) = txn.peek_token() else {
                 return Ok(false);
             };
-            if !matches!(hash, Token::Char('#')) {
+            if matches!(hash, Token::BeginGroup) {
                 break;
             }
-            txn.pop();
-            let Some(Token::Char(digit)) = txn.pop_token() else {
+            let Some(token) = txn.pop_token() else {
                 return Ok(false);
             };
-            let n = digit.to_digit(10).unwrap_or(0);
-            if n == 0 || n > 9 || n != u32::from(count) + 1 {
-                // Delimited/malformed parameter text is left to the dedicated
-                // argument scanner instead of being silently accepted here.
-                return Ok(false);
-            }
-            count += 1;
+            parameter_tokens.push(token);
         }
         let Some(body) = txn.pop_group() else {
             return Ok(false);
         };
+        let Some(parameter_text) = parse_parameter_text(&parameter_tokens) else {
+            return Ok(false);
+        };
+        let count = parameter_text.parameter_count();
         let body = if expand_body {
             self.expand_edef_body(body)?
         } else {
@@ -445,6 +453,7 @@ impl Processor {
                 param_count: count,
                 optional_default: None,
                 body,
+                parameter_text: Some(parameter_text),
             }),
             global || command == "gdef" || command == "xdef",
         );
@@ -483,6 +492,59 @@ impl Processor {
             _ => Meaning::Token(source),
         };
         self.define_macro(target, meaning, global);
+        Ok(true)
+    }
+
+    fn parse_futurelet(
+        &mut self,
+        queue: &mut VecDeque<Queued>,
+        global: bool,
+    ) -> Result<bool, usize> {
+        let mut txn = QueueTxn::new(queue);
+        let result = self.parse_futurelet_txn(global, &mut txn)?;
+        if result {
+            txn.commit();
+        } else {
+            txn.rollback();
+        }
+        Ok(result)
+    }
+
+    /// `\futurelet\name<middle><next>` assigns the meaning of `<next>` to
+    /// `name`, then puts `<next>` and `<middle>` back in front of the stream so
+    /// both execute in their original order.  This raw-token lookahead is
+    /// deliberately not macro expansion: the assigned meaning is a snapshot
+    /// just like `\let`.
+    fn parse_futurelet_txn(
+        &mut self,
+        global: bool,
+        txn: &mut QueueTxn<'_>,
+    ) -> Result<bool, usize> {
+        let Some(target) = txn.pop_control_word() else {
+            return Ok(false);
+        };
+        let Some(middle) = txn.pop() else {
+            return Ok(false);
+        };
+        let Some(next) = txn.pop() else {
+            return Ok(false);
+        };
+        let source = next.token.clone();
+        let meaning = match &source {
+            Token::ControlWord(name) => self
+                .lookup_macro(name)
+                .unwrap_or_else(|| Meaning::Token(source.clone())),
+            Token::ControlSymbol(symbol) => Meaning::Token(Token::ControlSymbol(*symbol)),
+            _ => Meaning::Token(source),
+        };
+        self.define_macro(target, meaning, global);
+        // QueueTxn's consumed tokens would otherwise be restored on drop.  We
+        // commit the assignment and then explicitly put the two lookahead
+        // tokens back; they are part of the command's semantics, not consumed
+        // input.
+        txn.commit();
+        txn.queue.push_front(next);
+        txn.queue.push_front(middle);
         Ok(true)
     }
 
@@ -528,6 +590,7 @@ impl Processor {
                     param_count: count,
                     optional_default: default,
                     body,
+                    parameter_text: None,
                 }),
                 false,
             );
@@ -846,7 +909,23 @@ impl Drop for QueueTxn<'_> {
     }
 }
 
+/// Let the dedicated argument module validate and represent primitive
+/// parameter text.  The queue has already tokenized the header, so a tiny
+/// synthetic definition is enough to reuse its exact control-word, delimiter,
+/// and `#{` rules without rescanning the real continuation.
+fn parse_parameter_text(tokens: &[Token]) -> Option<ParameterText> {
+    let header = token_text(tokens);
+    let probe = format!(r"\def\probe{header}{{}}");
+    macro_args::parse_definition(&probe)
+        .ok()
+        .flatten()
+        .map(|parsed| parsed.parameter_text)
+}
+
 fn consume_args(queue: &mut VecDeque<Queued>, def: &MacroDef) -> Option<Vec<Vec<Token>>> {
+    if let Some(parameter_text) = &def.parameter_text {
+        return consume_parameter_args(queue, parameter_text);
+    }
     let mut txn = QueueTxn::new(queue);
     let mut args = Vec::with_capacity(def.param_count as usize);
     if let Some(default) = &def.optional_default {
@@ -873,48 +952,120 @@ fn consume_args(queue: &mut VecDeque<Queued>, def: &MacroDef) -> Option<Vec<Vec<
     Some(args)
 }
 
-fn substitute(body: &[Token], args: &[Vec<Token>], cap: usize) -> Result<Vec<Token>, usize> {
-    let mut size = 0usize;
-    let mut i = 0;
-    while i < body.len() {
-        if matches!(body[i], Token::Char('#'))
-            && let Some(Token::Char(digit)) = body.get(i + 1)
-            && let Some(index) = digit.to_digit(10)
-            && index > 0
-            && (index as usize) <= args.len()
-        {
-            for token in &args[index as usize - 1] {
-                size = size.saturating_add(token.byte_len());
-                if size > cap {
-                    return Err(cap);
+fn consume_parameter_args(
+    queue: &mut VecDeque<Queued>,
+    parameter_text: &ParameterText,
+) -> Option<Vec<Vec<Token>>> {
+    let mut txn = QueueTxn::new(queue);
+    let delimiters = parameter_text.delimiters();
+    if !consume_exact_delimiter(&mut txn, &delimiters[0]) {
+        txn.rollback();
+        return None;
+    }
+    let mut args = Vec::with_capacity(parameter_text.parameter_count() as usize);
+    for index in 0..parameter_text.parameter_count() as usize {
+        let delimiter = &delimiters[index + 1];
+        let argument = if delimiter.is_empty() {
+            txn.skip_whitespace();
+            if matches!(txn.peek_token(), Some(Token::BeginGroup)) {
+                txn.pop_group()?
+            } else {
+                let token = txn.pop_token()?;
+                if matches!(token, Token::EndGroup) {
+                    return None;
+                }
+                vec![token]
+            }
+        } else {
+            let mut depth = 0usize;
+            let mut argument = Vec::new();
+            loop {
+                if depth == 0 && delimiter_matches(&txn, delimiter) {
+                    let _ = consume_exact_delimiter(&mut txn, delimiter);
+                    break argument;
+                }
+                let token = txn.pop_token()?;
+                match token {
+                    Token::BeginGroup => {
+                        depth += 1;
+                        argument.push(Token::BeginGroup);
+                    },
+                    Token::EndGroup => {
+                        if depth == 0 {
+                            return None;
+                        }
+                        depth -= 1;
+                        argument.push(Token::EndGroup);
+                    },
+                    other => argument.push(other),
                 }
             }
-            i += 2;
-            continue;
-        }
-        size = size.saturating_add(body[i].byte_len());
-        if size > cap {
-            return Err(cap);
-        }
-        i += 1;
+        };
+        args.push(argument);
     }
-    let mut out = Vec::with_capacity(body.len().saturating_add(size.min(cap)));
-    i = 0;
-    while i < body.len() {
-        if matches!(body[i], Token::Char('#'))
-            && let Some(Token::Char(digit)) = body.get(i + 1)
-            && let Some(index) = digit.to_digit(10)
-            && index > 0
-            && (index as usize) <= args.len()
-        {
-            out.extend(args[index as usize - 1].iter().cloned());
-            i += 2;
-            continue;
+    txn.commit();
+    Some(args)
+}
+
+fn consume_exact_delimiter(txn: &mut QueueTxn<'_>, delimiter: &[macro_args::ParameterToken]) -> bool {
+    for expected in delimiter {
+        let Some(token) = txn.peek_token() else {
+            return false;
+        };
+        if token_identity(token) != expected.as_str() {
+            return false;
         }
-        out.push(body[i].clone());
-        i += 1;
+        txn.pop();
     }
-    Ok(out)
+    true
+}
+
+fn delimiter_matches(
+    txn: &QueueTxn<'_>,
+    delimiter: &[macro_args::ParameterToken],
+) -> bool {
+    delimiter.iter().enumerate().all(|(offset, expected)| {
+        txn.peek_token_at(offset)
+            .is_some_and(|token| token_identity(token) == expected.as_str())
+    })
+}
+
+fn token_identity(token: &Token) -> String {
+    match token {
+        Token::Char(c) => c.to_string(),
+        Token::BeginGroup => "{".to_owned(),
+        Token::EndGroup => "}".to_owned(),
+        Token::ControlWord(name) => format!("\\{name}"),
+        Token::ControlSymbol(c) => format!("\\{c}"),
+        Token::Verbatim(text) => text.clone(),
+        Token::Frozen(inner) => token_identity(inner),
+    }
+}
+
+fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> Result<Vec<Token>, usize> {
+    let body_text = token_text(&def.body);
+    let argument_texts: Vec<String> = args.iter().map(|arg| token_text(arg)).collect();
+    let argument_refs: Vec<&str> = argument_texts.iter().map(String::as_str).collect();
+    let estimated = body_text.len().saturating_add(
+        argument_refs
+            .iter()
+            .map(|arg| arg.len())
+            .sum::<usize>(),
+    );
+    if estimated > cap {
+        return Err(cap);
+    }
+    let expanded = macro_args::substitute(
+        &body_text,
+        &argument_refs,
+        def.parameter_text
+            .as_ref()
+            .is_some_and(ParameterText::terminal_open),
+    );
+    if expanded.len() > cap {
+        return Err(cap);
+    }
+    Ok(tokenize(&expanded))
 }
 
 fn prepend(queue: &mut VecDeque<Queued>, tokens: Vec<Token>, depth: usize) {
