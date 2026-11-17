@@ -37,7 +37,7 @@
 //!
 //! Readers enforce [`Config::max_input_bytes`] (default 4 MiB) and layered parse
 //! and AST depth limits, so adversarial input is rejected rather than exhausting
-//! memory. The MTEF and UnicodeMath readers also enforce [`Config::max_nodes`]
+//! memory. The LaTeX, MTEF and UnicodeMath readers enforce [`Config::max_nodes`]
 //! and [`Config::max_depth`], failing with [`Error::LimitExceeded`]. See [`Error`]
 //! for the failure modes.
 

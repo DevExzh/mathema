@@ -1,6 +1,6 @@
 use crate::ast::compact::CompactNode;
 use crate::ast::normalize::normalize_compact_expr;
-use crate::error::{Config, Strictness};
+use crate::error::{Config, Error, LimitKind, Strictness};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
 use crate::writer::Writer;
@@ -29,6 +29,58 @@ fn round_trip_simple() {
 
         assert_eq!(out1, out2, "round-trip failed for input: {input}");
     }
+}
+
+#[test]
+fn latex_node_limit_is_exact_for_compact_and_heap_readers() {
+    // The whitespace before `^` exercises the parser's implicit-base path,
+    // which creates the final script node after the preceding atom was parsed.
+    let input = r"x ^2 + y";
+    let unlimited = Config::default().with_max_nodes(None);
+    let parsed = LatexReader::parse_compact(input, &unlimited).unwrap();
+    let node_count = parsed.expr.arena.node_count();
+    assert!(node_count > 0);
+
+    for strictness in [Strictness::Strict, Strictness::Lenient] {
+        let exact = Config::default()
+            .with_strictness(strictness)
+            .with_max_nodes(Some(node_count));
+        let compact = LatexReader::parse_compact(input, &exact).unwrap();
+        assert_eq!(compact.expr.arena.node_count(), node_count);
+        let heap = LatexReader::parse(input, &exact).unwrap();
+        assert!(!heap.expr.nodes.is_empty());
+
+        let below = exact.with_max_nodes(Some(node_count - 1));
+        for result in [
+            LatexReader::parse_compact(input, &below).map(|_| ()),
+            LatexReader::parse(input, &below).map(|_| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(Error::LimitExceeded {
+                    kind: LimitKind::Nodes,
+                    limit
+                }) if limit == node_count - 1
+            ));
+        }
+    }
+
+    let zero = Config::default().with_max_nodes(Some(0));
+    assert!(matches!(
+        LatexReader::parse_compact("x", &zero),
+        Err(Error::LimitExceeded {
+            kind: LimitKind::Nodes,
+            limit: 0
+        })
+    ));
+    assert_eq!(
+        LatexReader::parse("x", &unlimited)
+            .unwrap()
+            .expr
+            .nodes
+            .len(),
+        1
+    );
 }
 
 #[test]

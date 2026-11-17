@@ -3,6 +3,7 @@ use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::char;
 use smallvec::SmallVec;
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
@@ -1154,7 +1155,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
     }
     let processed = preprocess_cow(trimmed)
         .map_err(|limit| Error::from(LatexParseError::ExpansionLimit { limit }))?;
-    let mut parser = LatexCompactParser::with_capacity(processed.len());
+    let mut parser = LatexCompactParser::with_capacity_limited(processed.len(), config.max_nodes);
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
             if let Some(error) = parser.abort.take() {
@@ -1177,7 +1178,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             };
             let diagnostics = std::mem::take(&mut parser.diagnostics);
             Ok(CompactParseResult::with_diagnostics(
-                CompactExpr::new(parser.arena, roots, display),
+                CompactExpr::new(parser.arena.into_inner(), roots, display),
                 diagnostics,
             ))
         },
@@ -1222,7 +1223,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 };
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(parser.arena, roots, display),
+                    CompactExpr::new(parser.arena.into_inner(), roots, display),
                     diagnostics,
                 ))
             }
@@ -1258,7 +1259,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 };
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(parser.arena, roots, display),
+                    CompactExpr::new(parser.arena.into_inner(), roots, display),
                     diagnostics,
                 ))
             } else {
@@ -1279,8 +1280,72 @@ pub fn parse(input: &str, config: &Config) -> Result<ParseResult> {
 // Compact parser
 // ---------------------------------------------------------------------------
 
+/// Arena wrapper used by the LaTeX parser to count nodes against the caller's
+/// `Config::max_nodes` without changing the compact arena API used elsewhere.
+/// Nodes past the configured bound are retained only long enough for the
+/// parser to unwind with valid IDs. The resulting parse is discarded.
+struct LatexArena {
+    inner: AstArena,
+    max_nodes: Option<usize>,
+    node_limit_hit: bool,
+}
+
+impl LatexArena {
+    fn with_capacity(
+        nodes: usize,
+        children: usize,
+        strings: usize,
+        max_nodes: Option<usize>,
+    ) -> Self {
+        Self {
+            inner: AstArena::with_capacity(nodes, children, strings),
+            max_nodes,
+            node_limit_hit: false,
+        }
+    }
+
+    #[inline]
+    fn push_node(&mut self, node: CompactNode) -> NodeId {
+        let id = self.inner.push_node(node);
+        if let Some(limit) = self.max_nodes
+            && self.inner.node_count() > limit
+        {
+            self.node_limit_hit = true;
+        }
+        id
+    }
+
+    #[inline]
+    fn node_limit_hit(&self) -> bool {
+        self.node_limit_hit
+    }
+
+    #[inline]
+    fn node_limit(&self) -> Option<usize> {
+        self.max_nodes
+    }
+
+    fn into_inner(self) -> AstArena {
+        self.inner
+    }
+}
+
+impl Deref for LatexArena {
+    type Target = AstArena;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for LatexArena {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 pub(crate) struct LatexCompactParser {
-    pub(crate) arena: AstArena,
+    arena: LatexArena,
     depth: u32,
     /// A typed resource error raised by a parser helper that communicates
     /// through nom's error channel. Resource failures must remain fatal in
@@ -1319,11 +1384,20 @@ impl LatexCompactParser {
     /// Heuristic: a typical LaTeX formula produces roughly 1 node per 3 input bytes,
     /// with similar proportions for children and strings.
     fn with_capacity(input_len: usize) -> Self {
+        Self::with_capacity_and_limit(input_len, None)
+    }
+
+    fn with_capacity_limited(input_len: usize, max_nodes: Option<usize>) -> Self {
+        Self::with_capacity_and_limit(input_len, max_nodes)
+    }
+
+    fn with_capacity_and_limit(input_len: usize, max_nodes: Option<usize>) -> Self {
         let est_nodes = input_len / 3 + 4;
+        let est_nodes = max_nodes.map_or(est_nodes, |limit| est_nodes.min(limit));
         let est_children = est_nodes;
         let est_strings = input_len;
         Self {
-            arena: AstArena::with_capacity(est_nodes, est_children, est_strings),
+            arena: LatexArena::with_capacity(est_nodes, est_children, est_strings, max_nodes),
             depth: 0,
             abort: None,
             display_override: false,
@@ -1343,6 +1417,23 @@ impl LatexCompactParser {
             message: message.into(),
             span: None,
         });
+    }
+
+    /// Turn an arena node-budget hit into a typed parser error. The parser
+    /// keeps the last node temporarily so every in-flight ID remains valid,
+    /// then unwinds before any partial tree can be returned to the caller.
+    #[inline]
+    fn check_node_limit(&mut self) -> bool {
+        if self.arena.node_limit_hit()
+            && self.abort.is_none()
+            && let Some(limit) = self.arena.node_limit()
+        {
+            self.abort = Some(Error::LimitExceeded {
+                kind: crate::error::LimitKind::Nodes,
+                limit,
+            });
+        }
+        self.abort.is_some()
     }
 
     /// Intern a single char as a string, avoiding heap allocation.
@@ -2105,6 +2196,12 @@ impl LatexCompactParser {
         let mut ids = SmallVec::new();
         let mut rest = input;
         loop {
+            if self.check_node_limit() {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    rest,
+                    nom::error::ErrorKind::TooLarge,
+                )));
+            }
             if self.depth == 1 {
                 let skip = skip_horizontal_ws_bytes(rest.as_bytes());
                 rest = &rest[skip..];
@@ -2147,14 +2244,25 @@ impl LatexCompactParser {
             && crate::ast::normalize::can_carry_script(*self.arena.node(prev))
         {
             ids.pop();
-            ids.push(crate::ast::normalize::make_script_with_base(
-                &mut self.arena,
-                prev,
-                id,
-            ));
+            ids.push(self.make_script_with_base(prev, id));
             return;
         }
         ids.push(id);
+    }
+
+    fn make_script_with_base(&mut self, base: NodeId, script_id: NodeId) -> NodeId {
+        match *self.arena.node(script_id) {
+            CompactNode::Subscript { sub, .. } => {
+                self.arena.push_node(CompactNode::Subscript { base, sub })
+            },
+            CompactNode::Superscript { sup, .. } => {
+                self.arena.push_node(CompactNode::Superscript { base, sup })
+            },
+            CompactNode::SubSup { sub, sup, .. } => {
+                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
+            },
+            _ => script_id,
+        }
     }
 
     /// Parse one element: an atom optionally followed by scripts.
