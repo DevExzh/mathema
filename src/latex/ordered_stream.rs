@@ -13,7 +13,9 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 use super::packages;
-use super::{ExpansionFailure, expansion_cap, expansion_work_cap, find_verb_end};
+use super::{
+    ExpansionFailure, SyntaxCommand, SyntaxKind, expansion_cap, expansion_work_cap, find_verb_end,
+};
 use crate::latex::macro_args::{self, ParameterText};
 use crate::latex::text_style;
 
@@ -23,6 +25,13 @@ mod select;
 type ExpansionResult<T> = std::result::Result<T, ExpansionFailure>;
 
 const MAX_EXPANSION_DEPTH: usize = 64;
+
+fn malformed(command: &str, detail: &'static str) -> ExpansionFailure {
+    ExpansionFailure::Syntax {
+        command: SyntaxCommand::from_name(command),
+        kind: SyntaxKind::from_detail(detail),
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Token {
@@ -576,7 +585,7 @@ impl Processor {
         loop {
             let Some(next_name) = txn.peek_control_word() else {
                 txn.rollback();
-                return Ok(false);
+                return Err(malformed(name, "expected an assignment after prefix"));
             };
             if next_name == "global" {
                 global = true;
@@ -596,7 +605,7 @@ impl Processor {
         }
         let Some(command) = txn.peek_control_word() else {
             txn.rollback();
-            return Ok(false);
+            return Err(malformed(name, "expected an assignment after prefix"));
         };
         if matches!(command.as_str(), "def" | "gdef" | "edef" | "xdef") {
             txn.pop();
@@ -656,7 +665,10 @@ impl Processor {
             });
         }
         txn.rollback();
-        Ok(false)
+        Err(malformed(
+            name,
+            "expected a definition, let, or futurelet assignment after prefix",
+        ))
     }
 
     fn parse_def_txn(
@@ -667,29 +679,28 @@ impl Processor {
         protected: bool,
         txn: &mut QueueTxn<'_>,
     ) -> ExpansionResult<bool> {
-        let Some(target) = txn.pop_control_sequence() else {
-            return Ok(false);
-        };
+        let target = txn
+            .pop_control_sequence()
+            .ok_or_else(|| malformed(command, "expected a control-sequence target"))?;
         txn.skip_whitespace();
         let mut parameter_tokens = Vec::new();
         loop {
-            let Some(hash) = txn.peek_token() else {
-                return Ok(false);
+            let Some(token) = txn.peek_token() else {
+                return Err(malformed(command, "expected a braced replacement body"));
             };
-            if matches!(hash, Token::BeginGroup) {
+            if matches!(token, Token::BeginGroup) {
                 break;
             }
-            let Some(token) = txn.pop_token() else {
-                return Ok(false);
-            };
-            parameter_tokens.push(token);
+            parameter_tokens.push(
+                txn.pop_token()
+                    .ok_or_else(|| malformed(command, "expected a braced replacement body"))?,
+            );
         }
-        let Some(body) = txn.pop_group() else {
-            return Ok(false);
-        };
-        let Some(parameter_text) = parse_parameter_text(&parameter_tokens) else {
-            return Ok(false);
-        };
+        let body = txn
+            .pop_group()
+            .ok_or_else(|| malformed(command, "expected a braced replacement body"))?;
+        let parameter_text = parse_parameter_text(&parameter_tokens)
+            .ok_or_else(|| malformed(command, "invalid parameter text"))?;
         let count = parameter_text.parameter_count();
         let body = if expand_body {
             self.expand_edef_body(body)?
@@ -711,9 +722,9 @@ impl Processor {
     }
 
     fn parse_let_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> ExpansionResult<bool> {
-        let Some(target) = txn.pop_control_sequence() else {
-            return Ok(false);
-        };
+        let target = txn
+            .pop_control_sequence()
+            .ok_or_else(|| malformed("let", "expected a control-sequence target"))?;
         txn.skip_whitespace();
         if matches!(txn.peek_token(), Some(Token::Char('='))) {
             txn.pop();
@@ -724,11 +735,11 @@ impl Processor {
                 txn.pop();
             }
         }
-        let Some(source) = txn.pop_token() else {
-            return Ok(false);
-        };
+        let source = txn
+            .pop_token()
+            .ok_or_else(|| malformed("let", "expected a source token"))?;
         if matches!(source, Token::EndGroup) {
-            return Ok(false);
+            return Err(malformed("let", "expected a source token"));
         }
         let meaning = match &source {
             Token::ControlWord(name) => match self.lookup_macro_for_expansion(name)? {
@@ -772,15 +783,15 @@ impl Processor {
         global: bool,
         txn: &mut QueueTxn<'_>,
     ) -> ExpansionResult<bool> {
-        let Some(target) = txn.pop_control_sequence() else {
-            return Ok(false);
-        };
-        let Some(middle) = txn.pop() else {
-            return Ok(false);
-        };
-        let Some(next) = txn.pop() else {
-            return Ok(false);
-        };
+        let target = txn
+            .pop_control_sequence()
+            .ok_or_else(|| malformed("futurelet", "expected a control-sequence target"))?;
+        let middle = txn
+            .pop()
+            .ok_or_else(|| malformed("futurelet", "expected a middle token"))?;
+        let next = txn
+            .pop()
+            .ok_or_else(|| malformed("futurelet", "expected a lookahead token"))?;
         let source = next.token.clone();
         let meaning = match &source {
             Token::ControlWord(name) => match self.lookup_macro_for_expansion(name)? {
@@ -822,31 +833,46 @@ impl Processor {
             txn.pop();
             txn.skip_whitespace();
         }
-        let Some(target) = txn.pop_command_name_or_group() else {
-            return Ok(false);
-        };
+        let target = txn.pop_newcommand_target()?;
         txn.skip_whitespace();
         let mut count = 0u8;
         if let Some(number) = txn.pop_bracket() {
             let text = token_text(&number);
-            let Ok(parsed) = text.trim().parse::<u8>() else {
-                return Ok(false);
-            };
+            let parsed = text
+                .trim()
+                .parse::<u8>()
+                .ok()
+                .filter(|count| *count <= 9)
+                .ok_or_else(|| {
+                    malformed(command, "parameter count must be an integer from 0 to 9")
+                })?;
             count = parsed;
             txn.skip_whitespace();
+        } else if txn.peek_token_is('[') {
+            return Err(malformed(command, "unterminated parameter count"));
         }
         let default = if count > 0 {
-            let default = txn.pop_bracket();
-            if default.is_some() {
+            if txn.peek_token_is('[') {
+                let default = txn
+                    .pop_bracket()
+                    .ok_or_else(|| malformed(command, "unterminated optional default"))?;
                 txn.skip_whitespace();
+                Some(default)
+            } else {
+                None
             }
-            default
         } else {
+            if txn.peek_token_is('[') {
+                return Err(malformed(
+                    command,
+                    "optional default requires at least one parameter",
+                ));
+            }
             None
         };
-        let Some(body) = txn.pop_group() else {
-            return Ok(false);
-        };
+        let body = txn
+            .pop_group()
+            .ok_or_else(|| malformed(command, "expected a braced replacement body"))?;
         if command != "providecommand" || !self.has_macro(&target) {
             self.define_macro(
                 target,
@@ -869,20 +895,22 @@ impl Processor {
             txn.pop();
             txn.skip_whitespace();
         }
-        let Some(name) = txn.pop_group() else {
-            return Ok(false);
-        };
+        let name = txn
+            .pop_group()
+            .ok_or_else(|| malformed("newenvironment", "expected an environment name group"))?;
         txn.skip_whitespace();
         if txn.peek_token_is('[') {
-            let _ = txn.pop_bracket();
+            let _ = txn
+                .pop_bracket()
+                .ok_or_else(|| malformed("newenvironment", "unterminated parameter count"))?;
             txn.skip_whitespace();
         }
-        let Some(begin) = txn.pop_group() else {
-            return Ok(false);
-        };
-        let Some(end) = txn.pop_group() else {
-            return Ok(false);
-        };
+        let begin = txn
+            .pop_group()
+            .ok_or_else(|| malformed("newenvironment", "expected a braced begin body"))?;
+        let end = txn
+            .pop_group()
+            .ok_or_else(|| malformed("newenvironment", "expected a braced end body"))?;
         self.define_environment(
             token_text(&name).trim().to_owned(),
             EnvDef { begin, end },
@@ -1393,21 +1421,41 @@ impl<'a> QueueTxn<'a> {
         matches!(self.peek_token(), Some(Token::Char(value)) if *value == ch)
     }
 
-    fn pop_command_name_or_group(&mut self) -> Option<String> {
+    fn pop_newcommand_target(&mut self) -> ExpansionResult<String> {
         self.skip_whitespace();
-        if matches!(self.peek_token(), Some(Token::BeginGroup)) {
-            let inner = self.pop_group()?;
-            let mut i = 0;
-            while i < inner.len() && inner[i].is_whitespace() {
-                i += 1;
-            }
-            return match inner.get(i)? {
-                Token::ControlWord(name) => Some(name.clone()),
-                Token::ControlSymbol(symbol) => Some(control_key_symbol(*symbol)),
-                _ => None,
-            };
+        if !matches!(self.peek_token(), Some(Token::BeginGroup)) {
+            return self
+                .pop_control_sequence()
+                .ok_or_else(|| malformed("newcommand", "expected a control-sequence target"));
         }
-        self.pop_control_sequence()
+        let inner = self
+            .pop_group()
+            .ok_or_else(|| malformed("newcommand", "unterminated target group"))?;
+        let mut index = 0;
+        while inner.get(index).is_some_and(Token::is_whitespace) {
+            index += 1;
+        }
+        let target = match inner.get(index) {
+            Some(Token::ControlWord(name)) => name.clone(),
+            Some(Token::ControlSymbol(symbol)) => control_key_symbol(*symbol),
+            _ => {
+                return Err(malformed(
+                    "newcommand",
+                    "target group must contain one control sequence",
+                ));
+            },
+        };
+        index += 1;
+        while inner.get(index).is_some_and(Token::is_whitespace) {
+            index += 1;
+        }
+        if index != inner.len() {
+            return Err(malformed(
+                "newcommand",
+                "target group must contain one control sequence",
+            ));
+        }
+        Ok(target)
     }
 
     fn pop_group(&mut self) -> Option<Vec<Token>> {

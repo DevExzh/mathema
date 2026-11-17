@@ -31,6 +31,9 @@ pub enum LatexParseError {
 
     #[error("macro expansion exceeded recursive depth limit ({limit})")]
     ExpansionDepthLimit { limit: usize },
+
+    #[error("malformed \\{command}: {detail}")]
+    MalformedDefinition { command: String, detail: String },
 }
 
 impl LatexParseError {
@@ -43,7 +46,8 @@ impl LatexParseError {
             | Self::DepthExceeded { span, .. } => *span,
             Self::ExpansionLimit { .. }
             | Self::ExpansionWorkLimit { .. }
-            | Self::ExpansionDepthLimit { .. } => None,
+            | Self::ExpansionDepthLimit { .. }
+            | Self::MalformedDefinition { .. } => None,
         }
     }
 }

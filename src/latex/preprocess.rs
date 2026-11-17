@@ -29,6 +29,128 @@ pub enum ExpansionFailure {
     Work { limit: usize },
     /// A replacement chain exceeded the recursive expansion depth.
     Depth { limit: usize },
+    /// A recognized declaration or assignment did not satisfy its grammar.
+    Syntax {
+        command: SyntaxCommand,
+        kind: SyntaxKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxCommand {
+    Def,
+    Gdef,
+    Edef,
+    Xdef,
+    Let,
+    Futurelet,
+    Newcommand,
+    Renewcommand,
+    Providecommand,
+    Newenvironment,
+    Global,
+    Long,
+    Protected,
+    Other,
+}
+
+impl SyntaxCommand {
+    pub(crate) fn from_name(name: &str) -> Self {
+        match name {
+            "def" => Self::Def,
+            "gdef" => Self::Gdef,
+            "edef" => Self::Edef,
+            "xdef" => Self::Xdef,
+            "let" => Self::Let,
+            "futurelet" => Self::Futurelet,
+            "newcommand" => Self::Newcommand,
+            "renewcommand" => Self::Renewcommand,
+            "providecommand" => Self::Providecommand,
+            "newenvironment" => Self::Newenvironment,
+            "global" => Self::Global,
+            "long" => Self::Long,
+            "protected" => Self::Protected,
+            _ => Self::Other,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Def => "def",
+            Self::Gdef => "gdef",
+            Self::Edef => "edef",
+            Self::Xdef => "xdef",
+            Self::Let => "let",
+            Self::Futurelet => "futurelet",
+            Self::Newcommand => "newcommand",
+            Self::Renewcommand => "renewcommand",
+            Self::Providecommand => "providecommand",
+            Self::Newenvironment => "newenvironment",
+            Self::Global => "global",
+            Self::Long => "long",
+            Self::Protected => "protected",
+            Self::Other => "macro declaration",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxKind {
+    ControlSequenceTarget,
+    ReplacementBody,
+    ParameterText,
+    ParameterCount,
+    OptionalDefault,
+    OptionalDefaultWithoutParameter,
+    TargetGroup,
+    SourceToken,
+    MiddleToken,
+    LookaheadToken,
+    PrefixAssignment,
+}
+
+impl SyntaxKind {
+    pub(crate) fn from_detail(detail: &str) -> Self {
+        match detail {
+            "expected a control-sequence target" => Self::ControlSequenceTarget,
+            "expected a braced replacement body" => Self::ReplacementBody,
+            "invalid parameter text" => Self::ParameterText,
+            "parameter count must be an integer from 0 to 9" | "unterminated parameter count" => {
+                Self::ParameterCount
+            },
+            "unterminated optional default" => Self::OptionalDefault,
+            "optional default requires at least one parameter" => {
+                Self::OptionalDefaultWithoutParameter
+            },
+            "unterminated target group" | "target group must contain one control sequence" => {
+                Self::TargetGroup
+            },
+            "expected a source token" => Self::SourceToken,
+            "expected a middle token" => Self::MiddleToken,
+            "expected a lookahead token" => Self::LookaheadToken,
+            _ => Self::PrefixAssignment,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ControlSequenceTarget => "expected a control-sequence target",
+            Self::ReplacementBody => "expected a braced replacement body",
+            Self::ParameterText => "invalid parameter text",
+            Self::ParameterCount => "parameter count must be an integer from 0 to 9",
+            Self::OptionalDefault => "unterminated optional default",
+            Self::OptionalDefaultWithoutParameter => {
+                "optional default requires at least one parameter"
+            },
+            Self::TargetGroup => "target group must contain one control sequence",
+            Self::SourceToken => "expected a source token",
+            Self::MiddleToken => "expected a middle token",
+            Self::LookaheadToken => "expected a lookahead token",
+            Self::PrefixAssignment => {
+                "expected a definition, let, or futurelet assignment after prefix"
+            },
+        }
+    }
 }
 
 /// Maximum number of bytes macro expansion may produce for a given input.

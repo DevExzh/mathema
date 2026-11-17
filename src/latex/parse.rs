@@ -1206,6 +1206,10 @@ fn expansion_error(failure: ExpansionFailure) -> Error {
         ExpansionFailure::OutputBytes { limit } => LatexParseError::ExpansionLimit { limit },
         ExpansionFailure::Work { limit } => LatexParseError::ExpansionWorkLimit { limit },
         ExpansionFailure::Depth { limit } => LatexParseError::ExpansionDepthLimit { limit },
+        ExpansionFailure::Syntax { command, kind } => LatexParseError::MalformedDefinition {
+            command: command.as_str().to_owned(),
+            detail: kind.as_str().to_owned(),
+        },
     })
 }
 
@@ -1227,7 +1231,13 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let processed = preprocess_cow(trimmed).map_err(expansion_error)?;
+    let processed = match preprocess_cow(trimmed) {
+        Ok(processed) => processed,
+        Err(ExpansionFailure::Syntax { .. }) if config.strictness == Strictness::Lenient => {
+            std::borrow::Cow::Borrowed(trimmed)
+        },
+        Err(failure) => return Err(expansion_error(failure)),
+    };
     let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
