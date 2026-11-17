@@ -181,25 +181,35 @@ fn write_script_node_with_next(
 ) {
     match *arena.node(id) {
         CompactNode::Subscript { base, sub } => {
-            write_script_base(buf, arena, base);
             if is_effectively_empty_arg(arena, sub) {
+                // A script with no effective argument disappears; serialize
+                // its base exactly as a normal sibling so transparent wrappers
+                // (for example an empty color declaration) do not gain a
+                // grouping pair that vanishes on the next parse.
+                write_node(buf, arena, base);
                 return;
             }
+            write_script_base(buf, arena, base);
             buf.push('_');
             write_script_arg(buf, arena, sub, next);
         },
         CompactNode::Superscript { base, sup } => {
-            write_script_base(buf, arena, base);
             if is_effectively_empty_arg(arena, sup) {
+                write_node(buf, arena, base);
                 return;
             }
+            write_script_base(buf, arena, base);
             buf.push('^');
             write_script_arg(buf, arena, sup, next);
         },
         CompactNode::SubSup { base, sub, sup } => {
-            write_script_base(buf, arena, base);
             let sub_empty = is_effectively_empty_arg(arena, sub);
             let sup_empty = is_effectively_empty_arg(arena, sup);
+            if sub_empty && sup_empty {
+                write_node(buf, arena, base);
+                return;
+            }
+            write_script_base(buf, arena, base);
             if !sub_empty {
                 buf.push('_');
                 // The subscript argument is always followed by the `^` marker, so
@@ -633,42 +643,46 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Subscript { base, sub } => {
+            if is_effectively_empty_arg(arena, sub) {
+                write_node(buf, arena, base);
+                return;
+            }
             if is_empty_row(arena, base) {
                 buf.push_str("{}");
-                if !is_effectively_empty_arg(arena, sub) {
-                    buf.push('_');
-                    write_always_braced(buf, arena, sub);
-                }
+                buf.push('_');
+                write_always_braced(buf, arena, sub);
             } else {
                 write_script_base(buf, arena, base);
-                if !is_effectively_empty_arg(arena, sub) {
-                    buf.push('_');
-                    write_braced(buf, arena, sub);
-                }
+                buf.push('_');
+                write_braced(buf, arena, sub);
             }
         },
 
         CompactNode::Superscript { base, sup } => {
+            if is_effectively_empty_arg(arena, sup) {
+                write_node(buf, arena, base);
+                return;
+            }
             if is_empty_row(arena, base) {
                 buf.push_str("{}");
-                if !is_effectively_empty_arg(arena, sup) {
-                    buf.push('^');
-                    write_always_braced(buf, arena, sup);
-                }
+                buf.push('^');
+                write_always_braced(buf, arena, sup);
             } else {
                 write_script_base(buf, arena, base);
-                if !is_effectively_empty_arg(arena, sup) {
-                    buf.push('^');
-                    write_braced(buf, arena, sup);
-                }
+                buf.push('^');
+                write_braced(buf, arena, sup);
             }
         },
 
         CompactNode::SubSup { base, sub, sup } => {
+            let sub_empty = is_effectively_empty_arg(arena, sub);
+            let sup_empty = is_effectively_empty_arg(arena, sup);
+            if sub_empty && sup_empty {
+                write_node(buf, arena, base);
+                return;
+            }
             if is_empty_row(arena, base) {
                 buf.push_str("{}");
-                let sub_empty = is_effectively_empty_arg(arena, sub);
-                let sup_empty = is_effectively_empty_arg(arena, sup);
                 if !sub_empty {
                     buf.push('_');
                     write_always_braced(buf, arena, sub);
@@ -679,8 +693,6 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 }
             } else {
                 write_script_base(buf, arena, base);
-                let sub_empty = is_effectively_empty_arg(arena, sub);
-                let sup_empty = is_effectively_empty_arg(arena, sup);
                 if !sub_empty {
                     buf.push('_');
                     write_braced(buf, arena, sub);
@@ -1909,7 +1921,18 @@ fn is_empty_body(arena: &AstArena, id: NodeId) -> bool {
 /// True for a missing node or an empty Row (an absent/effectively-empty script
 /// argument).
 fn is_effectively_empty_arg(arena: &AstArena, id: NodeId) -> bool {
-    !id.is_some() || is_empty_row(arena, id)
+    if !id.is_some() {
+        return true;
+    }
+    match *arena.node(id) {
+        CompactNode::Row(span) => arena.children(span).is_empty(),
+        // A color declaration with no following content is a transparent
+        // wrapper around an empty row. Unwrap only this transparent wrapper;
+        // zero-width atoms and explicit spaces carry grouping/spacing meaning
+        // and must remain script arguments.
+        CompactNode::Color { content, .. } => is_effectively_empty_arg(arena, content),
+        _ => false,
+    }
 }
 
 /// True if a script node has at least one non-empty subscript or superscript
@@ -2691,6 +2714,56 @@ mod tests {
         let out2 = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
         assert_eq!(out1, "{}^{2}");
         assert_eq!(out1, out2);
+    }
+
+    #[test]
+    fn effectively_empty_color_script_argument_is_omitted() {
+        let config = Config::default();
+        let input = ",_v76_\\color{\n5sf\n_v}";
+
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        crate::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
+        crate::ast::normalize::normalize_compact_expr(&mut reparsed).unwrap();
+        let second = LatexWriter::write_compact(&reparsed, &config).unwrap();
+        assert_eq!(first, ",_v76");
+        assert_eq!(first, second);
+
+        let heap = LatexReader::parse(input, &config).unwrap();
+        assert_eq!(LatexWriter::write(&heap.expr, &config).unwrap(), ",_v76");
+
+        for (input, expected) in [
+            (r"x_\color{red}y", r"x_{\textcolor{red}{y}}"),
+            (
+                r"x_\color{red}\mathord{}",
+                r"x_{\textcolor{red}{\mathord{}}}",
+            ),
+            ("x_\\ ", r"x_{\ }"),
+        ] {
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+            assert_eq!(first, expected, "unexpected script output for {input:?}");
+            assert_eq!(first, second, "script output was not stable for {input:?}");
+        }
+    }
+
+    #[test]
+    fn scripts_without_effective_arguments_reuse_the_normal_base_writer() {
+        for (input, expected) in [
+            (r"\teal^\teal", r"\textcolor{teal}{}"),
+            (r"\teal_\teal", r"\textcolor{teal}{}"),
+            (r"\teal_\teal^\teal", r"\textcolor{teal}{}"),
+            (r"x^{}", "x"),
+            (r"x_{}^{}", "x"),
+            (r"z \teal^\teal", r"z\textcolor{teal}{}"),
+            (r"\teal^x", r"{\textcolor{teal}{}}^x"),
+        ] {
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+            assert_eq!(first, expected, "unexpected script output for {input:?}");
+            assert_eq!(first, second, "script output was not stable for {input:?}");
+        }
     }
 
     #[test]
