@@ -115,3 +115,28 @@ fn recognized_macros_and_selectors_require_their_arguments() {
         );
     }
 }
+
+#[test]
+fn explicit_groups_and_prefixes_keep_assignments_local() {
+    for (input, expected) in [
+        (r"\begingroup x+\endgroup y", "x+y"),
+        (r"\def\x{a}\begingroup\def\x{b}\x\endgroup\x", "ba"),
+        (r"\def\a{A}\def\b{x}{\long\let\b\a\b}\b", "{A}x"),
+        (r"\def\a{A}{\global\long\let\b\a}\b", "{}A"),
+    ] {
+        assert_eq!(
+            mathema::from_latex(input).unwrap().to_mathml().unwrap(),
+            mathema::from_latex(expected).unwrap().to_mathml().unwrap(),
+            "{input}"
+        );
+    }
+    for invalid in [
+        r"\begingroup x",
+        r"\endgroup",
+        r"{\endgroup}",
+        r"\begingroup x}",
+        r"\protected\let\b\a",
+    ] {
+        assert!(mathema::from_latex(invalid).is_err(), "{invalid}");
+    }
+}

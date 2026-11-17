@@ -175,6 +175,7 @@ impl WorkBudget {
 
 #[derive(Clone, Debug, Default)]
 struct Scope {
+    explicit_group: bool,
     input_mode: InputMode,
     macros: HashMap<String, Meaning>,
     environments: HashMap<String, Rc<EnvDef>>,
@@ -228,6 +229,9 @@ impl Processor {
         // missing argument. Resource failures remain fatal in lenient mode.
         self.charge_work(0)?;
         result?;
+        if self.scopes.iter().any(|scope| scope.explicit_group) {
+            return Err(malformed("begingroup", SyntaxKind::GroupEnd));
+        }
         render_tokens_bounded(&output, self.cap)
     }
 
@@ -263,10 +267,14 @@ impl Processor {
         Ok(())
     }
 
-    fn pop_scope(&mut self) {
+    fn pop_scope(&mut self) -> ExpansionResult<()> {
+        if self.scopes.last().is_some_and(|scope| scope.explicit_group) {
+            return Err(malformed("begingroup", SyntaxKind::GroupEnd));
+        }
         if self.scopes.len() > 1 {
             self.scopes.pop();
         }
+        Ok(())
     }
 
     fn define_macro(&mut self, name: String, meaning: Meaning, global: bool) {
@@ -393,13 +401,13 @@ impl Processor {
                 },
                 Token::EndGroup => {
                     self.append(out, Token::EndGroup)?;
-                    self.pop_scope();
+                    self.pop_scope()?;
                 },
                 Token::Verbatim(text) => {
                     self.append(out, Token::Verbatim(text))?;
                 },
                 Token::EndEnvironment => {
-                    self.pop_scope();
+                    self.pop_scope()?;
                     self.environment_scopes = self.environment_scopes.saturating_sub(1);
                 },
                 Token::ControlWord(name) => {
@@ -640,9 +648,12 @@ impl Processor {
                 false
             });
         }
+        if protected && matches!(command.as_str(), "let" | "futurelet") {
+            return Err(malformed("protected", SyntaxKind::ProtectedAssignment));
+        }
         if command == "let" {
             txn.pop();
-            let result = self.parse_let_txn(true, &mut txn)?;
+            let result = self.parse_let_txn(global, &mut txn)?;
             return Ok(if result {
                 txn.commit();
                 true
@@ -998,9 +1009,9 @@ impl Processor {
             .is_some_and(|env| env.name == env_name)
         {
             if cell_scoped {
-                self.pop_scope();
+                self.pop_scope()?;
             }
-            self.pop_scope();
+            self.pop_scope()?;
             self.parser_environments.pop();
         }
         Ok(true)
@@ -1189,6 +1200,23 @@ impl Processor {
     ) -> ExpansionResult<()> {
         if mode == Mode::Normal {
             if let Token::ControlWord(name) = &token {
+                match name.as_str() {
+                    "begingroup" => {
+                        self.push_scope()?;
+                        self.scopes.last_mut().expect("new group").explicit_group = true;
+                        return Ok(());
+                    },
+                    "endgroup" => {
+                        let current = self.scopes.last_mut().expect("global scope");
+                        if !current.explicit_group {
+                            return Err(malformed("endgroup", SyntaxKind::GroupEnd));
+                        }
+                        current.explicit_group = false;
+                        return self.pop_scope();
+                    },
+                    _ => {},
+                }
+
                 let argument_mode = if text_style(name).is_some()
                     || matches!(name.as_str(), "angl" | "reflectbox")
                 {
@@ -1226,7 +1254,7 @@ impl Processor {
                     .last()
                     .is_some_and(|env| env.cell_scoped && env.content_scope == self.scopes.len())
             {
-                self.pop_scope();
+                self.pop_scope()?;
                 self.push_scope()?;
             }
             let input_mode = &mut self.scopes.last_mut().expect("global scope").input_mode;

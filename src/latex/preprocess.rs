@@ -51,6 +51,8 @@ pub enum SyntaxCommand {
     Providecommand,
     Newenvironment,
     Begin,
+    Begingroup,
+    Endgroup,
     Global,
     Long,
     Protected,
@@ -71,6 +73,8 @@ impl SyntaxCommand {
             "providecommand" => Self::Providecommand,
             "newenvironment" => Self::Newenvironment,
             "begin" => Self::Begin,
+            "begingroup" => Self::Begingroup,
+            "endgroup" => Self::Endgroup,
             "global" => Self::Global,
             "long" => Self::Long,
             "protected" => Self::Protected,
@@ -91,6 +95,8 @@ impl SyntaxCommand {
             Self::Providecommand => "providecommand",
             Self::Newenvironment => "newenvironment",
             Self::Begin => "begin",
+            Self::Begingroup => "begingroup",
+            Self::Endgroup => "endgroup",
             Self::Global => "global",
             Self::Long => "long",
             Self::Protected => "protected",
@@ -118,6 +124,8 @@ pub enum SyntaxKind {
     EnvironmentBegin,
     EnvironmentEnd,
     MissingArguments,
+    GroupEnd,
+    ProtectedAssignment,
 }
 
 impl SyntaxKind {
@@ -143,6 +151,8 @@ impl SyntaxKind {
             Self::EnvironmentName => "expected a nonempty environment name group",
             Self::EnvironmentBegin => "expected a braced begin body",
             Self::EnvironmentEnd => "expected a braced end body",
+            Self::GroupEnd => "unmatched explicit group delimiter",
+            Self::ProtectedAssignment => "protected applies only to a macro definition",
             Self::MissingArguments => "missing a required argument",
         }
     }
@@ -207,6 +217,8 @@ fn prepare_source(input: &str) -> (Cow<'_, str>, bool) {
                         | "xdef"
                         | "let"
                         | "futurelet"
+                        | "begingroup"
+                        | "endgroup"
                         | "expandafter"
                         | "noexpand"
                         | "global"
