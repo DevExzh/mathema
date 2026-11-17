@@ -47,10 +47,13 @@ fn write_node_slice(
         // A negation overlay is stored as adjacent base and combining-solidus
         // nodes after row normalization. Keep the pair in one argument so a
         // large-operator command cannot absorb the slash as its body.
-        if i + 1 < children.len() && is_combining_slash(arena, children[i + 1]) {
+        if i + 1 < children.len()
+            && is_large_operator_overlay_base(arena, id)
+            && is_combining_slash(arena, children[i + 1])
+        {
             let output_start = buf.len();
             buf.push_str("\\centernot{");
-            write_node(buf, arena, id);
+            write_centernot_base(buf, arena, id);
             buf.push('}');
             ends_with_command =
                 appended_ends_with_letter_command(buf, output_start, ends_with_command);
@@ -581,6 +584,7 @@ fn centernot_base(arena: &AstArena, span: NodeSpan) -> Option<NodeId> {
             if arena.str_val(sid) == "\u{0338}"
     )
     .then_some(children[0])
+    .filter(|&base| is_large_operator_overlay_base(arena, base))
 }
 
 fn is_combining_slash(arena: &AstArena, id: NodeId) -> bool {
@@ -589,6 +593,35 @@ fn is_combining_slash(arena: &AstArena, id: NodeId) -> bool {
         CompactNode::Symbol(SymbolKind::Ordinary, sid)
             if arena.str_val(sid) == "\u{0338}"
     )
+}
+
+fn is_large_operator_overlay_base(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Symbol(SymbolKind::LargeOp, _) | CompactNode::Nary { .. } => true,
+        CompactNode::MathAtom { content, .. } => is_large_operator_overlay_base(arena, content),
+        CompactNode::Row(span) => {
+            let children = arena.children(span);
+            children.len() == 1 && is_large_operator_overlay_base(arena, children[0])
+        },
+        _ => false,
+    }
+}
+
+fn write_centernot_base(buf: &mut String, arena: &AstArena, id: NodeId) {
+    let scalar_integral = match *arena.node(id) {
+        CompactNode::Symbol(SymbolKind::LargeOp, sid) if arena.str_val(sid) == "\u{222B}" => true,
+        CompactNode::Nary {
+            op: '\u{222B}',
+            body,
+            ..
+        } => is_empty_body(arena, body),
+        _ => false,
+    };
+    if scalar_integral {
+        buf.push_str("\\intop");
+    } else {
+        write_wrapped_content(buf, arena, id);
+    }
 }
 
 enum ColorArgument<'a> {
@@ -647,7 +680,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Row(span) => {
             if let Some(base) = centernot_base(arena, span) {
                 buf.push_str("\\centernot{");
-                write_wrapped_content(buf, arena, base);
+                write_centernot_base(buf, arena, base);
                 buf.push('}');
                 return;
             }

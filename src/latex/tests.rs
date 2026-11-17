@@ -234,10 +234,10 @@ fn centernot_overlays_stay_grouped_from_nary_and_ordinary_symbols() {
         let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
         normalize_compact_expr(&mut parsed.expr).unwrap();
         let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
-        if input.contains("centernot") {
+        if input.contains("intop") {
             assert!(
-                first.starts_with(r"\centernot{"),
-                "overlay was serialized as an ungrouped glyph: {first:?}"
+                first.starts_with(r"\centernot{\intop}"),
+                "scalar integral overlay was not kept as intop: {first:?}"
             );
         }
 
@@ -246,6 +246,25 @@ fn centernot_overlays_stay_grouped_from_nary_and_ordinary_symbols() {
         let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
         assert_eq!(first, second, "negated expression changed: {input:?}");
     }
+
+    let precomposed = r"m\centernot{=}";
+    let first = crate::convert(precomposed, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    assert_eq!(first, r"m\neq");
+    assert_eq!(first, second);
+
+    let split = crate::ast::MathExpr::inline(vec![
+        crate::ast::MathNode::Identifier("m".into()),
+        crate::ast::MathNode::Symbol(crate::ast::SymbolKind::Relation, "=".into()),
+        crate::ast::MathNode::Symbol(crate::ast::SymbolKind::Ordinary, "\u{0338}".into()),
+        crate::ast::MathNode::Identifier("t".into()),
+    ]);
+    let first = LatexWriter::write(&split, &config).unwrap();
+    let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+    normalize_compact_expr(&mut reparsed.expr).unwrap();
+    let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+    assert_eq!(first, second, "split ordinary overlay changed");
+    assert!(first.contains('\u{0338}'), "split overlay glyph was lost");
 }
 
 #[test]
