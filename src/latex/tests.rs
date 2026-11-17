@@ -32,6 +32,28 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn verbatim_macro_text_round_trips_through_public_api() {
+    use crate::convert::from_latex;
+
+    for (input, literal) in [
+        (r"\verb!\def\inside{literal}!", r"\def\inside{literal}"),
+        (
+            r"\verb*|\frac{a}{b}\ip\newcommand{\inside}{literal}|",
+            r"\newcommand{\inside}{literal}",
+        ),
+        (
+            r"\def\outside{expanded}\verb!\def\inside{literal}!\outside",
+            r"\def\inside{literal}",
+        ),
+    ] {
+        let first = from_latex(input).unwrap().to_latex().unwrap();
+        let second = from_latex(&first).unwrap().to_latex().unwrap();
+        assert!(first.contains(literal), "lost verbatim content: {first:?}");
+        assert_eq!(first, second, "verbatim round-trip failed for {input:?}");
+    }
+}
+
+#[test]
 fn round_trip_script_base_tokens() {
     let config = Config::default();
     let cases = [

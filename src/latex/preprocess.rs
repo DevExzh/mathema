@@ -93,6 +93,14 @@ fn needs_preprocessing(input: &str) -> bool {
 fn uses_builtin_macro(input: &str) -> bool {
     let mut s = input;
     while let Some(pos) = s.find('\\') {
+        // A verbatim block owns everything through its closing delimiter.
+        // Commands-looking text in that block must not trigger the
+        // preprocessor's slow path or be considered for macro expansion.
+        let command_start = &s[pos..];
+        if let Some(end) = find_verb_end(command_start, 0) {
+            s = &command_start[end..];
+            continue;
+        }
         let after = &s[pos + 1..];
         let name_len: usize = after
             .chars()
@@ -172,13 +180,26 @@ fn find_verb_end(input: &str, start: usize) -> Option<usize> {
         return None;
     }
     let mut i = start + "\\verb".len();
+    // `\verbfoo` is an ordinary command named `verbfoo`, not a verbatim
+    // command followed by `f` as its delimiter.
+    if input[i..]
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphabetic())
+    {
+        return None;
+    }
     if input[i..].starts_with('*') {
         i += 1;
     }
     let delim = input[i..].chars().next()?;
     let after_delim = i + delim.len_utf8();
-    let end = input[after_delim..].find(delim)?;
-    Some(after_delim + end + delim.len_utf8())
+    // The parser consumes an unterminated `\verb` through the end of input,
+    // so preserve that same literal region during preprocessing.
+    match input[after_delim..].find(delim) {
+        Some(end) => Some(after_delim + end + delim.len_utf8()),
+        None => Some(input.len()),
+    }
 }
 
 /// Trim leading whitespace.
@@ -292,6 +313,14 @@ impl Preprocessor {
         let mut s = input;
 
         while !s.is_empty() {
+            // Do not inspect definitions inside `\verb` or `\verb*`. This is
+            // required even when the verbatim text contains a real `\def`,
+            // because definition extraction runs before macro expansion.
+            if let Some(end) = find_verb_end(s, 0) {
+                out.push_str(&s[..end]);
+                s = &s[end..];
+                continue;
+            }
             // Try each definition form
             if (s.starts_with("\\newcommand") || s.starts_with("\\renewcommand"))
                 && let Some(rest) = self.parse_newcommand(s)
@@ -978,6 +1007,31 @@ mod tests {
         // inside a \verb / \verb* verbatim block.
         assert_eq!(preprocess("\\verb@\\ip!@"), "\\verb@\\ip!@");
         assert_eq!(preprocess("\\verb*!\\ip{!}!"), "\\verb*!\\ip{!}!");
+    }
+
+    #[test]
+    fn verb_definitions_are_not_extracted() {
+        let input = r"\verb!\def\inside{literal}!";
+        assert_eq!(preprocess(input), input);
+
+        // Definitions outside verbatim still expand, while a definition-like
+        // sequence inside the verbatim block remains literal text.
+        assert_eq!(
+            preprocess(r"\def\outside{expanded}\verb!\def\inside{literal}!\outside"),
+            r"\verb!\def\inside{literal}!expanded"
+        );
+    }
+
+    #[test]
+    fn unterminated_verb_is_literal_through_preprocessing() {
+        let input = r"\verb!\def\inside{literal}";
+        assert_eq!(preprocess(input), input);
+    }
+
+    #[test]
+    fn verb_command_boundary_is_checked() {
+        let input = r"\def\x{expanded}\verbfoo\x";
+        assert_eq!(preprocess(input), r"\verbfooexpanded");
     }
 
     #[test]
