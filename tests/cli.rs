@@ -27,6 +27,50 @@ fn convert_stdin_latex_to_mathml() {
 }
 
 #[test]
+fn convert_stdin_latex_preserves_control_space() {
+    mathema()
+        .args(["convert", "--from", "latex", "--to", "latex"])
+        .write_stdin("x\\ ")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("x\\ "));
+}
+
+#[test]
+fn convert_batch_latex_preserves_control_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out");
+    let first = dir.path().join("first.tex");
+    let second = dir.path().join("second.tex");
+    std::fs::write(&first, "x\\ ").unwrap();
+    std::fs::write(&second, "y\\ ").unwrap();
+
+    mathema()
+        .args([
+            "convert",
+            "--from",
+            "latex",
+            "--to",
+            "latex",
+            "--output",
+            output.to_str().unwrap(),
+            first.to_str().unwrap(),
+            second.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(output.join("first.tex")).unwrap(),
+        "x\\ "
+    );
+    assert_eq!(
+        std::fs::read_to_string(output.join("second.tex")).unwrap(),
+        "y\\ "
+    );
+}
+
+#[test]
 fn convert_missing_to_flag() {
     mathema()
         .args(["convert", "--from", "latex", "x^2"])
@@ -42,6 +86,36 @@ fn validate_valid_latex() {
         .assert()
         .success()
         .stdout(predicate::str::contains("valid"));
+}
+
+#[test]
+fn validate_stdin_latex_preserves_control_space() {
+    mathema()
+        .args(["validate", "--from", "latex"])
+        .write_stdin("x\\ ")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("valid"));
+}
+
+#[test]
+fn validate_batch_latex_preserves_control_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.tex");
+    let second = dir.path().join("second.tex");
+    std::fs::write(&first, "x\\ ").unwrap();
+    std::fs::write(&second, "y\\ ").unwrap();
+
+    mathema()
+        .args([
+            "validate",
+            "--from",
+            "latex",
+            first.to_str().unwrap(),
+            second.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
 }
 
 #[test]
@@ -78,6 +152,54 @@ fn render_with_font_size() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with("<svg"));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_stdin_latex_preserves_control_space() {
+    mathema()
+        .args(["render", "--from", "latex", "--format", "svg"])
+        .write_stdin("x\\ ")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("<svg"));
+}
+
+#[cfg(feature = "render")]
+#[test]
+fn render_batch_latex_preserves_control_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("out");
+    let first = dir.path().join("first.tex");
+    let second = dir.path().join("second.tex");
+    std::fs::write(&first, "x\\ ").unwrap();
+    std::fs::write(&second, "y\\ ").unwrap();
+
+    mathema()
+        .args([
+            "render",
+            "--from",
+            "latex",
+            "--format",
+            "svg",
+            "--output",
+            output.to_str().unwrap(),
+            first.to_str().unwrap(),
+            second.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    assert!(
+        std::fs::read_to_string(output.join("first.svg"))
+            .unwrap()
+            .starts_with("<svg")
+    );
+    assert!(
+        std::fs::read_to_string(output.join("second.svg"))
+            .unwrap()
+            .starts_with("<svg")
+    );
 }
 
 // --- Auto-detection tests ---

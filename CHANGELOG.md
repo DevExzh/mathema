@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CLI parsing keeps LaTeX source whitespace intact, including a trailing `\ `
+  control-space command, while retaining trimming for other input formats.
+
 - SVG and raster rendering reject non-finite or non-positive `font_size_px`
   values; raster rendering applies the same validation to its `scale` factor.
 

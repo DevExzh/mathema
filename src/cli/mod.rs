@@ -181,7 +181,7 @@ fn run_convert(args: ConvertArgs) -> Result<(), CliError> {
     };
 
     let from = resolve_format(args.from, path, &content)?;
-    let result = mathema::convert_with(content.trim(), from, args.to, &config)
+    let result = mathema::convert_with(input_for_format(&content, from), from, args.to, &config)
         .map_err(|e| CliError::from_mathema(e, &content, &source_name))?;
 
     match &args.output {
@@ -249,7 +249,7 @@ fn run_convert_batch(
             },
         };
 
-        match mathema::convert_with(content.trim(), fmt, to, config) {
+        match mathema::convert_with(input_for_format(&content, fmt), fmt, to, config) {
             Ok(result) => {
                 let out_path = match &output {
                     Some(dir) => {
@@ -356,7 +356,7 @@ fn run_validate(args: ValidateArgs) -> Result<(), CliError> {
         };
 
         // Parse to validate — convert to same format to exercise the parser
-        match mathema::convert_with(content.trim(), from, from, &config) {
+        match mathema::convert_with(input_for_format(&content, from), from, from, &config) {
             Ok(_) => {
                 if !is_batch {
                     println!("{source_name}: valid ({from:?})");
@@ -434,7 +434,12 @@ fn run_render(args: RenderArgs) -> Result<(), CliError> {
     };
 
     let from = resolve_format(args.from, path, &content)?;
-    let conv = parse_input(content.trim(), from, &config, &source_name)?;
+    let conv = parse_input(
+        input_for_format(&content, from),
+        from,
+        &config,
+        &source_name,
+    )?;
 
     match args.format {
         Format::Svg => {
@@ -574,7 +579,7 @@ fn run_render_batch(
             },
         };
 
-        let conv = match parse_input(content.trim(), fmt, config, &source_name) {
+        let conv = match parse_input(input_for_format(&content, fmt), fmt, config, &source_name) {
             Ok(c) => c,
             Err(e) => {
                 failures.push((source_name, e));
@@ -653,6 +658,19 @@ fn run_render_batch(
 }
 
 // --- Helpers ---
+
+/// Prepare input for a reader without discarding a LaTeX control-space token.
+///
+/// `str::trim` is still appropriate for XML and linear binary/text formats,
+/// where surrounding whitespace is framing. In LaTeX, however, a trailing
+/// backslash followed by a space is an explicit `\ ` spacing command, so the
+/// original source must reach the reader unchanged.
+fn input_for_format(content: &str, format: Format) -> &str {
+    match format {
+        Format::LaTeX => content,
+        _ => content.trim(),
+    }
+}
 
 /// Resolve input format: use explicit --from, or auto-detect, or fail.
 fn resolve_format(
@@ -751,4 +769,17 @@ fn resolve_inputs(input: Vec<String>) -> Result<Vec<Input>, CliError> {
         items.push(Input::File(path));
     }
     Ok(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::input_for_format;
+    use mathema::Format;
+
+    #[test]
+    fn only_latex_keeps_reader_input_whitespace() {
+        let input = "  x\\ \n";
+        assert_eq!(input_for_format(input, Format::LaTeX), input);
+        assert_eq!(input_for_format(input, Format::MathML), "x\\");
+    }
 }
