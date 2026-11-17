@@ -1963,6 +1963,23 @@ fn script_grouping_follows_the_content_of_an_unwritable_color() {
 }
 
 #[test]
+fn nested_script_arguments_keep_only_their_visible_base_and_markers() {
+    for (input, equivalent) in [
+        (r"a^{^{\color{red}}}+b", "a+b"),
+        (r"a_{_{\color{red}}}+b", "a+b"),
+        (r"a^{x^{\color{red}}}+b", "a^x+b"),
+        (r"a_{x_{\color{red}}}+b", "a_x+b"),
+        (r"a^{x_{\color{red}}^2}+b", "a^{x^2}+b"),
+        (r"a_{x_2^{\color{red}}}+b", "a_{x_2}+b"),
+    ] {
+        let write = |s| crate::convert(s, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let first = write(input);
+        assert_eq!(first, write(equivalent), "{input}");
+        assert_eq!(first, write(&first), "{input}");
+    }
+}
+
+#[test]
 fn trailing_empty_implicit_scripts_do_not_regroup_the_preceding_base() {
     for input in [
         r"mathrm\mathrm\teal^\teal^\teal",

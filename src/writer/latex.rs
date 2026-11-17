@@ -1861,6 +1861,13 @@ fn written_script_content(arena: &AstArena, mut id: NodeId) -> NodeId {
             {
                 content
             },
+            CompactNode::Subscript { base, .. }
+            | CompactNode::Superscript { base, .. }
+            | CompactNode::SubSup { base, .. }
+                if !script_has_any_arg(arena, id) =>
+            {
+                base
+            },
             CompactNode::Row(span) => {
                 let mut children = arena
                     .children(span)
@@ -2022,6 +2029,12 @@ fn is_effectively_empty_arg(arena: &AstArena, id: NodeId) -> bool {
         // zero-width atoms and explicit spaces carry grouping/spacing meaning
         // and must remain script arguments.
         CompactNode::Color { content, .. } => is_effectively_empty_arg(arena, content),
+        // A nested script whose markers disappear writes just its base.
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. } => {
+            is_effectively_empty_arg(arena, base) && !script_has_any_arg(arena, id)
+        },
         _ => false,
     }
 }
