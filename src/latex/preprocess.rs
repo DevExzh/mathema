@@ -3,6 +3,11 @@ use std::collections::HashMap;
 use super::mhchem::capture_braced as scan_braced;
 use super::packages;
 
+#[path = "ordered.rs"]
+mod ordered;
+#[path = "ordered_stream.rs"]
+mod ordered_stream;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -70,12 +75,11 @@ pub fn preprocess_cow(input: &str) -> Result<std::borrow::Cow<'_, str>, usize> {
         return Ok(std::borrow::Cow::Borrowed(input));
     }
     let stripped = strip_comments(input);
-    let mut pp = Preprocessor::default();
-    // Seed builtin (package) macros first so that user `\newcommand`/`\def`
-    // definitions extracted next override them (user definitions win).
-    pp.seed_builtins();
-    let after_defs = pp.extract_definitions(&stripped);
-    Ok(std::borrow::Cow::Owned(pp.expand_all(&after_defs)?))
+    // Definitions are processed while walking the token stream.  In
+    // particular, a definition inside a group must not leak into text before
+    // it or after the group closes.  `ordered` also retains the expansion cap
+    // and verbatim opacity guarantees of the original preprocessor.
+    Ok(std::borrow::Cow::Owned(ordered_stream::expand(&stripped)?))
 }
 
 /// Fast-path check: does the input contain any syntax we need to process?
@@ -83,7 +87,15 @@ fn needs_preprocessing(input: &str) -> bool {
     input.contains('%')
         || input.contains("\\newcommand")
         || input.contains("\\renewcommand")
+        || input.contains("\\providecommand")
         || input.contains("\\def")
+        || input.contains("\\gdef")
+        || input.contains("\\edef")
+        || input.contains("\\xdef")
+        || input.contains("\\let")
+        || input.contains("\\noexpand")
+        || input.contains("\\global")
+        || input.contains("\\long")
         || input.contains("\\newenvironment")
         || uses_builtin_macro(input)
 }
@@ -1001,5 +1013,79 @@ mod tests {
     fn comments_not_stripped_inside_verb() {
         // A percent sign inside \verb content is literal text, not a comment.
         assert_eq!(preprocess("\\verb@% still here@"), "\\verb@% still here@");
+    }
+
+    // --- Ordered/scoped TeX definitions -----------------------------------
+
+    #[test]
+    fn definitions_take_effect_at_their_location() {
+        assert_eq!(
+            preprocess(r"\foo\def\foo{a}\foo\def\foo{b}\foo"),
+            r"\fooab"
+        );
+    }
+
+    #[test]
+    fn local_definitions_follow_groups() {
+        assert_eq!(
+            preprocess(r"\def\x{1}\x{\def\x{2}\x}\x"),
+            "1{2}1"
+        );
+        assert_eq!(
+            preprocess(r"\def\x{1}\x{\def\x{2}\x{\gdef\x{3}\x}\x}\x"),
+            "1{2{3}3}3"
+        );
+    }
+
+    #[test]
+    fn edef_and_xdef_capture_expansion_at_definition_time() {
+        assert_eq!(
+            preprocess(r"\def\foo{a}\xdef\bar{\foo}\def\foo{}\bar"),
+            "a"
+        );
+        assert_eq!(
+            preprocess(r"\def\foo{a}\xdef\bar{\foo\noexpand\foo}\def\foo{b}\bar"),
+            "ab"
+        );
+        assert_eq!(
+            preprocess(r"\def\foo{a}\xdef\bar{\def\noexpand\foo{}}\foo\bar\foo"),
+            "a"
+        );
+    }
+
+    #[test]
+    fn let_copies_meaning_or_token_identity() {
+        assert_eq!(
+            preprocess(r"\let\foo=\frac\def\frac{}\foo12"),
+            r"\frac12"
+        );
+        assert_eq!(
+            preprocess(r"\def\foo{1}\let\bar\foo\def\foo{2}\bar"),
+            "1"
+        );
+        assert_eq!(
+            preprocess(r"\let\foo=x\noexpand\foo"),
+            "x"
+        );
+        assert_eq!(
+            preprocess(r"\let\foo=x\edef\bar{\foo}\def\foo{y}\bar"),
+            "y"
+        );
+        assert_eq!(
+            preprocess(r"\let\foo{\sqrt\foo1}"),
+            r"\sqrt{1}"
+        );
+        assert_eq!(
+            preprocess(r"\let\equals==a\equals b"),
+            "a= b"
+        );
+    }
+
+    #[test]
+    fn macro_replacement_consumes_outer_arguments() {
+        assert_eq!(
+            preprocess(r"\def\pick#1{[#1]}\def\alias{\pick}\alias{x}"),
+            "[x]"
+        );
     }
 }
