@@ -68,7 +68,15 @@ fn write_node_slice(
             }
             let script_id = children[i + 1];
             let next = children.get(i + 2).copied();
-            if is_script_base_token(arena, id) && !would_merge_with_buffer(buf, arena, id) {
+            if is_script_node(arena, id) && !script_has_any_arg(arena, id) {
+                // The preceding script has no effective arguments. Keep its
+                // base as the single surviving base, then attach the trailing
+                // implicit script's markers to it once. This avoids emitting
+                // an extra `{}` base before a real trailing script.
+                let base = script_base_id(arena, id).expect("script node has a base");
+                write_script_base(buf, arena, base);
+                write_empty_base_script_markers(buf, arena, script_id, next);
+            } else if is_script_base_token(arena, id) && !would_merge_with_buffer(buf, arena, id) {
                 // Use the same canonical base spelling and bracing as an ordinary
                 // script node, rather than bypassing it on this fast path.
                 write_script_base(buf, arena, id);
@@ -169,6 +177,15 @@ fn is_script_node(arena: &AstArena, id: NodeId) -> bool {
             | CompactNode::Superscript { .. }
             | CompactNode::SubSup { .. }
     )
+}
+
+fn script_base_id(arena: &AstArena, id: NodeId) -> Option<NodeId> {
+    match *arena.node(id) {
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. } => Some(base),
+        _ => None,
+    }
 }
 
 /// Write a script node, forcibly bracing any sub/superscript argument that
@@ -2813,6 +2830,35 @@ mod tests {
             let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
             assert_eq!(first, expected, "unexpected script output for {input:?}");
             assert_eq!(first, second, "script output was not stable for {input:?}");
+        }
+    }
+
+    #[test]
+    fn elided_scripts_attach_one_trailing_implicit_script() {
+        for (input, expected) in [
+            (
+                r"\teal^\teal^\utilde'",
+                r"{\textcolor{teal}{}}^{\utilde{\prime}}",
+            ),
+            (r"x^{}^\utilde'", r"x^{\utilde{\prime}}"),
+            (
+                r"\color{red}{}^\utilde'",
+                r"{\textcolor{red}{}}^{\utilde{\prime}}",
+            ),
+        ] {
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+            assert_eq!(first, expected, "unexpected trailing script for {input:?}");
+            assert_eq!(
+                first, second,
+                "trailing script was not stable for {input:?}"
+            );
+        }
+
+        for input in [r"a \teal^\teal^\utilde' b", r"a x^{}^\utilde' b"] {
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+            assert_eq!(first, second, "surrounding sibling changed {input:?}");
         }
     }
 
