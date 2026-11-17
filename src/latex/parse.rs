@@ -1392,6 +1392,12 @@ impl LatexCompactParser {
         }
     }
 
+    #[inline]
+    fn take_resource_error(&mut self) -> Option<Error> {
+        self.check_node_limit();
+        self.abort.take()
+    }
+
     /// Intern a single char as a string, avoiding heap allocation.
     #[inline]
     fn push_char_str(&mut self, c: char) -> StrId {
@@ -2961,7 +2967,10 @@ impl LatexCompactParser {
                 };
                 let id = match self.parse_node_list(&processed) {
                     Ok((_, ids)) => self.flatten_single(&ids),
-                    Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    Err(_) => {
+                        self.check_node_limit();
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+                    },
                 };
                 Ok((after, id))
             },
@@ -2980,7 +2989,10 @@ impl LatexCompactParser {
                 };
                 let id = match self.parse_node_list(&processed) {
                     Ok((_, ids)) => self.flatten_single(&ids),
-                    Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    Err(_) => {
+                        self.check_node_limit();
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+                    },
                 };
                 Ok((after, id))
             },
@@ -3000,7 +3012,10 @@ impl LatexCompactParser {
                 };
                 let id = match self.parse_node_list(&processed) {
                     Ok((_, ids)) => self.flatten_single(&ids),
-                    Err(_) => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    Err(_) => {
+                        self.check_node_limit();
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+                    },
                 };
                 Ok((after, id))
             },
@@ -4128,10 +4143,10 @@ impl LatexCompactParser {
         // The operator (parsed as a full element so it keeps its \limits/body).
         let (input, op_id) = match self.parse_element(input) {
             Ok(v) => v,
-            Err(_) => (
-                input,
-                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-            ),
+            Err(_) => (input, {
+                self.check_node_limit();
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+            }),
         };
 
         // Decompose the parsed operator so the four corner scripts hug the bare
@@ -4989,6 +5004,7 @@ impl LatexCompactParser {
                     }),
                 )),
                 Err(_) => {
+                    self.check_node_limit();
                     // No content follows; just emit an empty node
                     let empty = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
                     Ok((
@@ -5149,6 +5165,9 @@ impl LatexCompactParser {
             return;
         }
         for (r, row) in rows.iter_mut().enumerate() {
+            if self.check_node_limit() {
+                return;
+            }
             // Row-level alternating color (1-based row numbering).
             let row_color: Option<String> = rowcolors.as_ref().and_then(|(start, odd, even)| {
                 let n = r + 1;
@@ -5159,6 +5178,9 @@ impl LatexCompactParser {
                 if c.is_empty() { None } else { Some(c.clone()) }
             });
             for (col, cell) in row.iter_mut().enumerate() {
+                if self.check_node_limit() {
+                    return;
+                }
                 if self.cell_is_boxed(cell) {
                     continue; // already colored by \cellcolor/\rowcolor
                 }
@@ -5750,7 +5772,10 @@ impl LatexCompactParser {
         } else {
             match self.parse_node_list(tok.text) {
                 Ok((_, ids)) => ids,
-                Err(_) => SmallVec::new(),
+                Err(_) => {
+                    self.check_node_limit();
+                    SmallVec::new()
+                },
             }
         }
     }
@@ -5824,7 +5849,11 @@ impl LatexCompactParser {
         }
         match self.parse_node_list(seg) {
             Ok((_, ids)) if !ids.is_empty() => Some(self.flatten_single(&ids)),
-            _ => None,
+            Err(_) => {
+                self.check_node_limit();
+                None
+            },
+            Ok((_, _)) => None,
         }
     }
 
@@ -5881,7 +5910,16 @@ impl LatexCompactParser {
         let (rest, _) = char('{')(rest)?;
         let (rest, _) = tag(env_name)(rest)?;
         let (rest, _) = char('}')(rest)?;
-        let node = self.build_bussproofs(body);
+        let node = match self.build_bussproofs(body) {
+            Ok(node) => node,
+            Err(error) => {
+                self.abort = Some(error);
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    rest,
+                    nom::error::ErrorKind::TooLarge,
+                )));
+            },
+        };
         Ok((rest, node))
     }
 
@@ -5897,7 +5935,16 @@ impl LatexCompactParser {
         body.push('\\');
         body.push_str(name);
         body.push_str(&input[..end]);
-        let node = self.build_bussproofs(&body);
+        let node = match self.build_bussproofs(&body) {
+            Ok(node) => node,
+            Err(error) => {
+                self.abort = Some(error);
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    &input[end..],
+                    nom::error::ErrorKind::TooLarge,
+                )));
+            },
+        };
         Ok((&input[end..], node))
     }
 
@@ -5905,7 +5952,7 @@ impl LatexCompactParser {
     /// stack. Stack underflow and leftover entries never panic: missing
     /// premises are padded with empty rows and leftover stack entries are
     /// wrapped in a `Row`.
-    fn build_bussproofs(&mut self, body: &str) -> NodeId {
+    fn build_bussproofs(&mut self, body: &str) -> Result<NodeId> {
         let mut stack: Vec<NodeId> = Vec::new();
         let mut right_label: Option<NodeId> = None;
         let mut left_label: Option<NodeId> = None;
@@ -5913,6 +5960,9 @@ impl LatexCompactParser {
         let mut rest = body;
 
         while let Some(bs) = rest.find('\\') {
+            if let Some(error) = self.take_resource_error() {
+                return Err(error);
+            }
             rest = &rest[bs + 1..];
             let nlen = rest
                 .as_bytes()
@@ -5925,7 +5975,7 @@ impl LatexCompactParser {
             match name {
                 "AxiomC" | "AXC" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    let leaf = self.buss_content(arg.unwrap_or(""));
+                    let leaf = self.buss_content(arg.unwrap_or(""))?;
                     stack.push(leaf);
                     rest = after;
                 },
@@ -5938,7 +5988,7 @@ impl LatexCompactParser {
                         &mut left_label,
                         &mut right_label,
                         &mut line_style,
-                    );
+                    )?;
                     rest = after;
                 },
                 "BinaryInfC" | "BIC" => {
@@ -5950,7 +6000,7 @@ impl LatexCompactParser {
                         &mut left_label,
                         &mut right_label,
                         &mut line_style,
-                    );
+                    )?;
                     rest = after;
                 },
                 "TrinaryInfC" | "TIC" => {
@@ -5962,7 +6012,7 @@ impl LatexCompactParser {
                         &mut left_label,
                         &mut right_label,
                         &mut line_style,
-                    );
+                    )?;
                     rest = after;
                 },
                 "QuaternaryInfC" => {
@@ -5974,7 +6024,7 @@ impl LatexCompactParser {
                         &mut left_label,
                         &mut right_label,
                         &mut line_style,
-                    );
+                    )?;
                     rest = after;
                 },
                 "QuinaryInfC" => {
@@ -5986,17 +6036,17 @@ impl LatexCompactParser {
                         &mut left_label,
                         &mut right_label,
                         &mut line_style,
-                    );
+                    )?;
                     rest = after;
                 },
                 "RightLabel" | "RL" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    right_label = Some(self.buss_content(arg.unwrap_or("")));
+                    right_label = Some(self.buss_content(arg.unwrap_or(""))?);
                     rest = after;
                 },
                 "LeftLabel" | "LL" => {
                     let (after, arg) = bussproofs_take_arg(rest);
-                    left_label = Some(self.buss_content(arg.unwrap_or("")));
+                    left_label = Some(self.buss_content(arg.unwrap_or(""))?);
                     rest = after;
                 },
                 // Inference line styles (apply to the next inference).
@@ -6013,14 +6063,21 @@ impl LatexCompactParser {
             }
         }
 
-        match stack.len() {
+        if let Some(error) = self.take_resource_error() {
+            return Err(error);
+        }
+        let node = match stack.len() {
             1 => stack[0],
             0 => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             _ => {
                 let span = self.arena.push_children_deferred(&stack);
                 self.arena.push_node(CompactNode::Row(span))
             },
+        };
+        if let Some(error) = self.take_resource_error() {
+            return Err(error);
         }
+        Ok(node)
     }
 
     /// Pop `arity` premises (lenient), build an inference node with the given
@@ -6033,19 +6090,26 @@ impl LatexCompactParser {
         left: &mut Option<NodeId>,
         right: &mut Option<NodeId>,
         line: &mut BussLine,
-    ) {
+    ) -> Result<()> {
         let avail = stack.len().min(arity);
         let split = stack.len() - avail;
         let mut premises: SmallVec<[NodeId; 4]> = stack.drain(split..).collect();
         while premises.len() < arity {
+            if let Some(error) = self.take_resource_error() {
+                return Err(error);
+            }
             let empty = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             premises.insert(0, empty);
         }
-        let concl = self.buss_content(concl_src);
+        let concl = self.buss_content(concl_src)?;
         let node = self.buss_make_node(&premises, concl, left.take(), right.take(), *line);
+        if let Some(error) = self.take_resource_error() {
+            return Err(error);
+        }
         // Line style resets to the default after each inference.
         *line = BussLine::Single;
         stack.push(node);
+        Ok(())
     }
 
     /// Assemble a single proof node: premises stacked horizontally above a
@@ -6143,7 +6207,7 @@ impl LatexCompactParser {
 
     /// Parse the content of an axiom/conclusion/label, stripping surrounding
     /// inline-math delimiters (`$...$` or `\(...\)`).
-    fn buss_content(&mut self, src: &str) -> NodeId {
+    fn buss_content(&mut self, src: &str) -> Result<NodeId> {
         let mut s = src.trim();
         if let Some(inner) = s.strip_prefix('$').and_then(|x| x.strip_suffix('$')) {
             s = inner.trim();
@@ -6151,11 +6215,38 @@ impl LatexCompactParser {
             s = inner.trim();
         }
         if s.is_empty() {
-            return self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            let node = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            if let Some(error) = self.take_resource_error() {
+                return Err(error);
+            }
+            return Ok(node);
         }
         match self.parse_node_list(s) {
-            Ok((_, ids)) if !ids.is_empty() => self.flatten_single(&ids),
-            _ => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            Ok((_, ids)) => {
+                if !ids.is_empty() {
+                    let node = self.flatten_single(&ids);
+                    if let Some(error) = self.take_resource_error() {
+                        return Err(error);
+                    }
+                    Ok(node)
+                } else {
+                    let node = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                    if let Some(error) = self.take_resource_error() {
+                        return Err(error);
+                    }
+                    Ok(node)
+                }
+            },
+            Err(_) => {
+                if let Some(error) = self.take_resource_error() {
+                    return Err(error);
+                }
+                let node = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                if let Some(error) = self.take_resource_error() {
+                    return Err(error);
+                }
+                Ok(node)
+            },
         }
     }
 
@@ -6206,7 +6297,16 @@ impl LatexCompactParser {
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             ));
         };
-        let node = self.build_xymatrix(body);
+        let node = match self.build_xymatrix(body) {
+            Ok(node) => node,
+            Err(error) => {
+                self.abort = Some(error);
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    rest,
+                    nom::error::ErrorKind::TooLarge,
+                )));
+            },
+        };
         Ok((rest, node))
     }
 
@@ -6228,7 +6328,16 @@ impl LatexCompactParser {
             let after = &body[pos + "\\xymatrix".len()..];
             let start = after.find('{').unwrap_or(after.len());
             match super::mhchem::capture_braced(&after[start..]) {
-                Some((_, inner)) => self.build_xymatrix(inner),
+                Some((_, inner)) => match self.build_xymatrix(inner) {
+                    Ok(node) => node,
+                    Err(error) => {
+                        self.abort = Some(error);
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            rest,
+                            nom::error::ErrorKind::TooLarge,
+                        )));
+                    },
+                },
                 None => self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             }
         } else {
@@ -6239,14 +6348,17 @@ impl LatexCompactParser {
 
     /// Build a centered [`CompactNode::Array`] grid from an xymatrix body,
     /// rendering `\ar[dir]` commands as directional arrow glyphs.
-    fn build_xymatrix(&mut self, body: &str) -> NodeId {
+    fn build_xymatrix(&mut self, body: &str) -> Result<NodeId> {
         let mut rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::new();
         let mut num_cols = 0usize;
         for row_src in cd_split_rows(body) {
+            if let Some(error) = self.take_resource_error() {
+                return Err(error);
+            }
             let cells_src = xy_split_cells(row_src);
             let mut row: Vec<SmallVec<[NodeId; 8]>> = Vec::with_capacity(cells_src.len());
             for cell_src in &cells_src {
-                row.push(self.parse_xy_cell(cell_src));
+                row.push(self.parse_xy_cell(cell_src)?);
             }
             num_cols = num_cols.max(row.len());
             rows.push(row);
@@ -6261,22 +6373,34 @@ impl LatexCompactParser {
         }
         let columns: SmallVec<[ColumnAlign; 4]> =
             smallvec::smallvec![ColumnAlign::Center; num_cols];
-        self.build_array_with_spacing(&columns, rows, 130, false, 0, 0, false)
+        let node = self.build_array_with_spacing(&columns, rows, 130, false, 0, 0, false);
+        if let Some(error) = self.take_resource_error() {
+            return Err(error);
+        }
+        Ok(node)
     }
 
     /// Parse one xymatrix cell: leading object content followed by any
     /// `\ar[dir]^{..}_{..}` arrows rendered as glyphs.
-    fn parse_xy_cell(&mut self, cell: &str) -> SmallVec<[NodeId; 8]> {
+    fn parse_xy_cell(&mut self, cell: &str) -> Result<SmallVec<[NodeId; 8]>> {
         let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
         let head_end = xy_find_ar(cell);
         let head = cell[..head_end].trim();
-        if !head.is_empty()
-            && let Ok((_, ids)) = self.parse_node_list(head)
-        {
-            out.extend(ids);
+        if !head.is_empty() {
+            match self.parse_node_list(head) {
+                Ok((_, ids)) => out.extend(ids),
+                Err(_) => {
+                    if let Some(error) = self.take_resource_error() {
+                        return Err(error);
+                    }
+                },
+            }
         }
         let mut rest = &cell[head_end..];
         while rest.starts_with("\\ar") {
+            if let Some(error) = self.take_resource_error() {
+                return Err(error);
+            }
             rest = &rest[3..];
             // Skip optional `\ar` shaft/curve/offset modifiers (`@{->}`,
             // `@/^/`, `@(u,d)`, `@<1ex>`, `@2`, …) — the arrow direction is
@@ -6290,11 +6414,11 @@ impl LatexCompactParser {
                 let t = rest.trim_start();
                 if let Some(r) = t.strip_prefix('^') {
                     let (after, lab) = xy_take_script(r);
-                    over = self.xy_label(lab);
+                    over = self.xy_label(lab)?;
                     rest = after;
                 } else if let Some(r) = t.strip_prefix('_') {
                     let (after, lab) = xy_take_script(r);
-                    under = self.xy_label(lab);
+                    under = self.xy_label(lab)?;
                     rest = after;
                 } else {
                     rest = t;
@@ -6302,27 +6426,53 @@ impl LatexCompactParser {
                 }
             }
             out.push(self.xy_arrow(dir, over, under));
+            if let Some(error) = self.take_resource_error() {
+                return Err(error);
+            }
             let next = xy_find_ar(rest);
             let between = rest[..next].trim();
-            if !between.is_empty()
-                && let Ok((_, ids)) = self.parse_node_list(between)
-            {
-                out.extend(ids);
+            if !between.is_empty() {
+                match self.parse_node_list(between) {
+                    Ok((_, ids)) => out.extend(ids),
+                    Err(_) => {
+                        if let Some(error) = self.take_resource_error() {
+                            return Err(error);
+                        }
+                    },
+                }
             }
             rest = &rest[next..];
         }
-        out
+        if let Some(error) = self.take_resource_error() {
+            return Err(error);
+        }
+        Ok(out)
     }
 
     /// Parse an arrow label into a single node, or `None` when empty.
-    fn xy_label(&mut self, src: &str) -> Option<NodeId> {
+    fn xy_label(&mut self, src: &str) -> Result<Option<NodeId>> {
         let s = src.trim();
         if s.is_empty() {
-            return None;
+            return Ok(None);
         }
         match self.parse_node_list(s) {
-            Ok((_, ids)) if !ids.is_empty() => Some(self.flatten_single(&ids)),
-            _ => None,
+            Ok((_, ids)) => {
+                if ids.is_empty() {
+                    Ok(None)
+                } else {
+                    let node = self.flatten_single(&ids);
+                    if let Some(error) = self.take_resource_error() {
+                        return Err(error);
+                    }
+                    Ok(Some(node))
+                }
+            },
+            Err(_) => {
+                if let Some(error) = self.take_resource_error() {
+                    return Err(error);
+                }
+                Ok(None)
+            },
         }
     }
 
@@ -6446,6 +6596,7 @@ impl LatexCompactParser {
         // Append an upright parenthesized equation-number cell to each row.
         let mut numbered_rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::with_capacity(rows.len());
         for (i, mut row) in rows.into_iter().enumerate() {
+            self.ensure_node_budget(input)?;
             let label = if sub {
                 // Shared master number 1, incrementing sub-letter per row.
                 let letter = char::from(b'a' + (i % 26) as u8);
@@ -6474,6 +6625,7 @@ impl LatexCompactParser {
             0,
             false,
         );
+        self.ensure_node_budget(input)?;
         // Big left brace, no right delimiter (cases style).
         let open = self.arena.push_str("{");
         let close = self.arena.push_str("");
@@ -7072,5 +7224,30 @@ mod tests {
                 limit: 2
             })
         ));
+    }
+
+    #[test]
+    fn specialized_builders_stop_at_small_node_limits() {
+        let cases = [
+            (
+                r"\begin{prooftree}\AxiomC{$A$}\AxiomC{$B$}\BinaryInfC{$C$}\end{prooftree}",
+                7,
+            ),
+            (r"\xymatrix{A\ar[r]^B & C\\D & E}", 5),
+            (r"\begin{numcases}{f(x)=}x&x>0\\-x&x\le0\end{numcases}", 5),
+        ];
+        for (input, expected_nodes) in cases {
+            let mut parser = LatexCompactParser::with_capacity(input.len(), Some(4));
+            let result = parser.parse_node_list(input);
+            assert!(matches!(result, Err(nom::Err::Failure(_))));
+            assert!(matches!(
+                parser.abort,
+                Some(Error::LimitExceeded {
+                    kind: crate::error::LimitKind::Nodes,
+                    limit: 4
+                })
+            ));
+            assert_eq!(parser.arena.node_count(), expected_nodes);
+        }
     }
 }

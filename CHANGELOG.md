@@ -39,7 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   children). The LaTeX, MTEF and UnicodeMath readers enforce the node limit
   while they build nodes. MTEF and UnicodeMath enforce the depth limit while
   they build nodes, and the depth validators now report `LimitExceeded` instead
-  of `Unsupported`.
+  of `Unsupported`. LaTeX proof-tree, XY-diagram and `numcases` builders stop
+  promptly when the node limit is reached instead of recovering into more
+  nodes.
 
 ### Changed
 
