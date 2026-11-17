@@ -29,9 +29,17 @@ fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
 fn write_node_slice(
     buf: &mut String,
     arena: &AstArena,
-    children: &[NodeId],
+    mut children: &[NodeId],
     mut ends_with_command: bool,
 ) {
+    // A trailing implicit script with no arguments emits nothing. Remove it
+    // before deciding whether any preceding base needs grouping or a body.
+    while let Some((&last, prefix)) = children.split_last() {
+        if !is_script_with_empty_base(arena, last) || script_has_any_arg(arena, last) {
+            break;
+        }
+        children = prefix;
+    }
     let mut i = 0;
     while i < children.len() {
         let id = children[i];

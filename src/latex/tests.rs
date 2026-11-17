@@ -1915,3 +1915,18 @@ fn script_grouping_follows_the_content_of_an_unwritable_color() {
         assert_eq!(convert(&first), first);
     }
 }
+
+#[test]
+fn trailing_empty_implicit_scripts_do_not_regroup_the_preceding_base() {
+    for input in [
+        r"mathrm\mathrm\teal^\teal^\teal",
+        r"a\mathrm{b}^{}^{}",
+        r"\textcolor{blue}{x}^{}^{}",
+        r"\textcolor{blue}{x}^{}^{}+b",
+        r"\textcolor{blue}{x}^{}^2",
+    ] {
+        let write = |s| crate::convert(s, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let first = write(input);
+        assert_eq!(first, write(&first), "{input}");
+    }
+}
