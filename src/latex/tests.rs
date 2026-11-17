@@ -105,6 +105,24 @@ fn relax_script_boundaries_do_not_escape_groups_or_arrays() {
         .unwrap();
         assert_eq!(actual, want, "{input}");
     }
+    let cr = crate::convert_with(
+        r"\begin{matrix}x^\relax\cr y\end{matrix}",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &config,
+    )
+    .unwrap();
+    let slash = crate::convert_with(
+        r"\begin{matrix}x^\relax\\ y\end{matrix}",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        cr, slash,
+        r"\cr must terminate the first matrix row after relax"
+    );
 }
 
 #[test]

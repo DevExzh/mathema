@@ -103,12 +103,10 @@ fn ws(input: &str) -> IResult<&str, ()> {
 /// (or for a complementary script) rather than escaping as a sibling.
 #[inline]
 fn script_argument_boundary(input: &str) -> bool {
-    input.is_empty()
+    is_table_boundary(input)
         || input.starts_with('}')
-        || input.starts_with('&')
-        || input.starts_with("\\\\")
+        || is_cr_row_separator(input)
         || matches!(input.as_bytes().first(), Some(b'^' | b'_' | b'\''))
-        || strip_control_word(input, "end").is_some()
         || strip_control_word(input, "right").is_some()
         || strip_control_word(input, "middle").is_some()
 }
