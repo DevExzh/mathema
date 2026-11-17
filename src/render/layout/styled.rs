@@ -86,6 +86,7 @@ pub(super) fn layout_actuarial(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox
         depth: body_depth,
         kind: BoxKind::Rule { thickness: total },
     };
+    let right_x = 2.0 * side_pad + inner.width;
     let body = LayoutBox {
         width: inner.width + 2.0 * side_pad + rule,
         height: body_height,
@@ -93,7 +94,7 @@ pub(super) fn layout_actuarial(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox
         kind: BoxKind::HBox {
             children: vec![
                 PositionedBox::new(side_pad, 0.0, inner),
-                PositionedBox::at_origin(right),
+                PositionedBox::new(right_x, 0.0, right),
             ],
         },
     };

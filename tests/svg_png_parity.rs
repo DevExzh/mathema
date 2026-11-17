@@ -140,6 +140,8 @@ fn svg_matches_png_on_corpus() {
             r"\left( \frac{1}{1 + \frac{1}{1 + x}} \right) \left[ \sum_k a_k \right]",
             true,
         ),
+        ("actuarial", r"A_{\angl n}+B_{\angl g}", true),
+        ("mirrored", r"\mathreflectbox{b+\frac{x}{y}}", true),
         ("middle", r"\left\langle x \middle| y \right\rangle", true),
         ("quadratic", r"x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}", true),
         ("binom", r"\binom{n}{k} = \frac{n!}{k!(n-k)!}", true),
@@ -204,4 +206,37 @@ fn svg_matches_png_on_corpus() {
         avg < 5.0,
         "average SVG/PNG diff {avg:.2}% exceeds 5% — parity regression"
     );
+}
+
+#[test]
+fn reflections_and_enclosures_are_valid_in_all_svg_outputs() {
+    use mathema::reader::{Reader, latex::LatexReader};
+    use mathema::render::{
+        render_to_svg, render_to_svg_compact, render_to_svg_standalone,
+        render_to_svg_standalone_compact,
+    };
+    let src = r"\mathreflectbox{b}+\angl n";
+    let compact = LatexReader::parse_compact(src, &Default::default())
+        .unwrap()
+        .expr;
+    let heap = compact.to_math_expr();
+    let opts = RenderOptions::default();
+    for (svg, arena_svg) in [
+        (
+            render_to_svg(&heap, &opts).unwrap(),
+            render_to_svg_compact(&compact, &opts).unwrap(),
+        ),
+        (
+            render_to_svg_standalone(&heap, &opts).unwrap(),
+            render_to_svg_standalone_compact(&compact, &opts).unwrap(),
+        ),
+    ] {
+        for output in [&svg, &arena_svg] {
+            resvg::usvg::Tree::from_str(output, &resvg::usvg::Options::default()).unwrap();
+        }
+        assert_eq!(
+            svg, arena_svg,
+            "heap and compact transforms and rule positions"
+        );
+    }
 }
