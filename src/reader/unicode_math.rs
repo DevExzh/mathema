@@ -605,10 +605,10 @@ impl CompactParser {
     }
 
     /// Parse a UnicodeMath box (`▭` U+25AD) or phantom (`⟡` U+27E1) operator
-    /// emitted by this crate's UnicodeMath writer, so a write→read round-trip
-    /// recovers the `Boxed`/`Phantom` structure instead of dropping it as an
-    /// unknown symbol. The marker is followed by its content (parenthesized only
-    /// when complex), which we parse as the next atom.
+    /// emitted by this crate's UnicodeMath writer. A masked box uses
+    /// ▭(mask&content), where mask 6 hides the bottom and left sides, leaving
+    /// the actuarial top/right enclosure. Splitting occurs only at the mask
+    /// separator, so ampersands inside the nested operand remain untouched.
     fn parse_box_phantom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let mut chars = input.chars();
         let is_box = match chars.next() {
@@ -622,6 +622,31 @@ impl CompactParser {
             },
         };
         let rest = chars.as_str();
+        if is_box
+            && rest.starts_with('(')
+            && let Some(end) = matching_paren_end(rest)
+        {
+            let inner = &rest[1..end - 1];
+            if let Some((mask, body)) = inner.split_once('&')
+                && let Ok(mask) = mask.parse::<u8>()
+            {
+                let ids = self
+                    .parse_expr_list(body)
+                    .map_err(|_| parse_error(body, nom::error::ErrorKind::Complete))?;
+                let content = self.flatten_single(&ids);
+                let node = if mask == 6 {
+                    CompactNode::Actuarial(content)
+                } else {
+                    let empty = self.arena.push_str("");
+                    CompactNode::Boxed {
+                        content,
+                        bg_color: empty,
+                        border_color: empty,
+                    }
+                };
+                return Ok((&rest[end..], self.push_node(node)));
+            }
+        }
         // The content is a child of the box, one level deeper.
         self.enter(rest)?;
         let content = self.parse_atom(rest);
@@ -1197,6 +1222,18 @@ mod tests {
             "⟡y should parse to Phantom(y), got {:?}",
             nodes
         );
+    }
+
+    #[test]
+    fn reads_masked_actuarial_box_without_consuming_nested_ampersands() {
+        let nodes = parse("▭(6&x)");
+        assert!(matches!(
+            &nodes[0],
+            MathNode::Actuarial(inner)
+                if matches!(&**inner, MathNode::Identifier(s) if s == "x")
+        ));
+        let nested = parse("▭(6&■(a&b@c&d))");
+        assert!(matches!(&nested[0], MathNode::Actuarial(_)));
     }
 
     #[test]

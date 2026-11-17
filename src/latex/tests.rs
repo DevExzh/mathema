@@ -179,6 +179,23 @@ fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
         crate::convert_with(&omml, crate::Format::Omml, crate::Format::LaTeX, &config).unwrap();
     assert_eq!(from_omml, r"\angl{x}");
 
+    let unicode = crate::convert_with(
+        r"\angl{x}",
+        crate::Format::LaTeX,
+        crate::Format::UnicodeMath,
+        &config,
+    )
+    .unwrap();
+    assert_eq!(unicode, "▭(6&\"x\")");
+    let from_unicode = crate::convert_with(
+        &unicode,
+        crate::Format::UnicodeMath,
+        crate::Format::LaTeX,
+        &config,
+    )
+    .unwrap();
+    assert_eq!(from_unicode, r"\angl{x}");
+
     let result = crate::from_latex_with(r"\angl{x}", &config).unwrap();
     let bytes = result
         .to_mtef_bytes(&crate::writer::mtef::MtefWriteOptions::default())
