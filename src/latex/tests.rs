@@ -1846,3 +1846,24 @@ fn binrel_uses_the_sample_class_and_writes_only_the_body() {
         r"\alpha@x"
     );
 }
+
+#[test]
+fn relation_aliases_keep_their_glyphs_in_fences_and_math() {
+    for (source, expected) in [
+        (r"a\lt b\gt c", "a<b>c"),
+        (
+            r"\left\lt\frac1x\right\gt",
+            r"\left\langle\frac1x\right\rangle",
+        ),
+        (r"a\mapsfrom b", "a↤b"),
+    ] {
+        let a = crate::from_latex(source).unwrap();
+        let b = crate::from_latex(expected).unwrap();
+        assert_eq!(a.to_mathml().unwrap(), b.to_mathml().unwrap(), "{source}");
+        let written = a.to_latex().unwrap();
+        assert_eq!(
+            crate::from_latex(&written).unwrap().to_latex().unwrap(),
+            written
+        );
+    }
+}

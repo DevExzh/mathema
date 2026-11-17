@@ -535,8 +535,8 @@ fn delim_to_glyph(d: &str) -> String {
         "\\rceil" => "\u{2309}".into(),
         "\\lfloor" => "\u{230A}".into(),
         "\\rfloor" => "\u{230B}".into(),
-        "\\langle" => "\u{27E8}".into(),
-        "\\rangle" => "\u{27E9}".into(),
+        "<" | "\\lt" | "\\langle" => "\u{27E8}".into(),
+        ">" | "\\gt" | "\\rangle" => "\u{27E9}".into(),
         "\\{" | "\\lbrace" => "{".into(),
         "\\}" | "\\rbrace" => "}".into(),
         "\\|" | "\\Vert" | "\\lVert" | "\\rVert" => "\u{2016}".into(),
@@ -2165,6 +2165,11 @@ impl LatexCompactParser {
                                 nom::error::ErrorKind::Char,
                             ))
                         })?;
+                        let ch = match ch {
+                            '<' => '\u{27E8}',
+                            '>' => '\u{27E9}',
+                            other => other,
+                        };
                         let sid = self.push_char_str(ch);
                         Ok((after, sid))
                     },

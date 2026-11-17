@@ -1087,7 +1087,7 @@ fn classify_mo(text: &str) -> SymbolKind {
         | '\u{2218}' | '*' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' | '\u{2248}' | '\u{2261}'
         | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}' | '\u{2208}' | '\u{2192}'
-        | '\u{2190}' | '\u{21D2}' | '\u{21D0}' => SymbolKind::Relation,
+        | '\u{2190}' | '\u{21A4}' | '\u{21A6}' | '\u{21D2}' | '\u{21D0}' => SymbolKind::Relation,
         '(' | '[' | '{' | '\u{27E8}' | '\u{230A}' | '\u{2308}' => SymbolKind::Open,
         ')' | ']' | '}' | '\u{27E9}' | '\u{230B}' | '\u{2309}' => SymbolKind::Close,
         ',' | ';' => SymbolKind::Punctuation,
