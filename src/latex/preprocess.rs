@@ -1061,10 +1061,7 @@ mod tests {
 
     #[test]
     fn local_definitions_follow_groups() {
-        assert_eq!(
-            preprocess(r"\def\x{1}\x{\def\x{2}\x}\x"),
-            "1{2}1"
-        );
+        assert_eq!(preprocess(r"\def\x{1}\x{\def\x{2}\x}\x"), "1{2}1");
         assert_eq!(
             preprocess(r"\def\x{1}\x{\def\x{2}\x{\gdef\x{3}\x}\x}\x"),
             "1{2{3}3}3"
@@ -1073,10 +1070,7 @@ mod tests {
 
     #[test]
     fn edef_and_xdef_capture_expansion_at_definition_time() {
-        assert_eq!(
-            preprocess(r"\def\foo{a}\xdef\bar{\foo}\def\foo{}\bar"),
-            "a"
-        );
+        assert_eq!(preprocess(r"\def\foo{a}\xdef\bar{\foo}\def\foo{}\bar"), "a");
         assert_eq!(
             preprocess(r"\def\foo{a}\xdef\bar{\foo\noexpand\foo}\def\foo{b}\bar"),
             "ab"
@@ -1089,30 +1083,12 @@ mod tests {
 
     #[test]
     fn let_copies_meaning_or_token_identity() {
-        assert_eq!(
-            preprocess(r"\let\foo=\frac\def\frac{}\foo12"),
-            r"\frac12"
-        );
-        assert_eq!(
-            preprocess(r"\def\foo{1}\let\bar\foo\def\foo{2}\bar"),
-            "1"
-        );
-        assert_eq!(
-            preprocess(r"\let\foo=x\noexpand\foo"),
-            "x"
-        );
-        assert_eq!(
-            preprocess(r"\let\foo=x\edef\bar{\foo}\def\foo{y}\bar"),
-            "y"
-        );
-        assert_eq!(
-            preprocess(r"\let\foo{\sqrt\foo1}"),
-            r"\sqrt{1}"
-        );
-        assert_eq!(
-            preprocess(r"\let\equals==a\equals b"),
-            "a= b"
-        );
+        assert_eq!(preprocess(r"\let\foo=\frac\def\frac{}\foo12"), r"\frac12");
+        assert_eq!(preprocess(r"\def\foo{1}\let\bar\foo\def\foo{2}\bar"), "1");
+        assert_eq!(preprocess(r"\let\foo=x\noexpand\foo"), "x");
+        assert_eq!(preprocess(r"\let\foo=x\edef\bar{\foo}\def\foo{y}\bar"), "y");
+        assert_eq!(preprocess(r"\let\foo{\sqrt\foo1}"), r"\sqrt{1}");
+        assert_eq!(preprocess(r"\let\equals==a\equals b"), "a= b");
     }
 
     #[test]
@@ -1121,18 +1097,12 @@ mod tests {
             preprocess(r"\def\pick#1{[#1]}\def\alias{\pick}\alias{x}"),
             "[x]"
         );
-        assert_eq!(
-            preprocess(r"\def\f#1{#1x}\f{\alpha}"),
-            r"\alpha x"
-        );
+        assert_eq!(preprocess(r"\def\f#1{#1x}\f{\alpha}"), r"\alpha x");
     }
 
     #[test]
     fn futurelet_assigns_raw_next_token_and_keeps_it_in_stream() {
-        assert_eq!(
-            preprocess(r"\futurelet\foo\frac1{2+\foo}"),
-            r"\frac1{2+1}"
-        );
+        assert_eq!(preprocess(r"\futurelet\foo\frac1{2+\foo}"), r"\frac1{2+1}");
     }
 
     #[test]
@@ -1147,9 +1117,6 @@ mod tests {
             preprocess(r"\def\@firstoftwo#1#2{#2}\@firstoftwo{a}{b}"),
             "b"
         );
-        assert_eq!(
-            preprocess(r"\let\pick\@secondoftwo\pick{a}{b}"),
-            "b"
-        );
+        assert_eq!(preprocess(r"\let\pick\@secondoftwo\pick{a}{b}"), "b");
     }
 }

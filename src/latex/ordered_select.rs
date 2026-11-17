@@ -58,4 +58,3 @@ fn argument(input: &mut QueueTxn<'_>) -> Option<Vec<Token>> {
         _ => Some(vec![input.pop_token()?]),
     }
 }
-

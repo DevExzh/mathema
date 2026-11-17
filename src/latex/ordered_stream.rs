@@ -9,9 +9,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::latex::macro_args::{self, ParameterText};
 use super::packages;
 use super::{expansion_cap, find_verb_end};
+use crate::latex::macro_args::{self, ParameterText};
 use crate::latex::text_style;
 
 #[path = "ordered_select.rs"]
@@ -226,8 +226,13 @@ impl Processor {
                     if mode == Mode::Edef {
                         if name == "noexpand" {
                             self.edef_noexpand(queue, out)?;
-                        } else if !self.expand_macro_from_queue(&name, depth, queue, out, Mode::Edef)?
-                        {
+                        } else if !self.expand_macro_from_queue(
+                            &name,
+                            depth,
+                            queue,
+                            out,
+                            Mode::Edef,
+                        )? {
                             self.append(out, Token::ControlWord(name))?;
                         }
                         continue;
@@ -331,18 +336,26 @@ impl Processor {
     ) -> Result<bool, usize> {
         if matches!(name, "def" | "gdef" | "edef" | "xdef") {
             let mut txn = QueueTxn::new(queue);
-            let result = self.parse_def_txn(
-                name,
-                false,
-                matches!(name, "edef" | "xdef"),
-                &mut txn,
-            )?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            let result =
+                self.parse_def_txn(name, false, matches!(name, "edef" | "xdef"), &mut txn)?;
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         if name == "let" {
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_let_txn(false, &mut txn)?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         if name == "futurelet" {
             return self.parse_futurelet(queue, false);
@@ -350,12 +363,24 @@ impl Processor {
         if matches!(name, "newcommand" | "renewcommand" | "providecommand") {
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_newcommand_txn(name, &mut txn)?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         if name == "newenvironment" {
             let mut txn = QueueTxn::new(queue);
             let result = self.parse_newenvironment_txn(&mut txn)?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         if !matches!(name, "global" | "long") {
             return Ok(false);
@@ -386,7 +411,7 @@ impl Processor {
             txn.rollback();
             return Ok(false);
         };
-            if matches!(command.as_str(), "def" | "gdef" | "edef" | "xdef") {
+        if matches!(command.as_str(), "def" | "gdef" | "edef" | "xdef") {
             txn.pop();
             let result = self.parse_def_txn(
                 &command,
@@ -394,17 +419,35 @@ impl Processor {
                 matches!(command.as_str(), "edef" | "xdef"),
                 &mut txn,
             )?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         if command == "let" {
             txn.pop();
             let result = self.parse_let_txn(true, &mut txn)?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         if command == "futurelet" {
             txn.pop();
             let result = self.parse_futurelet_txn(false, &mut txn)?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         // TeX permits a macro expanding to `\def` after a prefix.
         if let Some(Meaning::Macro(def)) = self.lookup_macro(&command)
@@ -420,7 +463,13 @@ impl Processor {
                 matches!(effective.as_str(), "edef" | "xdef"),
                 &mut txn,
             )?;
-            return Ok(if result { txn.commit(); true } else { txn.rollback(); false });
+            return Ok(if result {
+                txn.commit();
+                true
+            } else {
+                txn.rollback();
+                false
+            });
         }
         txn.rollback();
         Ok(false)
@@ -475,11 +524,7 @@ impl Processor {
         Ok(true)
     }
 
-    fn parse_let_txn(
-        &mut self,
-        global: bool,
-        txn: &mut QueueTxn<'_>,
-    ) -> Result<bool, usize> {
+    fn parse_let_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
         let Some(target) = txn.pop_control_word() else {
             return Ok(false);
         };
@@ -530,11 +575,7 @@ impl Processor {
     /// both execute in their original order.  This raw-token lookahead is
     /// deliberately not macro expansion: the assigned meaning is a snapshot
     /// just like `\let`.
-    fn parse_futurelet_txn(
-        &mut self,
-        global: bool,
-        txn: &mut QueueTxn<'_>,
-    ) -> Result<bool, usize> {
+    fn parse_futurelet_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
         let Some(target) = txn.pop_control_word() else {
             return Ok(false);
         };
@@ -727,9 +768,7 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
     ) -> Result<bool, usize> {
-        if text_style(name).is_none()
-            && !matches!(name, "angl" | "reflectbox" | "mathreflectbox")
-        {
+        if text_style(name).is_none() && !matches!(name, "angl" | "reflectbox" | "mathreflectbox") {
             return Ok(false);
         }
         let Some(argument) = queue.iter().find(|item| !item.token.is_whitespace()) else {
@@ -1022,7 +1061,10 @@ fn consume_parameter_args(
     Some(args)
 }
 
-fn consume_exact_delimiter(txn: &mut QueueTxn<'_>, delimiter: &[macro_args::ParameterToken]) -> bool {
+fn consume_exact_delimiter(
+    txn: &mut QueueTxn<'_>,
+    delimiter: &[macro_args::ParameterToken],
+) -> bool {
     for expected in delimiter {
         let Some(token) = txn.peek_token() else {
             return false;
@@ -1035,10 +1077,7 @@ fn consume_exact_delimiter(txn: &mut QueueTxn<'_>, delimiter: &[macro_args::Para
     true
 }
 
-fn delimiter_matches(
-    txn: &QueueTxn<'_>,
-    delimiter: &[macro_args::ParameterToken],
-) -> bool {
+fn delimiter_matches(txn: &QueueTxn<'_>, delimiter: &[macro_args::ParameterToken]) -> bool {
     delimiter.iter().enumerate().all(|(offset, expected)| {
         txn.peek_token_at(offset)
             .is_some_and(|token| token_identity(token) == expected.as_str())
@@ -1180,7 +1219,9 @@ fn tokenize(input: &str) -> Vec<Token> {
             let first = input[after..].chars().next().unwrap();
             let name_len = crate::latex::control_word_len(&input[after..]);
             if name_len > 0 {
-                tokens.push(Token::ControlWord(input[after..after + name_len].to_owned()));
+                tokens.push(Token::ControlWord(
+                    input[after..after + name_len].to_owned(),
+                ));
                 i = after + name_len;
             } else {
                 tokens.push(Token::ControlSymbol(first));
@@ -1205,9 +1246,9 @@ fn render_tokens(tokens: &[Token]) -> String {
     for token in tokens {
         match token {
             Token::Char(c) => {
-                if previous_control_word.is_some_and(|name| {
-                    !name.starts_with("verb") && c.is_ascii_alphabetic()
-                }) {
+                if previous_control_word
+                    .is_some_and(|name| !name.starts_with("verb") && c.is_ascii_alphabetic())
+                {
                     out.push(' ');
                 }
                 out.push(*c);
@@ -1244,4 +1285,3 @@ fn render_tokens(tokens: &[Token]) -> String {
     }
     out
 }
-
