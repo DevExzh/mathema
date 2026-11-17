@@ -678,7 +678,7 @@ impl Processor {
         txn: &mut QueueTxn<'_>,
     ) -> Result<bool, usize> {
         txn.skip_whitespace();
-        if matches!(txn.peek_token(), Some(Token::ControlSymbol('*'))) {
+        if matches!(txn.peek_token(), Some(Token::Char('*'))) {
             txn.pop();
             txn.skip_whitespace();
         }
@@ -725,7 +725,7 @@ impl Processor {
 
     fn parse_newenvironment_txn(&mut self, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
         txn.skip_whitespace();
-        if matches!(txn.peek_token(), Some(Token::ControlSymbol('*'))) {
+        if matches!(txn.peek_token(), Some(Token::Char('*'))) {
             txn.pop();
             txn.skip_whitespace();
         }
@@ -1127,17 +1127,30 @@ impl Drop for QueueTxn<'_> {
     }
 }
 
-/// Let the dedicated argument module validate and represent primitive
-/// parameter text.  The queue has already tokenized the header, so a tiny
-/// synthetic definition is enough to reuse its exact control-word, delimiter,
-/// and `#{` rules without rescanning the real continuation.
+/// Let the dedicated argument module validate and represent the already
+/// tokenized parameter text.  Converting each header token to its exact token
+/// spelling keeps delimiter identity without detokenizing and retokenizing a
+/// synthetic definition string.
 fn parse_parameter_text(tokens: &[Token]) -> Option<ParameterText> {
-    let header = token_text(tokens);
-    let probe = format!(r"\def\probe{header}{{}}");
-    macro_args::parse_definition(&probe)
-        .ok()
-        .flatten()
-        .map(|parsed| parsed.parameter_text)
+    let parameter_tokens = tokens
+        .iter()
+        .map(parameter_token)
+        .collect::<Option<Vec<_>>>()?;
+    macro_args::parse_parameter_text(&parameter_tokens).ok()
+}
+
+fn parameter_token(token: &Token) -> Option<macro_args::ParameterToken> {
+    let text = match token {
+        Token::Char(ch) => ch.to_string(),
+        Token::BeginGroup => "{".to_owned(),
+        Token::EndGroup => "}".to_owned(),
+        Token::ControlWord(name) => format!("\\{name}"),
+        Token::ControlSymbol(symbol) => format!("\\{symbol}"),
+        Token::Verbatim(text) => text.clone(),
+        Token::EndEnvironment => return None,
+        Token::Frozen(inner) => return parameter_token(inner),
+    };
+    Some(macro_args::ParameterToken::from_text(text))
 }
 
 fn consume_args(queue: &mut VecDeque<Queued>, def: &MacroDef) -> Option<Vec<Vec<Token>>> {
@@ -1233,7 +1246,7 @@ fn consume_exact_delimiter(
         let Some(token) = txn.peek_token() else {
             return false;
         };
-        if token_identity(token) != expected.as_str() {
+        if !token_matches_parameter(token, expected.as_str()) {
             return false;
         }
         txn.pop();
@@ -1244,20 +1257,25 @@ fn consume_exact_delimiter(
 fn delimiter_matches(txn: &QueueTxn<'_>, delimiter: &[macro_args::ParameterToken]) -> bool {
     delimiter.iter().enumerate().all(|(offset, expected)| {
         txn.peek_token_at(offset)
-            .is_some_and(|token| token_identity(token) == expected.as_str())
+            .is_some_and(|token| token_matches_parameter(token, expected.as_str()))
     })
 }
 
-fn token_identity(token: &Token) -> String {
+fn token_matches_parameter(token: &Token, expected: &str) -> bool {
     match token {
-        Token::Char(c) => c.to_string(),
-        Token::BeginGroup => "{".to_owned(),
-        Token::EndGroup => "}".to_owned(),
-        Token::ControlWord(name) => format!("\\{name}"),
-        Token::ControlSymbol(c) => format!("\\{c}"),
-        Token::Verbatim(text) => text.clone(),
-        Token::EndEnvironment => String::new(),
-        Token::Frozen(inner) => token_identity(inner),
+        Token::Char(c) => {
+            expected.chars().eq(std::iter::once(*c)) && expected.len() == c.len_utf8()
+        },
+        Token::BeginGroup => expected == "{",
+        Token::EndGroup => expected == "}",
+        Token::ControlWord(name) => expected.strip_prefix('\\') == Some(name.as_str()),
+        Token::ControlSymbol(c) => {
+            let mut chars = expected.chars();
+            chars.next() == Some('\\') && chars.next() == Some(*c) && chars.next().is_none()
+        },
+        Token::Verbatim(text) => expected == text,
+        Token::EndEnvironment => false,
+        Token::Frozen(inner) => token_matches_parameter(inner, expected),
     }
 }
 
