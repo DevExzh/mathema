@@ -579,9 +579,7 @@ fn emit_box_embedded(
             emit_box_embedded(svg, &child.layout, cx, cy, em, options, glyphs);
         },
         BoxKind::Reflected { child } => {
-            svg.push_str(r#"<g transform="translate("#);
-            push_f3(svg, x + layout.width * em);
-            svg.push_str(",0) scale(-1,1)>");
+            super::emit::open_reflected_group(svg, x + layout.width * em);
             emit_box_embedded(
                 svg,
                 &child.layout,
@@ -966,9 +964,7 @@ fn emit_box_arena_embedded(
             emit_box_arena_embedded(svg, arena, *child, x + padding * em, y, em, options, glyphs);
         },
         ArenaBoxKind::Reflected { child } => {
-            svg.push_str(r#"<g transform="translate("#);
-            push_f3(svg, x + layout.width * em);
-            svg.push_str(",0) scale(-1,1)>");
+            super::emit::open_reflected_group(svg, x + layout.width * em);
             emit_box_arena_embedded(svg, arena, *child, 0.0, y, em, options, glyphs);
             svg.push_str("</g>");
         },

@@ -3,6 +3,13 @@ use super::RenderOptions;
 use super::fonts_registry::FontId;
 use super::layout::{BoxKind, LayoutBox};
 
+/// Mirror local x coordinates about the right edge of the layout box.
+pub(super) fn open_reflected_group(svg: &mut String, right_edge: f64) {
+    svg.push_str(r#"<g transform="translate("#);
+    push_f3(svg, right_edge);
+    svg.push_str(r#",0) scale(-1,1)">"#);
+}
+
 /// Write an XML-escaped version of `s` directly into a `String` buffer.
 /// Maps `<`, `>`, `&`, `"`, `'` to their entities to prevent attribute
 /// injection, while avoiding the `std::fmt` machinery entirely.
@@ -628,9 +635,7 @@ fn emit_box(
             emit_box(svg, &child.layout, cx, cy, em, attrs);
         },
         BoxKind::Reflected { child } => {
-            svg.push_str(r#"<g transform="translate("#);
-            push_f3(svg, x + layout.width * em);
-            svg.push_str(",0) scale(-1,1)>");
+            open_reflected_group(svg, x + layout.width * em);
             emit_box(
                 svg,
                 &child.layout,
@@ -1001,9 +1006,7 @@ fn emit_box_arena(
             emit_box_arena(svg, arena, *child, x + padding * em, y, em, attrs);
         },
         ArenaBoxKind::Reflected { child } => {
-            svg.push_str(r#"<g transform="translate("#);
-            push_f3(svg, x + layout.width * em);
-            svg.push_str(",0) scale(-1,1)>");
+            open_reflected_group(svg, x + layout.width * em);
             emit_box_arena(svg, arena, *child, 0.0, y, em, attrs);
             svg.push_str("</g>");
         },
