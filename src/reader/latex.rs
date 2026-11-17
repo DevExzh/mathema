@@ -168,6 +168,28 @@ mod tests {
     }
 
     #[test]
+    fn emphasis_toggles_slant_and_preserves_the_surrounding_weight() {
+        for (input, equivalent) in [
+            (
+                r"\emph{one \emph{two} three}",
+                r"\textit{one \textup{two} three}",
+            ),
+            (
+                r"\textit{\emph{a\emph{b}}}",
+                r"\textit{\textup{a\textit{b}}}",
+            ),
+            (
+                r"\textsf{\textbf{\emph{x}\textmd{y}}}",
+                r"\textsf{\textbf{\textit{x}}y}",
+            ),
+        ] {
+            assert_eq!(parse(input), parse(equivalent), "{input}");
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            assert_eq!(parse(&first), parse(input), "{first}");
+        }
+    }
+
+    #[test]
     fn mathbb_command() {
         let node = parse_one("\\mathbb{R}");
         assert!(matches!(node, MathNode::Styled(TextStyle::DoubleStruck, _)));

@@ -43,10 +43,12 @@ fn text_style(name: &str) -> Option<crate::ast::TextStyle> {
     use crate::ast::TextStyle;
     Some(match name {
         "textbf" => TextStyle::Bold,
-        "textit" => TextStyle::Italic,
+        "textit" | "emph" => TextStyle::Italic,
         "texttt" => TextStyle::Monospace,
         "textsf" => TextStyle::SansSerif,
-        "text" | "textrm" | "textnormal" | "textup" | "mbox" | "hbox" => TextStyle::Normal,
+        "text" | "textrm" | "textnormal" | "textup" | "textmd" | "mbox" | "hbox" => {
+            TextStyle::Normal
+        },
         _ => return None,
     })
 }
