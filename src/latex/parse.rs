@@ -3091,16 +3091,7 @@ impl LatexCompactParser {
                     }),
                 ))
             },
-            "reflectbox" | "mathreflectbox" => {
-                let (input, content) = self.parse_required_group(input)?;
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Reflect {
-                        content,
-                        text_mode: name == "reflectbox",
-                    }),
-                ))
-            },
+            "reflectbox" | "mathreflectbox" => self.parse_reflect(input, name == "reflectbox"),
             "cancel" => self.parse_cancel(input, StrokeKind::Forward),
             "bcancel" => self.parse_cancel(input, StrokeKind::Backward),
             "xcancel" => self.parse_cancel(input, StrokeKind::Cross),
@@ -3769,6 +3760,15 @@ impl LatexCompactParser {
             },
             _ => id,
         }
+    }
+
+    fn parse_reflect<'a>(&mut self, input: &'a str, text_mode: bool) -> IResult<&'a str, NodeId> {
+        let (input, content) = self.parse_required_group(input)?;
+        Ok((
+            input,
+            self.arena
+                .push_node(CompactNode::Reflect { content, text_mode }),
+        ))
     }
 
     /// Parse a single unbraced TeX token: one letter, one digit, one symbol, or a command.
