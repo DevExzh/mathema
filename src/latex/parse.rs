@@ -46,16 +46,12 @@ fn skip_horizontal_ws_bytes(input: &[u8]) -> usize {
         .unwrap_or(input.len())
 }
 
-/// Trim leading/trailing whitespace like `str::trim`, but keep a single trailing
-/// whitespace character when it immediately follows a backslash. This prevents
-/// destroying backslash-space commands such as `\ ` or `\\ ` during trimming.
+/// Trim leading/trailing ASCII whitespace like `str::trim`, but keep a single
+/// trailing whitespace character when it immediately follows a backslash. This
+/// prevents destroying backslash-space commands such as `\ ` or `\\ ` during
+/// trimming. Non-ASCII spaces are literal math characters, not source spacing.
 fn trim_latex_input(input: &str) -> &str {
-    let start = input
-        .char_indices()
-        .find(|(_, c)| !c.is_whitespace())
-        .map(|(i, _)| i)
-        .unwrap_or(input.len());
-    let trimmed_start = &input[start..];
+    let trimmed_start = input.trim_start_matches(|c: char| c.is_ascii_whitespace());
 
     let mut end = trimmed_start.len();
     while end > 0 {
@@ -70,6 +66,23 @@ fn trim_latex_input(input: &str) -> &str {
         end -= 1;
     }
     &trimmed_start[..end]
+}
+
+/// Width in em of a fixed-width Unicode math space.
+pub(crate) fn math_space_width(ch: char) -> Option<Rational> {
+    let (num, den) = match ch {
+        '\u{00A0}' => (1, 4),
+        '\u{2000}' | '\u{2002}' => (1, 2),
+        '\u{2001}' | '\u{2003}' | '\u{3000}' => (1, 1),
+        '\u{2004}' => (1, 3),
+        // Keep the MathML thick-math-space convention used by the OMML reader.
+        '\u{2005}' => (5, 18),
+        '\u{2006}' | '\u{2009}' | '\u{202F}' => (1, 6),
+        '\u{200A}' => (1, 18),
+        '\u{205F}' => (2, 9),
+        _ => return None,
+    };
+    Some(Rational::new(num, den))
 }
 
 /// Byte table of ASCII characters that are recognized as symbol tokens.
@@ -2478,10 +2491,17 @@ impl LatexCompactParser {
                         .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
                 ))
             },
-            // Non-ASCII: Unicode letters → identifiers, other → symbols
+            // Non-ASCII: math spaces → explicit widths, letters → identifiers,
+            // other characters → symbols
             Some(&b) if b > 127 => {
                 let ch = input.chars().next().unwrap();
                 let len = ch.len_utf8();
+                if let Some(width) = math_space_width(ch) {
+                    return Ok((
+                        &input[len..],
+                        self.arena.push_node(CompactNode::Space(width)),
+                    ));
+                }
                 let sid = self.arena.push_str(&input[..len]);
                 if ch.is_alphabetic() {
                     Ok((
@@ -4346,6 +4366,11 @@ impl LatexCompactParser {
         } else if let Some(r) = rest.strip_prefix("pt") {
             (r, value * 0.1) // 1pt ~ 0.1em at 10pt base
         } else if let Some(r) = rest.strip_prefix("mu") {
+            if !num_str.contains('.')
+                && let Ok(mu) = num_str.parse::<i32>()
+            {
+                return Ok((r, Rational::new(mu, 18)));
+            }
             (r, value / 18.0) // 1mu = 1/18 em
         } else if let Some(r) = rest.strip_prefix("mm") {
             (r, value * 0.284) // approximate

@@ -477,9 +477,60 @@ fn write_idotsint(buf: &mut String) {
     buf.push_str("\\idotsint");
 }
 
+#[derive(Clone, Copy)]
+enum MathLeafKind {
+    Number,
+    Identifier,
+    Symbol(SymbolKind),
+}
+
+fn write_leaf_with_math_spaces(buf: &mut String, s: &str, kind: MathLeafKind) -> bool {
+    let Some((first_space, _)) = s
+        .char_indices()
+        .find(|&(_, ch)| crate::latex::parse::math_space_width(ch).is_some())
+    else {
+        return false;
+    };
+
+    // Keep contiguous non-space runs intact. A run may be a multi-character
+    // operator (for example `lim`) or identifier; splitting it into one AST
+    // node per character loses that information and allocates unnecessarily.
+    let mut segment_start = 0;
+    for (index, ch) in s
+        .char_indices()
+        .skip_while(|&(index, _)| index < first_space)
+    {
+        let Some(width) = crate::latex::parse::math_space_width(ch) else {
+            continue;
+        };
+        if segment_start < index {
+            write_math_leaf_segment(buf, &s[segment_start..index], kind);
+        }
+        write_space(buf, width);
+        segment_start = index + ch.len_utf8();
+    }
+    if segment_start < s.len() {
+        write_math_leaf_segment(buf, &s[segment_start..], kind);
+    }
+    true
+}
+
+fn write_math_leaf_segment(buf: &mut String, s: &str, kind: MathLeafKind) {
+    match kind {
+        MathLeafKind::Number => buf.push_str(s),
+        MathLeafKind::Identifier => write_identifier_text(buf, s),
+        MathLeafKind::Symbol(symbol_kind) => write_symbol_text(buf, symbol_kind, s),
+    }
+}
+
 fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
-        CompactNode::Number(sid) => buf.push_str(arena.str_val(sid)),
+        CompactNode::Number(sid) => {
+            let s = arena.str_val(sid);
+            if !write_leaf_with_math_spaces(buf, s, MathLeafKind::Number) {
+                buf.push_str(s);
+            }
+        },
 
         CompactNode::Identifier(sid) => write_identifier(buf, arena, sid),
 
@@ -1161,10 +1212,30 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
 #[inline]
 fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
     let s = arena.str_val(sid);
-    let ch = s.chars().next().unwrap_or('?');
-    if let Some(cmd) = unicode_to_latex(ch) {
+    if write_leaf_with_math_spaces(buf, s, MathLeafKind::Identifier) {
+        return;
+    }
+    write_identifier_text(buf, s);
+}
+
+fn write_identifier_text(buf: &mut String, s: &str) {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return;
+    };
+    if let Some(cmd) = unicode_to_latex(first) {
         buf.push('\\');
         buf.push_str(cmd);
+        let tail = chars.as_str();
+        if !tail.is_empty() {
+            // A command name consumes following ASCII letters. A literal
+            // source space terminates it and is ignored by the math parser,
+            // keeping the output stable when the identifier is reparsed.
+            if tail.as_bytes().first().is_some_and(u8::is_ascii_alphabetic) {
+                buf.push(' ');
+            }
+            buf.push_str(tail);
+        }
     } else {
         buf.push_str(s);
     }
@@ -1230,6 +1301,13 @@ fn write_operator_name(buf: &mut String, name: &str, limits_above_below: bool) {
 
 fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
     let s = arena.str_val(sid);
+    if write_leaf_with_math_spaces(buf, s, MathLeafKind::Symbol(kind)) {
+        return;
+    }
+    write_symbol_text(buf, kind, s);
+}
+
+fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
     let ch = s.chars().next().unwrap_or('?');
     // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064 INVISIBLE
     // PLUS) have no glyph or width in LaTeX. Emit an empty ordinary atom
@@ -1308,7 +1386,9 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
 fn write_space(buf: &mut String, r: Rational) {
     // Use exact Rational matching for all known LaTeX spacing commands
     // to ensure round-trip idempotency.
-    if r == Rational::new(-3, 18) {
+    if r == Rational::new(1, 18) {
+        buf.push_str("\\mkern1mu ");
+    } else if r == Rational::new(-3, 18) {
         buf.push_str("\\!");
     } else if r == Rational::new(-4, 18) {
         buf.push_str("\\negmedspace ");
@@ -1320,6 +1400,8 @@ fn write_space(buf: &mut String, r: Rational) {
         buf.push_str("\\:");
     } else if r == Rational::new(5, 18) {
         buf.push_str("\\;");
+    } else if r == Rational::new(1, 3) {
+        buf.push_str("\\mkern6mu ");
     } else if r == Rational::new(1, 4) {
         buf.push_str("\\ ");
     } else if r == Rational::new(1, 2) {
@@ -1695,6 +1777,24 @@ mod tests {
         LatexWriter::write(&parsed.expr, &config).unwrap()
     }
 
+    fn math_space_cases() -> [(char, &'static str, Rational); 13] {
+        [
+            ('\u{00A0}', r"\ ", Rational::new(1, 4)),
+            ('\u{2000}', r"\enspace ", Rational::new(1, 2)),
+            ('\u{2001}', r"\quad ", Rational::new(1, 1)),
+            ('\u{2002}', r"\enspace ", Rational::new(1, 2)),
+            ('\u{2003}', r"\quad ", Rational::new(1, 1)),
+            ('\u{2004}', r"\mkern6mu ", Rational::new(1, 3)),
+            ('\u{2005}', r"\;", Rational::new(5, 18)),
+            ('\u{2006}', r"\,", Rational::new(1, 6)),
+            ('\u{2009}', r"\,", Rational::new(1, 6)),
+            ('\u{200A}', r"\mkern1mu ", Rational::new(1, 18)),
+            ('\u{202F}', r"\,", Rational::new(1, 6)),
+            ('\u{205F}', r"\:", Rational::new(2, 9)),
+            ('\u{3000}', r"\quad ", Rational::new(1, 1)),
+        ]
+    }
+
     #[test]
     fn number() {
         assert_eq!(roundtrip("42"), "42");
@@ -1824,6 +1924,159 @@ mod tests {
         // Scripts on an invisible atom must not attach to the preceding
         // identifier when the output is parsed again.
         assert_eq!(roundtrip("A\u{2062}^2"), r"A{\mathord{}}^{2}");
+    }
+
+    #[test]
+    fn unicode_math_spaces_use_exact_stable_latex_spacing() {
+        let config = Config::default();
+        for &(space, command, width) in math_space_cases().iter() {
+            let raw = MathExpr::inline(vec![MathNode::Symbol(
+                SymbolKind::Ordinary,
+                space.to_string(),
+            )]);
+            assert_eq!(LatexWriter::write(&raw, &config).unwrap(), command);
+
+            // The empty `$` prefix writes no content, leaving the space first in
+            // the output where raw Unicode whitespace was previously trimmed.
+            let first = roundtrip(&format!("${space}-"));
+            assert_eq!(first, format!("{command}-"), "space: {space:?}");
+
+            let parsed = LatexReader::parse(&first, &config).unwrap();
+            assert_eq!(
+                parsed.expr.nodes.first(),
+                Some(&MathNode::Space(width)),
+                "space width changed: {space:?}"
+            );
+            assert_eq!(roundtrip(&first), first, "space: {space:?}");
+
+            // A binary operator before the space must not add a separator on
+            // only the first pass.
+            let parsed = LatexReader::parse(&format!("-{space}"), &config).unwrap();
+            assert_eq!(parsed.expr.nodes.len(), 2, "{:?}", parsed.expr.nodes);
+            assert_eq!(
+                parsed.expr.nodes.last(),
+                Some(&MathNode::Space(width)),
+                "literal space was not classified: {space:?}"
+            );
+            let trailing = roundtrip(&format!("-{space}"));
+            assert_eq!(trailing, format!("-{command}"), "space: {space:?}");
+            assert_eq!(roundtrip(&trailing), trailing, "space: {space:?}");
+        }
+    }
+
+    #[test]
+    fn mathml_embedded_unicode_math_spaces_are_stable_in_math_leaves() {
+        for &(space, command, _) in math_space_cases().iter() {
+            for (tag, before, after) in [("mo", "𝔸", "𝔹"), ("mi", "𝔸", "𝔹"), ("mn", "1", "2")]
+            {
+                let cases = [
+                    (
+                        format!("{before}{space}{after}"),
+                        format!("{before}{command}{after}"),
+                    ),
+                    (
+                        format!("{before}{space}{space}{after}"),
+                        format!("{before}{command}{command}{after}"),
+                    ),
+                ];
+                for (content, expected) in cases {
+                    let input = format!("<math><{tag}>{content}</{tag}></math>");
+                    let first = crate::convert(&input, crate::Format::MathML, crate::Format::LaTeX)
+                        .unwrap();
+                    assert_eq!(first, expected, "{tag} space: {space:?}");
+                    let second =
+                        crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+                    assert_eq!(second, first, "{tag} space: {space:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_math_leaf_runs_keep_operator_and_identifier_semantics() {
+        let cases = [
+            (
+                "<math><mo>lim\u{2004}sup</mo></math>",
+                r"\lim\mkern6mu \sup",
+            ),
+            (
+                "<math><mi>α\u{2004}beta</mi></math>",
+                r"\alpha\mkern6mu beta",
+            ),
+            ("<math><mi>αx</mi></math>", r"\alpha x"),
+        ];
+        for (input, expected) in cases {
+            let first = crate::convert(input, crate::Format::MathML, crate::Format::LaTeX)
+                .expect("MathML input should convert");
+            assert_eq!(first, expected, "input: {input}");
+            let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX)
+                .expect("LaTeX output should reparse");
+            assert_eq!(second, first, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn embedded_math_space_edges_are_stable_in_ast_leaves() {
+        let command = r"\mkern6mu ";
+        let cases = [
+            (
+                MathNode::Symbol(
+                    SymbolKind::Ordinary,
+                    "\u{2004}𝔸\u{2004}\u{2004}𝔹\u{2004}".into(),
+                ),
+                format!("{command}𝔸{command}{command}𝔹{command}"),
+            ),
+            (
+                MathNode::Identifier("\u{2004}𝔸\u{2004}\u{2004}𝔹\u{2004}".into()),
+                format!("{command}𝔸{command}{command}𝔹{command}"),
+            ),
+            (
+                MathNode::Number("\u{2004}1\u{2004}\u{2004}2\u{2004}".into()),
+                format!("{command}1{command}{command}2{command}"),
+            ),
+        ];
+        let config = Config::default();
+        for (node, expected) in cases {
+            let first = LatexWriter::write(&MathExpr::inline(vec![node]), &config).unwrap();
+            assert_eq!(first, expected);
+            let second =
+                crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+            assert_eq!(second, first);
+        }
+    }
+
+    #[test]
+    fn font_relative_unicode_spaces_remain_literal_and_stable() {
+        for space in ['\u{2007}', '\u{2008}'] {
+            let first = roundtrip(&format!("${space}-"));
+            assert_eq!(first, format!("{space}-"), "space: {space:?}");
+            assert_eq!(roundtrip(&first), first, "space: {space:?}");
+
+            for (tag, before, after) in [("mo", "𝔸", "𝔹"), ("mi", "𝔸", "𝔹"), ("mn", "1", "2")]
+            {
+                let content = format!("{before}{space}{space}{after}");
+                let input = format!("<math><{tag}>{content}</{tag}></math>");
+                let first =
+                    crate::convert(&input, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+                assert_eq!(first, content, "{tag} space: {space:?}");
+                let second =
+                    crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+                assert_eq!(second, first, "{tag} space: {space:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn text_mode_math_spaces_are_not_split() {
+        let first = crate::convert(
+            "<math><mtext>𝔸\u{2004}𝔹</mtext></math>",
+            crate::Format::MathML,
+            crate::Format::LaTeX,
+        )
+        .unwrap();
+        assert_eq!(first, "\\text{𝔸\u{2004}𝔹}");
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(second, first);
     }
 
     #[test]
