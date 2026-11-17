@@ -320,6 +320,114 @@ fn nary_body_boundaries_allow_missing_bodies_and_propagate_errors() {
 }
 
 #[test]
+fn middle_large_operator_delimiters_remain_scalar() {
+    let config = Config::default();
+    for command in [
+        "sum",
+        "prod",
+        "coprod",
+        "int",
+        "iint",
+        "iiint",
+        "iiiint",
+        "oint",
+        "oiint",
+        "oiiint",
+        "ointctrclockwise",
+        "varointclockwise",
+        "bigwedge",
+        "bigvee",
+        "bigcap",
+        "bigcup",
+        "bigodot",
+        "bigoplus",
+        "bigotimes",
+        "biguplus",
+        "bigsqcup",
+    ] {
+        let input = format!(r"\middle\{command} t'ene");
+        let mut parsed = LatexReader::parse_compact(&input, &config).unwrap();
+        normalize_compact_expr(&mut parsed.expr).unwrap();
+        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+        assert!(
+            first.starts_with("\\mathord{"),
+            "scalar large operator lost its ordinary class: {first:?}"
+        );
+
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+        normalize_compact_expr(&mut reparsed.expr).unwrap();
+        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        assert_eq!(first, second, "scalar middle operator changed: {input:?}");
+    }
+
+    let fenced = r"\left(a\middle\int t\right)";
+    let mut parsed = LatexReader::parse_compact(fenced, &config).unwrap();
+    normalize_compact_expr(&mut parsed.expr).unwrap();
+    let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+    let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+    normalize_compact_expr(&mut reparsed.expr).unwrap();
+    let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+    assert!(
+        first.contains(r"\middle") && first.contains('∫'),
+        "fenced middle delimiter lost: {first:?}"
+    );
+    assert_eq!(first, second, "fenced middle delimiter changed");
+
+    let real = r"\int t'ene";
+    let mut parsed = LatexReader::parse_compact(real, &config).unwrap();
+    normalize_compact_expr(&mut parsed.expr).unwrap();
+    let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+    let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+    normalize_compact_expr(&mut reparsed.expr).unwrap();
+    let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+    assert_eq!(first, second, "real n-ary body changed");
+
+    let mathml = crate::convert(
+        "<math><mo>∫</mo><mi>t</mi></math>",
+        crate::Format::MathML,
+        crate::Format::LaTeX,
+    )
+    .unwrap();
+    assert!(
+        mathml == "\\int t",
+        "MathML large operator should remain a real integral: {mathml:?}"
+    );
+    assert_eq!(
+        crate::convert(&mathml, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+        mathml
+    );
+
+    let direct = crate::ast::MathExpr::inline(vec![
+        crate::ast::MathNode::Nary {
+            op: '∫',
+            sub: None,
+            sup: None,
+            body: Box::new(crate::ast::MathNode::Row(Vec::new())),
+            limits: crate::ast::LimitStyle::Default,
+        },
+        crate::ast::MathNode::Superscript {
+            base: Box::new(crate::ast::MathNode::Identifier("t".into())),
+            sup: Box::new(crate::ast::MathNode::Symbol(
+                crate::ast::SymbolKind::Ordinary,
+                "′".into(),
+            )),
+        },
+        crate::ast::MathNode::Identifier("ene".into()),
+    ]);
+    let direct_latex = LatexWriter::write(&direct, &config).unwrap();
+    assert!(
+        direct_latex.starts_with("\\int{}"),
+        "explicit empty operator lost its body boundary: {direct_latex:?}"
+    );
+    let mut reparsed = LatexReader::parse_compact(&direct_latex, &config).unwrap();
+    normalize_compact_expr(&mut reparsed.expr).unwrap();
+    assert_eq!(
+        LatexWriter::write_compact(&reparsed.expr, &config).unwrap(),
+        direct_latex
+    );
+}
+
+#[test]
 fn round_trip_spacing() {
     let config = Config::default();
     let cases = [

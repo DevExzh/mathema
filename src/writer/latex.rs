@@ -1321,6 +1321,19 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
         buf.push_str("\\mathord{}");
         return;
     }
+    // A scalar large-operator glyph represented as an ordinary symbol can
+    // come from a middle delimiter or an imported/direct AST. Emit an
+    // explicit ordinary atom so the LaTeX command cannot be reparsed as an
+    // n-ary operator that absorbs the following element as its body.
+    if kind == SymbolKind::Ordinary
+        && let Some(cmd) = nary_op_to_latex(ch)
+    {
+        buf.push_str("\\mathord{");
+        buf.push('\\');
+        buf.push_str(cmd);
+        buf.push('}');
+        return;
+    }
     // A word such as `<mo>lim</mo>` is a function name: `\lim` when LaTeX
     // has the command, else `\operatorname{…}` (writing only its first
     // letter would lose the rest).
