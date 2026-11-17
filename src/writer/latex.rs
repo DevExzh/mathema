@@ -22,11 +22,16 @@ impl Writer for LatexWriter {
 }
 
 fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
-    write_node_slice(buf, arena, arena.children(span));
+    write_node_slice(buf, arena, arena.children(span), false);
 }
 
 /// Write a sequence of sibling nodes (see `write_nodes`).
-fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
+fn write_node_slice(
+    buf: &mut String,
+    arena: &AstArena,
+    children: &[NodeId],
+    mut ends_with_command: bool,
+) {
     let mut i = 0;
     while i < children.len() {
         let id = children[i];
@@ -36,7 +41,10 @@ fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
         // stays a separate atom and remains stable across round-trips.
         if is_script_with_empty_base(arena, id) {
             let next = children.get(i + 1).copied();
+            let output_start = buf.len();
             write_standalone_empty_base_script(buf, arena, id, next);
+            ends_with_command =
+                appended_ends_with_letter_command(buf, output_start, ends_with_command);
             i += 1;
             continue;
         }
@@ -50,10 +58,10 @@ fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
             && i + 1 == children.len() - 1
             && is_script_with_empty_base(arena, children[i + 1])
         {
+            let output_start = buf.len();
             if i > 0 {
                 let space = needs_space(arena, children.get(i - 1).copied(), id)
-                    || (buf_ends_with_letter_command(buf)
-                        && node_starts_with_ascii_letter(arena, id));
+                    || (ends_with_command && node_starts_with_ascii_letter(arena, id));
                 if space {
                     buf.push(' ');
                 }
@@ -77,6 +85,8 @@ fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
                 write_node(buf, arena, id);
                 write_standalone_empty_base_script(buf, arena, script_id, next);
             }
+            ends_with_command =
+                appended_ends_with_letter_command(buf, output_start, ends_with_command);
             i += 2;
             continue;
         }
@@ -85,19 +95,22 @@ fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
         // command. Writing it as separate \int\cdots\int nodes is not stable
         // because the first \int greedily absorbs the \cdots as its body.
         if i + 3 <= children.len() && is_idotsint_triple(arena, &children[i..i + 3]) {
+            let output_start = buf.len();
             if i > 0 {
                 let space = needs_space(arena, children.get(i - 1).copied(), children[i])
-                    || (buf_ends_with_letter_command(buf)
-                        && node_starts_with_ascii_letter(arena, children[i]));
+                    || (ends_with_command && node_starts_with_ascii_letter(arena, children[i]));
                 if space {
                     buf.push(' ');
                 }
             }
             write_idotsint(buf);
+            ends_with_command =
+                appended_ends_with_letter_command(buf, output_start, ends_with_command);
             i += 3;
             continue;
         }
 
+        let output_start = buf.len();
         if i > 0 {
             // A leading-script group is always set off by a space, so that the
             // spacing does not depend on how the node before is classified
@@ -105,7 +118,7 @@ fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
             let space = needs_space(arena, children.get(i - 1).copied(), id)
                 || (matches!(*arena.node(id), CompactNode::PreScripts { .. })
                     && !buf.ends_with(' '))
-                || (buf_ends_with_letter_command(buf) && node_starts_with_ascii_letter(arena, id));
+                || (ends_with_command && node_starts_with_ascii_letter(arena, id));
             if space {
                 buf.push(' ');
             }
@@ -125,6 +138,7 @@ fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
                 buf.push_str("{}");
             }
         }
+        ends_with_command = appended_ends_with_letter_command(buf, output_start, ends_with_command);
         i += 1;
     }
 }
@@ -364,21 +378,28 @@ fn is_script_with_empty_base(arena: &AstArena, id: NodeId) -> bool {
     is_empty_script_base(arena, base)
 }
 
-/// Check if the buffer ends with a `\command` pattern (backslash followed by ASCII letters).
-/// This detects cases where appending an ASCII letter would extend the command name.
-fn buf_ends_with_letter_command(buf: &str) -> bool {
-    let bytes = buf.as_bytes();
-    let len = bytes.len();
-    if len == 0 {
+/// Update the control-word state after a writer operation appended to `buf`.
+/// The scan is restricted to the newly appended suffix. A plain identifier
+/// run therefore carries the previous state in constant time instead of
+/// rescanning the whole row at every sibling boundary.
+#[inline]
+fn appended_ends_with_letter_command(buf: &str, start: usize, previous: bool) -> bool {
+    if buf.len() == start {
+        return previous;
+    }
+    let bytes = &buf.as_bytes()[start..];
+    if !bytes.last().is_some_and(|byte| byte.is_ascii_alphabetic()) {
         return false;
     }
-    // Scan backwards past ASCII letters
-    let mut i = len;
+    let mut i = bytes.len();
     while i > 0 && bytes[i - 1].is_ascii_alphabetic() {
         i -= 1;
     }
-    // Must have at least one letter, preceded by '\'
-    i < len && i > 0 && bytes[i - 1] == b'\\'
+    if i == 0 {
+        previous
+    } else {
+        bytes[i - 1] == b'\\'
+    }
 }
 
 /// Check if a node's first written character would be a plain ASCII letter.
@@ -594,23 +615,26 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("\\left");
             write_delim(buf, open_str);
             buf.push(' ');
+            let mut ends_with_command = false;
             for &child_id in content_ids {
                 match *arena.node(child_id) {
                     CompactNode::Middle(sid) => {
                         buf.push_str(" \\middle");
                         write_delim(buf, arena.str_val(sid));
                         buf.push(' ');
+                        ends_with_command = false;
                     },
                     _ => {
                         // A command delimiter at the end of the previous child
                         // (e.g. an inner \right\rangle) would merge with a
                         // following plain letter. Insert a separator when needed.
-                        if buf_ends_with_letter_command(buf)
-                            && node_starts_with_ascii_letter(arena, child_id)
-                        {
+                        if ends_with_command && node_starts_with_ascii_letter(arena, child_id) {
                             buf.push(' ');
                         }
+                        let output_start = buf.len();
                         write_node(buf, arena, child_id);
+                        ends_with_command =
+                            appended_ends_with_letter_command(buf, output_start, ends_with_command);
                     },
                 }
             }
@@ -703,7 +727,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             // so that its own scripts are braced as there.
             match *arena.node(base) {
                 CompactNode::Row(span) => write_nodes(buf, arena, span),
-                _ => write_node_slice(buf, arena, &[base]),
+                _ => write_node_slice(buf, arena, &[base], false),
             }
             buf.push('}');
         },
@@ -2070,6 +2094,25 @@ mod tests {
             let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX)
                 .expect("LaTeX output should reparse");
             assert_eq!(second, first, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn control_word_boundaries_survive_empty_and_nested_rows() {
+        let cases = [
+            "<math><mrow><mi>α</mi><mrow></mrow><mi>a</mi><mi>b</mi></mrow></math>",
+            "<math><mfenced><mi>α</mi><mrow><mi>a</mi><mi>b</mi></mrow></mfenced></math>",
+        ];
+        for input in cases {
+            let first = crate::convert(input, crate::Format::MathML, crate::Format::LaTeX)
+                .expect("MathML input should convert");
+            let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX)
+                .expect("LaTeX output should reparse");
+            assert_eq!(first, second, "control-word boundary changed for {input}");
+            assert!(
+                first.contains(r"\alpha a"),
+                "missing separator in {first:?}"
+            );
         }
     }
 
