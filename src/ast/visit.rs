@@ -133,6 +133,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
         | MathNode::Actuarial(inner) => {
             v.visit_node(inner);
         },
+        MathNode::Reflect { content: inner, .. } => v.visit_node(inner),
         MathNode::Cancel { content, .. } => {
             v.visit_node(content);
         },
@@ -291,6 +292,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
         | MathNode::Actuarial(inner) => {
             v.visit_node_mut(inner);
         },
+        MathNode::Reflect { content: inner, .. } => v.visit_node_mut(inner),
         MathNode::Cancel { content, .. } => {
             v.visit_node_mut(content);
         },
@@ -450,6 +452,7 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         | CompactNode::Actuarial(inner) => {
             v.visit_node(arena, inner);
         },
+        CompactNode::Reflect { content: inner, .. } => v.visit_node(arena, inner),
         CompactNode::Cancel { content, .. }
         | CompactNode::Scaled { content, .. }
         | CompactNode::RaiseBox { content, .. } => {
@@ -603,6 +606,7 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
         | CompactNode::Actuarial(inner) => {
             v.visit_node_mut(arena, inner);
         },
+        CompactNode::Reflect { content: inner, .. } => v.visit_node_mut(arena, inner),
         CompactNode::Cancel { content, .. }
         | CompactNode::Scaled { content, .. }
         | CompactNode::RaiseBox { content, .. } => {

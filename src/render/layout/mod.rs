@@ -80,6 +80,8 @@ pub enum BoxKind {
         bg_color: Option<String>,
         border_color: Option<String>,
     },
+    /// Child reflected horizontally around its centerline.
+    Reflected { child: Box<PositionedBox> },
     /// A run of text characters rendered as a single `<text>` element.
     TextRun {
         text: String,
@@ -538,6 +540,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             add_jot,
         } => layout_array(columns, rows, *arraystretch, *add_jot, ctx),
         MathNode::Phantom(content, kind) => layout_phantom(content, *kind, ctx),
+        MathNode::Reflect { content, text_mode } => layout_reflect(content, *text_mode, ctx),
         MathNode::Boxed {
             content,
             bg_color,
@@ -1371,6 +1374,10 @@ fn layout_node_arena(
             ctx,
         ),
         CompactNode::Phantom(inner, kind) => layout_phantom_arena(ast, inner, kind, arena, ctx),
+        CompactNode::Reflect {
+            content: inner,
+            text_mode,
+        } => layout_reflect_arena(ast, inner, text_mode, arena, ctx),
         CompactNode::Boxed {
             content: inner,
             bg_color,

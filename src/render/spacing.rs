@@ -68,6 +68,7 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
         MathNode::Accent { base, .. } => classify_node_depth(base, depth + 1),
         MathNode::Array { .. } => AtomType::Inner,
         MathNode::Phantom(_, _) => AtomType::Ord,
+        MathNode::Reflect { .. } => AtomType::Ord,
         MathNode::Boxed { .. } | MathNode::Actuarial(_) => AtomType::Inner,
         MathNode::Cancel { content, .. } => classify_node_depth(content, depth + 1),
         MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
@@ -134,6 +135,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
         CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, depth + 1),
         CompactNode::Array { .. } => AtomType::Inner,
         CompactNode::Phantom(..) => AtomType::Ord,
+        CompactNode::Reflect { .. } => AtomType::Ord,
         CompactNode::Boxed { .. } | CompactNode::Actuarial(_) => AtomType::Inner,
         CompactNode::Cancel { content, .. } => classify_node_c_depth(arena, content, depth + 1),
         CompactNode::Scaled { content, .. } => classify_node_c_depth(arena, content, depth + 1),

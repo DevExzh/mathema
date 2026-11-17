@@ -109,6 +109,23 @@ pub(super) fn layout_actuarial(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox
     }
 }
 
+pub(super) fn layout_reflect(content: &MathNode, text_mode: bool, ctx: &LayoutCtx) -> LayoutBox {
+    let inner = if text_mode {
+        let styled = MathNode::Styled(TextStyle::Normal, vec![content.clone()]);
+        layout_node(&styled, ctx)
+    } else {
+        layout_node(content, ctx)
+    };
+    LayoutBox {
+        width: inner.width,
+        height: inner.height,
+        depth: inner.depth,
+        kind: BoxKind::Reflected {
+            child: Box::new(PositionedBox::at_origin(inner)),
+        },
+    }
+}
+
 /// Build the stroke `<path>` data for a `\cancel`/`\bcancel`/`\xcancel`/`\sout`
 /// strike, rounded to the minimal coordinate precision via [`PathWriter`].
 /// Shared by the heap and arena cancel layouts.
@@ -525,6 +542,30 @@ pub(super) fn layout_scaled_arena(
     // Recursively scale all positions and dimensions in the subtree
     arena.scale_subtree(inner_id, f);
     inner_id
+}
+
+pub(super) fn layout_reflect_arena(
+    ast: &AstArena,
+    content: NodeId,
+    text_mode: bool,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let inner = layout_node_arena(ast, content, arena, ctx);
+    // Text-mode reflection uses an hbox in TeX. The AST has already retained
+    // the wrapper's mode for writers and MathML, while the arena layout keeps
+    // the same glyph metrics as the surrounding math for now.
+    let _ = text_mode;
+    let (width, height, depth) = {
+        let node = arena.get(inner);
+        (node.width, node.height, node.depth)
+    };
+    arena.alloc(ArenaLayoutBox {
+        width,
+        height,
+        depth,
+        kind: ArenaBoxKind::Reflected { child: inner },
+    })
 }
 
 pub(super) fn layout_styled_arena(

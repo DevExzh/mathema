@@ -180,6 +180,7 @@ fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
             let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
             (cmin.min(x), cmax.max(x + layout.width))
         },
+        BoxKind::Reflected { child } => compute_x_bounds(&child.layout, x + child.dx),
 
         // Invisible nodes contribute no visible content.
         BoxKind::Kern | BoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
@@ -587,6 +588,33 @@ fn emit_raster_box(
             let cy = y - child.dy * em;
             emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
         },
+        BoxKind::Reflected { child } => {
+            let width = (layout.width * em).ceil().max(1.0) as u32;
+            let height = ((layout.height + layout.depth) * em).ceil().max(1.0) as u32;
+            if let Some(mut reflected) = Pixmap::new(width, height) {
+                let baseline = layout.height * em;
+                emit_raster_box(
+                    &mut reflected,
+                    ctx,
+                    &child.layout,
+                    child.dx * em,
+                    baseline - child.dy * em,
+                );
+                let transform = Transform::from_translate(
+                    (x + layout.width * em) as f32,
+                    (y - layout.height * em) as f32,
+                )
+                .pre_scale(-1.0, 1.0);
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    reflected.as_ref(),
+                    &PixmapPaint::default(),
+                    transform,
+                    None,
+                );
+            }
+        },
     }
 }
 
@@ -853,6 +881,27 @@ fn emit_raster_box_arena(
             // Content — arena stores the child without a position offset, so we
             // apply the box padding here (heap version stored dx=padding).
             emit_raster_box_arena(pixmap, ctx, arena, *child, x + padding * em, y);
+        },
+        ArenaBoxKind::Reflected { child } => {
+            let width = (layout.width * em).ceil().max(1.0) as u32;
+            let height = ((layout.height + layout.depth) * em).ceil().max(1.0) as u32;
+            if let Some(mut reflected) = Pixmap::new(width, height) {
+                let baseline = layout.height * em;
+                emit_raster_box_arena(&mut reflected, ctx, arena, *child, 0.0, baseline);
+                let transform = Transform::from_translate(
+                    (x + layout.width * em) as f32,
+                    (y - layout.height * em) as f32,
+                )
+                .pre_scale(-1.0, 1.0);
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    reflected.as_ref(),
+                    &PixmapPaint::default(),
+                    transform,
+                    None,
+                );
+            }
         },
     }
 }

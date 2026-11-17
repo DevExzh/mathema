@@ -293,6 +293,13 @@ pub enum CompactNode {
     // ── Decorators ─────────────────────────────────────────────────
     /// Invisible (phantom) content occupying space per the given `PhantomKind`.
     Phantom(NodeId, PhantomKind),
+    /// Content reflected horizontally around its vertical centerline.
+    Reflect {
+        /// Reflected content.
+        content: NodeId,
+        /// Whether the wrapper uses LaTeX's text/hbox mode.
+        text_mode: bool,
+    },
     /// Boxed content, optionally with background and border colors.
     Boxed {
         /// The boxed inner expression.
@@ -713,6 +720,13 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             let inner_id = push_math_node(arena, inner);
             arena.push_node(CompactNode::Phantom(inner_id, *kind))
         },
+        MathNode::Reflect { content, text_mode } => {
+            let inner_id = push_math_node(arena, content);
+            arena.push_node(CompactNode::Reflect {
+                content: inner_id,
+                text_mode: *text_mode,
+            })
+        },
         MathNode::Boxed {
             content,
             bg_color,
@@ -994,6 +1008,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         CompactNode::Phantom(inner, kind) => {
             MathNode::Phantom(Box::new(reconstruct_node(arena, inner)), kind)
         },
+        CompactNode::Reflect { content, text_mode } => MathNode::Reflect {
+            content: Box::new(reconstruct_node(arena, content)),
+            text_mode,
+        },
         CompactNode::Boxed {
             content,
             bg_color,
@@ -1177,7 +1195,7 @@ mod tests {
     }
 
     #[test]
-    fn all_28_variants_constructible() {
+    fn all_variants_constructible() {
         let mut arena = AstArena::new();
         let s = arena.push_str("x");
         let id = arena.push_node(CompactNode::Identifier(s));
@@ -1261,6 +1279,10 @@ mod tests {
                 row_seps: 0,
             },
             CompactNode::Phantom(id, PhantomKind::Full),
+            CompactNode::Reflect {
+                content: id,
+                text_mode: false,
+            },
             CompactNode::Boxed {
                 content: id,
                 bg_color: s,
@@ -1282,7 +1304,7 @@ mod tests {
             CompactNode::Middle(s),
             CompactNode::ColAlign(ColumnAlign::Center),
         ];
-        assert_eq!(variants.len(), 29);
+        assert_eq!(variants.len(), 30);
     }
 
     /// Helper: round-trip a MathExpr through CompactExpr and assert equality.

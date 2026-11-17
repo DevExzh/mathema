@@ -973,6 +973,10 @@ impl<'a> Emitter<'a> {
                 self.loss("OMML output does not preserve math style or size switches")
             },
             CompactNode::ColAlign(_) => {},
+            CompactNode::Reflect { content, .. } => {
+                self.loss("OMML cannot represent horizontal reflection; the content was written");
+                self.node(content, fmt);
+            },
         }
     }
 

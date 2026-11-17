@@ -331,6 +331,42 @@ mod integration_tests {
         assert!(render_to_svg_standalone_compact_arena(&expr, &options, &mut arena).is_err());
         assert_eq!(arena.get(previous).width, 7.0);
     }
+
+    #[test]
+    fn reflected_svg_uses_horizontal_transform_and_preserves_width() {
+        use crate::reader::Reader;
+        let parsed = crate::reader::latex::LatexReader::parse_compact(
+            r"\mathreflectbox{xy^2}",
+            &Default::default(),
+        )
+        .unwrap();
+        let svg = render_to_svg_compact(&parsed.expr, &RenderOptions::default()).unwrap();
+        assert!(svg.contains("scale(-1,1)"));
+        assert!(svg.contains("translate("));
+        let plain =
+            crate::reader::latex::LatexReader::parse_compact("xy^2", &Default::default()).unwrap();
+        let plain_svg = render_to_svg_compact(&plain.expr, &RenderOptions::default()).unwrap();
+        let width = |s: &str| -> String {
+            s.split("width=\"")
+                .nth(1)
+                .and_then(|v| v.split('"').next())
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(width(&svg), width(&plain_svg));
+    }
+
+    #[test]
+    fn nested_reflections_emit_nested_transforms() {
+        use crate::reader::Reader;
+        let parsed = crate::reader::latex::LatexReader::parse_compact(
+            r"\mathreflectbox{\reflectbox{xy}}",
+            &Default::default(),
+        )
+        .unwrap();
+        let svg = render_to_svg_compact(&parsed.expr, &RenderOptions::default()).unwrap();
+        assert_eq!(svg.matches("scale(-1,1)").count(), 2);
+    }
 }
 
 #[cfg(all(test, feature = "render"))]

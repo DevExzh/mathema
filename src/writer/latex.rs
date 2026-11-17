@@ -988,6 +988,16 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push('}');
         },
 
+        CompactNode::Reflect { content, text_mode } => {
+            buf.push_str(if text_mode {
+                "\\reflectbox{"
+            } else {
+                "\\mathreflectbox{"
+            });
+            write_reflect_content(buf, arena, content);
+            buf.push('}');
+        },
+
         CompactNode::Cancel { stroke, content } => {
             let cmd = match stroke {
                 StrokeKind::Forward => "cancel",
@@ -1488,6 +1498,50 @@ fn write_actuarial_content(buf: &mut String, arena: &AstArena, content: NodeId) 
             }
         },
         _ => write_wrapped_content(buf, arena, content),
+    }
+}
+
+/// Write reflected math content with the wrapper's closing brace providing a
+/// safe token boundary. This keeps simple script arguments unbraced while
+/// retaining grouping for compound arguments.
+fn write_reflect_content(buf: &mut String, arena: &AstArena, content: NodeId) {
+    if let CompactNode::Row(span) = *arena.node(content) {
+        for &child in arena.children(span) {
+            write_reflect_node(buf, arena, child);
+        }
+    } else {
+        write_reflect_node(buf, arena, content);
+    }
+}
+
+fn write_reflect_node(buf: &mut String, arena: &AstArena, id: NodeId) {
+    match *arena.node(id) {
+        CompactNode::Superscript { base, sup } => {
+            write_script_base(buf, arena, base);
+            buf.push('^');
+            write_reflect_arg(buf, arena, sup);
+        },
+        CompactNode::Subscript { base, sub } => {
+            write_script_base(buf, arena, base);
+            buf.push('_');
+            write_reflect_arg(buf, arena, sub);
+        },
+        CompactNode::SubSup { base, sub, sup } => {
+            write_script_base(buf, arena, base);
+            buf.push('_');
+            write_reflect_arg(buf, arena, sub);
+            buf.push('^');
+            write_reflect_arg(buf, arena, sup);
+        },
+        _ => write_node(buf, arena, id),
+    }
+}
+
+fn write_reflect_arg(buf: &mut String, arena: &AstArena, id: NodeId) {
+    if is_simple_token(arena, id) {
+        write_node(buf, arena, id);
+    } else {
+        write_braced(buf, arena, id);
     }
 }
 
@@ -2344,5 +2398,38 @@ mod tests {
             first,
             crate::from_latex(&first).unwrap().to_latex().unwrap()
         );
+    }
+
+    #[test]
+    fn reflected_math_groups_have_stable_latex_spelling() {
+        for input in [r"\reflectbox{$x^2$}", r"\mathreflectbox{\frac{a}{b}}"] {
+            let first = roundtrip(input);
+            let command = if input.starts_with(r"\reflectbox") {
+                r"\reflectbox{"
+            } else {
+                r"\mathreflectbox{"
+            };
+            assert!(first.starts_with(command), "{first:?}");
+            assert_eq!(first, roundtrip(&first));
+        }
+    }
+
+    #[test]
+    fn reflected_modes_round_trip_through_mathml_metadata() {
+        for (input, mode, command) in [
+            (r"\reflectbox{abc}", "text", r"\reflectbox{"),
+            (r"\mathreflectbox{x^2}", "math", r"\mathreflectbox{"),
+        ] {
+            let mathml =
+                crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+            assert!(mathml.contains(&format!("data-mathema-reflect=\"{mode}\"")));
+            let latex =
+                crate::convert(&mathml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+            assert!(latex.starts_with(command), "{latex:?}");
+            assert_eq!(
+                latex,
+                crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap()
+            );
+        }
     }
 }

@@ -3091,6 +3091,16 @@ impl LatexCompactParser {
                     }),
                 ))
             },
+            "reflectbox" | "mathreflectbox" => {
+                let (input, content) = self.parse_required_group(input)?;
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Reflect {
+                        content,
+                        text_mode: name == "reflectbox",
+                    }),
+                ))
+            },
             "cancel" => self.parse_cancel(input, StrokeKind::Forward),
             "bcancel" => self.parse_cancel(input, StrokeKind::Backward),
             "xcancel" => self.parse_cancel(input, StrokeKind::Cross),

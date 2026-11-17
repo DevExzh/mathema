@@ -724,6 +724,10 @@ impl<'a> Encoder<'a> {
                 Ok(())
             },
             CompactNode::ColAlign(_) => Ok(()),
+            CompactNode::Reflect { content, .. } => {
+                self.lose("MTEF cannot represent horizontal reflection; the content was written");
+                self.node(content, size)
+            },
         }
     }
 

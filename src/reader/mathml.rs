@@ -388,7 +388,15 @@ impl<'a> MathmlCompactParser<'a> {
             "mrow" => {
                 let children = self.parse_children(name)?;
                 let span = self.arena.push_children_deferred(&children);
-                Ok(self.arena.push_node(CompactNode::Row(span)))
+                let row = self.arena.push_node(CompactNode::Row(span));
+                if let Some(mode) = get_attr(start, "data-mathema-reflect") {
+                    Ok(self.arena.push_node(CompactNode::Reflect {
+                        content: row,
+                        text_mode: mode == "text",
+                    }))
+                } else {
+                    Ok(row)
+                }
             },
             "mfrac" => {
                 let children = self.parse_children(name)?;

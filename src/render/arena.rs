@@ -108,6 +108,8 @@ pub enum ArenaBoxKind {
         bg_color: Option<String>,
         border_color: Option<String>,
     },
+    /// Child reflected horizontally around its centerline.
+    Reflected { child: LayoutBoxId },
     /// A run of text characters rendered as a single `<text>` element.
     TextRun {
         text: String,
@@ -203,6 +205,13 @@ impl LayoutArena {
     /// Recursively scale all positions and dimensions in a subtree rooted at `id`.
     /// Used by `layout_scaled_arena` to properly scale `\scalebox` content.
     pub fn scale_subtree(&mut self, id: LayoutBoxId, f: f64) {
+        if let ArenaBoxKind::Reflected { child } = self.boxes[id.index()].kind {
+            self.boxes[id.index()].width *= f;
+            self.boxes[id.index()].height *= f;
+            self.boxes[id.index()].depth *= f;
+            self.scale_subtree(child, f);
+            return;
+        }
         let bx = &mut self.boxes[id.index()];
         bx.width *= f;
         bx.height *= f;
@@ -231,6 +240,7 @@ impl LayoutArena {
                 let child_id = *child;
                 self.scale_subtree(child_id, f);
             },
+            ArenaBoxKind::Reflected { .. } => unreachable!("handled before mutable borrow"),
             ArenaBoxKind::Glyph { size, .. } => {
                 *size *= f;
             },

@@ -82,7 +82,9 @@ fn collect_chars_inner(node: &LayoutBox, chars: &mut HashSet<(FontId, char)>) {
                 collect_chars_inner(&child.layout, chars);
             }
         },
-        BoxKind::Color { child, .. } | BoxKind::Boxed { child, .. } => {
+        BoxKind::Color { child, .. }
+        | BoxKind::Boxed { child, .. }
+        | BoxKind::Reflected { child } => {
             collect_chars_inner(&child.layout, chars);
         },
         BoxKind::Rule { .. } | BoxKind::Kern | BoxKind::SvgPath(_) | BoxKind::Phantom => {},
@@ -149,7 +151,7 @@ fn collect_chars_arena_inner(
         ArenaBoxKind::Color { child, .. } => {
             collect_chars_arena_inner(arena, *child, chars);
         },
-        ArenaBoxKind::Boxed { child, .. } => {
+        ArenaBoxKind::Boxed { child, .. } | ArenaBoxKind::Reflected { child } => {
             collect_chars_arena_inner(arena, *child, chars);
         },
         ArenaBoxKind::Rule { .. }
@@ -253,7 +255,9 @@ fn collect_variants_inner(node: &LayoutBox, ids: &mut HashSet<u16>) {
                 collect_variants_inner(&child.layout, ids);
             }
         },
-        BoxKind::Color { child, .. } | BoxKind::Boxed { child, .. } => {
+        BoxKind::Color { child, .. }
+        | BoxKind::Boxed { child, .. }
+        | BoxKind::Reflected { child } => {
             collect_variants_inner(&child.layout, ids);
         },
         BoxKind::Rule { .. }
@@ -304,7 +308,9 @@ fn collect_variants_arena_inner(arena: &LayoutArena, id: LayoutBoxId, ids: &mut 
                 collect_variants_arena_inner(arena, child.id, ids);
             }
         },
-        ArenaBoxKind::Color { child, .. } | ArenaBoxKind::Boxed { child, .. } => {
+        ArenaBoxKind::Color { child, .. }
+        | ArenaBoxKind::Boxed { child, .. }
+        | ArenaBoxKind::Reflected { child } => {
             collect_variants_arena_inner(arena, *child, ids);
         },
         ArenaBoxKind::Rule { .. }

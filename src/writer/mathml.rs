@@ -519,6 +519,20 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             Ok(())
         },
 
+        MathNode::Reflect { content, text_mode } => {
+            let mut elem = BytesStart::new("mrow");
+            elem.push_attribute((
+                "data-mathema-reflect",
+                if *text_mode { "text" } else { "math" },
+            ));
+            elem.push_attribute(("style", "display:inline-block; transform:scaleX(-1)"));
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node(w, content)?;
+            w.write_event(Event::End(BytesEnd::new("mrow")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+
         MathNode::Cancel { stroke, content } => {
             let mut elem = BytesStart::new("menclose");
             let notation = match stroke {
@@ -1025,6 +1039,14 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("<menclose notation=\"actuarial\">");
             write_node_fast(buf, arena, inner);
             buf.push_str("</menclose>");
+        },
+
+        CompactNode::Reflect { content, text_mode } => {
+            buf.push_str("<mrow data-mathema-reflect=\"");
+            buf.push_str(if text_mode { "text" } else { "math" });
+            buf.push_str("\" style=\"display:inline-block; transform:scaleX(-1)\">");
+            write_node_fast(buf, arena, content);
+            buf.push_str("</mrow>");
         },
 
         CompactNode::Cancel { stroke, content } => {

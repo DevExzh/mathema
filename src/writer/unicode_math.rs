@@ -318,6 +318,7 @@ fn write_node(out: &mut String, node: &MathNode) {
             write_node(out, display);
         },
         MathNode::MathAtom { content, .. } => write_node(out, content),
+        MathNode::Reflect { content, .. } => write_node(out, content),
     }
 }
 
@@ -679,6 +680,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::MathAtom { content, .. } => {
             write_node_c(out, arena, content);
         },
+        CompactNode::Reflect { content, .. } => write_node_c(out, arena, content),
 
         CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
