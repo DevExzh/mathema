@@ -78,6 +78,11 @@ pub fn preprocess_cow(input: &str) -> Result<std::borrow::Cow<'_, str>, usize> {
         return Ok(std::borrow::Cow::Borrowed(input));
     }
     let stripped = strip_comments(input);
+    // A comments-only change still needs an owned result, but does not need to
+    // seed the macro table or walk a token queue.
+    if !needs_expansion_processing(&stripped) {
+        return Ok(std::borrow::Cow::Owned(stripped));
+    }
     // Definitions are processed while walking the token stream.  In
     // particular, a definition inside a group must not leak into text before
     // it or after the group closes.  `ordered` also retains the expansion cap
@@ -87,8 +92,11 @@ pub fn preprocess_cow(input: &str) -> Result<std::borrow::Cow<'_, str>, usize> {
 
 /// Fast-path check: does the input contain any syntax we need to process?
 fn needs_preprocessing(input: &str) -> bool {
-    input.contains('%')
-        || input.contains("\\newcommand")
+    input.contains('%') || needs_expansion_processing(input)
+}
+
+fn needs_expansion_processing(input: &str) -> bool {
+    input.contains("\\newcommand")
         || input.contains("\\renewcommand")
         || input.contains("\\providecommand")
         || input.contains("\\def")
