@@ -3,8 +3,9 @@ use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 /// Arena-based storage for compact AST nodes.
 ///
 /// Nodes, child references, and UTF-8 text each occupy a contiguous buffer.
-/// `NodeId`, `NodeSpan`, and `StrId` index into these vectors. This layout
-/// eliminates per-node heap allocations and gives cache-friendly traversal.
+/// `NodeId` selects a node, `NodeSpan` selects a range of child references,
+/// and `StrId` locates a string through its byte offsets. This layout avoids
+/// per-node heap allocations.
 ///
 /// An `AstArena` is short-lived (one per `convert()` call). Dead nodes left by
 /// normalization are unreachable garbage and are never reclaimed — the entire
