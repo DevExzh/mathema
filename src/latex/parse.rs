@@ -3040,85 +3040,10 @@ impl LatexCompactParser {
             // \ensuremath{content} — transparent wrapper; content already in math mode
             "ensuremath" => self.parse_required_group(input),
 
-            // --- mhchem: \ce{...} chemical equations, \pu{...} physical units ---
-            "ce" | "pu" => {
-                let Some((after, body)) = super::mhchem::capture_braced(input) else {
-                    return Ok((
-                        input,
-                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-                    ));
-                };
-                let latex = if name == "ce" {
-                    super::mhchem::ce_to_latex(body)
-                } else {
-                    super::mhchem::pu_to_latex(body)
-                };
-                let processed = match preprocess_cow(&latex) {
-                    Ok(p) => p,
-                    Err(failure) => {
-                        self.abort = Some(expansion_error(failure));
-                        return Err(nom::Err::Failure(nom::error::Error::new(
-                            input,
-                            nom::error::ErrorKind::TooLarge,
-                        )));
-                    },
-                };
-                let id = match self.parse_node_list(&processed) {
-                    Ok((_, ids)) => self.flatten_single(&ids),
-                    Err(_) => {
-                        self.check_node_limit();
-                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
-                    },
-                };
-                Ok((after, id))
-            },
-
-            // --- physics: variadic derivative operators ---
-            "dv" | "pdv" | "fdv" => {
-                let (after, latex) = super::physics::translate_derivative(name, input);
-                let processed = match preprocess_cow(&latex) {
-                    Ok(p) => p,
-                    Err(failure) => {
-                        self.abort = Some(expansion_error(failure));
-                        return Err(nom::Err::Failure(nom::error::Error::new(
-                            input,
-                            nom::error::ErrorKind::TooLarge,
-                        )));
-                    },
-                };
-                let id = match self.parse_node_list(&processed) {
-                    Ok((_, ids)) => self.flatten_single(&ids),
-                    Err(_) => {
-                        self.check_node_limit();
-                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
-                    },
-                };
-                Ok((after, id))
-            },
-
-            // --- siunitx (+ units `\unit`): numbers, units, quantities ---
-            "num" | "si" | "SI" | "qty" | "unit" | "ang" | "numrange" | "SIrange" | "qtyrange"
-            | "numlist" | "SIlist" | "qtylist" | "sisetup" => {
-                let (after, latex) = super::siunitx::translate(name, input);
-                let processed = match preprocess_cow(&latex) {
-                    Ok(p) => p,
-                    Err(failure) => {
-                        self.abort = Some(expansion_error(failure));
-                        return Err(nom::Err::Failure(nom::error::Error::new(
-                            input,
-                            nom::error::ErrorKind::TooLarge,
-                        )));
-                    },
-                };
-                let id = match self.parse_node_list(&processed) {
-                    Ok((_, ids)) => self.flatten_single(&ids),
-                    Err(_) => {
-                        self.check_node_limit();
-                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
-                    },
-                };
-                Ok((after, id))
-            },
+            // These packages translate their arguments to ordinary LaTeX.
+            "ce" | "pu" | "dv" | "pdv" | "fdv" | "num" | "si" | "SI" | "qty" | "unit" | "ang"
+            | "numrange" | "SIrange" | "qtyrange" | "numlist" | "SIlist" | "qtylist"
+            | "sisetup" => self.parse_package_translation(input, name),
             "smash" => {
                 // \smash[b]{...} or \smash[t]{...} or \smash{...}
                 let (input, _) = ws(input)?;
@@ -3997,6 +3922,45 @@ impl LatexCompactParser {
             self.arena
                 .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
         ))
+    }
+
+    /// Keep translation buffers and preprocessing errors off the recursive
+    /// command dispatch frame for ordinary commands such as fractions.
+    fn parse_package_translation<'a>(
+        &mut self,
+        input: &'a str,
+        name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let (rest, latex) = match name {
+            "ce" | "pu" => {
+                let Some((rest, body)) = super::mhchem::capture_braced(input) else {
+                    return Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                    ));
+                };
+                let latex = if name == "ce" {
+                    super::mhchem::ce_to_latex(body)
+                } else {
+                    super::mhchem::pu_to_latex(body)
+                };
+                (rest, latex)
+            },
+            "dv" | "pdv" | "fdv" => super::physics::translate_derivative(name, input),
+            _ => super::siunitx::translate(name, input),
+        };
+        let processed = preprocess_cow(&latex).map_err(|failure| {
+            self.abort = Some(expansion_error(failure));
+            nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
+        })?;
+        let id = match self.parse_node_list(&processed) {
+            Ok((_, ids)) => self.flatten_single(&ids),
+            Err(_) => {
+                self.check_node_limit();
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+            },
+        };
+        Ok((rest, id))
     }
 
     fn parse_cancel<'a>(&mut self, input: &'a str, stroke: StrokeKind) -> IResult<&'a str, NodeId> {
