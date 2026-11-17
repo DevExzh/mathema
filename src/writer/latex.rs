@@ -1221,7 +1221,13 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
 
 fn write_identifier_text(buf: &mut String, s: &str) {
     if !s.chars().any(|ch| unicode_to_latex(ch).is_some()) {
-        buf.push_str(s);
+        for ch in s.chars() {
+            if ascii_math_identifier_needs_char(ch) {
+                write_math_char(buf, ch);
+            } else {
+                buf.push(ch);
+            }
+        }
         return;
     }
 
@@ -1231,7 +1237,10 @@ fn write_identifier_text(buf: &mut String, s: &str) {
     // terminates a preceding command naturally.
     let mut previous_was_command = false;
     for ch in s.chars() {
-        if let Some(cmd) = unicode_to_latex(ch) {
+        if ascii_math_identifier_needs_char(ch) {
+            write_math_char(buf, ch);
+            previous_was_command = false;
+        } else if let Some(cmd) = unicode_to_latex(ch) {
             buf.push('\\');
             buf.push_str(cmd);
             previous_was_command = true;
@@ -1243,6 +1252,15 @@ fn write_identifier_text(buf: &mut String, s: &str) {
             previous_was_command = false;
         }
     }
+}
+
+/// An identifier read from MathML may contain punctuation even though a normal
+/// LaTeX identifier is alphabetic.  Keep the same reserved-glyph protection as
+/// ordinary symbols, and add the four LaTeX parameter/comment characters that
+/// cannot appear literally in a math input stream.
+#[inline]
+fn ascii_math_identifier_needs_char(ch: char) -> bool {
+    ascii_math_literal_needs_char(ch) || matches!(ch, '#' | '$' | '%' | '&')
 }
 
 #[inline]
@@ -1370,6 +1388,18 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
         write_operator_name(buf, s, LimitStyle::Default);
         return;
     }
+    // A handful of ASCII characters are active or classed specially in math
+    // mode.  Printing them literally would change an ordinary AST symbol when
+    // the output is parsed again (`~` becomes a space, `^` starts a script,
+    // `'` becomes a prime, and `<`/`>`/`|` acquire relation/fence classes).
+    // KaTeX exposes TeX's `\char` primitive in math mode, so use its backtick
+    // form to emit the glyph without changing the public node shape.  Restrict
+    // this to ordinary symbols: real binary and relation tokens must continue
+    // using their canonical operators and spacing.
+    if kind == SymbolKind::Ordinary && s.chars().count() == 1 && ascii_math_literal_needs_char(ch) {
+        write_math_char(buf, ch);
+        return;
+    }
     // Math minus sign → ASCII hyphen-minus for LaTeX output. A literal
     // Unicode minus can arrive as an Ordinary symbol (the ASCII `-` parser
     // maps to BinaryOp), so retain that class explicitly; otherwise a run
@@ -1424,6 +1454,30 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
         },
         _ => buf.push_str(s),
     }
+}
+
+/// Whether a literal ASCII glyph would be reinterpreted by the math parser or
+/// by the TeX/KaTeX atom-class table if written directly.
+#[inline]
+fn ascii_math_literal_needs_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\'' | '<' | '>' | '\\' | '^' | '_' | '|' | '~' | '{' | '}'
+    )
+}
+
+/// Emit one ordinary ASCII glyph with TeX's character-token primitive.  TeX
+/// control characters and comment characters are escaped inside the backtick
+/// token; the emitted form remains a single ordinary symbol to the reader.
+fn write_math_char(buf: &mut String, ch: char) {
+    buf.push_str(r"\char`");
+    if matches!(
+        ch,
+        '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~'
+    ) {
+        buf.push('\\');
+    }
+    buf.push(ch);
 }
 
 fn write_space(buf: &mut String, r: Rational) {
@@ -1717,9 +1771,16 @@ fn is_script_base_token(arena: &AstArena, id: NodeId) -> bool {
 /// preferred-command forms are single atoms before a script marker.
 fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
-        CompactNode::Identifier(_) | CompactNode::Symbol(_, _) => {
-            script_base_char(arena, id).is_some_and(|ch| !ch.is_ascii() && !ch.is_alphabetic())
-        },
+        CompactNode::Identifier(_) => script_base_char(arena, id).is_some_and(|ch| {
+            (!ch.is_ascii() && !ch.is_alphabetic())
+                || (ch.is_ascii() && ascii_math_literal_needs_char(ch))
+        }),
+        CompactNode::Symbol(kind, _) => script_base_char(arena, id).is_some_and(|ch| {
+            (!ch.is_ascii() && !ch.is_alphabetic())
+                || (kind == SymbolKind::Ordinary
+                    && ch.is_ascii()
+                    && ascii_math_literal_needs_char(ch))
+        }),
         CompactNode::Scaled { content, .. } => script_base_needs_braces(arena, content),
         _ => false,
     }
@@ -2044,14 +2105,163 @@ mod tests {
     #[test]
     fn backslash_before_mathord_commands_is_stable() {
         for (input, expected) in [
-            ("\\textbackslash\u{2062}A", r"\textbackslash \mathord{}A"),
-            ("\\textbackslash\u{2212}A", r"\textbackslash \mathord{-}A"),
-            ("\\textbackslash A", r"\textbackslash A"),
+            ("\\textbackslash\u{2062}A", r"\char`\\\mathord{}A"),
+            ("\\textbackslash\u{2212}A", r"\char`\\\mathord{-}A"),
+            ("\\textbackslash A", r"\char`\\A"),
         ] {
             let first = roundtrip(input);
             assert_eq!(first, expected);
             assert_eq!(first, roundtrip(&first));
         }
+    }
+
+    #[test]
+    fn math_mode_literal_ascii_symbols_keep_ordinary_atoms() {
+        let config = Config::default();
+        let cases = [
+            (r"\textasciitilde", "~", r"\char`\~"),
+            (r"\textasciicircum", "^", r"\char`\^"),
+            (r"\textquotesingle", "'", r"\char`'"),
+            (r"\textless", "<", r"\char`<"),
+            (r"\textgreater", ">", r"\char`>"),
+            (r"\textbar", "|", r"\char`|"),
+        ];
+        for (source, literal, expected) in cases {
+            let direct =
+                MathExpr::inline(vec![MathNode::Symbol(SymbolKind::Ordinary, literal.into())]);
+            let output = LatexWriter::write(&direct, &config).unwrap();
+            assert_eq!(output, expected, "direct symbol: {source:?}");
+            let reparsed = LatexReader::parse(&output, &config).unwrap();
+            assert_eq!(
+                reparsed.expr.nodes, direct.nodes,
+                "direct symbol changed after writing: {source:?}"
+            );
+
+            let parsed = LatexReader::parse(source, &config).unwrap();
+            assert_eq!(parsed.expr.nodes, direct.nodes, "source: {source:?}");
+            let command_output = LatexWriter::write(&parsed.expr, &config).unwrap();
+            assert_eq!(command_output, expected, "literal command: {source:?}");
+            assert_eq!(
+                LatexWriter::write(
+                    &LatexReader::parse(&command_output, &config).unwrap().expr,
+                    &config,
+                )
+                .unwrap(),
+                expected,
+                "not idempotent: {source:?}"
+            );
+        }
+
+        for (literal, expected) in [
+            ("_", r"\char`\_"),
+            ("{", r"\char`\{"),
+            ("}", r"\char`\}"),
+            ("\\", r"\char`\\"),
+        ] {
+            let direct =
+                MathExpr::inline(vec![MathNode::Symbol(SymbolKind::Ordinary, literal.into())]);
+            let output = LatexWriter::write(&direct, &config).unwrap();
+            assert_eq!(output, expected, "direct symbol: {literal:?}");
+            assert_eq!(
+                LatexReader::parse(&output, &config).unwrap().expr.nodes,
+                direct.nodes,
+                "direct symbol changed after writing: {literal:?}"
+            );
+        }
+
+        for (literal, expected) in [
+            ("~", r"\char`\~"),
+            ("^", r"\char`\^"),
+            ("'", r"\char`'"),
+            ("<", r"\char`<"),
+            (">", r"\char`>"),
+            ("|", r"\char`|"),
+        ] {
+            let expr = MathExpr::inline(vec![MathNode::Identifier(literal.into())]);
+            let output = LatexWriter::write(&expr, &config).unwrap();
+            assert_eq!(output, expected, "direct identifier: {literal:?}");
+            assert_eq!(
+                LatexWriter::write(&LatexReader::parse(&output, &config).unwrap().expr, &config,)
+                    .unwrap(),
+                expected,
+                "identifier output was not stable: {literal:?}"
+            );
+        }
+
+        // The text writer remains text-mode aware; these must not be changed
+        // into math `\char` nodes merely because their glyphs overlap.
+        let text = MathExpr::inline(vec![MathNode::Text(
+            TextStyle::Normal,
+            "~^'|<>_\\{}".into(),
+        )]);
+        let text_output = LatexWriter::write(&text, &config).unwrap();
+        assert!(text_output.starts_with(r"\text{"), "{text_output}");
+        assert!(text_output.contains(r"\textasciitilde{}"), "{text_output}");
+        assert!(text_output.contains(r"\textasciicircum{}"), "{text_output}");
+        assert!(!text_output.contains(r"\char`"), "{text_output}");
+    }
+
+    #[test]
+    fn math_mode_literal_symbols_survive_public_formats_and_scripts() {
+        for (input, expected) in [
+            (r"\textasciitilde", r"\char`\~"),
+            (r"\textasciicircum", r"\char`\^"),
+            (r"\textquotesingle", r"\char`'"),
+            (r"\textless", r"\char`<"),
+            (r"\textgreater", r"\char`>"),
+            (r"\textbar", r"\char`|"),
+        ] {
+            let output = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX)
+                .expect("LaTeX output should succeed");
+            assert_eq!(output, expected, "{input}");
+            assert_eq!(
+                crate::convert(&output, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+                expected,
+                "not stable: {input}"
+            );
+
+            let mathml = crate::convert(input, crate::Format::LaTeX, crate::Format::MathML)
+                .expect("MathML output should succeed");
+            assert!(
+                mathml.contains(match input {
+                    r"\textasciitilde" => "~",
+                    r"\textasciicircum" => "^",
+                    r"\textquotesingle" => "&apos;",
+                    r"\textless" => "&lt;",
+                    r"\textgreater" => "&gt;",
+                    r"\textbar" => "|",
+                    _ => unreachable!(),
+                }),
+                "glyph was lost for {input}: {mathml}"
+            );
+        }
+
+        // Script bases and arguments must remain ordinary symbols, while an
+        // actual prime remains U+2032 and relation/binary tokens retain their
+        // spacing classes.
+        for (input, expected) in [
+            (r"\textasciitilde^2", r"{\char`\~}^{2}"),
+            (r"x_{\textasciicircum}", r"x_{\char`\^}"),
+            (r"\textquotesingle^2", r"{\char`'}^{2}"),
+            (r"x'", r"x^{\prime}"),
+            ("a+b", "a+ b"),
+            ("a<b", "a< b"),
+        ] {
+            let output = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX)
+                .expect("LaTeX output should succeed");
+            assert_eq!(output, expected, "{input}");
+            assert_eq!(
+                crate::convert(&output, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+                expected,
+                "not stable: {input}"
+            );
+        }
+
+        let mathml = crate::from_mathml("<math><mo>~</mo><mo>&lt;</mo><mo>|</mo></math>")
+            .unwrap()
+            .to_latex()
+            .unwrap();
+        assert_eq!(mathml, r"\char`\~< |");
     }
 
     #[test]

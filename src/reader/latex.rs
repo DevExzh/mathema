@@ -143,6 +143,29 @@ mod tests {
     }
 
     #[test]
+    fn char_primitive_preserves_literal_math_symbols() {
+        for input in [r"\char`\~", r#"\char"7e"#, r"\char126"] {
+            assert_eq!(
+                parse_one(input),
+                MathNode::Symbol(SymbolKind::Ordinary, "~".into()),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            parse_one(r"\char`\^"),
+            MathNode::Symbol(SymbolKind::Ordinary, "^".into())
+        );
+        assert_eq!(
+            parse_one(r"\char`'"),
+            MathNode::Symbol(SymbolKind::Ordinary, "'".into())
+        );
+        assert_eq!(
+            parse_one(r"\char`\\"),
+            MathNode::Symbol(SymbolKind::Ordinary, "\\".into())
+        );
+    }
+
+    #[test]
     fn text_takes_one_unexpanded_token() {
         for (input, braced) in [
             (r"\sqrt \text x", r"\sqrt{\text{x}}"),

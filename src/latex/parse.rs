@@ -3143,6 +3143,16 @@ impl LatexCompactParser {
                 ))
             },
 
+            // `\char` is a math-mode primitive used by the LaTeX writer for
+            // literal ASCII glyphs whose source characters have active TeX
+            // meanings (`~`, `^`, `'`, ...).  The writer uses the backtick
+            // form (`\char`\~`) so the following sibling cannot be consumed
+            // as part of a hexadecimal character number.  Keep the result an
+            // ordinary symbol: unlike `\mathord`, this preserves the public
+            // AST shape when a direct ordinary symbol is written and read
+            // back.
+            "char" => self.parse_char(input),
+
             // --- Negation ---
             "not" => self.parse_not(input),
 
@@ -3798,6 +3808,93 @@ impl LatexCompactParser {
             .arena
             .push_node(CompactNode::MathAtom { atom_type, content });
         Ok((rest, id))
+    }
+
+    /// Parse the character forms emitted by the LaTeX writer's math-mode
+    /// literal-symbol path.  TeX accepts several number syntaxes after
+    /// `\char`; supporting the backtick form is sufficient for writer output,
+    /// while decimal/hex forms make the reader useful for ordinary KaTeX/TeX
+    /// input as well (`\char"7e`, `\char126`).
+    fn parse_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let Some(first) = input.chars().next() else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        };
+
+        let (rest, codepoint) = if first == '`' {
+            let after_tick = &input[first.len_utf8()..];
+            let Some(token) = after_tick.chars().next() else {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )));
+            };
+            let mut rest = &after_tick[token.len_utf8()..];
+            let codepoint = if token == '\\' {
+                // `\char`\\` names a literal backslash; an escaped brace or
+                // punctuation is handled the same way.  A control word is
+                // intentionally reduced to its first character, matching
+                // TeX's character-token interpretation for this form.
+                let Some(escaped) = rest.chars().next() else {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Char,
+                    )));
+                };
+                rest = &rest[escaped.len_utf8()..];
+                escaped
+            } else {
+                token
+            };
+            (rest, codepoint as u32)
+        } else if first == '"' {
+            let digits = &input[first.len_utf8()..];
+            let count = digits
+                .bytes()
+                .take_while(|byte| byte.is_ascii_hexdigit())
+                .count();
+            if count == 0 {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::HexDigit,
+                )));
+            }
+            let value = u32::from_str_radix(&digits[..count], 16).map_err(|_| {
+                nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::HexDigit,
+                ))
+            })?;
+            (&digits[count..], value)
+        } else {
+            let digits = input.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Digit,
+                )));
+            }
+            let value = input[..digits].parse::<u32>().map_err(|_| {
+                nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+            })?;
+            (&input[digits..], value)
+        };
+
+        let Some(ch) = char::from_u32(codepoint) else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        };
+        let sid = self.push_char_str(ch);
+        Ok((
+            rest,
+            self.arena
+                .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+        ))
     }
 
     fn parse_cancel<'a>(&mut self, input: &'a str, stroke: StrokeKind) -> IResult<&'a str, NodeId> {

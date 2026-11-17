@@ -367,9 +367,9 @@ fn round_trip_ascii_identifier_script_bases() {
         (":", ":"),
         ("[", "["),
         ("]", "]"),
-        ("{", r"\{"),
-        ("}", r"\}"),
-        ("|", "|"),
+        ("{", r"{\char`\{}"),
+        ("}", r"{\char`\}}"),
+        ("|", r"{\char`|}"),
     ] {
         let input = format!("<math><msup><mi>{ch}</mi><mn>2</mn></msup></math>");
         let expected = format!("{written}^{{2}}");
