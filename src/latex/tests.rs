@@ -1680,6 +1680,7 @@ fn fuzz_repro_roundtrip_misc() {
         "_'sTfc(\\middle~\\s-'",
         " ' \\middle' oe~\\middle-' ' \\middle' oe \\middloe'",
         "'_\u{211C}?'_\u{211C}",
+        ",_v76_\\color{\n5sf\n_v}",
         ";\\int\\pod \\int\\podop ",
         "$\\\\$\\\\$\\idotsint$\\\\$jitt",
         "\\text{\\fonment{e\\\t- *\\} '\\t& (*a\\ngln#}  (",

@@ -1909,7 +1909,18 @@ fn is_empty_body(arena: &AstArena, id: NodeId) -> bool {
 /// True for a missing node or an empty Row (an absent/effectively-empty script
 /// argument).
 fn is_effectively_empty_arg(arena: &AstArena, id: NodeId) -> bool {
-    !id.is_some() || is_empty_row(arena, id)
+    if !id.is_some() {
+        return true;
+    }
+    match *arena.node(id) {
+        CompactNode::Row(span) => arena.children(span).is_empty(),
+        // A color declaration with no following content is a transparent
+        // wrapper around an empty row. Unwrap only this transparent wrapper;
+        // zero-width atoms and explicit spaces carry grouping/spacing meaning
+        // and must remain script arguments.
+        CompactNode::Color { content, .. } => is_effectively_empty_arg(arena, content),
+        _ => false,
+    }
 }
 
 /// True if a script node has at least one non-empty subscript or superscript
@@ -2691,6 +2702,38 @@ mod tests {
         let out2 = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
         assert_eq!(out1, "{}^{2}");
         assert_eq!(out1, out2);
+    }
+
+    #[test]
+    fn effectively_empty_color_script_argument_is_omitted() {
+        let config = Config::default();
+        let input = ",_v76_\\color{\n5sf\n_v}";
+
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        crate::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
+        crate::ast::normalize::normalize_compact_expr(&mut reparsed).unwrap();
+        let second = LatexWriter::write_compact(&reparsed, &config).unwrap();
+        assert_eq!(first, ",_v76");
+        assert_eq!(first, second);
+
+        let heap = LatexReader::parse(input, &config).unwrap();
+        assert_eq!(LatexWriter::write(&heap.expr, &config).unwrap(), ",_v76");
+
+        for (input, expected) in [
+            (r"x_\color{red}y", r"x_{\textcolor{red}{y}}"),
+            (
+                r"x_\color{red}\mathord{}",
+                r"x_{\textcolor{red}{\mathord{}}}",
+            ),
+            ("x_\\ ", r"x_{\ }"),
+        ] {
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+            assert_eq!(first, expected, "unexpected script output for {input:?}");
+            assert_eq!(first, second, "script output was not stable for {input:?}");
+        }
     }
 
     #[test]
