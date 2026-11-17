@@ -3732,7 +3732,11 @@ impl LatexCompactParser {
         } else {
             self.parse_required_group(input)?
         };
-        Ok((rest, self.arena.push_node(CompactNode::Reflect { content, text_mode })))
+        Ok((
+            rest,
+            self.arena
+                .push_node(CompactNode::Reflect { content, text_mode }),
+        ))
     }
 
     /// Parse a single unbraced TeX token: one letter, one digit, one symbol, or a command.
@@ -3751,6 +3755,7 @@ impl LatexCompactParser {
                 Ok((&input[1..], self.arena.push_node(CompactNode::Number(sid))))
             },
             Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
+            Some(&b) if !b.is_ascii() => self.parse_atom(input),
             _ => Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Alt,

@@ -389,15 +389,15 @@ impl<'a> MathmlCompactParser<'a> {
                 let children = self.parse_children(name)?;
                 let span = self.arena.push_children_deferred(&children);
                 let row = self.arena.push_node(CompactNode::Row(span));
-                let mode = get_attr(start, "data-mathema-reflect").or_else(|| {
-                    get_attr(start, "style")
-                        .filter(|style| style.to_ascii_lowercase().contains("scalex(-1)"))
-                        .map(|_| "math".to_owned())
-                });
-                if let Some(mode) = mode {
+                let mode = get_attr(start, "data-mathema-reflect");
+                let reflected = match get_attr(start, "style") {
+                    Some(style) => has_horizontal_reflection(&style),
+                    None => matches!(mode.as_deref(), Some("text" | "math")),
+                };
+                if reflected {
                     Ok(self.arena.push_node(CompactNode::Reflect {
                         content: row,
-                        text_mode: mode == "text",
+                        text_mode: mode.as_deref() == Some("text"),
                     }))
                 } else {
                     Ok(row)
@@ -949,6 +949,39 @@ impl<'a> MathmlCompactParser<'a> {
 // ---------------------------------------------------------------------------
 // Helpers (no arena access needed)
 // ---------------------------------------------------------------------------
+
+/// Read the supported, single horizontal CSS transform. Other declarations
+/// (such as CSS variables) are not transforms on this element.
+fn has_horizontal_reflection(style: &str) -> bool {
+    let mut reflected = false;
+    let mut important = false;
+    for declaration in style.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if !property.trim().eq_ignore_ascii_case("transform") {
+            continue;
+        }
+        let (value, priority) = match value.rsplit_once('!') {
+            Some((value, priority)) if priority.trim().eq_ignore_ascii_case("important") => {
+                (value, true)
+            },
+            _ => (value, false),
+        };
+        if important && !priority {
+            continue;
+        }
+        important = priority;
+        reflected = value
+            .trim()
+            .strip_suffix(')')
+            .and_then(|v| v.split_once('('))
+            .is_some_and(|(name, arg)| {
+                name.eq_ignore_ascii_case("scaleX") && arg.trim().parse::<f64>() == Ok(-1.0)
+            });
+    }
+    reflected
+}
 
 fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> {
     start

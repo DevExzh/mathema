@@ -983,7 +983,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 write_hbox_content(buf, arena, content);
             } else {
                 buf.push_str(r"\mathreflectbox{");
-                write_wrapped_content(buf, arena, content);
+                write_box_math(buf, arena, &[content]);
             }
             buf.push('}');
         },
@@ -1479,6 +1479,16 @@ fn write_wrapped_content(buf: &mut String, arena: &AstArena, content: NodeId) {
     }
 }
 
+fn write_box_math(buf: &mut String, arena: &AstArena, nodes: &[NodeId]) {
+    if let [only] = nodes
+        && let CompactNode::Row(span) = *arena.node(*only)
+    {
+        write_nodes(buf, arena, span);
+    } else {
+        write_node_slice(buf, arena, nodes);
+    }
+}
+
 /// Emit upright text directly in a text box and keep math runs in inline math mode.
 fn write_hbox_content(buf: &mut String, arena: &AstArena, id: NodeId) {
     let one = [id];
@@ -1501,18 +1511,32 @@ fn write_hbox_content(buf: &mut String, arena: &AstArena, id: NodeId) {
                 write_styled_text(buf, style, arena.str_val(sid));
             }
             rest = tail;
+        } else if matches!(
+            *arena.node(first),
+            CompactNode::Reflect {
+                text_mode: true,
+                ..
+            }
+        ) {
+            write_node(buf, arena, first);
+            rest = tail;
         } else {
             let n = rest
                 .iter()
-                .take_while(|&&id| !matches!(*arena.node(id), CompactNode::Text(..)))
+                .take_while(|&&id| {
+                    !matches!(
+                        *arena.node(id),
+                        CompactNode::Text(..)
+                            | CompactNode::Reflect {
+                                text_mode: true,
+                                ..
+                            }
+                    )
+                })
                 .count();
             let (math, tail) = rest.split_at(n);
             buf.push('$');
-            if let [only] = math {
-                write_wrapped_content(buf, arena, *only);
-            } else {
-                write_node_slice(buf, arena, math);
-            }
+            write_box_math(buf, arena, math);
             buf.push('$');
             rest = tail;
         }
@@ -2407,6 +2431,53 @@ mod tests {
             };
             assert!(first.starts_with(command), "{first:?}");
             assert_eq!(first, roundtrip(&first));
+        }
+    }
+
+    #[test]
+    fn reflection_keeps_the_argument_mode_and_inline_math() {
+        for (input, expected) in [
+            (r"\reflectbox{abc}", r"\reflectbox{abc}"),
+            (r"\reflectbox{$x^2$}", r"\reflectbox{$x^{2}$}"),
+            (
+                r"\reflectbox{pay \$5 or $x^2$}",
+                r"\reflectbox{pay \$5 or $x^{2}$}",
+            ),
+            (
+                r"\reflectbox{a\reflectbox{b}c}",
+                r"\reflectbox{a\reflectbox{b}c}",
+            ),
+            (r"\mathreflectbox{x^2}", r"\mathreflectbox{x^{2}}"),
+            (r"\mathreflectbox λ", r"\mathreflectbox{\lambda}"),
+        ] {
+            let first = crate::from_latex(input).unwrap();
+            assert_eq!(first.to_latex().unwrap(), expected, "{input}");
+            let second = crate::from_latex(expected).unwrap();
+            assert_eq!(
+                second.to_mathml().unwrap(),
+                first.to_mathml().unwrap(),
+                "{input}"
+            );
+        }
+        assert!(crate::from_latex(r"\reflectbox{x^2}").is_err());
+    }
+
+    #[test]
+    fn reflected_mathml_requires_an_actual_transform() {
+        for (style, reflected) in [
+            ("transform: scaleX( -1.0 )", true),
+            ("--note: scaleX(-1)", false),
+            ("transform:scaleX(-1) rotate(90deg)", false),
+            ("transform:scaleX(-1);transform:none", false),
+            ("transform:scaleX(-1) !important; transform:none", true),
+        ] {
+            let ml = format!(r#"<math><mrow style="{style}"><mi>x</mi></mrow></math>"#);
+            let tex = crate::convert(&ml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+            assert_eq!(
+                tex.contains(r"\mathreflectbox"),
+                reflected,
+                "{style}: {tex}"
+            );
         }
     }
 
