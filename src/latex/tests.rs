@@ -1932,3 +1932,30 @@ fn trailing_empty_implicit_scripts_do_not_regroup_the_preceding_base() {
         assert_eq!(first, write(&first), "{input}");
     }
 }
+
+#[test]
+fn fence_boundaries_match_complete_control_words() {
+    for (input, equiv) in [
+        (r"\left(\rightarrow\right)", r"\left(\to\right )"),
+        (
+            r"\left(\color{red}a\rightarrow b\right)",
+            r"\left(\textcolor{red}{a\to b}\right)",
+        ),
+        (
+            r"\left\langle a\middle|\rightleftharpoons b\right \rangle",
+            r"\left\langle a\middle\vert \rightleftharpoons b\right\rangle",
+        ),
+    ] {
+        assert_eq!(
+            crate::from_latex(input).unwrap().to_mathml().unwrap(),
+            crate::from_latex(equiv).unwrap().to_mathml().unwrap(),
+            "{input}"
+        );
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(
+            first,
+            crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+            "{input}"
+        );
+    }
+}

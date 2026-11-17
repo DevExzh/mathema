@@ -152,11 +152,7 @@ fn is_table_boundary(input: &str) -> bool {
     input.is_empty()
         || input.starts_with('&')
         || input.starts_with("\\\\")
-        || (input.starts_with("\\end")
-            && input[4..]
-                .chars()
-                .next()
-                .is_none_or(|ch| !ch.is_ascii_alphabetic()))
+        || strip_control_word(input, "end").is_some()
 }
 
 /// True when an n-ary operator has reached a grammar boundary where an empty
@@ -167,11 +163,7 @@ fn is_nary_body_boundary(input: &str) -> bool {
     is_table_boundary(input)
         || input.starts_with('}')
         || is_cr_row_separator(input)
-        || (input.starts_with("\\right")
-            && input[6..]
-                .chars()
-                .next()
-                .is_none_or(|ch| !ch.is_ascii_alphabetic()))
+        || strip_control_word(input, "right").is_some()
 }
 
 fn classify_char(c: char) -> SymbolKind {
@@ -788,7 +780,7 @@ fn cd_body_len(input: &str) -> usize {
         match bytes[i] {
             b'{' => depth += 1,
             b'}' if depth > 0 => depth -= 1,
-            b'\\' if depth == 0 && input[i..].starts_with("\\end") => return i,
+            b'\\' if depth == 0 && strip_control_word(&input[i..], "end").is_some() => return i,
             _ => {},
         }
         i += 1;
@@ -4243,15 +4235,12 @@ impl LatexCompactParser {
             self.ensure_node_budget(rest)?;
             let (r, _) = ws(rest)?;
             rest = r;
-            // Check for \right
-            if let Ok((after_right, _)) =
-                tag::<&str, &str, nom::error::Error<&str>>("\\right")(rest)
-            {
+            // A command such as \rightarrow is an operand, not a closing fence.
+            if let Some(after_right) = strip_control_word(rest, "right") {
+                let (after_right, _) = ws(after_right)?;
                 return Ok((after_right, ids));
             }
-            // Check for \middle
-            if let Ok((after_mid, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\middle")(rest)
-            {
+            if let Some(after_mid) = strip_control_word(rest, "middle") {
                 let (after_mid, _) = ws(after_mid)?;
                 let (after_delim, sid) = self.parse_delimiter_into(after_mid)?;
                 ids.push(self.arena.push_node(CompactNode::Middle(sid)));
@@ -4960,9 +4949,9 @@ impl LatexCompactParser {
                 if rest.is_empty()
                     || rest.starts_with('&')
                     || rest.starts_with("\\\\")
-                    || rest.starts_with("\\end")
-                    || rest.starts_with("\\right")
-                    || rest.starts_with("\\middle")
+                    || strip_control_word(rest, "end").is_some()
+                    || strip_control_word(rest, "right").is_some()
+                    || strip_control_word(rest, "middle").is_some()
                     || rest.starts_with('}')
                 {
                     break;
@@ -5636,7 +5625,7 @@ impl LatexCompactParser {
             || input.starts_with('}')
             || input.starts_with('&')
             || input.starts_with("\\\\")
-            || input.starts_with("\\end")
+            || strip_control_word(input, "end").is_some()
         {
             return Ok((
                 input,
@@ -7287,7 +7276,7 @@ impl LatexCompactParser {
         // Stop at &, \\, \cr, or \end
         if input.starts_with('&')
             || input.starts_with("\\\\")
-            || input.starts_with("\\end")
+            || strip_control_word(input, "end").is_some()
             || is_cr_row_separator(input)
             || input.is_empty()
         {
