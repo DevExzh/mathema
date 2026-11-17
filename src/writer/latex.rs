@@ -2431,5 +2431,9 @@ mod tests {
                 crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap()
             );
         }
+        let style_only = r#"<math><mrow style="display:inline-block; transform:scaleX(-1)"><mi>x</mi></mrow></math>"#;
+        let latex =
+            crate::convert(style_only, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+        assert!(latex.starts_with(r"\mathreflectbox{"), "{latex:?}");
     }
 }

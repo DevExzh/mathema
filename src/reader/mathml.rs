@@ -389,7 +389,12 @@ impl<'a> MathmlCompactParser<'a> {
                 let children = self.parse_children(name)?;
                 let span = self.arena.push_children_deferred(&children);
                 let row = self.arena.push_node(CompactNode::Row(span));
-                if let Some(mode) = get_attr(start, "data-mathema-reflect") {
+                let mode = get_attr(start, "data-mathema-reflect").or_else(|| {
+                    get_attr(start, "style")
+                        .filter(|style| style.to_ascii_lowercase().contains("scalex(-1)"))
+                        .map(|_| "math".to_owned())
+                });
+                if let Some(mode) = mode {
                     Ok(self.arena.push_node(CompactNode::Reflect {
                         content: row,
                         text_mode: mode == "text",
