@@ -543,6 +543,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             bg_color,
             border_color,
         } => layout_boxed(content, bg_color.as_deref(), border_color.as_deref(), ctx),
+        MathNode::Actuarial(content) => layout_actuarial(content, ctx),
         MathNode::Cancel { stroke, content } => layout_cancel(*stroke, content, ctx),
         MathNode::Scaled { factor, content } => layout_scaled(*factor, content, ctx),
         MathNode::RaiseBox {
@@ -1393,6 +1394,7 @@ fn layout_node_arena(
             };
             layout_boxed_arena(ast, inner, bg, border, arena, ctx)
         },
+        CompactNode::Actuarial(inner) => layout_actuarial_arena(ast, inner, arena, ctx),
         CompactNode::Cancel { stroke, content } => {
             layout_cancel_arena(ast, stroke, content, arena, ctx)
         },

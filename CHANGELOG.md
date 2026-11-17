@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- LaTeX actuarial-angle notation (angl and angln) keeps its top and right
+  enclosure through the AST, MathML, OMML, MTEF v5, SVG, and raster output.
+
 ### Added
 
 - **OMML paragraphs.** `OmmlReader::parse_paragraph` reads an `m:oMathPara`

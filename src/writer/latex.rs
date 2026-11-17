@@ -982,6 +982,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push('}');
             }
         },
+        CompactNode::Actuarial(inner) => {
+            buf.push_str("\\angl{");
+            write_actuarial_content(buf, arena, inner);
+            buf.push('}');
+        },
 
         CompactNode::Cancel { stroke, content } => {
             let cmd = match stroke {
@@ -1471,6 +1476,18 @@ fn write_wrapped_content(buf: &mut String, arena: &AstArena, content: NodeId) {
         write_nodes(buf, arena, span);
     } else {
         write_node(buf, arena, content);
+    }
+}
+
+fn write_actuarial_content(buf: &mut String, arena: &AstArena, content: NodeId) {
+    match *arena.node(content) {
+        CompactNode::Text(_, sid) => buf.push_str(arena.str_val(sid)),
+        CompactNode::Row(span) => {
+            for &child in arena.children(span) {
+                write_actuarial_content(buf, arena, child);
+            }
+        },
+        _ => write_wrapped_content(buf, arena, content),
     }
 }
 

@@ -1602,7 +1602,10 @@ impl<'i> Parser<'i> {
             });
         }
         let all_hidden = hide.iter().all(|&h| h);
-        if !all_hidden {
+        let actuarial = hide == [false, true, true, false] && strikes == [false; 4];
+        if actuarial {
+            node = self.arena.push_node(CompactNode::Actuarial(node));
+        } else if !all_hidden {
             if hide.iter().any(|&h| h) {
                 self.info(
                     "partially hidden <m:borderBox> sides are not represented; read as a full box"

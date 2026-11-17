@@ -3531,28 +3531,32 @@ impl LatexCompactParser {
 
             // --- Actuarial angle notation ---
             "angl" | "angln" => {
-                // \angl{n} → n with angle bracket — render as content with right angle bar
+                // \angl{n} is the actuarial angle enclosure: a top and right
+                // rule around the argument.
+                if name == "angln" {
+                    let n = self.arena.push_str("n");
+                    let content_id = self
+                        .arena
+                        .push_node(CompactNode::Text(TextStyle::Normal, n));
+                    return Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Actuarial(content_id)),
+                    ));
+                }
                 let (input, _) = ws(input)?;
                 if input.starts_with('{') {
                     let (input, content_id) = self.parse_braced_group(input)?;
-                    // Emit content with an overline to approximate the actuarial angle
-                    let line_sid = self.arena.push_str("\u{203E}");
-                    let line_id = self
-                        .arena
-                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, line_sid));
+                    let content_id = self.actuarial_hbox_content(content_id);
                     Ok((
                         input,
-                        self.arena.push_node(CompactNode::Overscript {
-                            base: content_id,
-                            over: line_id,
-                            movable_limits: false,
-                        }),
+                        self.arena.push_node(CompactNode::Actuarial(content_id)),
                     ))
                 } else {
-                    // No argument — just emit empty
+                    let (rest, content_id) = self.parse_single_token(input)?;
+                    let content_id = self.actuarial_hbox_content(content_id);
                     Ok((
-                        input,
-                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                        rest,
+                        self.arena.push_node(CompactNode::Actuarial(content_id)),
                     ))
                 }
             },
@@ -3730,6 +3734,30 @@ impl LatexCompactParser {
             // LaTeX allows single unbraced tokens as arguments:
             // \frac12 → \frac{1}{2}, \vec x → \vec{x}
             self.parse_single_token(input)
+        }
+    }
+
+    fn actuarial_hbox_content(&mut self, id: NodeId) -> NodeId {
+        match *self.arena.node(id) {
+            CompactNode::Identifier(sid) => self
+                .arena
+                .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+            CompactNode::Row(span) => {
+                let children: SmallVec<[NodeId; 8]> = self.arena.children(span).into();
+                let mut mapped: SmallVec<[NodeId; 8]> = SmallVec::new();
+                for child in children {
+                    let child = match *self.arena.node(child) {
+                        CompactNode::Identifier(sid) => self
+                            .arena
+                            .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                        _ => child,
+                    };
+                    mapped.push(child);
+                }
+                let span = self.arena.push_children_deferred(&mapped);
+                self.arena.push_node(CompactNode::Row(span))
+            },
+            _ => id,
         }
     }
 

@@ -420,7 +420,9 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
             }
         },
 
-        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
+        MathNode::Phantom(inner, _)
+        | MathNode::Boxed { content: inner, .. }
+        | MathNode::Actuarial(inner) => {
             normalize_node_depth(inner, d);
         },
         MathNode::Cancel { content, .. } => {
@@ -855,7 +857,9 @@ fn normalize_compact_node(
             }
         },
 
-        CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => {
+        CompactNode::Phantom(inner, _)
+        | CompactNode::Boxed { content: inner, .. }
+        | CompactNode::Actuarial(inner) => {
             normalize_compact_node(arena, inner, d)?;
         },
         CompactNode::Cancel { content, .. } | CompactNode::RaiseBox { content, .. } => {

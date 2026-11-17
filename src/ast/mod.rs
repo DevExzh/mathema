@@ -218,6 +218,8 @@ pub enum MathNode {
         /// Optional border color (`\fcolorbox`).
         border_color: Option<String>,
     },
+    /// Actuarial angle enclosure with a top and right rule.
+    Actuarial(Box<MathNode>),
     /// Strikethrough/cancellation
     Cancel {
         /// Direction/shape of the cancellation stroke.
@@ -655,7 +657,9 @@ pub(crate) fn compact_children(
         CompactNode::Root { index, radicand } => [index, radicand].into_iter().for_each(push),
         CompactNode::Nary { sub, sup, body, .. } => [sub, sup, body].into_iter().for_each(push),
         CompactNode::Accent { base, .. } => push(base),
-        CompactNode::Phantom(inner, _) | CompactNode::Boxed { content: inner, .. } => push(inner),
+        CompactNode::Phantom(inner, _)
+        | CompactNode::Boxed { content: inner, .. }
+        | CompactNode::Actuarial(inner) => push(inner),
         CompactNode::Cancel { content, .. }
         | CompactNode::Scaled { content, .. }
         | CompactNode::RaiseBox { content, .. }
@@ -772,9 +776,9 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             }
             Ok(())
         },
-        MathNode::Phantom(inner, _) | MathNode::Boxed { content: inner, .. } => {
-            check_node_depth(inner, d)
-        },
+        MathNode::Phantom(inner, _)
+        | MathNode::Boxed { content: inner, .. }
+        | MathNode::Actuarial(inner) => check_node_depth(inner, d),
         MathNode::Cancel { content, .. }
         | MathNode::Scaled { content, .. }
         | MathNode::RaiseBox { content, .. } => check_node_depth(content, d),

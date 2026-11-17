@@ -29,6 +29,92 @@ fn round_trip_simple() {
 
         assert_eq!(out1, out2, "round-trip failed for input: {input}");
     }
+    let text_mathml = crate::convert_with(
+        r"\angl{n}",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &config,
+    )
+    .unwrap();
+    assert!(text_mathml.contains("<mtext>n</mtext>"));
+    let math_mathml = crate::convert_with(
+        r"\angl{$x^2$}",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &config,
+    )
+    .unwrap();
+    assert!(math_mathml.contains("<msup>"));
+}
+
+#[test]
+fn actuarial_angle_preserves_enclosure_and_argument_boundaries() {
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\angl{n}", r"\angl{n}"),
+        (r"a_{\angl{n}i}", r"a_{\angl{n}i}"),
+        (r"a_\angln", r"a_{\angl{n}}"),
+    ] {
+        let first = crate::from_latex_with(input, &config)
+            .unwrap()
+            .to_latex()
+            .unwrap();
+        assert_eq!(first, expected, "{input}");
+        assert_eq!(
+            crate::from_latex_with(&first, &config)
+                .unwrap()
+                .to_latex()
+                .unwrap(),
+            first
+        );
+        let mathml =
+            crate::convert_with(input, crate::Format::LaTeX, crate::Format::MathML, &config)
+                .unwrap();
+        assert!(mathml.contains("notation=\"actuarial\""), "{mathml}");
+    }
+}
+
+#[test]
+fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
+    let config = Config::default();
+    let mathml = crate::convert_with(
+        r"\angl{x}",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &config,
+    )
+    .unwrap();
+    assert!(mathml.contains("notation=\"actuarial\""));
+    let from_mathml = crate::convert_with(
+        &mathml,
+        crate::Format::MathML,
+        crate::Format::LaTeX,
+        &config,
+    )
+    .unwrap();
+    assert_eq!(from_mathml, r"\angl{x}");
+
+    let omml = crate::convert_with(
+        r"\angl{x}",
+        crate::Format::LaTeX,
+        crate::Format::Omml,
+        &config,
+    )
+    .unwrap();
+    assert!(omml.contains("<m:hideBot"));
+    assert!(omml.contains("<m:hideLeft"));
+    assert!(!omml.contains("<m:hideTop"));
+    assert!(!omml.contains("<m:hideRight"));
+    let from_omml =
+        crate::convert_with(&omml, crate::Format::Omml, crate::Format::LaTeX, &config).unwrap();
+    assert_eq!(from_omml, r"\angl{x}");
+
+    let result = crate::from_latex_with(r"\angl{x}", &config).unwrap();
+    let bytes = result
+        .to_mtef_bytes(&crate::writer::mtef::MtefWriteOptions::default())
+        .unwrap();
+    let back = crate::from_mtef_bytes_with(&bytes, &config).unwrap();
+    assert_eq!(back.to_latex().unwrap(), r"\angl{x}");
 }
 
 #[test]

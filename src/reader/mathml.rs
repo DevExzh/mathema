@@ -542,7 +542,9 @@ impl<'a> MathmlCompactParser<'a> {
             "menclose" => {
                 let notation = get_attr(start, "notation").unwrap_or_default();
                 let id = self.parse_child_id(name)?;
-                if notation.contains("box") || notation.contains("roundedbox") {
+                if notation.split_whitespace().any(|n| n == "actuarial") {
+                    Ok(self.arena.push_node(CompactNode::Actuarial(id)))
+                } else if notation.contains("box") || notation.contains("roundedbox") {
                     let empty = self.arena.push_str("");
                     Ok(self.arena.push_node(CompactNode::Boxed {
                         content: id,

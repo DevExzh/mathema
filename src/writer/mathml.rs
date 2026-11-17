@@ -509,6 +509,15 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 .map_err(to_err)?;
             Ok(())
         },
+        MathNode::Actuarial(inner) => {
+            let mut elem = BytesStart::new("menclose");
+            elem.push_attribute(("notation", "actuarial"));
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node(w, inner)?;
+            w.write_event(Event::End(BytesEnd::new("menclose")))
+                .map_err(to_err)?;
+            Ok(())
+        },
 
         MathNode::Cancel { stroke, content } => {
             let mut elem = BytesStart::new("menclose");
@@ -1009,6 +1018,11 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             } else {
                 buf.push_str("<menclose notation=\"box\">");
             }
+            write_node_fast(buf, arena, inner);
+            buf.push_str("</menclose>");
+        },
+        CompactNode::Actuarial(inner) => {
+            buf.push_str("<menclose notation=\"actuarial\">");
             write_node_fast(buf, arena, inner);
             buf.push_str("</menclose>");
         },

@@ -18,6 +18,10 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::Boxed { .. } => Some(
             "UnicodeMath box (▭) round-trips structurally but drops background/border color".into(),
         ),
+        CompactNode::Actuarial { .. } => Some(
+            "UnicodeMath cannot represent an actuarial enclosure; only the content is written"
+                .into(),
+        ),
         CompactNode::Phantom(..) => Some(
             "UnicodeMath phantom (⟡) round-trips structurally but drops the phantom kind (v/h)"
                 .into(),
@@ -280,6 +284,9 @@ fn write_node(out: &mut String, node: &MathNode) {
 
         MathNode::Boxed { content: inner, .. } => {
             out.push('\u{25AD}'); // rectangle
+            write_paren_if_complex(out, inner);
+        },
+        MathNode::Actuarial(inner) => {
             write_paren_if_complex(out, inner);
         },
 
@@ -623,6 +630,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Boxed { content: inner, .. } => {
             out.push('\u{25AD}');
+            write_paren_if_complex_c(out, arena, inner);
+        },
+        CompactNode::Actuarial(inner) => {
             write_paren_if_complex_c(out, arena, inner);
         },
 

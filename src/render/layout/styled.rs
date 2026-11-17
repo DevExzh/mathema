@@ -69,6 +69,47 @@ pub(super) fn layout_boxed(
     }
 }
 
+pub(super) fn layout_actuarial(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+    let size = ctx.size();
+    let rule = (ctx.params.rule_thickness * size).max(0.04 * size);
+    let top_pad = 4.0 * rule;
+    let inner = layout_node(content, ctx);
+    let bottom_pad = (0.25 * size - inner.depth).max(0.0);
+    let total = inner.height + inner.depth + bottom_pad;
+    let right = LayoutBox {
+        width: rule,
+        height: inner.height + bottom_pad,
+        depth: inner.depth,
+        kind: BoxKind::Delimiter {
+            ch: '|',
+            target_height: total,
+        },
+    };
+    let body = LayoutBox {
+        width: inner.width + rule,
+        height: inner.height.max(right.height),
+        depth: inner.depth.max(right.depth),
+        kind: BoxKind::HBox {
+            children: vec![
+                PositionedBox::new(0.0, bottom_pad, inner),
+                PositionedBox::at_origin(right),
+            ],
+        },
+    };
+    let top = LayoutBox::rule(body.width, rule);
+    LayoutBox {
+        width: body.width,
+        height: body.height + top_pad,
+        depth: body.depth,
+        kind: BoxKind::VBox {
+            children: vec![
+                PositionedBox::new(0.0, body.height + top_pad - top.height, top),
+                PositionedBox::at_origin(body),
+            ],
+        },
+    }
+}
+
 /// Build the stroke `<path>` data for a `\cancel`/`\bcancel`/`\xcancel`/`\sout`
 /// strike, rounded to the minimal coordinate precision via [`PathWriter`].
 /// Shared by the heap and arena cancel layouts.
@@ -334,6 +375,73 @@ pub(super) fn layout_boxed_arena(
             padding,
             bg_color,
             border_color,
+        },
+    })
+}
+
+pub(super) fn layout_actuarial_arena(
+    ast: &AstArena,
+    content: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    let rule = (ctx.params.rule_thickness * size).max(0.04 * size);
+    let inner_id = layout_node_arena(ast, content, arena, ctx);
+    let inner_depth = arena.get(inner_id).depth;
+    let top_pad = 4.0 * rule;
+    let bottom_pad = (0.25 * size - inner_depth).max(0.0);
+    let inner_h = arena.get(inner_id).height;
+    let inner_w = arena.get(inner_id).width;
+    let total = inner_h + inner_depth + bottom_pad;
+    let right_id = arena.alloc(ArenaLayoutBox {
+        width: rule,
+        height: inner_h + bottom_pad,
+        depth: inner_depth,
+        kind: ArenaBoxKind::Delimiter {
+            ch: '|',
+            target_height: total,
+        },
+    });
+    let body_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox {
+        dx: 0.0,
+        dy: bottom_pad,
+        id: inner_id,
+    });
+    arena.push_child(ArenaPositionedBox {
+        dx: inner_w,
+        dy: 0.0,
+        id: right_id,
+    });
+    let body_children = arena.finish_children(body_start);
+    let body_id = arena.alloc(ArenaLayoutBox {
+        width: inner_w + rule,
+        height: inner_h.max(inner_h + bottom_pad),
+        depth: inner_depth,
+        kind: ArenaBoxKind::HBox {
+            children: body_children,
+        },
+    });
+    let top_id = arena.alloc(ArenaLayoutBox::rule(inner_w + rule, rule));
+    let outer_start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox {
+        dx: 0.0,
+        dy: arena.get(body_id).height + top_pad - arena.get(top_id).height,
+        id: top_id,
+    });
+    arena.push_child(ArenaPositionedBox {
+        dx: 0.0,
+        dy: 0.0,
+        id: body_id,
+    });
+    let outer_children = arena.finish_children(outer_start);
+    arena.alloc(ArenaLayoutBox {
+        width: inner_w + rule,
+        height: arena.get(body_id).height + top_pad,
+        depth: arena.get(body_id).depth,
+        kind: ArenaBoxKind::VBox {
+            children: outer_children,
         },
     })
 }

@@ -265,6 +265,24 @@ mod integration_tests {
     }
 
     #[test]
+    fn actuarial_angle_renders_top_and_right_rules_on_both_layout_paths() {
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let result =
+            crate::reader::latex::LatexReader::parse_compact(r"\angl{x}", &config).unwrap();
+        let options = RenderOptions::default();
+        let heap = render_to_svg_compact(&result.expr, &options).unwrap();
+        let mut arena = arena::LayoutArena::new();
+        let compact = render_to_svg_compact_arena(&result.expr, &options, &mut arena).unwrap();
+        assert_eq!(heap, compact);
+        assert!(heap.contains("<rect"), "missing actuarial top rule: {heap}");
+        assert!(
+            heap.contains("<path"),
+            "missing actuarial right rule: {heap}"
+        );
+    }
+
+    #[test]
     fn svg_entry_points_reject_invalid_font_sizes() {
         use crate::reader::Reader;
 

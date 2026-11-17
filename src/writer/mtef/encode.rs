@@ -673,6 +673,18 @@ impl<'a> Encoder<'a> {
                     self.node(content, size)
                 }
             },
+            CompactNode::Actuarial(content) => {
+                if self.v5 {
+                    // tvBX_RIGHT | tvBX_TOP in the MTEF v5 tmBOX variation.
+                    self.template(size, 37, 0x0C);
+                    self.slot(size, Some(content))?;
+                    self.end();
+                    Ok(())
+                } else {
+                    self.lose("MTEF 3 has no top/right enclosure template; the content was kept");
+                    self.node(content, size)
+                }
+            },
             CompactNode::Cancel { stroke, content } => self.cancel(size, stroke, content),
             CompactNode::Styled(style, span) => self.styled(size, style, span),
             CompactNode::Phantom(..) => {

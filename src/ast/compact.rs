@@ -302,6 +302,8 @@ pub enum CompactNode {
         /// Interned border color (empty string for none).
         border_color: StrId,
     },
+    /// Actuarial angle enclosure with a top and right rule.
+    Actuarial(NodeId),
     /// Content struck through with a cancellation line.
     Cancel {
         /// The cancellation stroke direction/style.
@@ -725,6 +727,10 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 border_color: border_sid,
             })
         },
+        MathNode::Actuarial(content) => {
+            let content_id = push_math_node(arena, content);
+            arena.push_node(CompactNode::Actuarial(content_id))
+        },
         MathNode::Cancel { stroke, content } => {
             let content_id = push_math_node(arena, content);
             arena.push_node(CompactNode::Cancel {
@@ -1014,6 +1020,9 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 bg_color: bg,
                 border_color: border,
             }
+        },
+        CompactNode::Actuarial(content) => {
+            MathNode::Actuarial(Box::new(reconstruct_node(arena, content)))
         },
         CompactNode::Cancel { stroke, content } => MathNode::Cancel {
             stroke,
