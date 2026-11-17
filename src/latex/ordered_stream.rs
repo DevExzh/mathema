@@ -106,6 +106,29 @@ fn tokenized_builtin_macros() -> &'static [BuiltinMacro] {
         .as_slice()
 }
 
+fn builtin_meanings() -> &'static HashMap<&'static str, Meaning> {
+    static BUILTINS: OnceLock<HashMap<&'static str, Meaning>> = OnceLock::new();
+    BUILTINS.get_or_init(|| {
+        let mut meanings = HashMap::new();
+        for builtin in tokenized_builtin_macros() {
+            meanings.insert(
+                builtin.name,
+                Meaning::Macro(MacroDef {
+                    param_count: builtin.param_count,
+                    optional_default: None,
+                    body: Arc::clone(&builtin.body),
+                    parameter_text: None,
+                    protected: false,
+                }),
+            );
+        }
+        for &(name, selector) in select::Selector::BUILTINS {
+            meanings.insert(name, Meaning::Selector(selector));
+        }
+        meanings
+    })
+}
+
 #[derive(Clone, Debug)]
 struct EnvDef {
     begin: MacroDef,
@@ -236,22 +259,9 @@ impl Processor {
     }
 
     fn seed_builtins(&mut self) {
-        for builtin in tokenized_builtin_macros() {
-            self.define_macro(
-                builtin.name.to_owned(),
-                Meaning::Macro(MacroDef {
-                    param_count: builtin.param_count,
-                    optional_default: None,
-                    body: Arc::clone(&builtin.body),
-                    parameter_text: None,
-                    protected: false,
-                }),
-                true,
-            );
-        }
-        for &(name, selector) in select::Selector::BUILTINS {
-            self.define_macro(name.to_owned(), Meaning::Selector(selector), true);
-        }
+        // Builtin meanings live in an immutable process-wide table. Local and
+        // global definitions in `scopes` shadow these entries without copying
+        // every builtin name into each parser invocation.
     }
 
     fn push_scope(&mut self) -> ExpansionResult<()> {
@@ -309,14 +319,19 @@ impl Processor {
             .iter()
             .rev()
             .any(|scope| scope.macros.contains_key(name))
+            || builtin_meanings().contains_key(name)
+    }
+
+    fn lookup_defined_meaning(&self, name: &str) -> Option<&Meaning> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.macros.get(name))
+            .or_else(|| builtin_meanings().get(name))
     }
 
     fn single_definition_macro(&self, name: &str) -> Option<String> {
-        let meaning = self
-            .scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.macros.get(name))?;
+        let meaning = self.lookup_defined_meaning(name)?;
         let Meaning::Macro(def) = meaning else {
             return None;
         };
@@ -332,20 +347,11 @@ impl Processor {
     }
 
     fn lookup_macro_for_expansion(&mut self, name: &str) -> ExpansionResult<Option<Meaning>> {
-        let Some(work_size) = self
-            .scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.macros.get(name).map(Meaning::work_size))
-        else {
+        let Some(meaning) = self.lookup_defined_meaning(name).cloned() else {
             return Ok(None);
         };
-        self.charge_work(work_size)?;
-        Ok(self
-            .scopes
-            .iter()
-            .rev()
-            .find_map(|scope| scope.macros.get(name).cloned()))
+        self.charge_work(meaning.work_size())?;
+        Ok(Some(meaning))
     }
 
     fn lookup_environment(&self, name: &str) -> Option<Rc<EnvDef>> {
