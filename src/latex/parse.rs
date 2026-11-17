@@ -150,7 +150,26 @@ fn is_table_boundary(input: &str) -> bool {
     input.is_empty()
         || input.starts_with('&')
         || input.starts_with("\\\\")
-        || input.starts_with("\\end")
+        || (input.starts_with("\\end")
+            && input[4..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !ch.is_ascii_alphabetic()))
+}
+
+/// True when an n-ary operator has reached a grammar boundary where an empty
+/// body is valid. Other input must be parsed as a real element so malformed
+/// bodies propagate their original parser error.
+#[inline]
+fn is_nary_body_boundary(input: &str) -> bool {
+    is_table_boundary(input)
+        || input.starts_with('}')
+        || is_cr_row_separator(input)
+        || (input.starts_with("\\right")
+            && input[6..]
+                .chars()
+                .next()
+                .is_none_or(|ch| !ch.is_ascii_alphabetic()))
 }
 
 fn classify_char(c: char) -> SymbolKind {
@@ -2375,30 +2394,18 @@ impl LatexCompactParser {
         let (input, (sub_id, sup_id)) = self.parse_optional_limits(input)?;
         let (input, _) = ws(input)?;
 
-        // The body is the next element (or empty row if nothing follows).
+        // The body is the next element, or an empty row at a grammar boundary.
         // Use `parse_element` (not bare `parse_atom`) so a nested n-ary operator
         // body — e.g. the 2nd integral in `\int\limits.. \int\limits.. f` — is
         // itself routed through `parse_nary_rest` and keeps its \limits/limits.
         //
         // Inside a `\left...\right` fence the body must not consume the closing
         // `\right`; treat it as an empty body so the fence parser can terminate.
-        let (input, body_id) = if is_table_boundary(input)
-            || (input.starts_with("\\right")
-                && input[6..]
-                    .chars()
-                    .next()
-                    .is_none_or(|c| !c.is_ascii_alphabetic()))
-        {
+        let (input, body_id) = if is_nary_body_boundary(input) {
             let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             (input, row_id)
         } else {
-            match self.parse_element(input) {
-                Ok((rest, id)) => (rest, id),
-                Err(_) => {
-                    let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-                    (input, row_id)
-                },
-            }
+            self.parse_element(input)?
         };
 
         Ok((

@@ -1,6 +1,6 @@
 use crate::ast::compact::CompactNode;
 use crate::ast::normalize::normalize_compact_expr;
-use crate::error::Config;
+use crate::error::{Config, Strictness};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
 use crate::writer::Writer;
@@ -196,6 +196,50 @@ fn named_operator_limit_modifiers_round_trip() {
         );
     }
 }
+
+#[test]
+fn nary_body_boundaries_allow_missing_bodies_and_propagate_errors() {
+    let config = Config::default();
+    for input in [
+        r"{\sum}",
+        r"\left(\sum\right)",
+        r"\begin{matrix}\sum&x\end{matrix}",
+        r"\begin{matrix}x&\sum\end{matrix}",
+        r"\begin{matrix}\sum\cr x\end{matrix}",
+    ] {
+        assert!(
+            LatexReader::parse_compact(input, &config).is_ok(),
+            "valid empty n-ary body boundary rejected: {input:?}"
+        );
+    }
+
+    let malformed = r"{\sum\frac{a}}";
+    assert!(
+        LatexReader::parse_compact(malformed, &config).is_err(),
+        "malformed n-ary body should propagate a strict parse error"
+    );
+    let lenient = config.with_strictness(Strictness::Lenient);
+    let malformed_with_valid = format!("{malformed}+b");
+    let recovered = LatexReader::parse(&malformed_with_valid, &lenient)
+        .expect("lenient recovery should remain available for malformed n-ary bodies");
+    assert!(
+        recovered.has_warnings(),
+        "lenient recovery should report the malformed body"
+    );
+    assert!(
+        recovered
+            .expr
+            .nodes
+            .iter()
+            .any(|node| matches!(node, crate::ast::MathNode::Identifier(name) if name == "b")),
+        "lenient recovery should continue to following valid material"
+    );
+    assert!(
+        LatexReader::parse_compact(malformed, &lenient).is_ok(),
+        "lenient recovery should remain available for malformed n-ary bodies"
+    );
+}
+
 #[test]
 fn round_trip_spacing() {
     let config = Config::default();
