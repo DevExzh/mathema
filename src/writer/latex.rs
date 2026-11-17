@@ -1574,16 +1574,26 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
 /// by the TeX/KaTeX atom-class table if written directly.
 #[inline]
 fn ascii_math_literal_needs_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\'' | '<' | '>' | '\\' | '^' | '_' | '|' | '~' | '{' | '}'
-    )
+    ch.is_control()
+        || matches!(
+            ch,
+            '\'' | '<' | '>' | '\\' | '^' | '_' | '|' | '~' | '{' | '}'
+        )
 }
 
 /// Emit one ordinary ASCII glyph with TeX's character-token primitive.  TeX
 /// control characters and comment characters are escaped inside the backtick
 /// token; the emitted form remains a single ordinary symbol to the reader.
 fn write_math_char(buf: &mut String, ch: char) {
+    if ch.is_control() {
+        // A raw C0, C1, or DEL character is not a parseable LaTeX atom. Use
+        // decimal \\char syntax and retain a source-space terminator so a
+        // following digit cannot be consumed as part of the character code.
+        buf.push_str("\\char");
+        buf.push_str(&(ch as u32).to_string());
+        buf.push(' ');
+        return;
+    }
     buf.push_str(r"\char`");
     if matches!(
         ch,
@@ -2357,6 +2367,54 @@ mod tests {
         assert!(!text_output.contains(r"\char`"), "{text_output}");
     }
 
+    #[test]
+    fn control_symbols_use_bounded_numeric_char_tokens() {
+        let config = Config::default();
+        for (code, expected) in [
+            ('\u{0000}', r"\char0 "),
+            ('\u{0002}', r"\char2 "),
+            ('\u{001f}', r"\char31 "),
+            ('\u{007f}', r"\char127 "),
+            ('\u{0085}', r"\char133 "),
+        ] {
+            let expr = MathExpr::inline(vec![MathNode::Symbol(
+                SymbolKind::Ordinary,
+                code.to_string(),
+            )]);
+            let output = LatexWriter::write(&expr, &config).unwrap();
+            assert_eq!(output, expected, "control U+{:04X}", code as u32);
+            let reparsed = LatexReader::parse(&output, &config).unwrap();
+            assert_eq!(
+                reparsed.expr.nodes, expr.nodes,
+                "control U+{:04X}",
+                code as u32
+            );
+            assert_eq!(
+                LatexWriter::write(&reparsed.expr, &config).unwrap(),
+                expected,
+                "control U+{:04X} changed after a second write",
+                code as u32
+            );
+        }
+
+        for source in [
+            r"\char2 34",
+            r"\char2a",
+            r"\char2\alpha",
+            r"\char2^3",
+            r"\char2_3^4",
+            r#"\char"7f 8"#,
+        ] {
+            let first = roundtrip(source);
+            let second = roundtrip(&first);
+            assert_eq!(first, second, "source {source:?} was not stable");
+            assert_eq!(
+                crate::from_latex(source).unwrap().to_mathml().unwrap(),
+                crate::from_latex(&first).unwrap().to_mathml().unwrap(),
+                "source {source:?} changed its math structure as {first:?}",
+            );
+        }
+    }
     #[test]
     fn math_mode_literal_symbols_survive_public_formats_and_scripts() {
         for (input, expected) in [
