@@ -44,6 +44,20 @@ fn write_node_slice(
     while i < children.len() {
         let id = children[i];
 
+        // A negation overlay is stored as adjacent base and combining-solidus
+        // nodes after row normalization. Keep the pair in one argument so a
+        // large-operator command cannot absorb the slash as its body.
+        if i + 1 < children.len() && is_combining_slash(arena, children[i + 1]) {
+            let output_start = buf.len();
+            buf.push_str("\\centernot{");
+            write_node(buf, arena, id);
+            buf.push('}');
+            ends_with_command =
+                appended_ends_with_letter_command(buf, output_start, ends_with_command);
+            i += 2;
+            continue;
+        }
+
         // Stand-alone empty-base script (first child or following another
         // empty-base script). Write it with an explicit `{}` base so that it
         // stays a separate atom and remains stable across round-trips.
@@ -556,6 +570,27 @@ fn write_math_leaf_segment(buf: &mut String, s: &str, kind: MathLeafKind) {
     }
 }
 
+fn centernot_base(arena: &AstArena, span: NodeSpan) -> Option<NodeId> {
+    let children = arena.children(span);
+    if children.len() != 2 {
+        return None;
+    }
+    matches!(
+        *arena.node(children[1]),
+        CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            if arena.str_val(sid) == "\u{0338}"
+    )
+    .then_some(children[0])
+}
+
+fn is_combining_slash(arena: &AstArena, id: NodeId) -> bool {
+    matches!(
+        *arena.node(id),
+        CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            if arena.str_val(sid) == "\u{0338}"
+    )
+}
+
 enum ColorArgument<'a> {
     Html(&'a str),
     Named(&'a str),
@@ -610,6 +645,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Space(r) => write_space(buf, r),
 
         CompactNode::Row(span) => {
+            if let Some(base) = centernot_base(arena, span) {
+                buf.push_str("\\centernot{");
+                write_wrapped_content(buf, arena, base);
+                buf.push('}');
+                return;
+            }
             if is_idotsint_row(arena, id) {
                 write_idotsint(buf);
                 return;

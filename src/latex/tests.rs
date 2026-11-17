@@ -222,6 +222,33 @@ fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
 }
 
 #[test]
+fn centernot_overlays_stay_grouped_from_nary_and_ordinary_symbols() {
+    let config = Config::default();
+    for input in [
+        r"\centernot{\intop}t",
+        r"\centernot\intop t",
+        r"\centernot{\alpha}t",
+        r"\not=",
+        r"\not\in",
+    ] {
+        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut parsed.expr).unwrap();
+        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+        if input.contains("centernot") {
+            assert!(
+                first.starts_with(r"\centernot{"),
+                "overlay was serialized as an ungrouped glyph: {first:?}"
+            );
+        }
+
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+        normalize_compact_expr(&mut reparsed.expr).unwrap();
+        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        assert_eq!(first, second, "negated expression changed: {input:?}");
+    }
+}
+
+#[test]
 fn latex_node_limit_is_exact_for_compact_and_heap_readers() {
     // The whitespace before `^` exercises the parser's implicit-base path,
     // which creates the final script node after the preceding atom was parsed.
