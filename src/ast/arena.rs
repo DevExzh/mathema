@@ -2,7 +2,7 @@ use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 
 /// Arena-based storage for compact AST nodes.
 ///
-/// All nodes, child references, and strings are stored contiguously in vectors.
+/// Nodes, child references, and UTF-8 text each occupy a contiguous buffer.
 /// `NodeId`, `NodeSpan`, and `StrId` index into these vectors. This layout
 /// eliminates per-node heap allocations and gives cache-friendly traversal.
 ///
@@ -13,7 +13,7 @@ use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 pub struct AstArena {
     nodes: Vec<CompactNode>,
     children: Vec<NodeId>,
-    strings: Vec<u8>,
+    strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
     /// Always has one more entry than the number of interned strings.
     str_starts: Vec<u32>,
@@ -35,7 +35,7 @@ impl AstArena {
         Self {
             nodes: Vec::new(),
             children: Vec::new(),
-            strings: Vec::new(),
+            strings: String::new(),
             str_starts: vec![0],
             list_overflow: false,
             size_overflow: false,
@@ -52,7 +52,7 @@ impl AstArena {
         Self {
             nodes: Vec::with_capacity(nodes),
             children: Vec::with_capacity(children),
-            strings: Vec::with_capacity(strings),
+            strings: String::with_capacity(strings),
             str_starts,
             list_overflow: false,
             size_overflow: false,
@@ -94,7 +94,7 @@ impl AstArena {
         if self.strings.len() + s.len() > self.entry_limit || id >= self.entry_limit {
             self.size_overflow = true;
         } else {
-            self.strings.extend_from_slice(s.as_bytes());
+            self.strings.push_str(s);
         }
         self.str_starts.push(self.strings.len() as u32);
         StrId::new(id.min(self.entry_limit) as u32)
@@ -208,8 +208,7 @@ impl AstArena {
         let idx = id.index();
         let start = self.str_starts[idx] as usize;
         let end = self.str_starts[idx + 1] as usize;
-        // Safety: we only store valid UTF-8 via push_str
-        unsafe { std::str::from_utf8_unchecked(&self.strings[start..end]) }
+        &self.strings[start..end]
     }
 
     // ── Unsafe hot-path accessors (crate-internal; not part of the public API) ──
@@ -246,7 +245,7 @@ impl AstArena {
             let idx = id.index();
             let start = *self.str_starts.get_unchecked(idx) as usize;
             let end = *self.str_starts.get_unchecked(idx + 1) as usize;
-            std::str::from_utf8_unchecked(self.strings.get_unchecked(start..end))
+            self.strings.as_str().get_unchecked(start..end)
         }
     }
 
@@ -368,6 +367,21 @@ mod tests {
         assert_eq!(arena.str_val(s1), "hello");
         assert_eq!(arena.str_val(s2), "world");
         assert_eq!(arena.str_val(s3), "");
+    }
+
+    #[test]
+    fn unicode_string_slices_remain_valid() {
+        let mut arena = AstArena::new();
+        let greek = arena.push_str("αβ");
+        let math = arena.push_str("𝔸");
+        assert_eq!(arena.str_val(greek), "αβ");
+        assert_eq!(arena.str_val(math), "𝔸");
+        // The internal fast accessor shares the same UTF-8 checked backing
+        // store and must return the exact slice as the public accessor.
+        unsafe {
+            assert_eq!(arena.str_unchecked(greek), "αβ");
+            assert_eq!(arena.str_unchecked(math), "𝔸");
+        }
     }
 
     #[test]
