@@ -24,6 +24,7 @@ pub(crate) enum Token {
     ControlWord(String),
     ControlSymbol(char),
     Verbatim(String),
+    EndEnvironment,
     /// A frozen control-sequence token is emitted literally.  It carries the
     /// identity captured by `\let` or by ordinary `\noexpand` handling.
     Frozen(Box<Token>),
@@ -41,6 +42,7 @@ impl Token {
             Self::ControlWord(name) => name.len() + 1,
             Self::ControlSymbol(c) => c.len_utf8() + 1,
             Self::Verbatim(text) => text.len(),
+            Self::EndEnvironment => 0,
             Self::Frozen(token) => token.byte_len(),
         }
     }
@@ -209,12 +211,11 @@ impl Processor {
                 Token::Verbatim(text) => {
                     self.append(out, Token::Verbatim(text))?;
                 },
+                Token::EndEnvironment => {
+                    self.pop_scope();
+                    self.environment_scopes = self.environment_scopes.saturating_sub(1);
+                },
                 Token::ControlWord(name) => {
-                    if name == "__mathema_end_environment" {
-                        self.pop_scope();
-                        self.environment_scopes = self.environment_scopes.saturating_sub(1);
-                        continue;
-                    }
                     if mode == Mode::Edef {
                         if name == "noexpand" {
                             self.edef_noexpand(queue, out)?;
@@ -657,7 +658,7 @@ impl Processor {
                 // The end body must run before the environment scope is
                 // restored; place a private marker after it.
                 queue.push_front(Queued {
-                    token: Token::ControlWord("__mathema_end_environment".to_owned()),
+                    token: Token::EndEnvironment,
                     depth,
                 });
             }
@@ -1038,6 +1039,7 @@ fn token_identity(token: &Token) -> String {
         Token::ControlWord(name) => format!("\\{name}"),
         Token::ControlSymbol(c) => format!("\\{c}"),
         Token::Verbatim(text) => text.clone(),
+        Token::EndEnvironment => String::new(),
         Token::Frozen(inner) => token_identity(inner),
     }
 }
@@ -1090,6 +1092,7 @@ fn token_text(tokens: &[Token]) -> String {
                 out.push(*c);
             },
             Token::Verbatim(text) => out.push_str(text),
+            Token::EndEnvironment => {},
             Token::Frozen(inner) => out.push_str(&token_text(std::slice::from_ref(inner))),
         }
     }
@@ -1153,6 +1156,7 @@ fn render_tokens(tokens: &[Token]) -> String {
                 out.push(*c);
             },
             Token::Verbatim(text) => out.push_str(text),
+            Token::EndEnvironment => {},
             Token::Frozen(inner) => out.push_str(&render_tokens(std::slice::from_ref(inner))),
         }
     }
