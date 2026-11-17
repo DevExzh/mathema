@@ -57,14 +57,14 @@ fn write_node_slice(
             continue;
         }
 
-        // If this node is immediately followed by a *trailing* empty-base
-        // script, attach the script directly when safe. Attaching is only done
-        // for the last child in the row; otherwise a following sibling could be
-        // re-parsed as part of the scripted atom (e.g. `1_{\prime}^1{1}`
-        // instead of separate `1` and `{}_{\prime}^1{1}` atoms).
+        // A trailing implicit script can attach here when the next sibling
+        // cannot take it as a prescript. This also applies before explicit
+        // spacing, just as in row normalization.
         if i + 1 < children.len()
-            && i + 1 == children.len() - 1
             && is_script_with_empty_base(arena, children[i + 1])
+            && children.get(i + 2).is_none_or(|&after| {
+                !crate::ast::normalize::can_take_prescripts(*arena.node(after))
+            })
         {
             let output_start = buf.len();
             if i > 0 {
