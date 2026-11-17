@@ -275,10 +275,9 @@ mod integration_tests {
         let mut arena = arena::LayoutArena::new();
         let compact = render_to_svg_compact_arena(&result.expr, &options, &mut arena).unwrap();
         assert_eq!(heap, compact);
-        assert!(heap.contains("<rect"), "missing actuarial top rule: {heap}");
         assert!(
-            heap.contains("<path"),
-            "missing actuarial right rule: {heap}"
+            heap.matches("<rect").count() >= 2,
+            "missing connected top/right rules: {heap}"
         );
     }
 

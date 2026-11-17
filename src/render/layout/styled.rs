@@ -75,23 +75,22 @@ pub(super) fn layout_actuarial(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox
     let top_pad = 4.0 * rule;
     let inner = layout_node(content, ctx);
     let bottom_pad = (0.25 * size - inner.depth).max(0.0);
-    let total = inner.height + inner.depth + bottom_pad;
+    let body_height = inner.height;
+    let body_depth = inner.depth + bottom_pad;
+    let total = body_height + top_pad + body_depth;
     let right = LayoutBox {
         width: rule,
-        height: inner.height + bottom_pad,
-        depth: inner.depth,
-        kind: BoxKind::Delimiter {
-            ch: '|',
-            target_height: total,
-        },
+        height: body_height + top_pad,
+        depth: body_depth,
+        kind: BoxKind::Rule { thickness: total },
     };
     let body = LayoutBox {
         width: inner.width + rule,
-        height: inner.height.max(right.height),
-        depth: inner.depth.max(right.depth),
+        height: body_height,
+        depth: body_depth,
         kind: BoxKind::HBox {
             children: vec![
-                PositionedBox::new(0.0, bottom_pad, inner),
+                PositionedBox::at_origin(inner),
                 PositionedBox::at_origin(right),
             ],
         },
@@ -393,20 +392,19 @@ pub(super) fn layout_actuarial_arena(
     let bottom_pad = (0.25 * size - inner_depth).max(0.0);
     let inner_h = arena.get(inner_id).height;
     let inner_w = arena.get(inner_id).width;
-    let total = inner_h + inner_depth + bottom_pad;
+    let body_height = inner_h;
+    let body_depth = inner_depth + bottom_pad;
+    let total = body_height + top_pad + body_depth;
     let right_id = arena.alloc(ArenaLayoutBox {
         width: rule,
-        height: inner_h + bottom_pad,
-        depth: inner_depth,
-        kind: ArenaBoxKind::Delimiter {
-            ch: '|',
-            target_height: total,
-        },
+        height: body_height + top_pad,
+        depth: body_depth,
+        kind: ArenaBoxKind::Rule { thickness: total },
     });
     let body_start = arena.begin_children();
     arena.push_child(ArenaPositionedBox {
         dx: 0.0,
-        dy: bottom_pad,
+        dy: 0.0,
         id: inner_id,
     });
     arena.push_child(ArenaPositionedBox {
@@ -417,8 +415,8 @@ pub(super) fn layout_actuarial_arena(
     let body_children = arena.finish_children(body_start);
     let body_id = arena.alloc(ArenaLayoutBox {
         width: inner_w + rule,
-        height: inner_h.max(inner_h + bottom_pad),
-        depth: inner_depth,
+        height: body_height,
+        depth: body_depth,
         kind: ArenaBoxKind::HBox {
             children: body_children,
         },
