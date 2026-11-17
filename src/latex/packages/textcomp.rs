@@ -67,6 +67,7 @@ pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
     ("textless", "\u{003C}", SymbolClass::Ordinary),   // < LESS-THAN SIGN
     ("textgreater", "\u{003E}", SymbolClass::Ordinary), // > GREATER-THAN SIGN
     ("textquotesingle", "\u{0027}", SymbolClass::Ordinary), // ' APOSTROPHE
+    ("textellipsis", "\u{2026}", SymbolClass::Ordinary), // … HORIZONTAL ELLIPSIS
     // --- ordinals & superscript digits -------------------------------------
     ("textordmasculine", "\u{00BA}", SymbolClass::Ordinary), // º MASCULINE ORDINAL INDICATOR
     ("textordfeminine", "\u{00AA}", SymbolClass::Ordinary),  // ª FEMININE ORDINAL INDICATOR
@@ -168,6 +169,7 @@ mod tests {
         assert!(to_mathml("\\textbar").contains('\u{007C}'));
         // `'` is XML-escaped to `&apos;` in MathML output.
         assert!(to_mathml("\\textquotesingle").contains("&apos;"));
+        assert!(to_mathml("\\textellipsis").contains('\u{2026}'));
     }
 
     #[test]

@@ -265,7 +265,10 @@ fn clean_text_content(raw: &str) -> String {
                         i += 2;
                     }, // medium space
                     _ => {
-                        // Skip unknown commands: consume \word
+                        // Consume a control word. TeX drops source whitespace
+                        // immediately following it; keep control symbols such
+                        // as `\ ` and escaped punctuation on their existing
+                        // paths so explicitly requested spaces stay visible.
                         i += 1; // skip backslash
                         let start = i;
                         while i < len && bytes[i].is_ascii_alphabetic() {
@@ -276,6 +279,15 @@ fn clean_text_content(raw: &str) -> String {
                             let ch = raw[i..].chars().next().unwrap();
                             out.push(ch);
                             i += ch.len_utf8();
+                        } else if &raw[start..i] == "KaTeX" {
+                            out.push_str("KaTeX");
+                        } else if &raw[start..i] == "LaTeX" {
+                            out.push_str("LaTeX");
+                        } else if &raw[start..i] == "TeX" {
+                            out.push_str("TeX");
+                        } else if &raw[start..i] == "relax" {
+                            // Native TeX no-op: do not turn `\relax` into
+                            // visible identifier letters in a text run.
                         } else if let Some(ch) =
                             crate::unicode::symbols::latex_to_unicode(&raw[start..i])
                         {
@@ -287,7 +299,13 @@ fn clean_text_content(raw: &str) -> String {
                         {
                             out.push_str(text);
                         }
-                        // Otherwise drop the command name.
+                        // Otherwise drop the command name. A control word also
+                        // consumes any following source whitespace, just as
+                        // TeX does. Explicit `\ ` is handled above and is not
+                        // consumed here.
+                        while i < len && raw.as_bytes()[i].is_ascii_whitespace() {
+                            i += 1;
+                        }
                     },
                 }
             },
@@ -3763,6 +3781,10 @@ impl LatexCompactParser {
             "scriptscriptstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(3))),
             // Explicit line break.
             "newline" => Some(self.arena.push_node(CompactNode::Newline)),
+            // TeX's `\relax` terminates scanners and contributes no glyph or
+            // spacing.  Keep it as an empty row so scripts can recognize an
+            // empty argument without turning the command name into letters.
+            "relax" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
             // Line-break hints and equation tags are layout no-ops in this renderer.
             "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak" | "limits"
             | "nolimits" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),

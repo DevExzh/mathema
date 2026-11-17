@@ -8,6 +8,22 @@ fn invalid(input: &str) -> nom::Err<nom::error::Error<&str>> {
     nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
 }
 
+/// TeX consumes source whitespace following a control word.  Control symbols
+/// (`\ `, `\,`, escaped punctuation, and so on) do not have this lexical
+/// behavior.  Keep this local to text-box scanning so an explicitly escaped or
+/// group-separated space remains visible to the text decoder.
+fn skip_control_word_space<'a>(token: &str, input: &'a str) -> &'a str {
+    let bytes = token.as_bytes();
+    let is_control_word = bytes.len() > 2
+        && bytes.first() == Some(&b'\\')
+        && (bytes[1].is_ascii_alphabetic() || bytes[1] == b'@');
+    if is_control_word {
+        input.trim_start_matches(|ch: char| ch.is_ascii_whitespace())
+    } else {
+        input
+    }
+}
+
 /// An escaped dollar is a control symbol. Dollars in nested math groups
 /// (including a nested text argument) don't end the surrounding math run.
 fn math_end<'a>(input: &'a str, close: &str) -> Parsed<'a, (&'a str, &'a str)> {
@@ -130,12 +146,16 @@ impl LatexCompactParser {
             let name = token.strip_prefix('\\');
             let nested_style =
                 name.and_then(|name| text_style(name).map(|s| nested_text_style(style, name, s)));
-            let nested_box = matches!(token, r"\reflectbox" | r"\verb" | r"\LaTeX" | r"\TeX");
+            let nested_box = matches!(
+                token,
+                r"\reflectbox" | r"\verb" | r"\LaTeX" | r"\TeX" | r"\KaTeX" | r"\textellipsis"
+            );
             if close.is_none() && nested_style.is_none() && !nested_box {
                 if box_syntax
                     && (matches!(token, "^" | "_" | "&" | "#" | r"\)")
                         || name.is_some_and(|name| {
-                            !name.is_empty()
+                            name != "relax"
+                                && !name.is_empty()
                                 && name.bytes().all(|b| b.is_ascii_alphabetic())
                                 && crate::unicode::symbols::latex_to_unicode(name).is_none()
                                 && crate::latex::packages::lookup_package_symbol(name).is_none()
@@ -143,7 +163,7 @@ impl LatexCompactParser {
                 {
                     return Err(invalid(rest));
                 }
-                rest = after;
+                rest = skip_control_word_space(token, after);
                 continue;
             }
             self.push_hbox_text(&literal[..literal.len() - rest.len()], style, nodes);
@@ -170,8 +190,8 @@ impl LatexCompactParser {
                 rest = remaining;
             } else {
                 let (remaining, inner) = self.parse_command(rest)?;
-                nodes.push(inner);
-                rest = remaining;
+                self.push_hbox_node(inner, nodes);
+                rest = skip_control_word_space(token, remaining);
             }
             self.ensure_node_budget(rest)?;
             literal = rest;
@@ -185,8 +205,32 @@ impl LatexCompactParser {
             let text = clean_text_content(raw);
             if !text.is_empty() {
                 let sid = self.arena.push_str(&text);
-                nodes.push(self.arena.push_node(CompactNode::Text(style, sid)));
+                let node = self.arena.push_node(CompactNode::Text(style, sid));
+                self.push_hbox_node(node, nodes);
             }
+        }
+    }
+
+    fn push_hbox_node(&mut self, node: NodeId, nodes: &mut SmallVec<[NodeId; 8]>) {
+        if let CompactNode::Text(style, sid) = *self.arena.node(node)
+            && let Some(&last) = nodes.last()
+            && let CompactNode::Text(last_style, last_sid) = *self.arena.node(last)
+            && last_style == style
+        {
+            // A logo/control word such as `\KaTeX` is still text in the
+            // surrounding hbox. Merge adjacent runs of the same style so a
+            // source text group stays one canonical text node instead of
+            // gaining a structural brace row.
+            let mut joined = String::with_capacity(
+                self.arena.str_val(last_sid).len() + self.arena.str_val(sid).len(),
+            );
+            joined.push_str(self.arena.str_val(last_sid));
+            joined.push_str(self.arena.str_val(sid));
+            let joined_sid = self.arena.push_str(&joined);
+            nodes.pop();
+            nodes.push(self.arena.push_node(CompactNode::Text(style, joined_sid)));
+        } else {
+            nodes.push(node);
         }
     }
 }

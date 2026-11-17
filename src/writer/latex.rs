@@ -2574,6 +2574,56 @@ mod tests {
     }
 
     #[test]
+    fn relax_and_text_control_words_follow_tex_lexing() {
+        for (input, expected) in [
+            (r"\relax", ""),
+            (r"x\relax", "x"),
+            (r"\relax x", "x"),
+            (r"x^\relax", "x"),
+            (r"x_\relax", "x"),
+            (r"x^{\relax}", "x"),
+            (r"x_{\relax}", "x"),
+            (r"\relax^2", r"{}^{2}"),
+            (r"x^\relax y", "xy"),
+            (r"x^\relax_2", r"x_{2}"),
+            (r"\text{a\relax b}", r"\text{ab}"),
+            (r"\text{a \relax b}", r"\text{a b}"),
+            (r"\text{a\relax\ b}", r"\text{a b}"),
+            (r"\text{a\relax{ }b}", r"\text{a b}"),
+            (r"\hbox{a\relax b}", r"\text{ab}"),
+            (r"\text{\KaTeX}", r"\text{KaTeX}"),
+            (r"\text{a\KaTeX b}", r"\text{aKaTeXb}"),
+            (r"\text{a \KaTeX b}", r"\text{a KaTeXb}"),
+            (r"\text{a\KaTeX\ b}", r"\text{aKaTeX b}"),
+            (r"\text{a\KaTeX{ }b}", r"\text{aKaTeX b}"),
+            (r"\text{\textellipsis}", r"\ldots"),
+            (r"\text{a\textellipsis b}", r"{\text{a}\ldots\text{b}}"),
+            (r"\text{a \textellipsis b}", r"{\text{a }\ldots\text{b}}"),
+            (r"\text{a\textellipsis\ b}", r"{\text{a}\ldots\text{ b}}"),
+            (r"\kern2\relax", r"\;"),
+            (r"\kern2\relax em", r"\;em"),
+        ] {
+            let first = roundtrip(input);
+            assert_eq!(first, expected, "unexpected output for {input:?}");
+            assert_eq!(
+                first,
+                roundtrip(&first),
+                "output was not stable for {input:?}"
+            );
+        }
+
+        // The ellipsis command must retain its glyph rather than disappearing
+        // as an unknown text command.
+        let mathml = crate::convert(
+            r"\text{a\textellipsis b}",
+            crate::Format::LaTeX,
+            crate::Format::MathML,
+        )
+        .unwrap();
+        assert!(mathml.contains('…'), "ellipsis glyph was lost: {mathml}");
+    }
+
+    #[test]
     fn text_mode_math_spaces_are_not_split() {
         let first = crate::convert(
             "<math><mtext>𝔸\u{2004}𝔹</mtext></math>",
