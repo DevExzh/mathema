@@ -93,6 +93,16 @@ fn to_err(e: std::io::Error) -> crate::error::Error {
 }
 
 fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
+    write_node_in(w, node, false)
+}
+
+/// A positional MathML child must occupy exactly one element, even when it
+/// contains an operator followed by its operand.
+fn write_argument(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
+    write_node_in(w, node, true)
+}
+
+fn write_node_in(w: &mut XmlWriter, node: &MathNode, single_argument: bool) -> Result<()> {
     match node {
         MathNode::Number(s) => write_simple_element(w, "mn", s),
         MathNode::Identifier(s) => write_mi(w, s),
@@ -212,8 +222,8 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         MathNode::Subscript { base, sub } => {
             w.write_event(Event::Start(BytesStart::new("msub")))
                 .map_err(to_err)?;
-            write_node(w, base)?;
-            write_node(w, sub)?;
+            write_argument(w, base)?;
+            write_argument(w, sub)?;
             w.write_event(Event::End(BytesEnd::new("msub")))
                 .map_err(to_err)?;
             Ok(())
@@ -222,8 +232,8 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         MathNode::Superscript { base, sup } => {
             w.write_event(Event::Start(BytesStart::new("msup")))
                 .map_err(to_err)?;
-            write_node(w, base)?;
-            write_node(w, sup)?;
+            write_argument(w, base)?;
+            write_argument(w, sup)?;
             w.write_event(Event::End(BytesEnd::new("msup")))
                 .map_err(to_err)?;
             Ok(())
@@ -232,9 +242,9 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         MathNode::SubSup { base, sub, sup } => {
             w.write_event(Event::Start(BytesStart::new("msubsup")))
                 .map_err(to_err)?;
-            write_node(w, base)?;
-            write_node(w, sub)?;
-            write_node(w, sup)?;
+            write_argument(w, base)?;
+            write_argument(w, sub)?;
+            write_argument(w, sup)?;
             w.write_event(Event::End(BytesEnd::new("msubsup")))
                 .map_err(to_err)?;
             Ok(())
@@ -247,18 +257,18 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         } => {
             w.write_event(Event::Start(BytesStart::new("mmultiscripts")))
                 .map_err(to_err)?;
-            write_node(w, base)?;
+            write_argument(w, base)?;
             w.write_event(Event::Empty(BytesStart::new("mprescripts")))
                 .map_err(to_err)?;
             match pre_sub {
-                Some(s) => write_node(w, s)?,
+                Some(s) => write_argument(w, s)?,
                 None => {
                     w.write_event(Event::Empty(BytesStart::new("none")))
                         .map_err(to_err)?;
                 },
             }
             match pre_sup {
-                Some(s) => write_node(w, s)?,
+                Some(s) => write_argument(w, s)?,
                 None => {
                     w.write_event(Event::Empty(BytesStart::new("none")))
                         .map_err(to_err)?;
@@ -279,8 +289,8 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 elem.push_attribute(("accent", "true"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_node(w, base)?;
-            write_node(w, over)?;
+            write_argument(w, base)?;
+            write_argument(w, over)?;
             w.write_event(Event::End(BytesEnd::new("mover")))
                 .map_err(to_err)?;
             Ok(())
@@ -296,8 +306,8 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 elem.push_attribute(("accentunder", "true"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_node(w, base)?;
-            write_node(w, under)?;
+            write_argument(w, base)?;
+            write_argument(w, under)?;
             w.write_event(Event::End(BytesEnd::new("munder")))
                 .map_err(to_err)?;
             Ok(())
@@ -314,9 +324,9 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 elem.push_attribute(("accent", "true"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_node(w, base)?;
-            write_node(w, under)?;
-            write_node(w, over)?;
+            write_argument(w, base)?;
+            write_argument(w, under)?;
+            write_argument(w, over)?;
             w.write_event(Event::End(BytesEnd::new("munderover")))
                 .map_err(to_err)?;
             Ok(())
@@ -328,8 +338,8 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 elem.push_attribute(("linethickness", "0"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_node(w, num)?;
-            write_node(w, den)?;
+            write_argument(w, num)?;
+            write_argument(w, den)?;
             w.write_event(Event::End(BytesEnd::new("mfrac")))
                 .map_err(to_err)?;
             Ok(())
@@ -347,8 +357,8 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         MathNode::Root { index, radicand } => {
             w.write_event(Event::Start(BytesStart::new("mroot")))
                 .map_err(to_err)?;
-            write_node(w, radicand)?;
-            write_node(w, index)?;
+            write_argument(w, radicand)?;
+            write_argument(w, index)?;
             w.write_event(Event::End(BytesEnd::new("mroot")))
                 .map_err(to_err)?;
             Ok(())
@@ -361,6 +371,12 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             body,
             limits,
         } => {
+            let has_body = !is_empty_math_node(body);
+            let group = single_argument && has_body;
+            if group {
+                w.write_event(Event::Start(BytesStart::new("mrow")))
+                    .map_err(to_err)?;
+            }
             if let Some((tag, movable)) =
                 nary_script_tag(*op, *limits, sub.is_some(), sup.is_some())
             {
@@ -368,18 +384,22 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                     .map_err(to_err)?;
                 write_mo_char(w, *op, Some(movable))?;
                 if let Some(lower) = sub {
-                    write_node(w, lower)?;
+                    write_argument(w, lower)?;
                 }
                 if let Some(upper) = sup {
-                    write_node(w, upper)?;
+                    write_argument(w, upper)?;
                 }
                 w.write_event(Event::End(BytesEnd::new(tag)))
                     .map_err(to_err)?;
             } else {
                 write_mo_char(w, *op, None)?;
             }
-            if !is_empty_math_node(body) {
+            if has_body {
                 write_node(w, body)?;
+            }
+            if group {
+                w.write_event(Event::End(BytesEnd::new("mrow")))
+                    .map_err(to_err)?;
             }
             Ok(())
         },
@@ -400,7 +420,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 AccentPosition::Below => elem.push_attribute(("accentunder", "true")),
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_node(w, base)?;
+            write_argument(w, base)?;
             write_mo_char(w, *accent, None)?;
             w.write_event(Event::End(BytesEnd::new(tag)))
                 .map_err(to_err)?;
@@ -519,7 +539,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         },
 
         MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
-            write_node(w, content)
+            write_node_in(w, content, single_argument)
         },
 
         MathNode::Styled(style, children) => {
@@ -536,9 +556,9 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         },
         MathNode::MathChoice { display, .. } => {
             // MathML doesn't have mathchoice; output the display branch
-            write_node(w, display)
+            write_node_in(w, display, single_argument)
         },
-        MathNode::MathAtom { content, .. } => write_node(w, content),
+        MathNode::MathAtom { content, .. } => write_node_in(w, content, single_argument),
     }
 }
 
@@ -756,6 +776,14 @@ fn canonical_mathml_text(text: &str) -> Cow<'_, str> {
 
 #[inline]
 fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
+    write_node_fast_in(buf, arena, id, false);
+}
+
+fn write_argument_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
+    write_node_fast_in(buf, arena, id, true);
+}
+
+fn write_node_fast_in(buf: &mut String, arena: &AstArena, id: NodeId, single_argument: bool) {
     match *arena.node(id) {
         CompactNode::Number(sid) => simple_element(buf, "mn", arena.str_val(sid)),
         CompactNode::Identifier(sid) => write_mi_fast(buf, arena.str_val(sid)),
@@ -817,23 +845,23 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Subscript { base, sub } => {
             buf.push_str("<msub>");
-            write_node_fast(buf, arena, base);
-            write_node_fast(buf, arena, sub);
+            write_argument_fast(buf, arena, base);
+            write_argument_fast(buf, arena, sub);
             buf.push_str("</msub>");
         },
 
         CompactNode::Superscript { base, sup } => {
             buf.push_str("<msup>");
-            write_node_fast(buf, arena, base);
-            write_node_fast(buf, arena, sup);
+            write_argument_fast(buf, arena, base);
+            write_argument_fast(buf, arena, sup);
             buf.push_str("</msup>");
         },
 
         CompactNode::SubSup { base, sub, sup } => {
             buf.push_str("<msubsup>");
-            write_node_fast(buf, arena, base);
-            write_node_fast(buf, arena, sub);
-            write_node_fast(buf, arena, sup);
+            write_argument_fast(buf, arena, base);
+            write_argument_fast(buf, arena, sub);
+            write_argument_fast(buf, arena, sup);
             buf.push_str("</msubsup>");
         },
 
@@ -843,15 +871,15 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             pre_sup,
         } => {
             buf.push_str("<mmultiscripts>");
-            write_node_fast(buf, arena, base);
+            write_argument_fast(buf, arena, base);
             buf.push_str("<mprescripts/>");
             if pre_sub.is_some() {
-                write_node_fast(buf, arena, pre_sub);
+                write_argument_fast(buf, arena, pre_sub);
             } else {
                 buf.push_str("<none/>");
             }
             if pre_sup.is_some() {
-                write_node_fast(buf, arena, pre_sup);
+                write_argument_fast(buf, arena, pre_sup);
             } else {
                 buf.push_str("<none/>");
             }
@@ -868,8 +896,8 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             } else {
                 buf.push_str("<mover>");
             }
-            write_node_fast(buf, arena, base);
-            write_node_fast(buf, arena, over);
+            write_argument_fast(buf, arena, base);
+            write_argument_fast(buf, arena, over);
             buf.push_str("</mover>");
         },
 
@@ -883,8 +911,8 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             } else {
                 buf.push_str("<munder>");
             }
-            write_node_fast(buf, arena, base);
-            write_node_fast(buf, arena, under);
+            write_argument_fast(buf, arena, base);
+            write_argument_fast(buf, arena, under);
             buf.push_str("</munder>");
         },
 
@@ -899,9 +927,9 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             } else {
                 buf.push_str("<munderover>");
             }
-            write_node_fast(buf, arena, base);
-            write_node_fast(buf, arena, under);
-            write_node_fast(buf, arena, over);
+            write_argument_fast(buf, arena, base);
+            write_argument_fast(buf, arena, under);
+            write_argument_fast(buf, arena, over);
             buf.push_str("</munderover>");
         },
 
@@ -911,8 +939,8 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             } else {
                 buf.push_str("<mfrac>");
             }
-            write_node_fast(buf, arena, num);
-            write_node_fast(buf, arena, den);
+            write_argument_fast(buf, arena, num);
+            write_argument_fast(buf, arena, den);
             buf.push_str("</mfrac>");
         },
 
@@ -924,8 +952,8 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Root { index, radicand } => {
             buf.push_str("<mroot>");
-            write_node_fast(buf, arena, radicand);
-            write_node_fast(buf, arena, index);
+            write_argument_fast(buf, arena, radicand);
+            write_argument_fast(buf, arena, index);
             buf.push_str("</mroot>");
         },
 
@@ -936,22 +964,30 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             body,
             limits,
         } => {
+            let has_body = !is_empty_compact_node(arena, body);
+            let group = single_argument && has_body;
+            if group {
+                open_tag(buf, "mrow");
+            }
             if let Some((tag, movable)) = nary_script_tag(op, limits, sub.is_some(), sup.is_some())
             {
                 open_tag(buf, tag);
                 write_mo_char_fast(buf, op, Some(movable));
                 if sub.is_some() {
-                    write_node_fast(buf, arena, sub);
+                    write_argument_fast(buf, arena, sub);
                 }
                 if sup.is_some() {
-                    write_node_fast(buf, arena, sup);
+                    write_argument_fast(buf, arena, sup);
                 }
                 close_tag(buf, tag);
             } else {
                 write_mo_char_fast(buf, op, None);
             }
-            if !is_empty_compact_node(arena, body) {
+            if has_body {
                 write_node_fast(buf, arena, body);
+            }
+            if group {
+                close_tag(buf, "mrow");
             }
         },
 
@@ -971,7 +1007,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
                 AccentPosition::Above => buf.push_str(" accent=\"true\">"),
                 AccentPosition::Below => buf.push_str(" accentunder=\"true\">"),
             }
-            write_node_fast(buf, arena, base);
+            write_argument_fast(buf, arena, base);
             write_mo_char_fast(buf, accent, None);
             close_tag(buf, tag);
         },
@@ -1089,7 +1125,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
-            write_node_fast(buf, arena, content)
+            write_node_fast_in(buf, arena, content, single_argument)
         },
 
         CompactNode::Styled(style, span) => {
@@ -1135,10 +1171,10 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Newline => {},
         CompactNode::MathChoice { display, .. } => {
             // MathML doesn't have mathchoice; output the display branch
-            write_node_fast(buf, arena, display);
+            write_node_fast_in(buf, arena, display, single_argument);
         },
         CompactNode::MathAtom { content, .. } => {
-            write_node_fast(buf, arena, content);
+            write_node_fast_in(buf, arena, content, single_argument);
         },
     }
 }
@@ -1566,6 +1602,48 @@ mod tests {
             "compact output: {output}"
         );
         assert!(!output.contains("><<"), "compact output: {output}");
+    }
+
+    #[test]
+    fn nary_operands_stay_inside_fixed_arity_mathml_arguments() {
+        for (source, before, after) in [
+            (
+                r"\frac{\sum_i^n x}{2}",
+                "<mfrac><mrow><munderover>",
+                "</munderover><mi>x</mi></mrow><mn>2</mn></mfrac>",
+            ),
+            (
+                r"y^{\prod_k^n k}",
+                "<msup><mi>y</mi><mrow><munderover>",
+                "</munderover><mi>k</mi></mrow></msup>",
+            ),
+            (
+                r"\sqrt[\sum_i i]{z}",
+                "<mroot><mi>z</mi><mrow><munder>",
+                "</munder><mi>i</mi></mrow></mroot>",
+            ),
+            (
+                r"\overset{2}{\sum_i x}",
+                "<mrow><munder>",
+                "</munder><mi>x</mi></mrow><mn>2</mn></mover>",
+            ),
+            (
+                r"\frac{a}{\int_0^1 x}",
+                "<mfrac><mi>a</mi><mrow><msubsup>",
+                "</msubsup><mi>x</mi></mrow></mfrac>",
+            ),
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            for xml in [
+                parsed.to_mathml().unwrap(),
+                MathmlWriter::write(&parsed.expr(), &Config::default()).unwrap(),
+            ] {
+                assert!(
+                    xml.contains(before) && xml.contains(after),
+                    "{source}: {xml}"
+                );
+            }
+        }
     }
 
     #[test]

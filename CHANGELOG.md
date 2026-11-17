@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MathML groups an operator and its operand when they fill one fraction,
+  root, or script argument. For example, the numerator of
+  `\frac{\sum_i^n x}{2}` keeps the sum and its `x` together.
+
 - MathML output preserves TeX's movable default limits. Sum and product-family
   operators use movable under/over elements, while integral-family operators
   keep side limits and explicit `\limits`/`\nolimits` remain distinct.
