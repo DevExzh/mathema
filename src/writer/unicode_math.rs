@@ -8,6 +8,9 @@ use crate::writer::Writer as MathWriter;
 /// round-trippably represent. UnicodeMath is a lossy linear notation.
 fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
     match node {
+        CompactNode::Reflect { .. } => {
+            Some("UnicodeMath writes the content of a reflected box without mirroring it".into())
+        },
         CompactNode::Rule { .. } => {
             Some("UnicodeMath cannot represent a rule (\\rule/\\hline); it was dropped".into())
         },
@@ -17,10 +20,6 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         ),
         CompactNode::Boxed { .. } => Some(
             "UnicodeMath box (▭) round-trips structurally but drops background/border color".into(),
-        ),
-        CompactNode::Actuarial { .. } => Some(
-            "UnicodeMath cannot represent an actuarial enclosure; only the content is written"
-                .into(),
         ),
         CompactNode::Phantom(..) => Some(
             "UnicodeMath phantom (⟡) round-trips structurally but drops the phantom kind (v/h)"
@@ -287,7 +286,15 @@ fn write_node(out: &mut String, node: &MathNode) {
             write_paren_if_complex(out, inner);
         },
         MathNode::Actuarial(inner) => {
-            write_paren_if_complex(out, inner);
+            out.push('\u{25AD}');
+            out.push('(');
+            out.push_str("6&");
+            if matches!(&**inner, MathNode::Text(..)) {
+                write_node(out, inner);
+            } else {
+                write_paren_if_complex(out, inner);
+            }
+            out.push(')');
         },
 
         MathNode::Cancel { content, .. } => {
@@ -634,7 +641,15 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             write_paren_if_complex_c(out, arena, inner);
         },
         CompactNode::Actuarial(inner) => {
-            write_paren_if_complex_c(out, arena, inner);
+            out.push('\u{25AD}');
+            out.push('(');
+            out.push_str("6&");
+            if matches!(*arena.node(inner), CompactNode::Text(..)) {
+                write_node_c(out, arena, inner);
+            } else {
+                write_paren_if_complex_c(out, arena, inner);
+            }
+            out.push(')');
         },
 
         CompactNode::Cancel { content, .. } => {
@@ -888,5 +903,13 @@ mod tests {
             diags.iter().any(|d| d.message.contains("color")),
             "expected a color-loss diagnostic, got {diags:?}"
         );
+    }
+
+    #[test]
+    fn actuarial_uses_masked_box_syntax() {
+        let output = write(MathNode::Actuarial(Box::new(MathNode::Identifier(
+            "x".into(),
+        ))));
+        assert_eq!(output, "▭(6&x)");
     }
 }

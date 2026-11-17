@@ -92,7 +92,11 @@ struct MathmlCompactParser<'a> {
 impl<'a> MathmlCompactParser<'a> {
     fn new(input: &'a str) -> Result<Self> {
         let mut reader = Reader::from_str(input);
-        reader.config_mut().trim_text(true);
+        // Keep token text bytes intact so token-level MathML whitespace can be
+        // normalized by `read_text_content`. Formatting whitespace between
+        // token elements is still ignored by `parse_children` and
+        // `collect_remaining`.
+        reader.config_mut().trim_text(false);
         // Heuristic: MathML is verbose, roughly 1 node per 15 input bytes
         let est_nodes = input.len() / 15 + 4;
         Ok(Self {
@@ -353,11 +357,12 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(self.arena.push_node(CompactNode::Symbol(kind, sid)))
             },
             "mtext" => {
+                let mathvariant = get_attr(start, "mathvariant")
+                    .and_then(|variant| mathvariant_to_style(&variant))
+                    .unwrap_or(TextStyle::Normal);
                 let text = self.read_text_content(name)?;
                 let sid = self.arena.push_str(&text);
-                Ok(self
-                    .arena
-                    .push_node(CompactNode::Text(TextStyle::Normal, sid)))
+                Ok(self.arena.push_node(CompactNode::Text(mathvariant, sid)))
             },
             "ms" => {
                 // String literal: render content wrapped in quotes.
@@ -554,50 +559,40 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "menclose" => {
                 let notation = get_attr(start, "notation").unwrap_or_default();
-                let id = self.parse_child_id(name)?;
-                if notation.split_whitespace().any(|n| n == "actuarial") {
+                let mut id = self.parse_child_id(name)?;
+                let has = |mark: &str| notation.split_ascii_whitespace().any(|n| n == mark);
+                let diagonal = match (has("updiagonalstrike"), has("downdiagonalstrike")) {
+                    (true, true) => Some(StrokeKind::Cross),
+                    (true, false) => Some(StrokeKind::Forward),
+                    (false, true) => Some(StrokeKind::Backward),
+                    (false, false) => None,
+                };
+                let strokes = [
+                    diagonal,
+                    has("horizontalstrike").then_some(StrokeKind::Horizontal),
+                    has("verticalstrike").then_some(StrokeKind::Vertical),
+                ];
+                let has_stroke = strokes.iter().any(Option::is_some);
+                for stroke in strokes.into_iter().flatten() {
+                    id = self.arena.push_node(CompactNode::Cancel {
+                        stroke,
+                        content: id,
+                    });
+                }
+                let top_right = has("actuarial") || (has("top") && has("right"));
+                let full_box =
+                    has("box") || has("roundedbox") || (top_right && has("bottom") && has("left"));
+                if top_right && !full_box {
                     Ok(self.arena.push_node(CompactNode::Actuarial(id)))
-                } else if notation.contains("box") || notation.contains("roundedbox") {
+                } else if full_box || !has_stroke {
                     let empty = self.arena.push_str("");
                     Ok(self.arena.push_node(CompactNode::Boxed {
                         content: id,
                         bg_color: empty,
                         border_color: empty,
-                    }))
-                } else if notation.contains("updiagonalstrike")
-                    && notation.contains("downdiagonalstrike")
-                {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Cross,
-                        content: id,
-                    }))
-                } else if notation.contains("updiagonalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Forward,
-                        content: id,
-                    }))
-                } else if notation.contains("downdiagonalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Backward,
-                        content: id,
-                    }))
-                } else if notation.contains("horizontalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Horizontal,
-                        content: id,
-                    }))
-                } else if notation.contains("verticalstrike") {
-                    Ok(self.arena.push_node(CompactNode::Cancel {
-                        stroke: StrokeKind::Vertical,
-                        content: id,
                     }))
                 } else {
-                    let empty = self.arena.push_str("");
-                    Ok(self.arena.push_node(CompactNode::Boxed {
-                        content: id,
-                        bg_color: empty,
-                        border_color: empty,
-                    }))
+                    Ok(id)
                 }
             },
             "mstyle" => {
@@ -665,6 +660,10 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn read_text_content(&mut self, tag_name: &str) -> Result<String> {
+        self.read_text_content_with_space(tag_name)
+    }
+
+    fn read_text_content_with_space(&mut self, tag_name: &str) -> Result<String> {
         let mut text = String::new();
         loop {
             match self.reader.read_event() {
@@ -702,7 +701,7 @@ impl<'a> MathmlCompactParser<'a> {
                 _ => continue,
             }
         }
-        Ok(text.trim().to_string())
+        Ok(collapse_mathml_token_text(&text))
     }
 
     fn parse_table(&mut self, parent_tag: &str) -> Result<Vec<Vec<SmallVec<[NodeId; 8]>>>> {
@@ -1095,6 +1094,27 @@ fn parse_em_width(s: &str) -> Rational {
     Rational::zero()
 }
 
+/// Apply MathML token whitespace rules to the four XML whitespace characters.
+/// Non-ASCII spaces such as NBSP remain rendered characters.
+fn collapse_mathml_token_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_space = false;
+    let mut has_content = false;
+    for ch in text.chars() {
+        if matches!(ch, ' ' | '\t' | '\n' | '\r') {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && has_content {
+            out.push(' ');
+        }
+        out.push(ch);
+        has_content = true;
+        pending_space = false;
+    }
+    out
+}
+
 fn mathvariant_to_style(variant: &str) -> Option<TextStyle> {
     match variant {
         "normal" => Some(TextStyle::Normal),
@@ -1192,6 +1212,43 @@ mod tests {
     fn mtext() {
         let node = parse_one("<math><mtext>hello</mtext></math>");
         assert_eq!(node, MathNode::Text(TextStyle::Normal, "hello".into()));
+    }
+
+    #[test]
+    fn mtext_collapses_xml_whitespace_and_preserves_rendered_spaces() {
+        let variants = [
+            ("bold", TextStyle::Bold),
+            ("italic", TextStyle::Italic),
+            ("bold-italic", TextStyle::BoldItalic),
+            ("monospace", TextStyle::Monospace),
+            ("sans-serif", TextStyle::SansSerif),
+            ("bold-sans-serif", TextStyle::SansSerifBold),
+            ("sans-serif-italic", TextStyle::SansSerifItalic),
+            ("sans-serif-bold-italic", TextStyle::SansSerifBoldItalic),
+            ("double-struck", TextStyle::DoubleStruck),
+            ("script", TextStyle::Script),
+            ("bold-script", TextStyle::BoldScript),
+            ("fraktur", TextStyle::Fraktur),
+            ("bold-fraktur", TextStyle::BoldFraktur),
+        ];
+        for (variant, style) in variants {
+            let input = format!(
+                "<math><mtext mathvariant=\"{variant}\" xml:space=\"preserve\"> \t a \n &lt; b \r </mtext></math>"
+            );
+            let expected = MathNode::Text(style, "a < b".into());
+            assert_eq!(parse_one(&input), expected, "variant: {variant}");
+
+            let compact = MathmlReader::parse_compact(&input, &Config::default())
+                .unwrap()
+                .to_parse_result();
+            assert_eq!(compact.expr.nodes, vec![expected], "variant: {variant}");
+        }
+
+        let node = parse_one("<math><mtext>\u{00a0} a  b \u{00a0}</mtext></math>");
+        assert_eq!(
+            node,
+            MathNode::Text(TextStyle::Normal, "\u{00a0} a b \u{00a0}".into())
+        );
     }
 
     #[test]

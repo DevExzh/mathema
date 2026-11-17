@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LaTeX actuarial-angle notation (angl and angln) keeps its top and right
   enclosure through the AST, MathML, OMML, MTEF v5, SVG, and raster output.
 
+### Fixed
+
+- MathML `<mtext>` preserves its supported `mathvariant` style on both writer
+  paths. Token whitespace follows the MathML collapse rule. Leading, trailing,
+  and repeated spaces in AST text use NBSP where needed, while a single
+  interior space remains ordinary text. Non-ASCII rendered spaces survive.
+  Normal text omits the redundant `mathvariant` attribute.
+
 ### Added
 
 - **OMML paragraphs.** `OmmlReader::parse_paragraph` reads an `m:oMathPara`

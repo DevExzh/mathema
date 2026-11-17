@@ -483,7 +483,7 @@ fn golden_operator() {
 fn golden_text() {
     let latex = "\\text{if } x > 0";
     let mathml = convert(latex, Format::LaTeX, Format::MathML).unwrap();
-    assert!(mathml.contains("<mtext>"));
+    assert!(mathml.contains("<mtext"));
 }
 
 #[test]
