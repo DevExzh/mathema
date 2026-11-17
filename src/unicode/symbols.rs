@@ -697,6 +697,12 @@ pub fn nary_op_to_latex(ch: char) -> Option<&'static str> {
     NARY_OP_LATEX.get(&ch).copied()
 }
 
+/// Integral operators use side scripts by default in every TeX math style.
+#[inline]
+pub(crate) fn is_integral_operator(ch: char) -> bool {
+    matches!(ch, '∫'..='∰' | '∲' | '∳' | '⨌')
+}
+
 /// Check whether a LaTeX command is an n-ary (large) operator.
 #[inline]
 pub fn is_nary_command(command: &str) -> bool {

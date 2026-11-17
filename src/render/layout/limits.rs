@@ -1,11 +1,6 @@
 use super::*;
 
-/// Integral-like operators that default to `\nolimits` (side placement) in TeX.
-/// These use superscript/subscript even in display mode, unlike \sum and \prod.
-#[inline]
-pub(super) fn is_nolimits_op(ch: char) -> bool {
-    matches!(ch, '∫' | '∬' | '∭' | '∮' | '∯' | '∰')
-}
+use crate::unicode::symbols::is_integral_operator;
 
 /// Check whether a MathNode is a large (n-ary) operator symbol.
 pub(super) fn is_large_op(node: &MathNode) -> bool {
@@ -18,7 +13,7 @@ pub(super) fn is_large_op(node: &MathNode) -> bool {
 pub(super) fn wants_limits_above_below(node: &MathNode, style: MathStyle) -> bool {
     match node {
         MathNode::Symbol(SymbolKind::LargeOp, s) => {
-            style.is_display() && !s.chars().next().is_some_and(is_nolimits_op)
+            style.is_display() && !s.chars().next().is_some_and(is_integral_operator)
         },
         MathNode::Operator(op) => match op.limit_style {
             LimitStyle::AboveBelow => true,
@@ -67,7 +62,7 @@ pub(super) fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: Ma
                     .str_val(sid)
                     .chars()
                     .next()
-                    .is_some_and(is_nolimits_op)
+                    .is_some_and(is_integral_operator)
         },
         CompactNode::Operator { limits, .. } => match limits {
             LimitStyle::AboveBelow => true,
@@ -433,7 +428,7 @@ pub(super) fn layout_nary(
         LimitStyle::AboveBelow => true,
         LimitStyle::SubSup => false,
         // Integrals default to side-limits (nolimits); sums/products to above/below in display.
-        LimitStyle::Default => ctx.style.is_display() && !is_nolimits_op(op),
+        LimitStyle::Default => ctx.style.is_display() && !is_integral_operator(op),
     };
 
     if use_limits {
@@ -1285,7 +1280,7 @@ pub(super) fn layout_nary_arena(
         LimitStyle::AboveBelow => true,
         LimitStyle::SubSup => false,
         // Integrals default to side-limits (nolimits); sums/products to above/below in display.
-        LimitStyle::Default => ctx.style.is_display() && !is_nolimits_op(op),
+        LimitStyle::Default => ctx.style.is_display() && !is_integral_operator(op),
     };
 
     if use_limits {

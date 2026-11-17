@@ -1081,7 +1081,8 @@ fn resolve_entities_lossy(s: &str) -> String {
 }
 
 fn classify_mo(text: &str) -> SymbolKind {
-    let ch = text.trim().chars().next().unwrap_or(' ');
+    let text = text.trim();
+    let ch = text.chars().next().unwrap_or(' ');
     match ch {
         '+' | '-' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2217}'
         | '\u{2218}' | '*' => SymbolKind::BinaryOp,
@@ -1091,8 +1092,11 @@ fn classify_mo(text: &str) -> SymbolKind {
         '(' | '[' | '{' | '\u{27E8}' | '\u{230A}' | '\u{2308}' => SymbolKind::Open,
         ')' | ']' | '}' | '\u{27E9}' | '\u{230B}' | '\u{2309}' => SymbolKind::Close,
         ',' | ';' => SymbolKind::Punctuation,
-        '\u{2211}' | '\u{220F}' | '\u{2210}' | '\u{222B}' | '\u{222C}' | '\u{222D}'
-        | '\u{222E}' | '\u{22C2}' | '\u{22C3}' => SymbolKind::LargeOp,
+        _ if ch.len_utf8() == text.len()
+            && crate::unicode::symbols::nary_op_to_latex(ch).is_some() =>
+        {
+            SymbolKind::LargeOp
+        },
         '|' | '\u{2016}' => SymbolKind::Fence,
         _ => SymbolKind::Ordinary,
     }

@@ -1482,16 +1482,17 @@ fn wants_limits_above_below_large_op() {
 
 #[test]
 fn integral_large_op_no_above_below() {
-    // Integral operators should NOT get above/below limits even in display mode
-    let int = MathNode::Symbol(SymbolKind::LargeOp, "\u{222B}".into());
-    assert!(!wants_limits_above_below(&int, MathStyle::Display));
-    assert!(!wants_limits_above_below(&int, MathStyle::Text));
-    // Double integral
-    let iint = MathNode::Symbol(SymbolKind::LargeOp, "\u{222C}".into());
-    assert!(!wants_limits_above_below(&iint, MathStyle::Display));
-    // Contour integral
-    let oint = MathNode::Symbol(SymbolKind::LargeOp, "\u{222E}".into());
-    assert!(!wants_limits_above_below(&oint, MathStyle::Display));
+    for glyph in ['∫', '∬', '∭', '⨌', '∮', '∯', '∰', '∲', '∳'] {
+        let integral = MathNode::Symbol(SymbolKind::LargeOp, glyph.to_string());
+        assert!(
+            !wants_limits_above_below(&integral, MathStyle::Display),
+            "{glyph}"
+        );
+        assert!(
+            !wants_limits_above_below(&integral, MathStyle::Text),
+            "{glyph}"
+        );
+    }
 }
 
 #[test]
