@@ -622,30 +622,40 @@ impl CompactParser {
             },
         };
         let rest = chars.as_str();
-        if is_box
-            && rest.starts_with('(')
-            && let Some(end) = matching_paren_end(rest)
-        {
-            let inner = &rest[1..end - 1];
-            if let Some((mask, body)) = inner.split_once('&')
-                && let Ok(mask) = mask.parse::<u8>()
-            {
-                let ids = self
-                    .parse_expr_list(body)
-                    .map_err(|_| parse_error(body, nom::error::ErrorKind::Complete))?;
-                let content = self.flatten_single(&ids);
-                let node = if mask == 6 {
-                    CompactNode::Actuarial(content)
-                } else {
-                    let empty = self.arena.push_str("");
-                    CompactNode::Boxed {
-                        content,
-                        bg_color: empty,
-                        border_color: empty,
-                    }
-                };
-                return Ok((&rest[end..], self.push_node(node)));
+        if is_box && rest.starts_with('(') {
+            let mut body = &rest[1..];
+            let digits_end = body
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(body.len());
+            if digits_end == 0 || !body[digits_end..].starts_with('&') {
+                return Err(parse_error(rest, nom::error::ErrorKind::Tag));
             }
+            let mask = body[..digits_end]
+                .parse::<u8>()
+                .map_err(|_| parse_error(rest, nom::error::ErrorKind::TooLarge))?;
+            if mask != 6 {
+                return Err(parse_error(rest, nom::error::ErrorKind::Tag));
+            }
+            body = &body[digits_end + 1..];
+            self.enter(body)?;
+            let mut remaining = body;
+            let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+            loop {
+                self.tick(1);
+                if remaining.starts_with(')') {
+                    remaining = &remaining[1..];
+                    break;
+                }
+                let (tail, id) = self.parse_element(remaining)?;
+                if tail.len() == remaining.len() {
+                    return Err(parse_error(remaining, nom::error::ErrorKind::Verify));
+                }
+                ids.push(id);
+                remaining = tail;
+            }
+            self.depth -= 1;
+            let content = self.flatten_single(&ids);
+            return Ok((remaining, self.push_node(CompactNode::Actuarial(content))));
         }
         // The content is a child of the box, one level deeper.
         self.enter(rest)?;
@@ -1234,6 +1244,11 @@ mod tests {
         ));
         let nested = parse("▭(6&■(a&b@c&d))");
         assert!(matches!(&nested[0], MathNode::Actuarial(_)));
+        let limited = Config::default().with_max_nodes(Some(1));
+        assert!(matches!(
+            UnicodeMathReader::parse("▭(6&x)", &limited),
+            Err(Error::LimitExceeded { .. })
+        ));
     }
 
     #[test]
