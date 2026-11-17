@@ -60,10 +60,10 @@ fn write_node_slice(buf: &mut String, arena: &AstArena, children: &[NodeId]) {
             }
             let script_id = children[i + 1];
             let next = children.get(i + 2).copied();
-            if is_simple_token(arena, id) && !would_merge_with_buffer(buf, arena, id) {
-                // Safe to attach directly; brace the script argument if it would
-                // otherwise merge with the following sibling.
-                write_node(buf, arena, id);
+            if is_script_base_token(arena, id) && !would_merge_with_buffer(buf, arena, id) {
+                // Use the same canonical base spelling and bracing as an ordinary
+                // script node, rather than bypassing it on this fast path.
+                write_script_base(buf, arena, id);
                 write_empty_base_script_markers(buf, arena, script_id, next);
             } else if matches!(*arena.node(id), CompactNode::Row(_)) {
                 // Use the script-base writer so that a single-child Row wrapping
@@ -1462,39 +1462,105 @@ fn escape_text_content(s: &str) -> String {
     out
 }
 
-/// Write the base of a sub/superscript. In addition to the usual bracing
-/// rules, force braces when the base is a single-character token that would
-/// merge with the immediately preceding output (e.g. `6` after another `6`).
-/// Without the braces, re-parsing would combine the base with the preceding
-/// token and the writer would emit a different form on the next round-trip.
+/// Write the base of a sub/superscript. Single-glyph identifiers and symbols
+/// use the same token spelling and canonical bracing, including through a
+/// single-child Row or a sizing wrapper that will be dropped. Bases that would
+/// merge with the preceding output remain explicitly grouped.
 #[inline]
 fn write_script_base(buf: &mut String, arena: &AstArena, id: NodeId) {
     if is_idotsint_row(arena, id) {
         write_idotsint(buf);
         return;
     }
-    // A single-child Row wrapping a simple token must inherit the token's
-    // merge check, otherwise `pp^{\prime}` would be written as `pp^{
-    // \prime}` and re-parsed as the multi-letter identifier `pp` carrying
-    // the prime.
-    if let CompactNode::Row(span) = *arena.node(id) {
-        let children = arena.children(span);
-        if children.len() == 1
-            && is_simple_token(arena, children[0])
-            && would_merge_with_buffer(buf, arena, children[0])
-        {
-            buf.push('{');
-            write_node(buf, arena, id);
-            buf.push('}');
-            return;
-        }
-    }
-    if is_simple_token(arena, id) && would_merge_with_buffer(buf, arena, id) {
-        buf.push('{');
-        write_node(buf, arena, id);
-        buf.push('}');
-    } else {
+    let token = match *arena.node(id) {
+        CompactNode::Row(span) => {
+            let children = arena.children(span);
+            match children {
+                [child] if is_script_base_token(arena, *child) => Some(*child),
+                _ => None,
+            }
+        },
+        _ => is_script_base_token(arena, id).then_some(id),
+    };
+    let Some(token) = token else {
         write_braced(buf, arena, id);
+        return;
+    };
+    let braced =
+        script_base_needs_braces(arena, token) || would_merge_with_buffer(buf, arena, token);
+    if braced {
+        buf.push('{');
+    }
+    write_script_base_token(buf, arena, token);
+    if braced {
+        buf.push('}');
+    }
+}
+
+/// Whether this node is emitted as one atomic script-base token rather than a
+/// compound expression. Non-ASCII symbols are included; their canonical braces
+/// are decided separately from the written glyph, not from the AST node kind.
+fn is_script_base_token(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Number(_) => true,
+        CompactNode::Identifier(_) | CompactNode::Symbol(_, _) => {
+            script_base_char(arena, id).is_some()
+        },
+        CompactNode::Scaled { content, .. }
+            if !matches!(
+                *arena.node(content),
+                CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, ..)
+            ) =>
+        {
+            is_script_base_token(arena, content)
+        },
+        _ => false,
+    }
+}
+
+/// Preserve the established grouping of non-alphabetic Unicode symbols. ASCII
+/// and alphabetic glyphs need no node-type-specific braces: both their raw and
+/// preferred-command forms are single atoms before a script marker.
+fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Identifier(_) | CompactNode::Symbol(_, _) => {
+            script_base_char(arena, id).is_some_and(|ch| !ch.is_ascii() && !ch.is_alphabetic())
+        },
+        CompactNode::Scaled { content, .. } => script_base_needs_braces(arena, content),
+        _ => false,
+    }
+}
+
+fn script_base_char(arena: &AstArena, id: NodeId) -> Option<char> {
+    let sid = match *arena.node(id) {
+        CompactNode::Identifier(sid) | CompactNode::Symbol(_, sid) => sid,
+        _ => return None,
+    };
+    let mut chars = arena.str_val(sid).chars();
+    let (Some(ch), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    Some(ch)
+}
+
+/// Write one atomic base while preserving the canonical glyph spelling for the
+/// node. ASCII identifiers use the symbol writer so punctuation stays literal
+/// (`:` rather than the `\colon` command); Unicode identifiers use the regular
+/// identifier writer so their preferred commands (`\ell`, `\Re`, …) survive.
+/// Sizing wrappers around non-delimiters are dropped by the regular node writer
+/// and therefore recurse into their content here as well.
+fn write_script_base_token(buf: &mut String, arena: &AstArena, id: NodeId) {
+    match *arena.node(id) {
+        CompactNode::Identifier(sid) => {
+            let ch = arena.str_val(sid).chars().next();
+            if ch.is_some_and(|ch| ch.is_ascii()) {
+                write_symbol(buf, arena, SymbolKind::Ordinary, sid);
+            } else {
+                write_identifier(buf, arena, sid);
+            }
+        },
+        CompactNode::Scaled { content, .. } => write_script_base_token(buf, arena, content),
+        _ => write_node(buf, arena, id),
     }
 }
 
@@ -1828,5 +1894,65 @@ mod tests {
             roundtrip("\\fcolorbox{blue}{red}{C}"),
             "\\fcolorbox{blue}{red}{C}"
         );
+    }
+
+    #[test]
+    fn unnormalized_empty_group_script_bases_are_stable() {
+        for (input, expected) in [
+            ("\u{2113}{}^2", r"\ell^{2}"),
+            (r"\ell{}^2", r"\ell^{2}"),
+            (r"\Finv{}^2", "\u{2132}^{2}"),
+            (r"\textohm{}^2", r"\Omega^{2}"),
+        ] {
+            let out1 = crate::from_latex(input).unwrap().to_latex().unwrap();
+            let out2 = crate::from_latex(&out1).unwrap().to_latex().unwrap();
+            assert_eq!(out1, expected, "non-canonical output for {input:?}");
+            assert_eq!(out1, out2, "unnormalized round-trip failed for {input:?}");
+        }
+    }
+
+    #[test]
+    fn direct_compact_row_script_bases_use_token_rules() {
+        let config = Config::default();
+        for (base, expected) in [
+            (MathNode::Identifier("\u{2113}".into()), r"\ell^{2}"),
+            (MathNode::Identifier("\u{211C}".into()), r"\Re^{2}"),
+            (MathNode::Identifier("\u{03B1}".into()), r"\alpha^{2}"),
+            (MathNode::Identifier(":".into()), ":^{2}"),
+            (
+                MathNode::Symbol(SymbolKind::Ordinary, "\u{2132}".into()),
+                "\u{2132}^{2}",
+            ),
+        ] {
+            let expr =
+                CompactExpr::from_math_expr(&MathExpr::inline(vec![MathNode::Superscript {
+                    base: Box::new(MathNode::Row(vec![base])),
+                    sup: Box::new(MathNode::Number("2".into())),
+                }]))
+                .unwrap();
+            let out1 = LatexWriter::write_compact(&expr, &config).unwrap();
+            let reparsed = LatexReader::parse_compact(&out1, &config).unwrap();
+            let out2 = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+            assert_eq!(out1, expected);
+            assert_eq!(out1, out2);
+        }
+    }
+
+    #[test]
+    fn empty_row_before_trailing_empty_base_script_is_safe() {
+        let config = Config::default();
+        let expr = MathExpr::inline(vec![
+            MathNode::Row(Vec::new()),
+            MathNode::Superscript {
+                base: Box::new(MathNode::Row(Vec::new())),
+                sup: Box::new(MathNode::Number("2".into())),
+            },
+        ]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let out1 = LatexWriter::write_compact(&compact, &config).unwrap();
+        let reparsed = LatexReader::parse_compact(&out1, &config).unwrap();
+        let out2 = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        assert_eq!(out1, "{}^{2}");
+        assert_eq!(out1, out2);
     }
 }
