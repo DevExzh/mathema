@@ -1630,6 +1630,7 @@ fn fuzz_repro_roundtrip_misc() {
     for input in [
         "\u{2212}-B",
         "A\u{2062}",
+        r"\teal^\teal",
         "$\u{2004}-'\t'\t\t",
         "±|@",
         "×x",
