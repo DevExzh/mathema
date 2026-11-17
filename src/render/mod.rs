@@ -97,6 +97,21 @@ impl Default for RenderOptions {
 }
 
 impl RenderOptions {
+    /// Validate the numeric options used to turn layout units into pixels.
+    ///
+    /// Layout itself works in em units, so an invalid font size would only be
+    /// discovered while emitting output. Rejecting it at the public rendering
+    /// boundary keeps all SVG entry points from producing malformed dimensions
+    /// (and gives raster rendering the same behavior).
+    pub(crate) fn validate(&self) -> Result<()> {
+        if !self.font_size_px.is_finite() || self.font_size_px <= 0.0 {
+            return Err(crate::error::Error::Render {
+                message: "font_size_px must be finite and greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+
     /// Resolve whether display mode is active, considering expr metadata.
     #[must_use]
     pub fn is_display(&self, expr: &MathExpr) -> bool {
@@ -107,6 +122,7 @@ impl RenderOptions {
 
 /// Render a math expression to an SVG string.
 pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String> {
+    options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
@@ -136,6 +152,7 @@ pub fn render_to_svg_compact_arena(
     options: &RenderOptions,
     layout_arena: &mut arena::LayoutArena,
 ) -> Result<String> {
+    options.validate()?;
     crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
     let style = if options
         .display_mode
@@ -157,6 +174,7 @@ pub fn render_to_svg_compact_arena(
 /// glyph outlines from Latin Modern Math are embedded as `<path>` elements.
 #[cfg(feature = "render")]
 pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Result<String> {
+    options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     let style = if options.is_display(expr) {
         style::MathStyle::Display
@@ -194,6 +212,7 @@ pub fn render_to_svg_standalone_compact_arena(
     options: &RenderOptions,
     layout_arena: &mut arena::LayoutArena,
 ) -> Result<String> {
+    options.validate()?;
     crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
     let style = if options
         .display_mode
@@ -240,6 +259,39 @@ mod integration_tests {
             render_to_svg_compact_arena(&result.expr, &options, &mut layout_arena).unwrap();
 
         assert_eq!(heap_svg, arena_svg);
+    }
+
+    #[test]
+    fn svg_entry_points_reject_invalid_font_sizes() {
+        use crate::reader::Reader;
+
+        let config = crate::error::Config::default();
+        let compact = crate::reader::latex::LatexReader::parse_compact("x", &config).unwrap();
+        let expr = compact.expr.to_math_expr();
+
+        for font_size_px in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let options = RenderOptions {
+                font_size_px,
+                ..RenderOptions::default()
+            };
+            let outputs = [
+                render_to_svg(&expr, &options),
+                render_to_svg_compact(&compact.expr, &options),
+                render_to_svg_standalone(&expr, &options),
+                render_to_svg_standalone_compact(&compact.expr, &options),
+            ];
+            for output in outputs {
+                match output {
+                    Err(crate::error::Error::Render { message }) => {
+                        assert!(
+                            message.contains("font_size_px"),
+                            "unexpected validation error: {message}"
+                        );
+                    },
+                    other => panic!("invalid font size should be rejected: {other:?}"),
+                }
+            }
+        }
     }
 }
 

@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- SVG and raster rendering reject non-finite or non-positive `font_size_px`
+  values; raster rendering applies the same validation to its `scale` factor.
+
 - MTEF writer rewritten to follow `MTEFv5.md` and `MTEFv3.md` and the layout
   MathType and Equation Editor write: header, MathType's default encoding,
   font and EQN_PREFS definitions (MTEF 5), typesize records where the size

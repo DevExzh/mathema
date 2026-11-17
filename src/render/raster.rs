@@ -86,12 +86,26 @@ impl Default for RasterOptions {
     }
 }
 
+impl RasterOptions {
+    /// Validate the numeric options used to size the output image.
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.render.validate()?;
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err(crate::error::Error::Render {
+                message: "scale must be finite and greater than zero".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Render a math expression directly to raster image bytes (PNG or JPEG).
 pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u8>> {
+    options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
     let style = if options.render.is_display(expr) {
         MathStyle::Display
@@ -104,6 +118,7 @@ pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u
 
 /// Render a compact math expression directly to raster image bytes (PNG or JPEG).
 pub fn render_to_image_compact(expr: &CompactExpr, options: &RasterOptions) -> Result<Vec<u8>> {
+    options.validate()?;
     crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
     let style = if options
         .render
@@ -1901,6 +1916,60 @@ mod tests {
             png_2x.len() > png_1x.len(),
             "2x scale should produce larger PNG"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_font_size_and_scale() {
+        use crate::reader::Reader;
+
+        let expr = MathExpr::inline(vec![MathNode::Number("1".into())]);
+        let config = crate::error::Config::default();
+        let compact = crate::reader::latex::LatexReader::parse_compact("1", &config).unwrap();
+
+        for font_size_px in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let options = RasterOptions {
+                render: RenderOptions {
+                    font_size_px,
+                    ..RenderOptions::default()
+                },
+                ..RasterOptions::default()
+            };
+            for output in [
+                render_to_image(&expr, &options),
+                render_to_image_compact(&compact.expr, &options),
+            ] {
+                match output {
+                    Err(crate::error::Error::Render { message }) => {
+                        assert!(
+                            message.contains("font_size_px"),
+                            "unexpected validation error: {message}"
+                        );
+                    },
+                    other => panic!("invalid font size should be rejected: {other:?}"),
+                }
+            }
+        }
+
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let options = RasterOptions {
+                scale,
+                ..RasterOptions::default()
+            };
+            for output in [
+                render_to_image(&expr, &options),
+                render_to_image_compact(&compact.expr, &options),
+            ] {
+                match output {
+                    Err(crate::error::Error::Render { message }) => {
+                        assert!(
+                            message.contains("scale"),
+                            "unexpected validation error: {message}"
+                        );
+                    },
+                    other => panic!("invalid scale should be rejected: {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]
