@@ -274,7 +274,11 @@ impl Processor {
                     }
                 },
                 Token::ControlSymbol(symbol) => {
-                    self.append(out, Token::ControlSymbol(symbol))?;
+                    let name = control_key_symbol(symbol);
+                    let expanded = self.expand_macro_from_queue(&name, depth, queue, out, mode)?;
+                    if !expanded {
+                        self.append(out, Token::ControlSymbol(symbol))?;
+                    }
                     if symbol == '\\'
                         && self
                             .parser_environments
@@ -531,7 +535,7 @@ impl Processor {
         protected: bool,
         txn: &mut QueueTxn<'_>,
     ) -> Result<bool, usize> {
-        let Some(target) = txn.pop_control_word() else {
+        let Some(target) = txn.pop_control_sequence() else {
             return Ok(false);
         };
         txn.skip_whitespace();
@@ -575,18 +579,18 @@ impl Processor {
     }
 
     fn parse_let_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
-        let Some(target) = txn.pop_control_word() else {
+        let Some(target) = txn.pop_control_sequence() else {
             return Ok(false);
         };
         txn.skip_whitespace();
         if matches!(txn.peek_token(), Some(Token::Char('='))) {
             txn.pop();
-            if matches!(txn.peek_token(), Some(Token::Char(' ')))
-                && !matches!(txn.peek_token_at(1), Some(Token::EndGroup))
-            {
+            // Exactly one space after an equals sign is optional syntax; a
+            // second space is the source token being assigned (for example
+            // the `\let\space= ` idiom).
+            if matches!(txn.peek_token(), Some(Token::Char(' '))) {
                 txn.pop();
             }
-            txn.skip_whitespace();
         }
         let Some(source) = txn.pop_token() else {
             return Ok(false);
@@ -598,7 +602,9 @@ impl Processor {
             Token::ControlWord(name) => self
                 .lookup_macro(name)
                 .unwrap_or_else(|| Meaning::Token(source.clone())),
-            Token::ControlSymbol(symbol) => Meaning::Token(Token::ControlSymbol(*symbol)),
+            Token::ControlSymbol(symbol) => self
+                .lookup_macro(&control_key_symbol(*symbol))
+                .unwrap_or_else(|| Meaning::Token(Token::ControlSymbol(*symbol))),
             _ => Meaning::Token(source),
         };
         self.define_macro(target, meaning, global);
@@ -626,7 +632,7 @@ impl Processor {
     /// deliberately not macro expansion: the assigned meaning is a snapshot
     /// just like `\let`.
     fn parse_futurelet_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
-        let Some(target) = txn.pop_control_word() else {
+        let Some(target) = txn.pop_control_sequence() else {
             return Ok(false);
         };
         let Some(middle) = txn.pop() else {
@@ -640,7 +646,9 @@ impl Processor {
             Token::ControlWord(name) => self
                 .lookup_macro(name)
                 .unwrap_or_else(|| Meaning::Token(source.clone())),
-            Token::ControlSymbol(symbol) => Meaning::Token(Token::ControlSymbol(*symbol)),
+            Token::ControlSymbol(symbol) => self
+                .lookup_macro(&control_key_symbol(*symbol))
+                .unwrap_or_else(|| Meaning::Token(Token::ControlSymbol(*symbol))),
             _ => Meaning::Token(source),
         };
         self.define_macro(target, meaning, global);
@@ -961,9 +969,10 @@ impl<'a> QueueTxn<'a> {
         }
     }
 
-    fn pop_control_word(&mut self) -> Option<String> {
+    fn pop_control_sequence(&mut self) -> Option<String> {
         match self.pop_token()? {
             Token::ControlWord(name) => Some(name),
+            Token::ControlSymbol(symbol) => Some(control_key_symbol(symbol)),
             _ => None,
         }
     }
@@ -988,10 +997,11 @@ impl<'a> QueueTxn<'a> {
             }
             return match inner.get(i)? {
                 Token::ControlWord(name) => Some(name.clone()),
+                Token::ControlSymbol(symbol) => Some(control_key_symbol(*symbol)),
                 _ => None,
             };
         }
-        self.pop_control_word()
+        self.pop_control_sequence()
     }
 
     fn pop_group(&mut self) -> Option<Vec<Token>> {
@@ -1205,6 +1215,16 @@ fn token_identity(token: &Token) -> String {
     }
 }
 
+fn control_key_symbol(symbol: char) -> String {
+    // Word names are stored without a leading backslash.  A nonprinting
+    // prefix keeps control-symbol meanings in the same map without colliding
+    // with a word such as `space`.
+    let mut key = String::with_capacity(2);
+    key.push('\u{0}');
+    key.push(symbol);
+    key
+}
+
 fn parser_environment_kind(name: &str) -> Option<bool> {
     // The first group is the environment itself; matrix/array-family bodies
     // are split into independently scoped cells by `&` and `\\`.
@@ -1400,8 +1420,14 @@ fn render_tokens(tokens: &[Token]) -> String {
             },
             Token::EndEnvironment => {},
             Token::Frozen(inner) => {
-                out.push_str(&render_tokens(std::slice::from_ref(inner)));
-                previous_control_word = None;
+                if let Token::ControlWord(name) = inner.as_ref() {
+                    out.push('\\');
+                    out.push_str(name);
+                    previous_control_word = Some(name);
+                } else {
+                    out.push_str(&render_tokens(std::slice::from_ref(inner)));
+                    previous_control_word = None;
+                }
             },
         }
     }

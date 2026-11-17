@@ -1090,8 +1090,14 @@ mod tests {
         assert_eq!(preprocess(r"\def\foo{1}\let\bar\foo\def\foo{2}\bar"), "1");
         assert_eq!(preprocess(r"\let\foo=x\noexpand\foo"), "x");
         assert_eq!(preprocess(r"\let\foo=x\edef\bar{\foo}\def\foo{y}\bar"), "y");
+        assert_eq!(preprocess(r"\let\foo=\alpha\foo x"), r"\alpha x");
         assert_eq!(preprocess(r"\let\foo{\sqrt\foo1}"), r"\sqrt{1}");
         assert_eq!(preprocess(r"\let\equals==a\equals b"), "a= b");
+        assert_eq!(
+            preprocess(r"\def\:{\let\space= }\: \text{\space}"),
+            r"\text{ }"
+        );
+        assert_eq!(preprocess(r"\def\:{a}\let\x\:\x"), "a");
     }
 
     #[test]
