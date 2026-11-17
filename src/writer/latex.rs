@@ -532,11 +532,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push('\\');
                 buf.push_str(cmd);
                 buf.push('{');
-                // Ligature sequences such as '' and --, and the active '~'
-                // shorthand for a non-breaking space, would be re-parsed
-                // differently on the next read. Escape them so the text content
-                // round-trips faithfully.
-                buf.push_str(&escape_text_content(s));
+                write_text_content(buf, s);
                 buf.push('}');
             }
         },
@@ -1507,42 +1503,25 @@ fn write_verb(buf: &mut String, content: &str) {
     buf.push(delim);
 }
 
-/// Escape characters inside a text-mode command (\text, \texttt, ...) that
-/// would be interpreted specially when the output is read back in. Ligatures
-/// such as '' and -- become their Unicode equivalents, active shorthand '~'
-/// becomes a non-breaking space, and LaTeX special characters are backslash-
-/// escaped so they survive re-parsing.
-fn escape_text_content(s: &str) -> String {
-    if !s.contains('\'')
-        && !s.contains('`')
-        && !s.contains('-')
-        && !s.contains('~')
-        && !s.contains('%')
-        && !s.contains('#')
-        && !s.contains('$')
-        && !s.contains('&')
-        && !s.contains('_')
-        && !s.contains('^')
-        && !s.contains('{')
-        && !s.contains('}')
-    {
-        return s.to_string();
+/// Write decoded text so that text-mode syntax and ligatures cannot change it.
+fn write_text_content(buf: &mut String, text: &str) {
+    let mut previous = None;
+    for ch in text.chars() {
+        if previous == Some(ch) && matches!(ch, '-' | '`' | '\'') {
+            buf.push_str("{}");
+        }
+        match ch {
+            '\\' => buf.push_str(r"\textbackslash{}"),
+            '~' => buf.push_str(r"\textasciitilde{}"),
+            '^' => buf.push_str(r"\textasciicircum{}"),
+            '%' | '#' | '$' | '&' | '_' | '{' | '}' => {
+                buf.push('\\');
+                buf.push(ch);
+            },
+            _ => buf.push(ch),
+        }
+        previous = Some(ch);
     }
-    let mut out = s.to_string();
-    out = out.replace("---", "\u{2014}"); // em dash
-    out = out.replace("--", "\u{2013}"); // en dash
-    out = out.replace("``", "\u{201C}"); // left double quote
-    out = out.replace("''", "\u{201D}"); // right double quote
-    out = out.replace('~', "\u{00A0}"); // non-breaking space
-    out = out.replace('%', "\\%");
-    out = out.replace('#', "\\#");
-    out = out.replace('$', "\\$");
-    out = out.replace('&', "\\&");
-    out = out.replace('_', "\\_");
-    out = out.replace('^', "\\^");
-    out = out.replace('{', "\\{");
-    out = out.replace('}', "\\}");
-    out
 }
 
 /// Write the base of a sub/superscript. Single-glyph identifiers and symbols
@@ -2125,6 +2104,34 @@ mod tests {
                     crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
                 assert_eq!(second, first, "{tag} space: {space:?}");
             }
+        }
+    }
+
+    #[test]
+    fn decoded_text_round_trips_without_reinterpreting_literals() {
+        let config = Config::default();
+        let literal = r"---''~^\{}#%_$&x";
+        let expr = MathExpr::inline(vec![MathNode::Text(TextStyle::Normal, literal.into())]);
+        let latex = LatexWriter::write(&expr, &config).unwrap();
+        assert_eq!(
+            LatexReader::parse(&latex, &config).unwrap().expr.nodes,
+            expr.nodes
+        );
+        assert_eq!(roundtrip(&latex), latex);
+
+        for (input, literal) in [
+            (r"\text\textbackslash", "\\"),
+            (r"\text\textasciitilde", "~"),
+            (r"\text\textasciicircum", "^"),
+            (r"\text{\\{x}}", " x"),
+        ] {
+            let output = roundtrip(input);
+            assert_eq!(
+                LatexReader::parse(&output, &config).unwrap().expr.nodes,
+                vec![MathNode::Text(TextStyle::Normal, literal.into())],
+                "{input}"
+            );
+            assert_eq!(roundtrip(&output), output);
         }
     }
 

@@ -143,6 +143,31 @@ mod tests {
     }
 
     #[test]
+    fn text_takes_one_unexpanded_token() {
+        for (input, braced) in [
+            (r"\sqrt \text x", r"\sqrt{\text{x}}"),
+            (r"x_\text x", r"x_{\text{x}}"),
+            (r"\textbf 𝔸b", r"\textbf{𝔸}b"),
+            ("\\text e\u{0301}x", "\\text{e\u{0301}}x"),
+            (r"\text\%x", r"\text{\%}x"),
+            (r"\text\{x", r"\text{\{}x"),
+            (r"\textit\alpha x", r"\textit{α}x"),
+            (
+                r"\newcommand{\word}{alpha}\textbf\word y",
+                r"\textbf{alpha}y",
+            ),
+        ] {
+            assert_eq!(parse(input), parse(braced), "{input}");
+        }
+        for invalid in [r"\text", r"{\text}", r"\text&", r"\text{unclosed"] {
+            assert!(
+                LatexReader::parse(invalid, &Config::default()).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn mathbb_command() {
         let node = parse_one("\\mathbb{R}");
         assert!(matches!(node, MathNode::Styled(TextStyle::DoubleStruck, _)));

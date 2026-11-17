@@ -280,6 +280,10 @@ fn clean_text_content(raw: &str) -> String {
                             // A symbol command (`\int`, `\alpha`) keeps its
                             // character rather than vanishing from the text.
                             out.push(ch);
+                        } else if let Some((text, _)) =
+                            super::packages::lookup_package_symbol(&raw[start..i])
+                        {
+                            out.push_str(text);
                         }
                         // Otherwise drop the command name.
                     },
@@ -2837,6 +2841,9 @@ impl LatexCompactParser {
         if let Some(id) = self.try_leaf_command(name) {
             return Ok((input, id));
         }
+        if let Some(style) = super::text_style(name) {
+            return self.parse_text(input, style);
+        }
         match name {
             // --- mathtools / physics paired delimiters (auto-scaling) ---
             // Each accepts an optional `*` (auto-size; a no-op here since the
@@ -2908,8 +2915,6 @@ impl LatexCompactParser {
             "left" => self.parse_left_right(input),
 
             // --- Text and font ---
-            "text" | "textrm" | "textit" | "textbf" | "texttt" | "textsf" | "textnormal"
-            | "textup" | "mbox" | "hbox" => self.parse_text(input, name),
             "mathrm" | "mathbf" | "mathit" | "mathtt" | "mathsf" | "mathbb" | "mathcal"
             | "mathscr" | "mathfrak" | "boldsymbol" | "bm" | "mathnormal" | "mathup"
             | "mathsfup" | "mathsfit" | "mathbfup" | "mathbfit" | "mathbfcal" | "mathbffrak"
@@ -4058,51 +4063,23 @@ impl LatexCompactParser {
         }
     }
 
-    fn parse_text<'a>(&mut self, input: &'a str, cmd_name: &str) -> IResult<&'a str, NodeId> {
-        let style = match cmd_name {
-            "textbf" => TextStyle::Bold,
-            "textit" => TextStyle::Italic,
-            "texttt" => TextStyle::Monospace,
-            "textsf" => TextStyle::SansSerif,
-            _ => TextStyle::Normal,
-        };
+    fn parse_text<'a>(&mut self, input: &'a str, style: TextStyle) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        // Scan for matching '}' with brace counting (handles nested {}).
-        // Escaped braces `\{` and `\}` are text literals and must not affect
-        // the brace balance, otherwise an early `\}` prematurely closes the
-        // argument and leaves stray braces in the surrounding math.
-        let mut depth = 1u32;
-        let mut end = 0;
-        let mut i = 0;
-        while i < input.len() {
-            let c = input[i..].chars().next().unwrap();
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = i;
-                        break;
-                    }
-                },
-                '\\' if input[i + 1..].starts_with('{') || input[i + 1..].starts_with('}') => {
-                    i += 2;
-                    continue;
-                },
-                _ => {},
-            }
-            i += c.len_utf8();
+        let invalid_arg =
+            || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char));
+        let braced = input.starts_with('{');
+        let (rest, raw) = if braced {
+            super::mhchem::capture_braced(input)
+        } else {
+            super::split_token(input).filter(|(_, token)| {
+                !token.starts_with(['}', '&', '$', '#', '^', '_']) && *token != r"\\"
+            })
         }
-        if depth != 0 {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Char,
-            )));
-        }
-        let raw = &input[..end];
-        let rest = &input[end + 1..]; // skip the closing '}'
+        .ok_or_else(invalid_arg)?;
         let text = clean_text_content(raw);
+        if !braced && text.is_empty() {
+            return Err(invalid_arg());
+        }
         let sid = self.arena.push_str(&text);
         Ok((rest, self.arena.push_node(CompactNode::Text(style, sid))))
     }

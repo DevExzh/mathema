@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::mhchem::capture_braced as scan_braced;
 use super::packages;
 
 // ---------------------------------------------------------------------------
@@ -205,33 +206,6 @@ fn find_verb_end(input: &str, start: usize) -> Option<usize> {
 /// Trim leading whitespace.
 fn skip_ws(s: &str) -> &str {
     s.trim_start()
-}
-
-/// Consume `{...}` with brace-depth matching. Allows leading whitespace
-/// before `{`. Returns `(rest, inner_content)`.
-fn scan_braced(s: &str) -> Option<(&str, &str)> {
-    let s = skip_ws(s);
-    let mut chars = s.chars();
-    if chars.next()? != '{' {
-        return None;
-    }
-    let after_open = &s[1..]; // safe: '{' is 1 byte
-    let mut depth: u32 = 1;
-    let mut end_byte = 0;
-    for ch in after_open.chars() {
-        if ch == '{' {
-            depth += 1;
-        } else if ch == '}' {
-            depth -= 1;
-            if depth == 0 {
-                let inner = &after_open[..end_byte];
-                let rest = &after_open[end_byte + 1..]; // '}' is 1 byte
-                return Some((rest, inner));
-            }
-        }
-        end_byte += ch.len_utf8();
-    }
-    None
 }
 
 /// Consume `[...]` respecting nested `{...}`. Allows leading whitespace
@@ -553,19 +527,37 @@ impl Preprocessor {
                 s = &s[end..];
                 continue;
             }
-            // Try \name macro expansion
             if s.starts_with('\\')
-                && let Some((cmd_rest, name)) = scan_command(s)
-                && let Some(def) = self.macros.get(name)
+                && let Some((cmd_rest, command)) = super::split_token(s)
             {
-                let def = def.clone();
-                if let Some((rest, args)) = consume_args(cmd_rest, &def) {
-                    let replaced = substitute(&def.body, &args);
-                    out.push_str(&replaced);
-                    s = rest;
-                    changed = true;
-                    continue;
+                let name = &command[1..];
+                if let Some(def) = self.macros.get(name) {
+                    if let Some((rest, args)) = consume_args(cmd_rest, def) {
+                        out.push_str(&substitute(&def.body, &args));
+                        s = rest;
+                        changed = true;
+                        continue;
+                    }
+                } else if super::text_style(name).is_some() {
+                    // A native text command takes its argument before expansion.
+                    // Group a bare macro token so its replacement stays in text mode.
+                    let arg = cmd_rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+                    if let Some((rest, token)) = super::split_token(arg)
+                        && let Some(macro_name) = token.strip_prefix('\\')
+                        && self.macros.contains_key(macro_name)
+                    {
+                        out.push_str(command);
+                        out.push('{');
+                        out.push_str(token);
+                        out.push('}');
+                        s = rest;
+                        changed = true;
+                        continue;
+                    }
                 }
+                out.push_str(command);
+                s = cmd_rest;
+                continue;
             }
             // Copy one char
             let ch = s.chars().next().unwrap();
@@ -615,46 +607,15 @@ fn consume_args<'a>(s: &'a str, def: &MacroDef) -> Option<(&'a str, Vec<String>)
     // Remaining required args: {..} or single token
     while args.len() < total {
         let trimmed = skip_ws(rest);
-        if let Some((r, inner)) = scan_braced(trimmed) {
-            args.push(inner.to_owned());
-            rest = r;
-        } else if let Some((r, tok)) = consume_single_token(trimmed) {
-            args.push(tok);
-            rest = r;
+        let (r, token) = if trimmed.starts_with('{') {
+            scan_braced(trimmed)?
         } else {
-            return None;
-        }
+            super::split_token(trimmed).filter(|(_, token)| *token != "}")?
+        };
+        args.push(token.to_owned());
+        rest = r;
     }
     Some((rest, args))
-}
-
-/// Consume `\commandname` or one non-whitespace char.
-fn consume_single_token(s: &str) -> Option<(&str, String)> {
-    let s = skip_ws(s);
-    let mut chars = s.chars();
-    let first = chars.next()?;
-    if first == '\\' {
-        // \commandname — alphabetic run
-        let after_bs = &s[1..];
-        let name_len: usize = after_bs
-            .chars()
-            .take_while(|c| c.is_ascii_alphabetic())
-            .map(|c| c.len_utf8())
-            .sum();
-        if name_len == 0 {
-            // single special char like \{
-            let special = after_bs.chars().next()?;
-            let tok_len = 1 + special.len_utf8();
-            return Some((&s[tok_len..], s[..tok_len].to_owned()));
-        }
-        let tok_len = 1 + name_len;
-        Some((&s[tok_len..], s[..tok_len].to_owned()))
-    } else if first.is_whitespace() {
-        None
-    } else {
-        let len = first.len_utf8();
-        Some((&s[len..], first.to_string()))
-    }
 }
 
 /// Replace `#1`..`#9` in body with the corresponding args.
