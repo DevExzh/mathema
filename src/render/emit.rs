@@ -207,7 +207,12 @@ fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
             let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
             (cmin.min(x), cmax.max(x + layout.width))
         },
-        BoxKind::Reflected { child } => compute_x_bounds(&child.layout, x + child.dx),
+        BoxKind::Reflected { child } => {
+            let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
+            let left = x + layout.width - (cmax - x);
+            let right = x + layout.width - (cmin - x);
+            (left, right)
+        },
 
         BoxKind::Kern | BoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
     }
@@ -243,7 +248,12 @@ fn compute_x_bounds_arena(arena: &LayoutArena, id: LayoutBoxId, x: f64) -> (f64,
             let (cmin, cmax) = compute_x_bounds_arena(arena, *child, x + padding);
             (cmin.min(x), cmax.max(x + layout.width))
         },
-        ArenaBoxKind::Reflected { child } => compute_x_bounds_arena(arena, *child, x),
+        ArenaBoxKind::Reflected { child } => {
+            let (cmin, cmax) = compute_x_bounds_arena(arena, *child, x);
+            let left = x + layout.width - (cmax - x);
+            let right = x + layout.width - (cmin - x);
+            (left, right)
+        },
 
         ArenaBoxKind::Kern | ArenaBoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
     }

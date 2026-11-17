@@ -180,7 +180,12 @@ fn compute_x_bounds(layout: &LayoutBox, x: f64) -> (f64, f64) {
             let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
             (cmin.min(x), cmax.max(x + layout.width))
         },
-        BoxKind::Reflected { child } => compute_x_bounds(&child.layout, x + child.dx),
+        BoxKind::Reflected { child } => {
+            let (cmin, cmax) = compute_x_bounds(&child.layout, x + child.dx);
+            let left = x + layout.width - (cmax - x);
+            let right = x + layout.width - (cmin - x);
+            (left, right)
+        },
 
         // Invisible nodes contribute no visible content.
         BoxKind::Kern | BoxKind::Phantom => (f64::INFINITY, f64::NEG_INFINITY),
@@ -589,20 +594,23 @@ fn emit_raster_box(
             emit_raster_box(pixmap, ctx, &child.layout, cx, cy);
         },
         BoxKind::Reflected { child } => {
-            let width = (layout.width * em).ceil().max(1.0) as u32;
-            let height = ((layout.height + layout.depth) * em).ceil().max(1.0) as u32;
+            let margin = em.ceil().max(2.0);
+            let width = (layout.width * em + 2.0 * margin).ceil().max(1.0) as u32;
+            let height = ((layout.height + layout.depth) * em + 2.0 * margin)
+                .ceil()
+                .max(1.0) as u32;
             if let Some(mut reflected) = Pixmap::new(width, height) {
-                let baseline = layout.height * em;
+                let baseline = layout.height * em + margin;
                 emit_raster_box(
                     &mut reflected,
                     ctx,
                     &child.layout,
-                    child.dx * em,
+                    child.dx * em + margin,
                     baseline - child.dy * em,
                 );
                 let transform = Transform::from_translate(
-                    (x + layout.width * em) as f32,
-                    (y - layout.height * em) as f32,
+                    (x + layout.width * em + margin) as f32,
+                    (y - layout.height * em - margin) as f32,
                 )
                 .pre_scale(-1.0, 1.0);
                 pixmap.draw_pixmap(
@@ -883,14 +891,17 @@ fn emit_raster_box_arena(
             emit_raster_box_arena(pixmap, ctx, arena, *child, x + padding * em, y);
         },
         ArenaBoxKind::Reflected { child } => {
-            let width = (layout.width * em).ceil().max(1.0) as u32;
-            let height = ((layout.height + layout.depth) * em).ceil().max(1.0) as u32;
+            let margin = em.ceil().max(2.0);
+            let width = (layout.width * em + 2.0 * margin).ceil().max(1.0) as u32;
+            let height = ((layout.height + layout.depth) * em + 2.0 * margin)
+                .ceil()
+                .max(1.0) as u32;
             if let Some(mut reflected) = Pixmap::new(width, height) {
-                let baseline = layout.height * em;
-                emit_raster_box_arena(&mut reflected, ctx, arena, *child, 0.0, baseline);
+                let baseline = layout.height * em + margin;
+                emit_raster_box_arena(&mut reflected, ctx, arena, *child, margin, baseline);
                 let transform = Transform::from_translate(
-                    (x + layout.width * em) as f32,
-                    (y - layout.height * em) as f32,
+                    (x + layout.width * em + margin) as f32,
+                    (y - layout.height * em - margin) as f32,
                 )
                 .pre_scale(-1.0, 1.0);
                 pixmap.draw_pixmap(
@@ -1930,6 +1941,63 @@ mod tests {
             ..RasterOptions::default()
         };
         render_to_image(&expr, &options).unwrap()
+    }
+
+    #[test]
+    fn reflected_asymmetric_glyph_matches_horizontal_pixel_flip() {
+        let plain = render_png(vec![MathNode::Identifier("b".into())]);
+        let reflected = render_png(vec![MathNode::Reflect {
+            content: Box::new(MathNode::Identifier("b".into())),
+            text_mode: false,
+        }]);
+        let plain = Pixmap::decode_png(&plain).unwrap();
+        let reflected = Pixmap::decode_png(&reflected).unwrap();
+        assert_eq!(
+            (plain.width(), plain.height()),
+            (reflected.width(), reflected.height())
+        );
+        for y in 0..plain.height() {
+            for x in 0..plain.width() {
+                let left = plain.pixel(x, y);
+                let right = reflected.pixel(plain.width() - 1 - x, y);
+                assert_eq!(left, right, "pixel mismatch at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn double_reflection_restores_the_original_pixels() {
+        let plain = render_png(vec![MathNode::Identifier("b".into())]);
+        let reflected = render_png(vec![MathNode::Reflect {
+            content: Box::new(MathNode::Reflect {
+                content: Box::new(MathNode::Identifier("b".into())),
+                text_mode: false,
+            }),
+            text_mode: false,
+        }]);
+        assert_eq!(plain, reflected);
+    }
+
+    #[test]
+    fn reflected_negative_kern_keeps_ink_inside_the_output() {
+        let content = MathNode::Row(vec![
+            MathNode::Space(Rational::new(-1, 2)),
+            MathNode::Identifier("b".into()),
+        ]);
+        let reflected = render_png(vec![MathNode::Reflect {
+            content: Box::new(content),
+            text_mode: false,
+        }]);
+        let pixmap = Pixmap::decode_png(&reflected).unwrap();
+        let mut ink = 0usize;
+        for y in 0..pixmap.height() {
+            for x in 0..pixmap.width() {
+                if pixmap.pixel(x, y).is_some_and(|pixel| pixel.alpha() > 0) {
+                    ink += 1;
+                }
+            }
+        }
+        assert!(ink > 0);
     }
 
     #[test]
