@@ -1785,7 +1785,7 @@ mod tests {
             ('\u{2002}', r"\enspace ", Rational::new(1, 2)),
             ('\u{2003}', r"\quad ", Rational::new(1, 1)),
             ('\u{2004}', r"\mkern6mu ", Rational::new(1, 3)),
-            ('\u{2005}', r"\;", Rational::new(5, 18)),
+            ('\u{2005}', r"\ ", Rational::new(1, 4)),
             ('\u{2006}', r"\,", Rational::new(1, 6)),
             ('\u{2009}', r"\,", Rational::new(1, 6)),
             ('\u{200A}', r"\mkern1mu ", Rational::new(1, 18)),
@@ -1962,6 +1962,15 @@ mod tests {
             assert_eq!(trailing, format!("-{command}"), "space: {space:?}");
             assert_eq!(roundtrip(&trailing), trailing, "space: {space:?}");
         }
+    }
+
+    #[test]
+    fn unicode_four_per_em_space_has_literal_quarter_em_width() {
+        assert_eq!(
+            crate::latex::parse::math_space_width('\u{2005}'),
+            Some(Rational::new(1, 4))
+        );
+        assert_eq!(roundtrip("\u{2005}"), r"\ ");
     }
 
     #[test]

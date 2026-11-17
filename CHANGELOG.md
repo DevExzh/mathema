@@ -157,6 +157,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `\dagger` and `\ddagger` for the binary operators.
 - LaTeX math accepts `\>`, `\enskip`, and the positive and negative named
   thin, medium, and thick spaces. Their widths survive conversion back to LaTeX.
+- Literal Unicode math spaces survive LaTeX conversion at either end of a
+  formula. U+2004 and U+2005 keep their one-third and one-quarter em widths.
+- A script on `ℜ` or `ℓ` keeps the same grouping when its glyph is written
+  as `\Re` or `\ell` and parsed again.
 - Literal backslash symbols are written as `\textbackslash` rather than a raw
   backslash that could become a newline or control space when followed by
   another command.
