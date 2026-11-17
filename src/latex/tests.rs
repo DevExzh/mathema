@@ -1694,3 +1694,64 @@ fn fuzz_repro_roundtrip_misc() {
         );
     }
 }
+
+#[test]
+fn token_selectors_choose_before_expanding() {
+    for (input, expected) in [
+        (r"\@firstoftwo{ab}{\missing}", "ab"),
+        (r"\@secondoftwo{\frac\bad}{xy}", "xy"),
+        (r"\@ifstar{a}{b}  *!", "a!"),
+        (r"\@ifstar{a}{b}  ?!", "b?!"),
+        (r"\@ifnextchar{\alpha}{a}{b}  \alpha x", r"a\alpha x"),
+        (r"\@ifnextchar{ab}{a}{b}ab", "bab"),
+        (r"\def\a{x}\@firstoftwo{}{\def\a{y}}\a", "x"),
+        (r"\def\pick{\@ifnextchar x{a}{b}}\pick x", "ax"),
+        (
+            r"\let\pick\@ifstar\def\@ifstar{z}\pick{a}{b}*\@ifstar",
+            "az",
+        ),
+    ] {
+        assert_eq!(
+            crate::from_latex(input).unwrap().to_mathml().unwrap(),
+            crate::from_latex(expected).unwrap().to_mathml().unwrap(),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn text_or_math_follows_the_actual_argument_mode() {
+    for (input, expected) in [
+        (r"x+\TextOrMath{text}{math}", "x+math"),
+        (
+            r"\text{hello \TextOrMath{world}{wrong}}",
+            r"\text{hello world}",
+        ),
+        (
+            r"\text{$x+\TextOrMath{bad}{y}$ \TextOrMath{cost}{bad}}",
+            r"\text{$x+y$ cost}",
+        ),
+        (
+            r"\text{\(\TextOrMath{bad}{x}\) \$\TextOrMath{yes}{bad}}",
+            r"\text{\(x\) \$yes}",
+        ),
+        (
+            r"\def\pick{\TextOrMath{t}{m}}\textbf\pick+\pick",
+            r"\textbf{t}+m",
+        ),
+        (r"\let\label\text\label{\TextOrMath{t}{m}}", r"\text{t}"),
+        (r"\angl{\TextOrMath{n}{bad}}", r"\angl{n}"),
+        (r"\reflectbox{\TextOrMath{abc}{bad}}", r"\reflectbox{abc}"),
+        (
+            r"\mathreflectbox{\TextOrMath{bad}{x^2}}",
+            r"\mathreflectbox{x^2}",
+        ),
+        (r"\def\a{x}\TextOrMath{\def\a{y}}{}\a", "x"),
+    ] {
+        assert_eq!(
+            crate::from_latex(input).unwrap().to_mathml().unwrap(),
+            crate::from_latex(expected).unwrap().to_mathml().unwrap(),
+            "{input}"
+        );
+    }
+}

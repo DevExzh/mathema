@@ -111,6 +111,7 @@ fn needs_expansion_processing(input: &str) -> bool {
         || input.contains("\\@secondoftwo")
         || input.contains("\\@ifstar")
         || input.contains("\\@ifnextchar")
+        || input.contains("\\TextOrMath")
         || input.contains("\\noexpand")
         || input.contains("\\global")
         || input.contains("\\long")

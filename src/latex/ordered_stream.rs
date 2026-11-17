@@ -85,8 +85,18 @@ enum Meaning {
     Selector(select::Selector),
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum InputMode {
+    #[default]
+    Math,
+    Text,
+    DollarMath,
+    ParenMath,
+}
+
 #[derive(Clone, Debug, Default)]
 struct Scope {
+    input_mode: InputMode,
     macros: HashMap<String, Meaning>,
     environments: HashMap<String, EnvDef>,
 }
@@ -149,7 +159,11 @@ impl Processor {
     }
 
     fn push_scope(&mut self) {
-        self.scopes.push(Scope::default());
+        let input_mode = self.scopes.last().expect("global scope").input_mode;
+        self.scopes.push(Scope {
+            input_mode,
+            ..Scope::default()
+        });
     }
 
     fn pop_scope(&mut self) {
@@ -266,20 +280,18 @@ impl Processor {
                         out,
                         Mode::Normal,
                     )? {
-                        // Native text commands consume one token.  Grouping a
-                        // bare macro here preserves the parser's text mode.
-                        if !self.wrap_text_argument(&name, depth, queue, out)? {
-                            self.append(out, Token::ControlWord(name))?;
-                        }
+                        self.emit_native(Token::ControlWord(name), queue, out, mode, depth)?;
                     }
                 },
                 Token::ControlSymbol(symbol) => {
                     let name = control_key_symbol(symbol);
                     let expanded = self.expand_macro_from_queue(&name, depth, queue, out, mode)?;
                     if !expanded {
-                        self.append(out, Token::ControlSymbol(symbol))?;
+                        self.emit_native(Token::ControlSymbol(symbol), queue, out, mode, depth)?;
                     }
-                    if symbol == '\\'
+                    if !expanded
+                        && mode == Mode::Normal
+                        && symbol == '\\'
                         && self
                             .parser_environments
                             .last()
@@ -290,8 +302,9 @@ impl Processor {
                     }
                 },
                 Token::Char(ch) => {
-                    self.append(out, Token::Char(ch))?;
-                    if ch == '&'
+                    self.emit_native(Token::Char(ch), queue, out, mode, depth)?;
+                    if mode == Mode::Normal
+                        && ch == '&'
                         && self
                             .parser_environments
                             .last()
@@ -302,7 +315,7 @@ impl Processor {
                     }
                 },
                 Token::Frozen(token) => {
-                    self.append(out, *token)?;
+                    self.emit_native(*token, queue, out, mode, depth)?;
                 },
             }
         }
@@ -326,7 +339,10 @@ impl Processor {
         }
         match meaning {
             Meaning::Selector(selector) => {
-                let Some(replacement) = selector.select(queue) else {
+                let Some(replacement) = selector.select(
+                    queue,
+                    self.scopes.last().expect("global scope").input_mode == InputMode::Text,
+                ) else {
                     return Ok(false);
                 };
                 prepend(queue, replacement, depth + 1);
@@ -356,13 +372,7 @@ impl Processor {
                     self.append(out, Token::ControlWord(name.to_owned()))?;
                     return Ok(true);
                 }
-                let token = match token {
-                    Token::ControlWord(_) | Token::ControlSymbol(_) => {
-                        Token::Frozen(Box::new(token))
-                    },
-                    other => other,
-                };
-                self.append(out, token)?;
+                self.emit_native(token, queue, out, mode, depth)?;
                 Ok(true)
             },
         }
@@ -877,42 +887,78 @@ impl Processor {
         self.append(out, token)
     }
 
-    fn wrap_text_argument(
+    /// Native commands remain in the output for the AST parser. Track only
+    /// the mode transitions that affect the meaning of an expandable selector.
+    fn emit_native(
+        &mut self,
+        token: Token,
+        queue: &mut VecDeque<Queued>,
+        out: &mut Vec<Token>,
+        mode: Mode,
+        depth: usize,
+    ) -> Result<(), usize> {
+        if mode == Mode::Normal {
+            if let Token::ControlWord(name) = &token {
+                let argument_mode = if text_style(name).is_some()
+                    || matches!(name.as_str(), "angl" | "reflectbox")
+                {
+                    Some(InputMode::Text)
+                } else if name == "mathreflectbox" {
+                    Some(InputMode::Math)
+                } else {
+                    None
+                };
+                if let Some(input_mode) = argument_mode
+                    && self.open_mode_argument(name, input_mode, depth, queue, out)?
+                {
+                    return Ok(());
+                }
+            }
+            let input_mode = &mut self.scopes.last_mut().expect("global scope").input_mode;
+            *input_mode = match (*input_mode, &token) {
+                (InputMode::Text, Token::Char('$')) => InputMode::DollarMath,
+                (InputMode::DollarMath, Token::Char('$')) => InputMode::Text,
+                (InputMode::Text, Token::ControlSymbol('(')) => InputMode::ParenMath,
+                (InputMode::ParenMath, Token::ControlSymbol(')')) => InputMode::Text,
+                (current, _) => current,
+            };
+        }
+        self.append(out, token)
+    }
+
+    fn open_mode_argument(
         &mut self,
         name: &str,
+        input_mode: InputMode,
         depth: usize,
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
     ) -> Result<bool, usize> {
-        if text_style(name).is_none() && !matches!(name, "angl" | "reflectbox" | "mathreflectbox") {
-            return Ok(false);
-        }
-        let Some(argument) = queue.iter().find(|item| !item.token.is_whitespace()) else {
+        let Some(argument) = queue.iter().find(|q| !q.token.is_whitespace()) else {
             return Ok(false);
         };
-        let Token::ControlWord(argument_name) = &argument.token else {
-            return Ok(false);
+        // Braced contents expand in the argument's mode through their closing
+        // brace. A bare macro is one argument even if its replacement is longer.
+        let grouped = match &argument.token {
+            Token::BeginGroup => true,
+            Token::ControlWord(word) if self.lookup_macro(word).is_some() => false,
+            _ => return Ok(false),
         };
-        if !matches!(self.lookup_macro(argument_name), Some(Meaning::Macro(_))) {
-            return Ok(false);
-        }
-        // Remove separator whitespace and the macro token from the queue, then
-        // put the token back inside a generated group.  The group token drives
-        // scope restoration through the same main loop as source braces.
-        while matches!(queue.front(), Some(item) if item.token.is_whitespace()) {
+        while queue.front().is_some_and(|q| q.token.is_whitespace()) {
             queue.pop_front();
         }
-        let Some(argument_item) = queue.pop_front() else {
-            return Ok(false);
-        };
+        let first = queue.pop_front().expect("argument was present");
         self.append(out, Token::ControlWord(name.to_owned()))?;
         self.append(out, Token::BeginGroup)?;
         self.push_scope();
-        queue.push_front(Queued {
-            token: Token::EndGroup,
-            depth,
-        });
-        queue.push_front(argument_item);
+        self.scopes.last_mut().expect("argument scope").input_mode = input_mode;
+        if !grouped {
+            queue.push_front(Queued {
+                token: Token::EndGroup,
+                depth,
+            });
+            queue.push_front(first);
+        }
         Ok(true)
     }
 

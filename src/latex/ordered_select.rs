@@ -9,6 +9,7 @@ pub(super) enum Selector {
     Second,
     IfStar,
     IfNextChar,
+    TextOrMath,
 }
 
 impl Selector {
@@ -17,9 +18,14 @@ impl Selector {
         ("@secondoftwo", Self::Second),
         ("@ifstar", Self::IfStar),
         ("@ifnextchar", Self::IfNextChar),
+        ("TextOrMath", Self::TextOrMath),
     ];
 
-    pub(super) fn select(self, queue: &mut VecDeque<Queued>) -> Option<Vec<Token>> {
+    pub(super) fn select(
+        self,
+        queue: &mut VecDeque<Queued>,
+        text_mode: bool,
+    ) -> Option<Vec<Token>> {
         let mut input = QueueTxn::new(queue);
         let pattern = if self == Self::IfNextChar {
             Some(argument(&mut input)?)
@@ -29,6 +35,7 @@ impl Selector {
         let yes = argument(&mut input)?;
         let no = argument(&mut input)?;
         let choose_first = match self {
+            Self::TextOrMath => text_mode,
             Self::First => true,
             Self::Second => false,
             Self::IfStar => {
