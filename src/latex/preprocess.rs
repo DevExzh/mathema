@@ -97,6 +97,10 @@ fn needs_preprocessing(input: &str) -> bool {
         || input.contains("\\xdef")
         || input.contains("\\let")
         || input.contains("\\futurelet")
+        || input.contains("\\@firstoftwo")
+        || input.contains("\\@secondoftwo")
+        || input.contains("\\@ifstar")
+        || input.contains("\\@ifnextchar")
         || input.contains("\\noexpand")
         || input.contains("\\global")
         || input.contains("\\long")
@@ -119,11 +123,7 @@ fn uses_builtin_macro(input: &str) -> bool {
             continue;
         }
         let after = &s[pos + 1..];
-        let name_len: usize = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphabetic())
-            .map(|c| c.len_utf8())
-            .sum();
+        let name_len = super::control_word_len(after);
         if name_len > 0 && packages::is_builtin_macro_name(&after[..name_len]) {
             return true;
         }
@@ -259,11 +259,7 @@ fn scan_command(s: &str) -> Option<(&str, &str)> {
         return None;
     }
     let after_bs = &s[1..]; // safe: '\' is 1 byte
-    let name_len: usize = after_bs
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .map(|c| c.len_utf8())
-        .sum();
+    let name_len = super::control_word_len(after_bs);
     if name_len == 0 {
         return None;
     }
@@ -1051,7 +1047,7 @@ mod tests {
     fn definitions_take_effect_at_their_location() {
         assert_eq!(
             preprocess(r"\foo\def\foo{a}\foo\def\foo{b}\foo"),
-            r"\fooab"
+            r"\foo ab"
         );
     }
 
@@ -1117,6 +1113,10 @@ mod tests {
             preprocess(r"\def\pick#1{[#1]}\def\alias{\pick}\alias{x}"),
             "[x]"
         );
+        assert_eq!(
+            preprocess(r"\def\f#1{#1x}\f{\alpha}"),
+            r"\alpha x"
+        );
     }
 
     #[test]
@@ -1124,6 +1124,24 @@ mod tests {
         assert_eq!(
             preprocess(r"\futurelet\foo\frac1{2+\foo}"),
             r"\frac1{2+1}"
+        );
+    }
+
+    #[test]
+    fn selector_builtins_discard_unselected_branches() {
+        assert_eq!(preprocess(r"\@firstoftwo{a}{b}"), "a");
+        assert_eq!(preprocess(r"\@secondoftwo{a}{b}"), "b");
+        assert_eq!(preprocess(r"\@ifstar{a}{b}*"), "a");
+        assert_eq!(preprocess(r"\@ifstar{a}{b}"), "b");
+        assert_eq!(preprocess(r"\@ifnextchar x{a}{b}x"), "ax");
+        assert_eq!(preprocess(r"\@ifnextchar x{a}{b}y"), "by");
+        assert_eq!(
+            preprocess(r"\def\@firstoftwo#1#2{#2}\@firstoftwo{a}{b}"),
+            "b"
+        );
+        assert_eq!(
+            preprocess(r"\let\pick\@secondoftwo\pick{a}{b}"),
+            "b"
         );
     }
 }

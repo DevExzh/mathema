@@ -14,6 +14,9 @@ use super::packages;
 use super::{expansion_cap, find_verb_end};
 use crate::latex::text_style;
 
+#[path = "ordered_select.rs"]
+mod select;
+
 const MAX_EXPANSION_DEPTH: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +75,7 @@ struct EnvDef {
 enum Meaning {
     Macro(MacroDef),
     Token(Token),
+    Selector(select::Selector),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -128,6 +132,9 @@ impl Processor {
                 }),
                 true,
             );
+        }
+        for &(name, selector) in select::Selector::BUILTINS {
+            self.define_macro(name.to_owned(), Meaning::Selector(selector), true);
         }
     }
 
@@ -278,6 +285,13 @@ impl Processor {
             return Ok(true);
         }
         match meaning {
+            Meaning::Selector(selector) => {
+                let Some(replacement) = selector.select(queue) else {
+                    return Ok(false);
+                };
+                prepend(queue, replacement, depth + 1);
+                Ok(true)
+            },
             Meaning::Macro(def) => {
                 let Some(args) = consume_args(queue, &def) else {
                     return Ok(false);
@@ -1045,29 +1059,78 @@ fn token_identity(token: &Token) -> String {
 }
 
 fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> Result<Vec<Token>, usize> {
-    let body_text = token_text(&def.body);
-    let argument_texts: Vec<String> = args.iter().map(|arg| token_text(arg)).collect();
-    let argument_refs: Vec<&str> = argument_texts.iter().map(String::as_str).collect();
-    let estimated = body_text.len().saturating_add(
-        argument_refs
-            .iter()
-            .map(|arg| arg.len())
-            .sum::<usize>(),
-    );
-    if estimated > cap {
-        return Err(cap);
-    }
-    let expanded = macro_args::substitute(
-        &body_text,
-        &argument_refs,
+    // Substitute directly in token space.  Detokenizing and retokenizing here
+    // would turn `\alpha` followed by an argument letter into `\alphax`, and
+    // would also erase frozen meanings captured by `\let`/`\noexpand`.
+    let mut size = usize::from(
         def.parameter_text
             .as_ref()
             .is_some_and(ParameterText::terminal_open),
     );
-    if expanded.len() > cap {
-        return Err(cap);
+    let mut i = 0;
+    while i < def.body.len() {
+        if matches!(def.body[i], Token::Char('#'))
+            && let Some(Token::Char(next)) = def.body.get(i + 1)
+        {
+            if *next == '#' {
+                size = size.saturating_add(1);
+                i += 2;
+                continue;
+            }
+            if let Some(index) = next.to_digit(10)
+                && index > 0
+                && (index as usize) <= args.len()
+            {
+                size = size.saturating_add(
+                    args[index as usize - 1]
+                        .iter()
+                        .map(Token::byte_len)
+                        .sum::<usize>(),
+                );
+                if size > cap {
+                    return Err(cap);
+                }
+                i += 2;
+                continue;
+            }
+        }
+        size = size.saturating_add(def.body[i].byte_len());
+        if size > cap {
+            return Err(cap);
+        }
+        i += 1;
     }
-    Ok(tokenize(&expanded))
+    let mut out = Vec::with_capacity(def.body.len().saturating_add(args.len()));
+    if def
+        .parameter_text
+        .as_ref()
+        .is_some_and(ParameterText::terminal_open)
+    {
+        out.push(Token::BeginGroup);
+    }
+    i = 0;
+    while i < def.body.len() {
+        if matches!(def.body[i], Token::Char('#'))
+            && let Some(Token::Char(next)) = def.body.get(i + 1)
+        {
+            if *next == '#' {
+                out.push(Token::Char('#'));
+                i += 2;
+                continue;
+            }
+            if let Some(index) = next.to_digit(10)
+                && index > 0
+                && (index as usize) <= args.len()
+            {
+                out.extend(args[index as usize - 1].iter().cloned());
+                i += 2;
+                continue;
+            }
+        }
+        out.push(def.body[i].clone());
+        i += 1;
+    }
+    Ok(out)
 }
 
 fn prepend(queue: &mut VecDeque<Queued>, tokens: Vec<Token>, depth: usize) {
@@ -1115,12 +1178,8 @@ fn tokenize(input: &str) -> Vec<Token> {
                 break;
             }
             let first = input[after..].chars().next().unwrap();
-            if first.is_ascii_alphabetic() {
-                let name_len: usize = input[after..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_alphabetic())
-                    .map(char::len_utf8)
-                    .sum();
+            let name_len = crate::latex::control_word_len(&input[after..]);
+            if name_len > 0 {
                 tokens.push(Token::ControlWord(input[after..after + name_len].to_owned()));
                 i = after + name_len;
             } else {
@@ -1142,22 +1201,45 @@ fn tokenize(input: &str) -> Vec<Token> {
 
 fn render_tokens(tokens: &[Token]) -> String {
     let mut out = String::new();
+    let mut previous_control_word: Option<&str> = None;
     for token in tokens {
         match token {
-            Token::Char(c) => out.push(*c),
-            Token::BeginGroup => out.push('{'),
-            Token::EndGroup => out.push('}'),
+            Token::Char(c) => {
+                if previous_control_word.is_some_and(|name| {
+                    !name.starts_with("verb") && c.is_ascii_alphabetic()
+                }) {
+                    out.push(' ');
+                }
+                out.push(*c);
+                previous_control_word = None;
+            },
+            Token::BeginGroup => {
+                out.push('{');
+                previous_control_word = None;
+            },
+            Token::EndGroup => {
+                out.push('}');
+                previous_control_word = None;
+            },
             Token::ControlWord(name) => {
                 out.push('\\');
                 out.push_str(name);
+                previous_control_word = Some(name);
             },
             Token::ControlSymbol(c) => {
                 out.push('\\');
                 out.push(*c);
+                previous_control_word = None;
             },
-            Token::Verbatim(text) => out.push_str(text),
+            Token::Verbatim(text) => {
+                out.push_str(text);
+                previous_control_word = None;
+            },
             Token::EndEnvironment => {},
-            Token::Frozen(inner) => out.push_str(&render_tokens(std::slice::from_ref(inner))),
+            Token::Frozen(inner) => {
+                out.push_str(&render_tokens(std::slice::from_ref(inner)));
+                previous_control_word = None;
+            },
         }
     }
     out

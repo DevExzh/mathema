@@ -7,15 +7,27 @@ pub mod physics;
 pub mod preprocess;
 pub mod siunitx;
 
+/// Length of a control word after the backslash.  Internal KaTeX names may
+/// begin with `@`; an `@` occurring after an ordinary alphabetic command is
+/// still an ordinary source character (`\alpha@x`).
+#[inline]
+fn control_word_len(name: &str) -> usize {
+    let bytes = name.as_bytes();
+    if bytes.first() == Some(&b'@') && bytes.get(1).is_some_and(u8::is_ascii_alphabetic) {
+        bytes
+            .iter()
+            .take_while(|&&b| b.is_ascii_alphabetic() || b == b'@')
+            .count()
+    } else {
+        bytes.iter().take_while(|b| b.is_ascii_alphabetic()).count()
+    }
+}
+
 /// Split off one TeX character, control word, or control symbol before argument expansion.
 fn split_token(input: &str) -> Option<(&str, &str)> {
     let len = if let Some(name) = input.strip_prefix('\\') {
         let first = name.chars().next()?;
-        1 + if first.is_ascii_alphabetic() {
-            name.bytes().take_while(u8::is_ascii_alphabetic).count()
-        } else {
-            first.len_utf8()
-        }
+        1 + control_word_len(name).max(first.len_utf8())
     } else {
         let mut chars = input.chars();
         let base = chars.next()?;
