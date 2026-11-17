@@ -200,7 +200,7 @@ pub(crate) fn expand(input: &str) -> ExpansionResult<String> {
     // missing argument. Resource failures remain fatal in lenient mode.
     processor.charge_work(0)?;
     result?;
-    Ok(render_tokens(&output))
+    render_tokens_bounded(&output, cap)
 }
 
 pub(crate) struct Processor {
@@ -1872,60 +1872,88 @@ fn tokenize(input: &str) -> Vec<Token> {
     tokens
 }
 
-fn render_tokens(tokens: &[Token]) -> String {
+fn render_tokens_bounded(tokens: &[Token], cap: usize) -> ExpansionResult<String> {
     let mut out = String::new();
-    let mut previous_control_word: Option<&str> = None;
+    let mut previous_nonverb_control_word = false;
+    render_tokens_into(tokens, &mut out, &mut previous_nonverb_control_word, cap)?;
+    Ok(out)
+}
+
+fn render_tokens_into(
+    tokens: &[Token],
+    out: &mut String,
+    previous_nonverb_control_word: &mut bool,
+    cap: usize,
+) -> ExpansionResult<()> {
     for token in tokens {
         match token {
             Token::Char(c) => {
-                if previous_control_word
-                    .is_some_and(|name| !name.starts_with("verb") && c.is_ascii_alphabetic())
-                {
-                    out.push(' ');
+                if *previous_nonverb_control_word && c.is_ascii_alphabetic() {
+                    push_rendered(out, " ", cap)?;
                 }
-                out.push(*c);
-                previous_control_word = None;
+                let mut encoded = [0u8; 4];
+                push_rendered(out, c.encode_utf8(&mut encoded), cap)?;
+                *previous_nonverb_control_word = false;
             },
             Token::BeginGroup => {
-                out.push('{');
-                previous_control_word = None;
+                push_rendered(out, "{", cap)?;
+                *previous_nonverb_control_word = false;
             },
             Token::EndGroup => {
-                out.push('}');
-                previous_control_word = None;
+                push_rendered(out, "}", cap)?;
+                *previous_nonverb_control_word = false;
             },
             Token::ControlWord(name) => {
-                out.push('\\');
-                out.push_str(name);
-                previous_control_word = Some(name);
+                push_rendered(out, "\\", cap)?;
+                push_rendered(out, name, cap)?;
+                *previous_nonverb_control_word = !name.starts_with("verb");
             },
             Token::ControlSymbol(c) => {
-                out.push('\\');
-                out.push(*c);
-                previous_control_word = None;
+                push_rendered(out, "\\", cap)?;
+                let mut encoded = [0u8; 4];
+                push_rendered(out, c.encode_utf8(&mut encoded), cap)?;
+                *previous_nonverb_control_word = false;
             },
             Token::Verbatim(text) => {
-                out.push_str(text);
-                previous_control_word = None;
+                push_rendered(out, text, cap)?;
+                *previous_nonverb_control_word = false;
             },
             Token::EndEnvironment => {},
             Token::NoExpand(inner) => {
-                out.push_str(&render_tokens(std::slice::from_ref(inner)));
-                previous_control_word = None;
+                render_tokens_into(
+                    std::slice::from_ref(inner),
+                    out,
+                    previous_nonverb_control_word,
+                    cap,
+                )?;
+                *previous_nonverb_control_word = false;
             },
             Token::Frozen(inner) => {
                 if let Token::ControlWord(name) = inner.as_ref() {
-                    out.push('\\');
-                    out.push_str(name);
-                    previous_control_word = Some(name);
+                    push_rendered(out, "\\", cap)?;
+                    push_rendered(out, name, cap)?;
+                    *previous_nonverb_control_word = !name.starts_with("verb");
                 } else {
-                    out.push_str(&render_tokens(std::slice::from_ref(inner)));
-                    previous_control_word = None;
+                    render_tokens_into(
+                        std::slice::from_ref(inner),
+                        out,
+                        previous_nonverb_control_word,
+                        cap,
+                    )?;
+                    *previous_nonverb_control_word = false;
                 }
             },
         }
     }
-    out
+    Ok(())
+}
+
+fn push_rendered(out: &mut String, text: &str, cap: usize) -> ExpansionResult<()> {
+    if out.len().saturating_add(text.len()) > cap {
+        return Err(ExpansionFailure::OutputBytes { limit: cap });
+    }
+    out.push_str(text);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1941,7 +1969,7 @@ mod tests {
             .collect();
         let mut output = Vec::new();
         processor.process_queue(&mut queue, &mut output, Mode::Normal)?;
-        Ok(render_tokens(&output))
+        render_tokens_bounded(&output, cap)
     }
 
     fn chained_name(index: usize) -> String {
@@ -2007,6 +2035,30 @@ mod tests {
         assert_eq!(
             expand_with_limits(&input, 2048, 1400).unwrap(),
             format!("x+{tail}")
+        );
+    }
+
+    #[test]
+    fn final_control_word_separator_counts_toward_output_limit() {
+        let mut processor = Processor::new_with_limits(7, 128);
+        processor.seed_builtins();
+        let mut queue = VecDeque::from([
+            Queued {
+                token: Token::ControlWord("alpha".into()),
+                depth: 0,
+            },
+            Queued {
+                token: Token::Char('a'),
+                depth: 0,
+            },
+        ]);
+        let mut output = Vec::new();
+        processor
+            .process_queue(&mut queue, &mut output, Mode::Normal)
+            .unwrap();
+        assert_eq!(
+            render_tokens_bounded(&output, 7),
+            Err(ExpansionFailure::OutputBytes { limit: 7 })
         );
     }
 }
