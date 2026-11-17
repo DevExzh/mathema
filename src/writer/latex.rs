@@ -1470,6 +1470,19 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
         }
         return;
     }
+    // A bar's opening, closing, neutral-fence and ordinary forms have
+    // different math spacing even though they use the same glyph.
+    if let Some(command) = match (s, kind) {
+        ("|", SymbolKind::Open) => Some(r"\lvert"),
+        ("|", SymbolKind::Close) => Some(r"\rvert"),
+        ("‖", SymbolKind::Ordinary) => Some(r"\Vert"),
+        ("‖", SymbolKind::Close) => Some(r"\rVert"),
+        ("‖", SymbolKind::Fence) => Some(r"\|"),
+        _ => None,
+    } {
+        buf.push_str(command);
+        return;
+    }
     // ASCII symbols are written directly
     if ch.is_ascii() {
         match ch {

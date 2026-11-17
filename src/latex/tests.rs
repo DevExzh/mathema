@@ -1868,3 +1868,33 @@ fn relation_aliases_keep_their_glyphs_in_fences_and_math() {
         );
     }
 }
+
+#[test]
+fn vertical_bar_commands_work_as_middle_delimiters_and_preserve_atom_class() {
+    for (named, literal) in [
+        (
+            r"\left\langle a\middle\vert b\right\rangle",
+            r"\left\langle a\middle|b\right\rangle",
+        ),
+        (
+            r"\left\Vert a\middle\Vert b\right\Vert",
+            r"\left\|a\middle\|b\right\|",
+        ),
+    ] {
+        assert_eq!(
+            crate::from_latex(named).unwrap().to_mathml().unwrap(),
+            crate::from_latex(literal).unwrap().to_mathml().unwrap()
+        );
+    }
+    for src in [
+        r"a\vert b",
+        r"a\Vert b",
+        r"\lvert x\rvert^2",
+        r"\lVert x\rVert",
+    ] {
+        let parsed = LatexReader::parse(src, &Config::default()).unwrap().expr;
+        let first = LatexWriter::write(&parsed, &Config::default()).unwrap();
+        let second = LatexReader::parse(&first, &Config::default()).unwrap().expr;
+        assert_eq!(parsed.nodes, second.nodes, "{src} => {first}");
+    }
+}
