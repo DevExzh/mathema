@@ -361,95 +361,22 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             body,
             limits,
         } => {
-            // Decide between munderover and msubsup based on limits
-            match limits {
-                LimitStyle::AboveBelow => {
-                    let tag = match (sub, sup) {
-                        (Some(_), Some(_)) => "munderover",
-                        (Some(_), None) => "munder",
-                        (None, Some(_)) => "mover",
-                        (None, None) => {
-                            write_mo_char(w, *op)?;
-                            if !is_empty_math_node(body) {
-                                write_node(w, body)?;
-                            }
-                            return Ok(());
-                        },
-                    };
-                    w.write_event(Event::Start(BytesStart::new(tag)))
-                        .map_err(to_err)?;
-                    write_mo_char_with_movable(w, *op, false)?;
-                    if let Some(s) = sub {
-                        write_node(w, s)?;
-                    }
-                    if let Some(s) = sup {
-                        write_node(w, s)?;
-                    }
-                    w.write_event(Event::End(BytesEnd::new(tag)))
-                        .map_err(to_err)?;
-                },
-                LimitStyle::Default if nary_default_uses_under_over(*op) => {
-                    let tag = match (sub, sup) {
-                        (Some(_), Some(_)) => "munderover",
-                        (Some(_), None) => "munder",
-                        (None, Some(_)) => "mover",
-                        (None, None) => {
-                            write_mo_char(w, *op)?;
-                            if !is_empty_math_node(body) {
-                                write_node(w, body)?;
-                            }
-                            return Ok(());
-                        },
-                    };
-                    w.write_event(Event::Start(BytesStart::new(tag)))
-                        .map_err(to_err)?;
-                    let mut op_elem = BytesStart::new("mo");
-                    op_elem.push_attribute(("movablelimits", "true"));
-                    w.write_event(Event::Start(op_elem)).map_err(to_err)?;
-                    w.write_event(Event::Text(BytesText::new(&op.to_string())))
-                        .map_err(to_err)?;
-                    w.write_event(Event::End(BytesEnd::new("mo")))
-                        .map_err(to_err)?;
-                    if let Some(s) = sub {
-                        write_node(w, s)?;
-                    }
-                    if let Some(s) = sup {
-                        write_node(w, s)?;
-                    }
-                    w.write_event(Event::End(BytesEnd::new(tag)))
-                        .map_err(to_err)?;
-                },
-                _ => {
-                    let tag = match (sub, sup) {
-                        (Some(_), Some(_)) => "msubsup",
-                        (Some(_), None) => "msub",
-                        (None, Some(_)) => "msup",
-                        (None, None) => {
-                            write_mo_char(w, *op)?;
-                            if !is_empty_math_node(body) {
-                                write_node(w, body)?;
-                            }
-                            return Ok(());
-                        },
-                    };
-                    w.write_event(Event::Start(BytesStart::new(tag)))
-                        .map_err(to_err)?;
-                    let mut op_elem = BytesStart::new("mo");
-                    op_elem.push_attribute(("movablelimits", "false"));
-                    w.write_event(Event::Start(op_elem)).map_err(to_err)?;
-                    w.write_event(Event::Text(BytesText::new(&op.to_string())))
-                        .map_err(to_err)?;
-                    w.write_event(Event::End(BytesEnd::new("mo")))
-                        .map_err(to_err)?;
-                    if let Some(s) = sub {
-                        write_node(w, s)?;
-                    }
-                    if let Some(s) = sup {
-                        write_node(w, s)?;
-                    }
-                    w.write_event(Event::End(BytesEnd::new(tag)))
-                        .map_err(to_err)?;
-                },
+            if let Some((tag, movable)) =
+                nary_script_tag(*op, *limits, sub.is_some(), sup.is_some())
+            {
+                w.write_event(Event::Start(BytesStart::new(tag)))
+                    .map_err(to_err)?;
+                write_mo_char(w, *op, Some(movable))?;
+                if let Some(lower) = sub {
+                    write_node(w, lower)?;
+                }
+                if let Some(upper) = sup {
+                    write_node(w, upper)?;
+                }
+                w.write_event(Event::End(BytesEnd::new(tag)))
+                    .map_err(to_err)?;
+            } else {
+                write_mo_char(w, *op, None)?;
             }
             if !is_empty_math_node(body) {
                 write_node(w, body)?;
@@ -474,7 +401,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_node(w, base)?;
-            write_mo_char(w, *accent)?;
+            write_mo_char(w, *accent, None)?;
             w.write_event(Event::End(BytesEnd::new(tag)))
                 .map_err(to_err)?;
             Ok(())
@@ -690,28 +617,14 @@ fn write_mo(
     Ok(())
 }
 
-fn write_mo_char(w: &mut XmlWriter, ch: char) -> Result<()> {
-    let mut buf = [0u8; 4];
-    let s = ch.encode_utf8(&mut buf);
-    w.write_event(Event::Start(BytesStart::new("mo")))
-        .map_err(to_err)?;
-    w.write_event(Event::Text(BytesText::new(s)))
-        .map_err(to_err)?;
-    w.write_event(Event::End(BytesEnd::new("mo")))
-        .map_err(to_err)?;
-    Ok(())
-}
-
-fn write_mo_char_with_movable(w: &mut XmlWriter, ch: char, movable_limits: bool) -> Result<()> {
-    let mut buf = [0u8; 4];
-    let s = ch.encode_utf8(&mut buf);
+fn write_mo_char(w: &mut XmlWriter, ch: char, movable: Option<bool>) -> Result<()> {
     let mut elem = BytesStart::new("mo");
-    elem.push_attribute((
-        "movablelimits",
-        if movable_limits { "true" } else { "false" },
-    ));
+    if let Some(movable) = movable {
+        elem.push_attribute(("movablelimits", if movable { "true" } else { "false" }));
+    }
+    let mut glyph = [0; 4];
     w.write_event(Event::Start(elem)).map_err(to_err)?;
-    w.write_event(Event::Text(BytesText::new(s)))
+    w.write_event(Event::Text(BytesText::new(ch.encode_utf8(&mut glyph))))
         .map_err(to_err)?;
     w.write_event(Event::End(BytesEnd::new("mo")))
         .map_err(to_err)?;
@@ -1023,86 +936,19 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             body,
             limits,
         } => {
-            let has_sub = sub.is_some();
-            let has_sup = sup.is_some();
-
-            match limits {
-                LimitStyle::AboveBelow => {
-                    let tag = match (has_sub, has_sup) {
-                        (true, true) => "munderover",
-                        (true, false) => "munder",
-                        (false, true) => "mover",
-                        (false, false) => {
-                            write_mo_char_fast(buf, op);
-                            if !is_empty_compact_node(arena, body) {
-                                write_node_fast(buf, arena, body);
-                            }
-                            return;
-                        },
-                    };
-                    open_tag(buf, tag);
-                    write_mo_char_fast_with_movable(buf, op, false);
-                    if has_sub {
-                        write_node_fast(buf, arena, sub);
-                    }
-                    if has_sup {
-                        write_node_fast(buf, arena, sup);
-                    }
-                    close_tag(buf, tag);
-                },
-                LimitStyle::Default if nary_default_uses_under_over(op) => {
-                    let tag = match (has_sub, has_sup) {
-                        (true, true) => "munderover",
-                        (true, false) => "munder",
-                        (false, true) => "mover",
-                        (false, false) => {
-                            write_mo_char_fast(buf, op);
-                            if !is_empty_compact_node(arena, body) {
-                                write_node_fast(buf, arena, body);
-                            }
-                            return;
-                        },
-                    };
-                    open_tag(buf, tag);
-                    buf.push_str("<mo movablelimits=\"true\">");
-                    let mut op_buf = [0u8; 4];
-                    xml_escape_into(buf, op.encode_utf8(&mut op_buf));
-                    buf.push_str("</mo>");
-                    if has_sub {
-                        write_node_fast(buf, arena, sub);
-                    }
-                    if has_sup {
-                        write_node_fast(buf, arena, sup);
-                    }
-                    close_tag(buf, tag);
-                },
-                _ => {
-                    let tag = match (has_sub, has_sup) {
-                        (true, true) => "msubsup",
-                        (true, false) => "msub",
-                        (false, true) => "msup",
-                        (false, false) => {
-                            write_mo_char_fast(buf, op);
-                            if !is_empty_compact_node(arena, body) {
-                                write_node_fast(buf, arena, body);
-                            }
-                            return;
-                        },
-                    };
-                    open_tag(buf, tag);
-                    // Write mo with movablelimits
-                    let mut op_buf = [0u8; 4];
-                    buf.push_str("<mo movablelimits=\"false\">");
-                    xml_escape_into(buf, op.encode_utf8(&mut op_buf));
-                    buf.push_str("</mo>");
-                    if has_sub {
-                        write_node_fast(buf, arena, sub);
-                    }
-                    if has_sup {
-                        write_node_fast(buf, arena, sup);
-                    }
-                    close_tag(buf, tag);
-                },
+            if let Some((tag, movable)) = nary_script_tag(op, limits, sub.is_some(), sup.is_some())
+            {
+                open_tag(buf, tag);
+                write_mo_char_fast(buf, op, Some(movable));
+                if sub.is_some() {
+                    write_node_fast(buf, arena, sub);
+                }
+                if sup.is_some() {
+                    write_node_fast(buf, arena, sup);
+                }
+                close_tag(buf, tag);
+            } else {
+                write_mo_char_fast(buf, op, None);
             }
             if !is_empty_compact_node(arena, body) {
                 write_node_fast(buf, arena, body);
@@ -1126,7 +972,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
                 AccentPosition::Below => buf.push_str(" accentunder=\"true\">"),
             }
             write_node_fast(buf, arena, base);
-            write_mo_char_fast(buf, accent);
+            write_mo_char_fast(buf, accent, None);
             close_tag(buf, tag);
         },
 
@@ -1297,13 +1143,27 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
     }
 }
 
-/// TeX's default n-ary limits are movable above/below except for integral-like
-/// operators, which keep side limits in display style. Encoding the movable
-/// case as an under/over element lets MathML renderers apply the same context
-/// switch in inline and nested styles.
-#[inline]
-fn nary_default_uses_under_over(op: char) -> bool {
-    !matches!(op, '∫' | '∬' | '∭' | '∮' | '∯' | '∰')
+/// Select the MathML script element and whether its limits move to the side
+/// in compact math style. Fixed side scripts use the sub/sup family directly.
+fn nary_script_tag(
+    op: char,
+    limits: LimitStyle,
+    sub: bool,
+    sup: bool,
+) -> Option<(&'static str, bool)> {
+    let movable =
+        limits == LimitStyle::Default && !crate::unicode::symbols::is_integral_operator(op);
+    let stacked = movable || limits == LimitStyle::AboveBelow;
+    let tag = match (stacked, sub, sup) {
+        (_, false, false) => return None,
+        (true, true, true) => "munderover",
+        (true, true, false) => "munder",
+        (true, false, true) => "mover",
+        (false, true, true) => "msubsup",
+        (false, true, false) => "msub",
+        (false, false, true) => "msup",
+    };
+    Some((tag, movable))
 }
 
 #[inline]
@@ -1329,20 +1189,14 @@ fn write_mi_fast(buf: &mut String, s: &str) {
 }
 
 #[inline]
-fn write_mo_char_fast(buf: &mut String, ch: char) {
-    let mut char_buf = [0u8; 4];
-    buf.push_str("<mo>");
-    xml_escape_into(buf, ch.encode_utf8(&mut char_buf));
-    buf.push_str("</mo>");
-}
-
-#[inline]
-fn write_mo_char_fast_with_movable(buf: &mut String, ch: char, movable_limits: bool) {
-    let mut char_buf = [0u8; 4];
-    buf.push_str("<mo movablelimits=\"");
-    buf.push_str(if movable_limits { "true" } else { "false" });
-    buf.push_str("\">");
-    xml_escape_into(buf, ch.encode_utf8(&mut char_buf));
+fn write_mo_char_fast(buf: &mut String, ch: char, movable: Option<bool>) {
+    buf.push_str(match movable {
+        Some(true) => "<mo movablelimits=\"true\">",
+        Some(false) => "<mo movablelimits=\"false\">",
+        None => "<mo>",
+    });
+    let mut glyph = [0; 4];
+    xml_escape_into(buf, ch.encode_utf8(&mut glyph));
     buf.push_str("</mo>");
 }
 
