@@ -92,9 +92,10 @@ struct MathmlCompactParser<'a> {
 impl<'a> MathmlCompactParser<'a> {
     fn new(input: &'a str) -> Result<Self> {
         let mut reader = Reader::from_str(input);
-        // Keep token text bytes intact. Whitespace-only events outside token
-        // elements are still ignored by `parse_children` and `collect_remaining`,
-        // while `<mtext>` can preserve significant leading and trailing spaces.
+        // Keep token text bytes intact so token-level MathML whitespace can be
+        // normalized by `read_text_content`. Formatting whitespace between
+        // token elements is still ignored by `parse_children` and
+        // `collect_remaining`.
         reader.config_mut().trim_text(false);
         // Heuristic: MathML is verbose, roughly 1 node per 15 input bytes
         let est_nodes = input.len() / 15 + 4;
@@ -359,7 +360,7 @@ impl<'a> MathmlCompactParser<'a> {
                 let mathvariant = get_attr(start, "mathvariant")
                     .and_then(|variant| mathvariant_to_style(&variant))
                     .unwrap_or(TextStyle::Normal);
-                let text = self.read_text_content_preserve(name)?;
+                let text = self.read_text_content(name)?;
                 let sid = self.arena.push_str(&text);
                 Ok(self.arena.push_node(CompactNode::Text(mathvariant, sid)))
             },
@@ -669,18 +670,10 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn read_text_content(&mut self, tag_name: &str) -> Result<String> {
-        self.read_text_content_with_space(tag_name, false)
+        self.read_text_content_with_space(tag_name)
     }
 
-    fn read_text_content_preserve(&mut self, tag_name: &str) -> Result<String> {
-        self.read_text_content_with_space(tag_name, true)
-    }
-
-    fn read_text_content_with_space(
-        &mut self,
-        tag_name: &str,
-        preserve_space: bool,
-    ) -> Result<String> {
+    fn read_text_content_with_space(&mut self, tag_name: &str) -> Result<String> {
         let mut text = String::new();
         loop {
             match self.reader.read_event() {
@@ -718,11 +711,7 @@ impl<'a> MathmlCompactParser<'a> {
                 _ => continue,
             }
         }
-        if preserve_space {
-            Ok(text)
-        } else {
-            Ok(text.trim().to_string())
-        }
+        Ok(collapse_mathml_token_text(&text))
     }
 
     fn parse_table(&mut self, parent_tag: &str) -> Result<Vec<Vec<SmallVec<[NodeId; 8]>>>> {
@@ -1115,6 +1104,27 @@ fn parse_em_width(s: &str) -> Rational {
     Rational::zero()
 }
 
+/// Apply MathML token whitespace rules to the four XML whitespace characters.
+/// Non-ASCII spaces such as NBSP remain rendered characters.
+fn collapse_mathml_token_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut pending_space = false;
+    let mut has_content = false;
+    for ch in text.chars() {
+        if matches!(ch, ' ' | '\t' | '\n' | '\r') {
+            pending_space = true;
+            continue;
+        }
+        if pending_space && has_content {
+            out.push(' ');
+        }
+        out.push(ch);
+        has_content = true;
+        pending_space = false;
+    }
+    out
+}
+
 fn mathvariant_to_style(variant: &str) -> Option<TextStyle> {
     match variant {
         "normal" => Some(TextStyle::Normal),
@@ -1215,7 +1225,7 @@ mod tests {
     }
 
     #[test]
-    fn mtext_preserves_mathvariant_and_significant_whitespace() {
+    fn mtext_collapses_xml_whitespace_and_preserves_rendered_spaces() {
         let variants = [
             ("bold", TextStyle::Bold),
             ("italic", TextStyle::Italic),
@@ -1233,9 +1243,9 @@ mod tests {
         ];
         for (variant, style) in variants {
             let input = format!(
-                r#"<math><mtext mathvariant="{variant}" xml:space="preserve">  a &lt; b  </mtext></math>"#
+                "<math><mtext mathvariant=\"{variant}\" xml:space=\"preserve\"> \t a \n &lt; b \r </mtext></math>"
             );
-            let expected = MathNode::Text(style, "  a < b  ".into());
+            let expected = MathNode::Text(style, "a < b".into());
             assert_eq!(parse_one(&input), expected, "variant: {variant}");
 
             let compact = MathmlReader::parse_compact(&input, &Config::default())
@@ -1243,6 +1253,12 @@ mod tests {
                 .to_parse_result();
             assert_eq!(compact.expr.nodes, vec![expected], "variant: {variant}");
         }
+
+        let node = parse_one("<math><mtext>\u{00a0} a  b \u{00a0}</mtext></math>");
+        assert_eq!(
+            node,
+            MathNode::Text(TextStyle::Normal, "\u{00a0} a b \u{00a0}".into())
+        );
     }
 
     #[test]

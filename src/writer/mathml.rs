@@ -1,5 +1,6 @@
 use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+use std::borrow::Cow;
 use std::io::Cursor;
 
 use crate::ast::arena::AstArena;
@@ -585,15 +586,13 @@ fn write_simple_element(w: &mut XmlWriter, tag: &str, text: &str) -> Result<()> 
 }
 
 fn write_text(w: &mut XmlWriter, style: TextStyle, text: &str) -> Result<()> {
+    let text = canonical_mathml_text(text);
     let mut elem = BytesStart::new("mtext");
     if style != TextStyle::Normal {
         elem.push_attribute(("mathvariant", style_to_mathvariant(style)));
     }
-    if text.chars().any(char::is_whitespace) {
-        elem.push_attribute(("xml:space", "preserve"));
-    }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
-    w.write_event(Event::Text(BytesText::new(text)))
+    w.write_event(Event::Text(BytesText::new(text.as_ref())))
         .map_err(to_err)?;
     w.write_event(Event::End(BytesEnd::new("mtext")))
         .map_err(to_err)?;
@@ -716,18 +715,59 @@ fn simple_element(buf: &mut String, tag: &str, text: &str) {
 
 #[inline]
 fn write_text_fast(buf: &mut String, style: TextStyle, text: &str) {
+    let text = canonical_mathml_text(text);
     buf.push_str("<mtext");
     if style != TextStyle::Normal {
         buf.push_str(" mathvariant=\"");
         buf.push_str(style_to_mathvariant(style));
         buf.push('"');
     }
-    if text.chars().any(char::is_whitespace) {
-        buf.push_str(" xml:space=\"preserve\"");
-    }
     buf.push('>');
-    xml_escape_into(buf, text);
+    xml_escape_into(buf, text.as_ref());
     buf.push_str("</mtext>");
+}
+
+/// Encode AST text in MathML's token whitespace model. XML whitespace is
+/// collapsed and trimmed in token content, so leading/trailing spaces and
+/// repeated interior spaces use NBSP after the first rendered space. A single
+/// ordinary interior space remains ordinary text.
+fn canonical_mathml_text(text: &str) -> Cow<'_, str> {
+    if !text.chars().any(|c| matches!(c, ' ' | '\t' | '\n' | '\r')) {
+        return Cow::Borrowed(text);
+    }
+
+    let normalized: Vec<char> = text
+        .chars()
+        .map(|c| {
+            if matches!(c, ' ' | '\t' | '\n' | '\r') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut output = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < normalized.len() {
+        if normalized[index] != ' ' {
+            output.push(normalized[index]);
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        while index < normalized.len() && normalized[index] == ' ' {
+            index += 1;
+        }
+        let count = index - start;
+        if start == 0 || index == normalized.len() {
+            output.extend(std::iter::repeat_n('\u{00A0}', count));
+        } else {
+            output.push(' ');
+            output.extend(std::iter::repeat_n('\u{00A0}', count.saturating_sub(1)));
+        }
+    }
+    Cow::Owned(output)
 }
 
 #[inline]
@@ -1244,31 +1284,49 @@ mod tests {
             TextStyle::BoldFraktur,
         ];
         let config = Config::default();
+        let texts = [
+            (
+                "  a  < b  ",
+                "\u{00a0}\u{00a0}a \u{00a0}< b\u{00a0}\u{00a0}",
+            ),
+            ("\ta\nb\r", "\u{00a0}a b\u{00a0}"),
+            ("\u{00a0} a\u{00a0}", "\u{00a0} a\u{00a0}"),
+        ];
         for style in styles {
-            let expr = MathExpr::inline(vec![MathNode::Text(style, "  a < b  ".into())]);
-            let heap = MathmlWriter::write(&expr, &config).unwrap();
-            let compact_expr = CompactExpr::from_math_expr(&expr).unwrap();
-            let compact = MathmlWriter::write_compact(&compact_expr, &config).unwrap();
-            assert_eq!(heap, compact, "style: {style:?}");
-            assert!(heap.contains("xml:space=\"preserve\""));
-            if style == TextStyle::Normal {
-                assert!(heap.contains("<mtext xml:space=\"preserve\">"), "{heap}");
-            } else {
-                assert!(
-                    heap.contains(&format!("mathvariant=\"{}\"", style_to_mathvariant(style))),
-                    "style: {style:?}, output: {heap}"
-                );
-            }
+            for &(source, canonical) in &texts {
+                let expr = MathExpr::inline(vec![MathNode::Text(style, source.into())]);
+                let heap = MathmlWriter::write(&expr, &config).unwrap();
+                let compact_expr = CompactExpr::from_math_expr(&expr).unwrap();
+                let compact = MathmlWriter::write_compact(&compact_expr, &config).unwrap();
+                assert_eq!(heap, compact, "style: {style:?}, source: {source:?}");
+                if style == TextStyle::Normal {
+                    assert!(heap.contains("<mtext>"), "{heap}");
+                } else {
+                    assert!(
+                        heap.contains(&format!("mathvariant=\"{}\"", style_to_mathvariant(style))),
+                        "style: {style:?}, output: {heap}"
+                    );
+                }
 
-            let parsed = crate::reader::mathml::MathmlReader::parse(&heap, &config)
+                let parsed = crate::reader::mathml::MathmlReader::parse(
+                    &heap,
+                    &config.with_display(DisplayStyle::Inline),
+                )
                 .unwrap()
                 .expr;
-            assert_eq!(parsed.nodes, expr.nodes, "style: {style:?}");
+                assert_eq!(
+                    parsed.nodes,
+                    vec![MathNode::Text(style, canonical.into())],
+                    "style: {style:?}, source: {source:?}"
+                );
+                let rewritten = MathmlWriter::write(&parsed, &config).unwrap();
+                assert_eq!(rewritten, heap, "style: {style:?}, source: {source:?}");
+            }
         }
     }
 
     #[test]
-    fn text_without_whitespace_omits_xml_space_but_keeps_style() {
+    fn text_without_whitespace_keeps_style() {
         let expr = MathExpr::inline(vec![MathNode::Text(TextStyle::Bold, "hello".into())]);
         let output = MathmlWriter::write(&expr, &Config::default()).unwrap();
         assert!(output.contains("<mtext mathvariant=\"bold\">hello</mtext>"));

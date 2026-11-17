@@ -13,10 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - MathML `<mtext>` preserves its supported `mathvariant` style on both writer
-  paths. Text containing whitespace emits `xml:space="preserve"`, and the
-  reader keeps those characters. Normal text omits the redundant `mathvariant`
-  attribute. Other MathML token whitespace continues to use the existing
-  token-trimming rules.
+  paths. Token whitespace follows the MathML collapse rule. Leading, trailing,
+  and repeated spaces in AST text use NBSP where needed, while a single
+  interior space remains ordinary text. Non-ASCII rendered spaces survive.
+  Normal text omits the redundant `mathvariant` attribute.
 
 ### Added
 
