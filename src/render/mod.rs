@@ -282,6 +282,27 @@ mod integration_tests {
     }
 
     #[test]
+    fn actuarial_subscript_geometry_matches_heap_and_arena_paths() {
+        use crate::reader::Reader;
+        let config = crate::error::Config::default();
+        let latex =
+            crate::reader::latex::LatexReader::parse_compact(r"\angl{$x_i$}", &config).unwrap();
+        let mathml = crate::reader::mathml::MathmlReader::parse_compact(
+            r#"<math><msub><mi>x</mi><menclose notation="actuarial"><mi>i</mi></menclose></msub></math>"#,
+            &config,
+        )
+        .unwrap();
+        for expression in [&latex.expr, &mathml.expr] {
+            let options = RenderOptions::default();
+            let heap = render_to_svg_compact(expression, &options).unwrap();
+            let mut arena = arena::LayoutArena::new();
+            let compact = render_to_svg_compact_arena(expression, &options, &mut arena).unwrap();
+            assert_eq!(heap, compact);
+            assert!(heap.contains("<rect"), "actuarial rules missing: {heap}");
+        }
+    }
+
+    #[test]
     fn svg_entry_points_reject_invalid_font_sizes() {
         use crate::reader::Reader;
 

@@ -3543,11 +3543,20 @@ impl LatexCompactParser {
                         .push_node(CompactNode::Text(TextStyle::Normal, n));
                     return Ok((
                         input,
-                        self.arena.push_node(CompactNode::Actuarial(content_id)),
+                        self.arena.push_node(CompactNode::Actuarial {
+                            content: content_id,
+                            text_mode: true,
+                        }),
                     ));
                 }
                 let (rest, content) = self.parse_hbox_argument(input)?;
-                Ok((rest, self.arena.push_node(CompactNode::Actuarial(content))))
+                Ok((
+                    rest,
+                    self.arena.push_node(CompactNode::Actuarial {
+                        content,
+                        text_mode: true,
+                    }),
+                ))
             },
 
             // --- Phase angle ---

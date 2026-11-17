@@ -552,28 +552,34 @@ impl CompactParser {
         let Some(content) = input.strip_prefix(open) else {
             return Err(parse_error(input, nom::error::ErrorKind::Char));
         };
-        self.memo_failure(input, |this, _| {
-            let mut remaining = content;
-            let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
-            loop {
-                this.tick(1);
-                if remaining.starts_with(close) {
-                    break;
-                }
-                match this.parse_element(remaining) {
-                    Ok((rest, id)) => {
-                        children.push(id);
-                        remaining = rest;
-                    },
-                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                    Err(_) => break,
-                }
+        self.memo_failure(input, |this, _| this.parse_until_close(content, close))
+    }
+
+    fn parse_until_close<'a>(
+        &mut self,
+        content: &'a str,
+        close: char,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        let mut remaining = content;
+        let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
+        loop {
+            self.tick(1);
+            if remaining.starts_with(close) {
+                break;
             }
-            // Require the closing delimiter; otherwise this is not a balanced
-            // group and the caller falls back to literal handling.
-            let (remaining, _) = satisfy(|c| c == close)(remaining)?;
-            Ok((remaining, children))
-        })
+            match self.parse_element(remaining) {
+                Ok((rest, id)) => {
+                    children.push(id);
+                    remaining = rest;
+                },
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                Err(_) => break,
+            }
+        }
+        // Require the closing delimiter; otherwise this is not a balanced
+        // group and the caller falls back to literal handling.
+        let (remaining, _) = satisfy(|c| c == close)(remaining)?;
+        Ok((remaining, children))
     }
 
     /// Parse one atom. Whether an atom fails at an offset depends only on
@@ -622,44 +628,37 @@ impl CompactParser {
             },
         };
         let rest = chars.as_str();
-        if is_box && rest.starts_with('(') {
-            let mut body = &rest[1..];
-            let digits_end = body
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(body.len());
-            if digits_end == 0 || !body[digits_end..].starts_with('&') {
-                return Err(parse_error(rest, nom::error::ErrorKind::Tag));
-            }
-            let mask = body[..digits_end]
-                .parse::<u8>()
-                .map_err(|_| parse_error(rest, nom::error::ErrorKind::TooLarge))?;
-            if mask != 6 {
-                return Err(parse_error(rest, nom::error::ErrorKind::Tag));
-            }
-            body = &body[digits_end + 1..];
-            self.enter(body)?;
-            let mut remaining = body;
-            let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-            loop {
-                self.tick(1);
-                if remaining.starts_with(')') {
-                    remaining = &remaining[1..];
-                    break;
+        // An ordinary parenthesized operand is not a mask. Only claim this
+        // syntax once a decimal mask and its separator have both been read.
+        if is_box && let Some(params) = rest.strip_prefix('(') {
+            let n = params.bytes().take_while(u8::is_ascii_digit).count();
+            if n != 0
+                && let Some(body) = params[n..].strip_prefix('&')
+            {
+                if params[..n].parse::<u8>() != Ok(6) {
+                    return Err(parse_error(rest, nom::error::ErrorKind::Tag));
                 }
-                let (tail, id) = self.parse_element(remaining)?;
-                if tail.len() == remaining.len() {
-                    return Err(parse_error(remaining, nom::error::ErrorKind::Verify));
-                }
-                ids.push(id);
-                remaining = tail;
+                self.enter(body)?;
+                let parsed = self.parse_until_close(body, ')');
+                self.depth -= 1;
+                let (after, ids) = parsed?;
+                let content = self.flatten_single(&ids);
+                return Ok((
+                    after,
+                    self.push_node(CompactNode::Actuarial {
+                        content,
+                        text_mode: false,
+                    }),
+                ));
             }
-            self.depth -= 1;
-            let content = self.flatten_single(&ids);
-            return Ok((remaining, self.push_node(CompactNode::Actuarial(content))));
         }
         // The content is a child of the box, one level deeper.
         self.enter(rest)?;
-        let content = self.parse_atom(rest);
+        let content = if rest.starts_with('(') {
+            self.parse_absorbing_paren_group(rest)
+        } else {
+            self.parse_atom(rest)
+        };
         self.depth -= 1;
         let (rest, content) = content?;
         let node = if is_box {
@@ -1235,15 +1234,34 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_complex_boxes_are_not_masks_or_literal_fences() {
+        for input in ["▭(x+y)", "▭(6+x)", "▭(6&x+y)"] {
+            let ml =
+                crate::convert(input, crate::Format::UnicodeMath, crate::Format::MathML).unwrap();
+            assert!(
+                ml.contains("menclose") && !ml.contains("<mfenced"),
+                "{input}: {ml}"
+            );
+            let next = crate::convert(
+                input,
+                crate::Format::UnicodeMath,
+                crate::Format::UnicodeMath,
+            )
+            .unwrap();
+            assert_eq!(next, input);
+        }
+    }
+
+    #[test]
     fn reads_masked_actuarial_box_without_consuming_nested_ampersands() {
         let nodes = parse("▭(6&x)");
         assert!(matches!(
             &nodes[0],
-            MathNode::Actuarial(inner)
+            MathNode::Actuarial { content: inner, .. }
                 if matches!(&**inner, MathNode::Identifier(s) if s == "x")
         ));
         let nested = parse("▭(6&■(a&b@c&d))");
-        assert!(matches!(&nested[0], MathNode::Actuarial(_)));
+        assert!(matches!(&nested[0], MathNode::Actuarial { .. }));
         let limited = Config::default().with_max_nodes(Some(1));
         assert!(matches!(
             UnicodeMathReader::parse("▭(6&x)", &limited),
