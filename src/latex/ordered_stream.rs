@@ -107,6 +107,7 @@ struct EnvDef {
 struct ArrayContext {
     name: String,
     cell_scoped: bool,
+    content_scope: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -233,12 +234,17 @@ impl Processor {
         }
     }
 
-    fn push_scope(&mut self) {
+    fn push_scope(&mut self) -> ExpansionResult<()> {
+        let limit = crate::error::DEFAULT_MAX_DEPTH;
+        if self.scopes.len() > limit {
+            return Err(ExpansionFailure::Depth { limit });
+        }
         let input_mode = self.scopes.last().expect("global scope").input_mode;
         self.scopes.push(Scope {
             input_mode,
             ..Scope::default()
         });
+        Ok(())
     }
 
     fn pop_scope(&mut self) {
@@ -367,7 +373,7 @@ impl Processor {
             match token {
                 Token::BeginGroup => {
                     self.append(out, Token::BeginGroup)?;
-                    self.push_scope();
+                    self.push_scope()?;
                 },
                 Token::EndGroup => {
                     self.append(out, Token::EndGroup)?;
@@ -427,31 +433,8 @@ impl Processor {
                     if !expanded {
                         self.emit_native(Token::ControlSymbol(symbol), queue, out, mode, depth)?;
                     }
-                    if !expanded
-                        && mode == Mode::Normal
-                        && symbol == '\\'
-                        && self
-                            .parser_environments
-                            .last()
-                            .is_some_and(|env| env.cell_scoped)
-                    {
-                        self.pop_scope();
-                        self.push_scope();
-                    }
                 },
-                Token::Char(ch) => {
-                    self.emit_native(Token::Char(ch), queue, out, mode, depth)?;
-                    if mode == Mode::Normal
-                        && ch == '&'
-                        && self
-                            .parser_environments
-                            .last()
-                            .is_some_and(|env| env.cell_scoped)
-                    {
-                        self.pop_scope();
-                        self.push_scope();
-                    }
-                },
+                Token::Char(ch) => self.emit_native(Token::Char(ch), queue, out, mode, depth)?,
                 Token::NoExpand(_) => {
                     // `\noexpand` makes an expandable control sequence act
                     // like `\relax`; the token is intentionally discarded.
@@ -931,7 +914,7 @@ impl Processor {
         txn.commit();
         drop(txn);
         if name == "begin" {
-            self.push_scope();
+            self.push_scope()?;
             self.environment_scopes += 1;
             self.prepend(queue, env.begin, depth + 1)?;
         } else {
@@ -984,14 +967,15 @@ impl Processor {
         }
         self.append(out, Token::EndGroup)?;
         if name == "begin" {
-            self.push_scope();
+            self.push_scope()?;
+            if cell_scoped {
+                self.push_scope()?;
+            }
             self.parser_environments.push(ArrayContext {
                 name: env_name,
                 cell_scoped,
+                content_scope: self.scopes.len(),
             });
-            if cell_scoped {
-                self.push_scope();
-            }
         } else if self
             .parser_environments
             .last()
@@ -1253,6 +1237,19 @@ impl Processor {
                     return Ok(());
                 }
             }
+            // Only an actual separator in the current alignment ends a cell.
+            // A separator inside a nested group belongs to the inner construct.
+            let cell_separator = matches!(token, Token::Char('&') | Token::ControlSymbol('\\'))
+                || matches!(&token, Token::ControlWord(name) if name == "cr");
+            if cell_separator
+                && self
+                    .parser_environments
+                    .last()
+                    .is_some_and(|env| env.cell_scoped && env.content_scope == self.scopes.len())
+            {
+                self.pop_scope();
+                self.push_scope()?;
+            }
             let input_mode = &mut self.scopes.last_mut().expect("global scope").input_mode;
             *input_mode = match (*input_mode, &token) {
                 (InputMode::Text, Token::Char('$')) => InputMode::DollarMath,
@@ -1297,7 +1294,7 @@ impl Processor {
         let first = queue.pop_front().expect("argument was present");
         self.append(out, Token::ControlWord(name.to_owned()))?;
         self.append(out, Token::BeginGroup)?;
-        self.push_scope();
+        self.push_scope()?;
         self.scopes.last_mut().expect("argument scope").input_mode = input_mode;
         if !grouped {
             self.charge_work(1)?;

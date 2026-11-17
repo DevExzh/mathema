@@ -466,6 +466,18 @@ mod tests {
     }
 
     #[test]
+    fn only_the_current_alignment_separator_ends_a_macro_scope() {
+        assert_eq!(
+            expanded(r"\def\x{a}\begin{matrix}\def\x{b}\x\cr\x\end{matrix}"),
+            r"\begin{matrix}b\cr a\end{matrix}"
+        );
+        assert_eq!(
+            expanded(r"\def\x{a}\begin{matrix}{\def\x{b}\text{u\\v}\x}&\x\end{matrix}"),
+            r"\begin{matrix}{\text{u\\v}b}&a\end{matrix}"
+        );
+    }
+
+    #[test]
     fn array_cells_are_group_scoped() {
         assert_eq!(
             expanded(r"\def\x{1}\begin{matrix}\x&\def\x{2}\x&\x\end{matrix}\x"),
