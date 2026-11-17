@@ -467,6 +467,62 @@ fn named_operator_limit_modifiers_round_trip() {
 }
 
 #[test]
+fn operatorname_special_content_round_trips_through_public_apis() {
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\operatorname{rate\%}", r"\operatorname{rate\%}"),
+        (r"\operatorname*{rate\%}", r"\operatorname*{rate\%}"),
+        (r"\operatorname{a\{b\}c}", r"\operatorname{a\{b\}c}"),
+        (
+            r"\operatorname{a\textbackslash{}b}",
+            r"\operatorname{a\textbackslash{}b}",
+        ),
+        (
+            r"\operatorname{a\textasciitilde{}b}",
+            r"\operatorname{a\textasciitilde{}b}",
+        ),
+        (r"\operatorname{a\textmu b}", r"\operatorname{aµ b}"),
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, expected, "unexpected operator name for {input:?}");
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(second, first, "operator name changed for {input:?}");
+    }
+
+    let mathml = crate::convert(
+        "<math><mo>rate%</mo></math>",
+        crate::Format::MathML,
+        crate::Format::LaTeX,
+    )
+    .unwrap();
+    assert_eq!(mathml, r"\operatorname{rate\%}");
+    assert_eq!(
+        crate::convert(&mathml, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+        mathml
+    );
+
+    let direct = crate::ast::MathExpr::inline(vec![crate::ast::MathNode::Operator(
+        crate::ast::OperatorAttr {
+            name: "rate%".into(),
+            limit_style: crate::ast::LimitStyle::AboveBelow,
+        },
+    )]);
+    let direct_latex = LatexWriter::write(&direct, &config).unwrap();
+    assert_eq!(direct_latex, r"\operatorname*{rate\%}");
+    assert_eq!(
+        crate::convert(&direct_latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+        direct_latex
+    );
+
+    for malformed in [r"\operatorname{rate\%", r"\operatorname*{rate\textmu"] {
+        assert!(
+            LatexReader::parse(malformed, &config).is_err(),
+            "unclosed operator name was accepted: {malformed:?}"
+        );
+    }
+}
+
+#[test]
 fn nary_body_boundaries_allow_missing_bodies_and_propagate_errors() {
     let config = Config::default();
     for input in [

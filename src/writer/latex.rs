@@ -1325,24 +1325,42 @@ fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
         match limits {
             LimitStyle::AboveBelow => {
                 buf.push_str("\\operatorname*{");
-                buf.push_str(name);
+                write_operator_name_content(buf, name);
                 buf.push('}');
             },
             LimitStyle::Default if crate::ast::normalize::is_limit_function(name) => {
                 buf.push_str("\\operatorname*{");
-                buf.push_str(name);
+                write_operator_name_content(buf, name);
                 buf.push('}');
             },
             LimitStyle::SubSup => {
                 buf.push_str("\\operatorname{");
-                buf.push_str(name);
+                write_operator_name_content(buf, name);
                 buf.push_str("}\\nolimits");
             },
             LimitStyle::Default => {
                 buf.push_str("\\operatorname{");
-                buf.push_str(name);
+                write_operator_name_content(buf, name);
                 buf.push('}');
             },
+        }
+    }
+}
+
+fn write_operator_name_content(buf: &mut String, name: &str) {
+    for ch in name.chars() {
+        match ch {
+            '%' => buf.push_str("\\%"),
+            '#' => buf.push_str("\\#"),
+            '$' => buf.push_str("\\$"),
+            '&' => buf.push_str("\\&"),
+            '_' => buf.push_str("\\_"),
+            '^' => buf.push_str("\\^"),
+            '{' => buf.push_str("\\{"),
+            '}' => buf.push_str("\\}"),
+            '~' => buf.push_str("\\textasciitilde{}"),
+            '\\' => buf.push_str("\\textbackslash{}"),
+            _ => buf.push(ch),
         }
     }
 }
@@ -1384,7 +1402,18 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
     // A word such as `<mo>lim</mo>` is a function name: `\lim` when LaTeX
     // has the command, else `\operatorname{…}` (writing only its first
     // letter would lose the rest).
-    if s.chars().count() > 1 && s.chars().all(char::is_alphabetic) {
+    let first_is_ascii_letter = ch.is_ascii_alphabetic();
+    let has_operator_name_escape = s.chars().any(|ch| {
+        matches!(
+            ch,
+            '%' | '#' | '$' | '&' | '_' | '^' | '{' | '}' | '~' | '\\'
+        )
+    });
+    if s.chars().count() > 1
+        && (s.chars().all(char::is_alphabetic)
+            || (kind == SymbolKind::Ordinary
+                && (first_is_ascii_letter || has_operator_name_escape)))
+    {
         write_operator_name(buf, s, LimitStyle::Default);
         return;
     }

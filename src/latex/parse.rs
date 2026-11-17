@@ -318,6 +318,49 @@ fn clean_text_content(raw: &str) -> String {
     out
 }
 
+/// Decode literal content of an operatorname argument. Grouping braces are
+/// removed, escaped punctuation remains literal, and known core or package
+/// commands contribute their Unicode glyph.
+fn decode_operator_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' | '}' => {},
+            '\\' => {
+                let Some(next) = chars.peek().copied() else {
+                    out.push('\\');
+                    break;
+                };
+                if next.is_ascii_alphabetic() {
+                    let mut command = String::new();
+                    while let Some(next) = chars.peek().copied() {
+                        if next.is_ascii_alphabetic() {
+                            command.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Some(unicode) = latex_to_unicode(&command) {
+                        out.push(unicode);
+                    } else if let Some((unicode, _)) =
+                        crate::latex::packages::lookup_package_symbol(&command)
+                    {
+                        out.push_str(unicode);
+                    } else {
+                        out.push_str(&command);
+                    }
+                } else {
+                    out.push(chars.next().unwrap_or(next));
+                }
+            },
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Parse empheq option list (`box=…,left=…,right=…`), returning the raw value
 /// strings for the `box`, `left`, and `right` keys. Splitting respects brace
 /// depth so values like `\colorbox{a,b}` are not mis-split. Unknown keys are
@@ -4405,50 +4448,27 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         // Accept both braced {name} and unbraced single letter
         let (input, name) = if input.starts_with('{') {
-            let (input, _) = char('{')(input)?;
-            let (input, name) = take_while(|c: char| c != '}')(input)?;
-            let (input, _) = char('}')(input)?;
+            let Some((input, raw_name)) = super::mhchem::capture_braced(input) else {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )));
+            };
+            let name = decode_operator_name(raw_name);
             (input, name)
         } else if input
             .as_bytes()
             .first()
             .is_some_and(|b| b.is_ascii_alphabetic())
         {
-            (&input[1..], &input[..1])
+            (&input[1..], input[..1].to_owned())
         } else {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Alpha,
             )));
         };
-        // Resolve LaTeX commands within the name (e.g., \Gamma → Γ)
-        let sid = if name.contains('\\') {
-            let mut resolved = String::with_capacity(name.len());
-            let mut chars = name.chars().peekable();
-            while let Some(ch) = chars.next() {
-                if ch == '\\' {
-                    let mut cmd = String::new();
-                    while let Some(&c) = chars.peek() {
-                        if c.is_ascii_alphabetic() {
-                            cmd.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    if let Some(unicode) = latex_to_unicode(&cmd) {
-                        resolved.push(unicode);
-                    } else if !cmd.is_empty() {
-                        resolved.push_str(&cmd);
-                    }
-                } else {
-                    resolved.push(ch);
-                }
-            }
-            self.arena.push_str(&resolved)
-        } else {
-            self.arena.push_str(name)
-        };
+        let sid = self.arena.push_str(&name);
         Ok((
             input,
             self.arena

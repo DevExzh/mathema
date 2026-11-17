@@ -150,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - LaTeX text commands accept a single token, including in radicals and
   scripts. A bare macro's replacement stays in the text argument. Literal
   text characters and repeated hyphens or quotes survive LaTeX conversion.
+- Operator names escape LaTeX comment and grouping characters, including
+  percent signs, braces, and literal backslashes. Unclosed operator-name
+  arguments now fail instead of consuming the remainder of the input.
 
 - Malformed old-style LaTeX font switches (`\\rm`, `\\sf`, and related
   commands) no longer retry an unconsumed scoped argument until the AST grows
