@@ -19,7 +19,7 @@ use crate::unicode::symbols::{
 };
 
 use super::error::LatexParseError;
-use super::preprocess::preprocess_cow;
+use super::preprocess::{ExpansionFailure, preprocess_cow};
 
 pub(crate) const MAX_PARSE_DEPTH: u32 = 128;
 
@@ -1183,6 +1183,14 @@ fn nom_err_to_latex_error(
     }
 }
 
+fn expansion_error(failure: ExpansionFailure) -> Error {
+    Error::from(match failure {
+        ExpansionFailure::OutputBytes { limit } => LatexParseError::ExpansionLimit { limit },
+        ExpansionFailure::Work { limit } => LatexParseError::ExpansionWorkLimit { limit },
+        ExpansionFailure::Depth { limit } => LatexParseError::ExpansionDepthLimit { limit },
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -1201,8 +1209,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let processed = preprocess_cow(trimmed)
-        .map_err(|limit| Error::from(LatexParseError::ExpansionLimit { limit }))?;
+    let processed = preprocess_cow(trimmed).map_err(expansion_error)?;
     let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
@@ -3008,11 +3015,12 @@ impl LatexCompactParser {
                 };
                 let processed = match preprocess_cow(&latex) {
                     Ok(p) => p,
-                    Err(_) => {
-                        return Ok((
-                            after,
-                            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-                        ));
+                    Err(failure) => {
+                        self.abort = Some(expansion_error(failure));
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::TooLarge,
+                        )));
                     },
                 };
                 let id = match self.parse_node_list(&processed) {
@@ -3030,11 +3038,12 @@ impl LatexCompactParser {
                 let (after, latex) = super::physics::translate_derivative(name, input);
                 let processed = match preprocess_cow(&latex) {
                     Ok(p) => p,
-                    Err(_) => {
-                        return Ok((
-                            after,
-                            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-                        ));
+                    Err(failure) => {
+                        self.abort = Some(expansion_error(failure));
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::TooLarge,
+                        )));
                     },
                 };
                 let id = match self.parse_node_list(&processed) {
@@ -3053,11 +3062,12 @@ impl LatexCompactParser {
                 let (after, latex) = super::siunitx::translate(name, input);
                 let processed = match preprocess_cow(&latex) {
                     Ok(p) => p,
-                    Err(_) => {
-                        return Ok((
-                            after,
-                            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-                        ));
+                    Err(failure) => {
+                        self.abort = Some(expansion_error(failure));
+                        return Err(nom::Err::Failure(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::TooLarge,
+                        )));
                     },
                 };
                 let id = match self.parse_node_list(&processed) {

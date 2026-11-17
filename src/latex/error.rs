@@ -25,6 +25,12 @@ pub enum LatexParseError {
         "macro expansion exceeded size limit ({limit} bytes); possible runaway recursive macro"
     )]
     ExpansionLimit { limit: usize },
+
+    #[error("macro expansion exceeded work limit ({limit} work units)")]
+    ExpansionWorkLimit { limit: usize },
+
+    #[error("macro expansion exceeded recursive depth limit ({limit})")]
+    ExpansionDepthLimit { limit: usize },
 }
 
 impl LatexParseError {
@@ -35,7 +41,9 @@ impl LatexParseError {
             | Self::UnmatchedDelimiter { span, .. }
             | Self::InvalidCommand { span, .. }
             | Self::DepthExceeded { span, .. } => *span,
-            Self::ExpansionLimit { .. } => None,
+            Self::ExpansionLimit { .. }
+            | Self::ExpansionWorkLimit { .. }
+            | Self::ExpansionDepthLimit { .. } => None,
         }
     }
 }

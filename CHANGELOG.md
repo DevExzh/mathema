@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - LaTeX macro expansion now charges queued replacements, discarded selector
   branches, macro-body evaluation and token processing against a work budget.
-  Recursive expansion depth is a typed expansion error, and intermediate token
-  vectors avoid reserving their full source-byte length. Ordinary reusable
-  macros retain their existing behavior within the bounded budget.
+  Queue accounting follows consumed and rolled-back source tokens without
+  repeatedly scanning unread input. Recursive depth and work exhaustion use
+  distinct typed expansion errors, and intermediate token vectors avoid
+  reserving their full source-byte length. Ordinary reusable macros retain
+  their existing behavior within the bounded budget.
 
 ### Added
 

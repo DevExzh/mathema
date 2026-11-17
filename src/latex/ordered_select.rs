@@ -1,7 +1,9 @@
 //! Expandable LaTeX branch selectors. Read both arguments as tokens; only the
 //! selected replacement goes back on the input stream for execution.
 use super::{QueueTxn, Queued, Token};
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Selector {
@@ -24,9 +26,10 @@ impl Selector {
     pub(super) fn select(
         self,
         queue: &mut VecDeque<Queued>,
+        budget: Rc<RefCell<super::WorkBudget>>,
         text_mode: bool,
     ) -> Option<Vec<Token>> {
-        let mut input = QueueTxn::new(queue);
+        let mut input = QueueTxn::new(queue, budget);
         let pattern = if self == Self::IfNextChar {
             Some(argument(&mut input)?)
         } else {

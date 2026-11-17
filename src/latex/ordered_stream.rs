@@ -7,16 +7,20 @@
 //! processor are crate-visible so the conditional/selection helper can attach
 //! to this stream without reparsing rendered strings.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 
 use super::packages;
-use super::{expansion_cap, expansion_work_cap, find_verb_end};
+use super::{ExpansionFailure, expansion_cap, expansion_work_cap, find_verb_end};
 use crate::latex::macro_args::{self, ParameterText};
 use crate::latex::text_style;
 
 #[path = "ordered_select.rs"]
 mod select;
+
+type ExpansionResult<T> = std::result::Result<T, ExpansionFailure>;
 
 const MAX_EXPANSION_DEPTH: usize = 64;
 
@@ -134,6 +138,31 @@ impl Meaning {
     }
 }
 
+struct WorkBudget {
+    work_cap: usize,
+    work: usize,
+    failed: bool,
+}
+
+impl WorkBudget {
+    fn charge(&mut self, amount: usize) -> ExpansionResult<()> {
+        if self.failed {
+            return Err(ExpansionFailure::Work {
+                limit: self.work_cap,
+            });
+        }
+        let next = self.work.saturating_add(amount);
+        if next > self.work_cap {
+            self.failed = true;
+            return Err(ExpansionFailure::Work {
+                limit: self.work_cap,
+            });
+        }
+        self.work = next;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct Scope {
     input_mode: InputMode,
@@ -147,7 +176,7 @@ enum Mode {
     Edef,
 }
 
-pub(crate) fn expand(input: &str) -> Result<String, usize> {
+pub(crate) fn expand(input: &str) -> ExpansionResult<String> {
     let cap = expansion_cap(input.len());
     let mut processor = Processor::new_with_limits(cap, expansion_work_cap(input.len()));
     processor.seed_builtins();
@@ -163,8 +192,7 @@ pub(crate) fn expand(input: &str) -> Result<String, usize> {
 pub(crate) struct Processor {
     scopes: Vec<Scope>,
     cap: usize,
-    work_cap: usize,
-    work: usize,
+    budget: Rc<RefCell<WorkBudget>>,
     produced: usize,
     environment_scopes: usize,
     parser_environments: Vec<ArrayContext>,
@@ -175,8 +203,11 @@ impl Processor {
         Self {
             scopes: vec![Scope::default()],
             cap,
-            work_cap,
-            work: 0,
+            budget: Rc::new(RefCell::new(WorkBudget {
+                work_cap,
+                work: 0,
+                failed: false,
+            })),
             produced: 0,
             environment_scopes: 0,
             parser_environments: Vec::new(),
@@ -243,14 +274,34 @@ impl Processor {
         }
     }
 
-    fn lookup_macro(&self, name: &str) -> Option<Meaning> {
+    fn has_macro(&self, name: &str) -> bool {
         self.scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.macros.get(name).cloned())
+            .any(|scope| scope.macros.contains_key(name))
     }
 
-    fn lookup_macro_for_expansion(&mut self, name: &str) -> Result<Option<Meaning>, usize> {
+    fn single_definition_macro(&self, name: &str) -> Option<String> {
+        let meaning = self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.macros.get(name))?;
+        let Meaning::Macro(def) = meaning else {
+            return None;
+        };
+        if def.param_count == 0
+            && def.body.len() == 1
+            && let Token::ControlWord(effective) = &def.body[0]
+            && matches!(effective.as_str(), "def" | "gdef" | "edef" | "xdef")
+        {
+            Some(effective.clone())
+        } else {
+            None
+        }
+    }
+
+    fn lookup_macro_for_expansion(&mut self, name: &str) -> ExpansionResult<Option<Meaning>> {
         let Some(work_size) = self
             .scopes
             .iter()
@@ -274,31 +325,19 @@ impl Processor {
             .find_map(|scope| scope.environments.get(name).cloned())
     }
 
-    fn append(&mut self, out: &mut Vec<Token>, token: Token) -> Result<(), usize> {
+    fn append(&mut self, out: &mut Vec<Token>, token: Token) -> ExpansionResult<()> {
         self.charge_work(token.byte_len().saturating_add(1))?;
         let next = self.produced.saturating_add(token.byte_len());
         if next > self.cap {
-            return Err(self.cap);
+            return Err(ExpansionFailure::OutputBytes { limit: self.cap });
         }
         self.produced = next;
         out.push(token);
         Ok(())
     }
 
-    fn charge_work(&mut self, amount: usize) -> Result<(), usize> {
-        let next = self.work.saturating_add(amount);
-        if next > self.work_cap {
-            return Err(self.cap);
-        }
-        self.work = next;
-        Ok(())
-    }
-
-    fn charge_queue(&mut self, queue: &VecDeque<Queued>) -> Result<(), usize> {
-        let bytes = queue.iter().fold(0usize, |sum, item| {
-            sum.saturating_add(item.token.byte_len())
-        });
-        self.charge_work(bytes.saturating_add(queue.len()))
+    fn charge_work(&mut self, amount: usize) -> ExpansionResult<()> {
+        self.budget.borrow_mut().charge(amount)
     }
 
     fn prepend(
@@ -306,7 +345,7 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
         tokens: Vec<Token>,
         depth: usize,
-    ) -> Result<(), usize> {
+    ) -> ExpansionResult<()> {
         let bytes = tokens
             .iter()
             .fold(0usize, |sum, token| sum.saturating_add(token.byte_len()));
@@ -322,14 +361,9 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
         mode: Mode,
-    ) -> Result<(), usize> {
+    ) -> ExpansionResult<()> {
         while let Some(Queued { token, depth }) = queue.pop_front() {
-            self.charge_work(
-                token
-                    .byte_len()
-                    .saturating_add(queue.len())
-                    .saturating_add(1),
-            )?;
+            self.charge_work(token.byte_len().saturating_add(1))?;
             match token {
                 Token::BeginGroup => {
                     self.append(out, Token::BeginGroup)?;
@@ -437,28 +471,20 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
         mode: Mode,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         let Some(meaning) = self.lookup_macro_for_expansion(name)? else {
             return Ok(false);
         };
         if depth >= MAX_EXPANSION_DEPTH {
-            if let Meaning::Macro(def) = &meaning
-                && def.body.len() == 1
-                && matches!(&def.body[0], Token::ControlWord(body_name) if body_name == name)
-            {
-                // Preserve the historical finite result for the harmless
-                // identity macro (`\def\r{\r}`), while rejecting a long
-                // expansion chain with a typed resource error.
-                self.append(out, Token::ControlWord(name.to_owned()))?;
-                return Ok(true);
-            }
-            return Err(self.cap);
+            return Err(ExpansionFailure::Depth {
+                limit: MAX_EXPANSION_DEPTH,
+            });
         }
         match meaning {
             Meaning::Selector(selector) => {
-                self.charge_queue(queue)?;
                 let Some(replacement) = selector.select(
                     queue,
+                    self.budget.clone(),
                     self.scopes.last().expect("global scope").input_mode == InputMode::Text,
                 ) else {
                     return Ok(false);
@@ -471,8 +497,7 @@ impl Processor {
                     self.append(out, Token::ControlWord(name.to_owned()))?;
                     return Ok(true);
                 }
-                self.charge_queue(queue)?;
-                let Some(args) = consume_args(queue, &def) else {
+                let Some(args) = consume_args(queue, &def, self.budget.clone()) else {
                     return Ok(false);
                 };
                 let replacement = substitute(&def, &args, self.cap)?;
@@ -501,10 +526,9 @@ impl Processor {
         &mut self,
         name: &str,
         queue: &mut VecDeque<Queued>,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         if matches!(name, "def" | "gdef" | "edef" | "xdef") {
-            self.charge_queue(queue)?;
-            let mut txn = QueueTxn::new(queue);
+            let mut txn = QueueTxn::new(queue, self.budget.clone());
             let result = self.parse_def_txn(
                 name,
                 false,
@@ -521,8 +545,7 @@ impl Processor {
             });
         }
         if name == "let" {
-            self.charge_queue(queue)?;
-            let mut txn = QueueTxn::new(queue);
+            let mut txn = QueueTxn::new(queue, self.budget.clone());
             let result = self.parse_let_txn(false, &mut txn)?;
             return Ok(if result {
                 txn.commit();
@@ -533,12 +556,10 @@ impl Processor {
             });
         }
         if name == "futurelet" {
-            self.charge_queue(queue)?;
             return self.parse_futurelet(queue, false);
         }
         if matches!(name, "newcommand" | "renewcommand" | "providecommand") {
-            self.charge_queue(queue)?;
-            let mut txn = QueueTxn::new(queue);
+            let mut txn = QueueTxn::new(queue, self.budget.clone());
             let result = self.parse_newcommand_txn(name, &mut txn)?;
             return Ok(if result {
                 txn.commit();
@@ -549,8 +570,7 @@ impl Processor {
             });
         }
         if name == "newenvironment" {
-            self.charge_queue(queue)?;
-            let mut txn = QueueTxn::new(queue);
+            let mut txn = QueueTxn::new(queue, self.budget.clone());
             let result = self.parse_newenvironment_txn(&mut txn)?;
             return Ok(if result {
                 txn.commit();
@@ -567,8 +587,7 @@ impl Processor {
         // Prefix parsing is transactional.  If the next command is not a
         // definition primitive, restoring it leaves `\global` in the output
         // for the strict parser to reject.
-        self.charge_queue(queue)?;
-        let mut txn = QueueTxn::new(queue);
+        let mut txn = QueueTxn::new(queue, self.budget.clone());
         let mut global = name == "global";
         let mut protected = name == "protected";
         loop {
@@ -636,15 +655,10 @@ impl Processor {
             });
         }
         // TeX permits a macro expanding to `\def` after a prefix.
-        if let Some(Meaning::Macro(def)) = self.lookup_macro(&command)
-            && def.param_count == 0
-            && def.body.len() == 1
-            && let Token::ControlWord(effective) = &def.body[0]
-            && matches!(effective.as_str(), "def" | "gdef" | "edef" | "xdef")
-        {
+        if let Some(effective) = self.single_definition_macro(&command) {
             txn.pop();
             let result = self.parse_def_txn(
-                effective,
+                &effective,
                 global || effective == "gdef" || effective == "xdef",
                 matches!(effective.as_str(), "edef" | "xdef"),
                 protected,
@@ -669,7 +683,7 @@ impl Processor {
         expand_body: bool,
         protected: bool,
         txn: &mut QueueTxn<'_>,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         let Some(target) = txn.pop_control_sequence() else {
             return Ok(false);
         };
@@ -713,7 +727,7 @@ impl Processor {
         Ok(true)
     }
 
-    fn parse_let_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
+    fn parse_let_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> ExpansionResult<bool> {
         let Some(target) = txn.pop_control_sequence() else {
             return Ok(false);
         };
@@ -734,12 +748,16 @@ impl Processor {
             return Ok(false);
         }
         let meaning = match &source {
-            Token::ControlWord(name) => self
-                .lookup_macro(name)
-                .unwrap_or_else(|| Meaning::Token(source.clone())),
-            Token::ControlSymbol(symbol) => self
-                .lookup_macro(&control_key_symbol(*symbol))
-                .unwrap_or(Meaning::Token(Token::ControlSymbol(*symbol))),
+            Token::ControlWord(name) => match self.lookup_macro_for_expansion(name)? {
+                Some(meaning) => meaning,
+                None => Meaning::Token(source.clone()),
+            },
+            Token::ControlSymbol(symbol) => {
+                match self.lookup_macro_for_expansion(&control_key_symbol(*symbol))? {
+                    Some(meaning) => meaning,
+                    None => Meaning::Token(Token::ControlSymbol(*symbol)),
+                }
+            },
             _ => Meaning::Token(source),
         };
         self.define_macro(target, meaning, global);
@@ -750,8 +768,8 @@ impl Processor {
         &mut self,
         queue: &mut VecDeque<Queued>,
         global: bool,
-    ) -> Result<bool, usize> {
-        let mut txn = QueueTxn::new(queue);
+    ) -> ExpansionResult<bool> {
+        let mut txn = QueueTxn::new(queue, self.budget.clone());
         let result = self.parse_futurelet_txn(global, &mut txn)?;
         if result {
             txn.commit();
@@ -766,7 +784,11 @@ impl Processor {
     /// both execute in their original order.  This raw-token lookahead is
     /// deliberately not macro expansion: the assigned meaning is a snapshot
     /// just like `\let`.
-    fn parse_futurelet_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
+    fn parse_futurelet_txn(
+        &mut self,
+        global: bool,
+        txn: &mut QueueTxn<'_>,
+    ) -> ExpansionResult<bool> {
         let Some(target) = txn.pop_control_sequence() else {
             return Ok(false);
         };
@@ -778,12 +800,16 @@ impl Processor {
         };
         let source = next.token.clone();
         let meaning = match &source {
-            Token::ControlWord(name) => self
-                .lookup_macro(name)
-                .unwrap_or_else(|| Meaning::Token(source.clone())),
-            Token::ControlSymbol(symbol) => self
-                .lookup_macro(&control_key_symbol(*symbol))
-                .unwrap_or(Meaning::Token(Token::ControlSymbol(*symbol))),
+            Token::ControlWord(name) => match self.lookup_macro_for_expansion(name)? {
+                Some(meaning) => meaning,
+                None => Meaning::Token(source.clone()),
+            },
+            Token::ControlSymbol(symbol) => {
+                match self.lookup_macro_for_expansion(&control_key_symbol(*symbol))? {
+                    Some(meaning) => meaning,
+                    None => Meaning::Token(Token::ControlSymbol(*symbol)),
+                }
+            },
             _ => Meaning::Token(source),
         };
         self.define_macro(target, meaning, global);
@@ -792,6 +818,12 @@ impl Processor {
         // tokens back; they are part of the command's semantics, not consumed
         // input.
         txn.commit();
+        self.charge_work(
+            next.token
+                .byte_len()
+                .saturating_add(middle.token.byte_len())
+                .saturating_add(2),
+        )?;
         txn.queue.push_front(next);
         txn.queue.push_front(middle);
         Ok(true)
@@ -801,7 +833,7 @@ impl Processor {
         &mut self,
         command: &str,
         txn: &mut QueueTxn<'_>,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         txn.skip_whitespace();
         if matches!(txn.peek_token(), Some(Token::Char('*'))) {
             txn.pop();
@@ -832,7 +864,7 @@ impl Processor {
         let Some(body) = txn.pop_group() else {
             return Ok(false);
         };
-        if command != "providecommand" || self.lookup_macro(&target).is_none() {
+        if command != "providecommand" || !self.has_macro(&target) {
             self.define_macro(
                 target,
                 Meaning::Macro(MacroDef {
@@ -848,7 +880,7 @@ impl Processor {
         Ok(true)
     }
 
-    fn parse_newenvironment_txn(&mut self, txn: &mut QueueTxn<'_>) -> Result<bool, usize> {
+    fn parse_newenvironment_txn(&mut self, txn: &mut QueueTxn<'_>) -> ExpansionResult<bool> {
         txn.skip_whitespace();
         if matches!(txn.peek_token(), Some(Token::Char('*'))) {
             txn.pop();
@@ -881,12 +913,11 @@ impl Processor {
         name: &str,
         depth: usize,
         queue: &mut VecDeque<Queued>,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         if name != "begin" && name != "end" {
             return Ok(false);
         }
-        self.charge_queue(queue)?;
-        let mut txn = QueueTxn::new(queue);
+        let mut txn = QueueTxn::new(queue, self.budget.clone());
         txn.skip_whitespace();
         let Some(group) = txn.pop_group() else {
             txn.rollback();
@@ -907,6 +938,7 @@ impl Processor {
             if self.environment_scopes > 0 {
                 // The end body must run before the environment scope is
                 // restored; place a private marker after it.
+                self.charge_work(1)?;
                 queue.push_front(Queued {
                     token: Token::EndEnvironment,
                     depth,
@@ -927,12 +959,11 @@ impl Processor {
         name: &str,
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         if name != "begin" && name != "end" {
             return Ok(false);
         }
-        self.charge_queue(queue)?;
-        let mut txn = QueueTxn::new(queue);
+        let mut txn = QueueTxn::new(queue, self.budget.clone());
         txn.skip_whitespace();
         let Some(group) = txn.pop_group() else {
             txn.rollback();
@@ -980,8 +1011,8 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
         depth: usize,
-    ) -> Result<(), usize> {
-        let mut txn = QueueTxn::new(queue);
+    ) -> ExpansionResult<()> {
+        let mut txn = QueueTxn::new(queue, self.budget.clone());
         txn.skip_whitespace();
         let Some(token) = txn.pop_token() else {
             txn.rollback();
@@ -1017,11 +1048,11 @@ impl Processor {
         _out: &mut Vec<Token>,
         mode: Mode,
         depth: usize,
-    ) -> Result<(), usize> {
-        self.charge_queue(queue)?;
+    ) -> ExpansionResult<()> {
         let Some(first) = queue.pop_front() else {
             return Ok(());
         };
+        self.charge_work(first.token.byte_len().saturating_add(1))?;
         let _ = self.expand_one_after(queue, mode, depth)?;
         queue.push_front(first);
         Ok(())
@@ -1032,18 +1063,20 @@ impl Processor {
         queue: &mut VecDeque<Queued>,
         mode: Mode,
         depth: usize,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         let Some(item) = queue.pop_front() else {
             return Ok(false);
         };
+        self.charge_work(item.token.byte_len().saturating_add(1))?;
         let item_depth = item.depth.max(depth);
         if item_depth >= MAX_EXPANSION_DEPTH {
-            queue.push_front(item);
-            return Ok(false);
+            return Err(ExpansionFailure::Depth {
+                limit: MAX_EXPANSION_DEPTH,
+            });
         }
         match item.token {
             Token::ControlWord(name) if name == "noexpand" => {
-                let mut txn = QueueTxn::new(queue);
+                let mut txn = QueueTxn::new(queue, self.budget.clone());
                 txn.skip_whitespace();
                 let Some(token) = txn.pop() else {
                     txn.rollback();
@@ -1086,7 +1119,7 @@ impl Processor {
         depth: usize,
         queue: &mut VecDeque<Queued>,
         mode: Mode,
-    ) -> Result<bool, usize> {
+    ) -> ExpansionResult<bool> {
         let Some(meaning) = self.lookup_macro_for_expansion(name)? else {
             // Undefined and parser primitives are unexpandable; restore the
             // token so the retained token remains immediately before it.
@@ -1102,9 +1135,9 @@ impl Processor {
         };
         match meaning {
             Meaning::Selector(selector) => {
-                self.charge_queue(queue)?;
                 let Some(replacement) = selector.select(
                     queue,
+                    self.budget.clone(),
                     self.scopes.last().expect("global scope").input_mode == InputMode::Text,
                 ) else {
                     queue.push_front(Queued {
@@ -1124,8 +1157,7 @@ impl Processor {
                     });
                     return Ok(false);
                 }
-                self.charge_queue(queue)?;
-                let Some(args) = consume_args(queue, &def) else {
+                let Some(args) = consume_args(queue, &def, self.budget.clone()) else {
                     queue.push_front(Queued {
                         token: Token::ControlWord(name.to_owned()),
                         depth,
@@ -1155,7 +1187,7 @@ impl Processor {
     /// Return the ordinary `\noexpand` result. `None` means an empty input;
     /// expandable control sequences become a relax-like marker, while
     /// unexpandable meanings remain executable.
-    fn noexpand_replacement(&mut self, token: Token) -> Result<Option<Token>, usize> {
+    fn noexpand_replacement(&mut self, token: Token) -> ExpansionResult<Option<Token>> {
         let Token::ControlWord(name) = &token else {
             let Token::ControlSymbol(symbol) = &token else {
                 return Ok(Some(token));
@@ -1182,8 +1214,8 @@ impl Processor {
         &mut self,
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
-    ) -> Result<(), usize> {
-        let mut txn = QueueTxn::new(queue);
+    ) -> ExpansionResult<()> {
+        let mut txn = QueueTxn::new(queue, self.budget.clone());
         txn.skip_whitespace();
         let Some(token) = txn.pop_token() else {
             txn.rollback();
@@ -1203,7 +1235,7 @@ impl Processor {
         out: &mut Vec<Token>,
         mode: Mode,
         depth: usize,
-    ) -> Result<(), usize> {
+    ) -> ExpansionResult<()> {
         if mode == Mode::Normal {
             if let Token::ControlWord(name) = &token {
                 let argument_mode = if text_style(name).is_some()
@@ -1240,15 +1272,23 @@ impl Processor {
         depth: usize,
         queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
-    ) -> Result<bool, usize> {
-        let Some(argument) = queue.iter().find(|q| !q.token.is_whitespace()) else {
+    ) -> ExpansionResult<bool> {
+        let mut argument = None;
+        for item in queue.iter() {
+            self.charge_work(item.token.byte_len().saturating_add(1))?;
+            if !item.token.is_whitespace() {
+                argument = Some(item);
+                break;
+            }
+        }
+        let Some(argument) = argument else {
             return Ok(false);
         };
         // Braced contents expand in the argument's mode through their closing
         // brace. A bare macro is one argument even if its replacement is longer.
         let grouped = match &argument.token {
             Token::BeginGroup => true,
-            Token::ControlWord(word) if self.lookup_macro(word).is_some() => false,
+            Token::ControlWord(word) if self.has_macro(word) => false,
             _ => return Ok(false),
         };
         while queue.front().is_some_and(|q| q.token.is_whitespace()) {
@@ -1260,6 +1300,7 @@ impl Processor {
         self.push_scope();
         self.scopes.last_mut().expect("argument scope").input_mode = input_mode;
         if !grouped {
+            self.charge_work(1)?;
             queue.push_front(Queued {
                 token: Token::EndGroup,
                 depth,
@@ -1269,7 +1310,7 @@ impl Processor {
         Ok(true)
     }
 
-    fn expand_edef_body(&mut self, body: Vec<Token>) -> Result<Vec<Token>, usize> {
+    fn expand_edef_body(&mut self, body: Vec<Token>) -> ExpansionResult<Vec<Token>> {
         let body_bytes = body
             .iter()
             .fold(0usize, |sum, token| sum.saturating_add(token.byte_len()));
@@ -1289,19 +1330,23 @@ impl Processor {
 struct QueueTxn<'a> {
     queue: &'a mut VecDeque<Queued>,
     taken: Vec<Queued>,
+    budget: Rc<RefCell<WorkBudget>>,
     committed: bool,
 }
 
 impl<'a> QueueTxn<'a> {
-    fn new(queue: &'a mut VecDeque<Queued>) -> Self {
+    fn new(queue: &'a mut VecDeque<Queued>, budget: Rc<RefCell<WorkBudget>>) -> Self {
         Self {
             queue,
             taken: Vec::new(),
+            budget,
             committed: false,
         }
     }
 
     fn pop(&mut self) -> Option<Queued> {
+        let cost = self.queue.front()?.token.byte_len().saturating_add(1);
+        self.budget.borrow_mut().charge(cost).ok()?;
         let item = self.queue.pop_front()?;
         self.taken.push(item.clone());
         Some(item)
@@ -1315,11 +1360,18 @@ impl<'a> QueueTxn<'a> {
         self.queue.front().map(|item| &item.token)
     }
 
-    fn peek_token_at(&self, offset: usize) -> Option<&Token> {
+    fn peek_token_at(&mut self, offset: usize) -> Option<&Token> {
+        let cost = self.queue.get(offset)?.token.byte_len().saturating_add(1);
+        self.budget.borrow_mut().charge(cost).ok()?;
         self.queue.get(offset).map(|item| &item.token)
     }
 
-    fn peek_control_word(&self) -> Option<String> {
+    fn peek_control_word(&mut self) -> Option<String> {
+        let name_len = match self.peek_token()? {
+            Token::ControlWord(name) => name.len().saturating_add(1),
+            _ => return None,
+        };
+        self.budget.borrow_mut().charge(name_len).ok()?;
         match self.peek_token()? {
             Token::ControlWord(name) => Some(name.clone()),
             _ => None,
@@ -1422,6 +1474,10 @@ impl<'a> QueueTxn<'a> {
         if self.committed {
             return;
         }
+        let rollback_cost = self.taken.iter().fold(0usize, |sum, item| {
+            sum.saturating_add(item.token.byte_len().saturating_add(1))
+        });
+        let _ = self.budget.borrow_mut().charge(rollback_cost);
         for item in self.taken.drain(..).rev() {
             self.queue.push_front(item);
         }
@@ -1465,11 +1521,15 @@ fn parameter_token(token: &Token) -> Option<macro_args::ParameterToken> {
     Some(macro_args::ParameterToken::from_text(text))
 }
 
-fn consume_args(queue: &mut VecDeque<Queued>, def: &MacroDef) -> Option<Vec<Vec<Token>>> {
+fn consume_args(
+    queue: &mut VecDeque<Queued>,
+    def: &MacroDef,
+    budget: Rc<RefCell<WorkBudget>>,
+) -> Option<Vec<Vec<Token>>> {
     if let Some(parameter_text) = &def.parameter_text {
-        return consume_parameter_args(queue, parameter_text);
+        return consume_parameter_args(queue, parameter_text, budget);
     }
-    let mut txn = QueueTxn::new(queue);
+    let mut txn = QueueTxn::new(queue, budget);
     let mut args = Vec::with_capacity(def.param_count as usize);
     if let Some(default) = &def.optional_default {
         if let Some(value) = txn.pop_bracket() {
@@ -1498,8 +1558,9 @@ fn consume_args(queue: &mut VecDeque<Queued>, def: &MacroDef) -> Option<Vec<Vec<
 fn consume_parameter_args(
     queue: &mut VecDeque<Queued>,
     parameter_text: &ParameterText,
+    budget: Rc<RefCell<WorkBudget>>,
 ) -> Option<Vec<Vec<Token>>> {
-    let mut txn = QueueTxn::new(queue);
+    let mut txn = QueueTxn::new(queue, budget);
     let delimiters = parameter_text.delimiters();
     if !consume_exact_delimiter(&mut txn, &delimiters[0]) {
         txn.rollback();
@@ -1523,7 +1584,7 @@ fn consume_parameter_args(
             let mut depth = 0usize;
             let mut argument = Vec::new();
             loop {
-                if depth == 0 && delimiter_matches(&txn, delimiter) {
+                if depth == 0 && delimiter_matches(&mut txn, delimiter) {
                     let _ = consume_exact_delimiter(&mut txn, delimiter);
                     break argument;
                 }
@@ -1566,7 +1627,7 @@ fn consume_exact_delimiter(
     true
 }
 
-fn delimiter_matches(txn: &QueueTxn<'_>, delimiter: &[macro_args::ParameterToken]) -> bool {
+fn delimiter_matches(txn: &mut QueueTxn<'_>, delimiter: &[macro_args::ParameterToken]) -> bool {
     delimiter.iter().enumerate().all(|(offset, expected)| {
         txn.peek_token_at(offset)
             .is_some_and(|token| token_matches_parameter(token, expected.as_str()))
@@ -1616,7 +1677,7 @@ fn parser_environment_kind(name: &str) -> Option<bool> {
     }
 }
 
-fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> Result<Vec<Token>, usize> {
+fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> ExpansionResult<Vec<Token>> {
     // Substitute directly in token space.  Detokenizing and retokenizing here
     // would turn `\alpha` followed by an argument letter into `\alphax`, and
     // would also erase frozen meanings captured by `\let`/`\noexpand`.
@@ -1646,7 +1707,7 @@ fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> Result<Vec<Tok
                         .sum::<usize>(),
                 );
                 if size > cap {
-                    return Err(cap);
+                    return Err(ExpansionFailure::OutputBytes { limit: cap });
                 }
                 i += 2;
                 continue;
@@ -1654,7 +1715,7 @@ fn substitute(def: &MacroDef, args: &[Vec<Token>], cap: usize) -> Result<Vec<Tok
         }
         size = size.saturating_add(def.body[i].byte_len());
         if size > cap {
-            return Err(cap);
+            return Err(ExpansionFailure::OutputBytes { limit: cap });
         }
         i += 1;
     }
@@ -1814,7 +1875,7 @@ fn render_tokens(tokens: &[Token]) -> String {
 mod tests {
     use super::*;
 
-    fn expand_with_limits(input: &str, cap: usize, work_cap: usize) -> Result<String, usize> {
+    fn expand_with_limits(input: &str, cap: usize, work_cap: usize) -> ExpansionResult<String> {
         let mut processor = Processor::new_with_limits(cap, work_cap);
         processor.seed_builtins();
         let mut queue: VecDeque<Queued> = tokenize(input)
@@ -1858,19 +1919,37 @@ mod tests {
         input.push('\\');
         input.push_str(&chained_name(0));
 
-        assert_eq!(expand_with_limits(&input, 4096, 1 << 20), Err(4096));
+        assert_eq!(
+            expand_with_limits(&input, 4096, 1 << 20),
+            Err(ExpansionFailure::Depth {
+                limit: MAX_EXPANSION_DEPTH
+            })
+        );
     }
 
     #[test]
     fn discarded_selector_branches_consume_work_budget() {
         let discarded = "a".repeat(512);
         let input = format!(r"\@firstoftwo{{{discarded}}}{{x}}");
-        assert_eq!(expand_with_limits(&input, 4096, 128), Err(4096));
+        assert_eq!(
+            expand_with_limits(&input, 4096, 128),
+            Err(ExpansionFailure::Work { limit: 128 })
+        );
     }
 
     #[test]
     fn reusable_macros_fit_a_small_work_budget() {
         let input = r"\def\foo{xy}\foo+\foo";
         assert_eq!(expand_with_limits(input, 128, 4096).unwrap(), "xy+xy");
+    }
+
+    #[test]
+    fn unrelated_tail_tokens_do_not_multiply_macro_work() {
+        let tail = "a".repeat(256);
+        let input = format!("\\def\\foo{{x}}\\foo+{tail}");
+        assert_eq!(
+            expand_with_limits(&input, 2048, 1400).unwrap(),
+            format!("x+{tail}")
+        );
     }
 }

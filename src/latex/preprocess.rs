@@ -20,6 +20,17 @@ const MIN_EXPANSION_CAP: usize = 1 << 20; // 1 MiB
 const EXPANSION_WORK_MULTIPLIER: usize = 128;
 const MIN_EXPANSION_WORK: usize = 1 << 20;
 
+/// Resource failure raised while expanding the ordered macro stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpansionFailure {
+    /// Rendered or intermediate expansion bytes exceeded the output cap.
+    OutputBytes { limit: usize },
+    /// Token processing, queue traversal or clone work exceeded its budget.
+    Work { limit: usize },
+    /// A replacement chain exceeded the recursive expansion depth.
+    Depth { limit: usize },
+}
+
 /// Maximum number of bytes macro expansion may produce for a given input.
 pub(super) fn expansion_cap(input_len: usize) -> usize {
     input_len.saturating_mul(64).max(MIN_EXPANSION_CAP)
@@ -34,9 +45,9 @@ pub(crate) fn expansion_work_cap(input_len: usize) -> usize {
 /// Strip comments and expand definitions in the active ordered token stream.
 ///
 /// The common path borrows the input when no comments or expandable package
-/// macros are present.  Expansion errors carry the byte limit that stopped the
-/// traversal so callers can report a controlled resource-limit diagnostic.
-pub fn preprocess_cow(input: &str) -> Result<Cow<'_, str>, usize> {
+/// macros are present. Expansion errors identify whether output bytes, token
+/// work, or recursive depth stopped the traversal.
+pub fn preprocess_cow(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
     if !needs_preprocessing(input) {
         return Ok(Cow::Borrowed(input));
     }
@@ -298,7 +309,11 @@ mod tests {
             expanded(r"\newcommand{\a}{X}\newcommand{\b}{\a Y}\newcommand{\c}{\b Z}\c"),
             "X Y Z"
         );
-        assert!(expanded(r"\newcommand{\r}{\r}\r").contains(r"\r"));
+        let cycle = r"\newcommand{\r}{\r}\r";
+        assert_eq!(
+            preprocess_cow(cycle),
+            Err(ExpansionFailure::Depth { limit: 64 })
+        );
     }
 
     #[test]
