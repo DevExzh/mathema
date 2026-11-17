@@ -555,11 +555,14 @@ pub(super) fn layout_reflect_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    let inner = layout_node_arena(ast, content, arena, ctx);
-    // Text-mode reflection uses an hbox in TeX. The AST has already retained
-    // the wrapper's mode for writers and MathML, while the arena layout keeps
-    // the same glyph metrics as the surrounding math for now.
-    let _ = text_mode;
+    let inner = if text_mode {
+        match *ast.node(content) {
+            CompactNode::Row(span) => layout_styled_arena(ast, TextStyle::Normal, span, arena, ctx),
+            _ => layout_node_arena(ast, content, arena, ctx),
+        }
+    } else {
+        layout_node_arena(ast, content, arena, ctx)
+    };
     let (width, height, depth) = {
         let node = arena.get(inner);
         (node.width, node.height, node.depth)
