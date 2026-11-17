@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- LaTeX macro definitions take effect in source order. Group-local and global
+  definitions, `\let`, `\futurelet`, expanded and protected definitions, and
+  delimited parameters preserve token meanings. Declared environments accept
+  opening arguments and an optional first default.
+- LaTeX branch selectors choose from unexpanded tokens. `\TextOrMath`
+  follows text arguments and their inline math, and `\@ifnextchar` can look
+  through a macro replacement into the caller's remaining input.
 - LaTeX `\@binrel` applies the first argument's binary, relation, or ordinary
   spacing class to the second argument, including when the sample is a group.
 - **OMML paragraphs.** `OmmlReader::parse_paragraph` reads an `m:oMathPara`

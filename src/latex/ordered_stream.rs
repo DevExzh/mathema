@@ -26,10 +26,10 @@ type ExpansionResult<T> = std::result::Result<T, ExpansionFailure>;
 
 const MAX_EXPANSION_DEPTH: usize = 64;
 
-fn malformed(command: &str, detail: &'static str) -> ExpansionFailure {
+fn malformed(command: &str, kind: SyntaxKind) -> ExpansionFailure {
     ExpansionFailure::Syntax {
         command: SyntaxCommand::from_name(command),
-        kind: SyntaxKind::from_detail(detail),
+        kind,
     }
 }
 
@@ -108,8 +108,8 @@ fn tokenized_builtin_macros() -> &'static [BuiltinMacro] {
 
 #[derive(Clone, Debug)]
 struct EnvDef {
-    begin: Vec<Token>,
-    end: Vec<Token>,
+    begin: MacroDef,
+    end: Arc<[Token]>,
 }
 
 #[derive(Clone, Debug)]
@@ -177,7 +177,7 @@ impl WorkBudget {
 struct Scope {
     input_mode: InputMode,
     macros: HashMap<String, Meaning>,
-    environments: HashMap<String, EnvDef>,
+    environments: HashMap<String, Rc<EnvDef>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +195,11 @@ pub(crate) fn expand(input: &str) -> ExpansionResult<String> {
         .map(|token| Queued { token, depth: 0 })
         .collect();
     let mut output = Vec::new();
-    processor.process_queue(&mut queue, &mut output, Mode::Normal)?;
+    let result = processor.process_queue(&mut queue, &mut output, Mode::Normal);
+    // A transactional read stopped by the work budget can also look like a
+    // missing argument. Resource failures remain fatal in lenient mode.
+    processor.charge_work(0)?;
+    result?;
     Ok(render_tokens(&output))
 }
 
@@ -282,10 +286,10 @@ impl Processor {
             for scope in self.scopes.iter_mut().skip(1) {
                 scope.environments.remove(&name);
             }
-            self.scopes[0].environments.insert(name, env);
+            self.scopes[0].environments.insert(name, Rc::new(env));
         } else {
             let scope = self.scopes.len() - 1;
-            self.scopes[scope].environments.insert(name, env);
+            self.scopes[scope].environments.insert(name, Rc::new(env));
         }
     }
 
@@ -333,7 +337,7 @@ impl Processor {
             .find_map(|scope| scope.macros.get(name).cloned()))
     }
 
-    fn lookup_environment(&self, name: &str) -> Option<EnvDef> {
+    fn lookup_environment(&self, name: &str) -> Option<Rc<EnvDef>> {
         self.scopes
             .iter()
             .rev()
@@ -585,7 +589,7 @@ impl Processor {
         loop {
             let Some(next_name) = txn.peek_control_word() else {
                 txn.rollback();
-                return Err(malformed(name, "expected an assignment after prefix"));
+                return Err(malformed(name, SyntaxKind::PrefixAssignment));
             };
             if next_name == "global" {
                 global = true;
@@ -605,7 +609,7 @@ impl Processor {
         }
         let Some(command) = txn.peek_control_word() else {
             txn.rollback();
-            return Err(malformed(name, "expected an assignment after prefix"));
+            return Err(malformed(name, SyntaxKind::PrefixAssignment));
         };
         if matches!(command.as_str(), "def" | "gdef" | "edef" | "xdef") {
             txn.pop();
@@ -665,10 +669,7 @@ impl Processor {
             });
         }
         txn.rollback();
-        Err(malformed(
-            name,
-            "expected a definition, let, or futurelet assignment after prefix",
-        ))
+        Err(malformed(name, SyntaxKind::PrefixAssignment))
     }
 
     fn parse_def_txn(
@@ -681,26 +682,26 @@ impl Processor {
     ) -> ExpansionResult<bool> {
         let target = txn
             .pop_control_sequence()
-            .ok_or_else(|| malformed(command, "expected a control-sequence target"))?;
+            .ok_or_else(|| malformed(command, SyntaxKind::ControlSequenceTarget))?;
         txn.skip_whitespace();
         let mut parameter_tokens = Vec::new();
         loop {
             let Some(token) = txn.peek_token() else {
-                return Err(malformed(command, "expected a braced replacement body"));
+                return Err(malformed(command, SyntaxKind::ReplacementBody));
             };
             if matches!(token, Token::BeginGroup) {
                 break;
             }
             parameter_tokens.push(
                 txn.pop_token()
-                    .ok_or_else(|| malformed(command, "expected a braced replacement body"))?,
+                    .ok_or_else(|| malformed(command, SyntaxKind::ReplacementBody))?,
             );
         }
         let body = txn
             .pop_group()
-            .ok_or_else(|| malformed(command, "expected a braced replacement body"))?;
+            .ok_or_else(|| malformed(command, SyntaxKind::ReplacementBody))?;
         let parameter_text = parse_parameter_text(&parameter_tokens)
-            .ok_or_else(|| malformed(command, "invalid parameter text"))?;
+            .ok_or_else(|| malformed(command, SyntaxKind::ParameterText))?;
         let count = parameter_text.parameter_count();
         let body = if expand_body {
             self.expand_edef_body(body)?
@@ -724,7 +725,7 @@ impl Processor {
     fn parse_let_txn(&mut self, global: bool, txn: &mut QueueTxn<'_>) -> ExpansionResult<bool> {
         let target = txn
             .pop_control_sequence()
-            .ok_or_else(|| malformed("let", "expected a control-sequence target"))?;
+            .ok_or_else(|| malformed("let", SyntaxKind::ControlSequenceTarget))?;
         txn.skip_whitespace();
         if matches!(txn.peek_token(), Some(Token::Char('='))) {
             txn.pop();
@@ -737,9 +738,9 @@ impl Processor {
         }
         let source = txn
             .pop_token()
-            .ok_or_else(|| malformed("let", "expected a source token"))?;
+            .ok_or_else(|| malformed("let", SyntaxKind::SourceToken))?;
         if matches!(source, Token::EndGroup) {
-            return Err(malformed("let", "expected a source token"));
+            return Err(malformed("let", SyntaxKind::SourceToken));
         }
         let meaning = match &source {
             Token::ControlWord(name) => match self.lookup_macro_for_expansion(name)? {
@@ -785,13 +786,13 @@ impl Processor {
     ) -> ExpansionResult<bool> {
         let target = txn
             .pop_control_sequence()
-            .ok_or_else(|| malformed("futurelet", "expected a control-sequence target"))?;
+            .ok_or_else(|| malformed("futurelet", SyntaxKind::ControlSequenceTarget))?;
         let middle = txn
             .pop()
-            .ok_or_else(|| malformed("futurelet", "expected a middle token"))?;
+            .ok_or_else(|| malformed("futurelet", SyntaxKind::MiddleToken))?;
         let next = txn
             .pop()
-            .ok_or_else(|| malformed("futurelet", "expected a lookahead token"))?;
+            .ok_or_else(|| malformed("futurelet", SyntaxKind::LookaheadToken))?;
         let source = next.token.clone();
         let meaning = match &source {
             Token::ControlWord(name) => match self.lookup_macro_for_expansion(name)? {
@@ -834,45 +835,10 @@ impl Processor {
             txn.skip_whitespace();
         }
         let target = txn.pop_newcommand_target()?;
-        txn.skip_whitespace();
-        let mut count = 0u8;
-        if let Some(number) = txn.pop_bracket() {
-            let text = token_text(&number);
-            let parsed = text
-                .trim()
-                .parse::<u8>()
-                .ok()
-                .filter(|count| *count <= 9)
-                .ok_or_else(|| {
-                    malformed(command, "parameter count must be an integer from 0 to 9")
-                })?;
-            count = parsed;
-            txn.skip_whitespace();
-        } else if txn.peek_token_is('[') {
-            return Err(malformed(command, "unterminated parameter count"));
-        }
-        let default = if count > 0 {
-            if txn.peek_token_is('[') {
-                let default = txn
-                    .pop_bracket()
-                    .ok_or_else(|| malformed(command, "unterminated optional default"))?;
-                txn.skip_whitespace();
-                Some(default)
-            } else {
-                None
-            }
-        } else {
-            if txn.peek_token_is('[') {
-                return Err(malformed(
-                    command,
-                    "optional default requires at least one parameter",
-                ));
-            }
-            None
-        };
+        let (count, default) = declaration_args(command, txn)?;
         let body = txn
             .pop_group()
-            .ok_or_else(|| malformed(command, "expected a braced replacement body"))?;
+            .ok_or_else(|| malformed(command, SyntaxKind::ReplacementBody))?;
         if command != "providecommand" || !self.has_macro(&target) {
             self.define_macro(
                 target,
@@ -897,23 +863,30 @@ impl Processor {
         }
         let name = txn
             .pop_group()
-            .ok_or_else(|| malformed("newenvironment", "expected an environment name group"))?;
-        txn.skip_whitespace();
-        if txn.peek_token_is('[') {
-            let _ = txn
-                .pop_bracket()
-                .ok_or_else(|| malformed("newenvironment", "unterminated parameter count"))?;
-            txn.skip_whitespace();
+            .ok_or_else(|| malformed("newenvironment", SyntaxKind::EnvironmentName))?;
+        let env_name = token_text(&name);
+        if env_name.trim().is_empty() {
+            return Err(malformed("newenvironment", SyntaxKind::EnvironmentName));
         }
+        let (param_count, optional_default) = declaration_args("newenvironment", txn)?;
         let begin = txn
             .pop_group()
-            .ok_or_else(|| malformed("newenvironment", "expected a braced begin body"))?;
+            .ok_or_else(|| malformed("newenvironment", SyntaxKind::EnvironmentBegin))?;
         let end = txn
             .pop_group()
-            .ok_or_else(|| malformed("newenvironment", "expected a braced end body"))?;
+            .ok_or_else(|| malformed("newenvironment", SyntaxKind::EnvironmentEnd))?;
         self.define_environment(
-            token_text(&name).trim().to_owned(),
-            EnvDef { begin, end },
+            env_name.trim().to_owned(),
+            EnvDef {
+                begin: MacroDef {
+                    param_count,
+                    optional_default,
+                    body: begin.into(),
+                    parameter_text: None,
+                    protected: false,
+                },
+                end: end.into(),
+            },
             false,
         );
         Ok(true)
@@ -942,9 +915,12 @@ impl Processor {
         txn.commit();
         drop(txn);
         if name == "begin" {
+            let args = consume_args(queue, &env.begin, self.budget.clone())
+                .ok_or_else(|| malformed("begin", SyntaxKind::MissingArguments))?;
+            let replacement = substitute(&env.begin, &args, self.cap)?;
             self.push_scope()?;
             self.environment_scopes += 1;
-            self.prepend(queue, env.begin, depth + 1)?;
+            self.prepend(queue, replacement, depth + 1)?;
         } else {
             if self.environment_scopes > 0 {
                 // The end body must run before the environment scope is
@@ -955,7 +931,7 @@ impl Processor {
                     depth,
                 });
             }
-            self.prepend(queue, env.end, depth + 1)?;
+            self.prepend(queue, env.end.to_vec(), depth + 1)?;
         }
         Ok(true)
     }
@@ -1426,11 +1402,11 @@ impl<'a> QueueTxn<'a> {
         if !matches!(self.peek_token(), Some(Token::BeginGroup)) {
             return self
                 .pop_control_sequence()
-                .ok_or_else(|| malformed("newcommand", "expected a control-sequence target"));
+                .ok_or_else(|| malformed("newcommand", SyntaxKind::ControlSequenceTarget));
         }
         let inner = self
             .pop_group()
-            .ok_or_else(|| malformed("newcommand", "unterminated target group"))?;
+            .ok_or_else(|| malformed("newcommand", SyntaxKind::UnclosedTarget))?;
         let mut index = 0;
         while inner.get(index).is_some_and(Token::is_whitespace) {
             index += 1;
@@ -1439,10 +1415,7 @@ impl<'a> QueueTxn<'a> {
             Some(Token::ControlWord(name)) => name.clone(),
             Some(Token::ControlSymbol(symbol)) => control_key_symbol(*symbol),
             _ => {
-                return Err(malformed(
-                    "newcommand",
-                    "target group must contain one control sequence",
-                ));
+                return Err(malformed("newcommand", SyntaxKind::TargetGroup));
             },
         };
         index += 1;
@@ -1450,10 +1423,7 @@ impl<'a> QueueTxn<'a> {
             index += 1;
         }
         if index != inner.len() {
-            return Err(malformed(
-                "newcommand",
-                "target group must contain one control sequence",
-            ));
+            return Err(malformed("newcommand", SyntaxKind::TargetGroup));
         }
         Ok(target)
     }
@@ -1564,6 +1534,48 @@ fn parameter_token(token: &Token) -> Option<macro_args::ParameterToken> {
         Token::Frozen(inner) => return parameter_token(inner),
     };
     Some(macro_args::ParameterToken::from_text(text))
+}
+
+/// Read the LaTeX declaration's optional argument count and optional first default.
+fn declaration_args(
+    command: &str,
+    txn: &mut QueueTxn<'_>,
+) -> ExpansionResult<(u8, Option<Vec<Token>>)> {
+    txn.skip_whitespace();
+    let mut count = 0u8;
+    if let Some(number) = txn.pop_bracket() {
+        let text = token_text(&number);
+        let parsed = text
+            .trim()
+            .parse::<u8>()
+            .ok()
+            .filter(|_| text.trim().bytes().all(|b| b.is_ascii_digit()))
+            .ok_or_else(|| malformed(command, SyntaxKind::ParameterCount))?;
+        count = parsed;
+        txn.skip_whitespace();
+    } else if txn.peek_token_is('[') {
+        return Err(malformed(command, SyntaxKind::UnclosedParameterCount));
+    }
+    let default = if count > 0 {
+        if txn.peek_token_is('[') {
+            let default = txn
+                .pop_bracket()
+                .ok_or_else(|| malformed(command, SyntaxKind::OptionalDefault))?;
+            txn.skip_whitespace();
+            Some(default)
+        } else {
+            None
+        }
+    } else {
+        if txn.peek_token_is('[') {
+            return Err(malformed(
+                command,
+                SyntaxKind::OptionalDefaultWithoutParameter,
+            ));
+        }
+        None
+    };
+    Ok((count, default))
 }
 
 fn consume_args(

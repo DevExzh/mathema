@@ -53,9 +53,13 @@ fn lenient_parsing_recovers_malformed_macro_syntax() {
         r"\newcommand\foo[x]{}",
         r"\newcommand{\foo}[1.5]{}",
     ] {
+        let result = LatexReader::parse(input, &config).expect(input);
         assert!(
-            LatexReader::parse(input, &config).is_ok(),
-            "lenient parsing should recover: {input}"
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains("malformed")),
+            "{input}"
         );
     }
 }
@@ -63,4 +67,26 @@ fn lenient_parsing_recovers_malformed_macro_syntax() {
 #[test]
 fn unknown_control_words_keep_their_existing_fallback() {
     assert!(LatexReader::parse(r"\ordinaryunknown", &Config::default()).is_ok());
+}
+
+#[test]
+fn environment_arguments_bind_before_the_begin_code_runs() {
+    for (source, expected) in [
+        (
+            r"\newenvironment{tag}[2][a]{\def\x{#1}\x+#2:}{:\x}\begin{tag}{b}c\end{tag}",
+            "a+b:c:a",
+        ),
+        (
+            r"\newenvironment{tag}[2][a]{#1+#2:}{!}\begin{tag}[u]{v}w\end{tag}",
+            "u+v:w!",
+        ),
+        (r"\newcommand\f[10]{#1^2}\f 0123456789", "0^2"),
+    ] {
+        let got = mathema::from_latex(source).unwrap().to_mathml().unwrap();
+        assert_eq!(
+            got,
+            mathema::from_latex(expected).unwrap().to_mathml().unwrap(),
+            "{source}"
+        );
+    }
 }

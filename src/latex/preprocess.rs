@@ -107,37 +107,21 @@ pub enum SyntaxKind {
     MiddleToken,
     LookaheadToken,
     PrefixAssignment,
+    UnclosedParameterCount,
+    UnclosedTarget,
+    EnvironmentName,
+    EnvironmentBegin,
+    EnvironmentEnd,
+    MissingArguments,
 }
 
 impl SyntaxKind {
-    pub(crate) fn from_detail(detail: &str) -> Self {
-        match detail {
-            "expected a control-sequence target" => Self::ControlSequenceTarget,
-            "expected a braced replacement body" => Self::ReplacementBody,
-            "invalid parameter text" => Self::ParameterText,
-            "parameter count must be an integer from 0 to 9" | "unterminated parameter count" => {
-                Self::ParameterCount
-            },
-            "unterminated optional default" => Self::OptionalDefault,
-            "optional default requires at least one parameter" => {
-                Self::OptionalDefaultWithoutParameter
-            },
-            "unterminated target group" | "target group must contain one control sequence" => {
-                Self::TargetGroup
-            },
-            "expected a source token" => Self::SourceToken,
-            "expected a middle token" => Self::MiddleToken,
-            "expected a lookahead token" => Self::LookaheadToken,
-            _ => Self::PrefixAssignment,
-        }
-    }
-
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ControlSequenceTarget => "expected a control-sequence target",
             Self::ReplacementBody => "expected a braced replacement body",
             Self::ParameterText => "invalid parameter text",
-            Self::ParameterCount => "parameter count must be an integer from 0 to 9",
+            Self::ParameterCount => "parameter count must be a nonnegative integer from 0 to 255",
             Self::OptionalDefault => "unterminated optional default",
             Self::OptionalDefaultWithoutParameter => {
                 "optional default requires at least one parameter"
@@ -149,6 +133,12 @@ impl SyntaxKind {
             Self::PrefixAssignment => {
                 "expected a definition, let, or futurelet assignment after prefix"
             },
+            Self::UnclosedParameterCount => "unterminated parameter count",
+            Self::UnclosedTarget => "unterminated target group",
+            Self::EnvironmentName => "expected a nonempty environment name group",
+            Self::EnvironmentBegin => "expected a braced begin body",
+            Self::EnvironmentEnd => "expected a braced end body",
+            Self::MissingArguments => "missing a required argument",
         }
     }
 }

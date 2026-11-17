@@ -1231,14 +1231,24 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             config.display,
         )));
     }
-    let processed = match preprocess_cow(trimmed) {
-        Ok(processed) => processed,
-        Err(ExpansionFailure::Syntax { .. }) if config.strictness == Strictness::Lenient => {
-            std::borrow::Cow::Borrowed(trimmed)
+    let (processed, warning) = match preprocess_cow(trimmed) {
+        Ok(processed) => (processed, None),
+        Err(failure @ ExpansionFailure::Syntax { .. })
+            if config.strictness == Strictness::Lenient =>
+        {
+            (
+                std::borrow::Cow::Borrowed(trimmed),
+                Some(expansion_error(failure)),
+            )
         },
         Err(failure) => return Err(expansion_error(failure)),
     };
     let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
+    if let Some(error) = warning {
+        parser.warn(format!(
+            "{error}; parsed the original source without macro expansion"
+        ));
+    }
     match parser.parse_node_list(&processed) {
         Ok(("", ids)) => {
             if let Some(error) = parser.abort.take() {
