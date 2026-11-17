@@ -149,6 +149,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Literal Unicode minus signs retain their ordinary class when adjacent to
   ASCII minus operators, so LaTeX round-trips do not change `−-B` into a
   different binary-operator sequence.
+- Literal backslash symbols are written as `\textbackslash` rather than a raw
+  backslash that could become a newline or control space when followed by
+  another command.
 - `\text{\int}` lost its content; symbol commands in text keep their
   characters.
 - UnicodeMath writes leading scripts as `(_sub^sup)base` (UTN #28 section

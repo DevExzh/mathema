@@ -1270,6 +1270,7 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
             '$' => buf.push_str("\\$"),
             '%' => buf.push_str("\\%"),
             '&' => buf.push_str("\\&"),
+            '\\' => buf.push_str("\\textbackslash "),
             _ => buf.push(ch),
         }
         return;
@@ -1687,6 +1688,19 @@ mod tests {
         let text_first = roundtrip(r"\text{−--}");
         assert_eq!(text_first, r"\text{−–}");
         assert_eq!(text_first, roundtrip(&text_first));
+    }
+
+    #[test]
+    fn backslash_before_mathord_commands_is_stable() {
+        for (input, expected) in [
+            ("\\textbackslash\u{2062}A", r"\textbackslash \mathord{}A"),
+            ("\\textbackslash\u{2212}A", r"\textbackslash \mathord{-}A"),
+            ("\\textbackslash A", r"\textbackslash A"),
+        ] {
+            let first = roundtrip(input);
+            assert_eq!(first, expected);
+            assert_eq!(first, roundtrip(&first));
+        }
     }
 
     #[test]

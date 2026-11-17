@@ -529,7 +529,7 @@ fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[Colum
                         n_str.push(ch);
                     }
                     let count_text = n_str.trim();
-                    let n = match count_text.parse::<usize>() {
+                    let n = match count_text.parse::<u64>() {
                         Ok(n) => n,
                         Err(_)
                             if !count_text.is_empty()
@@ -561,27 +561,18 @@ fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[Colum
                             pattern.push(ch);
                         }
                         let (sub, _sub_seps) = parse_column_spec_at_depth(&pattern, depth + 1)?;
-                        let repeated = sub.len().checked_mul(n).ok_or(Error::LimitExceeded {
-                            kind: crate::error::LimitKind::ListLength,
-                            limit: AstArena::MAX_CHILDREN,
-                        })?;
-                        let total = result
-                            .len()
-                            .checked_add(repeated)
-                            .ok_or(Error::LimitExceeded {
-                                kind: crate::error::LimitKind::ListLength,
-                                limit: AstArena::MAX_CHILDREN,
-                            })?;
-                        if total > AstArena::MAX_CHILDREN {
-                            return Err(Error::LimitExceeded {
-                                kind: crate::error::LimitKind::ListLength,
-                                limit: AstArena::MAX_CHILDREN,
-                            });
-                        }
                         // An empty pattern has no columns; skip the loop
                         // entirely so even a huge repetition count is O(1).
                         if sub.is_empty() {
                             continue;
+                        }
+                        let max_repetitions =
+                            (AstArena::MAX_CHILDREN - result.len()) / sub.len();
+                        if n > max_repetitions as u64 {
+                            return Err(Error::LimitExceeded {
+                                kind: crate::error::LimitKind::ListLength,
+                                limit: AstArena::MAX_CHILDREN,
+                            });
                         }
                         for _ in 0..n {
                             result.extend_from_slice(&sub);
