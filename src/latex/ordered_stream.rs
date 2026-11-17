@@ -8,6 +8,7 @@
 //! to this stream without reparsing rendered strings.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, OnceLock};
 
 use super::packages;
 use super::{expansion_cap, expansion_work_cap, find_verb_end};
@@ -66,9 +67,30 @@ struct Queued {
 struct MacroDef {
     param_count: u8,
     optional_default: Option<Vec<Token>>,
-    body: Vec<Token>,
+    body: Arc<[Token]>,
     parameter_text: Option<ParameterText>,
     protected: bool,
+}
+
+struct BuiltinMacro {
+    name: &'static str,
+    param_count: u8,
+    body: Arc<[Token]>,
+}
+
+fn tokenized_builtin_macros() -> &'static [BuiltinMacro] {
+    static BUILTINS: OnceLock<Vec<BuiltinMacro>> = OnceLock::new();
+    BUILTINS
+        .get_or_init(|| {
+            packages::builtin_macros()
+                .map(|(name, param_count, body)| BuiltinMacro {
+                    name,
+                    param_count,
+                    body: Arc::from(tokenize(body)),
+                })
+                .collect()
+        })
+        .as_slice()
 }
 
 #[derive(Clone, Debug)]
@@ -162,13 +184,13 @@ impl Processor {
     }
 
     fn seed_builtins(&mut self) {
-        for (name, param_count, body) in packages::builtin_macros() {
+        for builtin in tokenized_builtin_macros() {
             self.define_macro(
-                name.to_owned(),
+                builtin.name.to_owned(),
                 Meaning::Macro(MacroDef {
-                    param_count,
+                    param_count: builtin.param_count,
                     optional_default: None,
-                    body: tokenize(body),
+                    body: Arc::clone(&builtin.body),
                     parameter_text: None,
                     protected: false,
                 }),
@@ -682,7 +704,7 @@ impl Processor {
             Meaning::Macro(MacroDef {
                 param_count: count,
                 optional_default: None,
-                body,
+                body: body.into(),
                 parameter_text: Some(parameter_text),
                 protected,
             }),
@@ -816,7 +838,7 @@ impl Processor {
                 Meaning::Macro(MacroDef {
                     param_count: count,
                     optional_default: default,
-                    body,
+                    body: body.into(),
                     parameter_text: None,
                     protected: false,
                 }),
