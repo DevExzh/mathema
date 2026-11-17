@@ -190,6 +190,30 @@ fn round_trip_ascii_identifier_script_bases() {
 }
 
 #[test]
+fn zero_width_nary_bodies_keep_following_tokens_stable() {
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\int\kern0pt gray", r"\int{}gray"),
+        (r"\int\hspace{} gray", r"\int{}gray"),
+        (r"\int\kern0pt", r"\int"),
+        (r"\int\hspace{}", r"\int"),
+    ] {
+        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut parsed.expr).unwrap();
+        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+        assert_eq!(
+            first, expected,
+            "unexpected zero-width output for {input:?}"
+        );
+
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+        normalize_compact_expr(&mut reparsed.expr).unwrap();
+        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        assert_eq!(second, first, "zero-width n-ary body changed for {input:?}");
+    }
+}
+
+#[test]
 fn repeated_limit_modifiers_use_the_last_style() {
     let config = Config::default();
     let cases = [

@@ -1687,12 +1687,13 @@ fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
         || matches!(*arena.node(id), CompactNode::Space(width) if width.num == 0)
 }
 
-/// Check if a Nary body is effectively empty (empty Row or NONE node).
+/// Check if a Nary body is effectively empty (empty Row, zero-width Space, or
+/// NONE node).
 fn is_empty_body(arena: &AstArena, id: NodeId) -> bool {
     if !id.is_some() {
         return true;
     }
-    matches!(*arena.node(id), CompactNode::Row(span) if arena.children(span).is_empty())
+    is_empty_script_base(arena, id)
 }
 
 /// True for a missing node or an empty Row (an absent/effectively-empty script
