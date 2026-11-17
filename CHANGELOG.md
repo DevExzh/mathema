@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- LaTeX `\@binrel` applies the first argument's binary, relation, or ordinary
+  spacing class to the second argument, including when the sample is a group.
 - **OMML paragraphs.** `OmmlReader::parse_paragraph` reads an `m:oMathPara`
   as separate equations plus its `m:jc` justification (`OmmlParagraph`,
   `OmmlJustification`); `OmmlWriter::write_paragraph` writes them back.

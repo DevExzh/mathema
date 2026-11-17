@@ -2755,12 +2755,7 @@ impl LatexCompactParser {
         if let Ok((rest, id)) = self.parse_special_command(after_backslash) {
             return Ok((rest, id));
         }
-        // Extract alphabetic command name via byte scan (avoids nom overhead)
-        let bytes = after_backslash.as_bytes();
-        let name_len = bytes
-            .iter()
-            .position(|&b| !b.is_ascii_alphabetic())
-            .unwrap_or(bytes.len());
+        let name_len = super::control_word_len(after_backslash);
         if name_len == 0 {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -3120,6 +3115,12 @@ impl LatexCompactParser {
             "tbinom" => self.parse_styled_binom(input, FractionKind::Inline),
 
             // --- Math atom type wrappers ---
+            "@binrel" => self.parse_binrel(input),
+            // Unexpanded internal commands have no math-glyph fallback.
+            _ if name.starts_with('@') => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Tag,
+            ))),
             "mathop" | "mathrel" | "mathbin" | "mathord" | "mathpunct" | "mathopen"
             | "mathclose" | "mathinner" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
@@ -3770,6 +3771,33 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Alt,
             ))),
         }
+    }
+
+    /// Apply the first argument's binary/relation/ordinary class to the second
+    /// argument. Like KaTeX, inspect the first atom of the outer argument group.
+    fn parse_binrel<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let grouped_first = input
+            .strip_prefix('{')
+            .is_some_and(|body| body[skip_ws_bytes(body.as_bytes())..].starts_with('{'));
+        let (rest, sample) = self.parse_required_group(input)?;
+        let first = match *self.arena.node(sample) {
+            CompactNode::Row(span) => self.arena.children(span).first().copied(),
+            _ => Some(sample),
+        };
+        let atom_type = match first
+            .filter(|_| !grouped_first)
+            .map(|id| *self.arena.node(id))
+        {
+            Some(CompactNode::Symbol(SymbolKind::BinaryOp, _)) => MathAtomType::Bin,
+            Some(CompactNode::Symbol(SymbolKind::Relation, _)) => MathAtomType::Rel,
+            _ => MathAtomType::Ord,
+        };
+        let (rest, content) = self.parse_required_group(rest)?;
+        let id = self
+            .arena
+            .push_node(CompactNode::MathAtom { atom_type, content });
+        Ok((rest, id))
     }
 
     fn parse_cancel<'a>(&mut self, input: &'a str, stroke: StrokeKind) -> IResult<&'a str, NodeId> {

@@ -103,11 +103,7 @@ fn uses_builtin_macro(input: &str) -> bool {
             continue;
         }
         let after = &s[pos + 1..];
-        let name_len: usize = after
-            .chars()
-            .take_while(|c| c.is_ascii_alphabetic())
-            .map(|c| c.len_utf8())
-            .sum();
+        let name_len = super::control_word_len(after);
         if name_len > 0 && packages::is_builtin_macro_name(&after[..name_len]) {
             return true;
         }
@@ -243,11 +239,7 @@ fn scan_command(s: &str) -> Option<(&str, &str)> {
         return None;
     }
     let after_bs = &s[1..]; // safe: '\' is 1 byte
-    let name_len: usize = after_bs
-        .chars()
-        .take_while(|c| c.is_ascii_alphabetic())
-        .map(|c| c.len_utf8())
-        .sum();
+    let name_len = super::control_word_len(after_bs);
     if name_len == 0 {
         return None;
     }

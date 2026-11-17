@@ -1694,3 +1694,36 @@ fn fuzz_repro_roundtrip_misc() {
         );
     }
 }
+
+#[test]
+fn binrel_uses_the_sample_class_and_writes_only_the_body() {
+    for (args, equivalent) in [
+        ("+xR", r"\mathbin{x}R"),
+        ("=xR", r"\mathrel{x}R"),
+        (" xxR", r"\mathord{x}R"),
+        (r"{\times x}{a+b}R", r"\mathbin{a+b}R"),
+        (r"{\leq x}{\alpha}R", r"\mathrel{\alpha}R"),
+        (r"{x+}{a}R", r"\mathord{a}R"),
+        (r"{{+}}{a}R", r"\mathord{a}R"),
+        (r"{}{a}R", r"\mathord{a}R"),
+    ] {
+        let input = format!(r"L\@binrel{args}");
+        let expected = format!("L{equivalent}");
+        let canonical = crate::from_latex(&input).unwrap().to_latex().unwrap();
+        assert_eq!(
+            canonical,
+            crate::from_latex(&expected).unwrap().to_latex().unwrap(),
+            "{input}"
+        );
+        assert_eq!(
+            canonical,
+            crate::from_latex(&canonical).unwrap().to_latex().unwrap()
+        );
+    }
+    assert!(crate::from_latex(r"\@binrel{+}").is_err());
+    assert!(crate::from_latex(r"\@binrelExtra{+}{x}").is_err());
+    assert_eq!(
+        crate::from_latex(r"\alpha@x").unwrap().to_latex().unwrap(),
+        r"\alpha@x"
+    );
+}
