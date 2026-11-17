@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use super::macro_args::{self, ParameterText};
@@ -112,6 +114,7 @@ fn needs_expansion_processing(input: &str) -> bool {
         || input.contains("\\noexpand")
         || input.contains("\\global")
         || input.contains("\\long")
+        || input.contains("\\protected")
         || input.contains("\\newenvironment")
         || uses_builtin_macro(input)
 }
@@ -1103,6 +1106,19 @@ mod tests {
     #[test]
     fn futurelet_assigns_raw_next_token_and_keeps_it_in_stream() {
         assert_eq!(preprocess(r"\futurelet\foo\frac1{2+\foo}"), r"\frac1{2+1}");
+        assert_eq!(
+            preprocess(r"\global\futurelet\foo\frac1{2+\foo}"),
+            r"\frac1{2+1}"
+        );
+    }
+
+    #[test]
+    fn protected_macros_remain_unexpanded_during_edef() {
+        assert_eq!(preprocess(r"\protected\def\foo{a}\edef\bar{\foo}\bar"), "a");
+        assert_eq!(
+            preprocess(r"\protected\def\foo{a}\edef\bar{\foo}\def\foo{b}\bar"),
+            "b"
+        );
     }
 
     #[test]
@@ -1118,5 +1134,25 @@ mod tests {
             "b"
         );
         assert_eq!(preprocess(r"\let\pick\@secondoftwo\pick{a}{b}"), "b");
+    }
+
+    #[test]
+    fn macro_argument_braces_do_not_create_a_scope() {
+        assert_eq!(
+            preprocess(r"\def\x{1}\x\def\foo#1{#1}\foo{\x\def\x{2}\x}\x"),
+            "1122"
+        );
+    }
+
+    #[test]
+    fn array_cells_are_group_scoped() {
+        assert_eq!(
+            preprocess(r"\def\x{1}\begin{matrix}\x&\def\x{2}\x&\x\end{matrix}\x"),
+            r"\begin{matrix}1&2&1\end{matrix}1"
+        );
+        assert_eq!(
+            preprocess(r"\def\x{1}\begin{matrix}\def\x{2}\x&\x\end{matrix}\x"),
+            r"\begin{matrix}2&1\end{matrix}1"
+        );
     }
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! Token-aware support for TeX primitive macro definitions.
 //!
 //! A `\def`/`\gdef` parameter text is not a collection of byte prefixes.  It

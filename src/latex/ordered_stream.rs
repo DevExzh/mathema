@@ -63,12 +63,19 @@ struct MacroDef {
     optional_default: Option<Vec<Token>>,
     body: Vec<Token>,
     parameter_text: Option<ParameterText>,
+    protected: bool,
 }
 
 #[derive(Clone, Debug)]
 struct EnvDef {
     begin: Vec<Token>,
     end: Vec<Token>,
+}
+
+#[derive(Clone, Debug)]
+struct ArrayContext {
+    name: String,
+    cell_scoped: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -108,6 +115,7 @@ pub(crate) struct Processor {
     cap: usize,
     produced: usize,
     environment_scopes: usize,
+    parser_environments: Vec<ArrayContext>,
 }
 
 impl Processor {
@@ -117,6 +125,7 @@ impl Processor {
             cap,
             produced: 0,
             environment_scopes: 0,
+            parser_environments: Vec::new(),
         }
     }
 
@@ -129,6 +138,7 @@ impl Processor {
                     optional_default: None,
                     body: tokenize(body),
                     parameter_text: None,
+                    protected: false,
                 }),
                 true,
             );
@@ -244,6 +254,9 @@ impl Processor {
                     if self.environment_command(&name, depth, queue)? {
                         continue;
                     }
+                    if self.parser_environment_command(&name, queue, out)? {
+                        continue;
+                    }
                     if name == "noexpand" {
                         self.noexpand(queue, out)?;
                     } else if !self.expand_macro_from_queue(
@@ -262,9 +275,27 @@ impl Processor {
                 },
                 Token::ControlSymbol(symbol) => {
                     self.append(out, Token::ControlSymbol(symbol))?;
+                    if symbol == '\\'
+                        && self
+                            .parser_environments
+                            .last()
+                            .is_some_and(|env| env.cell_scoped)
+                    {
+                        self.pop_scope();
+                        self.push_scope();
+                    }
                 },
                 Token::Char(ch) => {
                     self.append(out, Token::Char(ch))?;
+                    if ch == '&'
+                        && self
+                            .parser_environments
+                            .last()
+                            .is_some_and(|env| env.cell_scoped)
+                    {
+                        self.pop_scope();
+                        self.push_scope();
+                    }
                 },
                 Token::Frozen(token) => {
                     self.append(out, *token)?;
@@ -298,6 +329,10 @@ impl Processor {
                 Ok(true)
             },
             Meaning::Macro(def) => {
+                if mode == Mode::Edef && def.protected {
+                    self.append(out, Token::ControlWord(name.to_owned()))?;
+                    return Ok(true);
+                }
                 let Some(args) = consume_args(queue, &def) else {
                     return Ok(false);
                 };
@@ -336,8 +371,13 @@ impl Processor {
     ) -> Result<bool, usize> {
         if matches!(name, "def" | "gdef" | "edef" | "xdef") {
             let mut txn = QueueTxn::new(queue);
-            let result =
-                self.parse_def_txn(name, false, matches!(name, "edef" | "xdef"), &mut txn)?;
+            let result = self.parse_def_txn(
+                name,
+                false,
+                matches!(name, "edef" | "xdef"),
+                false,
+                &mut txn,
+            )?;
             return Ok(if result {
                 txn.commit();
                 true
@@ -382,7 +422,7 @@ impl Processor {
                 false
             });
         }
-        if !matches!(name, "global" | "long") {
+        if !matches!(name, "global" | "long" | "protected") {
             return Ok(false);
         }
 
@@ -391,6 +431,7 @@ impl Processor {
         // for the strict parser to reject.
         let mut txn = QueueTxn::new(queue);
         let mut global = name == "global";
+        let mut protected = name == "protected";
         loop {
             let Some(next_name) = txn.peek_control_word() else {
                 txn.rollback();
@@ -402,6 +443,11 @@ impl Processor {
                 continue;
             }
             if next_name == "long" {
+                txn.pop();
+                continue;
+            }
+            if next_name == "protected" {
+                protected = true;
                 txn.pop();
                 continue;
             }
@@ -417,6 +463,7 @@ impl Processor {
                 &command,
                 global || command == "gdef" || command == "xdef",
                 matches!(command.as_str(), "edef" | "xdef"),
+                protected,
                 &mut txn,
             )?;
             return Ok(if result {
@@ -440,7 +487,7 @@ impl Processor {
         }
         if command == "futurelet" {
             txn.pop();
-            let result = self.parse_futurelet_txn(false, &mut txn)?;
+            let result = self.parse_futurelet_txn(global, &mut txn)?;
             return Ok(if result {
                 txn.commit();
                 true
@@ -461,6 +508,7 @@ impl Processor {
                 effective,
                 global || effective == "gdef" || effective == "xdef",
                 matches!(effective.as_str(), "edef" | "xdef"),
+                protected,
                 &mut txn,
             )?;
             return Ok(if result {
@@ -480,6 +528,7 @@ impl Processor {
         command: &str,
         global: bool,
         expand_body: bool,
+        protected: bool,
         txn: &mut QueueTxn<'_>,
     ) -> Result<bool, usize> {
         let Some(target) = txn.pop_control_word() else {
@@ -518,6 +567,7 @@ impl Processor {
                 optional_default: None,
                 body,
                 parameter_text: Some(parameter_text),
+                protected,
             }),
             global || command == "gdef" || command == "xdef",
         );
@@ -647,6 +697,7 @@ impl Processor {
                     optional_default: default,
                     body,
                     parameter_text: None,
+                    protected: false,
                 }),
                 false,
             );
@@ -718,6 +769,63 @@ impl Processor {
                 });
             }
             prepend(queue, env.end, depth + 1);
+        }
+        Ok(true)
+    }
+
+    /// Parser-owned environments are not macro definitions, but TeX still
+    /// opens a group for them.  Array-like environments additionally group
+    /// each cell, so a local definition in one cell cannot leak through `&` or
+    /// `\\` into the next cell.  The parser will consume the emitted begin/end
+    /// commands normally; this method only tracks their definition scope.
+    fn parser_environment_command(
+        &mut self,
+        name: &str,
+        queue: &mut VecDeque<Queued>,
+        out: &mut Vec<Token>,
+    ) -> Result<bool, usize> {
+        if name != "begin" && name != "end" {
+            return Ok(false);
+        }
+        let mut txn = QueueTxn::new(queue);
+        txn.skip_whitespace();
+        let Some(group) = txn.pop_group() else {
+            txn.rollback();
+            return Ok(false);
+        };
+        let env_name = token_text(&group).trim().to_owned();
+        let Some(cell_scoped) = parser_environment_kind(&env_name) else {
+            txn.rollback();
+            return Ok(false);
+        };
+        txn.commit();
+        drop(txn);
+
+        self.append(out, Token::ControlWord(name.to_owned()))?;
+        self.append(out, Token::BeginGroup)?;
+        for token in group {
+            self.append(out, token)?;
+        }
+        self.append(out, Token::EndGroup)?;
+        if name == "begin" {
+            self.push_scope();
+            self.parser_environments.push(ArrayContext {
+                name: env_name,
+                cell_scoped,
+            });
+            if cell_scoped {
+                self.push_scope();
+            }
+        } else if self
+            .parser_environments
+            .last()
+            .is_some_and(|env| env.name == env_name)
+        {
+            if cell_scoped {
+                self.pop_scope();
+            }
+            self.pop_scope();
+            self.parser_environments.pop();
         }
         Ok(true)
     }
@@ -1094,6 +1202,20 @@ fn token_identity(token: &Token) -> String {
         Token::Verbatim(text) => text.clone(),
         Token::EndEnvironment => String::new(),
         Token::Frozen(inner) => token_identity(inner),
+    }
+}
+
+fn parser_environment_kind(name: &str) -> Option<bool> {
+    // The first group is the environment itself; matrix/array-family bodies
+    // are split into independently scoped cells by `&` and `\\`.
+    match name {
+        "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "smallmatrix"
+        | "array" | "cases" | "dcases" | "dcases*" | "rcases" | "rcases*" | "numcases"
+        | "subnumcases" => Some(true),
+        "aligned" | "alignedat" | "gathered" | "split" | "multlined" | "gather" | "gather*"
+        | "align" | "align*" | "equation" | "equation*" | "multline" | "multline*" | "flalign"
+        | "flalign*" | "CD" | "prooftree" | "xymatrix" => Some(false),
+        _ => None,
     }
 }
 
