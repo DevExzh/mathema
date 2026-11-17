@@ -1,3 +1,4 @@
+use crate::ast::compact::CompactNode;
 use crate::ast::normalize::normalize_compact_expr;
 use crate::error::Config;
 use crate::reader::Reader;
@@ -114,6 +115,65 @@ fn round_trip_ascii_identifier_script_bases() {
     }
 }
 
+#[test]
+fn repeated_limit_modifiers_use_the_last_style() {
+    let config = Config::default();
+    let cases = [
+        (
+            r"\int\limits\limits\limits_2^2",
+            crate::ast::LimitStyle::AboveBelow,
+        ),
+        (
+            r"\sum\limits\nolimits\limits_i^n x",
+            crate::ast::LimitStyle::AboveBelow,
+        ),
+        (
+            r"\sum\nolimits\limits\nolimits_i^n x",
+            crate::ast::LimitStyle::SubSup,
+        ),
+        (r"\int\limitsize_2^2", crate::ast::LimitStyle::Default),
+    ];
+    for (input, expected_limits) in cases {
+        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut parsed.expr).unwrap();
+        let roots = parsed.expr.arena.children(parsed.expr.roots);
+        let CompactNode::Nary { limits, .. } = *parsed.expr.arena.node(roots[0]) else {
+            panic!("expected n-ary root for {input:?}");
+        };
+        assert_eq!(limits, expected_limits, "wrong limit style for {input:?}");
+
+        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+        normalize_compact_expr(&mut reparsed.expr).unwrap();
+        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        assert_eq!(first, second, "unstable repeated modifiers for {input:?}");
+    }
+}
+
+#[test]
+fn named_operator_limit_modifiers_round_trip() {
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\lim\limits\nolimits", r"\lim\nolimits"),
+        (r"\sin\nolimits\limits", r"\sin\limits"),
+        (
+            r"\operatorname*{argmax}\nolimits",
+            r"\operatorname{argmax}\nolimits",
+        ),
+    ] {
+        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut parsed.expr).unwrap();
+        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+        assert_eq!(first, expected, "wrong named operator output for {input:?}");
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+        normalize_compact_expr(&mut reparsed.expr).unwrap();
+        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        assert_eq!(
+            first, second,
+            "unstable named operator output for {input:?}"
+        );
+    }
+}
 #[test]
 fn round_trip_spacing() {
     let config = Config::default();

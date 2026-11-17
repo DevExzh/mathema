@@ -535,7 +535,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Identifier(sid) => write_identifier(buf, arena, sid),
 
         CompactNode::Operator { name, limits } => {
-            write_operator_name(buf, arena.str_val(name), limits == LimitStyle::AboveBelow);
+            write_operator_name(buf, arena.str_val(name), limits);
         },
 
         CompactNode::Symbol(kind, sid) => write_symbol(buf, arena, kind, sid),
@@ -1287,18 +1287,44 @@ fn is_latex_operator_command(name: &str) -> bool {
 /// A function name: its LaTeX command when one exists, else
 /// `\operatorname{…}`, or `\operatorname*{…}` for one whose scripts are
 /// limits (`argmax`).
-fn write_operator_name(buf: &mut String, name: &str, limits_above_below: bool) {
+fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
     if is_latex_operator_command(name) {
         buf.push('\\');
         buf.push_str(name);
-    } else if limits_above_below || crate::ast::normalize::is_limit_function(name) {
-        buf.push_str("\\operatorname*{");
-        buf.push_str(name);
-        buf.push('}');
+        match limits {
+            LimitStyle::AboveBelow => buf.push_str("\\limits"),
+            // Named limit operators default to above/below in display mode,
+            // so preserve an explicit nolimits modifier when it changes that
+            // behavior. For ordinary functions SubSup is already their
+            // default and does not need a redundant modifier.
+            LimitStyle::SubSup if crate::unicode::symbols::operator_has_limits(name) => {
+                buf.push_str("\\nolimits");
+            },
+            LimitStyle::Default | LimitStyle::SubSup => {},
+        }
     } else {
-        buf.push_str("\\operatorname{");
-        buf.push_str(name);
-        buf.push('}');
+        match limits {
+            LimitStyle::AboveBelow => {
+                buf.push_str("\\operatorname*{");
+                buf.push_str(name);
+                buf.push('}');
+            },
+            LimitStyle::Default if crate::ast::normalize::is_limit_function(name) => {
+                buf.push_str("\\operatorname*{");
+                buf.push_str(name);
+                buf.push('}');
+            },
+            LimitStyle::SubSup => {
+                buf.push_str("\\operatorname{");
+                buf.push_str(name);
+                buf.push_str("}\\nolimits");
+            },
+            LimitStyle::Default => {
+                buf.push_str("\\operatorname{");
+                buf.push_str(name);
+                buf.push('}');
+            },
+        }
     }
 }
 
@@ -1327,7 +1353,7 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
     // has the command, else `\operatorname{…}` (writing only its first
     // letter would lose the rest).
     if s.chars().count() > 1 && s.chars().all(char::is_alphabetic) {
-        write_operator_name(buf, s, false);
+        write_operator_name(buf, s, LimitStyle::Default);
         return;
     }
     // Math minus sign → ASCII hyphen-minus for LaTeX output. A literal

@@ -96,6 +96,38 @@ fn ws(input: &str) -> IResult<&str, ()> {
     Ok((&input[skip..], ()))
 }
 
+/// Consume consecutive `\\limits` and `\\nolimits` modifiers after an
+/// operator. TeX permits repeated placement modifiers and the last modifier
+/// determines the operator's placement. A control-word boundary is required
+/// so that names such as `\\limitsize` remain ordinary commands.
+#[inline]
+fn consume_limit_modifiers(mut input: &str) -> (&str, Option<LimitStyle>) {
+    let mut style = None;
+    loop {
+        let skip = skip_ws_bytes(input.as_bytes());
+        let trimmed = &input[skip..];
+        let Some((rest, next_style)) = [
+            ("\\limits", LimitStyle::AboveBelow),
+            ("\\nolimits", LimitStyle::SubSup),
+        ]
+        .into_iter()
+        .find_map(|(command, next_style)| {
+            let rest = trimmed.strip_prefix(command)?;
+            rest.chars()
+                .next()
+                .is_none_or(|ch| !ch.is_ascii_alphabetic())
+                .then_some((rest, next_style))
+        }) else {
+            // Preserve whitespace that was inspected but did not belong to a
+            // following modifier. In particular, a top-level newline must
+            // remain visible to parse_scripts and the row parser.
+            return (input, style);
+        };
+        style = Some(next_style);
+        input = rest;
+    }
+}
+
 #[inline]
 fn consume_source_newline(input: &str) -> Option<&str> {
     input
@@ -2125,25 +2157,11 @@ impl LatexCompactParser {
             return self.parse_nary_rest(input, base);
         }
 
-        // Check for \limits/\nolimits after Operator nodes
+        // Check for repeated \limits/\nolimits after Operator nodes.
         if let CompactNode::Operator { name, .. } = *self.arena.node(base) {
-            let (trimmed, _) = ws(input)?;
-            if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\limits")(trimmed)
-                && rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic())
-            {
-                let new_id = self.arena.push_node(CompactNode::Operator {
-                    name,
-                    limits: LimitStyle::AboveBelow,
-                });
-                return self.parse_scripts(rest, new_id);
-            }
-            if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(trimmed)
-                && rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic())
-            {
-                let new_id = self.arena.push_node(CompactNode::Operator {
-                    name,
-                    limits: LimitStyle::SubSup,
-                });
+            let (rest, limit_style) = consume_limit_modifiers(input);
+            if let Some(limits) = limit_style {
+                let new_id = self.arena.push_node(CompactNode::Operator { name, limits });
                 return self.parse_scripts(rest, new_id);
             }
         }
@@ -2349,27 +2367,9 @@ impl LatexCompactParser {
         };
         let op_char = self.arena.str_val(sid).chars().next().unwrap_or('\u{2211}');
 
-        let (input, _) = ws(input)?;
-
-        // Check for \limits or \nolimits
-        let (input, limit_style) =
-            if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\limits")(input) {
-                if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
-                    (rest, LimitStyle::AboveBelow)
-                } else {
-                    (input, LimitStyle::Default)
-                }
-            } else if let Ok((rest, _)) =
-                tag::<&str, &str, nom::error::Error<&str>>("\\nolimits")(input)
-            {
-                if rest.chars().next().is_none_or(|c| !c.is_ascii_alphabetic()) {
-                    (rest, LimitStyle::SubSup)
-                } else {
-                    (input, LimitStyle::Default)
-                }
-            } else {
-                (input, LimitStyle::Default)
-            };
+        // TeX accepts consecutive placement modifiers. The last one wins.
+        let (input, limit_style) = consume_limit_modifiers(input);
+        let limit_style = limit_style.unwrap_or(LimitStyle::Default);
 
         let (input, _) = ws(input)?;
         let (input, (sub_id, sup_id)) = self.parse_optional_limits(input)?;
@@ -6934,5 +6934,18 @@ impl LatexCompactParser {
             }
         }
         ids
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::consume_limit_modifiers;
+    use crate::ast::LimitStyle;
+
+    #[test]
+    fn limit_modifier_scan_preserves_unmatched_newline() {
+        let (rest, style) = consume_limit_modifiers("\\limits\nx");
+        assert_eq!(style, Some(LimitStyle::AboveBelow));
+        assert_eq!(rest, "\nx");
     }
 }

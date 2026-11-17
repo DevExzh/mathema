@@ -164,6 +164,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Literal backslash symbols are written as `\textbackslash` rather than a raw
   backslash that could become a newline or control space when followed by
   another command.
+- Repeated LaTeX limits and nolimits modifiers are consumed in order, with the
+  last modifier determining placement for n-ary and named operators. Explicit
+  placement is preserved when writing named operators back to LaTeX.
 - `\text{\int}` lost its content; symbol commands in text keep their
   characters.
 - UnicodeMath writes leading scripts as `(_sub^sup)base` (UTN #28 section
