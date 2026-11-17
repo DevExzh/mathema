@@ -7,17 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- LaTeX actuarial-angle notation (angl and angln) keeps its top and right
-  enclosure through the AST, MathML, OMML, MTEF v5, SVG, and raster output.
-
-### Fixed
-
-- MathML `<mtext>` preserves its supported `mathvariant` style on both writer
-  paths. Token whitespace follows the MathML collapse rule. Leading, trailing,
-  and repeated spaces in AST text use NBSP where needed, while a single
-  interior space remains ordinary text. Non-ASCII rendered spaces survive.
-  Normal text omits the redundant `mathvariant` attribute.
-
 ### Added
 
 - **OMML paragraphs.** `OmmlReader::parse_paragraph` reads an `m:oMathPara`
@@ -53,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of `Unsupported`. LaTeX proof-tree, XY-diagram and `numcases` builders stop
   promptly when the node limit is reached instead of recovering into more
   nodes.
+- Actuarial angles (`\angl` and `\angln`) retain their top and right rules in
+  LaTeX, MathML, OMML, MTEF v5, UnicodeMath, and both SVG and raster rendering.
+  Text-box arguments preserve upright text and inline math.
 - LaTeX `\reflectbox` and `\mathreflectbox` preserve an explicit horizontal
   reflection through the AST and SVG/raster renderers. MathML uses a
   `data-mathema-reflect` marker with a CSS `scaleX(-1)` style so mathema can
@@ -150,6 +142,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- MathML text preserves supported `mathvariant` values. Both writers encode
+  significant leading, trailing, and repeated spaces using nonbreaking spaces.
+  The reader collapses ordinary XML whitespace in tokens.
 - LaTeX text commands accept a single token, including in radicals and
   scripts. A bare macro's replacement stays in the text argument. Literal
   text characters and repeated hyphens or quotes survive LaTeX conversion.
