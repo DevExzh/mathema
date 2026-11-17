@@ -1604,7 +1604,10 @@ impl<'i> Parser<'i> {
         let all_hidden = hide.iter().all(|&h| h);
         let actuarial = hide == [false, true, true, false] && strikes == [false; 4];
         if actuarial {
-            node = self.arena.push_node(CompactNode::Actuarial(node));
+            node = self.arena.push_node(CompactNode::Actuarial {
+                content: node,
+                text_mode: false,
+            });
         } else if !all_hidden {
             if hide.iter().any(|&h| h) {
                 self.info(

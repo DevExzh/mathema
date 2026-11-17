@@ -422,7 +422,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
 
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
-        | MathNode::Actuarial(inner) => {
+        | MathNode::Actuarial { content: inner, .. } => {
             normalize_node_depth(inner, d);
         },
         MathNode::Reflect { content: inner, .. } => normalize_node_depth(inner, d),
@@ -860,7 +860,7 @@ fn normalize_compact_node(
 
         CompactNode::Phantom(inner, _)
         | CompactNode::Boxed { content: inner, .. }
-        | CompactNode::Actuarial(inner) => {
+        | CompactNode::Actuarial { content: inner, .. } => {
             normalize_compact_node(arena, inner, d)?;
         },
         CompactNode::Reflect { content: inner, .. } => normalize_compact_node(arena, inner, d)?,

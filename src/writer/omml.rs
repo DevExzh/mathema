@@ -881,7 +881,7 @@ impl<'a> Emitter<'a> {
                 self.arg("m:e", inner, fmt);
                 self.close("m:borderBox");
             },
-            CompactNode::Actuarial(content) => {
+            CompactNode::Actuarial { content, .. } => {
                 self.open("m:borderBox");
                 self.open("m:borderBoxPr");
                 self.on("m:hideBot");

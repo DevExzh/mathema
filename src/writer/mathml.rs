@@ -510,11 +510,14 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
                 .map_err(to_err)?;
             Ok(())
         },
-        MathNode::Actuarial(inner) => {
+        MathNode::Actuarial {
+            content: inner,
+            text_mode,
+        } => {
             let mut elem = BytesStart::new("menclose");
             elem.push_attribute(("notation", "actuarial"));
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_node(w, inner)?;
+            write_box_child(w, inner, *text_mode)?;
             w.write_event(Event::End(BytesEnd::new("menclose")))
                 .map_err(to_err)?;
             Ok(())
@@ -528,7 +531,7 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
             ));
             elem.push_attribute(("style", "display:inline-block; transform:scaleX(-1)"));
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_node(w, content)?;
+            write_box_child(w, content, *text_mode)?;
             w.write_event(Event::End(BytesEnd::new("mrow")))
                 .map_err(to_err)?;
             Ok(())
@@ -573,6 +576,21 @@ fn write_node(w: &mut XmlWriter, node: &MathNode) -> Result<()> {
         },
         MathNode::MathAtom { content, .. } => write_node(w, content),
     }
+}
+
+fn write_box_child(w: &mut XmlWriter, child: &MathNode, text_size: bool) -> Result<()> {
+    if text_size {
+        let mut style = BytesStart::new("mstyle");
+        style.push_attribute(("displaystyle", "false"));
+        style.push_attribute(("scriptlevel", "0"));
+        w.write_event(Event::Start(style)).map_err(to_err)?;
+    }
+    write_node(w, child)?;
+    if text_size {
+        w.write_event(Event::End(BytesEnd::new("mstyle")))
+            .map_err(to_err)?;
+    }
+    Ok(())
 }
 
 fn write_simple_element(w: &mut XmlWriter, tag: &str, text: &str) -> Result<()> {
@@ -1107,9 +1125,12 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             write_node_fast(buf, arena, inner);
             buf.push_str("</menclose>");
         },
-        CompactNode::Actuarial(inner) => {
+        CompactNode::Actuarial {
+            content: inner,
+            text_mode,
+        } => {
             buf.push_str("<menclose notation=\"actuarial\">");
-            write_node_fast(buf, arena, inner);
+            write_box_child_fast(buf, arena, inner, text_mode);
             buf.push_str("</menclose>");
         },
 
@@ -1117,7 +1138,7 @@ fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push_str("<mrow data-mathema-reflect=\"");
             buf.push_str(if text_mode { "text" } else { "math" });
             buf.push_str("\" style=\"display:inline-block; transform:scaleX(-1)\">");
-            write_node_fast(buf, arena, content);
+            write_box_child_fast(buf, arena, content, text_mode);
             buf.push_str("</mrow>");
         },
 
@@ -1211,6 +1232,16 @@ fn write_mo_char_fast(buf: &mut String, ch: char) {
 }
 
 #[inline]
+fn write_box_child_fast(buf: &mut String, arena: &AstArena, child: NodeId, text_size: bool) {
+    if text_size {
+        buf.push_str(r#"<mstyle displaystyle="false" scriptlevel="0">"#);
+    }
+    write_node_fast(buf, arena, child);
+    if text_size {
+        buf.push_str("</mstyle>");
+    }
+}
+
 fn write_mo_fence_fast(buf: &mut String, text: &str) {
     buf.push_str("<mo fence=\"true\">");
     xml_escape_into(buf, text);
@@ -1343,6 +1374,91 @@ mod tests {
         assert!(output.contains("<mfrac>"));
         assert!(output.contains("<mn>1</mn>"));
         assert!(output.contains("<mn>2</mn>"));
+    }
+
+    #[test]
+    fn text_sizing_is_separate_from_an_upright_font() {
+        let xml = r#"<math><menclose notation="actuarial"><mi mathvariant="normal">x</mi></menclose></math>"#;
+        let parsed = crate::from_mathml(xml).unwrap();
+        let normalized = parsed.to_mathml().unwrap();
+        assert!(
+            normalized.contains(r#"mathvariant="normal""#),
+            "{normalized}"
+        );
+        assert!(!normalized.contains(r#"scriptlevel="0""#), "{normalized}");
+        for mode in [true, false] {
+            for node in [
+                MathNode::Actuarial {
+                    content: Box::new(MathNode::Identifier("x".into())),
+                    text_mode: mode,
+                },
+                MathNode::Reflect {
+                    content: Box::new(MathNode::Identifier("x".into())),
+                    text_mode: mode,
+                },
+            ] {
+                let expr = MathExpr::block(vec![node]);
+                let compact = CompactExpr::from_math_expr(&expr).unwrap();
+                for output in [
+                    MathmlWriter::write(&expr, &Config::default()).unwrap(),
+                    MathmlWriter::write_compact(&compact, &Config::default()).unwrap(),
+                ] {
+                    assert_eq!(output.matches("<mi>x</mi>").count(), 1, "{output}");
+                    assert_eq!(output.contains(r#"scriptlevel="0""#), mode);
+                    let round = crate::from_mathml(&output).unwrap().to_mathml().unwrap();
+                    assert_eq!(round, output);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn actuarial_text_mode_emits_standard_size_hints() {
+        let text = write(MathNode::Actuarial {
+            content: Box::new(MathNode::Identifier("x".into())),
+            text_mode: true,
+        });
+        assert!(text.contains("notation=\"actuarial\""));
+        assert!(text.contains("displaystyle=\"false\""));
+        assert!(text.contains("scriptlevel=\"0\""));
+
+        let inherited = write(MathNode::Actuarial {
+            content: Box::new(MathNode::Identifier("x".into())),
+            text_mode: false,
+        });
+        assert!(inherited.contains("notation=\"actuarial\""));
+        assert!(!inherited.contains("scriptlevel=\"0\""));
+    }
+
+    #[test]
+    fn native_actuarial_mathml_keeps_inherited_style() {
+        let config = Config::default();
+        let parsed = crate::reader::mathml::MathmlReader::parse(
+            r#"<math><msub><mi>x</mi><menclose notation="actuarial"><mi>y</mi></menclose></msub></math>"#,
+            &config,
+        )
+        .unwrap()
+        .expr;
+        let MathNode::Subscript { sub, .. } = &parsed.nodes[0] else {
+            panic!("expected subscript: {:?}", parsed.nodes);
+        };
+        assert!(matches!(
+            &**sub,
+            MathNode::Actuarial {
+                text_mode: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn latex_hbox_actuarial_style_hints_survive_mathml_round_trip() {
+        let mathml =
+            crate::convert(r"\angl{$x_i$}", crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert!(mathml.contains("displaystyle=\"false\""));
+        assert!(mathml.contains("scriptlevel=\"0\""));
+        let latex = crate::convert(&mathml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+        assert!(latex.starts_with(r"\angl{"), "{latex:?}");
     }
 
     #[test]

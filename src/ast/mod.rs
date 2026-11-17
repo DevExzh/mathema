@@ -226,7 +226,12 @@ pub enum MathNode {
         border_color: Option<String>,
     },
     /// Actuarial angle enclosure with a top and right rule.
-    Actuarial(Box<MathNode>),
+    Actuarial {
+        /// Enclosed content.
+        content: Box<MathNode>,
+        /// Whether the enclosure came from a LaTeX hbox and forces text sizing.
+        text_mode: bool,
+    },
     /// Strikethrough/cancellation
     Cancel {
         /// Direction/shape of the cancellation stroke.
@@ -666,7 +671,7 @@ pub(crate) fn compact_children(
         CompactNode::Accent { base, .. } => push(base),
         CompactNode::Phantom(inner, _)
         | CompactNode::Boxed { content: inner, .. }
-        | CompactNode::Actuarial(inner) => push(inner),
+        | CompactNode::Actuarial { content: inner, .. } => push(inner),
         CompactNode::Reflect { content: inner, .. } => push(inner),
         CompactNode::Cancel { content, .. }
         | CompactNode::Scaled { content, .. }
@@ -786,7 +791,7 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         },
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
-        | MathNode::Actuarial(inner) => check_node_depth(inner, d),
+        | MathNode::Actuarial { content: inner, .. } => check_node_depth(inner, d),
         MathNode::Reflect { content: inner, .. } => check_node_depth(inner, d),
         MathNode::Cancel { content, .. }
         | MathNode::Scaled { content, .. }

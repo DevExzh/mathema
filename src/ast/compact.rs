@@ -310,7 +310,12 @@ pub enum CompactNode {
         border_color: StrId,
     },
     /// Actuarial angle enclosure with a top and right rule.
-    Actuarial(NodeId),
+    Actuarial {
+        /// Enclosed content.
+        content: NodeId,
+        /// Whether the enclosure came from a LaTeX hbox and forces text sizing.
+        text_mode: bool,
+    },
     /// Content struck through with a cancellation line.
     Cancel {
         /// The cancellation stroke direction/style.
@@ -741,9 +746,12 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 border_color: border_sid,
             })
         },
-        MathNode::Actuarial(content) => {
+        MathNode::Actuarial { content, text_mode } => {
             let content_id = push_math_node(arena, content);
-            arena.push_node(CompactNode::Actuarial(content_id))
+            arena.push_node(CompactNode::Actuarial {
+                content: content_id,
+                text_mode: *text_mode,
+            })
         },
         MathNode::Cancel { stroke, content } => {
             let content_id = push_math_node(arena, content);
@@ -1039,8 +1047,9 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 border_color: border,
             }
         },
-        CompactNode::Actuarial(content) => {
-            MathNode::Actuarial(Box::new(reconstruct_node(arena, content)))
+        CompactNode::Actuarial { content, text_mode } => MathNode::Actuarial {
+            content: Box::new(reconstruct_node(arena, content)),
+            text_mode,
         },
         CompactNode::Cancel { stroke, content } => MathNode::Cancel {
             stroke,

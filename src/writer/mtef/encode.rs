@@ -673,7 +673,7 @@ impl<'a> Encoder<'a> {
                     self.node(content, size)
                 }
             },
-            CompactNode::Actuarial(content) => {
+            CompactNode::Actuarial { content, .. } => {
                 if self.v5 {
                     // tvBX_RIGHT | tvBX_TOP in the MTEF v5 tmBOX variation.
                     self.template(size, 37, 0x0C);

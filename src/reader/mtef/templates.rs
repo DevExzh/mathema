@@ -756,7 +756,10 @@ impl Decoder<'_> {
             Desc::Box { sides } => {
                 let content = self.take_or_empty(&mut slots, 0)?;
                 if sides == 0x0C {
-                    Item::Node(self.node(CompactNode::Actuarial(content))?)
+                    Item::Node(self.node(CompactNode::Actuarial {
+                        content,
+                        text_mode: false,
+                    })?)
                 } else {
                     if sides != 0x1E {
                         self.warn(

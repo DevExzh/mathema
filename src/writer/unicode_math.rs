@@ -285,15 +285,11 @@ fn write_node(out: &mut String, node: &MathNode) {
             out.push('\u{25AD}'); // rectangle
             write_paren_if_complex(out, inner);
         },
-        MathNode::Actuarial(inner) => {
+        MathNode::Actuarial { content: inner, .. } => {
             out.push('\u{25AD}');
             out.push('(');
             out.push_str("6&");
-            if matches!(&**inner, MathNode::Text(..)) {
-                write_node(out, inner);
-            } else {
-                write_paren_if_complex(out, inner);
-            }
+            write_node(out, inner);
             out.push(')');
         },
 
@@ -640,15 +636,11 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             out.push('\u{25AD}');
             write_paren_if_complex_c(out, arena, inner);
         },
-        CompactNode::Actuarial(inner) => {
+        CompactNode::Actuarial { content: inner, .. } => {
             out.push('\u{25AD}');
             out.push('(');
             out.push_str("6&");
-            if matches!(*arena.node(inner), CompactNode::Text(..)) {
-                write_node_c(out, arena, inner);
-            } else {
-                write_paren_if_complex_c(out, arena, inner);
-            }
+            write_node_c(out, arena, inner);
             out.push(')');
         },
 
@@ -907,9 +899,10 @@ mod tests {
 
     #[test]
     fn actuarial_uses_masked_box_syntax() {
-        let output = write(MathNode::Actuarial(Box::new(MathNode::Identifier(
-            "x".into(),
-        ))));
+        let output = write(MathNode::Actuarial {
+            content: Box::new(MathNode::Identifier("x".into())),
+            text_mode: false,
+        });
         assert_eq!(output, "▭(6&x)");
     }
 }

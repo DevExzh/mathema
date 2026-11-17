@@ -69,13 +69,17 @@ pub(super) fn layout_boxed(
     }
 }
 
-pub(super) fn layout_actuarial(content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+pub(super) fn layout_actuarial(content: &MathNode, force_text: bool, ctx: &LayoutCtx) -> LayoutBox {
     let size = ctx.size();
     let rule = (ctx.params.rule_thickness * size).max(0.04 * size);
     let top_pad = 4.0 * rule;
     let side_pad = size / 18.0;
     let trailing_margin = side_pad;
-    let inner = layout_node(content, &ctx.with_style(MathStyle::Text));
+    let inner = if force_text {
+        layout_node(content, &ctx.with_style(MathStyle::Text))
+    } else {
+        layout_node(content, ctx)
+    };
     let bottom_pad = (0.25 * size - inner.depth).max(0.0);
     let body_height = inner.height;
     let body_depth = inner.depth + bottom_pad;
@@ -400,6 +404,7 @@ pub(super) fn layout_boxed_arena(
 pub(super) fn layout_actuarial_arena(
     ast: &AstArena,
     content: NodeId,
+    force_text: bool,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
@@ -407,7 +412,11 @@ pub(super) fn layout_actuarial_arena(
     let rule = (ctx.params.rule_thickness * size).max(0.04 * size);
     let side_pad = size / 18.0;
     let trailing_margin = side_pad;
-    let inner_id = layout_node_arena(ast, content, arena, &ctx.with_style(MathStyle::Text));
+    let inner_id = if force_text {
+        layout_node_arena(ast, content, arena, &ctx.with_style(MathStyle::Text))
+    } else {
+        layout_node_arena(ast, content, arena, ctx)
+    };
     let inner_depth = arena.get(inner_id).depth;
     let top_pad = 4.0 * rule;
     let bottom_pad = (0.25 * size - inner_depth).max(0.0);

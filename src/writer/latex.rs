@@ -971,7 +971,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push('}');
             }
         },
-        CompactNode::Actuarial(inner) => {
+        CompactNode::Actuarial { content: inner, .. } => {
             buf.push_str("\\angl{");
             write_hbox_content(buf, arena, inner);
             buf.push('}');

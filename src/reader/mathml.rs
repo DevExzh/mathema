@@ -185,6 +185,18 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn parse_children(&mut self, parent_tag: &str) -> Result<SmallVec<[NodeId; 8]>> {
+        self.read_children(parent_tag, false)
+            .map(|(children, _)| children)
+    }
+
+    /// A sole mstyle child can set an enclosure's body to text size. Record its
+    /// actual presentation attributes independently of the child's font variant.
+    fn read_children(
+        &mut self,
+        parent_tag: &str,
+        inspect_style: bool,
+    ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
+        let mut body_in_text_style = false;
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
             return Err(Error::MathmlParse {
@@ -198,10 +210,16 @@ impl<'a> MathmlCompactParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
+                    if inspect_style && nodes.is_empty() && name == "mstyle" {
+                        body_in_text_style = has_explicit_text_size(&e);
+                    }
                     nodes.push(self.parse_element_by_name(&name, &e)?);
                 },
                 Ok(Event::Empty(e)) => {
                     let name = Self::local_name(&e);
+                    if inspect_style && nodes.is_empty() && name == "mstyle" {
+                        body_in_text_style = has_explicit_text_size(&e);
+                    }
                     nodes.push(self.parse_empty_element(&name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
@@ -231,7 +249,8 @@ impl<'a> MathmlCompactParser<'a> {
             }
         }
         self.depth -= 1;
-        Ok(nodes)
+        let sized = body_in_text_style && nodes.len() == 1;
+        Ok((nodes, sized))
     }
 
     fn parse_child_id(&mut self, parent_tag: &str) -> Result<NodeId> {
@@ -391,21 +410,22 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(self.arena.push_node(CompactNode::Space(r)))
             },
             "mrow" => {
-                let children = self.parse_children(name)?;
-                let span = self.arena.push_children_deferred(&children);
-                let row = self.arena.push_node(CompactNode::Row(span));
                 let mode = get_attr(start, "data-mathema-reflect");
                 let reflected = match get_attr(start, "style") {
                     Some(style) => has_horizontal_reflection(&style),
                     None => matches!(mode.as_deref(), Some("text" | "math")),
                 };
+                let (children, sized) = self.read_children(name, reflected)?;
                 if reflected {
-                    Ok(self.arena.push_node(CompactNode::Reflect {
-                        content: row,
-                        text_mode: mode.as_deref() == Some("text"),
-                    }))
+                    let content = self.flatten_ids(&children);
+                    let text_mode =
+                        mode.as_deref() == Some("text") || sized || has_explicit_text_size(start);
+                    Ok(self
+                        .arena
+                        .push_node(CompactNode::Reflect { content, text_mode }))
                 } else {
-                    Ok(row)
+                    let span = self.arena.push_children_deferred(&children);
+                    Ok(self.arena.push_node(CompactNode::Row(span)))
                 }
             },
             "mfrac" => {
@@ -559,7 +579,9 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "menclose" => {
                 let notation = get_attr(start, "notation").unwrap_or_default();
-                let mut id = self.parse_child_id(name)?;
+                let (children, sized) = self.read_children(name, true)?;
+                let mut id = self.flatten_ids(&children);
+                let text_mode = sized || has_explicit_text_size(start);
                 let has = |mark: &str| notation.split_ascii_whitespace().any(|n| n == mark);
                 let diagonal = match (has("updiagonalstrike"), has("downdiagonalstrike")) {
                     (true, true) => Some(StrokeKind::Cross),
@@ -583,7 +605,10 @@ impl<'a> MathmlCompactParser<'a> {
                 let full_box =
                     has("box") || has("roundedbox") || (top_right && has("bottom") && has("left"));
                 if top_right && !full_box {
-                    Ok(self.arena.push_node(CompactNode::Actuarial(id)))
+                    Ok(self.arena.push_node(CompactNode::Actuarial {
+                        content: id,
+                        text_mode,
+                    }))
                 } else if full_box || !has_stroke {
                     let empty = self.arena.push_str("");
                     Ok(self.arena.push_node(CompactNode::Boxed {
@@ -948,6 +973,14 @@ impl<'a> MathmlCompactParser<'a> {
 // ---------------------------------------------------------------------------
 // Helpers (no arena access needed)
 // ---------------------------------------------------------------------------
+
+fn has_explicit_text_size(start: &quick_xml::events::BytesStart<'_>) -> bool {
+    get_attr(start, "displaystyle").is_some_and(|v| v.trim().eq_ignore_ascii_case("false"))
+        && get_attr(start, "scriptlevel").is_some_and(|v| {
+            let n = v.trim();
+            !n.is_empty() && n.bytes().all(|b| b == b'0')
+        })
+}
 
 /// Read the supported, single horizontal CSS transform. Other declarations
 /// (such as CSS variables) are not transforms on this element.
