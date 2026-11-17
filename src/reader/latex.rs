@@ -143,6 +143,29 @@ mod tests {
     }
 
     #[test]
+    fn char_primitive_preserves_literal_math_symbols() {
+        for input in [r"\char`\~", r#"\char"7e"#, r"\char126"] {
+            assert_eq!(
+                parse_one(input),
+                MathNode::Symbol(SymbolKind::Ordinary, "~".into()),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            parse_one(r"\char`\^"),
+            MathNode::Symbol(SymbolKind::Ordinary, "^".into())
+        );
+        assert_eq!(
+            parse_one(r"\char`'"),
+            MathNode::Symbol(SymbolKind::Ordinary, "'".into())
+        );
+        assert_eq!(
+            parse_one(r"\char`\\"),
+            MathNode::Symbol(SymbolKind::Ordinary, "\\".into())
+        );
+    }
+
+    #[test]
     fn text_takes_one_unexpanded_token() {
         for (input, braced) in [
             (r"\sqrt \text x", r"\sqrt{\text{x}}"),
@@ -164,6 +187,28 @@ mod tests {
                 LatexReader::parse(invalid, &Config::default()).is_err(),
                 "{invalid}"
             );
+        }
+    }
+
+    #[test]
+    fn emphasis_toggles_slant_and_preserves_the_surrounding_weight() {
+        for (input, equivalent) in [
+            (
+                r"\emph{one \emph{two} three}",
+                r"\textit{one \textup{two} three}",
+            ),
+            (
+                r"\textit{\emph{a\emph{b}}}",
+                r"\textit{\textup{a\textit{b}}}",
+            ),
+            (
+                r"\textsf{\textbf{\emph{x}\textmd{y}}}",
+                r"\textsf{\textbf{\textit{x}}y}",
+            ),
+        ] {
+            assert_eq!(parse(input), parse(equivalent), "{input}");
+            let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+            assert_eq!(parse(&first), parse(input), "{first}");
         }
     }
 

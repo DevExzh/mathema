@@ -367,9 +367,9 @@ fn round_trip_ascii_identifier_script_bases() {
         (":", ":"),
         ("[", "["),
         ("]", "]"),
-        ("{", r"\{"),
-        ("}", r"\}"),
-        ("|", "|"),
+        ("{", r"{\char`\{}"),
+        ("}", r"{\char`\}}"),
+        ("|", r"{\char`|}"),
     ] {
         let input = format!("<math><msup><mi>{ch}</mi><mn>2</mn></msup></math>");
         let expected = format!("{written}^{{2}}");
@@ -462,6 +462,62 @@ fn named_operator_limit_modifiers_round_trip() {
         assert_eq!(
             first, second,
             "unstable named operator output for {input:?}"
+        );
+    }
+}
+
+#[test]
+fn operatorname_special_content_round_trips_through_public_apis() {
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\operatorname{rate\%}", r"\operatorname{rate\%}"),
+        (r"\operatorname*{rate\%}", r"\operatorname*{rate\%}"),
+        (r"\operatorname{a\{b\}c}", r"\operatorname{a\{b\}c}"),
+        (
+            r"\operatorname{a\textbackslash{}b}",
+            r"\operatorname{a\textbackslash{}b}",
+        ),
+        (
+            r"\operatorname{a\textasciitilde{}b}",
+            r"\operatorname{a\textasciitilde{}b}",
+        ),
+        (r"\operatorname{a\textmu b}", r"\operatorname{aµ b}"),
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, expected, "unexpected operator name for {input:?}");
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(second, first, "operator name changed for {input:?}");
+    }
+
+    let mathml = crate::convert(
+        "<math><mo>rate%</mo></math>",
+        crate::Format::MathML,
+        crate::Format::LaTeX,
+    )
+    .unwrap();
+    assert_eq!(mathml, r"\operatorname{rate\%}");
+    assert_eq!(
+        crate::convert(&mathml, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+        mathml
+    );
+
+    let direct = crate::ast::MathExpr::inline(vec![crate::ast::MathNode::Operator(
+        crate::ast::OperatorAttr {
+            name: "rate%".into(),
+            limit_style: crate::ast::LimitStyle::AboveBelow,
+        },
+    )]);
+    let direct_latex = LatexWriter::write(&direct, &config).unwrap();
+    assert_eq!(direct_latex, r"\operatorname*{rate\%}");
+    assert_eq!(
+        crate::convert(&direct_latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+        direct_latex
+    );
+
+    for malformed in [r"\operatorname{rate\%", r"\operatorname*{rate\textmu"] {
+        assert!(
+            LatexReader::parse(malformed, &config).is_err(),
+            "unclosed operator name was accepted: {malformed:?}"
         );
     }
 }
@@ -1754,4 +1810,37 @@ fn text_or_math_follows_the_actual_argument_mode() {
             "{input}"
         );
     }
+}
+
+#[test]
+fn binrel_uses_the_sample_class_and_writes_only_the_body() {
+    for (args, equivalent) in [
+        ("+xR", r"\mathbin{x}R"),
+        ("=xR", r"\mathrel{x}R"),
+        (" xxR", r"\mathord{x}R"),
+        (r"{\times x}{a+b}R", r"\mathbin{a+b}R"),
+        (r"{\leq x}{\alpha}R", r"\mathrel{\alpha}R"),
+        (r"{x+}{a}R", r"\mathord{a}R"),
+        (r"{{+}}{a}R", r"\mathord{a}R"),
+        (r"{}{a}R", r"\mathord{a}R"),
+    ] {
+        let input = format!(r"L\@binrel{args}");
+        let expected = format!("L{equivalent}");
+        let canonical = crate::from_latex(&input).unwrap().to_latex().unwrap();
+        assert_eq!(
+            canonical,
+            crate::from_latex(&expected).unwrap().to_latex().unwrap(),
+            "{input}"
+        );
+        assert_eq!(
+            canonical,
+            crate::from_latex(&canonical).unwrap().to_latex().unwrap()
+        );
+    }
+    assert!(crate::from_latex(r"\@binrel{+}").is_err());
+    assert!(crate::from_latex(r"\@binrelExtra{+}{x}").is_err());
+    assert_eq!(
+        crate::from_latex(r"\alpha@x").unwrap().to_latex().unwrap(),
+        r"\alpha@x"
+    );
 }

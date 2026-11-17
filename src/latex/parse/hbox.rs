@@ -51,15 +51,20 @@ fn nested_text_style(outer: TextStyle, name: &str, requested: TextStyle) -> Text
     if requested == Monospace || name == "textnormal" {
         return requested;
     }
-    let bold = matches!(
-        outer,
-        Bold | BoldItalic | SansSerifBold | SansSerifBoldItalic
-    ) || requested == Bold;
-    let italic = name != "textup"
+    let bold = name != "textmd"
         && (matches!(
             outer,
-            Italic | BoldItalic | SansSerifItalic | SansSerifBoldItalic
-        ) || requested == Italic);
+            Bold | BoldItalic | SansSerifBold | SansSerifBoldItalic
+        ) || requested == Bold);
+    let was_italic = matches!(
+        outer,
+        Italic | BoldItalic | SansSerifItalic | SansSerifBoldItalic
+    );
+    let italic = match name {
+        "emph" => !was_italic,
+        "textup" => false,
+        _ => was_italic || requested == Italic,
+    };
     let sans = name != "textrm"
         && (matches!(
             outer,

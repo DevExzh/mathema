@@ -7,9 +7,9 @@ pub mod physics;
 pub mod preprocess;
 pub mod siunitx;
 
-/// Length of a control word after the backslash.  Internal KaTeX names may
-/// begin with `@`; an `@` occurring after an ordinary alphabetic command is
-/// still an ordinary source character (`\alpha@x`).
+/// Length of a control word after the backslash. Recognize KaTeX's
+/// leading-`@` internal names while keeping the ordinary math character in
+/// expressions such as `\alpha@x` outside the control word.
 #[inline]
 fn control_word_len(name: &str) -> usize {
     let bytes = name.as_bytes();
@@ -44,10 +44,12 @@ fn text_style(name: &str) -> Option<crate::ast::TextStyle> {
     use crate::ast::TextStyle;
     Some(match name {
         "textbf" => TextStyle::Bold,
-        "textit" => TextStyle::Italic,
+        "textit" | "emph" => TextStyle::Italic,
         "texttt" => TextStyle::Monospace,
         "textsf" => TextStyle::SansSerif,
-        "text" | "textrm" | "textnormal" | "textup" | "mbox" | "hbox" => TextStyle::Normal,
+        "text" | "textrm" | "textnormal" | "textup" | "textmd" | "mbox" | "hbox" => {
+            TextStyle::Normal
+        },
         _ => return None,
     })
 }

@@ -318,6 +318,49 @@ fn clean_text_content(raw: &str) -> String {
     out
 }
 
+/// Decode literal content of an operatorname argument. Grouping braces are
+/// removed, escaped punctuation remains literal, and known core or package
+/// commands contribute their Unicode glyph.
+fn decode_operator_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '{' | '}' => {},
+            '\\' => {
+                let Some(next) = chars.peek().copied() else {
+                    out.push('\\');
+                    break;
+                };
+                if next.is_ascii_alphabetic() {
+                    let mut command = String::new();
+                    while let Some(next) = chars.peek().copied() {
+                        if next.is_ascii_alphabetic() {
+                            command.push(next);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Some(unicode) = latex_to_unicode(&command) {
+                        out.push(unicode);
+                    } else if let Some((unicode, _)) =
+                        crate::latex::packages::lookup_package_symbol(&command)
+                    {
+                        out.push_str(unicode);
+                    } else {
+                        out.push_str(&command);
+                    }
+                } else {
+                    out.push(chars.next().unwrap_or(next));
+                }
+            },
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Parse empheq option list (`box=…,left=…,right=…`), returning the raw value
 /// strings for the `box`, `left`, and `right` keys. Splitting respects brace
 /// depth so values like `\colorbox{a,b}` are not mis-split. Unknown keys are
@@ -2755,12 +2798,7 @@ impl LatexCompactParser {
         if let Ok((rest, id)) = self.parse_special_command(after_backslash) {
             return Ok((rest, id));
         }
-        // Extract alphabetic command name via byte scan (avoids nom overhead)
-        let bytes = after_backslash.as_bytes();
-        let name_len = bytes
-            .iter()
-            .position(|&b| !b.is_ascii_alphabetic())
-            .unwrap_or(bytes.len());
+        let name_len = super::control_word_len(after_backslash);
         if name_len == 0 {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -3120,6 +3158,12 @@ impl LatexCompactParser {
             "tbinom" => self.parse_styled_binom(input, FractionKind::Inline),
 
             // --- Math atom type wrappers ---
+            "@binrel" => self.parse_binrel(input),
+            // Unexpanded internal commands have no math-glyph fallback.
+            _ if name.starts_with('@') => Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Tag,
+            ))),
             "mathop" | "mathrel" | "mathbin" | "mathord" | "mathpunct" | "mathopen"
             | "mathclose" | "mathinner" => {
                 let (input, arg_id) = self.parse_required_group(input)?;
@@ -3141,6 +3185,16 @@ impl LatexCompactParser {
                     }),
                 ))
             },
+
+            // `\char` is a math-mode primitive used by the LaTeX writer for
+            // literal ASCII glyphs whose source characters have active TeX
+            // meanings (`~`, `^`, `'`, ...).  The writer uses the backtick
+            // form (`\char`\~`) so the following sibling cannot be consumed
+            // as part of a hexadecimal character number.  Keep the result an
+            // ordinary symbol: unlike `\mathord`, this preserves the public
+            // AST shape when a direct ordinary symbol is written and read
+            // back.
+            "char" => self.parse_char(input),
 
             // --- Negation ---
             "not" => self.parse_not(input),
@@ -3772,6 +3826,120 @@ impl LatexCompactParser {
         }
     }
 
+    /// Apply the first argument's binary/relation/ordinary class to the second
+    /// argument. Like KaTeX, inspect the first atom of the outer argument group.
+    fn parse_binrel<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let grouped_first = input
+            .strip_prefix('{')
+            .is_some_and(|body| body[skip_ws_bytes(body.as_bytes())..].starts_with('{'));
+        let (rest, sample) = self.parse_required_group(input)?;
+        let first = match *self.arena.node(sample) {
+            CompactNode::Row(span) => self.arena.children(span).first().copied(),
+            _ => Some(sample),
+        };
+        let atom_type = match first
+            .filter(|_| !grouped_first)
+            .map(|id| *self.arena.node(id))
+        {
+            Some(CompactNode::Symbol(SymbolKind::BinaryOp, _)) => MathAtomType::Bin,
+            Some(CompactNode::Symbol(SymbolKind::Relation, _)) => MathAtomType::Rel,
+            _ => MathAtomType::Ord,
+        };
+        let (rest, content) = self.parse_required_group(rest)?;
+        let id = self
+            .arena
+            .push_node(CompactNode::MathAtom { atom_type, content });
+        Ok((rest, id))
+    }
+
+    /// Parse the character forms emitted by the LaTeX writer's math-mode
+    /// literal-symbol path.  TeX accepts several number syntaxes after
+    /// `\char`; supporting the backtick form is sufficient for writer output,
+    /// while decimal/hex forms make the reader useful for ordinary KaTeX/TeX
+    /// input as well (`\char"7e`, `\char126`).
+    fn parse_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let Some(first) = input.chars().next() else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        };
+
+        let (rest, codepoint) = if first == '`' {
+            let after_tick = &input[first.len_utf8()..];
+            let Some(token) = after_tick.chars().next() else {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )));
+            };
+            let mut rest = &after_tick[token.len_utf8()..];
+            let codepoint = if token == '\\' {
+                // `\char`\\` names a literal backslash; an escaped brace or
+                // punctuation is handled the same way.  A control word is
+                // intentionally reduced to its first character, matching
+                // TeX's character-token interpretation for this form.
+                let Some(escaped) = rest.chars().next() else {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Char,
+                    )));
+                };
+                rest = &rest[escaped.len_utf8()..];
+                escaped
+            } else {
+                token
+            };
+            (rest, codepoint as u32)
+        } else if first == '"' {
+            let digits = &input[first.len_utf8()..];
+            let count = digits
+                .bytes()
+                .take_while(|byte| byte.is_ascii_hexdigit())
+                .count();
+            if count == 0 {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::HexDigit,
+                )));
+            }
+            let value = u32::from_str_radix(&digits[..count], 16).map_err(|_| {
+                nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::HexDigit,
+                ))
+            })?;
+            (&digits[count..], value)
+        } else {
+            let digits = input.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Digit,
+                )));
+            }
+            let value = input[..digits].parse::<u32>().map_err(|_| {
+                nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Digit))
+            })?;
+            (&input[digits..], value)
+        };
+
+        let Some(ch) = char::from_u32(codepoint) else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        };
+        let sid = self.push_char_str(ch);
+        Ok((
+            rest,
+            self.arena
+                .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+        ))
+    }
+
     fn parse_cancel<'a>(&mut self, input: &'a str, stroke: StrokeKind) -> IResult<&'a str, NodeId> {
         let (input, arg_id) = self.parse_required_group(input)?;
         Ok((
@@ -4280,50 +4448,27 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         // Accept both braced {name} and unbraced single letter
         let (input, name) = if input.starts_with('{') {
-            let (input, _) = char('{')(input)?;
-            let (input, name) = take_while(|c: char| c != '}')(input)?;
-            let (input, _) = char('}')(input)?;
+            let Some((input, raw_name)) = super::mhchem::capture_braced(input) else {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )));
+            };
+            let name = decode_operator_name(raw_name);
             (input, name)
         } else if input
             .as_bytes()
             .first()
             .is_some_and(|b| b.is_ascii_alphabetic())
         {
-            (&input[1..], &input[..1])
+            (&input[1..], input[..1].to_owned())
         } else {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Alpha,
             )));
         };
-        // Resolve LaTeX commands within the name (e.g., \Gamma → Γ)
-        let sid = if name.contains('\\') {
-            let mut resolved = String::with_capacity(name.len());
-            let mut chars = name.chars().peekable();
-            while let Some(ch) = chars.next() {
-                if ch == '\\' {
-                    let mut cmd = String::new();
-                    while let Some(&c) = chars.peek() {
-                        if c.is_ascii_alphabetic() {
-                            cmd.push(c);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    if let Some(unicode) = latex_to_unicode(&cmd) {
-                        resolved.push(unicode);
-                    } else if !cmd.is_empty() {
-                        resolved.push_str(&cmd);
-                    }
-                } else {
-                    resolved.push(ch);
-                }
-            }
-            self.arena.push_str(&resolved)
-        } else {
-            self.arena.push_str(name)
-        };
+        let sid = self.arena.push_str(&name);
         Ok((
             input,
             self.arena
