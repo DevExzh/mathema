@@ -205,7 +205,50 @@ pub(super) fn layout_array(
     } else {
         (0.0, None)
     };
-    let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
+    let mut suppressed_gaps = vec![false; n_cols.saturating_sub(1)];
+    let mut suppress_left_edge = false;
+    let mut suppress_right_edge = false;
+    for row in rows {
+        let mut logical = 0usize;
+        for cell in row {
+            let span = match cell.first() {
+                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
+                _ => 1,
+            }
+            .min(n_cols.saturating_sub(logical).max(1));
+            if let Some(MathNode::SpannedCell {
+                left_padding,
+                right_padding,
+                ..
+            }) = cell.first()
+            {
+                if *left_padding {
+                    if logical == 0 {
+                        suppress_left_edge = true;
+                    } else {
+                        suppressed_gaps[logical - 1] = true;
+                    }
+                }
+                if *right_padding {
+                    if logical + span >= n_cols {
+                        suppress_right_edge = true;
+                    } else {
+                        suppressed_gaps[logical + span - 1] = true;
+                    }
+                }
+            }
+            logical += span;
+        }
+    }
+    let gap_after = |j| {
+        if suppressed_gaps.get(j).copied().unwrap_or(false) {
+            0.0
+        } else {
+            uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size))
+        }
+    };
+    let left_edge = if suppress_left_edge { 0.0 } else { outer_pad };
+    let right_edge = if suppress_right_edge { 0.0 } else { outer_pad };
 
     // Ordinary cells establish all column minima first. A spanning cell then
     // receives the remaining width across its logical columns, using the same
@@ -234,7 +277,7 @@ pub(super) fn layout_array(
     // Start from top
     for (i, row) in cell_layouts.into_iter().enumerate() {
         cursor_y += row_heights[i];
-        let mut cursor_x = outer_pad;
+        let mut cursor_x = left_edge;
         let row_len = row.len();
         let mut row_iter = row.into_iter();
 
@@ -294,7 +337,7 @@ pub(super) fn layout_array(
     }
 
     let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
-    let total_width: f64 = outer_pad * 2.0 + col_widths.iter().sum::<f64>() + total_gap;
+    let total_width: f64 = left_edge + col_widths.iter().sum::<f64>() + total_gap + right_edge;
     let total_extent = cursor_y;
     // Center vertically around the axis
     let axis = ctx.params.axis_height * size;
@@ -315,7 +358,7 @@ pub(super) fn layout_array(
     if col_seps != 0 {
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + box_depth;
-        for bx in column_rules(&col_widths, gap_after, outer_pad, total_width, col_seps) {
+        for bx in column_rules(&col_widths, gap_after, left_edge, total_width, col_seps) {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
@@ -501,7 +544,56 @@ pub(super) fn layout_array_arena(
     } else {
         (0.0, None)
     };
-    let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
+    let mut suppressed_gaps = vec![false; n_cols.saturating_sub(1)];
+    let mut suppress_left_edge = false;
+    let mut suppress_right_edge = false;
+    for i in 0..n_rows {
+        let mut logical = 0usize;
+        for slot in 0..nc.min(n_cols) {
+            let idx = i * nc + slot;
+            if idx >= cell_ids_ast.len() || ast.is_span_padding(cell_ids_ast[idx]) {
+                logical += 1;
+                continue;
+            }
+            let span = match *ast.node(cell_ids_ast[idx]) {
+                CompactNode::SpannedCell { span, .. } => {
+                    (span.max(1) as usize).min(n_cols - logical)
+                },
+                _ => 1,
+            };
+            if let CompactNode::SpannedCell {
+                left_padding,
+                right_padding,
+                ..
+            } = *ast.node(cell_ids_ast[idx])
+            {
+                if left_padding {
+                    if logical == 0 {
+                        suppress_left_edge = true;
+                    } else {
+                        suppressed_gaps[logical - 1] = true;
+                    }
+                }
+                if right_padding {
+                    if logical + span >= n_cols {
+                        suppress_right_edge = true;
+                    } else {
+                        suppressed_gaps[logical + span - 1] = true;
+                    }
+                }
+            }
+            logical += span;
+        }
+    }
+    let gap_after = |j| {
+        if suppressed_gaps.get(j).copied().unwrap_or(false) {
+            0.0
+        } else {
+            uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size))
+        }
+    };
+    let left_edge = if suppress_left_edge { 0.0 } else { edge_pad };
+    let right_edge = if suppress_right_edge { 0.0 } else { edge_pad };
 
     for i in 0..n_rows {
         let mut j = 0;
@@ -530,7 +622,7 @@ pub(super) fn layout_array_arena(
 
     for i in 0..n_rows {
         cursor_y += row_heights[i];
-        let mut cursor_x = edge_pad;
+        let mut cursor_x = left_edge;
 
         let mut j = 0;
         while j < nc.min(n_cols) {
@@ -592,7 +684,7 @@ pub(super) fn layout_array_arena(
     }
 
     let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
-    let total_width: f64 = edge_pad + col_widths.iter().sum::<f64>() + total_gap + edge_pad;
+    let total_width: f64 = left_edge + col_widths.iter().sum::<f64>() + total_gap + right_edge;
 
     // Add vertical separator rules if col_seps is non-zero
     if col_seps != 0 {
@@ -600,7 +692,7 @@ pub(super) fn layout_array_arena(
         let rule_total_h = box_height + (half - axis);
         let box_depth = half - axis;
 
-        for bx in column_rules(&col_widths, gap_after, edge_pad, total_width, col_seps) {
+        for bx in column_rules(&col_widths, gap_after, left_edge, total_width, col_seps) {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
