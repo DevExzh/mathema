@@ -81,6 +81,29 @@ fn compact_smallmatrix_uses_script_quad_and_exterior_thin_spaces() {
     );
 }
 
+#[test]
+fn compact_smallmatrix_zero_width_advances_follow_mathmu_and_textem() {
+    let one = compact_latex_to_svg(r"\begin{smallmatrix}\kern0pt\end{smallmatrix}");
+    let two = compact_latex_to_svg(r"\begin{smallmatrix}\kern0pt&\kern0pt\end{smallmatrix}");
+    let sup_one = compact_latex_to_svg(r"x^{\begin{smallmatrix}\kern0pt\end{smallmatrix}}");
+    let sup_two =
+        compact_latex_to_svg(r"x^{\begin{smallmatrix}\kern0pt&\kern0pt\end{smallmatrix}}");
+    let sub_one = compact_latex_to_svg(r"x_{\begin{smallmatrix}\kern0pt\end{smallmatrix}}");
+    let sub_two =
+        compact_latex_to_svg(r"x_{\begin{smallmatrix}\kern0pt&\kern0pt\end{smallmatrix}}");
+
+    let one_width = viewbox_values(&one)[2] - 2.56;
+    let two_width = viewbox_values(&two)[2] - 2.56;
+    assert!((one_width - 5.333).abs() < 0.02, "{one}");
+    assert!((two_width - 9.778).abs() < 0.02, "{two}");
+    for (single, double) in [(sup_one, sup_two), (sub_one, sub_two)] {
+        assert!(
+            (viewbox_values(&double)[2] - viewbox_values(&single)[2] - 4.444).abs() < 0.02,
+            "nested smallmatrix advance drifted"
+        );
+    }
+}
+
 /// The legacy heap layout engine and the production arena engine must render
 /// every corpus formula to **byte-identical** SVG. This is the precondition for
 /// retiring the legacy engine: since the two now agree everywhere,
