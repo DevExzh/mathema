@@ -520,7 +520,22 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
                 }
             }
         },
-        MathNode::AlignedCell { content, .. } => normalize_node_depth(content, d),
+        MathNode::AlignedCell { content, .. } => {
+            // Keep the token boundaries inside an authored cell. MathML's
+            // `<mi>LONG</mi>` arrives as one multi-letter identifier and is
+            // upright, while a native TeX group `{LONG}` arrives as four
+            // identifier atoms and is italic. The ordinary row normalizer
+            // merges those atoms and loses that distinction before the cell
+            // writer can choose the faithful spelling.
+            match content.as_mut() {
+                MathNode::Row(children) => {
+                    for child in children {
+                        normalize_node_depth(child, d);
+                    }
+                },
+                node => normalize_node_depth(node, d),
+            }
+        },
 
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
@@ -1008,7 +1023,19 @@ fn normalize_compact_node(
                 *c = new_cells_span;
             }
         },
-        CompactNode::AlignedCell { content, .. } => normalize_compact_node(arena, content, d)?,
+        CompactNode::AlignedCell { content, .. } => {
+            // Preserve separate TeX identifier atoms within the cell. A
+            // multi-letter MathML `<mi>` is represented by one Identifier and
+            // must remain distinguishable from native TeX `L O N G` atoms.
+            if let CompactNode::Row(span) = *arena.node(content) {
+                let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
+                for child in children {
+                    normalize_compact_node(arena, child, d)?;
+                }
+            } else {
+                normalize_compact_node(arena, content, d)?;
+            }
+        },
 
         CompactNode::Phantom(inner, _)
         | CompactNode::Boxed { content: inner, .. }
