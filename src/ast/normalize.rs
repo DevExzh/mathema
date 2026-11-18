@@ -513,7 +513,9 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
             normalize_node_depth(base, d);
         },
 
-        MathNode::Array { rows, .. } | MathNode::Matrix { rows, .. } => {
+        MathNode::Array { rows, .. }
+        | MathNode::Matrix { rows, .. }
+        | MathNode::NativeArray { rows, .. } => {
             for row in rows.iter_mut() {
                 for cell in row.iter_mut() {
                     normalize_nodes_depth(cell, d);

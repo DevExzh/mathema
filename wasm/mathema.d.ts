@@ -57,6 +57,17 @@ export type MathNode =
       };
     }
   | { AlignedCell: { alignment: ColumnAlign; content: MathNode } }
+  | {
+      NativeArray: {
+        columns: ColumnAlign[];
+        rows: MathNode[][][];
+        arraystretch: number | undefined;
+        add_jot: boolean;
+        array_style: boolean;
+        col_seps: number;
+        row_seps: number;
+      };
+    }
   | { Phantom: [MathNode, PhantomKind] }
   | { Reflect: { content: MathNode; text_mode: boolean } }
   | { Rule: { width: Rational; height: Rational; lift: Rational } }

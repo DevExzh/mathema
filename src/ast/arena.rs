@@ -7,6 +7,7 @@ use super::{ColumnAlign, MatrixKind, SpaceBasis};
 enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(MatrixKind),
+    NativeArray,
     MatrixPadding,
 }
 
@@ -342,6 +343,19 @@ impl AstArena {
             },
             _ => None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn mark_native_array(&mut self, id: NodeId) {
+        if !self.size_overflow {
+            self.provenance.insert(id, Provenance::NativeArray);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_native_array(&self, id: NodeId) -> bool {
+        matches!(self.provenance.get(id), Some(Provenance::NativeArray))
+            && matches!(self.node(id), CompactNode::Array { .. })
     }
 
     /// Return matrix provenance only when the current compact array still has

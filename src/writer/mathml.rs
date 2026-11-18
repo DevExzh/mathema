@@ -662,7 +662,7 @@ fn write_node_in(
             Ok(())
         },
 
-        MathNode::Array { .. } | MathNode::Matrix { .. } => {
+        MathNode::Array { .. } | MathNode::Matrix { .. } | MathNode::NativeArray { .. } => {
             let (columns, rows, arraystretch, add_jot, kind) = match node {
                 MathNode::Array {
                     columns,
@@ -686,6 +686,19 @@ fn write_node_in(
                     None,
                     false,
                     Some(*kind),
+                ),
+                MathNode::NativeArray {
+                    columns,
+                    rows,
+                    arraystretch,
+                    add_jot,
+                    ..
+                } => (
+                    Cow::Borrowed(columns.as_slice()),
+                    rows,
+                    *arraystretch,
+                    *add_jot,
+                    None,
                 ),
                 _ => unreachable!(),
             };

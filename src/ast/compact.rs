@@ -699,6 +699,26 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             arraystretch,
             add_jot,
         } => push_array_node(arena, columns, rows, *arraystretch, *add_jot, None),
+        MathNode::NativeArray {
+            columns,
+            rows,
+            arraystretch,
+            add_jot,
+            array_style,
+            col_seps,
+            row_seps,
+        } => push_array_node_with_geometry(
+            arena,
+            columns,
+            rows,
+            *arraystretch,
+            *add_jot,
+            *array_style,
+            *col_seps,
+            *row_seps,
+            None,
+            true,
+        ),
         MathNode::Matrix {
             kind,
             alignment,
@@ -838,6 +858,33 @@ fn push_array_node(
     add_jot: bool,
     environment: Option<MatrixKind>,
 ) -> NodeId {
+    push_array_node_with_geometry(
+        arena,
+        columns,
+        rows,
+        arraystretch,
+        add_jot,
+        false,
+        0,
+        0,
+        environment,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_array_node_with_geometry(
+    arena: &mut AstArena,
+    columns: &[ColumnAlign],
+    rows: &[Vec<Vec<MathNode>>],
+    arraystretch: Option<f64>,
+    add_jot: bool,
+    array_style: bool,
+    col_seps: u32,
+    row_seps: u32,
+    environment: Option<MatrixKind>,
+    native_array: bool,
+) -> NodeId {
     let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
     let Some(num_cols) = arena.array_stride_deferred(rows.len(), columns.len().max(widest)) else {
         return arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
@@ -886,12 +933,15 @@ fn push_array_node(
         num_cols,
         arraystretch_pct,
         add_jot,
-        array_style: false,
-        col_seps: 0,
-        row_seps: 0,
+        array_style,
+        col_seps,
+        row_seps,
     });
     if let Some(environment) = environment {
         arena.mark_array_environment(id, environment);
+    }
+    if native_array {
+        arena.mark_native_array(id);
     }
     id
 }
@@ -1058,6 +1108,9 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             // Reconstruct rows from flat cells
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
+            let has_aligned_cell = cell_ids
+                .iter()
+                .any(|&cell| matches!(*arena.node(cell), CompactNode::AlignedCell { .. }));
             let mut rows = Vec::new();
             for chunk in cell_ids.chunks(nc.max(1)) {
                 let mut row = Vec::with_capacity(chunk.len());
@@ -1095,6 +1148,21 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                     kind,
                     alignment,
                     rows,
+                },
+                None if arena.is_native_array(id)
+                    || (has_aligned_cell && array_style)
+                    || col_seps != 0
+                    || row_seps != 0 =>
+                {
+                    MathNode::NativeArray {
+                        columns,
+                        rows,
+                        arraystretch,
+                        add_jot,
+                        array_style,
+                        col_seps,
+                        row_seps,
+                    }
                 },
                 None => MathNode::Array {
                     columns,
@@ -1319,6 +1387,21 @@ mod tests {
     }
 
     #[test]
+    fn native_array_geometry_survives_public_compact_boundary() {
+        let expr = MathExpr::inline(vec![MathNode::NativeArray {
+            columns: vec![ColumnAlign::Left],
+            rows: vec![vec![vec![MathNode::Identifier("x".into())]]],
+            arraystretch: None,
+            add_jot: false,
+            array_style: true,
+            col_seps: 0,
+            row_seps: 0,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        assert_eq!(compact.to_math_expr(), expr);
+    }
+
+    #[test]
     fn normalized_cell_keeps_alignment_and_content_metadata() {
         use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
         use crate::reader::{Reader, latex::LatexReader};
@@ -1332,8 +1415,11 @@ mod tests {
             normalize_compact_expr(&mut compact).unwrap();
             normalize_expr(&mut heap);
             assert_eq!(compact.to_math_expr(), heap);
-            let MathNode::Array { rows, .. } = &heap.nodes[0] else {
-                panic!("expected array")
+            let rows = match &heap.nodes[0] {
+                MathNode::Array { rows, .. } | MathNode::NativeArray { rows, .. } => rows,
+                _ => {
+                    panic!("expected array")
+                },
             };
             let [
                 MathNode::AlignedCell {

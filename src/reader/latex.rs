@@ -326,6 +326,91 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "render")]
+    fn heap_native_array_keeps_padding_for_whole_cell_overrides() {
+        let config = Config::default();
+        for (source, expected_width, expected_x) in [
+            (
+                r"\begin{array}{l}a\\\multicolumn{1}{r}{\hskip1pt}\end{array}",
+                "27.024",
+                "8",
+            ),
+            (
+                r"\begin{array}{l}a\\\multicolumn{1}{r}{\begin{matrix}x\end{matrix}}\end{array}",
+                "27.712",
+                "8",
+            ),
+        ] {
+            let heap = LatexReader::parse(source, &config).unwrap().expr;
+            assert!(matches!(
+                heap.nodes.as_slice(),
+                [MathNode::NativeArray {
+                    array_style: true,
+                    ..
+                }]
+            ));
+            let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            let projected = compact.to_math_expr();
+            assert_eq!(heap, projected, "heap projection changed {source}");
+            let heap_svg =
+                crate::render::render_to_svg(&heap, &crate::render::RenderOptions::default())
+                    .unwrap();
+            assert!(
+                heap_svg.contains(&format!(r#"width="{expected_width}""#)),
+                "unexpected heap width for {source}: {heap_svg}"
+            );
+            assert!(
+                heap_svg.contains(&format!(r#"x="{expected_x}""#)),
+                "unexpected heap cell position for {source}: {heap_svg}"
+            );
+            assert_eq!(
+                heap_svg,
+                crate::render::render_to_svg_compact(
+                    &compact,
+                    &crate::render::RenderOptions::default(),
+                )
+                .unwrap(),
+                "heap and compact geometry diverged for {source}"
+            );
+            assert_eq!(
+                LatexWriter::write(&heap, &config).unwrap(),
+                LatexWriter::write_compact(&compact, &config).unwrap(),
+                "heap and compact LaTeX diverged for {source}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "render")]
+    fn heap_native_array_keeps_native_rule_masks() {
+        let config = Config::default();
+        let source = r"\begin{array}{|l|}\hline a\\\hline b\\\hline\end{array}";
+        let heap = LatexReader::parse(source, &config).unwrap().expr;
+        assert!(matches!(
+            heap.nodes.as_slice(),
+            [MathNode::NativeArray {
+                col_seps,
+                row_seps,
+                ..
+            }] if *col_seps != 0 && *row_seps != 0
+        ));
+        let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+        let heap_latex = LatexWriter::write(&heap, &config).unwrap();
+        let compact_latex = LatexWriter::write_compact(&compact, &config).unwrap();
+        assert!(heap_latex.contains(r"\begin{array}{|l|}"), "{heap_latex}");
+        assert!(heap_latex.contains(r"\hline"), "{heap_latex}");
+        assert_eq!(heap_latex, compact_latex);
+        assert_eq!(
+            crate::render::render_to_svg(&heap, &crate::render::RenderOptions::default()).unwrap(),
+            crate::render::render_to_svg_compact(
+                &compact,
+                &crate::render::RenderOptions::default(),
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
     fn contradictory_compact_matrix_metadata_falls_back_to_array_writing() {
         let config = Config::default();
         let mut compact =

@@ -62,12 +62,17 @@ fn smallmatrix_horizontal_spacing(style: MathStyle, scale: f64) -> (f64, f64) {
     )
 }
 
+#[allow(clippy::needless_range_loop)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn layout_array(
     smallmatrix: bool,
     columns: &[ColumnAlign],
     rows: &[Vec<Vec<MathNode>>],
     arraystretch_opt: Option<f64>,
     add_jot: bool,
+    array_style: bool,
+    col_seps: u32,
+    row_seps: u32,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
@@ -125,14 +130,23 @@ pub(super) fn layout_array(
     // Position cells — consume cell_layouts by ownership to avoid cloning
     let mut children = Vec::new();
     let mut cursor_y = 0.0;
+    let mut row_boundary_y = Vec::with_capacity(n_rows + 1);
     let small_spacing =
         smallmatrix.then(|| smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale));
-    let outer_pad = small_spacing.map_or(0.0, |(edge, _)| edge);
-    let gap_after =
-        |j| small_spacing.map_or_else(|| col_gap_after(j, aligned, size), |(_, gap)| gap);
+    let colsep = ARRAY_COLSEP_EM * size;
+    let (outer_pad, uniform_gap) = if smallmatrix {
+        let (edge, gap) = small_spacing.expect("smallmatrix spacing");
+        (edge, Some(gap))
+    } else if array_style {
+        (colsep, Some(2.0 * colsep))
+    } else {
+        (0.0, None)
+    };
+    let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
 
     // Start from top
     for (i, row) in cell_layouts.into_iter().enumerate() {
+        row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
         let mut cursor_x = outer_pad;
         let mut row_iter = row.into_iter();
@@ -158,6 +172,7 @@ pub(super) fn layout_array(
 
         cursor_y += row_depths[i];
     }
+    row_boundary_y.push(cursor_y);
 
     let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
     let total_width: f64 = outer_pad * 2.0 + col_widths.iter().sum::<f64>() + total_gap;
@@ -166,6 +181,11 @@ pub(super) fn layout_array(
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
     let box_height = half + axis;
+    let box_depth = if smallmatrix {
+        (half - axis).max(0.0)
+    } else {
+        half - axis
+    };
 
     // Convert top-down cursor_y positions to VBox dy coordinates
     // (positive dy = up from baseline).
@@ -173,14 +193,74 @@ pub(super) fn layout_array(
         child.dy = box_height - child.dy;
     }
 
+    if col_seps != 0 {
+        let rule_w = 0.04 * size;
+        let rule_total_h = box_height + box_depth;
+        let mut boundary_x = Vec::with_capacity(n_cols + 1);
+        let mut x_acc = outer_pad;
+        for j in 0..n_cols {
+            boundary_x.push(x_acc);
+            x_acc += col_widths[j];
+            if j < n_cols - 1 {
+                x_acc += gap_after(j);
+            }
+        }
+        boundary_x.push(x_acc);
+        for pos in 0..=n_cols {
+            if pos >= 32 || (col_seps >> pos) & 1 == 0 {
+                continue;
+            }
+            let bx = if pos == 0 {
+                0.0
+            } else if pos == n_cols {
+                total_width
+            } else {
+                boundary_x[pos] - gap_after(pos - 1) / 2.0
+            };
+            let path = format!(
+                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                rule_w, rule_w, rule_total_h, rule_total_h
+            );
+            children.push(PositionedBox::new(
+                bx - rule_w / 2.0,
+                0.0,
+                LayoutBox {
+                    width: rule_w,
+                    height: box_height,
+                    depth: box_depth,
+                    kind: BoxKind::SvgPath(path),
+                },
+            ));
+        }
+    }
+
+    if row_seps != 0 {
+        let rule_t = 0.04 * size;
+        for (pos, &boundary) in row_boundary_y.iter().enumerate() {
+            if pos >= 32 || (row_seps >> pos) & 1 == 0 {
+                continue;
+            }
+            let path = format!(
+                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                total_width, total_width, rule_t, rule_t
+            );
+            children.push(PositionedBox::new(
+                0.0,
+                box_height - boundary - rule_t / 2.0,
+                LayoutBox {
+                    width: total_width,
+                    height: rule_t,
+                    depth: 0.0,
+                    kind: BoxKind::SvgPath(path),
+                },
+            ));
+        }
+    }
+
     LayoutBox {
         width: total_width,
         height: box_height,
-        depth: if smallmatrix {
-            (half - axis).max(0.0)
-        } else {
-            half - axis
-        },
+        depth: box_depth,
         kind: BoxKind::VBox { children },
     }
 }

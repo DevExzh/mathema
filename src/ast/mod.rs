@@ -383,6 +383,29 @@ pub enum MathNode {
         /// Cell content.
         content: Box<MathNode>,
     },
+    /// A native LaTeX array retaining layout metadata that the historical
+    /// [`MathNode::Array`] shape cannot represent.
+    ///
+    /// Readers use this additive variant when a parsed array carries a
+    /// whole-cell alignment override or native rule geometry. Existing
+    /// user-constructed [`MathNode::Array`] values keep their original shape
+    /// and default layout semantics.
+    NativeArray {
+        /// Per-column horizontal alignments.
+        columns: Vec<ColumnAlign>,
+        /// Rows of cells, where each cell is a sequence of nodes.
+        rows: Vec<Vec<Vec<MathNode>>>,
+        /// Optional `\arraystretch` row-height multiplier.
+        arraystretch: Option<f64>,
+        /// Whether to add `\jot` extra vertical spacing between rows.
+        add_jot: bool,
+        /// Whether native array edge padding and intercolumn glue apply.
+        array_style: bool,
+        /// Vertical rule positions from the native column preamble.
+        col_seps: u32,
+        /// Horizontal rule positions from native `\hline` commands.
+        row_seps: u32,
+    },
 }
 
 /// TeX math class of a symbol, controlling spacing and stretchiness.
@@ -916,7 +939,9 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             check_node_depth(body, d)
         },
         MathNode::Accent { base, .. } => check_node_depth(base, d),
-        MathNode::Array { rows, .. } | MathNode::Matrix { rows, .. } => {
+        MathNode::Array { rows, .. }
+        | MathNode::Matrix { rows, .. }
+        | MathNode::NativeArray { rows, .. } => {
             for row in rows {
                 for cell in row {
                     for n in cell {
@@ -1136,12 +1161,21 @@ mod tests {
                 atom_type: MathAtomType::Op,
                 content: Box::new(MathNode::Identifier("f".into())),
             },
+            MathNode::NativeArray {
+                columns: vec![ColumnAlign::Left],
+                rows: vec![vec![vec![MathNode::Identifier("x".into())]]],
+                arraystretch: None,
+                add_jot: false,
+                array_style: true,
+                col_seps: 0,
+                row_seps: 0,
+            },
             MathNode::StructuredOperator {
                 content: Box::new(MathNode::Identifier("f".into())),
                 form: OperatorNameForm::Starred(LimitStyle::Default),
             },
         ];
-        assert_eq!(nodes.len(), 36);
+        assert_eq!(nodes.len(), 37);
         #[cfg(feature = "serde")]
         for node in nodes {
             let json = serde_json::to_value(&node).unwrap();
