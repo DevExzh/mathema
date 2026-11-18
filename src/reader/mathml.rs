@@ -797,7 +797,9 @@ impl<'a> MathmlCompactParser<'a> {
                 if let Some(variant) = mathvariant
                     && let Some(style) = mathvariant_to_style(&variant)
                     && self.mathvariant_style != Some(style)
-                    && (style != TextStyle::Italic || self.mathvariant_style.is_some())
+                    && (style != TextStyle::Italic
+                        || self.mathvariant_style.is_some()
+                        || text.chars().count() > 1)
                     && !(style == TextStyle::Normal
                         && text.chars().count() > 1
                         && self
