@@ -8,11 +8,7 @@ pub(super) fn layout_fraction(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     // Override context style for \dfrac (Display) and \tfrac (Inline)
-    let override_ctx = match kind {
-        FractionKind::Display => Some(ctx.with_style(MathStyle::Display)),
-        FractionKind::Inline => Some(ctx.with_style(MathStyle::Text)),
-        _ => None,
-    };
+    let override_ctx = kind.forced_style().map(|style| ctx.with_style(style));
     let ctx = override_ctx.as_ref().unwrap_or(ctx);
 
     let p = &ctx.params;
@@ -123,11 +119,7 @@ pub(super) fn layout_fraction_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     // Override context style for \dfrac (Display) and \tfrac (Inline)
-    let override_ctx = match kind {
-        FractionKind::Display => Some(ctx.with_style(MathStyle::Display)),
-        FractionKind::Inline => Some(ctx.with_style(MathStyle::Text)),
-        _ => None,
-    };
+    let override_ctx = kind.forced_style().map(|style| ctx.with_style(style));
     let ctx = override_ctx.as_ref().unwrap_or(ctx);
 
     let p = &ctx.params;

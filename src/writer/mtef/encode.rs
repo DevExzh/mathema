@@ -1562,12 +1562,7 @@ impl<'a> Encoder<'a> {
             (false, _) => (14, 0, size),
         };
         self.template(size, selector, variation);
-        let forced_style = match kind {
-            FractionKind::Display => Some(MathStyle::Display),
-            FractionKind::Inline => Some(MathStyle::Text),
-            _ => None,
-        };
-        let fraction_style = forced_style.unwrap_or(self.math_style);
+        let fraction_style = kind.forced_style().unwrap_or(self.math_style);
         self.with_math_style(fraction_style.fracnum(), |this| {
             this.slot(slot_size, Some(num))
         })?;
@@ -1821,7 +1816,15 @@ impl<'a> Encoder<'a> {
     }
 
     fn fence_content(&mut self, size: Size, content: NodeSpan) -> Result<()> {
-        self.list(content, size)
+        // A middle delimiter ends the local style run in a left/right fence.
+        let arena = self.arena;
+        for segment in arena
+            .children(content)
+            .split_inclusive(|&id| matches!(*arena.node(id), CompactNode::Middle(_)))
+        {
+            self.list_ids(segment, size)?;
+        }
+        Ok(())
     }
 
     /// DiracBoxClass (`tmDIRAC`): left slot, right slot, then the angle

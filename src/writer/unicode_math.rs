@@ -195,14 +195,10 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
 
         MathNode::Fraction { num, den, kind } => {
-            let (num_style, den_style) = match kind {
-                FractionKind::Display => (MathStyle::Display, MathStyle::DisplayCramped),
-                FractionKind::Inline => (MathStyle::Text, MathStyle::TextCramped),
-                _ => (style.fracnum(), style.fracden()),
-            };
-            write_fraction_arg(out, num, num_style);
+            let style = kind.forced_style().unwrap_or(style);
+            write_fraction_arg(out, num, style.fracnum());
             out.push('/');
-            write_fraction_arg(out, den, den_style);
+            write_fraction_arg(out, den, style.fracden());
         },
 
         MathNode::Sqrt(inner) => {
@@ -614,14 +610,10 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Fraction { num, den, kind } => {
-            let (num_style, den_style) = match kind {
-                FractionKind::Display => (MathStyle::Display, MathStyle::DisplayCramped),
-                FractionKind::Inline => (MathStyle::Text, MathStyle::TextCramped),
-                _ => (style.fracnum(), style.fracden()),
-            };
-            write_fraction_arg_c(out, arena, num, num_style);
+            let style = kind.forced_style().unwrap_or(style);
+            write_fraction_arg_c(out, arena, num, style.fracnum());
             out.push('/');
-            write_fraction_arg_c(out, arena, den, den_style);
+            write_fraction_arg_c(out, arena, den, style.fracden());
         },
 
         CompactNode::Sqrt(inner) => {
@@ -1032,8 +1024,8 @@ mod tests {
             (format!(r"x^{{{choice}}}"), "x^S"),
             (format!(r"x_{{y^{{{choice}}}}}"), "x_(y^Q)"),
             (format!(r"\frac{{{choice}}}{{{choice}}}"), "T/T"),
-            (format!(r"\dfrac{{{choice}}}{{{choice}}}"), "D/D"),
-            (format!(r"\tfrac{{{choice}}}{{{choice}}}"), "T/T"),
+            (format!(r"\dfrac{{{choice}}}{{{choice}}}"), "T/T"),
+            (format!(r"\tfrac{{{choice}}}{{{choice}}}"), "S/S"),
             (format!(r"\sqrt[{choice}]{{{choice}}}"), "√(Q&D)"),
         ] {
             assert_eq!(

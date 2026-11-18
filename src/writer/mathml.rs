@@ -103,14 +103,6 @@ fn to_err(e: std::io::Error) -> crate::error::Error {
     crate::error::Error::Io(e)
 }
 
-fn fraction_style(kind: FractionKind) -> Option<MathStyle> {
-    match kind {
-        FractionKind::Display => Some(MathStyle::Display),
-        FractionKind::Inline => Some(MathStyle::Text),
-        _ => None,
-    }
-}
-
 fn math_style_attrs(style: MathStyle) -> (&'static str, &'static str) {
     let depth = match style.size_class() {
         0 => "0",
@@ -507,7 +499,7 @@ fn write_node_in(
         ),
 
         MathNode::Fraction { kind, num, den } => {
-            let forced = fraction_style(*kind);
+            let forced = kind.forced_style();
             if let Some(style) = forced {
                 start_math_style(w, style)?;
             }
@@ -1243,7 +1235,7 @@ fn write_node_fast_in(
         ),
 
         CompactNode::Fraction { kind, num, den } => {
-            let forced = fraction_style(kind);
+            let forced = kind.forced_style();
             if let Some(style) = forced {
                 start_math_style_fast(buf, style);
             }

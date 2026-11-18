@@ -757,11 +757,7 @@ impl<'a> Emitter<'a> {
                 self.close("m:limUpp");
             },
             CompactNode::Fraction { kind, num, den } => {
-                let style = match kind {
-                    FractionKind::Display => MathStyle::Display,
-                    FractionKind::Inline => MathStyle::Text,
-                    _ => self.style,
-                };
+                let style = kind.forced_style().unwrap_or(self.style);
                 self.open("m:f");
                 let ty = match kind {
                     FractionKind::Normal => None,

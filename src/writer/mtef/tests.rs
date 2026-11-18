@@ -653,6 +653,13 @@ fn mathchoice_mtef_uses_the_effective_style() {
             "SD"
         );
     }
+    let fence = r"\left(\scriptstyle\mathchoice{D}{T}{S}{Q}\middle|\mathchoice{D}{T}{S}{Q}\right)";
+    for options in [MtefWriteOptions::default(), v3()] {
+        assert_eq!(
+            mtef_latex(fence, DisplayStyle::Block, options.clone()),
+            mtef_latex(r"\left(S\middle|D\right)", DisplayStyle::Block, options)
+        );
+    }
     for source in [choice, r"x^{\mathchoice{D}{T}{S}{Q}}"] {
         assert_eq!(
             mtef_latex(source, DisplayStyle::Block, MtefWriteOptions::default()),

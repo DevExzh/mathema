@@ -31,6 +31,17 @@ impl From<super::DisplayStyle> for MathStyle {
     }
 }
 
+impl super::FractionKind {
+    /// The style forced by this fraction, before deriving its numerator and denominator styles.
+    pub(crate) fn forced_style(self) -> Option<MathStyle> {
+        match self {
+            Self::Display => Some(MathStyle::Display),
+            Self::Inline => Some(MathStyle::Text),
+            _ => None,
+        }
+    }
+}
+
 impl MathStyle {
     pub(crate) fn from_switch(value: u8) -> Self {
         match value {
