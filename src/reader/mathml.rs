@@ -378,19 +378,16 @@ impl<'a> MathmlCompactParser<'a> {
                 let name = text.trim();
                 // Multi-letter operator tokens and explicitly named operators
                 // are distinct from ordinary identifiers in <mi>.
-                let movable = match get_attr(start, "movablelimits").as_deref() {
-                    Some("true") => Some(true),
-                    Some("false") => Some(false),
-                    _ => None,
-                };
+                let attrs = operator_attributes(start);
+                let movable = attrs.movable_limits;
                 let mut chars = name.chars();
-                let named = get_attr(start, "data-mathema-operator").as_deref() == Some("name")
+                let named = attrs.named_operator
                     || kind == SymbolKind::Ordinary
                         && chars.next().is_some_and(|first| {
                             first.is_alphabetic()
                                 && (movable.is_some()
                                     || !chars.as_str().is_empty() && chars.all(char::is_alphabetic))
-                                || get_attr(start, "data-mjx-texclass").as_deref() == Some("OP")
+                                || attrs.texclass_op
                         });
                 let sid = self.arena.push_str(if named { name } else { &text });
                 let id = if named {
@@ -407,10 +404,12 @@ impl<'a> MathmlCompactParser<'a> {
                 } else {
                     self.arena.push_node(CompactNode::Symbol(kind, sid))
                 };
-                if (named || kind == SymbolKind::LargeOp)
-                    && let Some(value) = movable
-                {
-                    self.movable_limit_operators.insert(id, value);
+                if kind == SymbolKind::LargeOp {
+                    if let Some(value) = movable {
+                        self.movable_limit_operators.insert(id, value);
+                    }
+                } else if named && movable == Some(true) {
+                    self.movable_limit_operators.insert(id, true);
                 }
                 Ok(id)
             },
@@ -449,26 +448,27 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(self.arena.push_node(CompactNode::Space(r)))
             },
             "mrow" => {
-                let mode = get_attr(start, "data-mathema-reflect");
-                let reflected = match get_attr(start, "style") {
+                let attrs = mrow_attributes(start);
+                let reflected = match attrs.style.as_deref() {
                     Some(style) => has_horizontal_reflection(&style),
-                    None => matches!(mode.as_deref(), Some("text" | "math")),
+                    None => matches!(attrs.reflect.as_deref(), Some("text" | "math")),
                 };
                 let (children, sized) = self.read_children(name, reflected)?;
                 if reflected {
                     let content = self.flatten_ids(&children);
-                    let text_mode =
-                        mode.as_deref() == Some("text") || sized || has_explicit_text_size(start);
+                    let text_mode = attrs.reflect.as_deref() == Some("text")
+                        || sized
+                        || attrs.explicit_text_size;
                     Ok(self
                         .arena
                         .push_node(CompactNode::Reflect { content, text_mode }))
-                } else if get_attr(start, "data-mjx-texclass").as_deref() == Some("OP") {
+                } else if attrs.texclass_op {
                     let content = self.flatten_ids(&children);
                     let op = self.arena.push_node(CompactNode::MathAtom {
                         atom_type: MathAtomType::Op,
                         content,
                     });
-                    if get_attr(start, "data-mathema-limits").as_deref() == Some("movable") {
+                    if attrs.movable_limits {
                         self.movable_limit_operators.insert(op, true);
                     }
                     Ok(op)
@@ -1232,6 +1232,89 @@ fn has_horizontal_reflection(style: &str) -> bool {
             });
     }
     reflected
+}
+
+#[derive(Default)]
+struct OperatorAttributes {
+    movable_limits: Option<bool>,
+    named_operator: bool,
+    texclass_op: bool,
+}
+
+/// Read the small attribute subset used by an operator in one pass. Attribute
+/// values still use the same entity resolver as the general path.
+fn operator_attributes(start: &quick_xml::events::BytesStart<'_>) -> OperatorAttributes {
+    let mut result = OperatorAttributes::default();
+    for attr in start.attributes().flatten() {
+        match attr.key.as_ref() {
+            "movablelimits" => {
+                if result.movable_limits.is_none() {
+                    result.movable_limits = match unescape_attr(&attr.value).as_str() {
+                        "true" => Some(true),
+                        "false" => Some(false),
+                        _ => None,
+                    };
+                }
+            },
+            "data-mathema-operator" => {
+                result.named_operator = unescape_attr(&attr.value) == "name";
+            },
+            "data-mjx-texclass" => {
+                result.texclass_op = unescape_attr(&attr.value) == "OP";
+            },
+            _ => {},
+        }
+    }
+    result
+}
+
+#[derive(Default)]
+struct MrowAttributes {
+    reflect: Option<String>,
+    style: Option<String>,
+    texclass_op: bool,
+    movable_limits: bool,
+    explicit_text_size: bool,
+}
+
+/// Read presentation attributes needed by an mrow in one pass. Unknown
+/// attributes remain ignored as before, while known values retain entity
+/// decoding and the existing case-sensitive comparisons.
+fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes {
+    let mut result = MrowAttributes::default();
+    let mut display = None;
+    let mut scriptlevel = None;
+    for attr in start.attributes().flatten() {
+        match attr.key.as_ref() {
+            "data-mathema-reflect" if result.reflect.is_none() => {
+                result.reflect = Some(unescape_attr(&attr.value));
+            },
+            "style" if result.style.is_none() => {
+                result.style = Some(unescape_attr(&attr.value));
+            },
+            "data-mjx-texclass" => {
+                result.texclass_op = unescape_attr(&attr.value) == "OP";
+            },
+            "data-mathema-limits" => {
+                result.movable_limits = unescape_attr(&attr.value) == "movable";
+            },
+            "displaystyle" if display.is_none() => {
+                display = Some(unescape_attr(&attr.value));
+            },
+            "scriptlevel" if scriptlevel.is_none() => {
+                scriptlevel = Some(unescape_attr(&attr.value));
+            },
+            _ => {},
+        }
+    }
+    result.explicit_text_size = display
+        .as_deref()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("false"))
+        && scriptlevel.as_deref().is_some_and(|value| {
+            let value = value.trim();
+            !value.is_empty() && value.bytes().all(|byte| byte == b'0')
+        });
+    result
 }
 
 fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> {
