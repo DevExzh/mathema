@@ -2499,7 +2499,8 @@ fn structured_operatorname_body_uses_upright_face_without_flattening_styles() {
     let mixed = crate::from_latex(r"\operatorname{\mathbf{Re}\overline{x}}").unwrap();
     let mixed_mathml = mixed.to_mathml().unwrap();
     assert!(mixed_mathml.contains(r#"<mi mathvariant="normal">x</mi>"#));
-    assert!(mixed_mathml.contains(r#"<mstyle mathvariant="bold">"#));
+    assert!(mixed_mathml.contains(r#"mathvariant="bold""#));
+    assert!(mixed_mathml.contains(r#"font-weight:700"#));
     assert!(mixed.to_latex().unwrap().contains(r"\mathbf{Re}"));
 
     let explicit = crate::from_latex(r"\operatorname{\mathrm{rate}}").unwrap();
