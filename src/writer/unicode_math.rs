@@ -1778,9 +1778,10 @@ fn compact_spacing_flags(arena: &AstArena, id: NodeId, style: MathStyle) -> (boo
         | CompactNode::Underscript { .. }
         | CompactNode::Overscript { .. }
         | CompactNode::UnderOver { .. } => (false, true),
-        CompactNode::Color { content, .. }
-        | CompactNode::MathAtom { content, .. }
-        | CompactNode::StructuredOperator { content, .. } => {
+        CompactNode::Color { content, .. } => {
+            (false, compact_spacing_flags(arena, content, style).1)
+        },
+        CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
             compact_spacing_flags(arena, content, style)
         },
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
