@@ -131,7 +131,6 @@ pub(super) fn layout_array(
 
     // Layout all cells
     let mut cell_layouts: Vec<Vec<LayoutBox>> = Vec::new();
-    let mut cell_spans: Vec<Vec<usize>> = Vec::new();
     let cell_ctx = if smallmatrix {
         ctx.with_style(MathStyle::Script)
     } else {
@@ -139,22 +138,22 @@ pub(super) fn layout_array(
     };
     for row in rows {
         let mut row_layouts = Vec::new();
-        let mut row_spans = Vec::new();
         for cell in row {
             row_layouts.push(layout_row(crate::ast::table_cell_parts(cell).1, &cell_ctx));
-            row_spans.push(match cell.first() {
-                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
-                _ => 1,
-            });
         }
         cell_layouts.push(row_layouts);
-        cell_spans.push(row_spans);
     }
 
     let n_cols = columns.len().max(
-        cell_spans
-            .iter()
-            .map(|row| row.iter().sum())
+        rows.iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| match cell.first() {
+                        Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
+                        _ => 1,
+                    })
+                    .sum()
+            })
             .max()
             .unwrap_or(0),
     );
@@ -168,17 +167,13 @@ pub(super) fn layout_array(
     for (i, row) in cell_layouts.iter().enumerate() {
         let mut j = 0;
         for (cell_index, cell) in row.iter().enumerate() {
-            let span = cell_spans[i][cell_index].min(n_cols.saturating_sub(j).max(1));
+            let span = match rows[i][cell_index].first() {
+                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
+                _ => 1,
+            }
+            .min(n_cols.saturating_sub(j).max(1));
             if span == 1 {
                 col_widths[j] = col_widths[j].max(cell.width);
-            } else {
-                let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
-                    + (j..j.saturating_add(span).saturating_sub(1))
-                        .map(|k| col_gap_after(k, aligned, size))
-                        .sum::<f64>();
-                if cell.width > current {
-                    col_widths[j + span - 1] += cell.width - current;
-                }
             }
             row_heights[i] = row_heights[i].max(cell.height);
             row_depths[i] = row_depths[i].max(cell.depth);
@@ -199,6 +194,7 @@ pub(super) fn layout_array(
 
     // Position cells — consume cell_layouts by ownership to avoid cloning
     let mut children = Vec::new();
+    let mut cell_rules = Vec::new();
     let mut cursor_y = 0.0;
     let colsep = ARRAY_COLSEP_EM * size;
     let (outer_pad, uniform_gap) = if smallmatrix {
@@ -210,6 +206,30 @@ pub(super) fn layout_array(
         (0.0, None)
     };
     let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
+
+    // Ordinary cells establish all column minima first. A spanning cell then
+    // receives the remaining width across its logical columns, using the same
+    // effective gap as the positioning pass.
+    for (i, row) in cell_layouts.iter().enumerate() {
+        let mut j = 0;
+        for (cell_index, cell) in row.iter().enumerate() {
+            let span = match rows[i][cell_index].first() {
+                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
+                _ => 1,
+            }
+            .min(n_cols.saturating_sub(j).max(1));
+            if span > 1 {
+                let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
+                    + (j..j.saturating_add(span).saturating_sub(1))
+                        .map(&gap_after)
+                        .sum::<f64>();
+                if cell.width > current {
+                    col_widths[j + span - 1] += cell.width - current;
+                }
+            }
+            j += span;
+        }
+    }
 
     // Start from top
     for (i, row) in cell_layouts.into_iter().enumerate() {
@@ -229,7 +249,11 @@ pub(super) fn layout_array(
                 continue;
             };
             let cell_index = row_len.saturating_sub(row_iter.len()).saturating_sub(1);
-            let span = cell_spans[i][cell_index].min(n_cols.saturating_sub(j).max(1));
+            let span = match rows[i][cell_index].first() {
+                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
+                _ => 1,
+            }
+            .min(n_cols.saturating_sub(j).max(1));
             let merged_width = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
                 + (j..j.saturating_add(span).saturating_sub(1))
                     .map(&gap_after)
@@ -244,6 +268,19 @@ pub(super) fn layout_array(
                     ColumnAlign::Center => (merged_width - cell.width) / 2.0,
                     ColumnAlign::Right => merged_width - cell.width,
                 };
+                if let Some(MathNode::SpannedCell {
+                    left_rule,
+                    right_rule,
+                    ..
+                }) = rows[i][cell_index].first()
+                {
+                    if *left_rule {
+                        cell_rules.push(cursor_x);
+                    }
+                    if *right_rule {
+                        cell_rules.push(cursor_x + merged_width);
+                    }
+                }
                 children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
             }
             cursor_x += merged_width;
@@ -279,6 +316,27 @@ pub(super) fn layout_array(
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + box_depth;
         for bx in column_rules(&col_widths, gap_after, outer_pad, total_width, col_seps) {
+            let path = format!(
+                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                rule_w, rule_w, rule_total_h, rule_total_h
+            );
+            children.push(PositionedBox::new(
+                bx - rule_w / 2.0,
+                0.0,
+                LayoutBox {
+                    width: rule_w,
+                    height: box_height,
+                    depth: box_depth,
+                    kind: BoxKind::SvgPath(path),
+                },
+            ));
+        }
+    }
+
+    if !cell_rules.is_empty() {
+        let rule_w = 0.04 * size;
+        let rule_total_h = box_height + box_depth;
+        for bx in cell_rules {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
@@ -392,18 +450,11 @@ pub(super) fn layout_array_arena(
             let idx = i * nc + j;
             if idx < cell_layout_ids.len() {
                 let b = arena.get(cell_layout_ids[idx]);
-                match *ast.node(cell_ids_ast[idx]) {
-                    CompactNode::SpannedCell { span, .. } => {
-                        let span = (span.max(1) as usize).min(n_cols - j);
-                        let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
-                            + (j..j.saturating_add(span).saturating_sub(1))
-                                .map(|k| col_gap_after(k, aligned, size))
-                                .sum::<f64>();
-                        if b.width > current {
-                            col_widths[j + span - 1] += b.width - current;
-                        }
-                    },
-                    _ => col_widths[j] = col_widths[j].max(b.width),
+                if !matches!(
+                    *ast.node(cell_ids_ast[idx]),
+                    CompactNode::SpannedCell { .. }
+                ) {
+                    col_widths[j] = col_widths[j].max(b.width);
                 }
                 row_heights[i] = row_heights[i].max(b.height);
                 row_depths[i] = row_depths[i].max(b.depth);
@@ -436,6 +487,7 @@ pub(super) fn layout_array_arena(
 
     // Position cells
     let children_start = arena.begin_children();
+    let mut cell_rules = Vec::new();
     let mut cursor_y = 0.0;
 
     // `array`-style tables pad outer edges with
@@ -450,6 +502,31 @@ pub(super) fn layout_array_arena(
         (0.0, None)
     };
     let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
+
+    for i in 0..n_rows {
+        let mut j = 0;
+        while j < nc.min(n_cols) {
+            let idx = i * nc + j;
+            if idx >= cell_layout_ids.len() {
+                break;
+            }
+            let span = match *ast.node(cell_ids_ast[idx]) {
+                CompactNode::SpannedCell { span, .. } => (span.max(1) as usize).min(n_cols - j),
+                _ => 1,
+            };
+            if span > 1 {
+                let width = arena.get(cell_layout_ids[idx]).width;
+                let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
+                    + (j..j.saturating_add(span).saturating_sub(1))
+                        .map(&gap_after)
+                        .sum::<f64>();
+                if width > current {
+                    col_widths[j + span - 1] += width - current;
+                }
+            }
+            j += span;
+        }
+    }
 
     for i in 0..n_rows {
         cursor_y += row_heights[i];
@@ -482,6 +559,19 @@ pub(super) fn layout_array_arena(
                     ColumnAlign::Center => (merged_width - cell_w) / 2.0,
                     ColumnAlign::Right => merged_width - cell_w,
                 };
+                if let CompactNode::SpannedCell {
+                    left_rule,
+                    right_rule,
+                    ..
+                } = *ast.node(cell_ids_ast[idx])
+                {
+                    if left_rule {
+                        cell_rules.push(cursor_x);
+                    }
+                    if right_rule {
+                        cell_rules.push(cursor_x + merged_width);
+                    }
+                }
                 arena.push_child(ArenaPositionedBox {
                     dx: cursor_x + dx,
                     dy: box_height - cursor_y,
@@ -511,6 +601,29 @@ pub(super) fn layout_array_arena(
         let box_depth = half - axis;
 
         for bx in column_rules(&col_widths, gap_after, edge_pad, total_width, col_seps) {
+            let path = format!(
+                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                rule_w, rule_w, rule_total_h, rule_total_h
+            );
+            let rule_id = arena.alloc(ArenaLayoutBox {
+                width: rule_w,
+                height: box_height,
+                depth: box_depth,
+                kind: ArenaBoxKind::SvgPath(path),
+            });
+            arena.push_child(ArenaPositionedBox {
+                dx: bx - rule_w / 2.0,
+                dy: 0.0,
+                id: rule_id,
+            });
+        }
+    }
+
+    if !cell_rules.is_empty() {
+        let rule_w = 0.04 * size;
+        let rule_total_h = box_height + (half - axis);
+        let box_depth = half - axis;
+        for bx in cell_rules {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h

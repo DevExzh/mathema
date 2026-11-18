@@ -2304,7 +2304,27 @@ impl LatexCompactParser {
         array_style: bool,
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        self.build_array_with_spacing(columns, rows, 100, false, col_seps, row_seps, array_style)
+        let needs_native = col_seps != 0
+            || row_seps != 0
+            || rows.iter().flatten().any(|cell| {
+                matches!(
+                    cell.first().map(|id| self.arena.node(*id)),
+                    Some(CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. })
+                )
+            });
+        let id = self.build_array_with_spacing(
+            columns,
+            rows,
+            100,
+            false,
+            col_seps,
+            row_seps,
+            array_style,
+        );
+        if needs_native {
+            self.arena.mark_native_array(id);
+        }
+        id
     }
 
     /// Record a table environment that overrides the default text style of its cells.

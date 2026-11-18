@@ -1429,13 +1429,13 @@ impl<'a> MathmlCompactParser<'a> {
         let start = table.cells.len();
         loop {
             let index = table.cells.len() - start;
-            if index >= max_columns {
-                return Err(table_length_error());
-            }
             let event = self.reader.read_event();
             let empty = matches!(event, Ok(Event::Empty(_)));
             let (children, own_alignment, cell_span, left_rule, right_rule) = match event {
                 Ok(Event::Start(e) | Event::Empty(e)) => {
+                    if index >= max_columns {
+                        return Err(table_length_error());
+                    }
                     let name = Self::local_name(&e);
                     if name == "mtd" {
                         let children = if empty {
