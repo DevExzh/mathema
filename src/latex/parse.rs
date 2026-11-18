@@ -1676,44 +1676,25 @@ impl LatexCompactParser {
         }
     }
 
-    /// Flatten rows produced by a scoped declaration when they contain an
-    /// infix marker. Ordinary grouping rows remain intact.
+    /// A font declaration can produce multiple styled spans separated by an
+    /// infix marker. Real groups resolve their own fractions before returning,
+    /// so only the immediate row needs to be spliced into its enclosing list.
     fn flatten_infix_marker_rows(&self, ids: SmallVec<[NodeId; 8]>) -> SmallVec<[NodeId; 8]> {
-        let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+        if !self.infix_marker_seen {
+            return ids;
+        }
+        let mut result = SmallVec::new();
         for id in ids {
-            let CompactNode::Row(span) = *self.arena.node(id) else {
-                out.push(id);
-                continue;
-            };
-            let children = self.arena.children(span);
-            if children
-                .iter()
-                .copied()
-                .any(|child| self.contains_infix_marker(child))
-            {
-                for &child in children {
-                    out.push(child);
+            if let CompactNode::Row(span) = *self.arena.node(id) {
+                let children = self.arena.children(span);
+                if children.iter().any(|&child| self.is_infix_marker_id(child)) {
+                    result.extend_from_slice(children);
+                    continue;
                 }
-            } else {
-                out.push(id);
             }
+            result.push(id);
         }
-        out
-    }
-
-    fn contains_infix_marker(&self, id: NodeId) -> bool {
-        if self.is_infix_marker_id(id) {
-            return true;
-        }
-        match *self.arena.node(id) {
-            CompactNode::Row(span) | CompactNode::Styled(_, span) => self
-                .arena
-                .children(span)
-                .iter()
-                .copied()
-                .any(|child| self.contains_infix_marker(child)),
-            _ => false,
-        }
+        result
     }
 
     /// Resolve a top-level/group infix fraction operator into the corresponding node.
@@ -2917,11 +2898,7 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         let (input, _) = char('}')(input)?;
 
-        // Check for infix fraction markers within the parsed nodes
-        if let Some(result) = self.check_infix_fraction(&ids) {
-            return Ok((input, result));
-        }
-
+        let ids = self.resolve_infix_fraction(ids);
         Ok((input, self.flatten_single(&ids)))
     }
 
@@ -2950,7 +2927,7 @@ impl LatexCompactParser {
         let (leftover, ids) = self.parse_node_list(content)?;
         // leftover should be empty; if not, ignore trailing content
         let _ = leftover;
-        Ok((rest, ids))
+        Ok((rest, self.resolve_infix_fraction(ids)))
     }
 
     /// Parse a number: sequence of digits with optional decimal point.
@@ -4411,7 +4388,7 @@ impl LatexCompactParser {
             // A command such as \rightarrow is an operand, not a closing fence.
             if let Some(after_right) = strip_control_word(rest, "right") {
                 let (after_right, _) = ws(after_right)?;
-                return Ok((after_right, ids));
+                return Ok((after_right, self.resolve_infix_fraction(ids)));
             }
             if let Some(after_mid) = strip_control_word(rest, "middle") {
                 let (after_mid, _) = ws(after_mid)?;
@@ -5932,7 +5909,6 @@ impl LatexCompactParser {
                         self.push_element(&mut ids, id);
                         rest = r;
                     },
-                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
                     Err(error) => return Err(error),
                 }
             }
@@ -5955,53 +5931,10 @@ impl LatexCompactParser {
         self.arena.push_node(CompactNode::Styled(style, span))
     }
 
-    /// Expose infix markers nested inside font-generated rows or styled runs
-    /// so the enclosing sequence resolver can classify the fraction.
-    fn expose_infix_markers(&mut self, ids: &[NodeId]) -> SmallVec<[NodeId; 8]> {
-        let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
-        for &id in ids {
-            self.expose_infix_marker_node(id, &mut out);
-        }
-        out
-    }
-
-    fn expose_infix_marker_node(&mut self, id: NodeId, out: &mut SmallVec<[NodeId; 8]>) {
-        match *self.arena.node(id) {
-            CompactNode::Row(span) if self.contains_infix_marker(id) => {
-                let children: SmallVec<[NodeId; 8]> = self.arena.children(span).into();
-                for child in children {
-                    self.expose_infix_marker_node(child, out);
-                }
-            },
-            CompactNode::Styled(font, span) if self.contains_infix_marker(id) => {
-                let children: SmallVec<[NodeId; 8]> = self.arena.children(span).into();
-                let expanded = self.expose_infix_markers(&children);
-                let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
-                for child in expanded {
-                    if self.is_infix_marker_id(child)
-                        || matches!(*self.arena.node(child), CompactNode::Newline)
-                    {
-                        if !run.is_empty() {
-                            out.push(self.style_font_run(font, &run));
-                            run.clear();
-                        }
-                        out.push(child);
-                    } else {
-                        run.push(child);
-                    }
-                }
-                if !run.is_empty() {
-                    out.push(self.style_font_run(font, &run));
-                }
-            },
-            _ => out.push(id),
-        }
-    }
-
     /// Wrap declaration runs while leaving infix fraction markers visible to
     /// the surrounding sequence resolver.
     fn style_font_scope(&mut self, style: TextStyle, ids: SmallVec<[NodeId; 8]>) -> NodeId {
-        let ids = self.expose_infix_markers(&ids);
+        let ids = self.flatten_infix_marker_rows(ids);
         let mut result: SmallVec<[NodeId; 8]> = SmallVec::new();
         let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
         for id in ids {
@@ -7403,6 +7336,7 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
+        let ids = self.resolve_infix_fraction(ids);
         Ok((input, self.flatten_single(&ids)))
     }
 
@@ -7638,7 +7572,7 @@ impl LatexCompactParser {
                 Err(_) => break,
             }
         }
-        Ok((rest, ids))
+        Ok((rest, self.resolve_infix_fraction(ids)))
     }
 
     fn parse_cell_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

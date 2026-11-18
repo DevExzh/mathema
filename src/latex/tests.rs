@@ -154,6 +154,41 @@ fn legacy_font_declarations_are_not_unbraced_script_arguments() {
 }
 
 #[test]
+fn font_fraction_does_not_escape_its_argument_or_cell() {
+    for (input, equivalent) in [
+        (
+            r"p{q+\bf a\over b+c}r",
+            r"p\frac{q+\mathbf{a}}{\mathbf{b+c}}r",
+        ),
+        (r"p{\bf a\over b+c}r", r"p\frac{\mathbf{a}}{\mathbf{b+c}}r"),
+        (
+            r"\left(x+\bf a\over b\right)y",
+            r"\left(\frac{x+\mathbf{a}}{\mathbf{b}}\right)y",
+        ),
+        (
+            r"\begin{matrix}p+\bf a\over b&y\end{matrix}",
+            r"\begin{matrix}\frac{p+\mathbf{a}}{\mathbf{b}}&y\end{matrix}",
+        ),
+        (
+            r"\sqrt[p+\bf a\over b]{x}",
+            r"\sqrt[\frac{p+\mathbf{a}}{\mathbf{b}}]{x}",
+        ),
+    ] {
+        let f = crate::from_latex(input).unwrap();
+        assert_eq!(
+            f.to_mathml().unwrap(),
+            crate::from_latex(equivalent).unwrap().to_mathml().unwrap(),
+            "{input}"
+        );
+        let written = f.to_latex().unwrap();
+        assert_eq!(
+            f.to_mathml().unwrap(),
+            crate::from_latex(&written).unwrap().to_mathml().unwrap()
+        );
+    }
+}
+
+#[test]
 fn canonical_tex_attaches_bounds_to_the_operator_itself() {
     for (source, canonical) in [
         (r"\lim_i^j", r"\lim_i^j"),
