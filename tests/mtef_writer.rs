@@ -79,6 +79,16 @@ fn fixtures_convert_between_versions() {
 /// placement of a big operator (it is written as the operator's usual one),
 /// or for array stretch and jot; drop them before comparing.
 fn canonical(node: &mut MathNode) {
+    // MTEF stores the table cells and alignments in the same MATRIX record
+    // for a TeX matrix, smallmatrix, or array.
+    if let MathNode::Matrix { columns, rows, .. } = node {
+        *node = MathNode::Array {
+            columns: std::mem::take(columns),
+            rows: std::mem::take(rows),
+            arraystretch: None,
+            add_jot: false,
+        };
+    }
     match node {
         MathNode::Operator(attr) => attr.limit_style = LimitStyle::Default,
         MathNode::Nary {

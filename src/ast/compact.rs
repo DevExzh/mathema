@@ -835,7 +835,13 @@ fn push_array_node(
     let cells = arena.push_children_deferred(&cell_ids);
     let arraystretch_pct = arraystretch
         .map(|value| (value * 100.0).round() as u8)
-        .unwrap_or(100);
+        .unwrap_or(
+            if environment == Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) {
+                50
+            } else {
+                100
+            },
+        );
     let id = arena.push_node(CompactNode::Array {
         col_aligns,
         cells,

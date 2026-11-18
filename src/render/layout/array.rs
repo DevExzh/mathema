@@ -31,6 +31,37 @@ pub(super) fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
     }
 }
 
+/// amsmath's smallmatrix uses no minimum strut. In a regular array the
+/// height and depth of the strut split the stretched baseline skip 70:30.
+fn array_strut(smallmatrix: bool, size: f64, stretch: f64) -> (f64, f64) {
+    if smallmatrix {
+        (0.0, 0.0)
+    } else {
+        let skip = stretch * (1.2 * size);
+        (0.7 * skip, 0.3 * skip)
+    }
+}
+
+fn add_smallmatrix_row_glue(heights: &[f64], depths: &mut [f64], scale: f64) {
+    // TeX uses 6pt between baselines, with at least 1.5pt of clearance
+    // between the ink of adjacent rows, in a nominal ten-point document.
+    let baseline_skip = 0.6 * scale;
+    let line_skip = 0.15 * scale;
+    for (&next_height, depth) in heights.iter().skip(1).zip(depths) {
+        *depth += (baseline_skip - *depth - next_height).max(line_skip);
+    }
+}
+
+fn smallmatrix_horizontal_spacing(style: MathStyle, scale: f64) -> (f64, f64) {
+    // The edge thin spaces are in the surrounding math style. The thick
+    // space in the horizontal alignment preamble uses its text-mode width.
+    let width = |r, basis| crate::ast::style::space_width_in_em(r, Some(basis), style, scale);
+    (
+        width(Rational::new(1, 6), SpaceBasis::MathMu),
+        width(Rational::new(2777, 10_000), SpaceBasis::TextEm),
+    )
+}
+
 pub(super) fn layout_array(
     smallmatrix: bool,
     columns: &[ColumnAlign],
@@ -44,10 +75,7 @@ pub(super) fn layout_array(
 
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_opt.unwrap_or(1.0);
-    let baselineskip = 1.2 * size;
-    let arrayskip = arraystretch * baselineskip;
-    let arstrut_height = 0.7 * arrayskip;
-    let arstrut_depth = 0.3 * arrayskip;
+    let (arstrut_height, arstrut_depth) = array_strut(smallmatrix, size, arraystretch);
     let jot = 0.3 * size;
 
     // Layout all cells
@@ -83,6 +111,10 @@ pub(super) fn layout_array(
         }
     }
 
+    if smallmatrix {
+        add_smallmatrix_row_glue(&row_heights, &mut row_depths, ctx.size_scale);
+    }
+
     // addJot: extra 0.3em depth on every non-last row
     if add_jot {
         for d in row_depths.iter_mut().take(n_rows.saturating_sub(1)) {
@@ -93,19 +125,11 @@ pub(super) fn layout_array(
     // Position cells — consume cell_layouts by ownership to avoid cloning
     let mut children = Vec::new();
     let mut cursor_y = 0.0;
-    let outer_pad = if smallmatrix {
-        (3.0 / 18.0) * size
-    } else {
-        0.0
-    };
-    let gap_after = |j: usize| {
-        if smallmatrix {
-            let _ = j;
-            (5.0 / 18.0) * size
-        } else {
-            col_gap_after(j, aligned, size)
-        }
-    };
+    let small_spacing =
+        smallmatrix.then(|| smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale));
+    let outer_pad = small_spacing.map_or(0.0, |(edge, _)| edge);
+    let gap_after =
+        |j| small_spacing.map_or_else(|| col_gap_after(j, aligned, size), |(_, gap)| gap);
 
     // Start from top
     for (i, row) in cell_layouts.into_iter().enumerate() {
@@ -149,7 +173,11 @@ pub(super) fn layout_array(
     LayoutBox {
         width: total_width,
         height: box_height,
-        depth: half - axis,
+        depth: if smallmatrix {
+            (half - axis).max(0.0)
+        } else {
+            half - axis
+        },
         kind: BoxKind::VBox { children },
     }
 }
@@ -173,10 +201,7 @@ pub(super) fn layout_array_arena(
     let size = ctx.size();
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_pct as f64 / 100.0;
-    let baselineskip = 1.2 * size;
-    let arrayskip = arraystretch * baselineskip;
-    let arstrut_height = 0.7 * arrayskip;
-    let arstrut_depth = 0.3 * arrayskip;
+    let (arstrut_height, arstrut_depth) = array_strut(smallmatrix, size, arraystretch);
     let jot = 0.3 * size;
 
     // Extract column alignments
@@ -197,7 +222,11 @@ pub(super) fn layout_array_arena(
 
     // Layout each cell and store the layout box IDs
     let mut cell_layout_ids: Vec<LayoutBoxId> = Vec::with_capacity(cell_ids_ast.len());
-    let cell_ctx = ctx.with_style(MathStyle::Text);
+    let cell_ctx = ctx.with_style(if smallmatrix {
+        MathStyle::Script
+    } else {
+        MathStyle::Text
+    });
     for &cell_id in cell_ids_ast {
         match *ast.node(cell_id) {
             CompactNode::Row(span) => {
@@ -213,16 +242,8 @@ pub(super) fn layout_array_arena(
 
     // Compute column widths and row heights/depths with strut minimums
     let mut col_widths = vec![0.0_f64; n_cols];
-    let mut row_heights = if smallmatrix {
-        vec![0.0; n_rows]
-    } else {
-        vec![arstrut_height; n_rows]
-    };
-    let mut row_depths = if smallmatrix {
-        vec![0.0; n_rows]
-    } else {
-        vec![arstrut_depth; n_rows]
-    };
+    let mut row_heights = vec![arstrut_height; n_rows];
+    let mut row_depths = vec![arstrut_depth; n_rows];
 
     for i in 0..n_rows {
         for j in 0..nc.min(n_cols) {
@@ -237,17 +258,7 @@ pub(super) fn layout_array_arena(
     }
 
     if smallmatrix {
-        // TeX smallmatrix uses baselineskip=6ex@ and lineskip=1.5ex@,
-        // with lineskiplimit equal to lineskip. The surrounding text em is
-        // represented by the unscaled layout unit, including nested styles.
-        let base_size = size / ctx.style.size_multiplier();
-        let baseline_skip = 0.6 * base_size;
-        let line_skip = 0.15 * base_size;
-        for row in 0..n_rows.saturating_sub(1) {
-            let next_height = row_heights[row + 1];
-            let glue = (baseline_skip - row_depths[row] - next_height).max(line_skip);
-            row_depths[row] += glue;
-        }
+        add_smallmatrix_row_glue(&row_heights, &mut row_depths, ctx.size_scale);
     }
 
     // addJot: extra 0.3em depth on every non-last row
@@ -263,7 +274,11 @@ pub(super) fn layout_array_arena(
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
     let box_height = half + axis;
-    let box_depth = (half - axis).max(0.0);
+    let box_depth = if smallmatrix {
+        (half - axis).max(0.0)
+    } else {
+        half - axis
+    };
 
     // Position cells
     let children_start = arena.begin_children();
@@ -273,17 +288,9 @@ pub(super) fn layout_array_arena(
     // `array`-style tables pad outer edges with
     // `\arraycolsep` and use 2·arraycolsep between columns.
     let colsep = ARRAY_COLSEP_EM * size;
-    // amsmath builds smallmatrix in horizontal mode: the exterior thin
-    // spaces use the surrounding math quad, but its intercolumn thickspace
-    // uses the text-mode definition of .2777em.
     let (edge_pad, uniform_gap) = if smallmatrix {
-        let width = |r, basis| {
-            crate::ast::style::space_width_in_em(r, Some(basis), ctx.style, ctx.size_scale)
-        };
-        (
-            width(Rational::new(1, 6), SpaceBasis::MathMu),
-            Some(width(Rational::new(2777, 10_000), SpaceBasis::TextEm)),
-        )
+        let (edge, gap) = smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale);
+        (edge, Some(gap))
     } else if array_style {
         (colsep, Some(2.0 * colsep))
     } else {

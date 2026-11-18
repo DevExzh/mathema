@@ -104,6 +104,19 @@ fn compact_smallmatrix_zero_width_advances_follow_mathmu_and_textem() {
     }
 }
 
+#[test]
+fn public_heap_and_compact_smallmatrix_layouts_agree() {
+    for src in [
+        r"\begin{smallmatrix}\end{smallmatrix}",
+        r"\begin{smallmatrix}a&b\\c&d\end{smallmatrix}",
+        r"x^{\begin{Vsmallmatrix*}[r]x\\xy&z\\t&uvw\end{Vsmallmatrix*}}",
+        r"\begin{smallmatrix}\frac{1}{2}\\\frac{3}{4}\end{smallmatrix}",
+        r"\begin{smallmatrix}\mathchoice{D}{T}{S}{Q}&{\displaystyle\frac{1}{2}}\end{smallmatrix}",
+    ] {
+        assert_eq!(render_latex(src), compact_latex_to_svg(src), "{src}");
+    }
+}
+
 /// The legacy heap layout engine and the production arena engine must render
 /// every corpus formula to **byte-identical** SVG. This is the precondition for
 /// retiring the legacy engine: since the two now agree everywhere,

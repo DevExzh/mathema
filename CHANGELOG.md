@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- LaTeX parsing and export preserve the mathtools smallmatrix family, including
+  starred alignment options, fence spacing, and environment names supplied by macros.
+  The public heap AST now represents parsed matrices and small matrices with
+  `MathNode::Matrix`. Consumers that inspect table cells should handle both
+  `Matrix` and `Array`. Generic arrays and previously serialized array records
+  retain their `MathNode::Array` representation.
 - `\limsup`, `\liminf`, `\injlim`, and `\projlim` now render as movable
   operators with a thin space between their words. `\plim` uses the KaTeX
   expansion for an operator with forced limits.
