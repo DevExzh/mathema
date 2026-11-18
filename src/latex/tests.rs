@@ -3989,3 +3989,14 @@ fn unicode_number_runs_have_the_same_node_budget_as_ascii_digits() {
     }
     assert!(crate::from_latex_with("x¹⁺²⁺³⁺⁴⁺⁵⁺⁶", &config).is_err());
 }
+
+#[test]
+fn malformed_textcolor_recovery_is_latex_idempotent() {
+    let input = "\\textcolor{rex\0olor{bcolo!r{bluaLTeXc}\\operatorname{f}_di^2 x";
+    let parsed = crate::from_latex(input).unwrap();
+    let first = parsed.to_latex().unwrap();
+    let reparsed = crate::from_latex(&first).unwrap();
+    let second = reparsed.to_latex().unwrap();
+    assert_eq!(first, r"{\mathord{\operatorname{f}}}_d{i}^{2}x");
+    assert_eq!(first, second);
+}
