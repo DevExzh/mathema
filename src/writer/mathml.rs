@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
@@ -130,42 +130,22 @@ fn start_math_style_fast(buf: &mut String, style: MathStyle) {
     buf.push_str("\">");
 }
 
-/// Return the leading environment style recorded on a parsed table cell.
-///
-/// Matrix and ordinary array cells have no synthetic marker. Environments
-/// whose cells intentionally use another style carry a leading `StyleSwitch`,
-/// so output can preserve the source-level decision without inferring it
-/// from row metrics.
-fn heap_table_leading_style(rows: &[Vec<Vec<MathNode>>]) -> Option<u8> {
-    rows.iter()
-        .flat_map(|row| row.iter())
-        .find_map(|cell| match cell.first() {
-            Some(MathNode::StyleSwitch(style)) => Some(*style),
-            _ => None,
-        })
-}
-
-fn compact_table_leading_style(arena: &AstArena, cells: NodeSpan) -> Option<u8> {
-    arena
-        .children(cells)
-        .iter()
-        .find_map(|&cell| match *arena.node(cell) {
-            CompactNode::Row(span) => {
-                arena
-                    .children(span)
-                    .first()
-                    .and_then(|&id| match *arena.node(id) {
-                        CompactNode::StyleSwitch(style) => Some(style),
-                        _ => None,
-                    })
-            },
-            CompactNode::StyleSwitch(style) => Some(style),
-            _ => None,
-        })
-}
-
-fn table_needs_text_reset(style: MathStyle, leading_cell_style: Option<u8>) -> bool {
-    style.size_class() > 0 && leading_cell_style.is_none()
+/// If every cell starts in the same style, a nested table can keep its
+/// inherited size. Aligned environments retain display layout at that size.
+fn inherited_table_marker(
+    style: MathStyle,
+    add_jot: bool,
+    all_start_with: impl Fn(u8) -> bool,
+) -> Option<u8> {
+    let depth = style.size_class();
+    if depth == 0 {
+        return None;
+    }
+    if add_jot && all_start_with(0) {
+        return Some(0);
+    }
+    let marker = (depth + 1) as u8;
+    all_start_with(marker).then_some(marker)
 }
 
 /// Consecutive declarations replace one another and a trailing declaration
@@ -608,14 +588,20 @@ fn write_node_in(
             add_jot,
             ..
         } => {
-            let reset_to_text =
-                table_needs_text_reset(display_style, heap_table_leading_style(rows));
-            let strip_aligned_cell_markers = *add_jot && heap_table_leading_style(rows) == Some(0);
+            let promoted = inherited_table_marker(display_style, *add_jot, |marker| {
+                rows.iter().flatten().all(|cell| {
+                    cell.first().is_none_or(
+                        |node| matches!(node, MathNode::StyleSwitch(value) if *value == marker),
+                    )
+                })
+            });
+            let reset_to_text = display_style.size_class() > 0 && promoted.is_none();
+            let cell_style = promoted.map_or(MathStyle::Text, MathStyle::from_switch);
             if reset_to_text {
                 start_math_style(w, MathStyle::Text)?;
             }
             let mut table = BytesStart::new("mtable");
-            if *add_jot && display_style.size_class() > 0 {
+            if promoted == Some(0) {
                 table.push_attribute(("displaystyle", "true"));
             }
             w.write_event(Event::Start(table)).map_err(to_err)?;
@@ -633,23 +619,12 @@ fn write_node_in(
                         td.push_attribute(("columnalign", val));
                     }
                     w.write_event(Event::Start(td)).map_err(to_err)?;
-                    let cell = if strip_aligned_cell_markers
-                        && matches!(cell.first(), Some(MathNode::StyleSwitch(0)))
-                    {
+                    let cell = if promoted.is_some() && !cell.is_empty() {
                         &cell[1..]
                     } else {
                         cell.as_slice()
                     };
-                    write_nodes(
-                        w,
-                        cell,
-                        if *add_jot {
-                            MathStyle::Display
-                        } else {
-                            MathStyle::Text
-                        },
-                        false,
-                    )?;
+                    write_nodes(w, cell, cell_style, false)?;
                     w.write_event(Event::End(BytesEnd::new("mtd")))
                         .map_err(to_err)?;
                 }
@@ -1330,16 +1305,22 @@ fn write_node_fast_in(
         } => {
             let nc = num_cols as usize;
             let cell_ids = arena.children(cells);
-            let reset_to_text =
-                table_needs_text_reset(display_style, compact_table_leading_style(arena, cells));
-            let strip_aligned_cell_markers =
-                add_jot && compact_table_leading_style(arena, cells) == Some(0);
+            let promoted = inherited_table_marker(display_style, add_jot, |marker| {
+                cell_ids.iter().all(|&cell| {
+                match *arena.node(cell) {
+                    CompactNode::Row(span) => arena.children(span).first().is_none_or(|&id| matches!(*arena.node(id), CompactNode::StyleSwitch(value) if value == marker)),
+                    _ => false,
+                }
+            })
+            });
+            let reset_to_text = display_style.size_class() > 0 && promoted.is_none();
+            let cell_style = promoted.map_or(MathStyle::Text, MathStyle::from_switch);
 
             if reset_to_text {
                 start_math_style_fast(buf, MathStyle::Text);
             }
 
-            if add_jot && display_style.size_class() > 0 {
+            if promoted == Some(0) {
                 buf.push_str("<mtable displaystyle=\"true\">");
             } else {
                 buf.push_str("<mtable>");
@@ -1369,36 +1350,13 @@ fn write_node_fast_in(
                     match *arena.node(cell_id) {
                         CompactNode::Row(span) => {
                             let mut nodes = arena.children(span);
-                            if strip_aligned_cell_markers
-                                && nodes.first().is_some_and(|&id| {
-                                    matches!(*arena.node(id), CompactNode::StyleSwitch(0))
-                                })
-                            {
+                            if promoted.is_some() && !nodes.is_empty() {
                                 nodes = &nodes[1..];
                             }
-                            write_nodes_fast(
-                                buf,
-                                arena,
-                                nodes,
-                                if add_jot {
-                                    MathStyle::Display
-                                } else {
-                                    MathStyle::Text
-                                },
-                                false,
-                            );
+                            write_nodes_fast(buf, arena, nodes, cell_style, false);
                         },
                         _ => {
-                            write_node_fast(
-                                buf,
-                                arena,
-                                cell_id,
-                                if add_jot {
-                                    MathStyle::Display
-                                } else {
-                                    MathStyle::Text
-                                },
-                            );
+                            write_node_fast(buf, arena, cell_id, cell_style);
                         },
                     }
                     buf.push_str("</mtd>");
@@ -2363,6 +2321,40 @@ mod tests {
     }
 
     #[test]
+    fn a_single_styled_cell_does_not_override_the_rest_of_a_table() {
+        let parsed =
+            crate::from_latex(r"x^{\begin{matrix}\scriptscriptstyle a & b\end{matrix}}").unwrap();
+        let xml = parsed.to_mathml().unwrap();
+        assert!(
+            xml.contains(r#"<mstyle displaystyle="false" scriptlevel="0"><mtable>"#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"<mstyle displaystyle="false" scriptlevel="2"><mi>a</mi></mstyle>"#),
+            "{xml}"
+        );
+        assert_eq!(
+            xml,
+            MathmlWriter::write(&parsed.expr(), &Config::default()).unwrap()
+        );
+
+        let xml = r#"<math><mtable scriptlevel="2"><mtr scriptlevel="-1"><mtd scriptlevel="+1"><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable><mi>z</mi></math>"#;
+        let canonical = crate::from_mathml(xml).unwrap().to_mathml().unwrap();
+        for (level, text) in [(2, 'a'), (1, 'b')] {
+            assert!(
+                canonical.contains(&format!(
+                    r#"<mstyle displaystyle="false" scriptlevel="{level}"><mi>{text}</mi></mstyle>"#
+                )),
+                "{canonical}"
+            );
+        }
+        assert!(
+            canonical.ends_with("</mtable><mi>z</mi></math>"),
+            "{canonical}"
+        );
+    }
+
+    #[test]
     fn tables_reset_matrix_cells_to_text_size_inside_scripts() {
         let config = Config::default();
         for source in [
@@ -2370,7 +2362,7 @@ mod tests {
             r"x^{\begin{array}{c}a\end{array}}",
         ] {
             let result = crate::from_latex(source).unwrap();
-            let heap = result.to_mathml().unwrap();
+            let heap = MathmlWriter::write(&result.expr(), &config).unwrap();
             let compact = MathmlWriter::write_compact(result.compact_expr(), &config).unwrap();
             assert_eq!(heap, compact, "heap/compact mismatch for {source}");
             assert!(
@@ -2408,8 +2400,9 @@ mod tests {
         .to_mathml()
         .unwrap();
         assert!(
-            authored.contains("<mstyle displaystyle=\"false\" scriptlevel=\"0\"><mtable>"),
-            "authored nested table did not retain text sizing: {authored}"
+            authored.contains("<msup><mi>x</mi><mtable>")
+                && !authored.contains("scriptlevel=\"0\""),
+            "an unstyled MathML table inherits its surrounding script level: {authored}"
         );
 
         let explicit = crate::from_mathml(

@@ -868,7 +868,7 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "mtable" => {
-                let rows = self.parse_table(name)?;
+                let rows = self.with_table_style(start, true, |p| p.parse_table(name))?;
                 let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
                 let num_cols = ncols.max(1) as u16;
 
@@ -1054,6 +1054,36 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(collapse_mathml_token_text(&text))
     }
 
+    /// Tables start in compact display style and inherit the surrounding
+    /// script level. Rows and cells can override either presentation hint.
+    fn with_table_style<T>(
+        &mut self,
+        start: &quick_xml::events::BytesStart<'_>,
+        table_root: bool,
+        parse: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let previous = (self.style_display, self.style_level);
+        if table_root {
+            self.style_display = false;
+        }
+        if let Some((display, level)) = self.scoped_style(start) {
+            self.style_display = display;
+            self.style_level = level;
+        }
+        let result = parse(self);
+        (self.style_display, self.style_level) = previous;
+        result
+    }
+
+    fn parse_table_cell(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
+        let mut nodes = self.parse_children("mtd")?;
+        let marker = self.style_marker_for((self.style_display, self.style_level));
+        if marker != 1 && !nodes.is_empty() {
+            nodes.insert(0, self.arena.push_node(CompactNode::StyleSwitch(marker)));
+        }
+        Ok(nodes)
+    }
+
     fn parse_table(&mut self, parent_tag: &str) -> Result<Vec<Vec<SmallVec<[NodeId; 8]>>>> {
         let mut rows = Vec::new();
         loop {
@@ -1061,7 +1091,7 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtr" || name == "mlabeledtr" {
-                        rows.push(self.parse_table_row(&name)?);
+                        rows.push(self.with_table_style(&e, false, |p| p.parse_table_row(&name))?);
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -1083,7 +1113,7 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
-                        cells.push(self.parse_children("mtd")?);
+                        cells.push(self.with_table_style(&e, false, Self::parse_table_cell)?);
                     } else {
                         // Inferred cell: a non-<mtd> child is its own cell.
                         let id = self.parse_element_by_name(&name, &e)?;
