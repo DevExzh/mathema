@@ -289,7 +289,7 @@ fn write_node_in(w: &mut XmlWriter, node: &MathNode, single_argument: bool) -> R
                 elem.push_attribute(("accent", "true"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_argument(w, base)?;
+            write_limit_base(w, base, *movable_limits)?;
             write_argument(w, over)?;
             w.write_event(Event::End(BytesEnd::new("mover")))
                 .map_err(to_err)?;
@@ -306,7 +306,7 @@ fn write_node_in(w: &mut XmlWriter, node: &MathNode, single_argument: bool) -> R
                 elem.push_attribute(("accentunder", "true"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_argument(w, base)?;
+            write_limit_base(w, base, *movable_limits)?;
             write_argument(w, under)?;
             w.write_event(Event::End(BytesEnd::new("munder")))
                 .map_err(to_err)?;
@@ -324,7 +324,7 @@ fn write_node_in(w: &mut XmlWriter, node: &MathNode, single_argument: bool) -> R
                 elem.push_attribute(("accent", "true"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_argument(w, base)?;
+            write_limit_base(w, base, *movable_limits)?;
             write_argument(w, under)?;
             write_argument(w, over)?;
             w.write_event(Event::End(BytesEnd::new("munderover")))
@@ -651,6 +651,34 @@ fn write_mo_char(w: &mut XmlWriter, ch: char, movable: Option<bool>) -> Result<(
     Ok(())
 }
 
+/// An explicitly movable integral cannot be represented by the default TeX
+/// n-ary placement. Its generic under/over node carries the MathML attribute.
+fn write_limit_base(w: &mut XmlWriter, node: &MathNode, movable: bool) -> Result<()> {
+    match node {
+        MathNode::Symbol(SymbolKind::LargeOp, text) if movable => {
+            if let Some(ch) = single_operator_char(text) {
+                return write_mo_char(w, ch, Some(true));
+            }
+            write_argument(w, node)
+        },
+        MathNode::Row(children) if movable && children.len() == 1 => {
+            w.write_event(Event::Start(BytesStart::new("mrow")))
+                .map_err(to_err)?;
+            write_limit_base(w, &children[0], true)?;
+            w.write_event(Event::End(BytesEnd::new("mrow")))
+                .map_err(to_err)?;
+            Ok(())
+        },
+        _ => write_argument(w, node),
+    }
+}
+
+fn single_operator_char(text: &str) -> Option<char> {
+    let text = text.trim();
+    let ch = text.chars().next()?;
+    (text.len() == ch.len_utf8()).then_some(ch)
+}
+
 fn style_to_mathvariant(style: TextStyle) -> &'static str {
     match style {
         TextStyle::Normal => "normal",
@@ -896,7 +924,7 @@ fn write_node_fast_in(buf: &mut String, arena: &AstArena, id: NodeId, single_arg
             } else {
                 buf.push_str("<mover>");
             }
-            write_argument_fast(buf, arena, base);
+            write_limit_base_fast(buf, arena, base, movable_limits);
             write_argument_fast(buf, arena, over);
             buf.push_str("</mover>");
         },
@@ -911,7 +939,7 @@ fn write_node_fast_in(buf: &mut String, arena: &AstArena, id: NodeId, single_arg
             } else {
                 buf.push_str("<munder>");
             }
-            write_argument_fast(buf, arena, base);
+            write_limit_base_fast(buf, arena, base, movable_limits);
             write_argument_fast(buf, arena, under);
             buf.push_str("</munder>");
         },
@@ -927,7 +955,7 @@ fn write_node_fast_in(buf: &mut String, arena: &AstArena, id: NodeId, single_arg
             } else {
                 buf.push_str("<munderover>");
             }
-            write_argument_fast(buf, arena, base);
+            write_limit_base_fast(buf, arena, base, movable_limits);
             write_argument_fast(buf, arena, under);
             write_argument_fast(buf, arena, over);
             buf.push_str("</munderover>");
@@ -1234,6 +1262,29 @@ fn write_mo_char_fast(buf: &mut String, ch: char, movable: Option<bool>) {
     let mut glyph = [0; 4];
     xml_escape_into(buf, ch.encode_utf8(&mut glyph));
     buf.push_str("</mo>");
+}
+
+fn write_limit_base_fast(buf: &mut String, arena: &AstArena, id: NodeId, movable: bool) {
+    if movable {
+        match *arena.node(id) {
+            CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
+                if let Some(ch) = single_operator_char(arena.str_val(sid)) {
+                    write_mo_char_fast(buf, ch, Some(true));
+                    return;
+                }
+            },
+            CompactNode::Row(span) => {
+                if let &[only] = arena.children(span) {
+                    open_tag(buf, "mrow");
+                    write_limit_base_fast(buf, arena, only, true);
+                    close_tag(buf, "mrow");
+                    return;
+                }
+            },
+            _ => {},
+        }
+    }
+    write_argument_fast(buf, arena, id);
 }
 
 #[inline]

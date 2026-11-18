@@ -492,6 +492,17 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 }
                 if movable && let Some((op, moves_limits)) = self.limit_operator(base) {
+                    // MathML can explicitly make an integral's limits movable.
+                    // Keep the under/over node so the display-style placement
+                    // survives the conversion. A TeX `Default` n-ary integral
+                    // deliberately uses side scripts in display mode.
+                    if moves_limits && crate::unicode::symbols::is_integral_operator(op) {
+                        return Ok(self.arena.push_node(CompactNode::Overscript {
+                            base,
+                            over,
+                            movable_limits: true,
+                        }));
+                    }
                     return Ok(self.make_nary(
                         op,
                         NodeId::NONE,
@@ -525,6 +536,13 @@ impl<'a> MathmlCompactParser<'a> {
                     }));
                 }
                 if !is_accent && let Some((op, moves_limits)) = self.limit_operator(base) {
+                    if moves_limits && crate::unicode::symbols::is_integral_operator(op) {
+                        return Ok(self.arena.push_node(CompactNode::Underscript {
+                            base,
+                            under,
+                            movable_limits: true,
+                        }));
+                    }
                     return Ok(self.make_nary(
                         op,
                         under,
@@ -543,10 +561,36 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "munderover" => {
-                let movable = get_attr(start, "accent").as_deref() != Some("true");
+                let accent = get_attr(start, "accent").as_deref() == Some("true");
+                let accent_under = get_attr(start, "accentunder").as_deref() == Some("true");
                 let children = self.parse_children(name)?;
                 let (base, under, over) = self.three_child_ids(children);
-                if movable && let Some((op, moves_limits)) = self.limit_operator(base) {
+                // `munderover` has independent `accent` and `accentunder`
+                // flags. The public AST stores one accent flag per wrapper,
+                // so preserve both flags as nested wrappers when either is
+                // present. This also prevents an explicitly movable integral
+                // from being collapsed into a default TeX n-ary node.
+                if accent || accent_under {
+                    let inner = self.arena.push_node(CompactNode::Underscript {
+                        base,
+                        under,
+                        movable_limits: !accent_under,
+                    });
+                    return Ok(self.arena.push_node(CompactNode::Overscript {
+                        base: inner,
+                        over,
+                        movable_limits: !accent,
+                    }));
+                }
+                if let Some((op, moves_limits)) = self.limit_operator(base) {
+                    if moves_limits && crate::unicode::symbols::is_integral_operator(op) {
+                        return Ok(self.arena.push_node(CompactNode::UnderOver {
+                            base,
+                            under,
+                            over,
+                            movable_limits: true,
+                        }));
+                    }
                     return Ok(self.make_nary(
                         op,
                         under,
@@ -562,7 +606,7 @@ impl<'a> MathmlCompactParser<'a> {
                     base,
                     under,
                     over,
-                    movable_limits: movable,
+                    movable_limits: true,
                 }))
             },
             "mfenced" => {
@@ -1341,6 +1385,87 @@ mod tests {
         assert_eq!(*op, '∑');
         assert!(sub.is_some() && sup.is_some());
         assert_eq!(*limits, LimitStyle::Default);
+    }
+
+    #[test]
+    fn explicitly_movable_integral_keeps_under_over_structure() {
+        for (tag, expected) in [
+            (
+                "munder",
+                MathNode::Underscript {
+                    base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "∫".into())),
+                    under: Box::new(MathNode::Identifier("a".into())),
+                    movable_limits: true,
+                },
+            ),
+            (
+                "mover",
+                MathNode::Overscript {
+                    base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "∫".into())),
+                    over: Box::new(MathNode::Identifier("b".into())),
+                    movable_limits: true,
+                },
+            ),
+        ] {
+            let input = format!(
+                "<math><{tag}><mo movablelimits=\"true\">∫</mo><mi>{}</mi></{tag}></math>",
+                if tag == "munder" { "a" } else { "b" }
+            );
+            assert_eq!(parse_one(&input), expected);
+            let output =
+                crate::convert(&input, crate::Format::MathML, crate::Format::MathML).unwrap();
+            assert!(output.contains(&format!("<{tag}><mo movablelimits=\"true\">∫</mo>")));
+        }
+
+        let input = "<math><munderover><mo movablelimits=\"true\">∫</mo><mi>a</mi><mi>b</mi></munderover></math>";
+        assert!(matches!(
+            parse_one(input),
+            MathNode::UnderOver {
+                movable_limits: true,
+                ..
+            }
+        ));
+        let output = crate::convert(input, crate::Format::MathML, crate::Format::MathML).unwrap();
+        assert!(output.contains("<munderover><mo movablelimits=\"true\">∫</mo>"));
+    }
+
+    #[test]
+    fn operator_scripts_and_multi_character_tokens_keep_all_operands() {
+        for tag in ["msub", "msup", "msubsup"] {
+            let scripts = match tag {
+                "msub" => "<mi>a</mi>",
+                "msup" => "<mi>a</mi>",
+                _ => "<mi>a</mi><mi>b</mi>",
+            };
+            let input =
+                format!("<math><{tag}><mo movablelimits=\"true\">∫</mo>{scripts}</{tag}></math>");
+            let output =
+                crate::convert(&input, crate::Format::MathML, crate::Format::MathML).unwrap();
+            assert!(output.contains("∫"));
+            assert!(output.contains("a"));
+            if tag == "msubsup" {
+                assert!(output.contains("b"));
+            }
+        }
+
+        for input in [
+            "<math><munder><mo movablelimits=\"true\">∑x</mo><mi>a</mi></munder></math>",
+            "<math><munder><mo movablelimits=\"true\"> ∑ </mo><mi>a</mi></munder></math>",
+        ] {
+            let output =
+                crate::convert(input, crate::Format::MathML, crate::Format::MathML).unwrap();
+            assert!(output.contains("∑"));
+            if input.contains("∑x") {
+                assert!(output.contains("∑x"));
+            }
+        }
+    }
+
+    #[test]
+    fn munderover_preserves_both_accent_attributes() {
+        let input = "<math><munderover accent=\"true\" accentunder=\"true\"><mo>∫</mo><mo>_</mo><mo>¯</mo></munderover></math>";
+        let output = crate::convert(input, crate::Format::MathML, crate::Format::MathML).unwrap();
+        assert!(output.contains("<mover accent=\"true\"><munder accentunder=\"true\">"));
     }
 
     #[test]
