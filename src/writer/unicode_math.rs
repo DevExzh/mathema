@@ -1,5 +1,6 @@
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
+use crate::ast::style::MathStyle;
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, Result};
 use crate::writer::Writer as MathWriter;
@@ -35,7 +36,7 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
             Some("UnicodeMath does not preserve the \\raisebox shift".into())
         },
         CompactNode::MathChoice { .. } => {
-            Some("UnicodeMath keeps only the display-style branch of \\mathchoice".into())
+            Some("UnicodeMath keeps only the branch of \\mathchoice active at this style".into())
         },
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
@@ -57,11 +58,16 @@ pub struct UnicodeMathWriter;
 impl MathWriter for UnicodeMathWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
         let mut out = String::with_capacity(256);
+        let mut style = MathStyle::from(expr.display);
         for (i, node) in expr.nodes.iter().enumerate() {
+            if let MathNode::StyleSwitch(value) = node {
+                style = MathStyle::from_switch(*value);
+                continue;
+            }
             if i > 0 && needs_space_before(node) {
                 out.push(' ');
             }
-            write_node(&mut out, node);
+            write_node(&mut out, node, style);
         }
         Ok(out)
     }
@@ -78,17 +84,22 @@ impl MathWriter for UnicodeMathWriter {
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
         let mut out = String::with_capacity(256);
         let arena = &expr.arena;
+        let mut style = MathStyle::from(expr.display);
         for (i, &id) in arena.children(expr.roots).iter().enumerate() {
+            if let CompactNode::StyleSwitch(value) = *arena.node(id) {
+                style = MathStyle::from_switch(value);
+                continue;
+            }
             if i > 0 && needs_space_before_c(arena, id) {
                 out.push(' ');
             }
-            write_node_c(&mut out, arena, id);
+            write_node_c(&mut out, arena, id, style);
         }
         Ok(out)
     }
 }
 
-fn write_node(out: &mut String, node: &MathNode) {
+fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Number(s) => out.push_str(s),
         MathNode::Identifier(s) => out.push_str(s),
@@ -113,11 +124,16 @@ fn write_node(out: &mut String, node: &MathNode) {
         MathNode::Rule { .. } => {},
 
         MathNode::Row(children) => {
+            let mut current_style = style;
             for (i, child) in children.iter().enumerate() {
+                if let MathNode::StyleSwitch(value) = child {
+                    current_style = MathStyle::from_switch(*value);
+                    continue;
+                }
                 if i > 0 && needs_space_before(child) {
                     out.push(' ');
                 }
-                write_node(out, child);
+                write_node(out, child, current_style);
             }
         },
 
@@ -127,36 +143,43 @@ fn write_node(out: &mut String, node: &MathNode) {
             content,
         } => {
             out.push_str(open);
+            let mut current_style = style;
             for (i, item) in content.iter().enumerate() {
                 if i > 0 {
                     // separator
                 }
                 match item {
-                    FencedItem::Element(node) => write_node(out, node),
-                    FencedItem::Middle(delim) => out.push_str(delim),
+                    FencedItem::Element(MathNode::StyleSwitch(value)) => {
+                        current_style = MathStyle::from_switch(*value);
+                    },
+                    FencedItem::Element(node) => write_node(out, node, current_style),
+                    FencedItem::Middle(delim) => {
+                        out.push_str(delim);
+                        current_style = style;
+                    },
                 }
             }
             out.push_str(close);
         },
 
         MathNode::Subscript { base, sub } => {
-            write_base(out, base);
+            write_base(out, base, style);
             out.push('_');
-            write_script_arg(out, sub);
+            write_script_arg(out, sub, style.sub());
         },
 
         MathNode::Superscript { base, sup } => {
-            write_base(out, base);
+            write_base(out, base, style);
             out.push('^');
-            write_script_arg(out, sup);
+            write_script_arg(out, sup, style.sup());
         },
 
         MathNode::SubSup { base, sub, sup } => {
-            write_base(out, base);
+            write_base(out, base, style);
             out.push('_');
-            write_script_arg(out, sub);
+            write_script_arg(out, sub, style.sub());
             out.push('^');
-            write_script_arg(out, sup);
+            write_script_arg(out, sup, style.sup());
         },
 
         MathNode::PreScripts {
@@ -168,18 +191,18 @@ fn write_node(out: &mut String, node: &MathNode) {
             out.push('(');
             if let Some(sub) = pre_sub {
                 out.push('_');
-                write_script_arg(out, sub);
+                write_script_arg(out, sub, style.sub());
             }
             if let Some(sup) = pre_sup {
                 out.push('^');
-                write_script_arg(out, sup);
+                write_script_arg(out, sup, style.sup());
             }
             out.push(')');
-            write_node(out, base);
+            write_node(out, base, style);
         },
 
         MathNode::Overscript { base, over, .. } => {
-            write_node(out, base);
+            write_node(out, base, style);
             out.push('\u{0305}'); // combining overline as approximation
             // UnicodeMath limitation: arbitrary overscript content not representable;
             // only a combining overline is emitted for the base.
@@ -187,7 +210,7 @@ fn write_node(out: &mut String, node: &MathNode) {
         },
 
         MathNode::Underscript { base, under, .. } => {
-            write_node(out, base);
+            write_node(out, base, style);
             out.push('\u{0332}'); // combining underline as approximation
             // UnicodeMath limitation: arbitrary underscript content not representable;
             // only a combining underline is emitted for the base.
@@ -197,21 +220,26 @@ fn write_node(out: &mut String, node: &MathNode) {
         MathNode::UnderOver {
             base, under, over, ..
         } => {
-            write_node(out, base);
+            write_node(out, base, style);
             // UnicodeMath limitation: under/over content not representable;
             // only the base is emitted.
             let _ = (under, over);
         },
 
-        MathNode::Fraction { num, den, .. } => {
-            write_fraction_arg(out, num);
+        MathNode::Fraction { num, den, kind } => {
+            let (num_style, den_style) = match kind {
+                FractionKind::Display => (MathStyle::Display, MathStyle::DisplayCramped),
+                FractionKind::Inline => (MathStyle::Text, MathStyle::TextCramped),
+                _ => (style.fracnum(), style.fracden()),
+            };
+            write_fraction_arg(out, num, num_style);
             out.push('/');
-            write_fraction_arg(out, den);
+            write_fraction_arg(out, den, den_style);
         },
 
         MathNode::Sqrt(inner) => {
             out.push('\u{221A}');
-            write_paren_if_complex(out, inner);
+            write_paren_if_complex(out, inner, style.cramped());
         },
 
         MathNode::Root { index, radicand } => {
@@ -219,19 +247,19 @@ fn write_node(out: &mut String, node: &MathNode) {
             match index.as_ref() {
                 MathNode::Number(s) if s == "3" => {
                     out.push('\u{221B}');
-                    write_paren_if_complex(out, radicand);
+                    write_paren_if_complex(out, radicand, style.cramped());
                 },
                 MathNode::Number(s) if s == "4" => {
                     out.push('\u{221C}');
-                    write_paren_if_complex(out, radicand);
+                    write_paren_if_complex(out, radicand, style.cramped());
                 },
                 _ => {
                     // General nth root: √(n&radicand) notation
                     out.push('\u{221A}');
                     out.push('(');
-                    write_node(out, index);
+                    write_node(out, index, style.sup().sup());
                     out.push('&');
-                    write_node(out, radicand);
+                    write_node(out, radicand, style.cramped());
                     out.push(')');
                 },
             }
@@ -243,22 +271,28 @@ fn write_node(out: &mut String, node: &MathNode) {
             out.push(*op);
             if let Some(s) = sub {
                 out.push('_');
-                write_script_arg(out, s);
+                write_script_arg(out, s, style.sub());
             }
             if let Some(s) = sup {
                 out.push('^');
-                write_script_arg(out, s);
+                write_script_arg(out, s, style.sup());
             }
             out.push(' ');
-            write_node(out, body);
+            write_node(out, body, style);
         },
 
         MathNode::Accent { base, accent, .. } => {
-            write_node(out, base);
+            write_node(out, base, style);
             out.push(*accent);
         },
 
-        MathNode::Array { rows, .. } => {
+        MathNode::Array {
+            rows,
+            arraystretch,
+            add_jot,
+            ..
+        } => {
+            let cell_style = table_cell_style(*arraystretch, *add_jot);
             out.push('\u{25A0}'); // ■
             out.push('(');
             for (i, row) in rows.iter().enumerate() {
@@ -270,7 +304,7 @@ fn write_node(out: &mut String, node: &MathNode) {
                         out.push('&');
                     }
                     for node in cell {
-                        write_node(out, node);
+                        write_node(out, node, cell_style);
                     }
                 }
             }
@@ -279,69 +313,79 @@ fn write_node(out: &mut String, node: &MathNode) {
 
         MathNode::Phantom(inner, _) => {
             out.push('\u{27E1}'); // phantom operator
-            write_paren_if_complex(out, inner);
+            write_paren_if_complex(out, inner, style);
         },
 
         MathNode::Boxed { content: inner, .. } => {
             out.push('\u{25AD}'); // rectangle
-            write_paren_if_complex(out, inner);
+            write_paren_if_complex(out, inner, style);
         },
         MathNode::Actuarial { content: inner, .. } => {
             out.push('\u{25AD}');
             out.push('(');
             out.push_str("6&");
-            write_node(out, inner);
+            write_node(out, inner, style);
             out.push(')');
         },
 
         MathNode::Cancel { content, .. } => {
-            write_node(out, content);
+            write_node(out, content, style);
         },
 
         MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
-            write_node(out, content);
+            write_node(out, content, style);
         },
 
-        MathNode::Styled(style, children) => {
+        MathNode::Styled(text_style, children) => {
             // Apply Unicode math alphabet mapping
+            let mut current_style = style;
             for child in children {
+                if let MathNode::StyleSwitch(value) = child {
+                    current_style = MathStyle::from_switch(*value);
+                    continue;
+                }
                 match child {
                     MathNode::Identifier(s) | MathNode::Number(s) | MathNode::Text(_, s) => {
                         for ch in s.chars() {
                             let styled =
-                                crate::unicode::fonts::styled_char(ch, *style).unwrap_or(ch);
+                                crate::unicode::fonts::styled_char(ch, *text_style).unwrap_or(ch);
                             out.push(styled);
                         }
                     },
-                    _ => write_node(out, child),
+                    _ => write_node(out, child, current_style),
                 }
             }
         },
-        MathNode::MathChoice { display, .. } => {
-            // UnicodeMath doesn't have mathchoice; output the display branch
-            write_node(out, display);
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
+            let branch = style.choose(display, text, script, script_script);
+            write_node(out, branch, style);
         },
-        MathNode::MathAtom { content, .. } => write_node(out, content),
-        MathNode::Reflect { content, .. } => write_node(out, content),
+        MathNode::MathAtom { content, .. } => write_node(out, content, style),
+        MathNode::Reflect { content, .. } => write_node(out, content, style),
     }
 }
 
-fn write_base(out: &mut String, node: &MathNode) {
+fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Row(_) | MathNode::Fraction { .. } => {
             out.push('(');
-            write_node(out, node);
+            write_node(out, node, style);
             out.push(')');
         },
-        _ => write_node(out, node),
+        _ => write_node(out, node, style),
     }
 }
 
-fn write_script_arg(out: &mut String, node: &MathNode) {
+fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
-            write_node(out, node);
+            write_node(out, node, style);
             out.push(')');
         },
         MathNode::Fraction { .. }
@@ -353,45 +397,45 @@ fn write_script_arg(out: &mut String, node: &MathNode) {
         | MathNode::Actuarial { .. }
         | MathNode::Reflect { .. } => {
             out.push('(');
-            write_node(out, node);
+            write_node(out, node, style);
             out.push(')');
         },
-        _ => write_node(out, node),
+        _ => write_node(out, node, style),
     }
 }
 
-fn write_fraction_arg(out: &mut String, node: &MathNode) {
+fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
-            write_node(out, node);
+            write_node(out, node, style);
             out.push(')');
         },
         MathNode::Fraction { .. } => {
             out.push('(');
-            write_node(out, node);
+            write_node(out, node, style);
             out.push(')');
         },
-        _ => write_node(out, node),
+        _ => write_node(out, node, style),
     }
 }
 
-fn write_paren_if_complex(out: &mut String, node: &MathNode) {
+fn write_paren_if_complex(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
-            write_node(out, node);
+            write_node(out, node, style);
             out.push(')');
         },
         MathNode::Identifier(s) if s.chars().count() == 1 => {
-            write_node(out, node);
+            write_node(out, node, style);
         },
         MathNode::Number(s) if s.chars().count() == 1 => {
-            write_node(out, node);
+            write_node(out, node, style);
         },
         _ => {
             out.push('(');
-            write_node(out, node);
+            write_node(out, node, style);
             out.push(')');
         },
     }
@@ -399,6 +443,30 @@ fn write_paren_if_complex(out: &mut String, node: &MathNode) {
 
 fn needs_space_before(node: &MathNode) -> bool {
     matches!(node, MathNode::Operator(_) | MathNode::Text(_, _))
+}
+
+/// Table environments establish an independent math list for each cell. The
+/// compact representation retains the environment's row-height and `\jot`
+/// metadata, which is enough to recover the three styles used by LaTeX's
+/// matrix-family environments without adding a public AST field.
+fn table_cell_style(arraystretch: Option<f64>, add_jot: bool) -> MathStyle {
+    if add_jot {
+        MathStyle::Display
+    } else if arraystretch.is_some_and(|value| (value - 0.5).abs() < f64::EPSILON) {
+        MathStyle::Script
+    } else {
+        MathStyle::Text
+    }
+}
+
+fn table_cell_style_c(arraystretch_pct: u8, add_jot: bool) -> MathStyle {
+    if add_jot {
+        MathStyle::Display
+    } else if arraystretch_pct == 50 {
+        MathStyle::Script
+    } else {
+        MathStyle::Text
+    }
 }
 
 // ── Compact arena-based write helpers ────────────────────────────────
@@ -425,7 +493,7 @@ fn is_overunder_line(arena: &AstArena, id: NodeId) -> bool {
     matches!(arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(*sid) == "\u{203E}")
 }
 
-fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
+fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Identifier(sid) => out.push_str(arena.str_val(sid)),
@@ -448,11 +516,16 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Row(span) => {
+            let mut current_style = style;
             for (i, &child_id) in arena.children(span).iter().enumerate() {
+                if let CompactNode::StyleSwitch(value) = *arena.node(child_id) {
+                    current_style = MathStyle::from_switch(value);
+                    continue;
+                }
                 if i > 0 && needs_space_before_c(arena, child_id) {
                     out.push(' ');
                 }
-                write_node_c(out, arena, child_id);
+                write_node_c(out, arena, child_id, current_style);
             }
         },
 
@@ -462,33 +535,37 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             content,
         } => {
             out.push_str(arena.str_val(open));
+            let mut current_style = style;
             for &cid in arena.children(content) {
                 match *arena.node(cid) {
+                    CompactNode::StyleSwitch(value) => {
+                        current_style = MathStyle::from_switch(value);
+                    },
                     CompactNode::Middle(sid) => out.push_str(arena.str_val(sid)),
-                    _ => write_node_c(out, arena, cid),
+                    _ => write_node_c(out, arena, cid, current_style),
                 }
             }
             out.push_str(arena.str_val(close));
         },
 
         CompactNode::Subscript { base, sub } => {
-            write_base_c(out, arena, base);
+            write_base_c(out, arena, base, style);
             out.push('_');
-            write_script_arg_c(out, arena, sub);
+            write_script_arg_c(out, arena, sub, style.sub());
         },
 
         CompactNode::Superscript { base, sup } => {
-            write_base_c(out, arena, base);
+            write_base_c(out, arena, base, style);
             out.push('^');
-            write_script_arg_c(out, arena, sup);
+            write_script_arg_c(out, arena, sup, style.sup());
         },
 
         CompactNode::SubSup { base, sub, sup } => {
-            write_base_c(out, arena, base);
+            write_base_c(out, arena, base, style);
             out.push('_');
-            write_script_arg_c(out, arena, sub);
+            write_script_arg_c(out, arena, sub, style.sub());
             out.push('^');
-            write_script_arg_c(out, arena, sup);
+            write_script_arg_c(out, arena, sup, style.sup());
         },
 
         CompactNode::PreScripts {
@@ -500,64 +577,69 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             out.push('(');
             if pre_sub.is_some() {
                 out.push('_');
-                write_script_arg_c(out, arena, pre_sub);
+                write_script_arg_c(out, arena, pre_sub, style.sub());
             }
             if pre_sup.is_some() {
                 out.push('^');
-                write_script_arg_c(out, arena, pre_sup);
+                write_script_arg_c(out, arena, pre_sup, style.sup());
             }
             out.push(')');
-            write_node_c(out, arena, base);
+            write_node_c(out, arena, base, style);
         },
 
         CompactNode::Overscript { base, over, .. } => {
-            write_node_c(out, arena, base);
+            write_node_c(out, arena, base, style);
             if is_overunder_line(arena, over) {
                 out.push('\u{0305}'); // combining overline for \overline / \bar
             } else {
                 // Preserve overset / brace / arrow content instead of dropping it.
                 out.push('^');
-                write_script_arg_c(out, arena, over);
+                write_script_arg_c(out, arena, over, style.sup());
             }
         },
 
         CompactNode::Underscript { base, under, .. } => {
-            write_node_c(out, arena, base);
+            write_node_c(out, arena, base, style);
             if is_overunder_line(arena, under) {
                 out.push('\u{0332}'); // combining underline for \underline
             } else {
                 out.push('_');
-                write_script_arg_c(out, arena, under);
+                write_script_arg_c(out, arena, under, style.sub());
             }
         },
 
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
-            write_node_c(out, arena, base);
+            write_node_c(out, arena, base, style);
             if is_overunder_line(arena, under) {
                 out.push('\u{0332}');
             } else {
                 out.push('_');
-                write_script_arg_c(out, arena, under);
+                write_script_arg_c(out, arena, under, style.sub());
             }
             if is_overunder_line(arena, over) {
                 out.push('\u{0305}');
             } else {
                 out.push('^');
-                write_script_arg_c(out, arena, over);
+                write_script_arg_c(out, arena, over, style.sup());
             }
         },
 
-        CompactNode::Fraction { num, den, .. } => {
-            write_fraction_arg_c(out, arena, num);
+        CompactNode::Fraction { num, den, kind } => {
+            let (num_style, den_style) = match kind {
+                FractionKind::Display => (MathStyle::Display, MathStyle::DisplayCramped),
+                FractionKind::Inline => (MathStyle::Text, MathStyle::TextCramped),
+                _ => (style.fracnum(), style.fracden()),
+            };
+            write_fraction_arg_c(out, arena, num, num_style);
             out.push('/');
-            write_fraction_arg_c(out, arena, den);
+            write_fraction_arg_c(out, arena, den, den_style);
         },
 
         CompactNode::Sqrt(inner) => {
             out.push('\u{221A}');
-            write_paren_if_complex_c(out, arena, inner);
+            write_paren_if_complex_c(out, arena, inner, style.cramped());
         },
 
         CompactNode::Root { index, radicand } => {
@@ -565,18 +647,18 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             match idx_node {
                 CompactNode::Number(sid) if arena.str_val(sid) == "3" => {
                     out.push('\u{221B}');
-                    write_paren_if_complex_c(out, arena, radicand);
+                    write_paren_if_complex_c(out, arena, radicand, style.cramped());
                 },
                 CompactNode::Number(sid) if arena.str_val(sid) == "4" => {
                     out.push('\u{221C}');
-                    write_paren_if_complex_c(out, arena, radicand);
+                    write_paren_if_complex_c(out, arena, radicand, style.cramped());
                 },
                 _ => {
                     out.push('\u{221A}');
                     out.push('(');
-                    write_node_c(out, arena, index);
+                    write_node_c(out, arena, index, style.sup().sup());
                     out.push('&');
-                    write_node_c(out, arena, radicand);
+                    write_node_c(out, arena, radicand, style.cramped());
                     out.push(')');
                 },
             }
@@ -588,24 +670,29 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             out.push(op);
             if sub.is_some() {
                 out.push('_');
-                write_script_arg_c(out, arena, sub);
+                write_script_arg_c(out, arena, sub, style.sub());
             }
             if sup.is_some() {
                 out.push('^');
-                write_script_arg_c(out, arena, sup);
+                write_script_arg_c(out, arena, sup, style.sup());
             }
             out.push(' ');
-            write_node_c(out, arena, body);
+            write_node_c(out, arena, body, style);
         },
 
         CompactNode::Accent { base, accent, .. } => {
-            write_node_c(out, arena, base);
+            write_node_c(out, arena, base, style);
             out.push(accent);
         },
 
         CompactNode::Array {
-            cells, num_cols, ..
+            cells,
+            num_cols,
+            arraystretch_pct,
+            add_jot,
+            ..
         } => {
+            let cell_style = table_cell_style_c(arraystretch_pct, add_jot);
             out.push('\u{25A0}');
             out.push('(');
             let cell_ids = arena.children(cells);
@@ -622,10 +709,10 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
                     let cell_id = cell_ids[i * nc + j];
                     if let CompactNode::Row(cell_span) = *arena.node(cell_id) {
                         for &nid in arena.children(cell_span) {
-                            write_node_c(out, arena, nid);
+                            write_node_c(out, arena, nid, cell_style);
                         }
                     } else {
-                        write_node_c(out, arena, cell_id);
+                        write_node_c(out, arena, cell_id, cell_style);
                     }
                 }
             }
@@ -634,46 +721,51 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Phantom(inner, _) => {
             out.push('\u{27E1}');
-            write_paren_if_complex_c(out, arena, inner);
+            write_paren_if_complex_c(out, arena, inner, style);
         },
 
         CompactNode::Boxed { content: inner, .. } => {
             out.push('\u{25AD}');
-            write_paren_if_complex_c(out, arena, inner);
+            write_paren_if_complex_c(out, arena, inner, style);
         },
         CompactNode::Actuarial { content: inner, .. } => {
             out.push('\u{25AD}');
             out.push('(');
             out.push_str("6&");
-            write_node_c(out, arena, inner);
+            write_node_c(out, arena, inner, style);
             out.push(')');
         },
 
         CompactNode::Cancel { content, .. } => {
-            write_node_c(out, arena, content);
+            write_node_c(out, arena, content, style);
         },
 
         CompactNode::Scaled { content, .. } => {
-            write_node_c(out, arena, content);
+            write_node_c(out, arena, content, style);
         },
         CompactNode::RaiseBox { content, .. } => {
-            write_node_c(out, arena, content);
+            write_node_c(out, arena, content, style);
         },
 
-        CompactNode::Styled(style, span) => {
+        CompactNode::Styled(text_style, span) => {
+            let mut current_style = style;
             for &child_id in arena.children(span) {
                 let child = *arena.node(child_id);
+                if let CompactNode::StyleSwitch(value) = child {
+                    current_style = MathStyle::from_switch(value);
+                    continue;
+                }
                 match child {
                     CompactNode::Identifier(sid)
                     | CompactNode::Number(sid)
                     | CompactNode::Text(_, sid) => {
                         for ch in arena.str_val(sid).chars() {
                             let styled =
-                                crate::unicode::fonts::styled_char(ch, style).unwrap_or(ch);
+                                crate::unicode::fonts::styled_char(ch, text_style).unwrap_or(ch);
                             out.push(styled);
                         }
                     },
-                    _ => write_node_c(out, arena, child_id),
+                    _ => write_node_c(out, arena, child_id, current_style),
                 }
             }
         },
@@ -682,17 +774,23 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
             // Plain-text UnicodeMath has no portable color syntax, so the color
             // is dropped (see `unicode_math_loss`); the inner content is always
             // emitted so nothing is lost from the rendered expression.
-            write_node_c(out, arena, content);
+            write_node_c(out, arena, content, style);
         },
 
-        CompactNode::MathChoice { display, .. } => {
-            write_node_c(out, arena, display);
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
+            let branch = style.choose(display, text, script, script_script);
+            write_node_c(out, arena, branch, style);
         },
 
         CompactNode::MathAtom { content, .. } => {
-            write_node_c(out, arena, content);
+            write_node_c(out, arena, content, style);
         },
-        CompactNode::Reflect { content, .. } => write_node_c(out, arena, content),
+        CompactNode::Reflect { content, .. } => write_node_c(out, arena, content, style),
 
         CompactNode::Middle(_)
         | CompactNode::ColAlign(_)
@@ -703,22 +801,22 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId) {
     }
 }
 
-fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId) {
+fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Row(_) | CompactNode::Fraction { .. } => {
             out.push('(');
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
             out.push(')');
         },
-        _ => write_node_c(out, arena, id),
+        _ => write_node_c(out, arena, id, style),
     }
 }
 
-fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId) {
+fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
             out.push(')');
         },
         CompactNode::Fraction { .. }
@@ -730,45 +828,45 @@ fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId) {
         | CompactNode::Actuarial { .. }
         | CompactNode::Reflect { .. } => {
             out.push('(');
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
             out.push(')');
         },
-        _ => write_node_c(out, arena, id),
+        _ => write_node_c(out, arena, id, style),
     }
 }
 
-fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId) {
+fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
             out.push(')');
         },
         CompactNode::Fraction { .. } => {
             out.push('(');
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
             out.push(')');
         },
-        _ => write_node_c(out, arena, id),
+        _ => write_node_c(out, arena, id, style),
     }
 }
 
-fn write_paren_if_complex_c(out: &mut String, arena: &AstArena, id: NodeId) {
+fn write_paren_if_complex_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
             out.push(')');
         },
         CompactNode::Identifier(sid) if arena.str_val(sid).chars().count() == 1 => {
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
         },
         CompactNode::Number(sid) if arena.str_val(sid).chars().count() == 1 => {
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
         },
         _ => {
             out.push('(');
-            write_node_c(out, arena, id);
+            write_node_c(out, arena, id, style);
             out.push(')');
         },
     }
@@ -789,6 +887,14 @@ mod tests {
         let expr = MathExpr::inline(vec![node]);
         let config = Config::default();
         UnicodeMathWriter::write(&expr, &config).unwrap()
+    }
+
+    fn choice_latex(source: &str, display: DisplayStyle) -> (String, String) {
+        let config = Config::default().with_display(display);
+        let parsed = crate::from_latex_with(source, &config).unwrap();
+        let compact = parsed.to_unicode_math().unwrap();
+        let heap = UnicodeMathWriter::write(&parsed.expr(), &config).unwrap();
+        (compact, heap)
     }
 
     #[test]
@@ -869,6 +975,77 @@ mod tests {
         assert!(output.starts_with('\u{25A0}'));
         assert!(output.contains('&'));
         assert!(output.contains('@'));
+    }
+
+    #[test]
+    fn mathchoice_uses_the_active_display_style() {
+        let source = r"\mathchoice{D}{T}{S}{Q}";
+        assert_eq!(
+            choice_latex(source, DisplayStyle::Block),
+            ("D".into(), "D".into())
+        );
+        assert_eq!(
+            choice_latex(source, DisplayStyle::Inline),
+            ("T".into(), "T".into())
+        );
+    }
+
+    #[test]
+    fn mathchoice_uses_script_transitions_and_forced_fraction_styles() {
+        let choice = r"\mathchoice{D}{T}{S}{Q}";
+        for (source, expected) in [
+            (format!(r"x^{{{choice}}}"), "x^S"),
+            (format!(r"x_{{y^{{{choice}}}}}"), "x_(y^Q)"),
+            (format!(r"\frac{{{choice}}}{{{choice}}}"), "T/T"),
+            (format!(r"\dfrac{{{choice}}}{{{choice}}}"), "D/D"),
+            (format!(r"\tfrac{{{choice}}}{{{choice}}}"), "T/T"),
+            (format!(r"\sqrt[{choice}]{{{choice}}}"), "√(Q&D)"),
+        ] {
+            assert_eq!(
+                choice_latex(&source, DisplayStyle::Block),
+                (expected.into(), expected.into()),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn mathchoice_keeps_scoped_declarations_and_table_cell_styles() {
+        let choice = r"\mathchoice{D}{T}{S}{Q}";
+        for (source, expected) in [
+            (format!(r"{{\scriptstyle {choice}}}{choice}"), "SD"),
+            (
+                format!(r"\begin{{matrix}}{choice}&{choice}\\{choice}&{choice}\end{{matrix}}"),
+                "■(T&T@T&T)",
+            ),
+            (
+                format!(r"\begin{{smallmatrix}}{choice}\end{{smallmatrix}}"),
+                "■(S)",
+            ),
+            (
+                format!(r"\begin{{aligned}}{choice}&={choice}\end{{aligned}}"),
+                "■(D&=D)",
+            ),
+        ] {
+            let (compact, heap) = choice_latex(&source, DisplayStyle::Block);
+            assert_eq!(compact, expected, "{source}");
+            assert_eq!(heap, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn mathchoice_diagnostic_describes_style_dependent_selection() {
+        let config = Config::default().with_display(DisplayStyle::Inline);
+        let parsed = crate::from_latex_with(r"\mathchoice{D}{T}{S}{Q}", &config).unwrap();
+        let (output, diagnostics) =
+            UnicodeMathWriter::write_compact_with_diagnostics(parsed.compact_expr(), &config)
+                .unwrap();
+        assert_eq!(output, "T");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("active at this style") })
+        );
     }
 
     #[test]
