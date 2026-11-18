@@ -368,23 +368,11 @@ fn write_node_in(
             Ok(())
         },
         MathNode::Text(style, s) => write_text(w, *style, s),
-        MathNode::Space(r) => {
-            let mut elem = BytesStart::new("mspace");
-            let width = format!("{}em", r.as_f64());
-            elem.push_attribute(("width", width.as_str()));
-            w.write_event(Event::Empty(elem)).map_err(to_err)?;
-            Ok(())
-        },
-        MathNode::ExplicitSpace { width, basis } => {
-            let mut elem = BytesStart::new("mspace");
-            let width = format!(
-                "{}em",
-                crate::ast::style::local_space_width(*width, Some(*basis), display_style).as_f64()
-            );
-            elem.push_attribute(("width", width.as_str()));
-            w.write_event(Event::Empty(elem)).map_err(to_err)?;
-            Ok(())
-        },
+        MathNode::Space(r) => write_mspace(w, *r),
+        MathNode::ExplicitSpace { width, basis } => write_mspace(
+            w,
+            crate::ast::style::local_space_width(*width, Some(*basis), display_style),
+        ),
         MathNode::Rule {
             width,
             height,
@@ -861,6 +849,24 @@ fn write_text(w: &mut XmlWriter, style: TextStyle, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// CSS width is nonnegative. A logical start margin gives a negative TeX
+/// space its signed advance in a MathML layout.
+fn write_mspace(w: &mut XmlWriter, width: Rational) -> Result<()> {
+    let mut tag = BytesStart::new("mspace");
+    let mut value = String::new();
+    if width.num < 0 {
+        tag.push_attribute(("width", "0em"));
+        value.push_str("margin-inline-start:");
+    }
+    width.write_scaled_decimal(&mut value, 1);
+    value.push_str("em");
+    tag.push_attribute((
+        if width.num < 0 { "style" } else { "width" },
+        value.as_str(),
+    ));
+    w.write_event(Event::Empty(tag)).map_err(to_err)
+}
+
 fn write_mi(w: &mut XmlWriter, s: &str) -> Result<()> {
     let mut elem = BytesStart::new("mi");
     // Single-letter identifiers are italic by default in MathML;
@@ -1142,10 +1148,15 @@ fn write_node_fast_in(
         },
         CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
-            use std::fmt::Write;
-            let basis = arena.space_basis(id);
-            let width = crate::ast::style::local_space_width(r, basis, display_style).as_f64();
-            let _ = write!(buf, "<mspace width=\"{}em\"/>", width);
+            let width =
+                crate::ast::style::local_space_width(r, arena.space_basis(id), display_style);
+            if width.num < 0 {
+                buf.push_str("<mspace width=\"0em\" style=\"margin-inline-start:");
+            } else {
+                buf.push_str("<mspace width=\"");
+            }
+            width.write_scaled_decimal(buf, 1);
+            buf.push_str("em\"/>");
         },
 
         CompactNode::Row(span) => {
@@ -2071,6 +2082,29 @@ mod tests {
             assert!(xml.contains(operator), "{source}: {xml}");
             assert_eq!(crate::from_mathml(&xml).unwrap().to_mathml().unwrap(), xml);
         }
+    }
+
+    #[test]
+    fn negative_mspace_has_a_signed_browser_advance_and_round_trips() {
+        let formula = crate::from_latex(r"a\hskip-.25em b").unwrap();
+        let xml = formula.to_mathml().unwrap();
+        assert!(
+            xml.contains(r#"<mspace width="0em" style="margin-inline-start:-0.25em"/>"#),
+            "{xml}"
+        );
+        assert_eq!(
+            xml,
+            MathmlWriter::write(&formula.expr(), &Config::default()).unwrap()
+        );
+        let again = crate::from_mathml(&xml).unwrap();
+        assert_eq!(again.to_mathml().unwrap(), xml);
+        assert_eq!(
+            crate::from_mathml(r#"<math><mspace width="-.25em"/></math>"#)
+                .unwrap()
+                .expr()
+                .nodes,
+            vec![MathNode::Space(Rational::new(-1, 4))]
+        );
     }
 
     #[test]

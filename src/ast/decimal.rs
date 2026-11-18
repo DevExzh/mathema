@@ -1,65 +1,96 @@
-//! Conversion of decimal lengths to the bounded public rational type.
-
+//! Decimal lengths and conversion to the bounded public rational type.
 use super::Rational;
+use std::fmt::Write;
 
 impl Rational {
-    /// Convert a signed decimal times a unit ratio. Prefer the exact reduced
-    /// fraction. When that fraction exceeds our integer range, approximate
-    /// the value within the numerator and denominator bounds.
+    /// Convert a signed decimal times an exact unit ratio. If it cannot be
+    /// represented exactly, choose a nearby fraction within both field bounds.
     pub(crate) fn from_scaled_decimal(text: &str, unit: Self) -> Option<Self> {
         if unit.den == 0 {
             return None;
         }
-        let (magnitude, negative) = match text.as_bytes().first()? {
+        let (s, negative) = match text.as_bytes().first()? {
             b'-' => (&text[1..], true),
             b'+' => (&text[1..], false),
             _ => (text, false),
         };
         let negative = negative != (unit.num < 0);
-        if let Some((n, d)) = decimal_ratio(magnitude)
+        if let Some((n, d)) = decimal_ratio(s)
             && let Some(n) = n.checked_mul(u128::from(unit.num.unsigned_abs()))
             && let Some(d) = d.checked_mul(u128::from(unit.den))
-            && let Some(ratio) = reduced_ratio(n, d, negative)
         {
-            return Some(ratio);
+            return bounded_ratio(n, d, negative);
         }
-
-        if !magnitude.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
+        // Scientific notation and decimals beyond u128 precision. Reduce
+        // the finite floating-point value to a bounded decimal first.
+        if !s.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
             return None;
         }
-        let value = magnitude.parse::<f64>().ok()? * unit.as_f64().abs();
+        let value = s.parse::<f64>().ok()? * unit.as_f64().abs();
         if !value.is_finite() || value > f64::from(i32::MAX) + f64::from(u8::from(negative)) {
             return None;
         }
-        Some(closest_ratio(value, negative))
+        if value < 0.5 / f64::from(u32::MAX) {
+            return Some(Self::zero());
+        }
+        let (n, d) = decimal_ratio(&value.to_string())?;
+        bounded_ratio(n, d, negative)
     }
-    /// Scale a width for an output font while retaining simple exact fractions.
+
     pub(crate) fn scaled_by(self, num: u32, den: u32) -> Self {
         if self.den == 0 || den == 0 {
             return self;
         }
-        let n = u128::from(self.num.unsigned_abs()) * u128::from(num);
-        let d = u128::from(self.den) * u128::from(den);
-        reduced_ratio(n, d, self.num < 0).unwrap_or_else(|| {
-            closest_ratio(
-                self.as_f64().abs() * f64::from(num) / f64::from(den),
-                self.num < 0,
-            )
-        })
+        bounded_ratio(
+            u128::from(self.num.unsigned_abs()) * u128::from(num),
+            u128::from(self.den) * u128::from(den),
+            self.num < 0,
+        )
+        .unwrap_or_else(|| Self::new(if self.num < 0 { i32::MIN } else { i32::MAX }, 1))
     }
-}
 
-fn reduced_ratio(n: u128, d: u128, negative: bool) -> Option<Rational> {
-    let (mut a, mut b) = (n, d);
-    while b != 0 {
-        (a, b) = (b, a % b);
+    /// Use the short conventional spelling when it recovers the same
+    /// fraction. Extra decimal digits distinguish nearby large denominators.
+    pub(crate) fn write_scaled_decimal(self, buf: &mut String, multiplier: u32) {
+        let n = i64::from(self.num) * i64::from(multiplier);
+        let d = i64::from(self.den);
+        if d != 0 && n % d == 0 {
+            let _ = write!(buf, "{}", n / d);
+            return;
+        }
+        let start = buf.len();
+        let _ = write!(buf, "{}", n as f64 / d as f64);
+        if d == 0
+            || Self::from_scaled_decimal(&buf[start..], Self::new(1, multiplier)) == Some(self)
+        {
+            return;
+        }
+        buf.truncate(start);
+        if n < 0 {
+            buf.push('-');
+        }
+        let (n, d) = (n.unsigned_abs(), d as u64);
+        let _ = write!(buf, "{}", n / d);
+        let mut rem = n % d;
+        if rem == 0 {
+            return;
+        }
+        buf.push('.');
+        // Two distinct reduced fractions with u32 denominators differ by at
+        // least 1/(u32::MAX)^2. 22 decimal places suffice for all these unit
+        // multipliers, even when the exact decimal is recurring.
+        for _ in 0..22 {
+            rem *= 10;
+            buf.push(char::from(b'0' + (rem / d) as u8));
+            rem %= d;
+            if rem == 0 {
+                break;
+            }
+        }
+        while buf.ends_with('0') {
+            buf.pop();
+        }
     }
-    let n = i64::try_from(n / a).ok()?;
-    let d = u32::try_from(d / a).ok()?;
-    Some(Rational {
-        num: i32::try_from(if negative { -n } else { n }).ok()?,
-        den: d,
-    })
 }
 
 fn decimal_ratio(s: &str) -> Option<(u128, u128)> {
@@ -79,42 +110,48 @@ fn decimal_ratio(s: &str) -> Option<(u128, u128)> {
     Some((n, den))
 }
 
-/// Continued-fraction convergents. The final coefficient is bounded by
-/// both public fields; choose the nearer of the two remaining candidates.
-fn closest_ratio(value: f64, negative: bool) -> Rational {
-    let max_num = i32::MAX as u64 + u64::from(negative);
-    let max_den = u64::from(u32::MAX);
-    let finish = |n: u64, d: u64| Rational {
-        num: (if negative { -(n as i64) } else { n as i64 }) as i32,
-        den: d as u32,
+/// Continued fractions with bounded numerator and denominator. After the
+/// first out-of-range convergent, compare the last convergent and the
+/// largest admissible intermediate fraction using integer remainders.
+fn bounded_ratio(mut n: u128, mut d: u128, negative: bool) -> Option<Rational> {
+    let max_n = i32::MAX as u64 + u64::from(negative);
+    let max_d = u64::from(u32::MAX);
+    let finish = |n: u64, d: u64| {
+        Rational::new(
+            (if negative { -(n as i64) } else { n as i64 }) as i32,
+            d as u32,
+        )
     };
-    if value >= max_num as f64 {
-        return finish(max_num, 1);
+    if n <= u128::from(max_n) && d <= u128::from(max_d) {
+        return Some(finish(n as u64, d as u64));
     }
-    let mut x = value;
-    let (mut n0, mut d0) = (0u64, 1u64);
-    let (mut n1, mut d1) = (1u64, 0u64);
+    if n / d > u128::from(max_n) || (n / d == u128::from(max_n) && !n.is_multiple_of(d)) {
+        return None;
+    }
+    let (mut p0, mut q0, mut p1, mut q1) = (0u64, 1u64, 1u64, 0u64);
     loop {
-        let a = x.floor() as u64;
-        let bound = (max_num - n0)
-            .checked_div(n1)
+        let (a, rem) = (n / d, n % d);
+        let k = (max_n - p0)
+            .checked_div(p1)
             .unwrap_or(u64::MAX)
-            .min((max_den - d0).checked_div(d1).unwrap_or(u64::MAX));
-        if a > bound {
-            let (n, d) = (n0 + bound * n1, d0 + bound * d1);
-            return if (n as f64 / d as f64 - value).abs() < (n1 as f64 / d1 as f64 - value).abs() {
-                finish(n, d)
+            .min((max_d - q0).checked_div(q1).unwrap_or(u64::MAX));
+        if a > u128::from(k) {
+            let middle = 2 * u128::from(k);
+            // n/d < 2k + q0/q1 selects the intermediate fraction. Both
+            // remainder products are bounded by the input denominator.
+            let near = a < middle || (a == middle && rem * u128::from(q1) < d * u128::from(q0));
+            return Some(if near {
+                finish(p0 + k * p1, q0 + k * q1)
             } else {
-                finish(n1, d1)
-            };
+                finish(p1, q1)
+            });
         }
-        let (n, d) = (n0 + a * n1, d0 + a * d1);
-        let fraction = x - a as f64;
-        if fraction == 0.0 || n as f64 / d as f64 == value {
-            return finish(n, d);
+        let (p, q) = (p0 + a as u64 * p1, q0 + a as u64 * q1);
+        if rem == 0 {
+            return Some(finish(p, q));
         }
-        (n0, d0, n1, d1) = (n1, d1, n, d);
-        x = fraction.recip();
+        (p0, q0, p1, q1) = (p1, q1, p, q);
+        (n, d) = (d, rem);
     }
 }
 

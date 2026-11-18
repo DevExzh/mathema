@@ -778,8 +778,7 @@ impl<'a> MathmlCompactParser<'a> {
                     .push_node(CompactNode::Text(TextStyle::Normal, sid)))
             },
             "mspace" => {
-                let width = get_attr(start, "width").unwrap_or_default();
-                let r = parse_em_width(&width);
+                let r = mspace_width(start);
                 Ok(self.arena.push_node(CompactNode::Space(r)))
             },
             "mrow" => {
@@ -1119,8 +1118,7 @@ impl<'a> MathmlCompactParser<'a> {
         match name {
             "mo" => Ok(self.operator_token("", start)),
             "mspace" => {
-                let width = get_attr(start, "width").unwrap_or_default();
-                let r = parse_em_width(&width);
+                let r = mspace_width(start);
                 Ok(self.arena.push_node(CompactNode::Space(r)))
             },
             "mprescripts" => Ok(self.empty_row()),
@@ -1972,11 +1970,21 @@ fn single_accent_char(s: &str) -> Option<char> {
     }
 }
 
-fn parse_em_width(s: &str) -> Rational {
-    s.trim()
-        .strip_suffix("em")
-        .and_then(|v| Rational::from_scaled_decimal(v.trim(), Rational::one()))
-        .unwrap_or_else(Rational::zero)
+fn mspace_width(start: &quick_xml::events::BytesStart<'_>) -> Rational {
+    fn em_length(value: &str) -> Option<Rational> {
+        Rational::from_scaled_decimal(value.trim().strip_suffix("em")?.trim(), Rational::one())
+    }
+    let width = get_attr(start, "width").as_deref().and_then(em_length);
+    if width == Some(Rational::zero())
+        && let Some(style) = get_attr(start, "style")
+        && let Some((key, value)) = style.trim().trim_end_matches(';').split_once(':')
+        && key.trim().eq_ignore_ascii_case("margin-inline-start")
+        && let Some(margin) = em_length(value)
+        && margin.num < 0
+    {
+        return margin;
+    }
+    width.unwrap_or_else(Rational::zero)
 }
 
 /// Apply MathML token whitespace rules to the four XML whitespace characters.

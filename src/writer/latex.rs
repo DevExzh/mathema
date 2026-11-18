@@ -1893,30 +1893,24 @@ fn write_space(buf: &mut String, r: Rational) {
     }
 }
 
-fn write_rational_dimension(buf: &mut String, value: Rational) {
-    use std::fmt::Write;
-    let _ = write!(buf, "{}em", value.as_f64());
+fn write_rational_dimension(buf: &mut String, width: Rational) {
+    width.write_scaled_decimal(buf, 1);
+    buf.push_str("em");
 }
 
 fn write_space_with_basis(buf: &mut String, width: Rational, basis: Option<SpaceBasis>) {
-    use std::fmt::Write;
     if width.num == 0 {
         return;
     }
-    match basis {
-        None => write_space(buf, width),
-        Some(SpaceBasis::TextEm) => {
-            let _ = write!(buf, "\\kern{}em ", width.as_f64());
-        },
-        Some(SpaceBasis::Physical) => {
-            let pt = f64::from(width.num) * 10.0 / f64::from(width.den);
-            let _ = write!(buf, "\\kern{pt}pt ");
-        },
-        Some(SpaceBasis::MathMu) => {
-            let mu = f64::from(width.num) * 18.0 / f64::from(width.den);
-            let _ = write!(buf, "\\mkern{mu}mu ");
-        },
-    }
+    let (cmd, scale, unit) = match basis {
+        None => return write_space(buf, width),
+        Some(SpaceBasis::TextEm) => (r"\kern", 1, "em "),
+        Some(SpaceBasis::Physical) => (r"\kern", 10, "pt "),
+        Some(SpaceBasis::MathMu) => (r"\mkern", 18, "mu "),
+    };
+    buf.push_str(cmd);
+    width.write_scaled_decimal(buf, scale);
+    buf.push_str(unit);
 }
 
 fn write_delim(buf: &mut String, delim: &str) {
