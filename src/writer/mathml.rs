@@ -859,6 +859,11 @@ fn write_node_in(
             let variant = style_to_mathvariant(*style);
             let mut elem = BytesStart::new("mstyle");
             elem.push_attribute(("mathvariant", variant));
+            if w.operator_font.is_some()
+                && let Some(css) = scoped_font_css(*style)
+            {
+                elem.push_attribute(("style", css));
+            }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             let font = w.operator_font.map(|_| *style);
             w.with_operator_font(font, |w| write_nodes(w, children, display_style, false))?;
@@ -1819,6 +1824,12 @@ fn write_node_fast_in(
             let variant = style_to_mathvariant(style);
             buf.push_str("<mstyle mathvariant=\"");
             buf.push_str(variant);
+            if buf.operator_font.is_some()
+                && let Some(css) = scoped_font_css(style)
+            {
+                buf.push_str("\" style=\"");
+                buf.push_str(css);
+            }
             buf.push_str("\">");
             let font = buf.operator_font.map(|_| style);
             buf.with_operator_font(font, |buf| {
@@ -1885,6 +1896,28 @@ fn write_node_fast_in(
         CompactNode::StructuredOperator { content, form } => {
             write_structured_operator_group_fast(buf, arena, content, form, false, display_style)
         },
+    }
+}
+
+/// Chromium treats MathML's `mathvariant` as a glyph-selection hint and may
+/// report it as a normal computed CSS weight. The structured operator scope
+/// also carries the equivalent standard CSS declaration, which makes the
+/// browser's computed style and its selected glyph agree. Ordinary math
+/// output does not use this helper.
+fn scoped_font_css(style: TextStyle) -> Option<&'static str> {
+    match style {
+        TextStyle::Normal => Some("font-style:normal;font-weight:400"),
+        TextStyle::Bold => Some("font-weight:700"),
+        TextStyle::Italic => Some("font-style:italic"),
+        TextStyle::BoldItalic => Some("font-style:italic;font-weight:700"),
+        TextStyle::SansSerif => Some("font-family:sans-serif"),
+        TextStyle::SansSerifBold => Some("font-family:sans-serif;font-weight:700"),
+        TextStyle::SansSerifItalic => Some("font-family:sans-serif;font-style:italic"),
+        TextStyle::SansSerifBoldItalic => {
+            Some("font-family:sans-serif;font-style:italic;font-weight:700")
+        },
+        TextStyle::Monospace => Some("font-family:monospace"),
+        _ => None,
     }
 }
 
