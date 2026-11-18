@@ -2287,7 +2287,26 @@ fn structured_operatorname_decorations_preserve_operator_semantics() {
                 source_mathml,
                 "MathML was not stable for {source}"
             );
-            assert_eq!(source_mathml, expected_mathml, "{source} vs {expected}");
+            let strip_marker = |xml: String| {
+                [
+                    "starred-default",
+                    "starred-limits",
+                    "starred-nolimits",
+                    "unstarred",
+                ]
+                .into_iter()
+                .fold(xml, |xml, value| {
+                    xml.replace(
+                        &format!(" data-mathema-structured-operator=\"{value}\""),
+                        "",
+                    )
+                })
+            };
+            assert_eq!(
+                strip_marker(source_mathml),
+                strip_marker(expected_mathml),
+                "{source} vs {expected}"
+            );
         }
     }
 

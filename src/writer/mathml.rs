@@ -2276,7 +2276,8 @@ fn write_structured_operator_group_fast(
     movable: bool,
     display_style: MathStyle,
 ) {
-    buf.push_str(r#"<mrow data-mjx-texclass="OP" data-mathema-structured-operator=""#);
+    buf.push_str(r#"<mrow data-mjx-texclass="OP""#);
+    buf.push_str(r#" data-mathema-structured-operator=""#);
     buf.push_str(structured_operator_marker(limits, starred));
     buf.push('"');
     if movable {
