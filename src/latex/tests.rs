@@ -215,6 +215,8 @@ fn math_style_declarations_in_scripts_require_a_group() {
 fn style_switch_normalization_matches_heap_and_compact_scopes() {
     let config = Config::default();
     for source in [
+        r"{}^p{\scriptstyle}x",
+        r"{}^p{\scriptstyle xy}z",
         r"{\displaystyle x}y",
         r"{{\scriptstyle x}y}z",
         r"x_{{\displaystyle a}b}",
