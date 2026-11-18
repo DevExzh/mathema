@@ -1279,6 +1279,17 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
         },
 
+        CompactNode::AlignedCell { alignment, content } => {
+            buf.push_str(r"\multicolumn{1}{");
+            buf.push(match alignment {
+                ColumnAlign::Left => 'l',
+                ColumnAlign::Center => 'c',
+                ColumnAlign::Right => 'r',
+            });
+            buf.push_str("}{");
+            write_wrapped_content(buf, arena, content);
+            buf.push('}');
+        },
         CompactNode::Array {
             col_aligns,
             cells,
@@ -1351,6 +1362,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push_str(option);
             if env == "array" {
                 buf.push('{');
+                let aligned_cells = cell_ids
+                    .iter()
+                    .any(|&cell| arena.cell_alignment(cell).is_some());
+                if aligned_cells {
+                    buf.push_str("@{}");
+                }
                 for &id in columns {
                     if let CompactNode::ColAlign(col) = *arena.node(id) {
                         buf.push(match col {
@@ -1359,6 +1376,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             ColumnAlign::Right => 'r',
                         });
                     }
+                }
+                if aligned_cells {
+                    buf.push_str("@{}");
                 }
                 buf.push('}');
             }
@@ -1374,6 +1394,18 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             buf.push_str(" & ");
                         }
                         let cell_id = cell_ids[row_idx * nc + col_idx];
+                        if let Some(alignment) = arena.cell_alignment(cell_id) {
+                            buf.push_str(r"\multicolumn{1}{@{}");
+                            buf.push(match alignment {
+                                ColumnAlign::Left => 'l',
+                                ColumnAlign::Center => 'c',
+                                ColumnAlign::Right => 'r',
+                            });
+                            buf.push_str(r"@{}}{");
+                            write_aligned_cell_content(buf, arena, cell_id);
+                            buf.push('}');
+                            continue;
+                        }
                         // Each cell is a Row node wrapping cell contents
                         if let Some(marker) = match env {
                             "smallmatrix" | "smallmatrix*" => Some(2),
@@ -1678,6 +1710,24 @@ fn write_identifier(buf: &mut LatexBuffer, arena: &AstArena, sid: compact::StrId
         return;
     }
     write_identifier_text(buf, s);
+}
+
+fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
+    let id = match *arena.node(id) {
+        CompactNode::Row(span) if arena.children(span).len() == 1 => arena.children(span)[0],
+        _ => id,
+    };
+    match *arena.node(id) {
+        CompactNode::Identifier(sid) | CompactNode::Text(TextStyle::Normal, sid)
+            if arena.str_val(sid).chars().count() > 1 =>
+        {
+            buf.push_str(r"\text{");
+            write_identifier_text(buf, arena.str_val(sid));
+            buf.push('}');
+        },
+        CompactNode::Row(span) => write_nodes(buf, arena, span),
+        _ => write_node(buf, arena, id),
+    }
 }
 
 fn write_identifier_text(buf: &mut String, s: &str) {

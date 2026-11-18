@@ -360,6 +360,15 @@ pub enum MathNode {
         /// Source form and effective limit placement.
         form: OperatorNameForm,
     },
+    /// A table cell whose authored MathML alignment overrides its column.
+    /// The wrapper is transparent to mathematical content and layout except
+    /// for horizontal alignment inside its containing table.
+    AlignedCell {
+        /// Authored cell alignment.
+        alignment: ColumnAlign,
+        /// Cell content.
+        content: Box<MathNode>,
+    },
 }
 
 /// TeX math class of a symbol, controlling spacing and stretchiness.
@@ -788,7 +797,8 @@ pub(crate) fn compact_children(
         | CompactNode::RaiseBox { content, .. }
         | CompactNode::Color { content, .. }
         | CompactNode::MathAtom { content, .. }
-        | CompactNode::StructuredOperator { content, .. } => push(content),
+        | CompactNode::StructuredOperator { content, .. }
+        | CompactNode::AlignedCell { content, .. } => push(content),
         CompactNode::MathChoice {
             display,
             text,
@@ -902,6 +912,7 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             }
             Ok(())
         },
+        MathNode::AlignedCell { content, .. } => check_node_depth(content, d),
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
         | MathNode::Actuarial { content: inner, .. } => check_node_depth(inner, d),

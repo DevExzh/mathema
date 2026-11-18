@@ -290,6 +290,13 @@ pub enum CompactNode {
         /// Bit num_rows means "draw a horizontal rule at the bottom edge".
         row_seps: u32,
     },
+    /// A table cell with an authored alignment override.
+    AlignedCell {
+        /// Authored cell alignment.
+        alignment: ColumnAlign,
+        /// Cell content node.
+        content: NodeId,
+    },
 
     // ── Decorators ─────────────────────────────────────────────────
     /// Invisible (phantom) content occupying space per the given `PhantomKind`.
@@ -701,6 +708,13 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 smallvec::smallvec![*alignment; super::matrix_column_count(rows)];
             push_array_node(arena, &columns, rows, None, false, Some(*kind))
         },
+        MathNode::AlignedCell { alignment, content } => {
+            let content = push_math_node(arena, content);
+            arena.push_node(CompactNode::AlignedCell {
+                alignment: *alignment,
+                content,
+            })
+        },
 
         MathNode::Phantom(inner, kind) => {
             let inner_id = push_math_node(arena, inner);
@@ -837,8 +851,18 @@ fn push_array_node(
     let mut synthetic_padding = None;
     for row in rows {
         for cell in row {
-            let span = push_children(arena, cell);
-            cell_ids.push(arena.push_node(CompactNode::Row(span)));
+            let (alignment, nodes): (Option<ColumnAlign>, &[MathNode]) = match cell.as_slice() {
+                [MathNode::AlignedCell { alignment, content }] => {
+                    (Some(*alignment), std::slice::from_ref(content.as_ref()))
+                },
+                _ => (None, cell.as_slice()),
+            };
+            let span = push_children(arena, nodes);
+            let id = arena.push_node(CompactNode::Row(span));
+            if let Some(alignment) = alignment {
+                arena.mark_cell_alignment(id, alignment);
+            }
+            cell_ids.push(id);
         }
         for _ in row.len()..(num_cols as usize) {
             let padding = if environment.is_some() {
@@ -1047,14 +1071,26 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                     if arena.is_matrix_padding(cell_id) {
                         continue;
                     }
-                    match *arena.node(cell_id) {
-                        CompactNode::Row(span) => {
-                            row.push(reconstruct_children(arena, span));
-                        },
+                    let alignment = arena.cell_alignment(cell_id);
+                    let content = match *arena.node(cell_id) {
+                        CompactNode::Row(span) => reconstruct_children(arena, span),
                         _ => {
                             // Fallback: wrap single node
-                            row.push(vec![reconstruct_node(arena, cell_id)]);
+                            vec![reconstruct_node(arena, cell_id)]
                         },
+                    };
+                    if let Some(alignment) = alignment {
+                        let content = if content.len() == 1 {
+                            content.into_iter().next().unwrap()
+                        } else {
+                            MathNode::Row(content)
+                        };
+                        row.push(vec![MathNode::AlignedCell {
+                            alignment,
+                            content: Box::new(content),
+                        }]);
+                    } else {
+                        row.push(content);
                     }
                 }
                 rows.push(row);
@@ -1178,6 +1214,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             content: Box::new(reconstruct_node(arena, content)),
             form,
         },
+        CompactNode::AlignedCell { alignment, content } => MathNode::AlignedCell {
+            alignment,
+            content: Box::new(reconstruct_node(arena, content)),
+        },
 
         // Helper nodes — should not appear as standalone roots, but handle gracefully
         CompactNode::Middle(sid) => {
@@ -1225,6 +1265,7 @@ fn reconstruct_opt(arena: &AstArena, id: NodeId) -> Option<Box<MathNode>> {
 mod tests {
     use super::*;
     use crate::ast::{FencedItem, MathExpr, MathNode, OperatorAttr};
+    use crate::writer::Writer;
 
     #[test]
     fn hand_built_matrix_shape_and_default_pitch_survive_compact_boundary() {
@@ -1257,6 +1298,45 @@ mod tests {
                 .arena
                 .array_environment(compact.arena.children(compact.roots)[0]),
             Some(MatrixKind::SmallMatrix)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "render")]
+    fn authored_aligned_cell_survives_public_compact_boundary() {
+        let expr = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Left, ColumnAlign::Left],
+            rows: vec![
+                vec![
+                    vec![MathNode::Identifier("a".into())],
+                    vec![MathNode::Identifier("b".into())],
+                ],
+                vec![
+                    vec![MathNode::AlignedCell {
+                        alignment: ColumnAlign::Right,
+                        content: Box::new(MathNode::Identifier("LONG".into())),
+                    }],
+                    vec![MathNode::Identifier("c".into())],
+                ],
+            ],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        assert_eq!(compact.to_math_expr(), expr);
+        let mathml = crate::writer::mathml::MathmlWriter::write_compact(
+            &compact,
+            &crate::error::Config::default(),
+        )
+        .unwrap();
+        assert!(mathml.contains(r#"<mtd columnalign="right"><mi mathvariant="normal">LONG</mi>"#));
+        assert_eq!(
+            crate::render::render_to_svg_compact(
+                &compact,
+                &crate::render::RenderOptions::default()
+            )
+            .unwrap(),
+            crate::render::render_to_svg(&expr, &crate::render::RenderOptions::default()).unwrap()
         );
     }
 

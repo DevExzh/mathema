@@ -2365,8 +2365,21 @@ impl LatexCompactParser {
                 if self.check_node_limit() {
                     break;
                 }
-                let span = self.arena.push_children_deferred(cell);
-                cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
+                let (alignment, nodes) = match cell.as_slice() {
+                    [node] => match *self.arena.node(*node) {
+                        CompactNode::AlignedCell { alignment, content } => {
+                            (Some(alignment), smallvec::smallvec![content])
+                        },
+                        _ => (None, cell.clone()),
+                    },
+                    _ => (None, cell.clone()),
+                };
+                let span = self.arena.push_children_deferred(&nodes);
+                let id = self.arena.push_node(CompactNode::Row(span));
+                if let Some(alignment) = alignment {
+                    self.arena.mark_cell_alignment(id, alignment);
+                }
+                cell_ids.push(id);
             }
             // Pad short rows to num_cols
             for _ in row.len()..(num_cols as usize) {
@@ -3530,6 +3543,7 @@ impl LatexCompactParser {
 
             // --- Operatorname ---
             "operatorname" => self.parse_operatorname(input),
+            "multicolumn" => self.parse_multicolumn(input),
 
             // --- Additional binomials ---
             "dbinom" => self.parse_styled_binom(input, 0),
@@ -4891,6 +4905,47 @@ impl LatexCompactParser {
             },
             _ => None,
         }
+    }
+
+    fn parse_multicolumn<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let Some((input, span_count)) = super::mhchem::capture_braced(input) else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        };
+        if span_count.trim() != "1" {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        let (input, _) = ws(input)?;
+        let Some((input, spec)) = super::mhchem::capture_braced(input) else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        };
+        let spec = spec.trim().replace("@{}", "");
+        let alignment = match spec.as_str() {
+            "l" => ColumnAlign::Left,
+            "r" => ColumnAlign::Right,
+            "c" => ColumnAlign::Center,
+            _ => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            },
+        };
+        let (input, content) = self.parse_required_group(input)?;
+        Ok((
+            input,
+            self.arena
+                .push_node(CompactNode::AlignedCell { alignment, content }),
+        ))
     }
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

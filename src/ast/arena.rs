@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
-use super::{MatrixKind, SpaceBasis};
+use super::{ColumnAlign, MatrixKind, SpaceBasis};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(MatrixKind),
     MatrixPadding,
+    CellAlignment(ColumnAlign),
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -309,7 +310,10 @@ impl AstArena {
         }
         if let Some(provenance) = self.provenance.get(source) {
             self.provenance.insert(destination, provenance);
-        } else {
+        } else if !matches!(
+            self.provenance.get(destination),
+            Some(Provenance::CellAlignment(_))
+        ) {
             self.provenance.remove(destination);
         }
     }
@@ -406,6 +410,22 @@ impl AstArena {
     pub(crate) fn is_matrix_padding(&self, id: NodeId) -> bool {
         matches!(self.provenance.get(id), Some(Provenance::MatrixPadding))
             && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
+    }
+
+    #[inline]
+    pub(crate) fn mark_cell_alignment(&mut self, id: NodeId, alignment: ColumnAlign) {
+        if !self.size_overflow {
+            self.provenance
+                .insert(id, Provenance::CellAlignment(alignment));
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_alignment(&self, id: NodeId) -> Option<ColumnAlign> {
+        match self.provenance.get(id) {
+            Some(Provenance::CellAlignment(alignment)) => Some(alignment),
+            _ => None,
+        }
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.

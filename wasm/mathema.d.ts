@@ -56,6 +56,7 @@ export type MathNode =
         rows: MathNode[][][];
       };
     }
+  | { AlignedCell: { alignment: ColumnAlign; content: MathNode } }
   | { Phantom: [MathNode, PhantomKind] }
   | { Reflect: { content: MathNode; text_mode: boolean } }
   | { Rule: { width: Rational; height: Rational; lift: Rational } }

@@ -729,7 +729,11 @@ fn write_node_in(
                     let empty_cell: &[MathNode] = &[];
                     let cell = row.get(i).map(Vec::as_slice).unwrap_or(empty_cell);
                     let mut td = BytesStart::new("mtd");
-                    if let Some(align) = columns.get(i) {
+                    let cell_override = cell.first().and_then(|node| match node {
+                        MathNode::AlignedCell { alignment, .. } => Some(*alignment),
+                        _ => None,
+                    });
+                    if let Some(align) = cell_override.or_else(|| columns.get(i).copied()) {
                         let val = match align {
                             ColumnAlign::Left => "left",
                             ColumnAlign::Center => "center",
@@ -738,6 +742,12 @@ fn write_node_in(
                         td.push_attribute(("columnalign", val));
                     }
                     w.write_event(Event::Start(td)).map_err(to_err)?;
+                    if let [MathNode::AlignedCell { content, .. }] = cell {
+                        write_node(w, content, cell_style)?;
+                        w.write_event(Event::End(BytesEnd::new("mtd")))
+                            .map_err(to_err)?;
+                        continue;
+                    }
                     let cell = if promoted.is_some() && !cell.is_empty() {
                         &cell[1..]
                     } else {
@@ -771,6 +781,9 @@ fn write_node_in(
             Ok(())
         },
 
+        MathNode::AlignedCell { content, .. } => {
+            write_node_in(w, content, single_argument, display_style)
+        },
         MathNode::Phantom(inner, _) => {
             w.write_event(Event::Start(BytesStart::new("mphantom")))
                 .map_err(to_err)?;
@@ -1644,6 +1657,9 @@ fn write_node_fast_in(
             close_tag(buf, tag);
         },
 
+        CompactNode::AlignedCell { content, .. } => {
+            write_node_fast(buf, arena, content, display_style)
+        },
         CompactNode::Array {
             col_aligns,
             cells,
@@ -1703,7 +1719,33 @@ fn write_node_fast_in(
                 for (i, &cell_id) in row_chunk.iter().enumerate() {
                     // Get alignment
                     let align_nodes = arena.children(col_aligns);
-                    if let Some(&align_id) = align_nodes.get(i) {
+                    let cell_override =
+                        arena
+                            .cell_alignment(cell_id)
+                            .or_else(|| match *arena.node(cell_id) {
+                                CompactNode::AlignedCell { alignment, .. } => Some(alignment),
+                                _ => None,
+                            });
+                    if let Some(a) = cell_override.or_else(|| {
+                        align_nodes
+                            .get(i)
+                            .and_then(|&align_id| match *arena.node(align_id) {
+                                CompactNode::ColAlign(a) => Some(a),
+                                _ => None,
+                            })
+                    }) {
+                        let val = match a {
+                            ColumnAlign::Left => "left",
+                            ColumnAlign::Center => "center",
+                            ColumnAlign::Right => "right",
+                        };
+                        buf.push_str("<mtd columnalign=\"");
+                        buf.push_str(val);
+                        buf.push_str("\">");
+                    } else {
+                        buf.push_str("<mtd>");
+                    }
+                    /* if let Some(&align_id) = align_nodes.get(i) {
                         if let CompactNode::ColAlign(a) = *arena.node(align_id) {
                             let val = match a {
                                 ColumnAlign::Left => "left",
@@ -1718,9 +1760,12 @@ fn write_node_fast_in(
                         }
                     } else {
                         buf.push_str("<mtd>");
-                    }
+                    } */
                     // Write cell contents
                     match *arena.node(cell_id) {
+                        CompactNode::AlignedCell { content, .. } => {
+                            write_node_fast(buf, arena, content, cell_style);
+                        },
                         CompactNode::Row(span) => {
                             let mut nodes = arena.children(span);
                             if promoted.is_some() && !nodes.is_empty() {
