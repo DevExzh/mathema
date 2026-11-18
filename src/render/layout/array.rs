@@ -53,6 +53,25 @@ impl CellTemplate {
         right_rule: false,
     };
 
+    fn apply_rules(self, col: usize, mask: &mut u32) {
+        if self.alignment.is_none() {
+            return;
+        }
+        // A vertical rule between columns belongs to the template on its
+        // left. An override replaces internal rules and its trailing rule,
+        // and the leading template rule only in the first logical column.
+        let end = col + self.span;
+        let first = if col == 0 { 0 } else { col + 1 };
+        let preceding = |boundary: usize| ((1u64 << boundary.min(u32::BITS as usize)) - 1) as u32;
+        *mask &= !(preceding(end + 1) & !preceding(first));
+        if self.left_rule && col < u32::BITS as usize {
+            *mask |= 1 << col;
+        }
+        if self.right_rule && end < u32::BITS as usize {
+            *mask |= 1 << end;
+        }
+    }
+
     fn heap(nodes: &[MathNode]) -> Self {
         match nodes {
             [
@@ -158,7 +177,7 @@ impl ColumnLayout {
                 * 0.5
         };
         let end = col + cell.span;
-        let left = if cell.omit_left {
+        let left = if cell.omit_left && !cell.left_rule {
             0.0
         } else if col == 0 {
             self.edge
@@ -326,10 +345,15 @@ pub(super) fn layout_array(
         ctx.with_style(MathStyle::Text)
     };
     let mut has_span = false;
+    let mut has_override = false;
     for row in rows {
         let mut row_layouts = Vec::new();
         for cell in row {
             has_span |= matches!(cell.as_slice(), [MathNode::SpannedCell { .. }]);
+            has_override |= matches!(
+                cell.as_slice(),
+                [MathNode::SpannedCell { .. } | MathNode::AlignedCell { .. }]
+            );
             row_layouts.push(layout_row(crate::ast::table_cell_parts(cell).1, &cell_ctx));
         }
         cell_layouts.push(row_layouts);
@@ -375,19 +399,24 @@ pub(super) fn layout_array(
     for (i, row) in cell_layouts.into_iter().enumerate() {
         cursor_y += row_heights[i];
         let mut cursor_x = 0.0;
+        let mut visible_rules = if has_override { col_seps } else { 0 };
         let mut col = 0;
         for (cell, source) in row.into_iter().zip(&rows[i]) {
             let template = CellTemplate::heap(source);
             let (width, dx) = grid.place(col, template, cell.width, columns);
-            if template.left_rule {
+            template.apply_rules(col, &mut visible_rules);
+            if template.left_rule && col >= u32::BITS as usize {
                 cell_rules.push((cursor_x, i, cursor_y));
             }
-            if template.right_rule {
+            if template.right_rule && col + template.span >= u32::BITS as usize {
                 cell_rules.push((cursor_x + width, i, cursor_y));
             }
             children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
             cursor_x += width;
             col += template.span;
+        }
+        if visible_rules != 0 {
+            cell_rules.extend(grid.rules(visible_rules).map(|x| (x, i, cursor_y)));
         }
         cursor_y += row_depths[i];
     }
@@ -410,7 +439,7 @@ pub(super) fn layout_array(
         child.dy = box_height - child.dy;
     }
 
-    if col_seps != 0 {
+    if col_seps != 0 && !has_override {
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + box_depth;
         for bx in grid.rules(col_seps) {
@@ -526,8 +555,13 @@ pub(super) fn layout_array_arena(
         MathStyle::Text
     });
     let mut has_span = false;
+    let mut has_override = false;
     for &cell_id in cell_ids_ast {
         has_span |= matches!(ast.node(cell_id), CompactNode::SpannedCell { .. });
+        has_override |= matches!(
+            ast.node(cell_id),
+            CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+        );
         match *ast.node(cell_id) {
             CompactNode::Row(span) => {
                 cell_layout_ids.push(layout_row_arena(ast, span, arena, &cell_ctx));
@@ -591,16 +625,18 @@ pub(super) fn layout_array_arena(
     for i in 0..n_rows {
         cursor_y += row_heights[i];
         let mut cursor_x = 0.0;
+        let mut visible_rules = if has_override { col_seps } else { 0 };
         let mut j = 0;
         while j < nc {
             let idx = i * nc + j;
             let template = CellTemplate::compact(ast.node(cell_ids_ast[idx]), nc - j);
             let cell = cell_layout_ids[idx];
             let (width, dx) = grid.place(j, template, arena.get(cell).width, &columns);
-            if template.left_rule {
+            template.apply_rules(j, &mut visible_rules);
+            if template.left_rule && j >= u32::BITS as usize {
                 cell_rules.push((cursor_x, i, cursor_y));
             }
-            if template.right_rule {
+            if template.right_rule && j + template.span >= u32::BITS as usize {
                 cell_rules.push((cursor_x + width, i, cursor_y));
             }
             arena.push_child(ArenaPositionedBox {
@@ -611,12 +647,15 @@ pub(super) fn layout_array_arena(
             cursor_x += width;
             j += template.span;
         }
+        if visible_rules != 0 {
+            cell_rules.extend(grid.rules(visible_rules).map(|x| (x, i, cursor_y)));
+        }
         cursor_y += row_depths[i];
     }
     let total_width = grid.width();
 
     // Add vertical separator rules if col_seps is non-zero
-    if col_seps != 0 {
+    if col_seps != 0 && !has_override {
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + (half - axis);
         let box_depth = half - axis;
@@ -730,6 +769,27 @@ mod span_tests {
             (width, center + grid.edge / 2.0)
         );
         assert_eq!(grid.place(0, usual, 1.0, &columns).1, grid.edge);
+    }
+
+    #[test]
+    fn overrides_replace_only_their_own_preamble_rules() {
+        let mut mask = 0b1111;
+        CellTemplate {
+            span: 2,
+            alignment: Some(ColumnAlign::Right),
+            ..CellTemplate::ORDINARY
+        }
+        .apply_rules(0, &mut mask);
+        assert_eq!(mask, 0b1000);
+        let mut mask = 0b1111;
+        CellTemplate {
+            span: 2,
+            alignment: Some(ColumnAlign::Right),
+            right_rule: true,
+            ..CellTemplate::ORDINARY
+        }
+        .apply_rules(1, &mut mask);
+        assert_eq!(mask, 0b1011);
     }
 
     #[test]
