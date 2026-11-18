@@ -285,6 +285,17 @@ fn write_nodes_fast(
     inherited: MathStyle,
     explicit_row: bool,
 ) {
+    write_style_sequence_fast(buf, arena, nodes, inherited, explicit_row, write_node_fast);
+}
+
+fn write_style_sequence_fast(
+    buf: &mut String,
+    arena: &AstArena,
+    nodes: &[NodeId],
+    inherited: MathStyle,
+    explicit_row: bool,
+    emit: impl Fn(&mut String, &AstArena, NodeId, MathStyle),
+) {
     let switch = |&id: &NodeId| {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
             Some(value)
@@ -303,7 +314,7 @@ fn write_nodes_fast(
             inherited
         };
         for &id in run {
-            write_node_fast(buf, arena, id, active_style);
+            emit(buf, arena, id, active_style);
         }
         if style.is_some() {
             close_tag(buf, "mstyle");
@@ -892,6 +903,7 @@ fn write_mo_fence(w: &mut XmlWriter, text: &str, form: Option<&str>) -> Result<(
 
 fn write_mo_middle(w: &mut XmlWriter, text: &str) -> Result<()> {
     let mut elem = BytesStart::new("mo");
+    elem.push_attribute(("fence", "true"));
     elem.push_attribute(("stretchy", "true"));
     elem.push_attribute(("symmetric", "true"));
     w.write_event(Event::Start(elem)).map_err(to_err)?;
@@ -1947,7 +1959,7 @@ fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>) {
 }
 
 fn write_mo_middle_fast(buf: &mut String, text: &str) {
-    buf.push_str("<mo stretchy=\"true\" symmetric=\"true\">");
+    buf.push_str("<mo fence=\"true\" stretchy=\"true\" symmetric=\"true\">");
     xml_escape_into(buf, text);
     buf.push_str("</mo>");
 }
@@ -1968,16 +1980,23 @@ fn write_nodes_fenced_fast(
     nodes: &[NodeId],
     display_style: MathStyle,
 ) {
-    for &id in nodes {
-        if let CompactNode::Symbol(SymbolKind::Fence, sid) = *arena.node(id) {
-            let text = arena.str_val(sid);
-            if is_literal_fence_glyph(text) {
-                write_literal_fence_fast(buf, text);
-                continue;
+    write_style_sequence_fast(
+        buf,
+        arena,
+        nodes,
+        display_style,
+        false,
+        |buf, arena, id, style| {
+            if let CompactNode::Symbol(SymbolKind::Fence, sid) = *arena.node(id) {
+                let text = arena.str_val(sid);
+                if is_literal_fence_glyph(text) {
+                    write_literal_fence_fast(buf, text);
+                    return;
+                }
             }
-        }
-        write_node_fast(buf, arena, id, display_style);
-    }
+            write_node_fast(buf, arena, id, style);
+        },
+    );
 }
 
 fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
