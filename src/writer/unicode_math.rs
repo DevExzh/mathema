@@ -527,7 +527,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
 }
 
 fn write_structured_identifier_run(out: &mut String, value: &str) {
-    let styled_math = value.chars().any(|ch| !ch.is_ascii())
+    let styled_math = !value.is_ascii()
         && value
             .chars()
             .all(|ch| crate::unicode::fonts::unstyled_char(ch).is_some());
