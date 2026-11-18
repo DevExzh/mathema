@@ -1644,8 +1644,10 @@ fn write_operator_name_content(buf: &mut String, name: &str) {
         match ch {
             '\u{2009}' => buf.push_str("\\,"),
             '\u{205F}' => buf.push_str("\\:"),
-            '\u{2002}' => buf.push_str("\\enspace "),
-            '\u{2001}' => buf.push_str("\\quad "),
+            '\u{2002}' => buf.push_str("\\enspace{}"),
+            // A space after a control word is literal name content to this
+            // reader. An empty group ends the command without growing the name.
+            '\u{2001}' => buf.push_str("\\quad{}"),
             '\u{00A0}' => buf.push_str("\\ "),
             '%' => buf.push_str("\\%"),
             '#' => buf.push_str("\\#"),
@@ -2559,6 +2561,28 @@ mod tests {
             ),
         ] {
             assert_eq!(roundtrip(input), expected, "wrong spelling for {input:?}");
+        }
+    }
+
+    #[test]
+    fn word_sized_spaces_in_operator_names_round_trip_without_growing() {
+        for (input, expected) in [
+            (r"\operatorname{a\quad{}b}", r"\operatorname{a\quad{}b}"),
+            (
+                r"\operatorname*{a\enskip{}b}",
+                r"\operatorname*{a\enspace{}b}",
+            ),
+            (
+                r"\operatorname{a\qquad{} b}",
+                r"\operatorname{a\quad{}\quad{} b}",
+            ),
+        ] {
+            let parsed = crate::from_latex(input).unwrap();
+            let canonical = parsed.to_latex().unwrap();
+            assert_eq!(canonical, expected);
+            let again = crate::from_latex(&canonical).unwrap();
+            assert_eq!(again.to_latex().unwrap(), canonical);
+            assert_eq!(again.expr(), parsed.expr());
         }
     }
 
