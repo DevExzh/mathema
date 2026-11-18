@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Named LaTeX operators and compound `\mathop` expressions retain their
+  side, movable, or fixed limits in MathML and canonical LaTeX. In inline
+  output and nested script arguments, movable compound bounds use side scripts.
+  Inline MathML now carries `display="inline"` through a default-config reimport.
+
 - MathML groups an operator and its operand when they fill one fraction,
   root, or script argument. For example, the numerator of
   `\frac{\sum_i^n x}{2}` keeps the sum and its `x` together.

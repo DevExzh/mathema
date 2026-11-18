@@ -442,8 +442,13 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
         // wrapped atom for spacing decisions (e.g. \Big\ggg-).
         CompactNode::Scaled { content, .. } => needs_space(arena, Some(content), curr),
         CompactNode::PreScripts { base, .. } => needs_space(arena, Some(base), curr),
-        CompactNode::Operator { .. }
-        | CompactNode::Symbol(SymbolKind::BinaryOp, _)
+        // An operatorname ending in a braced argument already delimits the
+        // name, e.g. `\operatorname{rank}A`. Native control words retain
+        // their usual separator.
+        CompactNode::Operator { name, limits } => {
+            is_latex_operator_command(arena.str_val(name)) || limits == LimitStyle::AboveBelow
+        },
+        CompactNode::Symbol(SymbolKind::BinaryOp, _)
         | CompactNode::Symbol(SymbolKind::Relation, _) => true,
         // \mathrel / \mathbin wrappers behave like the relation/binary-op
         // symbols they contain, so they also need trailing space.

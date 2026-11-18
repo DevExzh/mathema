@@ -1,16 +1,16 @@
-upstream-v3-limit-sum-embellishment: A= {\lim}_{\begin{array}{c} n\rightarrow \infty \\ \Delta x_k\rightarrow 0 \end{array}}\sum\limits_{k= 1}^n {f({\tilde{x}}_k)\Delta x_k}
+upstream-v3-limit-sum-embellishment: A= \lim_{\begin{array}{c} n\rightarrow \infty \\ \Delta x_k\rightarrow 0 \end{array}}\sum\limits_{k= 1}^n {f({\tilde{x}}_k)\Delta x_k}
 upstream-v5-embellishments: \begin{array}{l} \widetilde{a+ b}+ \widehat{c+ d}+ \overgroup{d+ f}+ \overset{⃧}{e+ f}+ \overline{x+ y}+ \\ \overline{\overline{y+ t}}+ \underline{l+ m}+ \underline{\underline{k+ e}}+ \overrightarrow{kc+ 3}+ \overleftarrow{a+ b}+ \\ \overrightharpoon{y+ x}+ \overleftrightarrow{k- 4}+ \underrightarrow{c- d}+ \underleftarrow{d+ e}+ \underset{⇁}{e+ f}+ \\ \underleftrightarrow{c+ e}+ \cancel{d+ f}+ \xcancel{x+ z}+ \cancel{e+ x}+ \bcancel{y+ z} \\ \sqrt{2}+ \sqrt[3]{9}+ ⟌\overline{d+ 3}+ \overset{d+ 3}{⟌\overline{xy}} \end{array}
 upstream-v5-fences: \begin{array}{l} \left( a \right)+ \left[ b \right]+ \left\{ c \right\}+ \left\langle d \right\rangle+ \left| e \right|+ \left\| f \right\|+ \left\lfloor g \right\rfloor+ \\ \left\lceil h \right\rceil+ \left[ i \right)+ \left( j \right]+ \left| k \right\rangle+ \left\langle l \right|+ \left[ m \right[+ \left] n \right]+ \\ \left] o \right[+ \left⟦ p \right⟧+ \left( r \right.+ \left. s \right)+ \left[ t \right.+ \left. u \right]+ \left\{ v+\left. x \right\} \right.+ \\ \left\langle y \right.+ \left. z \right\rangle+ \left| a \right.+ \left. b \right|+ \left\| a \right.+ \left. b \right\|+ \left⟦ a \right.+ \left. b \right⟧+ \left\langle a \middle| b \right\rangle+ \\ {\overbrace{a}}^b+ {\underbrace{b}}_c+ {\overset{⎴}{a}}^b+ {\underset{⎵}{a}}_b \end{array}
 upstream-v5-integrals: \begin{array}{l} \int\nolimits {a+ \int\limits_c^a {b+}}\int\nolimits_c^a {b+}\int\nolimits {a+ \int\limits_b a} \\ \iint\nolimits {a+ \iint\limits_b {a+}}\iint\nolimits_b a \\ \iiint\nolimits {a+ \iiint\limits_b {a+}}\iiint\nolimits_b a \\ \oint\nolimits {a+}\oint\limits_b {a+}\oint\nolimits_b a \\ \oiint\nolimits {a+ \oiint\limits_b a}+ \oiint\nolimits_b a \\ \oiiint\nolimits {a+ \oiiint\limits_b a}+ \oiiint\nolimits_b a \\ \ointctrclockwise\nolimits {a+ \ointctrclockwise\limits_b {a+ \ointctrclockwise\nolimits_b a}}+ \varointclockwise\nolimits a \\ \varointclockwise\limits_b a+ \varointclockwise\nolimits_b a \end{array}
 upstream-v5-matrices: \begin{array}{lll} \begin{array}{l} d \\ g \\ b \\ a \\ b \\ c \end{array} & \begin{array}{l} d \\ b \\ d \\ a \\ b \\ c \end{array} & \begin{array}{l} c \\ b \\ d \\ d \\ b \\ e \end{array} \\ \begin{array}{l} a \\ b \end{array} & \begin{array}{l} c \\ d \end{array} & \begin{array}{l} e \\ f \end{array} \\ x & y & z \end{array}+ \begin{array}{lll} a+ b & d & 3e \\ v- 2 & r+ l & db+ 3 \\ x & x & s \end{array}+ \begin{array}{ccc} a+ b & c+ d & w \\ c+ 2 & e & e+ 3 \\ e & w & x \end{array}
-upstream-v5-sumop-limits: \begin{array}{l} {\min}_{w,b,\xi}\quad \;\frac{1}{2}w^Tw+ C\sum\limits_{i= 1}^l{}\xi_i \\ \text{subject}\;\text{to }\;\quad y_i(w^T\phi\left( x_i \right)+ b)\ \;\geq\;1- \xi_i \\ \xi_i\geq 0,\quad \forall i \end{array}
+upstream-v5-sumop-limits: \begin{array}{l} \min_{w,b,\xi}\quad \;\frac{1}{2}w^Tw+ C\sum\limits_{i= 1}^l{}\xi_i \\ \text{subject}\;\text{to }\;\quad y_i(w^T\phi\left( x_i \right)+ b)\ \;\geq\;1- \xi_i \\ \xi_i\geq 0,\quad \forall i \end{array}
 v3-bars: \left| z_1+z_2 \right|= 2
 v3-brace-bar-text: \left\{ \beta\left| \beta=\frac{k\text{π}}{2}+\frac{\text{π}}{6}\text{，}k\in Z \right. \right\}
 v3-brace-matrix: \left\{ \begin{array}{l} 2r+ \alpha r= 10 \\ \frac{1}{2}\alpha r^{2}= 4 \end{array}\Rightarrow r^2-5r+4=0,\therefore r=4 \right.
 v3-equation-system: \left\{ \begin{array}{l} \sin \theta+ \cos \theta= \frac{\sqrt{2}}{3} \\ \sin \theta- \cos \theta= \frac{4}{3} \end{array} \right.\Rightarrow \left\{ \begin{array}{l} \sin \theta= \frac{4+ \sqrt{2}}{6} \\ \cos \theta= \frac{\sqrt{2}- 4}{6} \end{array}\Rightarrow\tan\theta= \right.
 v3-fraction-root-script: \because \sin \alpha= \frac{y}{r}= \frac{y}{\sqrt{9+ y^{2}}}= - \frac{2}{3},\therefore y^{2}= \frac{36}{5},y< 0
 v3-function-names: P(r\cos \alpha,r\sin \alpha)
-v3-function-powers: {\sin}^{3}\theta- {\cos}^{3}\theta
+v3-function-powers: \sin^{3}\theta- \cos^{3}\theta
 v3-over-arrow: \overrightarrow{AB}\cdot \overrightarrow{AC}= 2
 v3-pile: \begin{array}{l} \therefore \sin \alpha+ \cos \alpha= - \frac{4}{5}\sqrt{2},\cos \alpha- \sin \alpha= \frac{3}{5}\sqrt{2},\cos 2\alpha= - \frac{24}{25}, \\ \sin 2\alpha= (\sin \alpha+ \cos \alpha)^{2}- 1= \frac{7}{25} \end{array}
 v3-subscripts: \{\theta_{1},\theta_{2},...,\theta_n\}
@@ -20,7 +20,7 @@ v5-explicit-font: \mathrm{cos}\angle\mathrm{A}CD= \frac{A{C}^{2}+ A{D}^{2}- C{D}
 v5-fraction: \alpha= \frac{l}{r}
 v5-interval: \left( -\frac{1}{2},1 \right]
 v5-nested-fractions: \frac{\cot (\alpha+ 4\pi)\cdot \cos (\alpha+ \pi)\cdot \cos (\frac{3}{2}\pi- \alpha)\cdot \tan (- \alpha)}{\tan (\pi+ \alpha)\cdot \tan (\frac{\pi}{2}+ \alpha)\cdot \cos (3\pi- \alpha)\cdot \sin (\alpha- \pi)}
-v5-parens-functions: \frac{\cos (\frac{9\pi}{2}- \alpha)\cos \left( \frac{\pi}{2}+\alpha \right){\tan}^{2}\left( \frac{\pi}{2}+\alpha \right)}{\sin \left( \frac{7\pi}{2}-\alpha \right)\sin \left( -\frac{3\pi}{2}-\alpha \right)\cot \left( 3\pi-\alpha \right)}
+v5-parens-functions: \frac{\cos (\frac{9\pi}{2}- \alpha)\cos \left( \frac{\pi}{2}+\alpha \right)\tan^{2}\left( \frac{\pi}{2}+\alpha \right)}{\sin \left( \frac{7\pi}{2}-\alpha \right)\sin \left( -\frac{3\pi}{2}-\alpha \right)\cot \left( 3\pi-\alpha \right)}
 v5-plus-minus: 2k\pi\pm \frac{\pi}{2}
 v5-subscript: S_{\Delta ABC}=
 v5-text-and-fonts: \triangle\mathrm{HAO}\text{中，}\mathrm{AH}= 350\text{（米），cos}\angle\text{HAO=}\frac{\text{11}}{\text{14}}

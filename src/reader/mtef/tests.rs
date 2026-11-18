@@ -270,7 +270,7 @@ fn v3_limit_on_a_function_name() {
         ])),
         &[0x11, 0],
     ]);
-    assert_eq!(latex(&eq3(&lim)), r"{\lim}_{n\rightarrow \infty}");
+    assert_eq!(latex(&eq3(&lim)), r"\lim_{n\rightarrow \infty}");
 }
 
 #[test]
