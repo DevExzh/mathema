@@ -26,6 +26,10 @@ use super::SymbolClass;
 /// Note: this parser does not recognise `\vert`, so the literal `|` delimiter
 /// (which is parser-supported and renders as the same glyph) is used instead.
 pub const MACROS: &[(&str, u8, &str)] = &[
+    // The fixed lower-case form is a regular macro in braket.sty. Keeping it
+    // in the ordered expansion stream lets the normal parser handle its
+    // grouping and inner-atom semantics.
+    ("braket", 1, r"\mathinner{\langle{#1}\rangle}"),
     // \ketbra{x}{y} → |x⟩⟨y|
     ("ketbra", 2, r"|{#1}\rangle\langle{#2}|"),
     // \Bra{x} → auto-scaling ⟨x| via \left\langle … \right|
@@ -124,5 +128,38 @@ mod tests {
     fn set_unregressed() {
         let out = mathml(r"\Set{x}");
         assert!(out.contains('{') || out.contains("&#x"), "got: {out}");
+    }
+
+    #[test]
+    fn dynamic_braket_forms_use_the_normal_parser() {
+        for source in [
+            r"\Braket{a|b}",
+            r"\Braket{a||b}",
+            r"\Braket{a\|b}",
+            r"\Set{x|x<\frac 1 2|S|}",
+            r"\Set{x||x<\frac 1 2|S|}",
+            r"\Set{x\|x<\frac 1 2|S|}",
+            r"\set{x|x<5|S|}",
+            r"\Braket{a\text{ | }b}",
+            r"\Braket{a\left|b\right|c}",
+        ] {
+            let first = crate::from_latex(source).unwrap();
+            let latex = first.to_latex().unwrap();
+            let second = crate::from_latex(&latex).unwrap();
+            assert_eq!(latex, second.to_latex().unwrap(), "{source}");
+            assert!(!first.to_mathml().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn fixed_set_matches_its_package_expansion() {
+        let source = crate::from_latex(r"\set{\dfrac{a}{b}|y}").unwrap();
+        let expansion = crate::from_latex(r"\{\,\dfrac{a}{b}\mid y\,\}").unwrap();
+        let source_mathml = source.to_mathml().unwrap();
+        let expansion_mathml = expansion.to_mathml().unwrap();
+        assert!(source_mathml.contains('∣') && expansion_mathml.contains('∣'));
+        assert_eq!(source.to_svg().unwrap(), expansion.to_svg().unwrap());
+        let canonical = source.to_latex().unwrap();
+        assert_eq!(canonical, source.to_latex().unwrap());
     }
 }
