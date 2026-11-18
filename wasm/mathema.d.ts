@@ -16,9 +16,8 @@ export interface MathExpr {
  * Discriminated union of the externally tagged `MathNode` enum.
  *
  * Tuple variants are represented by arrays and boxed values are transparent
- * under serde. The `serde-wasm-bindgen` serializer omits `None` object
- * properties, so optional fields below are absent when their Rust value is
- * `None`.
+ * under serde. Rust option fields are present on the returned object with
+ * the value `undefined` when they are empty.
  */
 export type MathNode =
   | { Number: string }
@@ -33,20 +32,20 @@ export type MathNode =
   | { Subscript: { base: MathNode; sub: MathNode } }
   | { Superscript: { base: MathNode; sup: MathNode } }
   | { SubSup: { base: MathNode; sub: MathNode; sup: MathNode } }
-  | { PreScripts: { base: MathNode; pre_sub?: MathNode; pre_sup?: MathNode } }
+  | { PreScripts: { base: MathNode; pre_sub: MathNode | undefined; pre_sup: MathNode | undefined } }
   | { Overscript: { base: MathNode; over: MathNode; movable_limits: boolean } }
   | { Underscript: { base: MathNode; under: MathNode; movable_limits: boolean } }
   | { UnderOver: { base: MathNode; under: MathNode; over: MathNode; movable_limits: boolean } }
   | { Fraction: { kind: FractionKind; num: MathNode; den: MathNode } }
   | { Sqrt: MathNode }
   | { Root: { index: MathNode; radicand: MathNode } }
-  | { Nary: { op: string; sub: MathNode | null; sup: MathNode | null; body: MathNode; limits: LimitStyle } }
+  | { Nary: { op: string; sub: MathNode | undefined; sup: MathNode | undefined; body: MathNode; limits: LimitStyle } }
   | { Accent: { base: MathNode; accent: string; position: AccentPosition; wide: boolean } }
   | {
       Array: {
         columns: ColumnAlign[];
         rows: MathNode[][][];
-        arraystretch?: number;
+        arraystretch: number | undefined;
         add_jot: boolean;
       };
     }
@@ -56,16 +55,15 @@ export type MathNode =
   | {
       Boxed: {
         content: MathNode;
-        bg_color?: string;
-        border_color?: string;
+        bg_color: string | undefined;
+        border_color: string | undefined;
       };
     }
   | { Actuarial: { content: MathNode; text_mode: boolean } }
   | { Cancel: { stroke: StrokeKind; content: MathNode } }
   | { Scaled: { factor: Rational; content: MathNode } }
-  | { RaiseBox: { shift: Rational; height?: Rational; depth?: Rational; content: MathNode } }
+  | { RaiseBox: { shift: Rational; height: Rational | undefined; depth: Rational | undefined; content: MathNode } }
   | { Styled: [TextStyle, MathNode[]] }
-  | { Color: { color: string; content: MathNode } }
   | {
       MathChoice: {
         display: MathNode;
@@ -75,7 +73,8 @@ export type MathNode =
       };
     }
   | { StyleSwitch: number }
-  | { MathAtom: { atom_type: MathAtomType; content: MathNode } };
+  | { MathAtom: { atom_type: MathAtomType; content: MathNode } }
+  | { Color: { color: string; content: MathNode } };
 
 export type FencedItem =
   | { Element: MathNode }
