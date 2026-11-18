@@ -2185,6 +2185,55 @@ mod tests {
     }
 
     #[test]
+    fn normal_multiletter_identifiers_do_not_gain_nested_style_wrappers() {
+        let ordinary = r#"<math><mi mathvariant="normal">xy</mi></math>"#;
+        let ordinary_output = crate::from_mathml(ordinary).unwrap().to_mathml().unwrap();
+        assert!(
+            !ordinary_output.contains("<mstyle mathvariant=\"normal\">"),
+            "{ordinary_output}"
+        );
+        assert_eq!(
+            crate::from_mathml(&ordinary_output)
+                .unwrap()
+                .to_mathml()
+                .unwrap(),
+            ordinary_output
+        );
+
+        let single = r#"<math><mi mathvariant="normal">x</mi></math>"#;
+        let single_output = crate::from_mathml(single).unwrap().to_mathml().unwrap();
+        assert!(
+            single_output.contains("mathvariant=\"normal\""),
+            "{single_output}"
+        );
+        assert_eq!(
+            crate::from_mathml(&single_output)
+                .unwrap()
+                .to_mathml()
+                .unwrap(),
+            single_output
+        );
+
+        for variant in ["bold", "italic", "bold-italic"] {
+            let input = format!(
+                r#"<math><mstyle mathvariant="{variant}"><mi mathvariant="normal">xy</mi><mi>z</mi></mstyle></math>"#
+            );
+            let output = crate::from_mathml(&input).unwrap().to_mathml().unwrap();
+            assert!(
+                output.contains(
+                    r#"<mstyle mathvariant="normal"><mi mathvariant="normal">xy</mi></mstyle>"#
+                ),
+                "{output}"
+            );
+            assert!(output.contains("<mi>z</mi>"), "{output}");
+            assert_eq!(
+                crate::from_mathml(&output).unwrap().to_mathml().unwrap(),
+                output
+            );
+        }
+    }
+
+    #[test]
     fn simple_operator() {
         let node = parse_one("<math><mo>+</mo></math>");
         assert_eq!(node, MathNode::Symbol(SymbolKind::BinaryOp, "+".into()));
