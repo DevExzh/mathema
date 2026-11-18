@@ -715,7 +715,10 @@ impl<'a> MathmlCompactParser<'a> {
         let mark_fences = self.fence_depth == Some(self.depth);
         let vertical_line = matches!(name, "|" | "‖");
         let attrs = operator_attributes(start, mark_fences || vertical_line);
-        if let Some(marked_kind) = attrs.symbol_kind.filter(|_| matches!(name, "-" | "−")) {
+        if let Some(marked_kind) = attrs
+            .symbol_kind
+            .filter(|_| matches!(name, "-" | "−" | "*" | "'"))
+        {
             kind = marked_kind;
         }
         if vertical_line

@@ -522,6 +522,11 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             }
         },
         MathNode::Operator(op) => layout_operator(op, ctx),
+        MathNode::Symbol(SymbolKind::Ordinary, s)
+            if ctx.styled_face.is_some() && matches!(s.as_str(), "'" | "*" | "-") =>
+        {
+            layout_text_run(s, ctx, false, ctx.styled_face)
+        },
         MathNode::Symbol(kind, s) => {
             if let Some(ch) = s.chars().next() {
                 if *kind == SymbolKind::LargeOp && ctx.branch_style().is_display() {
@@ -1423,6 +1428,11 @@ fn layout_node_arena(
         },
         CompactNode::Operator { name, .. } => {
             layout_text_run_arena(ast.str_val(name), arena, ctx, false, None)
+        },
+        CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            if ctx.styled_face.is_some() && matches!(ast.str_val(sid), "'" | "*" | "-") =>
+        {
+            layout_text_run_arena(ast.str_val(sid), arena, ctx, false, ctx.styled_face)
         },
         CompactNode::Symbol(kind, sid) => {
             let s = ast.str_val(sid);

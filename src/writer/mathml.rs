@@ -931,7 +931,7 @@ fn write_symbol_node(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<
             }
         }
     }
-    if kind == SymbolKind::Ordinary && matches!(text, "-" | "−") {
+    if kind == SymbolKind::Ordinary && matches!(text, "-" | "−" | "*" | "'") {
         elem.push_attribute(("data-mjx-texclass", "ORD"));
         elem.push_attribute(("lspace", "0em"));
         elem.push_attribute(("rspace", "0em"));
@@ -2478,7 +2478,7 @@ fn write_mo_symbol_fast(buf: &mut XmlBuffer, kind: SymbolKind, s: &str) {
             }
         }
     }
-    if kind == SymbolKind::Ordinary && matches!(s, "-" | "−") {
+    if kind == SymbolKind::Ordinary && matches!(s, "-" | "−" | "*" | "'") {
         buf.push_str(r#" data-mjx-texclass="ORD" lspace="0em" rspace="0em""#);
     }
     buf.push('>');

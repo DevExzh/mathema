@@ -2561,12 +2561,34 @@ fn operator_name_punctuation_is_local_to_its_math_list() {
     let parsed = crate::from_latex(src).unwrap();
     let xml = parsed.to_mathml().unwrap();
     for punct in ["&apos;", "-", "*"] {
-        assert!(xml.contains(&format!("<mtext>{punct}</mtext>")), "{xml}");
+        assert!(
+            xml.contains(&format!(
+                r#"<mo data-mjx-texclass="ORD" lspace="0em" rspace="0em">{punct}</mo>"#
+            )),
+            "{xml}"
+        );
     }
     let tex = parsed.to_latex().unwrap();
     assert_eq!(tex.matches(r"\prime").count(), 2, "{tex}");
     assert!(tex.contains(r"\kern-2pt"), "{tex}");
     assert_eq!(crate::from_latex(&tex).unwrap().to_mathml().unwrap(), xml);
+
+    for literal in ["*", "-", "'"] {
+        let with_char = format!(
+            r"\operatorname{{A\char{} \overline{{x}}}}",
+            literal.as_bytes()[0]
+        );
+        let direct = format!(r"\operatorname{{A{literal}\overline{{x}}}}");
+        let first = crate::from_latex(&with_char).unwrap().to_latex().unwrap();
+        assert_eq!(
+            first,
+            crate::from_latex(&direct).unwrap().to_latex().unwrap()
+        );
+        assert_eq!(
+            first,
+            crate::from_latex(&first).unwrap().to_latex().unwrap()
+        );
+    }
 
     let mixed = crate::from_latex(r"\operatorname{Re\plim\sqrt{x_i}}").unwrap();
     let xml = mixed.to_mathml().unwrap();

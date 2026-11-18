@@ -3033,7 +3033,7 @@ impl LatexCompactParser {
                 Ok((
                     &input[1..],
                     self.arena
-                        .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
                 ))
             },
             Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
