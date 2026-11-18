@@ -1856,6 +1856,23 @@ fn svg_math_operators_spacing() {
 }
 
 #[test]
+fn svg_mathchoice_spacing_uses_the_selected_atom_class() {
+    let choice = r"\mathchoice{x}{=}{+}{,}";
+    for (source, expected) in [
+        (format!(r"\textstyle a{choice}b"), r"\textstyle a=b"),
+        (
+            format!(r"\textstyle\left(a{choice}b\right)"),
+            r"\textstyle\left(a=b\right)",
+        ),
+        (format!(r"\textstyle a{choice}^2 b"), r"\textstyle a=^2 b"),
+    ] {
+        for render in [latex_to_svg, render_latex] {
+            assert_eq!(render(&source), render(expected), "{source}");
+        }
+    }
+}
+
+#[test]
 fn svg_fence_style_applies_until_the_next_middle() {
     let choice = r"\mathchoice{1}{2}{3}{4}";
     for (source, expected) in [

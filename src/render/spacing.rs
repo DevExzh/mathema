@@ -28,11 +28,15 @@ pub enum AtomType {
 
 /// Classify a MathNode into its atom type for spacing purposes.
 pub fn classify_node(node: &MathNode) -> AtomType {
-    classify_node_depth(node, 0)
+    classify_node_in(node, MathStyle::Display)
+}
+
+pub(super) fn classify_node_in(node: &MathNode, style: MathStyle) -> AtomType {
+    classify_node_depth(node, style, 0)
 }
 
 /// Depth-limited classification to prevent stack overflow on malicious ASTs.
-fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
+fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomType {
     // Bail to safe default if recursion is too deep
     if depth > crate::ast::MAX_AST_DEPTH {
         return AtomType::Ord;
@@ -61,27 +65,36 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
         MathNode::Subscript { base, .. }
         | MathNode::Superscript { base, .. }
         | MathNode::SubSup { base, .. }
-        | MathNode::PreScripts { base, .. } => classify_node_depth(base, depth + 1),
+        | MathNode::PreScripts { base, .. } => classify_node_depth(base, style, depth + 1),
         MathNode::Overscript { base, .. }
         | MathNode::Underscript { base, .. }
-        | MathNode::UnderOver { base, .. } => classify_node_depth(base, depth + 1),
-        MathNode::Accent { base, .. } => classify_node_depth(base, depth + 1),
+        | MathNode::UnderOver { base, .. } => classify_node_depth(base, style, depth + 1),
+        MathNode::Accent { base, .. } => classify_node_depth(base, style, depth + 1),
         MathNode::Array { .. } => AtomType::Inner,
         MathNode::Phantom(_, _) => AtomType::Ord,
         MathNode::Reflect { .. } => AtomType::Ord,
         MathNode::Boxed { .. } | MathNode::Actuarial { .. } => AtomType::Inner,
-        MathNode::Cancel { content, .. } => classify_node_depth(content, depth + 1),
+        MathNode::Cancel { content, .. } => classify_node_depth(content, style, depth + 1),
         MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
-            classify_node_depth(content, depth + 1)
+            classify_node_depth(content, style, depth + 1)
         },
         MathNode::Styled(_, children) => {
             if let Some(first) = children.first() {
-                classify_node_depth(first, depth + 1)
+                classify_node_depth(first, style, depth + 1)
             } else {
                 AtomType::Ord
             }
         },
-        MathNode::MathChoice { display, .. } => classify_node_depth(display, depth + 1),
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => classify_node_depth(
+            style.choose(display, text, script, script_script),
+            style,
+            depth + 1,
+        ),
         MathNode::MathAtom { atom_type, .. } => match atom_type {
             MathAtomType::Ord => AtomType::Ord,
             MathAtomType::Op => AtomType::Op,
@@ -97,10 +110,14 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
 
 /// Classify a CompactNode into its atom type for spacing purposes.
 pub fn classify_node_c(arena: &AstArena, id: NodeId) -> AtomType {
-    classify_node_c_depth(arena, id, 0)
+    classify_node_c_in(arena, id, MathStyle::Display)
 }
 
-fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType {
+pub(super) fn classify_node_c_in(arena: &AstArena, id: NodeId, style: MathStyle) -> AtomType {
+    classify_node_c_depth(arena, id, style, 0)
+}
+
+fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: usize) -> AtomType {
     if depth > crate::ast::MAX_AST_DEPTH {
         return AtomType::Ord;
     }
@@ -128,28 +145,50 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, depth: usize) -> AtomType
         CompactNode::Subscript { base, .. }
         | CompactNode::Superscript { base, .. }
         | CompactNode::SubSup { base, .. }
-        | CompactNode::PreScripts { base, .. } => classify_node_c_depth(arena, base, depth + 1),
+        | CompactNode::PreScripts { base, .. } => {
+            classify_node_c_depth(arena, base, style, depth + 1)
+        },
         CompactNode::Overscript { base, .. }
         | CompactNode::Underscript { base, .. }
-        | CompactNode::UnderOver { base, .. } => classify_node_c_depth(arena, base, depth + 1),
-        CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, depth + 1),
+        | CompactNode::UnderOver { base, .. } => {
+            classify_node_c_depth(arena, base, style, depth + 1)
+        },
+        CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, style, depth + 1),
         CompactNode::Array { .. } => AtomType::Inner,
         CompactNode::Phantom(..) => AtomType::Ord,
         CompactNode::Reflect { .. } => AtomType::Ord,
         CompactNode::Boxed { .. } | CompactNode::Actuarial { .. } => AtomType::Inner,
-        CompactNode::Cancel { content, .. } => classify_node_c_depth(arena, content, depth + 1),
-        CompactNode::Scaled { content, .. } => classify_node_c_depth(arena, content, depth + 1),
-        CompactNode::RaiseBox { content, .. } => classify_node_c_depth(arena, content, depth + 1),
-        CompactNode::Color { content, .. } => classify_node_c_depth(arena, content, depth + 1),
+        CompactNode::Cancel { content, .. } => {
+            classify_node_c_depth(arena, content, style, depth + 1)
+        },
+        CompactNode::Scaled { content, .. } => {
+            classify_node_c_depth(arena, content, style, depth + 1)
+        },
+        CompactNode::RaiseBox { content, .. } => {
+            classify_node_c_depth(arena, content, style, depth + 1)
+        },
+        CompactNode::Color { content, .. } => {
+            classify_node_c_depth(arena, content, style, depth + 1)
+        },
         CompactNode::Styled(_, span) => {
             let children = arena.children(span);
             if let Some(&first) = children.first() {
-                classify_node_c_depth(arena, first, depth + 1)
+                classify_node_c_depth(arena, first, style, depth + 1)
             } else {
                 AtomType::Ord
             }
         },
-        CompactNode::MathChoice { display, .. } => classify_node_c_depth(arena, display, depth + 1),
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => classify_node_c_depth(
+            arena,
+            style.choose(display, text, script, script_script),
+            style,
+            depth + 1,
+        ),
         CompactNode::MathAtom { atom_type, .. } => match atom_type {
             MathAtomType::Ord => AtomType::Ord,
             MathAtomType::Op => AtomType::Op,

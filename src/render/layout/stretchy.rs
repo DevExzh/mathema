@@ -492,7 +492,7 @@ pub(super) fn layout_fenced(
                 max_d = max_d.max(child.depth);
                 laid_out.push(FencePart::Element {
                     layout: child,
-                    atom: spacing::classify_node(n),
+                    atom: spacing::classify_node_in(n, current_ctx.style),
                     style: current_ctx.effective_spacing_style(),
                     size: current_ctx.size(),
                 });
@@ -705,7 +705,7 @@ pub(super) fn layout_fenced_arena(
                 max_d = max_d.max(b.depth);
                 laid_out.push(FencePart::Element {
                     layout: laid,
-                    atom: spacing::classify_node_c(ast, child_id),
+                    atom: spacing::classify_node_c_in(ast, child_id, current_ctx.style),
                     style: current_ctx.effective_spacing_style(),
                     size: current_ctx.size(),
                 });

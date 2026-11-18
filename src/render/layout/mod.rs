@@ -416,7 +416,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         }
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
-        let raw_atom = spacing::classify_node(node);
+        let raw_atom = spacing::classify_node_in(node, current_ctx.style);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
@@ -619,8 +619,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             layout_node(chosen, ctx)
         },
         MathNode::MathAtom { content, .. } => layout_node(content, ctx),
-        // Style declarations are consumed by the style-aware compact path;
-        // heap rendering keeps this marker layout-neutral until integration.
+        // A declaration controls its enclosing math list and has no box of its own.
         MathNode::StyleSwitch(_) => LayoutBox::kern(0.0),
     }
 }
@@ -1239,7 +1238,7 @@ fn layout_row_segment_arena(
         }
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
-        let raw_atom = spacing::classify_node_c(ast, id);
+        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.style);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
