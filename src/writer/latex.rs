@@ -891,26 +891,26 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             over,
             movable_limits,
         } => {
-            if write_compound_limits(buf, arena, base, NodeId::NONE, over, movable_limits) {
-                return;
-            } else if is_line_symbol(arena, over) {
-                buf.push_str("\\overline{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
-            } else if is_overlinesegment(arena, over) {
-                buf.push_str("\\overlinesegment{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
-            } else if is_overbrace(arena, over) {
-                buf.push_str("\\overbrace{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
-            } else {
-                buf.push_str("\\overset{");
-                write_wrapped_content(buf, arena, over);
-                buf.push_str("}{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
+            if !write_compound_limits(buf, arena, base, NodeId::NONE, over, movable_limits) {
+                if is_line_symbol(arena, over) {
+                    buf.push_str("\\overline{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                } else if is_overlinesegment(arena, over) {
+                    buf.push_str("\\overlinesegment{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                } else if is_overbrace(arena, over) {
+                    buf.push_str("\\overbrace{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                } else {
+                    buf.push_str("\\overset{");
+                    write_wrapped_content(buf, arena, over);
+                    buf.push_str("}{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                }
             }
         },
 
@@ -919,26 +919,26 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             under,
             movable_limits,
         } => {
-            if write_compound_limits(buf, arena, base, under, NodeId::NONE, movable_limits) {
-                return;
-            } else if is_line_symbol(arena, under) {
-                buf.push_str("\\underline{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
-            } else if is_underlinesegment(arena, under) {
-                buf.push_str("\\underlinesegment{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
-            } else if is_underbrace(arena, under) {
-                buf.push_str("\\underbrace{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
-            } else {
-                buf.push_str("\\underset{");
-                write_wrapped_content(buf, arena, under);
-                buf.push_str("}{");
-                write_wrapped_content(buf, arena, base);
-                buf.push('}');
+            if !write_compound_limits(buf, arena, base, under, NodeId::NONE, movable_limits) {
+                if is_line_symbol(arena, under) {
+                    buf.push_str("\\underline{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                } else if is_underlinesegment(arena, under) {
+                    buf.push_str("\\underlinesegment{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                } else if is_underbrace(arena, under) {
+                    buf.push_str("\\underbrace{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                } else {
+                    buf.push_str("\\underset{");
+                    write_wrapped_content(buf, arena, under);
+                    buf.push_str("}{");
+                    write_wrapped_content(buf, arena, base);
+                    buf.push('}');
+                }
             }
         },
 
