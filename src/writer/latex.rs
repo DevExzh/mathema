@@ -3,7 +3,7 @@ use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::unicode::fonts::style_to_latex_font;
-use crate::unicode::symbols::{nary_op_to_latex, unicode_to_latex};
+use crate::unicode::symbols::{mapped_symbol_kind, nary_op_to_latex, unicode_to_latex};
 use crate::writer::Writer;
 
 pub struct LatexWriter;
@@ -1717,12 +1717,30 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
         return;
     }
     // The same dagger glyph has ordinary and binary TeX commands.
+    let canonical_command = unicode_to_latex(ch);
     let command = match (kind, ch) {
         (SymbolKind::Ordinary, '†') => Some("dag"),
         (SymbolKind::Ordinary, '‡') => Some("ddag"),
-        _ => unicode_to_latex(ch),
+        _ => canonical_command,
     };
     if let Some(cmd) = command {
+        // Keep an explicitly ordinary symbol ordinary when its canonical
+        // control word normally parses as another atom class.  This matters
+        // for glyphs such as U+2223, whose ordinary spelling is `\mid` but
+        // whose command is a relation.  Without the wrapper, a second parse
+        // changes the preceding-node spacing decision and can add a literal
+        // separator on the next write.
+        if kind == SymbolKind::Ordinary
+            && canonical_command == Some(cmd)
+            && mapped_symbol_kind(ch).is_some_and(|mapped| {
+                !matches!(mapped, SymbolKind::Ordinary | SymbolKind::Alphabetic)
+            })
+        {
+            buf.push_str("\\mathord{\\");
+            buf.push_str(cmd);
+            buf.push('}');
+            return;
+        }
         buf.push('\\');
         buf.push_str(cmd);
         return;
@@ -2491,6 +2509,26 @@ mod tests {
         let text_first = roundtrip(r"\text{−--}");
         assert_eq!(text_first, r"\text{−–}");
         assert_eq!(text_first, roundtrip(&text_first));
+    }
+
+    #[test]
+    fn ordinary_middle_delimiter_keeps_compact_roundtrip_spacing() {
+        let input = r" ' \middle \mid\midfle' oe'";
+        let config = Config::default();
+
+        let mut first_expr = LatexReader::parse_compact(input, &config).unwrap();
+        crate::ast::normalize::normalize_compact_expr(&mut first_expr.expr).unwrap();
+        let first = LatexWriter::write_compact(&first_expr.expr, &config).unwrap();
+
+        let mut second_expr = LatexReader::parse_compact(&first, &config).unwrap();
+        crate::ast::normalize::normalize_compact_expr(&mut second_expr.expr).unwrap();
+        let second = LatexWriter::write_compact(&second_expr.expr, &config).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            r"{{}^{\prime}\mathord{\mid}}{midfle}^{\prime}o{e}^{\prime}"
+        );
     }
 
     #[test]
