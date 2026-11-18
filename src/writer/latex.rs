@@ -1710,14 +1710,29 @@ fn write_identifier(buf: &mut LatexBuffer, arena: &AstArena, sid: compact::StrId
 }
 
 fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[NodeId]) {
-    if let [id] = nodes
-        && let CompactNode::Identifier(sid) = *arena.node(*id)
-        && arena.str_val(sid).chars().nth(1).is_some()
-    {
-        // MathML identifiers containing multiple characters are upright.
+    // MathML represents a multi-letter `<mi>` as one upright identifier even
+    // when the cell also contains operators or other siblings. Native TeX
+    // groups retain one identifier node per letter because cell normalization
+    // disables only identifier coalescing, so wrapping each remaining
+    // multi-letter node is safe for both sources.
+    let mut start = 0;
+    for (index, &id) in nodes.iter().enumerate() {
+        let Some(sid) = (match *arena.node(id) {
+            CompactNode::Identifier(sid) if arena.str_val(sid).chars().nth(1).is_some() => {
+                Some(sid)
+            },
+            _ => None,
+        }) else {
+            continue;
+        };
+        if start < index {
+            write_node_slice(buf, arena, &nodes[start..index], false);
+        }
         write_styled_text(buf, TextStyle::Normal, arena.str_val(sid));
-    } else {
-        write_node_slice(buf, arena, nodes, false);
+        start = index + 1;
+    }
+    if start < nodes.len() {
+        write_node_slice(buf, arena, &nodes[start..], false);
     }
 }
 
@@ -2699,7 +2714,7 @@ fn is_underbrace(arena: &AstArena, id: NodeId) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::normalize::normalize_expr;
+    use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
     use crate::reader::Reader;
     use crate::reader::latex::LatexReader;
 
@@ -2746,6 +2761,71 @@ mod tests {
         assert!(
             italic_latex.contains(r"\mathit{LONG}"),
             "an explicit MathML italic variant must survive: {italic_latex}"
+        );
+    }
+
+    #[test]
+    fn aligned_cell_normalizes_other_runs_and_mixed_mathml_identifiers() {
+        let config = Config::default();
+        for (source, expected) in [
+            (
+                r"\begin{array}{l}\multicolumn{1}{r}{1{2}}\end{array}",
+                r"12",
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{r}{\text{A}\text{B}}\end{array}",
+                r"\text{AB}",
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{r}{{}^{a}x}\end{array}",
+                r"{}^{a}x",
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{r}{L{ON}G}\end{array}",
+                r"LONG",
+            ),
+        ] {
+            let mut expr = LatexReader::parse(source, &config).unwrap().expr;
+            normalize_expr(&mut expr);
+            let output = LatexWriter::write(&expr, &config).unwrap();
+            assert!(output.contains(expected), "{source} -> {output}");
+            assert!(
+                !output.contains(r"\text{ON}"),
+                "native letters became text: {output}"
+            );
+
+            let mut compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            normalize_compact_expr(&mut compact).unwrap();
+            let compact_output = LatexWriter::write_compact(&compact, &config).unwrap();
+            assert!(
+                compact_output.contains(expected),
+                "{source} -> {compact_output}"
+            );
+            assert!(
+                !compact_output.contains(r"\text{ON}"),
+                "native letters became text: {compact_output}"
+            );
+        }
+
+        let mixed = r#"<math><mtable columnalign="left"><mtr><mtd><mi>a</mi></mtd></mtr><mtr><mtd columnalign="right"><mrow><mi>LONG</mi><mo>+</mo><mi>x</mi></mrow></mtd></mtr></mtable></math>"#;
+        let mut mixed_expr = crate::from_mathml(mixed).unwrap().expr();
+        normalize_expr(&mut mixed_expr);
+        let mixed_latex = LatexWriter::write(&mixed_expr, &config).unwrap();
+        assert!(
+            mixed_latex.contains(r"\text{LONG}"),
+            "mixed MathML multi-letter mi lost its upright semantics: {mixed_latex}"
+        );
+        assert!(mixed_latex.contains('+'), "{mixed_latex}");
+        assert!(mixed_latex.contains('x'), "{mixed_latex}");
+
+        let mut mixed_compact = crate::reader::mathml::MathmlReader::parse_compact(mixed, &config)
+            .unwrap()
+            .expr;
+        normalize_compact_expr(&mut mixed_compact).unwrap();
+        let mixed_compact_latex = LatexWriter::write_compact(&mixed_compact, &config).unwrap();
+        assert!(
+            mixed_compact_latex.contains(r"\text{LONG}"),
+            "compact mixed MathML lost its upright semantics: {mixed_compact_latex}"
         );
     }
 

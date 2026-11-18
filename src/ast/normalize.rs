@@ -30,9 +30,17 @@ fn push_row_child(children: &mut Vec<MathNode>, node: MathNode) {
 }
 
 fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
+    normalize_nodes_depth_with_identifiers(nodes, depth, true);
+}
+
+fn normalize_nodes_depth_with_identifiers(
+    nodes: &mut Vec<MathNode>,
+    depth: usize,
+    merge_identifiers: bool,
+) {
     // Phase 1: recursively normalize each child
     for node in nodes.iter_mut() {
-        normalize_node_depth(node, depth);
+        normalize_node_depth_with_identifiers(node, depth, merge_identifiers);
     }
 
     // Phase 2: flatten Row children into the parent list
@@ -96,18 +104,23 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
     }
 
     // Phase 3c: merge adjacent ASCII Identifier nodes (math-mode letter runs).
-    let mut merged_ids = Vec::with_capacity(final_nodes.len());
-    for node in final_nodes {
-        if let MathNode::Identifier(ref text) = node
-            && let Some(MathNode::Identifier(prev_text)) = merged_ids.last_mut()
-            && prev_text.is_ascii()
-            && text.is_ascii()
-        {
-            prev_text.push_str(text);
-            continue;
+    let merged_ids = if merge_identifiers {
+        let mut merged_ids = Vec::with_capacity(final_nodes.len());
+        for node in final_nodes {
+            if let MathNode::Identifier(ref text) = node
+                && let Some(MathNode::Identifier(prev_text)) = merged_ids.last_mut()
+                && prev_text.is_ascii()
+                && text.is_ascii()
+            {
+                prev_text.push_str(text);
+                continue;
+            }
+            merged_ids.push(node);
         }
-        merged_ids.push(node);
-    }
+        merged_ids
+    } else {
+        final_nodes
+    };
 
     // Phase 4: an empty-base script is a limit of a big operator before it,
     // else a leading script of the next node (see `normalize_compact_span`).
@@ -378,7 +391,11 @@ fn make_prescripts_math(script: MathNode, base: MathNode) -> MathNode {
     }
 }
 
-fn normalize_node_depth(node: &mut MathNode, depth: usize) {
+fn normalize_node_depth_with_identifiers(
+    node: &mut MathNode,
+    depth: usize,
+    merge_identifiers: bool,
+) {
     // Stop recursing if AST is pathologically deep
     if depth > super::MAX_AST_DEPTH {
         return;
@@ -386,7 +403,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
     let d = depth + 1;
     match node {
         MathNode::Row(children) => {
-            normalize_nodes_depth(children, d);
+            normalize_nodes_depth_with_identifiers(children, d, merge_identifiers);
             // Unwrap single-child Row, except for an empty declaration group:
             // `{"\scriptstyle"}` must not leak into the following sibling.
             if children.len() == 1
@@ -400,7 +417,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         MathNode::Fenced { content, .. } => {
             for item in content.iter_mut() {
                 if let FencedItem::Element(n) = item {
-                    normalize_node_depth(n, d);
+                    normalize_node_depth_with_identifiers(n, d, merge_identifiers);
                 }
             }
             // Empty-base scripts become leading scripts of the next element;
@@ -442,19 +459,19 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         },
 
         MathNode::Subscript { base, sub } => {
-            normalize_node_depth(base, d);
-            normalize_node_depth(sub, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(sub, d, merge_identifiers);
             flatten_empty_script_math(node);
         },
         MathNode::Superscript { base, sup } => {
-            normalize_node_depth(base, d);
-            normalize_node_depth(sup, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(sup, d, merge_identifiers);
             flatten_empty_script_math(node);
         },
         MathNode::SubSup { base, sub, sup } => {
-            normalize_node_depth(base, d);
-            normalize_node_depth(sub, d);
-            normalize_node_depth(sup, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(sub, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(sup, d, merge_identifiers);
             flatten_empty_script_math(node);
         },
         MathNode::PreScripts {
@@ -462,110 +479,108 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
             pre_sub,
             pre_sup,
         } => {
-            normalize_node_depth(base, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
             if let Some(s) = pre_sub {
-                normalize_node_depth(s, d);
+                normalize_node_depth_with_identifiers(s, d, merge_identifiers);
             }
             if let Some(s) = pre_sup {
-                normalize_node_depth(s, d);
+                normalize_node_depth_with_identifiers(s, d, merge_identifiers);
             }
         },
 
         MathNode::Overscript { base, over, .. } => {
-            normalize_node_depth(base, d);
-            normalize_node_depth(over, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(over, d, merge_identifiers);
         },
         MathNode::Underscript { base, under, .. } => {
-            normalize_node_depth(base, d);
-            normalize_node_depth(under, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(under, d, merge_identifiers);
         },
         MathNode::UnderOver {
             base, under, over, ..
         } => {
-            normalize_node_depth(base, d);
-            normalize_node_depth(under, d);
-            normalize_node_depth(over, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(under, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(over, d, merge_identifiers);
         },
 
         MathNode::Fraction { num, den, .. } => {
-            normalize_node_depth(num, d);
-            normalize_node_depth(den, d);
+            normalize_node_depth_with_identifiers(num, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(den, d, merge_identifiers);
         },
         MathNode::Sqrt(inner) => {
-            normalize_node_depth(inner, d);
+            normalize_node_depth_with_identifiers(inner, d, merge_identifiers);
         },
         MathNode::Root { index, radicand } => {
-            normalize_node_depth(index, d);
-            normalize_node_depth(radicand, d);
+            normalize_node_depth_with_identifiers(index, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(radicand, d, merge_identifiers);
         },
 
         MathNode::Nary { sub, sup, body, .. } => {
             if let Some(s) = sub {
-                normalize_node_depth(s, d);
+                normalize_node_depth_with_identifiers(s, d, merge_identifiers);
             }
             if let Some(s) = sup {
-                normalize_node_depth(s, d);
+                normalize_node_depth_with_identifiers(s, d, merge_identifiers);
             }
-            normalize_node_depth(body, d);
+            normalize_node_depth_with_identifiers(body, d, merge_identifiers);
         },
 
         MathNode::Accent { base, .. } => {
-            normalize_node_depth(base, d);
+            normalize_node_depth_with_identifiers(base, d, merge_identifiers);
         },
 
         MathNode::Array { rows, .. } | MathNode::Matrix { rows, .. } => {
             for row in rows.iter_mut() {
                 for cell in row.iter_mut() {
-                    normalize_nodes_depth(cell, d);
+                    normalize_nodes_depth_with_identifiers(cell, d, merge_identifiers);
                 }
             }
         },
         MathNode::AlignedCell { content, .. } => {
-            // Keep the token boundaries inside an authored cell. MathML's
-            // `<mi>LONG</mi>` arrives as one multi-letter identifier and is
-            // upright, while a native TeX group `{LONG}` arrives as four
-            // identifier atoms and is italic. The ordinary row normalizer
-            // merges those atoms and loses that distinction before the cell
-            // writer can choose the faithful spelling.
+            // Preserve identifier atom boundaries while retaining every other
+            // normalization phase for the cell's math list.
             match content.as_mut() {
                 MathNode::Row(children) => {
-                    for child in children {
-                        normalize_node_depth(child, d);
-                    }
+                    normalize_nodes_depth_with_identifiers(children, d, false);
                 },
-                node => normalize_node_depth(node, d),
+                node => normalize_node_depth_with_identifiers(node, d, false),
             }
         },
 
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
         | MathNode::Actuarial { content: inner, .. } => {
-            normalize_node_depth(inner, d);
+            normalize_node_depth_with_identifiers(inner, d, merge_identifiers);
         },
-        MathNode::Reflect { content: inner, .. } => normalize_node_depth(inner, d),
+        MathNode::Reflect { content: inner, .. } => {
+            normalize_node_depth_with_identifiers(inner, d, merge_identifiers)
+        },
         MathNode::Cancel { content, .. } => {
-            normalize_node_depth(content, d);
+            normalize_node_depth_with_identifiers(content, d, merge_identifiers);
         },
         MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
-            normalize_node_depth(content, d);
+            normalize_node_depth_with_identifiers(content, d, merge_identifiers);
         },
         MathNode::Styled(_, children) => {
-            normalize_nodes_depth(children, d);
+            normalize_nodes_depth_with_identifiers(children, d, merge_identifiers);
         },
-        MathNode::Color { content, .. } => normalize_node_depth(content, d),
+        MathNode::Color { content, .. } => {
+            normalize_node_depth_with_identifiers(content, d, merge_identifiers)
+        },
         MathNode::MathChoice {
             display,
             text,
             script,
             script_script,
         } => {
-            normalize_node_depth(display, d);
-            normalize_node_depth(text, d);
-            normalize_node_depth(script, d);
-            normalize_node_depth(script_script, d);
+            normalize_node_depth_with_identifiers(display, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(text, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(script, d, merge_identifiers);
+            normalize_node_depth_with_identifiers(script_script, d, merge_identifiers);
         },
         MathNode::MathAtom { content, .. } | MathNode::StructuredOperator { content, .. } => {
-            normalize_node_depth(content, d);
+            normalize_node_depth_with_identifiers(content, d, merge_identifiers);
         },
 
         // Leaf nodes: nothing to normalize
@@ -607,6 +622,19 @@ fn normalize_compact_span(
     span: NodeSpan,
     depth: usize,
 ) -> crate::error::Result<NodeSpan> {
+    normalize_compact_span_with_identifiers(arena, span, depth, true)
+}
+
+/// Normalize a span while preserving separate ASCII identifier atoms. Native
+/// TeX groups supply one atom per letter, while a MathML multi-letter `<mi>`
+/// supplies one upright identifier. The distinction matters only inside an
+/// authored alignment cell.
+fn normalize_compact_span_with_identifiers(
+    arena: &mut AstArena,
+    span: NodeSpan,
+    depth: usize,
+    merge_identifiers: bool,
+) -> crate::error::Result<NodeSpan> {
     if depth > super::MAX_AST_DEPTH {
         return Ok(span);
     }
@@ -616,7 +644,7 @@ fn normalize_compact_span(
     // Collect IDs first to avoid borrow conflicts with arena.
     let child_ids: SmallVec<[NodeId; 8]> = arena.children(span).into();
     for &id in &child_ids {
-        normalize_compact_node(arena, id, d)?;
+        normalize_compact_node_with_identifiers(arena, id, d, merge_identifiers)?;
     }
 
     // Phase 2: flatten Rows and remove empty Rows.
@@ -702,12 +730,16 @@ fn normalize_compact_span(
         CompactNode::Number(sid) => Some((MergeKind::Number, sid)),
         _ => None,
     });
-    let merged_ids = merge_runs(arena, &final_nodes, |arena, node| match node {
-        CompactNode::Identifier(sid) if arena.str_val(sid).is_ascii() => {
-            Some((MergeKind::Identifier, sid))
-        },
-        _ => None,
-    });
+    let merged_ids = if merge_identifiers {
+        merge_runs(arena, &final_nodes, |arena, node| match node {
+            CompactNode::Identifier(sid) if arena.str_val(sid).is_ascii() => {
+                Some((MergeKind::Identifier, sid))
+            },
+            _ => None,
+        })
+    } else {
+        final_nodes
+    };
 
     // Phase 4: an empty-base script belongs to what follows it (`{}^{14}C`,
     // an MTEF script template with tvSU_PRECEDES, MathML `mprescripts`,
@@ -853,10 +885,11 @@ fn merge_runs(
 }
 
 /// Normalize a single compact node. May replace it in-place via `arena.node_mut`.
-fn normalize_compact_node(
+fn normalize_compact_node_with_identifiers(
     arena: &mut AstArena,
     id: NodeId,
     depth: usize,
+    merge_identifiers: bool,
 ) -> crate::error::Result<()> {
     if depth > super::MAX_AST_DEPTH {
         return Ok(());
@@ -866,7 +899,8 @@ fn normalize_compact_node(
     let node = *arena.node(id);
     match node {
         CompactNode::Row(span) => {
-            let new_span = normalize_compact_span(arena, span, d)?;
+            let new_span =
+                normalize_compact_span_with_identifiers(arena, span, d, merge_identifiers)?;
             let children = arena.children(new_span);
             if children.len() == 1
                 && !matches!(*arena.node(children[0]), CompactNode::StyleSwitch(_))
@@ -879,7 +913,8 @@ fn normalize_compact_node(
         },
 
         CompactNode::Styled(style, span) => {
-            let new_span = normalize_compact_span(arena, span, d)?;
+            let new_span =
+                normalize_compact_span_with_identifiers(arena, span, d, merge_identifiers)?;
             *arena.node_mut(id) = CompactNode::Styled(style, new_span);
         },
 
@@ -892,7 +927,8 @@ fn normalize_compact_node(
             // remove empty rows, merge adjacent text/number atoms, and attach
             // empty-base scripts to the preceding atom.  Middle delimiters are
             // leaves and pass through untouched.
-            let new_content = normalize_compact_span(arena, content, d)?;
+            let new_content =
+                normalize_compact_span_with_identifiers(arena, content, d, merge_identifiers)?;
             *arena.node_mut(id) = CompactNode::Fenced {
                 open,
                 close,
@@ -901,19 +937,19 @@ fn normalize_compact_node(
         },
 
         CompactNode::Subscript { base, sub } => {
-            normalize_compact_node(arena, base, d)?;
-            normalize_compact_node(arena, sub, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, sub, d, merge_identifiers)?;
             flatten_empty_script(arena, id);
         },
         CompactNode::Superscript { base, sup } => {
-            normalize_compact_node(arena, base, d)?;
-            normalize_compact_node(arena, sup, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, sup, d, merge_identifiers)?;
             flatten_empty_script(arena, id);
         },
         CompactNode::SubSup { base, sub, sup } => {
-            normalize_compact_node(arena, base, d)?;
-            normalize_compact_node(arena, sub, d)?;
-            normalize_compact_node(arena, sup, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, sub, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, sup, d, merge_identifiers)?;
             flatten_empty_script(arena, id);
         },
         CompactNode::PreScripts {
@@ -921,12 +957,12 @@ fn normalize_compact_node(
             pre_sub,
             pre_sup,
         } => {
-            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
             if pre_sub.is_some() {
-                normalize_compact_node(arena, pre_sub, d)?;
+                normalize_compact_node_with_identifiers(arena, pre_sub, d, merge_identifiers)?;
             }
             if pre_sup.is_some() {
-                normalize_compact_node(arena, pre_sup, d)?;
+                normalize_compact_node_with_identifiers(arena, pre_sup, d, merge_identifiers)?;
             }
             // Leading scripts stay leading scripts of their base. Without
             // scripts the node is its base; without a base it is an
@@ -965,45 +1001,45 @@ fn normalize_compact_node(
         },
 
         CompactNode::Overscript { base, over, .. } => {
-            normalize_compact_node(arena, base, d)?;
-            normalize_compact_node(arena, over, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, over, d, merge_identifiers)?;
         },
         CompactNode::Underscript { base, under, .. } => {
-            normalize_compact_node(arena, base, d)?;
-            normalize_compact_node(arena, under, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, under, d, merge_identifiers)?;
         },
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
-            normalize_compact_node(arena, base, d)?;
-            normalize_compact_node(arena, under, d)?;
-            normalize_compact_node(arena, over, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, under, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, over, d, merge_identifiers)?;
         },
 
         CompactNode::Fraction { num, den, .. } => {
-            normalize_compact_node(arena, num, d)?;
-            normalize_compact_node(arena, den, d)?;
+            normalize_compact_node_with_identifiers(arena, num, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, den, d, merge_identifiers)?;
         },
         CompactNode::Sqrt(inner) => {
-            normalize_compact_node(arena, inner, d)?;
+            normalize_compact_node_with_identifiers(arena, inner, d, merge_identifiers)?;
         },
         CompactNode::Root { index, radicand } => {
-            normalize_compact_node(arena, index, d)?;
-            normalize_compact_node(arena, radicand, d)?;
+            normalize_compact_node_with_identifiers(arena, index, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, radicand, d, merge_identifiers)?;
         },
 
         CompactNode::Nary { sub, sup, body, .. } => {
             if sub.is_some() {
-                normalize_compact_node(arena, sub, d)?;
+                normalize_compact_node_with_identifiers(arena, sub, d, merge_identifiers)?;
             }
             if sup.is_some() {
-                normalize_compact_node(arena, sup, d)?;
+                normalize_compact_node_with_identifiers(arena, sup, d, merge_identifiers)?;
             }
-            normalize_compact_node(arena, body, d)?;
+            normalize_compact_node_with_identifiers(arena, body, d, merge_identifiers)?;
         },
 
         CompactNode::Accent { base, .. } => {
-            normalize_compact_node(arena, base, d)?;
+            normalize_compact_node_with_identifiers(arena, base, d, merge_identifiers)?;
         },
 
         CompactNode::Array { cells, .. } => {
@@ -1014,7 +1050,7 @@ fn normalize_compact_node(
             let cell_ids: SmallVec<[NodeId; 8]> = arena.children(cells).into();
             let mut new_cells: SmallVec<[NodeId; 8]> = SmallVec::new();
             for &cell_id in &cell_ids {
-                normalize_compact_node(arena, cell_id, d)?;
+                normalize_compact_node_with_identifiers(arena, cell_id, d, merge_identifiers)?;
                 let new_id = normalize_array_cell(arena, cell_id)?;
                 new_cells.push(new_id);
             }
@@ -1024,30 +1060,31 @@ fn normalize_compact_node(
             }
         },
         CompactNode::AlignedCell { content, .. } => {
-            // Preserve separate TeX identifier atoms within the cell. A
-            // multi-letter MathML `<mi>` is represented by one Identifier and
-            // must remain distinguishable from native TeX `L O N G` atoms.
+            // Preserve separate TeX identifier atoms within the whole cell
+            // math list. Other normalization phases still run, including
+            // nested row flattening, number/text merging and script
+            // attachment.
             if let CompactNode::Row(span) = *arena.node(content) {
-                let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
-                for child in children {
-                    normalize_compact_node(arena, child, d)?;
-                }
+                let new_span = normalize_compact_span_with_identifiers(arena, span, d, false)?;
+                *arena.node_mut(content) = CompactNode::Row(new_span);
             } else {
-                normalize_compact_node(arena, content, d)?;
+                normalize_compact_node_with_identifiers(arena, content, d, false)?;
             }
         },
 
         CompactNode::Phantom(inner, _)
         | CompactNode::Boxed { content: inner, .. }
         | CompactNode::Actuarial { content: inner, .. } => {
-            normalize_compact_node(arena, inner, d)?;
+            normalize_compact_node_with_identifiers(arena, inner, d, merge_identifiers)?;
         },
-        CompactNode::Reflect { content: inner, .. } => normalize_compact_node(arena, inner, d)?,
+        CompactNode::Reflect { content: inner, .. } => {
+            normalize_compact_node_with_identifiers(arena, inner, d, merge_identifiers)?;
+        },
         CompactNode::Cancel { content, .. } | CompactNode::RaiseBox { content, .. } => {
-            normalize_compact_node(arena, content, d)?;
+            normalize_compact_node_with_identifiers(arena, content, d, merge_identifiers)?;
         },
         CompactNode::Scaled { content, .. } => {
-            normalize_compact_node(arena, content, d)?;
+            normalize_compact_node_with_identifiers(arena, content, d, merge_identifiers)?;
             // Sizing commands only apply to delimiter symbols. If the parser
             // produced a wrapper around anything else, the writer will drop the
             // sizing command and just emit the content. Flatten the wrapper now
@@ -1070,7 +1107,7 @@ fn normalize_compact_node(
             }
         },
         CompactNode::Color { content, .. } => {
-            normalize_compact_node(arena, content, d)?;
+            normalize_compact_node_with_identifiers(arena, content, d, merge_identifiers)?;
         },
         CompactNode::MathChoice {
             display,
@@ -1078,13 +1115,13 @@ fn normalize_compact_node(
             script,
             script_script,
         } => {
-            normalize_compact_node(arena, display, d)?;
-            normalize_compact_node(arena, text, d)?;
-            normalize_compact_node(arena, script, d)?;
-            normalize_compact_node(arena, script_script, d)?;
+            normalize_compact_node_with_identifiers(arena, display, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, text, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, script, d, merge_identifiers)?;
+            normalize_compact_node_with_identifiers(arena, script_script, d, merge_identifiers)?;
         },
         CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
-            normalize_compact_node(arena, content, d)?;
+            normalize_compact_node_with_identifiers(arena, content, d, merge_identifiers)?;
         },
 
         // Leaf nodes: nothing to normalize
