@@ -752,7 +752,7 @@ mod tests {
         );
 
         let parsed = LatexReader::parse_compact(r"a\hskip1em + b", &Config::default()).unwrap();
-        assert!(parsed.has_warnings());
+        assert!(!parsed.has_warnings());
         let expr = parsed.to_parse_result().expr;
         assert!(
             expr.nodes
@@ -785,7 +785,7 @@ mod tests {
         );
 
         let parsed =
-            LatexReader::parse_compact(r"a\hskip 1em plus fill minus 2pt b", &Config::default())
+            LatexReader::parse_compact(r"a\hskip 1em plus 1fill minus 2pt b", &Config::default())
                 .unwrap();
         assert!(parsed.has_warnings());
         let expr = parsed.to_parse_result().expr;
@@ -794,6 +794,28 @@ mod tests {
                 .iter()
                 .any(|node| matches!(node, MathNode::Identifier(text) if text == "b"))
         );
+    }
+
+    #[test]
+    fn glue_keywords_belong_only_to_skip_primitives() {
+        let full = r"a\hskip1em plus 1fil minus 2pt b";
+        let fixed = r"a\kern1em b";
+        let to_mathml = |x| crate::from_latex(x).unwrap().to_mathml().unwrap();
+        assert_eq!(to_mathml(full), to_mathml(fixed));
+        assert_eq!(to_mathml(r"a\mskip18mu plus 3fill b"), to_mathml(fixed));
+        let kern =
+            LatexReader::parse_compact(r"a\kern1em plus 1fil b", &Config::default()).unwrap();
+        assert!(!kern.has_warnings());
+        assert!(
+            crate::from_latex(r"a\kern1em plus 1fil b")
+                .unwrap()
+                .to_latex()
+                .unwrap()
+                .contains("plus")
+        );
+        let incomplete = crate::from_latex(r"a\hskip1em plus 2pt minus b").unwrap();
+        let tex = incomplete.to_latex().unwrap();
+        assert!(tex.contains("minus") && !tex.contains("plus"), "{tex}");
     }
 
     #[test]
@@ -812,7 +834,7 @@ mod tests {
     fn glue_fixed_width_matches_kern_and_consumes_infinite_orders() {
         for (glue, kern) in [
             (r"a\hskip 1em plus .5em minus .2em b", r"a\kern1em b"),
-            (r"a\hskip 1em plus fill minus 2pt b", r"a\kern1em b"),
+            (r"a\hskip 1em plus 1fill minus 2pt b", r"a\kern1em b"),
             (r"a\mskip 18mu plus 1fil b", r"a\mkern18mu b"),
         ] {
             let glue = parse(glue);

@@ -3448,8 +3448,7 @@ impl LatexCompactParser {
             "pmod" | "pod" => self.parse_pmod(input),
 
             // --- Kern/space dimension commands ---
-            "kern" | "hskip" => self.parse_kern(input, false),
-            "mkern" | "mskip" => self.parse_kern(input, true),
+            "kern" | "mkern" | "hskip" | "mskip" => self.parse_kern(input, name),
             "hspace" => self.parse_hspace(input),
             "mspace" => self.parse_hspace(input),
 
@@ -4965,143 +4964,107 @@ impl LatexCompactParser {
         Ok((rest, Rational::new(num_i, 100)))
     }
 
-    /// Parse one of `\kern`, `\mkern`, `\hskip`, or `\mskip` as fixed
-    /// horizontal spacing. The AST has no glue stretch/shrink fields, so any
-    /// such suffix is retained as source input and reported as a diagnostic.
-    fn parse_kern<'a>(&mut self, input: &'a str, is_mu: bool) -> IResult<&'a str, NodeId> {
+    /// A kern takes a fixed dimension. Glue additionally accepts stretch and
+    /// shrink components. An un-stretched math list uses the natural width.
+    fn parse_kern<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        // If the dimension is braced, handle {dim}
-        if input.starts_with('{') {
-            let (rest, _) = char('{')(input)?;
-            let end = rest.find('}').ok_or_else(|| {
+        let group = if input.starts_with('{') {
+            Some(super::mhchem::capture_braced(input).ok_or_else(|| {
                 nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
-            })?;
-            let dim_str = &rest[..end];
-            self.warn_kern_unit(is_mu, dim_str);
-            let after = &rest[end + 1..];
-            // Parse the dimension within the braces
-            let mut sub_parser = LatexCompactParser::with_capacity(dim_str.len(), None);
-            if let Ok((remaining, r)) = sub_parser.parse_dimension(dim_str) {
-                if !remaining.trim().is_empty() {
-                    if let Some(after_glue) = Self::consume_glue_suffix(remaining) {
-                        if after_glue != remaining {
-                            self.warn_kern_suffix(remaining);
-                        }
-                    } else {
-                        self.warn_kern_suffix(remaining);
-                    }
-                }
-                return Ok((after, self.arena.push_node(CompactNode::Space(r))));
-            }
-            // Failed to parse dimension; emit thin space
+            })?)
+        } else {
+            None
+        };
+        let dimension = group.map_or(input, |(_, body)| body);
+        let Ok((mut rest, width)) = self.parse_dimension(dimension) else {
             return Ok((
-                after,
+                group.map_or(input, |(tail, _)| tail),
                 self.arena.push_node(CompactNode::Space(Rational::zero())),
             ));
-        }
-        match self.parse_dimension(input) {
-            Ok((rest, r)) => {
-                let dimension_text = &input[..input.len() - rest.len()];
-                self.warn_kern_unit(is_mu, dimension_text);
-                let after_glue = Self::consume_glue_suffix(rest).unwrap_or(rest);
-                if !rest.trim().is_empty() {
-                    self.warn_kern_suffix(rest);
+        };
+        let is_mu = matches!(name, "mkern" | "mskip");
+        self.warn_kern_unit(is_mu, &dimension[..dimension.len() - rest.len()]);
+        if matches!(name, "hskip" | "mskip") {
+            let fixed_end = rest;
+            for keyword in ["plus", "minus"] {
+                let trimmed = &rest[skip_ws_bytes(rest.as_bytes())..];
+                let Some((word, operand)) = trimmed.split_at_checked(keyword.len()) else {
+                    continue;
+                };
+                if !word.eq_ignore_ascii_case(keyword)
+                    || operand.starts_with(|c: char| c.is_ascii_alphabetic())
+                {
+                    continue;
                 }
-                Ok((after_glue, self.arena.push_node(CompactNode::Space(r))))
-            },
-            Err(_) => {
-                // Couldn't parse dimension; just emit zero space
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Space(Rational::zero())),
-                ))
-            },
+                if let Some((tail, unit)) = Self::glue_component(operand) {
+                    self.warn_kern_unit(is_mu, unit);
+                    rest = tail;
+                } else {
+                    if group.is_none() {
+                        self.warn(
+                            "incomplete glue component; following tokens were retained as math",
+                        );
+                    }
+                    break;
+                }
+            }
+            if rest.len() != fixed_end.len() {
+                self.warn("only the natural width is representable; glue stretch and shrink components were dropped");
+            }
         }
+        if let Some((tail, _)) = group {
+            if !rest.trim().is_empty() {
+                self.warn("extra tokens in the braced spacing dimension were dropped");
+            }
+            rest = tail;
+        }
+        Ok((rest, self.arena.push_node(CompactNode::Space(width))))
     }
 
-    /// Consume the optional TeX glue stretch and shrink clauses after a fixed
-    /// dimension. The AST stores only fixed spacing, so the caller retains the
-    /// fixed value and reports one diagnostic for the discarded clauses.
-    ///
-    /// A suffix is consumed only when every clause is complete. This prevents
-    /// an incomplete `plus` or an unrelated following identifier from being
-    /// swallowed by a spacing primitive.
-    fn consume_glue_suffix(input: &str) -> Option<&str> {
-        let mut rest = input;
-        let mut found = false;
-        let mut phase = 0_u8;
-        for _ in 0..2 {
-            let trimmed = rest.trim_start();
-            let (keyword, next_phase) = if let Some(after) = trimmed.strip_prefix("plus") {
-                if after
-                    .chars()
-                    .next()
-                    .is_some_and(|ch| ch.is_ascii_alphabetic())
-                {
-                    return None;
-                }
-                (after, 1_u8)
-            } else if let Some(after) = trimmed.strip_prefix("minus") {
-                if after
-                    .chars()
-                    .next()
-                    .is_some_and(|ch| ch.is_ascii_alphabetic())
-                {
-                    return None;
-                }
-                (after, 2_u8)
-            } else {
-                break;
-            };
-            if phase & next_phase != 0 || (next_phase == 1 && phase == 2) {
+    /// Read a complete flexible dimension without consuming an unrelated
+    /// following expression. Infinite orders also take a numeric coefficient.
+    fn glue_component(input: &str) -> Option<(&str, &str)> {
+        let mut number = &input[skip_ws_bytes(input.as_bytes())..];
+        while matches!(number.as_bytes().first(), Some(b'+' | b'-')) {
+            number = &number[1..];
+            number = &number[skip_ws_bytes(number.as_bytes())..];
+        }
+        let before_dot = number.bytes().take_while(u8::is_ascii_digit).count();
+        let mut end = before_dot;
+        if number.as_bytes().get(end) == Some(&b'.') {
+            end += 1;
+            let decimals = number[end..].bytes().take_while(u8::is_ascii_digit).count();
+            if before_dot == 0 && decimals == 0 {
                 return None;
             }
-            let after_keyword = keyword.trim_start();
-            let after_value = if after_keyword.starts_with("fil") {
-                let end = after_keyword
-                    .char_indices()
-                    .take_while(|(_, ch)| ch.is_ascii_alphabetic())
-                    .map(|(index, ch)| index + ch.len_utf8())
-                    .last()
-                    .unwrap_or(0);
-                let word = &after_keyword[..end];
-                if !matches!(word, "fil" | "fill" | "filll") {
-                    return None;
-                }
-                &after_keyword[end..]
-            } else {
-                let mut probe = LatexCompactParser::with_capacity(after_keyword.len(), None);
-                let (after, _) = probe.parse_dimension(after_keyword).ok()?;
-                after
-            };
-            found = true;
-            phase |= next_phase;
-            rest = after_value;
+            end += decimals;
+        } else if before_dot == 0 {
+            return None;
         }
-        found.then_some(rest)
-    }
-
-    fn warn_kern_suffix(&mut self, suffix: &str) {
-        let suffix = suffix.trim_start();
-        let glue = ["plus", "minus"].into_iter().any(|word| {
-            suffix.strip_prefix(word).is_some_and(|rest| {
-                rest.chars()
-                    .next()
-                    .is_none_or(|ch| !ch.is_ascii_alphabetic())
-            })
-        });
-        if glue {
-            self.warn("stretch and shrink components in \\kern/\\hskip dimensions were dropped");
-        } else {
-            self.warn("extra tokens in a \\kern/\\hskip dimension were dropped");
+        let rest = &number[end..];
+        let rest = &rest[skip_ws_bytes(rest.as_bytes())..];
+        for unit in [
+            "filll", "fill", "fil", "em", "ex", "pt", "pc", "bp", "sp", "dd", "cc", "mm", "cm",
+            "in", "mu",
+        ] {
+            if let Some((found, after)) = rest.split_at_checked(unit.len())
+                && found.eq_ignore_ascii_case(unit)
+            {
+                return Some((after, found));
+            }
         }
+        None
     }
 
     fn warn_kern_unit(&mut self, is_mu: bool, dimension: &str) {
         let dimension = dimension.trim_end();
         let unit = ["em", "ex", "mu", "pt", "pc", "bp", "cm", "mm", "in", "sp"]
             .iter()
-            .find(|unit| dimension.ends_with(**unit))
+            .find(|unit| {
+                dimension
+                    .get(dimension.len().saturating_sub(unit.len())..)
+                    .is_some_and(|end| end.eq_ignore_ascii_case(unit))
+            })
             .copied();
         let wrong = match unit {
             Some("mu") => !is_mu,
