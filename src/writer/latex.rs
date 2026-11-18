@@ -15,19 +15,39 @@ impl Writer for LatexWriter {
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
-        let mut buf = String::with_capacity(256);
+        let mut buf = LatexBuffer {
+            text: String::with_capacity(256),
+            in_operator_name: false,
+        };
         write_nodes(&mut buf, &expr.arena, expr.roots);
-        Ok(buf)
+        Ok(buf.text)
     }
 }
 
-fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
+/// A named operator gives literal punctuation different TeX math codes.
+struct LatexBuffer {
+    text: String,
+    in_operator_name: bool,
+}
+impl std::ops::Deref for LatexBuffer {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.text
+    }
+}
+impl std::ops::DerefMut for LatexBuffer {
+    fn deref_mut(&mut self) -> &mut String {
+        &mut self.text
+    }
+}
+
+fn write_nodes(buf: &mut LatexBuffer, arena: &AstArena, span: NodeSpan) {
     write_node_slice(buf, arena, arena.children(span), false);
 }
 
 /// Write a sequence of sibling nodes (see `write_nodes`).
 fn write_node_slice(
-    buf: &mut String,
+    buf: &mut LatexBuffer,
     arena: &AstArena,
     mut children: &[NodeId],
     mut ends_with_command: bool,
@@ -266,7 +286,7 @@ fn script_base_id(arena: &AstArena, id: NodeId) -> Option<NodeId> {
 /// Write a script node, forcibly bracing any sub/superscript argument that
 /// would merge with the following sibling when written unbraced.
 fn write_script_node_with_next(
-    buf: &mut String,
+    buf: &mut LatexBuffer,
     arena: &AstArena,
     id: NodeId,
     next: Option<NodeId>,
@@ -320,7 +340,7 @@ fn write_script_node_with_next(
 /// Bracing an operator before its scripts turns it into an ordinary TeX
 /// group. Write the operator token directly so its requested limit policy
 /// stays in effect. A side-scripted compound operator needs explicit nolimits.
-fn write_postscript_base(buf: &mut String, arena: &AstArena, base: NodeId) {
+fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) {
     match *arena.node(base) {
         CompactNode::Operator { .. } | CompactNode::StructuredOperator { .. } => {
             write_node(buf, arena, base)
@@ -358,7 +378,7 @@ fn write_postscript_base(buf: &mut String, arena: &AstArena, base: NodeId) {
 }
 
 fn write_compound_limits(
-    buf: &mut String,
+    buf: &mut LatexBuffer,
     arena: &AstArena,
     base: NodeId,
     lower: NodeId,
@@ -387,7 +407,7 @@ fn write_compound_limits(
 
 /// In an unbraced script a large-operator control word is one token. A
 /// group around the same command instead gives the parser an n-ary body.
-fn write_scalar_operator_arg(buf: &mut String, arena: &AstArena, arg: NodeId) -> bool {
+fn write_scalar_operator_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeId) -> bool {
     let CompactNode::Symbol(SymbolKind::LargeOp, sid) = *arena.node(arg) else {
         return false;
     };
@@ -406,7 +426,12 @@ fn write_scalar_operator_arg(buf: &mut String, arena: &AstArena, arg: NodeId) ->
     }
 }
 
-fn write_grouped_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, force_group: bool) {
+fn write_grouped_script_arg(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
+    arg: NodeId,
+    force_group: bool,
+) {
     if !write_scalar_operator_arg(buf, arena, arg) {
         if force_group {
             write_always_braced(buf, arena, arg)
@@ -419,7 +444,7 @@ fn write_grouped_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, for
 /// Write a script argument.  Digit sequences are always braced so that a
 /// following `.` is not swallowed into a decimal literal and so that trailing
 /// vs. non-trailing position cannot change the bracing decision.
-fn write_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, _next: Option<NodeId>) {
+fn write_script_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeId, _next: Option<NodeId>) {
     let arg = written_script_content(arena, arg);
     if write_scalar_operator_arg(buf, arena, arg) {
         return;
@@ -453,7 +478,7 @@ fn is_numeric_argument(arena: &AstArena, id: NodeId) -> bool {
 
 /// Write a stand-alone empty-base script with an explicit `{}` base.
 fn write_standalone_empty_base_script(
-    buf: &mut String,
+    buf: &mut LatexBuffer,
     arena: &AstArena,
     script_id: NodeId,
     _next: Option<NodeId>,
@@ -469,7 +494,7 @@ fn write_standalone_empty_base_script(
 /// always braced so the output is independent of the surrounding context and
 /// remains stable when re-parsing normalizes adjacent tokens.
 fn write_standalone_empty_base_script_markers(
-    buf: &mut String,
+    buf: &mut LatexBuffer,
     arena: &AstArena,
     script_id: NodeId,
 ) {
@@ -502,7 +527,7 @@ fn write_standalone_empty_base_script_markers(
 /// `next` is the following sibling in the current row; it is used to brace a
 /// script argument that would otherwise merge with that sibling (e.g. `{}^2 2`).
 fn write_empty_base_script_markers(
-    buf: &mut String,
+    buf: &mut LatexBuffer,
     arena: &AstArena,
     script_id: NodeId,
     next: Option<NodeId>,
@@ -700,7 +725,7 @@ enum MathLeafKind {
     Symbol(SymbolKind),
 }
 
-fn write_leaf_with_math_spaces(buf: &mut String, s: &str, kind: MathLeafKind) -> bool {
+fn write_leaf_with_math_spaces(buf: &mut LatexBuffer, s: &str, kind: MathLeafKind) -> bool {
     let Some((first_space, _)) = s
         .char_indices()
         .find(|&(_, ch)| crate::unicode::math_space_width(ch).is_some())
@@ -731,7 +756,7 @@ fn write_leaf_with_math_spaces(buf: &mut String, s: &str, kind: MathLeafKind) ->
     true
 }
 
-fn write_math_leaf_segment(buf: &mut String, s: &str, kind: MathLeafKind) {
+fn write_math_leaf_segment(buf: &mut LatexBuffer, s: &str, kind: MathLeafKind) {
     match kind {
         MathLeafKind::Number => buf.push_str(s),
         MathLeafKind::Identifier => write_identifier_text(buf, s),
@@ -785,7 +810,7 @@ fn latex_color(name: &str) -> Option<ColorArgument<'_>> {
     }
 }
 
-fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
+fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(sid) => {
             let s = arena.str_val(sid);
@@ -1616,7 +1641,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
 }
 
 fn write_structured_operator(
-    buf: &mut String,
+    buf: &mut LatexBuffer,
     arena: &AstArena,
     content: NodeId,
     form: OperatorNameForm,
@@ -1627,7 +1652,9 @@ fn write_structured_operator(
         r"\operatorname{"
     });
     let start = buf.len();
+    let previous = std::mem::replace(&mut buf.in_operator_name, true);
     write_wrapped_content(buf, arena, content);
+    buf.in_operator_name = previous;
     // A constructed structured name may contain only plain letters. Keep a
     // TeX atom boundary so another import can recover its form and placement.
     if !crate::latex::parse::operator_name_needs_math(&buf[start..]) {
@@ -1645,7 +1672,7 @@ fn write_structured_operator(
 }
 
 #[inline]
-fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
+fn write_identifier(buf: &mut LatexBuffer, arena: &AstArena, sid: compact::StrId) {
     let s = arena.str_val(sid);
     if write_leaf_with_math_spaces(buf, s, MathLeafKind::Identifier) {
         return;
@@ -1778,7 +1805,7 @@ fn write_operator_name_content(buf: &mut String, name: &str) {
     }
 }
 
-fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
+fn write_symbol(buf: &mut LatexBuffer, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
     let s = arena.str_val(sid);
     if write_leaf_with_math_spaces(buf, s, MathLeafKind::Symbol(kind)) {
         return;
@@ -1786,7 +1813,20 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
     write_symbol_text(buf, kind, s);
 }
 
-fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
+fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
+    if kind == SymbolKind::Ordinary && buf.in_operator_name {
+        match s {
+            "'" | "-" | "*" => {
+                buf.push_str(s);
+                return;
+            },
+            "−" => {
+                write_math_char(buf, '−');
+                return;
+            },
+            _ => {},
+        }
+    }
     if kind == SymbolKind::Ordinary
         && let [byte] = s.as_bytes()
         && crate::latex::parse::ascii_ordinary_needs_char(char::from(*byte))
@@ -2028,7 +2068,7 @@ fn write_space_with_basis(buf: &mut String, width: Rational, basis: Option<Space
     buf.push_str(unit);
 }
 
-fn write_delim(buf: &mut String, delim: &str) {
+fn write_delim(buf: &mut LatexBuffer, delim: &str) {
     match delim {
         "" => buf.push('.'),
         "\\" => buf.push_str("\\backslash"),
@@ -2055,7 +2095,7 @@ fn write_delim(buf: &mut String, delim: &str) {
 /// where grouping matters (e.g. a script base that is a Row wrapping a Color
 /// or command node).
 #[inline]
-fn write_braced(buf: &mut String, arena: &AstArena, id: NodeId) {
+fn write_braced(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     if is_simple_token(arena, id) {
         write_node(buf, arena, id);
     } else if let CompactNode::Row(span) = *arena.node(id) {
@@ -2078,7 +2118,7 @@ fn write_braced(buf: &mut String, arena: &AstArena, id: NodeId) {
 /// Write the contents of a braced argument, unwrapping a top-level Row so that
 /// commands like \boxed{abc} do not end up as \boxed{{abc}} after re-parsing.
 #[inline]
-fn write_wrapped_content(buf: &mut String, arena: &AstArena, content: NodeId) {
+fn write_wrapped_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     if let CompactNode::Row(span) = *arena.node(content) {
         write_nodes(buf, arena, span);
     } else {
@@ -2107,7 +2147,12 @@ fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> 
 /// serialized as the natural accent command.  Scripted compound operators use
 /// the raw `\mathop` form so their movable outer-limit behavior survives a
 /// LaTeX round-trip.
-fn write_math_atom_op(buf: &mut String, arena: &AstArena, content: NodeId, natural_accent: bool) {
+fn write_math_atom_op(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
+    content: NodeId,
+    natural_accent: bool,
+) {
     if natural_accent {
         let mut id = content;
         while let CompactNode::Row(span) = *arena.node(id) {
@@ -2138,7 +2183,7 @@ fn is_natural_accent_node(arena: &AstArena, id: NodeId) -> bool {
 /// Accent bases keep the accent attached to the core operator, so an
 /// automatically inserted `AboveBelow` marker is not needed in their emitted
 /// LaTeX.  This also avoids redundant `\lim\limits` in canonical accents.
-fn write_accent_base_content(buf: &mut String, arena: &AstArena, content: NodeId) {
+fn write_accent_base_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     match *arena.node(content) {
         // Compact-to-heap reconstruction represents an explicit row break as
         // a zero-width space. Keep that operand visible inside an accent
@@ -2160,7 +2205,7 @@ fn write_accent_base_content(buf: &mut String, arena: &AstArena, content: NodeId
     }
 }
 
-fn write_box_math(buf: &mut String, arena: &AstArena, nodes: &[NodeId]) {
+fn write_box_math(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[NodeId]) {
     if let [only] = nodes
         && let CompactNode::Row(span) = *arena.node(*only)
     {
@@ -2171,7 +2216,7 @@ fn write_box_math(buf: &mut String, arena: &AstArena, nodes: &[NodeId]) {
 }
 
 /// Emit upright text directly in a text box and keep math runs in inline math mode.
-fn write_hbox_content(buf: &mut String, arena: &AstArena, id: NodeId) {
+fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     let one = [id];
     let children = match *arena.node(id) {
         CompactNode::Row(span) => arena.children(span),
@@ -2229,7 +2274,7 @@ fn write_hbox_content(buf: &mut String, arena: &AstArena, id: NodeId) {
 /// stand-alone empty-base scripts whose arguments must stay isolated from the
 /// surrounding text.
 #[inline]
-fn write_always_braced(buf: &mut String, arena: &AstArena, id: NodeId) {
+fn write_always_braced(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     if is_empty_row(arena, id) {
         return;
     }
@@ -2305,7 +2350,7 @@ fn write_text_content(buf: &mut String, text: &str) {
 /// single-child Row or a sizing wrapper that will be dropped. Bases that would
 /// merge with the preceding output remain explicitly grouped.
 #[inline]
-fn write_script_base(buf: &mut String, arena: &AstArena, id: NodeId) {
+fn write_script_base(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     let id = written_script_content(arena, id);
     if is_idotsint_row(arena, id) {
         write_idotsint(buf);
@@ -2426,7 +2471,7 @@ fn script_base_char(arena: &AstArena, id: NodeId) -> Option<char> {
 /// identifier writer so their preferred commands (`\ell`, `\Re`, …) survive.
 /// Sizing wrappers around non-delimiters are dropped by the regular node writer
 /// and therefore recurse into their content here as well.
-fn write_script_base_token(buf: &mut String, arena: &AstArena, id: NodeId) {
+fn write_script_base_token(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Identifier(sid) => {
             let text = arena.str_val(sid);

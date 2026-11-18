@@ -2592,6 +2592,13 @@ fn operator_name_punctuation_is_local_to_its_math_list() {
     assert!(tex.contains(r"\kern-2pt"), "{tex}");
     assert_eq!(crate::from_latex(&tex).unwrap().to_mathml().unwrap(), xml);
 
+    let minus = crate::from_latex(r"\operatorname{A\char8722\overline{x}}").unwrap();
+    let saved = minus.to_latex().unwrap();
+    assert_eq!(
+        crate::from_latex(&saved).unwrap().expr(),
+        minus.expr(),
+        "{saved}"
+    );
     for literal in ["*", "-", "'"] {
         let with_char = format!(
             r"\operatorname{{A\char{} \overline{{x}}}}",

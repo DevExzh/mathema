@@ -4912,7 +4912,11 @@ impl LatexCompactParser {
             LimitStyle::SubSup
         };
 
-        let node = if operator_name_needs_math(raw) {
+        // Most operator names copy straight from the source into the arena.
+        let literal = !raw
+            .bytes()
+            .any(|b| matches!(b, b'\\' | b'{' | b'}' | b'_' | b'^'));
+        let node = if !literal && operator_name_needs_math(raw) {
             let outer = std::mem::replace(&mut self.in_operator_name, true);
             let parsed = self.parse_node_list(raw);
             self.in_operator_name = outer;
@@ -4933,7 +4937,11 @@ impl LatexCompactParser {
                 },
             })
         } else {
-            let name = self.arena.push_str(&decode_operator_name(raw));
+            let name = if literal {
+                self.arena.push_str(raw)
+            } else {
+                self.arena.push_str(&decode_operator_name(raw))
+            };
             self.arena.push_node(CompactNode::Operator { name, limits })
         };
         if !starred {
