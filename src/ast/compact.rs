@@ -687,8 +687,8 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             alignment,
             rows,
         } => {
-            let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-            let columns = vec![*alignment; width];
+            let columns: SmallVec<[ColumnAlign; 4]> =
+                smallvec::smallvec![*alignment; super::matrix_column_count(rows)];
             push_array_node(arena, &columns, rows, None, false, Some(*kind))
         },
 
@@ -1207,6 +1207,17 @@ mod tests {
 
     #[test]
     fn hand_built_matrix_shape_and_default_pitch_survive_compact_boundary() {
+        for rows in [vec![], vec![vec![]]] {
+            let empty = MathExpr::inline(vec![MathNode::Matrix {
+                kind: MatrixKind::SmallMatrix,
+                alignment: ColumnAlign::Left,
+                rows,
+            }]);
+            assert_eq!(
+                CompactExpr::from_math_expr(&empty).unwrap().to_math_expr(),
+                empty
+            );
+        }
         let expr = MathExpr::inline(vec![MathNode::Matrix {
             kind: MatrixKind::SmallMatrix,
             alignment: ColumnAlign::Right,

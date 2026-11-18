@@ -626,13 +626,19 @@ fn write_node_in(
                     rows,
                     arraystretch,
                     add_jot,
-                } => (columns.clone(), rows, *arraystretch, *add_jot, None),
+                } => (
+                    Cow::Borrowed(columns.as_slice()),
+                    rows,
+                    *arraystretch,
+                    *add_jot,
+                    None,
+                ),
                 MathNode::Matrix {
                     kind,
                     alignment,
                     rows,
                 } => (
-                    vec![*alignment; rows.iter().map(Vec::len).max().unwrap_or(0)],
+                    Cow::Owned(vec![*alignment; crate::ast::matrix_column_count(rows)]),
                     rows,
                     None,
                     false,

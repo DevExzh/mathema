@@ -621,7 +621,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             rows,
         } => layout_array(
             matches!(kind, crate::ast::MatrixKind::SmallMatrix),
-            &vec![*alignment; rows.iter().map(Vec::len).max().unwrap_or(0)],
+            &vec![*alignment; crate::ast::matrix_column_count(rows)],
             rows,
             Some(if matches!(kind, crate::ast::MatrixKind::SmallMatrix) {
                 0.5

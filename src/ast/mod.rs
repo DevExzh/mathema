@@ -67,6 +67,12 @@ pub enum MatrixKind {
     SmallMatrix,
 }
 
+/// Compact tables have at least one column slot, even when no row has cells.
+/// Keeping that slot retains the alignment of an empty starred matrix.
+pub(crate) fn matrix_column_count(rows: &[Vec<Vec<MathNode>>]) -> usize {
+    rows.iter().map(Vec::len).max().unwrap_or(0).max(1)
+}
+
 /// A node in the shared mathematical expression tree.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
