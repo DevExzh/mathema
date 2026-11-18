@@ -212,6 +212,23 @@ impl AstArena {
         &mut self.nodes[id.index()]
     }
 
+    /// Replace a node by an existing node, preserving sparse spacing data
+    /// when normalization unwraps a group or elides an empty script field.
+    pub(crate) fn replace_from(&mut self, destination: NodeId, source: NodeId) {
+        if destination == source {
+            return;
+        }
+        self.nodes[destination.index()] = self.nodes[source.index()];
+        if self.space_bases.is_empty() {
+            return;
+        }
+        if let Some(basis) = self.space_basis(source) {
+            self.space_bases.insert(destination, basis);
+        } else {
+            self.space_bases.remove(&destination);
+        }
+    }
+
     /// Return the explicit unit basis for a spacing node, if one was parsed.
     #[inline]
     pub fn space_basis(&self, id: NodeId) -> Option<SpaceBasis> {

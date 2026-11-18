@@ -32,7 +32,7 @@ impl Rational {
             return None;
         }
         let value = magnitude.parse::<f64>().ok()? * unit.as_f64().abs();
-        if value.is_nan() {
+        if !value.is_finite() || value > f64::from(i32::MAX) + f64::from(u8::from(negative)) {
             return None;
         }
         Some(closest_ratio(value, negative))

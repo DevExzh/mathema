@@ -912,6 +912,18 @@ mod tests {
     }
 
     #[test]
+    fn explicit_spacing_observes_the_tex_dimension_range() {
+        for (command, unit) in [(r"\hskip", "pt"), (r"\mskip", "mu")] {
+            let normal = format!("a{command}16383{unit} b");
+            let large = format!("a{command}16384{unit} b");
+            assert!(crate::from_latex(&normal).is_ok(), "{normal}");
+            assert!(crate::from_latex(&large).is_err(), "{large}");
+            let huge = format!("a{command}{}{unit} b", "9".repeat(350));
+            assert!(crate::from_latex(&huge).is_err());
+        }
+    }
+
+    #[test]
     fn math_and_text_spacing_units_are_reported_without_rejecting_input() {
         let text_unit = LatexReader::parse_compact(r"a\hskip1mu b", &Config::default()).unwrap();
         assert!(text_unit.has_warnings());

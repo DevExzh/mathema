@@ -526,7 +526,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         },
         MathNode::Space(r) => LayoutBox::kern(r.as_f64() * ctx.size()),
         MathNode::ExplicitSpace { width, basis } => LayoutBox::kern(
-            crate::ast::style::space_width_in_em(*width, *basis, ctx.style),
+            crate::ast::style::space_width_in_em(*width, *basis, ctx.style) * ctx.size_scale,
         ),
         MathNode::Rule {
             width,
@@ -1397,9 +1397,9 @@ fn layout_node_arena(
             let basis = ast
                 .space_basis(id)
                 .unwrap_or(crate::ast::SpaceBasis::Current);
-            arena.alloc(ArenaLayoutBox::kern(crate::ast::style::space_width_in_em(
-                r, basis, ctx.style,
-            )))
+            arena.alloc(ArenaLayoutBox::kern(
+                crate::ast::style::space_width_in_em(r, basis, ctx.style) * ctx.size_scale,
+            ))
         },
         CompactNode::Row(span) => layout_row_arena(ast, span, arena, ctx),
         CompactNode::Fenced {

@@ -781,8 +781,7 @@ fn normalize_compact_node(
                 && !matches!(*arena.node(children[0]), CompactNode::StyleSwitch(_))
             {
                 // Unwrap single-child Row: replace this node with its child
-                let child_node = *arena.node(children[0]);
-                *arena.node_mut(id) = child_node;
+                arena.replace_from(id, children[0]);
             } else {
                 *arena.node_mut(id) = CompactNode::Row(new_span);
             }
@@ -959,7 +958,7 @@ fn normalize_compact_node(
                     *arena.node_mut(id) = CompactNode::Row(new_span);
                 },
                 _ => {
-                    *arena.node_mut(id) = *arena.node(content);
+                    arena.replace_from(id, content);
                 },
             }
         },
@@ -1015,11 +1014,11 @@ fn flatten_empty_script(arena: &mut AstArena, id: NodeId) {
                 base
             } else if sub_empty {
                 let new_id = arena.push_node(CompactNode::Superscript { base, sup });
-                *arena.node_mut(id) = *arena.node(new_id);
+                arena.replace_from(id, new_id);
                 return;
             } else if sup_empty {
                 let new_id = arena.push_node(CompactNode::Subscript { base, sub });
-                *arena.node_mut(id) = *arena.node(new_id);
+                arena.replace_from(id, new_id);
                 return;
             } else {
                 return;
@@ -1027,7 +1026,7 @@ fn flatten_empty_script(arena: &mut AstArena, id: NodeId) {
         },
         _ => return,
     };
-    *arena.node_mut(id) = *arena.node(base);
+    arena.replace_from(id, base);
 }
 
 /// True if `id` refers to a node that produces no output when written.

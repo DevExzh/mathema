@@ -3050,7 +3050,7 @@ mod tests {
                 compact.to_math_expr().nodes,
                 "{first}"
             );
-            assert!(first.contains(r"\kern"), "{first}");
+            assert!(first.contains(r"\hspace{"), "{first}");
         }
     }
 

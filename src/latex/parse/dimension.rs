@@ -84,7 +84,16 @@ pub(super) fn parse(input: &str) -> IResult<&str, Dimension> {
         None => (rest, None, 1, 10),
     };
     let scale = Rational::new(if negative { -n } else { n }, d);
-    let width = Rational::from_scaled_decimal(decimal, scale).ok_or_else(bad)?;
+    let too_large =
+        || nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify));
+    let width = Rational::from_scaled_decimal(decimal, scale).ok_or_else(too_large)?;
+    // TeX stores a dimension in scaled points (or scaled mu). Its maximum
+    // magnitude is 2^30-1 scaled units; rounding here permits decimal
+    // spellings of the same boundary value.
+    let units_per_em = if name == Some("mu") { 18.0 } else { 10.0 };
+    if (width.as_f64().abs() * units_per_em * 65536.0).round() > f64::from((1u32 << 30) - 1) {
+        return Err(too_large());
+    }
     Ok((rest, Dimension { width, unit: name }))
 }
 

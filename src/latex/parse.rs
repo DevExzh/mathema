@@ -4898,11 +4898,15 @@ impl LatexCompactParser {
             None
         };
         let dimension = group.map_or(input, |(_, body)| body);
-        let Ok((mut rest, parsed)) = dimension::parse(dimension) else {
-            return Ok((
-                group.map_or(input, |(tail, _)| tail),
-                self.arena.push_node(CompactNode::Space(Rational::zero())),
-            ));
+        let (mut rest, parsed) = match dimension::parse(dimension) {
+            Ok(parsed) => parsed,
+            Err(nom::Err::Error(_)) => {
+                return Ok((
+                    group.map_or(input, |(tail, _)| tail),
+                    self.arena.push_node(CompactNode::Space(Rational::zero())),
+                ));
+            },
+            Err(error) => return Err(error),
         };
         let is_mu = matches!(name, "mkern" | "mskip");
         if let Some(unit) = parsed.unit {
