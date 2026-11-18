@@ -1738,6 +1738,7 @@ fn matrix_attributes(kind: Option<MatrixKind>) -> &'static [(&'static str, &'sta
     match kind {
         Some(MatrixKind::SmallMatrix) => &[
             ("data-mathema-array-environment", "smallmatrix"),
+            ("scriptlevel", "1"),
             ("rowspacing", "0.1em"),
             ("columnspacing", "0.2778em"),
         ],

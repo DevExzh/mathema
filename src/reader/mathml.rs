@@ -1047,8 +1047,15 @@ impl<'a> MathmlCompactParser<'a> {
             "mtable" => {
                 let (rows, columns) =
                     self.with_table_style(start, true, |p| p.parse_table(name))?;
-                let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
-                let num_cols = ncols.max(1) as u16;
+                let ncols = columns.len();
+                let stride = ncols.max(1);
+                if rows.len().saturating_mul(stride) > AstArena::MAX_CHILDREN {
+                    return Err(Error::LimitExceeded {
+                        kind: crate::error::LimitKind::ListLength,
+                        limit: AstArena::MAX_CHILDREN,
+                    });
+                }
+                let num_cols = stride as u16;
 
                 let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
                 for _ in 0..ncols {
@@ -1295,7 +1302,11 @@ impl<'a> MathmlCompactParser<'a> {
             nodes = self.arena.children(span).iter().copied().collect();
         }
         let marker = self.style_marker_for((self.style_display, self.style_level));
-        if marker != 1 && !nodes.is_empty() {
+        if marker != 1
+            && nodes
+                .first()
+                .is_some_and(|&id| !matches!(self.arena.node(id), CompactNode::StyleSwitch(_)))
+        {
             nodes.insert(0, self.arena.push_node(CompactNode::StyleSwitch(marker)));
         }
         Ok(nodes)
@@ -1311,11 +1322,16 @@ impl<'a> MathmlCompactParser<'a> {
                     if name == "mtr" || name == "mlabeledtr" {
                         let (row, row_columns) =
                             self.with_table_style(&e, false, |p| p.parse_table_row(&name))?;
-                        if columns.is_empty() {
-                            columns = row_columns;
+                        if row_columns.len() > columns.len() {
+                            columns.extend_from_slice(&row_columns[columns.len()..]);
                         }
                         rows.push(row);
                     }
+                },
+                Ok(Event::Empty(e))
+                    if matches!(Self::local_name(&e).as_str(), "mtr" | "mlabeledtr") =>
+                {
+                    rows.push(Vec::new())
                 },
                 Ok(Event::End(e)) => {
                     if Self::local_name_end(&e) == parent_tag {
@@ -1348,9 +1364,14 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 Ok(Event::Empty(e)) => {
                     let name = Self::local_name(&e);
-                    columns.push(ColumnAlign::Center);
-                    let id = self.parse_empty_element(&name, &e)?;
-                    cells.push(smallvec::smallvec![id]);
+                    if name == "mtd" {
+                        columns.push(parse_column_align(get_attr(&e, "columnalign")));
+                        cells.push(SmallVec::new());
+                    } else {
+                        columns.push(ColumnAlign::Center);
+                        let id = self.parse_empty_element(&name, &e)?;
+                        cells.push(smallvec::smallvec![id]);
+                    }
                 },
                 Ok(Event::Text(e)) => {
                     let text = unescape_text(&e);
@@ -3159,6 +3180,31 @@ mod tests {
                 .unwrap()
                 .contains(r"\begin{smallmatrix}")
         );
+    }
+
+    #[test]
+    fn ragged_mtable_uses_columns_first_occupied_in_later_rows() {
+        let xml = r#"<math><mtable><mtr/><mtr><mtd columnalign="left"><mi>a</mi></mtd></mtr><mtr><mtd><mi>b</mi></mtd><mtd columnalign="right"/></mtr><mtr><mtd/><mtd><mi>c</mi></mtd></mtr></mtable></math>"#;
+        let result = crate::from_mathml(xml).unwrap();
+        let MathNode::Array { columns, rows, .. } = &result.expr().nodes[0] else {
+            panic!("expected an authored array");
+        };
+        assert_eq!(columns, &[ColumnAlign::Left, ColumnAlign::Right]);
+        assert_eq!(rows.len(), 4);
+        assert!(rows.iter().all(|row| row.len() == 2));
+        assert!(matches!(&rows[3][1][..], [MathNode::Identifier(s)] if s == "c"));
+        let wide = format!(
+            "<math><mtable>{}<mtr>{}</mtr></mtable></math>",
+            "<mtr/>".repeat(256),
+            "<mtd/>".repeat(256)
+        );
+        assert!(matches!(
+            crate::from_mathml(&wide),
+            Err(Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                ..
+            })
+        ));
     }
 
     #[test]
