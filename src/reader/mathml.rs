@@ -1048,53 +1048,7 @@ impl<'a> MathmlCompactParser<'a> {
                 let table_columns = parse_column_aligns(get_attr(start, "columnalign"));
                 let (rows, columns) =
                     self.with_table_style(start, true, |p| p.parse_table(name, &table_columns))?;
-                let ncols = columns.len();
-                let stride = ncols.max(1);
-                if rows.len().saturating_mul(stride) > AstArena::MAX_CHILDREN {
-                    return Err(Error::LimitExceeded {
-                        kind: crate::error::LimitKind::ListLength,
-                        limit: AstArena::MAX_CHILDREN,
-                    });
-                }
-                let num_cols = stride as u16;
-
-                let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-                for _ in 0..ncols {
-                    let align = columns
-                        .get(align_ids.len())
-                        .copied()
-                        .unwrap_or(ColumnAlign::Center);
-                    align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
-                }
-                let col_aligns = self.arena.push_children_deferred(&align_ids);
-
-                let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-                for row in &rows {
-                    for cell_children in row {
-                        let span = self.arena.push_children_deferred(cell_children);
-                        cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
-                    }
-                    // Pad short rows
-                    for _ in row.len()..(num_cols as usize) {
-                        cell_ids.push(self.empty_row());
-                    }
-                }
-                let cells = self.arena.push_children_deferred(&cell_ids);
-                let arraystretch_pct = arraystretch_percent(start).unwrap_or(100);
-                let array = self.arena.push_node(CompactNode::Array {
-                    col_aligns,
-                    cells,
-                    num_cols,
-                    arraystretch_pct,
-                    add_jot: false,
-                    array_style: false,
-                    col_seps: 0,
-                    row_seps: 0,
-                });
-                if let Some(environment) = array_environment(start, arraystretch_pct) {
-                    self.arena.mark_array_environment(array, environment);
-                }
-                Ok(array)
+                self.finish_table(start, rows, columns)
             },
             "mphantom" => {
                 let id = self.parse_child_id(name)?;
@@ -1186,6 +1140,7 @@ impl<'a> MathmlCompactParser<'a> {
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
         match name {
+            "mtable" => self.finish_table(start, Vec::new(), Vec::new()),
             "mrow" => {
                 let attrs = mrow_attributes(start);
                 let empty = self.empty_row();
@@ -1311,6 +1266,57 @@ impl<'a> MathmlCompactParser<'a> {
             nodes.insert(0, self.arena.push_node(CompactNode::StyleSwitch(marker)));
         }
         Ok(nodes)
+    }
+
+    fn finish_table(
+        &mut self,
+        start: &quick_xml::events::BytesStart<'_>,
+        rows: MathmlTableRows,
+        columns: Vec<ColumnAlign>,
+    ) -> Result<NodeId> {
+        let ncols = columns.len();
+        let stride = ncols.max(1);
+        if rows.len().saturating_mul(stride) > AstArena::MAX_CHILDREN {
+            return Err(Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                limit: AstArena::MAX_CHILDREN,
+            });
+        }
+        let num_cols = stride as u16;
+
+        let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
+        for align in columns {
+            align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
+        }
+        let col_aligns = self.arena.push_children_deferred(&align_ids);
+
+        let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for row in &rows {
+            for cell_children in row {
+                let span = self.arena.push_children_deferred(cell_children);
+                cell_ids.push(self.arena.push_node(CompactNode::Row(span)));
+            }
+            // Pad short rows
+            for _ in row.len()..(num_cols as usize) {
+                cell_ids.push(self.empty_row());
+            }
+        }
+        let cells = self.arena.push_children_deferred(&cell_ids);
+        let arraystretch_pct = arraystretch_percent(start).unwrap_or(100);
+        let array = self.arena.push_node(CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols,
+            arraystretch_pct,
+            add_jot: false,
+            array_style: false,
+            col_seps: 0,
+            row_seps: 0,
+        });
+        if let Some(environment) = array_environment(start, arraystretch_pct) {
+            self.arena.mark_array_environment(array, environment);
+        }
+        Ok(array)
     }
 
     fn parse_table(
@@ -3277,6 +3283,17 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let canonical = result.to_latex().unwrap();
         assert!(canonical.contains(r"\begin{array}{lcr}"), "{canonical}");
+    }
+
+    #[test]
+    fn empty_table_retains_its_type_in_both_xml_forms() {
+        let short = crate::from_mathml("<math><mtable/></math>").unwrap();
+        let long = crate::from_mathml("<math><mtable></mtable></math>").unwrap();
+        assert!(
+            matches!(&short.expr().nodes[..], [MathNode::Array { rows, .. }] if rows.is_empty())
+        );
+        assert_eq!(short.expr(), long.expr());
+        assert_eq!(short.to_mathml().unwrap(), long.to_mathml().unwrap());
     }
 
     #[test]
