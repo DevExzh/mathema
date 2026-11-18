@@ -9,8 +9,11 @@ use mathema::writer::mathml::MathmlWriter;
 fuzz_target!(|data: &[u8]| {
     if let Ok(input) = std::str::from_utf8(data) {
         let config = Config::default();
-        if let Ok(parsed) = MathmlReader::parse(input, &config) {
-            let _ = MathmlWriter::write(&parsed.expr, &config);
+        if let Ok(parsed) = MathmlReader::parse_compact(input, &config) {
+            if let Ok(xml) = MathmlWriter::write_compact(&parsed.expr, &config) {
+                let _ = MathmlReader::parse_compact(&xml, &config);
+            }
+            let _ = MathmlWriter::write(&parsed.expr.to_math_expr(), &config);
         }
     }
 });
