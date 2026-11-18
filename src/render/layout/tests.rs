@@ -481,6 +481,7 @@ fn layout_phantom_has_dimensions_but_invisible() {
             depth: 0,
             size_scale: 1.0,
             spacing_style: None,
+            display_choice: false,
         },
     );
     let expr = MathExpr::inline(vec![MathNode::Phantom(
@@ -510,6 +511,7 @@ fn layout_vphantom_has_zero_width() {
             depth: 0,
             size_scale: 1.0,
             spacing_style: None,
+            display_choice: false,
         },
     );
     let expr = MathExpr::inline(vec![MathNode::Phantom(
@@ -548,6 +550,7 @@ fn layout_hphantom_has_zero_height_depth() {
             depth: 0,
             size_scale: 1.0,
             spacing_style: None,
+            display_choice: false,
         },
     );
     let expr = MathExpr::inline(vec![MathNode::Phantom(
@@ -633,6 +636,7 @@ fn layout_boxed_adds_padding() {
             depth: 0,
             size_scale: 1.0,
             spacing_style: None,
+            display_choice: false,
         },
     );
     let expr = MathExpr::inline(vec![MathNode::Boxed {
@@ -671,6 +675,7 @@ fn layout_scaled_doubles_dimensions() {
             depth: 0,
             size_scale: 1.0,
             spacing_style: None,
+            display_choice: false,
         },
     );
     let expr = MathExpr::inline(vec![MathNode::Scaled {
@@ -704,6 +709,7 @@ fn layout_scaled_scales_child_positions() {
         depth: 0,
         size_scale: 1.0,
         spacing_style: None,
+        display_choice: false,
     };
     let normal = layout_node(&content, &ctx);
     let scaled = layout_scaled(factor, &content, &ctx);

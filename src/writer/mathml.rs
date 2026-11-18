@@ -131,10 +131,17 @@ fn start_math_style_fast(buf: &mut String, style: MathStyle) {
 }
 
 fn start_math_style_marker(w: &mut XmlWriter, marker: u8) -> Result<MathStyle> {
-    if marker == 4 || marker == 5 {
+    if MathStyle::marker_is_display(marker) {
         let mut tag = BytesStart::new("mstyle");
         tag.push_attribute(("displaystyle", "true"));
-        tag.push_attribute(("scriptlevel", if marker == 4 { "1" } else { "2" }));
+        tag.push_attribute((
+            "scriptlevel",
+            if marker == MathStyle::DISPLAY_AT_SCRIPT {
+                "1"
+            } else {
+                "2"
+            },
+        ));
         w.write_event(Event::Start(tag)).map_err(to_err)?;
     } else {
         start_math_style(w, MathStyle::from_switch(marker))?;
@@ -143,9 +150,13 @@ fn start_math_style_marker(w: &mut XmlWriter, marker: u8) -> Result<MathStyle> {
 }
 
 fn start_math_style_marker_fast(buf: &mut String, marker: u8) -> MathStyle {
-    if marker == 4 || marker == 5 {
+    if MathStyle::marker_is_display(marker) {
         buf.push_str("<mstyle displaystyle=\"true\" scriptlevel=\"");
-        buf.push_str(if marker == 4 { "1" } else { "2" });
+        buf.push_str(if marker == MathStyle::DISPLAY_AT_SCRIPT {
+            "1"
+        } else {
+            "2"
+        });
         buf.push_str("\">");
     } else {
         start_math_style_fast(buf, MathStyle::from_switch(marker));
@@ -176,7 +187,11 @@ fn inherited_table_marker(
         (depth + 1) as u8
     };
     if depth > 0 {
-        let display_marker = if depth == 1 { 4 } else { 5 };
+        let display_marker = if depth == 1 {
+            MathStyle::DISPLAY_AT_SCRIPT
+        } else {
+            MathStyle::DISPLAY_AT_SCRIPTSCRIPT
+        };
         if all_start_with(display_marker) {
             return Some(display_marker);
         }
@@ -185,7 +200,7 @@ fn inherited_table_marker(
 }
 
 fn table_style_from_marker(marker: u8) -> MathStyle {
-    if marker >= 4 {
+    if MathStyle::marker_is_display(marker) {
         MathStyle::Display
     } else {
         MathStyle::from_switch(marker)

@@ -43,13 +43,29 @@ impl super::FractionKind {
 }
 
 impl MathStyle {
+    /// A style marker for `displaystyle=true` at script optical size.
+    pub(crate) const DISPLAY_AT_SCRIPT: u8 = 4;
+    /// A style marker for `displaystyle=true` at scriptscript optical size.
+    pub(crate) const DISPLAY_AT_SCRIPTSCRIPT: u8 = 5;
+
     pub(crate) fn from_switch(value: u8) -> Self {
         match value {
             0 => Self::Display,
             1 => Self::Text,
             2 => Self::Script,
+            3 => Self::ScriptScript,
+            Self::DISPLAY_AT_SCRIPT => Self::Script,
             _ => Self::ScriptScript,
         }
+    }
+
+    /// Whether a compact style marker selects the display branch while keeping
+    /// the script-level optical size.
+    pub(crate) fn marker_is_display(value: u8) -> bool {
+        matches!(
+            value,
+            Self::DISPLAY_AT_SCRIPT | Self::DISPLAY_AT_SCRIPTSCRIPT
+        )
     }
 
     /// Select a TeX mathchoice branch. Cramped styles select the same branch

@@ -484,7 +484,7 @@ pub(super) fn layout_fenced(
     for item in content {
         match item {
             FencedItem::Element(MathNode::StyleSwitch(value)) => {
-                current_ctx = ctx.with_style(MathStyle::from_switch(*value));
+                current_ctx = ctx.with_switch(*value);
             },
             FencedItem::Element(n) => {
                 let child = layout_node(n, &current_ctx);
@@ -692,7 +692,7 @@ pub(super) fn layout_fenced_arena(
     for &child_id in content_children {
         match *ast.node(child_id) {
             CompactNode::StyleSwitch(value) => {
-                current_ctx = ctx.with_style(MathStyle::from_switch(value));
+                current_ctx = ctx.with_switch(value);
             },
             CompactNode::Middle(sid) => {
                 laid_out.push(FencePart::Middle(ast.str_val(sid)));

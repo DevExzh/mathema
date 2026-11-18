@@ -531,8 +531,8 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn style_marker_for(&self, style: (bool, i64)) -> u8 {
         match (style.0, style.1) {
-            (true, 1) => 4,
-            (true, 2..) => 5,
+            (true, 1) => crate::ast::style::MathStyle::DISPLAY_AT_SCRIPT,
+            (true, 2..) => crate::ast::style::MathStyle::DISPLAY_AT_SCRIPTSCRIPT,
             (_, 1) => 2,
             (_, 2..) => 3,
             _ if style.0 => 0,

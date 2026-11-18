@@ -1442,6 +1442,10 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             0 => buf.push_str("\\displaystyle "),
             1 => buf.push_str("\\textstyle "),
             2 => buf.push_str("\\scriptstyle "),
+            3 => buf.push_str("\\scriptscriptstyle "),
+            _ if crate::ast::style::MathStyle::marker_is_display(s) => {
+                buf.push_str("\\displaystyle ")
+            },
             _ => buf.push_str("\\scriptscriptstyle "),
         },
         CompactNode::SizeScale(idx) => {

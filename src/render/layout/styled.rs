@@ -298,7 +298,7 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
 
     for node in children {
         if let MathNode::StyleSwitch(value) = node {
-            current_ctx = current_ctx.with_style(MathStyle::from_switch(*value));
+            current_ctx = current_ctx.with_switch(*value);
             continue;
         }
 
@@ -692,7 +692,7 @@ pub(super) fn layout_styled_arena(
 
     for &id in ids {
         if let CompactNode::StyleSwitch(value) = *ast.node(id) {
-            current_ctx = current_ctx.with_style(MathStyle::from_switch(value));
+            current_ctx = current_ctx.with_switch(value);
             continue;
         }
 

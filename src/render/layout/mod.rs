@@ -346,6 +346,8 @@ struct LayoutCtx<'a> {
     /// `self.style`.  This allows fraction numerators/denominators to preserve
     /// medium/thick spacing even when the layout style drops to Script or below.
     spacing_style: Option<MathStyle>,
+    /// MathML can request the display branch while retaining script optical size.
+    display_choice: bool,
 }
 
 impl<'a> LayoutCtx<'a> {
@@ -366,7 +368,14 @@ impl<'a> LayoutCtx<'a> {
             depth: self.depth,
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
+            display_choice: false,
         }
+    }
+
+    fn with_switch(&self, marker: u8) -> LayoutCtx<'a> {
+        let mut next = self.with_style(MathStyle::from_switch(marker));
+        next.display_choice = MathStyle::marker_is_display(marker);
+        next
     }
 
     /// Return a new context with incremented depth for recursion tracking.
@@ -378,6 +387,7 @@ impl<'a> LayoutCtx<'a> {
             depth: self.depth + 1,
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
+            display_choice: self.display_choice,
         }
     }
 }
@@ -393,6 +403,7 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
         depth: 0,
         size_scale: 1.0,
         spacing_style: None,
+        display_choice: false,
     };
     layout_row(&expr.nodes, &ctx)
 }
@@ -411,7 +422,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
 
     for node in nodes {
         if let MathNode::StyleSwitch(style) = node {
-            current_ctx = current_ctx.with_style(MathStyle::from_switch(*style));
+            current_ctx = current_ctx.with_switch(*style);
             continue;
         }
 
@@ -615,7 +626,11 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             script,
             script_script,
         } => {
-            let chosen = ctx.style.choose(display, text, script, script_script);
+            let chosen = if ctx.display_choice {
+                display
+            } else {
+                ctx.style.choose(display, text, script, script_script)
+            };
             layout_node(chosen, ctx)
         },
         MathNode::MathAtom { content, .. } => layout_node(content, ctx),
@@ -926,6 +941,7 @@ impl<'a> LayoutBuilder<'a> {
             depth: 0,
             size_scale: 1.0,
             spacing_style: None,
+            display_choice: false,
         };
         layout_row_arena(&expr.arena, expr.roots, arena, &ctx)
     }
@@ -941,6 +957,7 @@ struct ArenaLayoutCtx<'a> {
     /// When set, use this style for inter-atom spacing calculations instead of
     /// `self.style`.  See `LayoutCtx::spacing_style` for rationale.
     spacing_style: Option<MathStyle>,
+    display_choice: bool,
 }
 
 impl<'a> ArenaLayoutCtx<'a> {
@@ -961,7 +978,14 @@ impl<'a> ArenaLayoutCtx<'a> {
             depth: self.depth,
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
+            display_choice: false,
         }
+    }
+
+    fn with_switch(&self, marker: u8) -> ArenaLayoutCtx<'a> {
+        let mut next = self.with_style(MathStyle::from_switch(marker));
+        next.display_choice = MathStyle::marker_is_display(marker);
+        next
     }
 
     fn deeper(&self) -> ArenaLayoutCtx<'a> {
@@ -972,6 +996,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             depth: self.depth + 1,
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
+            display_choice: self.display_choice,
         }
     }
 }
@@ -1226,7 +1251,7 @@ fn layout_row_segment_arena(
     for &id in ids {
         // Handle style switches — update context for subsequent children
         if let CompactNode::StyleSwitch(s) = *ast.node(id) {
-            current_ctx = current_ctx.with_style(MathStyle::from_switch(s));
+            current_ctx = current_ctx.with_switch(s);
             continue;
         }
 
@@ -1517,7 +1542,11 @@ fn layout_node_arena(
             script,
             script_script,
         } => {
-            let chosen = ctx.style.choose(display, text, script, script_script);
+            let chosen = if ctx.display_choice {
+                display
+            } else {
+                ctx.style.choose(display, text, script, script_script)
+            };
             layout_node_arena(ast, chosen, arena, ctx)
         },
         CompactNode::MathAtom { content, .. } => layout_node_arena(ast, content, arena, ctx),
