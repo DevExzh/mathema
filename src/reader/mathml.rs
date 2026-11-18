@@ -83,6 +83,12 @@ impl MathReader for MathmlReader {
 
 const MAX_PARSE_DEPTH: u32 = 128;
 
+#[derive(Clone, Copy)]
+enum ScriptChildMode {
+    Script,
+    Accent,
+}
+
 struct MathmlCompactParser<'a> {
     reader: Reader<&'a [u8]>,
     arena: AstArena,
@@ -209,6 +215,20 @@ impl<'a> MathmlCompactParser<'a> {
         parent_tag: &str,
         inspect_style: bool,
     ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
+        self.read_children_with_script_modes(parent_tag, inspect_style, None)
+    }
+
+    /// Read children while optionally suppressing the automatic script-style
+    /// transition for selected positional children. Accents are laid out in
+    /// the base style, while ordinary under/over scripts use one smaller
+    /// style. Keeping this policy at the child reader boundary also preserves
+    /// nested `mstyle` relative levels.
+    fn read_children_with_script_modes(
+        &mut self,
+        parent_tag: &str,
+        inspect_style: bool,
+        script_modes: Option<&[ScriptChildMode]>,
+    ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
         let mut body_in_text_style = false;
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
@@ -223,7 +243,17 @@ impl<'a> MathmlCompactParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
-                    let previous = self.enter_script_child_style(parent_tag, nodes.len());
+                    let child_style = script_modes
+                        .and_then(|modes| modes.get(nodes.len()).copied())
+                        .unwrap_or(ScriptChildMode::Script);
+                    let previous = match child_style {
+                        ScriptChildMode::Script => {
+                            self.enter_script_child_style(parent_tag, nodes.len())
+                        },
+                        ScriptChildMode::Accent => {
+                            self.enter_accent_child_style(parent_tag, nodes.len())
+                        },
+                    };
                     let id = if inspect_style
                         && nodes.is_empty()
                         && name == "mstyle"
@@ -242,7 +272,17 @@ impl<'a> MathmlCompactParser<'a> {
                     if inspect_style && nodes.is_empty() && name == "mstyle" {
                         body_in_text_style = has_explicit_text_size(&e);
                     }
-                    let previous = self.enter_script_child_style(parent_tag, nodes.len());
+                    let child_style = script_modes
+                        .and_then(|modes| modes.get(nodes.len()).copied())
+                        .unwrap_or(ScriptChildMode::Script);
+                    let previous = match child_style {
+                        ScriptChildMode::Script => {
+                            self.enter_script_child_style(parent_tag, nodes.len())
+                        },
+                        ScriptChildMode::Accent => {
+                            self.enter_accent_child_style(parent_tag, nodes.len())
+                        },
+                    };
                     let id = self.parse_empty_element(&name, &e)?;
                     self.restore_style(previous);
                     nodes.push(id);
@@ -306,11 +346,32 @@ impl<'a> MathmlCompactParser<'a> {
             "msub" | "msup" | "msubsup" | "munder" | "mover" | "munderover" if child_index > 0 => {
                 Some(1)
             },
+            // Each post- or pre-script pair in `mmultiscripts` is rendered at
+            // the compact script level. The parser applies this transition
+            // around every child after the base, including both sides of the
+            // `mprescripts` marker.
+            "mmultiscripts" if child_index > 0 => Some(1),
             _ => None,
         }?;
         let previous = (self.style_display, self.style_level);
         self.style_display = false;
         self.style_level = self.style_level.saturating_add(level_delta);
+        Some(previous)
+    }
+
+    /// Accents switch to compact displaystyle but keep the inherited
+    /// scriptlevel. MathML Core applies this displaystyle change even when an
+    /// accent attribute suppresses the size reduction.
+    fn enter_accent_child_style(
+        &mut self,
+        parent_tag: &str,
+        child_index: usize,
+    ) -> Option<(bool, i64)> {
+        if !matches!(parent_tag, "munder" | "mover" | "munderover") || child_index == 0 {
+            return None;
+        }
+        let previous = (self.style_display, self.style_level);
+        self.style_display = false;
         Some(previous)
     }
 
@@ -681,8 +742,19 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "mover" => {
                 let accent = get_attr(start, "accent");
-                let movable = accent.as_deref() != Some("true");
-                let children = self.parse_children(name)?;
+                let is_accent = accent.as_deref().is_some_and(is_true_mathml_boolean);
+                let movable = !is_accent;
+                let child_styles = [
+                    ScriptChildMode::Script,
+                    if is_accent {
+                        ScriptChildMode::Accent
+                    } else {
+                        ScriptChildMode::Script
+                    },
+                ];
+                let children = self
+                    .read_children_with_script_modes(name, false, Some(&child_styles))
+                    .map(|(children, _)| children)?;
                 let (base, over) = self.two_child_ids(children);
                 if let Some(node) =
                     self.mathml_accent(base, over, AccentPosition::Above, accent.as_deref())
@@ -702,8 +774,18 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "munder" => {
                 let accent = get_attr(start, "accentunder");
-                let is_accent = accent.as_deref() == Some("true");
-                let children = self.parse_children(name)?;
+                let is_accent = accent.as_deref().is_some_and(is_true_mathml_boolean);
+                let child_styles = [
+                    ScriptChildMode::Script,
+                    if is_accent {
+                        ScriptChildMode::Accent
+                    } else {
+                        ScriptChildMode::Script
+                    },
+                ];
+                let children = self
+                    .read_children_with_script_modes(name, false, Some(&child_styles))
+                    .map(|(children, _)| children)?;
                 let (base, under) = self.two_child_ids(children);
                 if let Some(node) =
                     self.mathml_accent(base, under, AccentPosition::Below, accent.as_deref())
@@ -722,9 +804,28 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "munderover" => {
-                let accent = get_attr(start, "accent").as_deref() == Some("true");
-                let accent_under = get_attr(start, "accentunder").as_deref() == Some("true");
-                let children = self.parse_children(name)?;
+                let accent = get_attr(start, "accent")
+                    .as_deref()
+                    .is_some_and(is_true_mathml_boolean);
+                let accent_under = get_attr(start, "accentunder")
+                    .as_deref()
+                    .is_some_and(is_true_mathml_boolean);
+                let child_styles = [
+                    ScriptChildMode::Script,
+                    if accent_under {
+                        ScriptChildMode::Accent
+                    } else {
+                        ScriptChildMode::Script
+                    },
+                    if accent {
+                        ScriptChildMode::Accent
+                    } else {
+                        ScriptChildMode::Script
+                    },
+                ];
+                let children = self
+                    .read_children_with_script_modes(name, false, Some(&child_styles))
+                    .map(|(children, _)| children)?;
                 let (base, under, over) = self.three_child_ids(children);
                 // `munderover` has independent `accent` and `accentunder`
                 // flags. The public AST stores one accent flag per wrapper,
@@ -1035,11 +1136,10 @@ impl<'a> MathmlCompactParser<'a> {
             return None;
         };
         let ch = single_accent_char(self.arena.str_val(sid))?;
-        let accent = match attr {
-            Some("true") => true,
-            Some("false") => false,
-            _ => crate::unicode::symbols::is_accent_glyph(ch),
-        };
+        // MathML Core treats absent and invalid accent attributes as false.
+        // The script style transition is therefore retained unless the
+        // author explicitly requests accent layout.
+        let accent = attr.is_some_and(is_true_mathml_boolean);
         if !accent {
             return None;
         }
@@ -1259,7 +1359,11 @@ impl<'a> MathmlCompactParser<'a> {
                         in_pre = true;
                         self.skip_element_body("mprescripts")?;
                     } else {
+                        let previous = seen_base
+                            .then(|| self.enter_script_child_style(parent_tag, 1))
+                            .flatten();
                         let id = self.parse_element_by_name(&name, &e)?;
+                        self.restore_style(previous);
                         if !seen_base {
                             base = id;
                             seen_base = true;
@@ -1275,7 +1379,11 @@ impl<'a> MathmlCompactParser<'a> {
                     if name == "mprescripts" {
                         in_pre = true;
                     } else {
+                        let previous = seen_base
+                            .then(|| self.enter_script_child_style(parent_tag, 1))
+                            .flatten();
                         let id = self.parse_empty_element(&name, &e)?;
+                        self.restore_style(previous);
                         if !seen_base {
                             base = id;
                             seen_base = true;
@@ -1289,7 +1397,11 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Text(e)) => {
                     let text = unescape_text(&e);
                     if !text.trim().is_empty() {
+                        let previous = seen_base
+                            .then(|| self.enter_script_child_style(parent_tag, 1))
+                            .flatten();
                         let id = self.classify_text_compact(&text);
+                        self.restore_style(previous);
                         if !seen_base {
                             base = id;
                             seen_base = true;
@@ -1303,7 +1415,11 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::GeneralRef(r)) => {
                     let text = resolve_general_ref(&r);
                     if !text.trim().is_empty() {
+                        let previous = seen_base
+                            .then(|| self.enter_script_child_style(parent_tag, 1))
+                            .flatten();
                         let id = self.classify_text_compact(&text);
+                        self.restore_style(previous);
                         if !seen_base {
                             base = id;
                             seen_base = true;
@@ -1340,6 +1456,11 @@ impl<'a> MathmlCompactParser<'a> {
 // ---------------------------------------------------------------------------
 // Helpers (no arena access needed)
 // ---------------------------------------------------------------------------
+
+#[inline]
+fn is_true_mathml_boolean(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("true")
+}
 
 /// Parse MathML's absolute or relative scriptlevel syntax. Invalid values are
 /// ignored by the caller, just as an unsupported presentation hint would be.
@@ -2009,6 +2130,110 @@ mod tests {
         };
         assert!(matches!(*num, MathNode::Row(_)));
         assert_eq!(*den, MathNode::Number("2".into()));
+    }
+
+    #[test]
+    fn mmultiscripts_apply_script_style_to_post_and_pre_pairs() {
+        let node = parse_one(
+            r#"<math display="inline"><mmultiscripts>
+                <mi>x</mi>
+                <mstyle scriptlevel="+1"><mi>i</mi></mstyle>
+                <mstyle scriptlevel="+1"><mn>2</mn></mstyle>
+                <mprescripts/>
+                <mstyle scriptlevel="+1"><mi>j</mi></mstyle>
+                <mstyle scriptlevel="+1"><mn>3</mn></mstyle>
+            </mmultiscripts></math>"#,
+        );
+        let expected_script = |node| MathNode::Row(vec![MathNode::StyleSwitch(3), node]);
+        assert_eq!(
+            node,
+            MathNode::PreScripts {
+                base: Box::new(MathNode::SubSup {
+                    base: Box::new(MathNode::Identifier("x".into())),
+                    sub: Box::new(expected_script(MathNode::Identifier("i".into()))),
+                    sup: Box::new(expected_script(MathNode::Number("2".into()))),
+                }),
+                pre_sub: Some(Box::new(expected_script(MathNode::Identifier("j".into())))),
+                pre_sup: Some(Box::new(expected_script(MathNode::Number("3".into())))),
+            }
+        );
+    }
+
+    #[test]
+    fn accent_under_over_children_keep_base_style() {
+        let accent_over = parse_one(
+            r#"<math display="inline"><mover accent="true"><mi>x</mi><mstyle scriptlevel="+0"><mo>^</mo></mstyle></mover></math>"#,
+        );
+        let ordinary_over = parse_one(
+            r#"<math display="inline"><mover accent="false"><mi>x</mi><mstyle scriptlevel="+0"><mo>^</mo></mstyle></mover></math>"#,
+        );
+        assert!(matches!(
+            accent_over,
+            MathNode::Overscript { over, movable_limits: false, .. }
+                if *over == MathNode::Row(vec![MathNode::StyleSwitch(1), MathNode::Symbol(SymbolKind::Ordinary, "^".into())])
+        ));
+        assert!(matches!(
+            ordinary_over,
+            MathNode::Overscript { over, movable_limits: true, .. }
+                if *over == MathNode::Row(vec![MathNode::StyleSwitch(2), MathNode::Symbol(SymbolKind::Ordinary, "^".into())])
+        ));
+
+        let accent_under_over = parse_one(
+            r#"<math display="inline"><munderover accent="true" accentunder="true"><mi>x</mi><mstyle scriptlevel="+0"><mo>_</mo></mstyle><mstyle scriptlevel="+0"><mo>^</mo></mstyle></munderover></math>"#,
+        );
+        assert!(matches!(
+            accent_under_over,
+            MathNode::Overscript { base, over, movable_limits: false }
+                if *over == MathNode::Row(vec![MathNode::StyleSwitch(1), MathNode::Symbol(SymbolKind::Ordinary, "^".into())])
+                    && matches!(&*base, MathNode::Underscript { under, movable_limits: false, .. }
+                        if **under == MathNode::Row(vec![MathNode::StyleSwitch(1), MathNode::Symbol(SymbolKind::Ordinary, "_".into())]))
+        ));
+
+        let display_accent = parse_one(
+            r#"<math display="block"><mover accent="true"><mi>x</mi><mstyle scriptlevel="+0"><mo>^</mo></mstyle></mover></math>"#,
+        );
+        assert!(matches!(
+            display_accent,
+            MathNode::Overscript { over, movable_limits: false, .. }
+                if *over == MathNode::Row(vec![MathNode::StyleSwitch(1), MathNode::Symbol(SymbolKind::Ordinary, "^".into())])
+        ));
+    }
+
+    #[test]
+    fn absent_or_invalid_accent_attributes_use_script_style() {
+        for attr in [
+            "",
+            "accent=\"false\"",
+            "accent=\"maybe\"",
+            "accent=\"TRUE\"",
+        ] {
+            let attr = if attr.is_empty() {
+                String::new()
+            } else {
+                format!(" {attr}")
+            };
+            let xml = format!(
+                r#"<math display="inline"><mover{attr}><mi>x</mi><mstyle scriptlevel="+0"><mo>^</mo></mstyle></mover></math>"#
+            );
+            let node = parse_one(&xml);
+            let expected_style = if attr.eq_ignore_ascii_case(" accent=\"TRUE\"") {
+                1
+            } else {
+                2
+            };
+            assert!(
+                matches!(
+                    node,
+                MathNode::Overscript { ref over, movable_limits: movable, .. }
+                        if movable == (expected_style == 2)
+                        && **over == MathNode::Row(vec![
+                                MathNode::StyleSwitch(expected_style),
+                                MathNode::Symbol(SymbolKind::Ordinary, "^".into()),
+                            ])
+                ),
+                "{xml}: {node:?}"
+            );
+        }
     }
 
     #[test]
