@@ -1400,10 +1400,7 @@ fn round_trip_ascii_identifier_script_bases() {
 fn malformed_color_brace_prime_script_is_idempotent() {
     let config = Config::default();
     for (input, expected) in [
-        (
-            r"a^{\{\color{red]{cohor{red}{}'}+b",
-            r"a^{\{^{\prime}}+ b",
-        ),
+        (r"a^{\{\color{red]{cohor{red}{}'}+b", r"a^{\{^{\prime}}+ b"),
         (r"\{^'", r"\{^{\prime}"),
         (r"\}^{\prime}", r"\}^{\prime}"),
     ] {
