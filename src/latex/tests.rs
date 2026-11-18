@@ -3134,6 +3134,31 @@ fn fuzz_repro_roundtrip_misc() {
 }
 
 #[test]
+fn separated_decimal_numbers_after_a_leading_script_are_stable() {
+    let input = "_:8.82 8.81 \n88\n8::::::::':::::::::::::+:::::::::::::::::8::::::";
+    let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(
+        first,
+        "{{}_{:}8.82}8.81888::::::::^{\\prime}:::::::::::::+ :::::::::::::::::8::::::"
+    );
+
+    for input in ["1 2", "1.2 3.4", "x^1.2"] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{input}");
+    }
+
+    let imported =
+        crate::from_mathml(r#"<math><mrow><mn>1.2</mn><mn>3.4</mn></mrow></math>"#).unwrap();
+    let first = imported.to_latex().unwrap();
+    let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first, "{1.2 3.4}");
+}
+
+#[test]
 fn empty_base_prime_after_middle_stays_stable_in_nested_fraction() {
     let input = "''>_-'\\ip\\over'_- '\\i\\ip\\r'enew^iJ";
     let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();

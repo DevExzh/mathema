@@ -65,6 +65,7 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
     for node in merged {
         if let MathNode::Number(ref num) = node
             && let Some(MathNode::Number(prev_num)) = final_nodes.last_mut()
+            && can_merge_number_text(prev_num, num)
         {
             prev_num.push_str(num);
             continue;
@@ -124,6 +125,22 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
         coalesced[content_end - 2] = make_script_with_base_math(prev, last);
     }
     *nodes = coalesced;
+}
+
+/// Adjacent number tokens can be merged only when their concatenation is a
+/// token accepted by the LaTeX number parser. Keeping a second decimal point
+/// in one node makes the writer emit an ambiguous token that reparses with a
+/// different grouping.
+pub(crate) fn can_merge_number_text(first: &str, second: &str) -> bool {
+    let mut dots = 0;
+    for byte in first.bytes().chain(second.bytes()) {
+        if byte == b'.' {
+            dots += 1;
+        } else if !byte.is_ascii_digit() {
+            return false;
+        }
+    }
+    dots <= 1
 }
 
 fn is_effectively_empty_math(node: &MathNode) -> bool {
@@ -737,7 +754,12 @@ fn merge_runs(
         };
         let mut end = i + 1;
         while end < ids.len()
-            && matches!(key(arena, *arena.node(ids[end])), Some((k, _)) if k == kind)
+            && matches!(key(arena, *arena.node(ids[end])), Some((k, sid)) if k == kind
+            && (kind != MergeKind::Number
+                || can_merge_number_text(
+                    arena.str_val(first_sid),
+                    arena.str_val(sid),
+                )))
         {
             end += 1;
         }

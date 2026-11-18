@@ -171,6 +171,7 @@ fn write_node_slice(
             // spacing does not depend on how the node before is classified
             // (a minus read back as a binary operator gets one anyway).
             let space = needs_space(arena, children.get(i - 1).copied(), id)
+                || adjacent_number_nodes_need_separator(arena, children[i - 1], id)
                 || (has_visible_prescripts(arena, id) && !buf.ends_with(' '))
                 || (ends_with_command && node_starts_with_ascii_letter(arena, id));
             if space {
@@ -195,6 +196,23 @@ fn write_node_slice(
         ends_with_command = appended_ends_with_letter_command(buf, output_start, ends_with_command);
         i += 1;
     }
+}
+
+/// Separate adjacent numeric tokens when their concatenation would contain
+/// more than one decimal point. The parser ignores source whitespace, so this
+/// keeps two authored decimal literals distinct without changing ordinary
+/// integer-run canonicalization.
+fn adjacent_number_nodes_need_separator(
+    arena: &AstArena,
+    previous: NodeId,
+    current: NodeId,
+) -> bool {
+    let (CompactNode::Number(previous), CompactNode::Number(current)) =
+        (*arena.node(previous), *arena.node(current))
+    else {
+        return false;
+    };
+    !crate::ast::normalize::can_merge_number_text(arena.str_val(previous), arena.str_val(current))
 }
 
 /// A literal brace is already emitted as a control sequence (`\{`/`\}`).
