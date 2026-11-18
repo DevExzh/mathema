@@ -674,6 +674,21 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Resolve the effective placement of a named operator in the current
+    /// OMML math style. `Default` limits stack in display style and sit at the
+    /// side in text or script styles. Explicit `\limits` always stack, while
+    /// `\nolimits` always stays a side script.
+    fn named_operator_stacks(&self, id: NodeId) -> bool {
+        let CompactNode::Operator { limits, .. } = *self.arena.node(id) else {
+            return false;
+        };
+        match limits {
+            LimitStyle::AboveBelow => true,
+            LimitStyle::Default => self.style.is_display(),
+            LimitStyle::SubSup => false,
+        }
+    }
+
     /// Whether a cell has a top-level `&` symbol.
     fn has_ampersand(&self, id: NodeId) -> bool {
         let arena = self.arena;
@@ -704,25 +719,51 @@ impl<'a> Emitter<'a> {
             } => self.fenced(open, close, content, fmt),
             CompactNode::Subscript { base, sub } => {
                 let style = self.style;
-                self.open("m:sSub");
-                self.with_style(style, |e| e.arg("m:e", base, fmt));
-                self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
-                self.close("m:sSub");
+                if self.named_operator_stacks(base) {
+                    self.open("m:limLow");
+                    self.with_style(style, |e| e.arg("m:e", base, fmt));
+                    self.with_style(style.sub(), |e| e.arg("m:lim", sub, fmt));
+                    self.close("m:limLow");
+                } else {
+                    self.open("m:sSub");
+                    self.with_style(style, |e| e.arg("m:e", base, fmt));
+                    self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
+                    self.close("m:sSub");
+                }
             },
             CompactNode::Superscript { base, sup } => {
                 let style = self.style;
-                self.open("m:sSup");
-                self.with_style(style, |e| e.arg("m:e", base, fmt));
-                self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
-                self.close("m:sSup");
+                if self.named_operator_stacks(base) {
+                    self.open("m:limUpp");
+                    self.with_style(style, |e| e.arg("m:e", base, fmt));
+                    self.with_style(style.sup(), |e| e.arg("m:lim", sup, fmt));
+                    self.close("m:limUpp");
+                } else {
+                    self.open("m:sSup");
+                    self.with_style(style, |e| e.arg("m:e", base, fmt));
+                    self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
+                    self.close("m:sSup");
+                }
             },
             CompactNode::SubSup { base, sub, sup } => {
                 let style = self.style;
-                self.open("m:sSubSup");
-                self.with_style(style, |e| e.arg("m:e", base, fmt));
-                self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
-                self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
-                self.close("m:sSubSup");
+                if self.named_operator_stacks(base) {
+                    self.open("m:limUpp");
+                    self.open("m:e");
+                    self.open("m:limLow");
+                    self.with_style(style, |e| e.arg("m:e", base, fmt));
+                    self.with_style(style.sub(), |e| e.arg("m:lim", sub, fmt));
+                    self.close("m:limLow");
+                    self.close("m:e");
+                    self.with_style(style.sup(), |e| e.arg("m:lim", sup, fmt));
+                    self.close("m:limUpp");
+                } else {
+                    self.open("m:sSubSup");
+                    self.with_style(style, |e| e.arg("m:e", base, fmt));
+                    self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
+                    self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
+                    self.close("m:sSubSup");
+                }
             },
             CompactNode::PreScripts {
                 base,
