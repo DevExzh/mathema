@@ -530,9 +530,11 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn style_marker_for(&self, style: (bool, i64)) -> u8 {
-        match style.1 {
-            1 => 2,
-            2.. => 3,
+        match (style.0, style.1) {
+            (true, 1) => 4,
+            (true, 2..) => 5,
+            (_, 1) => 2,
+            (_, 2..) => 3,
             _ if style.0 => 0,
             _ => 1,
         }
@@ -868,16 +870,18 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "mtable" => {
-                let rows = self.with_table_style(start, true, |p| p.parse_table(name))?;
+                let (rows, columns) =
+                    self.with_table_style(start, true, |p| p.parse_table(name))?;
                 let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
                 let num_cols = ncols.max(1) as u16;
 
                 let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
                 for _ in 0..ncols {
-                    align_ids.push(
-                        self.arena
-                            .push_node(CompactNode::ColAlign(ColumnAlign::Center)),
-                    );
+                    let align = columns
+                        .get(align_ids.len())
+                        .copied()
+                        .unwrap_or(ColumnAlign::Center);
+                    align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
                 }
                 let col_aligns = self.arena.push_children_deferred(&align_ids);
 
@@ -1084,14 +1088,23 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(nodes)
     }
 
-    fn parse_table(&mut self, parent_tag: &str) -> Result<Vec<Vec<SmallVec<[NodeId; 8]>>>> {
+    fn parse_table(
+        &mut self,
+        parent_tag: &str,
+    ) -> Result<(Vec<Vec<SmallVec<[NodeId; 8]>>>, Vec<ColumnAlign>)> {
         let mut rows = Vec::new();
+        let mut columns = Vec::new();
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtr" || name == "mlabeledtr" {
-                        rows.push(self.with_table_style(&e, false, |p| p.parse_table_row(&name))?);
+                        let (row, row_columns) =
+                            self.with_table_style(&e, false, |p| p.parse_table_row(&name))?;
+                        if columns.is_empty() {
+                            columns = row_columns;
+                        }
+                        rows.push(row);
                     }
                 },
                 Ok(Event::End(e)) => {
@@ -1103,25 +1116,32 @@ impl<'a> MathmlCompactParser<'a> {
                 _ => continue,
             }
         }
-        Ok(rows)
+        Ok((rows, columns))
     }
 
-    fn parse_table_row(&mut self, parent_tag: &str) -> Result<Vec<SmallVec<[NodeId; 8]>>> {
+    fn parse_table_row(
+        &mut self,
+        parent_tag: &str,
+    ) -> Result<(Vec<SmallVec<[NodeId; 8]>>, Vec<ColumnAlign>)> {
         let mut cells = Vec::new();
+        let mut columns = Vec::new();
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
+                        columns.push(parse_column_align(get_attr(&e, "columnalign")));
                         cells.push(self.with_table_style(&e, false, Self::parse_table_cell)?);
                     } else {
                         // Inferred cell: a non-<mtd> child is its own cell.
+                        columns.push(ColumnAlign::Center);
                         let id = self.parse_element_by_name(&name, &e)?;
                         cells.push(smallvec::smallvec![id]);
                     }
                 },
                 Ok(Event::Empty(e)) => {
                     let name = Self::local_name(&e);
+                    columns.push(ColumnAlign::Center);
                     let id = self.parse_empty_element(&name, &e)?;
                     cells.push(smallvec::smallvec![id]);
                 },
@@ -1129,6 +1149,7 @@ impl<'a> MathmlCompactParser<'a> {
                     let text = unescape_text(&e);
                     if !text.trim().is_empty() {
                         let id = self.classify_text_compact(&text);
+                        columns.push(ColumnAlign::Center);
                         cells.push(smallvec::smallvec![id]);
                     }
                 },
@@ -1136,6 +1157,7 @@ impl<'a> MathmlCompactParser<'a> {
                     let text = resolve_general_ref(&r);
                     if !text.trim().is_empty() {
                         let id = self.classify_text_compact(&text);
+                        columns.push(ColumnAlign::Center);
                         cells.push(smallvec::smallvec![id]);
                     }
                 },
@@ -1148,7 +1170,7 @@ impl<'a> MathmlCompactParser<'a> {
                 _ => continue,
             }
         }
-        Ok(cells)
+        Ok((cells, columns))
     }
 
     fn is_empty_row_id(&self, id: NodeId) -> bool {
@@ -1646,6 +1668,22 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .map(|a| unescape_attr(&a.value))
 }
 
+fn parse_column_align(value: Option<String>) -> ColumnAlign {
+    value
+        .and_then(|value| {
+            value
+                .split_ascii_whitespace()
+                .next()
+                .map(str::to_ascii_lowercase)
+        })
+        .as_deref()
+        .map_or(ColumnAlign::Center, |value| match value {
+            "left" => ColumnAlign::Left,
+            "right" => ColumnAlign::Right,
+            _ => ColumnAlign::Center,
+        })
+}
+
 /// Unescape text content, resolving the full MathML/HTML named-entity set
 /// (e.g. `&alpha;`, `&InvisibleTimes;`, `&ApplyFunction;`) plus numeric
 /// references. Falls back to a manual pass if quick-xml reports an error so
@@ -2116,7 +2154,7 @@ mod tests {
                 r#"<math><mstyle scriptlevel="1"><mstyle scriptlevel="0"><mi>x</mi></mstyle></mstyle></math>"#
             ),
             MathNode::Row(vec![
-                MathNode::StyleSwitch(2),
+                MathNode::StyleSwitch(4),
                 MathNode::Row(vec![
                     MathNode::StyleSwitch(0),
                     MathNode::Identifier("x".into()),
@@ -2288,7 +2326,7 @@ mod tests {
             ),
             MathNode::Row(vec![
                 MathNode::Row(vec![
-                    MathNode::StyleSwitch(2),
+                    MathNode::StyleSwitch(4),
                     MathNode::Row(vec![]),
                     MathNode::Identifier("x".into()),
                 ]),
@@ -2337,9 +2375,9 @@ mod tests {
         assert_eq!(
             node,
             MathNode::Row(vec![
-                MathNode::StyleSwitch(3),
+                MathNode::StyleSwitch(5),
                 MathNode::Row(vec![
-                    MathNode::StyleSwitch(2),
+                    MathNode::StyleSwitch(4),
                     MathNode::Identifier("x".into()),
                 ]),
             ])
@@ -2362,7 +2400,7 @@ mod tests {
                 r#"<math><mstyle displaystyle="perhaps" scriptlevel="+1"><mi>x</mi></mstyle></math>"#,
             ),
             MathNode::Row(vec![
-                MathNode::StyleSwitch(2),
+                MathNode::StyleSwitch(4),
                 MathNode::Identifier("x".into()),
             ])
         );
