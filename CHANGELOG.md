@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- Legacy font scopes stop at table cells while continuing through surrounding
+  fractions, fences, and siblings.
 - Legacy font declarations now remain visible to plain-TeX infix fraction
   resolution, so scoped styles reach both numerator and denominator.
 - `\\argmin` and `\\argmax` retain the thin mathematical space used by

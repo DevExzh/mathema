@@ -5932,6 +5932,76 @@ impl LatexCompactParser {
         result
     }
 
+    fn font_scope_contains_array(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Array { .. } => true,
+            CompactNode::Row(span)
+            | CompactNode::Styled(_, span)
+            | CompactNode::Fenced { content: span, .. } => self
+                .arena
+                .children(span)
+                .iter()
+                .copied()
+                .any(|child| self.font_scope_contains_array(child)),
+            CompactNode::Fraction { num, den, .. } => {
+                self.font_scope_contains_array(num) || self.font_scope_contains_array(den)
+            },
+            _ => false,
+        }
+    }
+
+    fn style_font_node(&mut self, style: TextStyle, id: NodeId) -> NodeId {
+        match *self.arena.node(id) {
+            CompactNode::Array { .. } => id,
+            CompactNode::Row(span) => {
+                let children: Vec<NodeId> = self.arena.children(span).to_vec();
+                let children: Vec<NodeId> = children
+                    .into_iter()
+                    .map(|child| self.style_font_node(style, child))
+                    .collect();
+                let span = self.arena.push_children_deferred(&children);
+                self.arena.push_node(CompactNode::Row(span))
+            },
+            CompactNode::Fenced {
+                open,
+                close,
+                content,
+            } => {
+                let children: Vec<NodeId> = self.arena.children(content).to_vec();
+                let children: Vec<NodeId> = children
+                    .into_iter()
+                    .map(|child| self.style_font_node(style, child))
+                    .collect();
+                let content = self.arena.push_children_deferred(&children);
+                self.arena.push_node(CompactNode::Fenced {
+                    open,
+                    close,
+                    content,
+                })
+            },
+            CompactNode::Fraction { kind, num, den } => {
+                let num = self.style_font_node(style, num);
+                let den = self.style_font_node(style, den);
+                self.arena
+                    .push_node(CompactNode::Fraction { kind, num, den })
+            },
+            CompactNode::Styled(existing, span) => {
+                let children: Vec<NodeId> = self.arena.children(span).to_vec();
+                let children: Vec<NodeId> = children
+                    .into_iter()
+                    .map(|child| self.style_font_node(style, child))
+                    .collect();
+                let span = self.arena.push_children_deferred(&children);
+                self.arena.push_node(CompactNode::Styled(existing, span))
+            },
+            CompactNode::Middle(_) => id,
+            _ => {
+                let span = self.arena.push_children_deferred(&[id]);
+                self.arena.push_node(CompactNode::Styled(style, span))
+            },
+        }
+    }
+
     fn flush_font_run(
         &mut self,
         style: TextStyle,
@@ -5939,8 +6009,21 @@ impl LatexCompactParser {
         ids: &mut SmallVec<[NodeId; 8]>,
     ) {
         if !run.is_empty() {
-            let span = self.arena.push_children_deferred(run);
-            ids.push(self.arena.push_node(CompactNode::Styled(style, span)));
+            if run
+                .iter()
+                .copied()
+                .any(|id| self.font_scope_contains_array(id))
+            {
+                let nodes: Vec<NodeId> = run
+                    .iter()
+                    .copied()
+                    .map(|id| self.style_font_node(style, id))
+                    .collect();
+                ids.extend(nodes);
+            } else {
+                let span = self.arena.push_children_deferred(run);
+                ids.push(self.arena.push_node(CompactNode::Styled(style, span)));
+            }
             run.clear();
         }
     }

@@ -189,6 +189,45 @@ fn font_fraction_does_not_escape_its_argument_or_cell() {
 }
 
 #[test]
+fn legacy_font_scope_resets_matrix_cells_but_keeps_siblings() {
+    for (input, expected) in [
+        (
+            r"\bf x\begin{matrix}y&z\end{matrix}t",
+            r"\mathbf{x}\begin{array}{cc} y & z \end{array}\mathbf{t}",
+        ),
+        (
+            r"\bf x\frac{a}{\begin{matrix}u&v\end{matrix}}t",
+            r"\mathbf{x}\frac{\mathbf{a}}{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+        ),
+        (
+            r"\bf x\begin{matrix}\it y&\bf z\end{matrix}t",
+            r"\mathbf{x}\begin{array}{cc} \mathit{y} & \mathbf{z} \end{array}\mathbf{t}",
+        ),
+        (
+            r"x\begin{matrix}y&z\end{matrix}t",
+            r"x\begin{array}{cc} y & z \end{array}t",
+        ),
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, expected, "{input}");
+        assert_eq!(
+            first,
+            crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+            "unstable matrix font scope: {input}"
+        );
+    }
+    let mathml = crate::convert(
+        r"\bf x\begin{matrix}y&z\end{matrix}t",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+    )
+    .unwrap();
+    assert!(mathml.contains("<mstyle mathvariant=\"bold\"><mi>x</mi></mstyle><mtable>"));
+    assert!(mathml.contains("</mtable><mstyle mathvariant=\"bold\"><mi>t</mi></mstyle>"));
+    assert!(!mathml.contains("<mstyle mathvariant=\"bold\"><mi>x</mi><mtable>"));
+}
+
+#[test]
 fn canonical_tex_attaches_bounds_to_the_operator_itself() {
     for (source, canonical) in [
         (r"\lim_i^j", r"\lim_i^j"),
