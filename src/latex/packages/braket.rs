@@ -158,6 +158,7 @@ mod tests {
         let source_mathml = source.to_mathml().unwrap();
         let expansion_mathml = expansion.to_mathml().unwrap();
         assert!(source_mathml.contains('∣') && expansion_mathml.contains('∣'));
+        #[cfg(feature = "render")]
         assert_eq!(source.to_svg().unwrap(), expansion.to_svg().unwrap());
         let canonical = source.to_latex().unwrap();
         assert_eq!(canonical, source.to_latex().unwrap());
