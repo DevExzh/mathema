@@ -2095,6 +2095,12 @@ fn structured_operatorname_keeps_resource_failures_visible() {
         crate::from_latex_with(deep, &config).is_err(),
         "structured operator content bypassed the depth limit"
     );
+    let limited = Config::default().with_max_nodes(Some(4));
+    let long = r"\operatorname*{\overline{\overline{\overline{\overline{lim}}}}}";
+    assert!(
+        crate::from_latex_with(long, &limited).is_err(),
+        "structured operator content bypassed the node limit"
+    );
 }
 
 #[test]
