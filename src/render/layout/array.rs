@@ -155,8 +155,6 @@ pub(super) fn layout_array_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let size = ctx.size();
-    // Small matrices use script-sized cells, while their TeX glue is measured
-    // in the surrounding math quad. Generic arrays retain the existing path.
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_pct as f64 / 100.0;
     let baselineskip = 1.2 * size;
@@ -236,50 +234,28 @@ pub(super) fn layout_array_arena(
     // `array`-style tables pad outer edges with
     // `\arraycolsep` and use 2·arraycolsep between columns.
     let colsep = ARRAY_COLSEP_EM * size;
-    let smallmatrix_pad = if smallmatrix {
-        crate::ast::style::space_width_in_em(
-            Rational::new(1, 6),
-            Some(SpaceBasis::MathMu),
-            ctx.style,
-            ctx.size_scale,
+    // amsmath builds smallmatrix in horizontal mode: the exterior thin
+    // spaces use the surrounding math quad, but its intercolumn thickspace
+    // uses the text-mode definition of .2777em.
+    let (edge_pad, uniform_gap) = if smallmatrix {
+        let width = |r, basis| {
+            crate::ast::style::space_width_in_em(r, Some(basis), ctx.style, ctx.size_scale)
+        };
+        (
+            width(Rational::new(1, 6), SpaceBasis::MathMu),
+            Some(width(Rational::new(2777, 10_000), SpaceBasis::TextEm)),
         )
-    } else {
-        0.0
-    };
-    let lead_pad = if smallmatrix {
-        smallmatrix_pad
     } else if array_style {
-        colsep
+        (colsep, Some(2.0 * colsep))
     } else {
-        0.0
+        (0.0, None)
     };
-    let trail_pad = if smallmatrix {
-        smallmatrix_pad
-    } else if array_style {
-        colsep
-    } else {
-        0.0
-    };
-    let gap_after = |j: usize| -> f64 {
-        if smallmatrix {
-            let _ = j;
-            crate::ast::style::space_width_in_em(
-                Rational::new(5, 18),
-                Some(SpaceBasis::TextEm),
-                ctx.style,
-                ctx.size_scale,
-            )
-        } else if array_style {
-            2.0 * colsep
-        } else {
-            col_gap_after(j, aligned, size)
-        }
-    };
+    let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
 
     for i in 0..n_rows {
         row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
-        let mut cursor_x = lead_pad;
+        let mut cursor_x = edge_pad;
 
         for j in 0..nc.min(n_cols) {
             let idx = i * nc + j;
@@ -311,12 +287,12 @@ pub(super) fn layout_array_arena(
     row_boundary_y.push(cursor_y); // bottom edge
 
     let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
-    let total_width: f64 = lead_pad + col_widths.iter().sum::<f64>() + total_gap + trail_pad;
+    let total_width: f64 = edge_pad + col_widths.iter().sum::<f64>() + total_gap + edge_pad;
 
     // Column boundary x positions (left edge of each column), incl. lead pad.
     let mut boundary_x = Vec::with_capacity(n_cols + 1);
     {
-        let mut x_acc = lead_pad;
+        let mut x_acc = edge_pad;
         for j in 0..n_cols {
             boundary_x.push(x_acc);
             x_acc += col_widths.get(j).copied().unwrap_or(0.0);
