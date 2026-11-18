@@ -623,7 +623,7 @@ fn write_node_in(
                 start_math_style(w, MathStyle::Text)?;
             }
             let mut table = BytesStart::new("mtable");
-            if *add_jot {
+            if *add_jot && display_style.size_class() > 0 {
                 table.push_attribute(("displaystyle", "true"));
             }
             w.write_event(Event::Start(table)).map_err(to_err)?;
@@ -1347,7 +1347,7 @@ fn write_node_fast_in(
                 start_math_style_fast(buf, MathStyle::Text);
             }
 
-            if add_jot {
+            if add_jot && display_style.size_class() > 0 {
                 buf.push_str("<mtable displaystyle=\"true\">");
             } else {
                 buf.push_str("<mtable>");
