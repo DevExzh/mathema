@@ -477,6 +477,13 @@ fn movable_compound_limits_follow_equation_display_style() {
             .windows(4)
             .any(|window| window[0..3] == [3, 0, 22])
     );
+    let (_, block_diagnostics) = block.to_mtef_bytes_with_diagnostics(&options).unwrap();
+    assert!(
+        block_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("movable limits")),
+        "MTEF should report the loss of movable compound placement"
+    );
 
     let inline = from_latex_with(
         r"\mathop{a+b}^i",
@@ -498,4 +505,27 @@ fn movable_compound_limits_follow_equation_display_style() {
     let decoded = from_mtef_bytes(&inline_bytes).unwrap();
     assert!(decoded.to_latex().unwrap().contains(r"\mathop{a+ b}"));
     assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), inline_bytes);
+}
+
+#[test]
+fn mtef3_compound_operator_limits_use_general_bigop_slots() {
+    let options = MtefWriteOptions::new(MtefVersion::V3);
+    for (input, selector, expected) in [
+        (r"\mathop{a+b}\limits^⎴", 43u8, r"\mathop{a+ b}\limits^{⎴}"),
+        (
+            r"\mathop{a+b}\nolimits^⎴",
+            42u8,
+            r"\mathop{a+ b}\nolimits^{⎴}",
+        ),
+    ] {
+        let original = from_latex(input).unwrap();
+        let bytes = original.to_mtef_bytes(&options).unwrap();
+        assert!(
+            bytes.windows(3).any(|window| window == [0x03, selector, 0]),
+            "{input} did not use the native MTEF 3 general operator slot"
+        );
+        let decoded = from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(decoded.to_latex().unwrap(), expected, "{input}");
+        assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), bytes, "{input}");
+    }
 }
