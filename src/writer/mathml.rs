@@ -146,7 +146,11 @@ fn start_math_style_marker(w: &mut XmlWriter, marker: u8) -> Result<MathStyle> {
     } else {
         start_math_style(w, MathStyle::from_switch(marker))?;
     }
-    Ok(MathStyle::from_switch(marker))
+    Ok(if MathStyle::marker_is_display(marker) {
+        MathStyle::Display
+    } else {
+        MathStyle::from_switch(marker)
+    })
 }
 
 fn start_math_style_marker_fast(buf: &mut String, marker: u8) -> MathStyle {
@@ -161,7 +165,11 @@ fn start_math_style_marker_fast(buf: &mut String, marker: u8) -> MathStyle {
     } else {
         start_math_style_fast(buf, MathStyle::from_switch(marker));
     }
-    MathStyle::from_switch(marker)
+    if MathStyle::marker_is_display(marker) {
+        MathStyle::Display
+    } else {
+        MathStyle::from_switch(marker)
+    }
 }
 
 /// If every cell starts in the same style, a nested table can keep its
