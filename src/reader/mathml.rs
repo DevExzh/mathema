@@ -384,13 +384,14 @@ impl<'a> MathmlCompactParser<'a> {
                     _ => None,
                 };
                 let mut chars = name.chars();
-                let named = kind == SymbolKind::Ordinary
-                    && chars.next().is_some_and(|first| {
-                        first.is_alphabetic()
-                            && (movable.is_some()
-                                || !chars.as_str().is_empty() && chars.all(char::is_alphabetic))
-                            || get_attr(start, "data-mjx-texclass").as_deref() == Some("OP")
-                    });
+                let named = get_attr(start, "data-mathema-operator").as_deref() == Some("name")
+                    || kind == SymbolKind::Ordinary
+                        && chars.next().is_some_and(|first| {
+                            first.is_alphabetic()
+                                && (movable.is_some()
+                                    || !chars.as_str().is_empty() && chars.all(char::is_alphabetic))
+                                || get_attr(start, "data-mjx-texclass").as_deref() == Some("OP")
+                        });
                 let sid = self.arena.push_str(if named { name } else { &text });
                 let id = if named {
                     let limits = match movable {
@@ -463,10 +464,14 @@ impl<'a> MathmlCompactParser<'a> {
                         .push_node(CompactNode::Reflect { content, text_mode }))
                 } else if get_attr(start, "data-mjx-texclass").as_deref() == Some("OP") {
                     let content = self.flatten_ids(&children);
-                    Ok(self.arena.push_node(CompactNode::MathAtom {
+                    let op = self.arena.push_node(CompactNode::MathAtom {
                         atom_type: MathAtomType::Op,
                         content,
-                    }))
+                    });
+                    if get_attr(start, "data-mathema-limits").as_deref() == Some("movable") {
+                        self.movable_limit_operators.insert(op, true);
+                    }
+                    Ok(op)
                 } else {
                     let span = self.arena.push_children_deferred(&children);
                     Ok(self.arena.push_node(CompactNode::Row(span)))
@@ -911,6 +916,37 @@ impl<'a> MathmlCompactParser<'a> {
                 };
                 *self.arena.node_mut(base) = CompactNode::Operator { name, limits };
                 Some(self.make_script_pair(base, sub, sup))
+            },
+            CompactNode::MathAtom {
+                atom_type: MathAtomType::Op,
+                ..
+            } => {
+                let movable = self.movable_limit_operators.get(&base) == Some(&true);
+                if !stacked && !movable {
+                    return Some(self.make_script_pair(base, sub, sup));
+                }
+                // Native MathML needs separate tags in compact and display
+                // styles when a compound base has no core <mo>.
+                let node = match (sub.is_some(), sup.is_some()) {
+                    (true, true) => CompactNode::UnderOver {
+                        base,
+                        under: sub,
+                        over: sup,
+                        movable_limits: movable,
+                    },
+                    (true, false) => CompactNode::Underscript {
+                        base,
+                        under: sub,
+                        movable_limits: movable,
+                    },
+                    (false, true) => CompactNode::Overscript {
+                        base,
+                        over: sup,
+                        movable_limits: movable,
+                    },
+                    (false, false) => return Some(base),
+                };
+                Some(self.arena.push_node(node))
             },
             CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
                 let text = self.arena.str_val(sid).trim();
