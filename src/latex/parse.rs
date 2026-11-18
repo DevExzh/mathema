@@ -2998,6 +2998,10 @@ impl LatexCompactParser {
     fn parse_symbol_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let c = input.as_bytes()[0] as char;
         let rest = &input[1..]; // all symbol chars are single-byte ASCII
+        Ok((rest, self.push_ascii_math_symbol(c)))
+    }
+
+    fn push_ascii_math_symbol(&mut self, c: char) -> NodeId {
         let kind = classify_char(c);
         // Remap ASCII characters that have distinct math semantics.
         let ch = match c {
@@ -3006,7 +3010,7 @@ impl LatexCompactParser {
             _ => c,
         };
         let sid = self.push_char_str(ch);
-        Ok((rest, self.arena.push_node(CompactNode::Symbol(kind, sid))))
+        self.arena.push_node(CompactNode::Symbol(kind, sid))
     }
 
     // -----------------------------------------------------------------------
@@ -3445,21 +3449,19 @@ impl LatexCompactParser {
                 // cannot be written as a bare atom outside a fence without
                 // producing unparseable output. Treat the whole \middle as
                 // unparseable and stop.
-                if ch.is_ascii() && !SYMBOL_BYTES.contains(&(ch as u8)) {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::Char,
-                    )));
-                }
-                // Outside a \left..\right pair the delimiter is just a bare
-                // symbol. Use the same ASCII class mapping the parser uses for
-                // literal characters so the writer applies the right spacing.
-                let kind = if ch.is_ascii() && SYMBOL_BYTES.contains(&(ch as u8)) {
-                    classify_char(ch)
+                let symbol = if ch.is_ascii() {
+                    if !SYMBOL_BYTES.contains(&(ch as u8)) {
+                        return Err(nom::Err::Error(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::Char,
+                        )));
+                    }
+                    self.push_ascii_math_symbol(ch)
                 } else {
-                    SymbolKind::Ordinary
+                    self.arena
+                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid))
                 };
-                Ok((input, self.arena.push_node(CompactNode::Symbol(kind, sid))))
+                Ok((input, symbol))
             },
 
             // --- Color (consume color arg, return content) ---

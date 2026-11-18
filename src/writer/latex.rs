@@ -2525,6 +2525,24 @@ mod tests {
     }
 
     #[test]
+    fn unfenced_middle_minus_uses_the_math_minus_glyph() {
+        for (input, literal) in [
+            (r"\intop\middle -!", r"\intop-!"),
+            (r"x\middle -y", "x-y"),
+            (r"x^{\middle -}", "x^{-}"),
+        ] {
+            let canonical = normalized_latex(input);
+            assert_eq!(canonical, normalized_latex(literal), "{input}");
+            assert_eq!(canonical, normalized_latex(&canonical), "{input}");
+            assert_eq!(
+                crate::from_latex(input).unwrap().to_mathml().unwrap(),
+                crate::from_latex(literal).unwrap().to_mathml().unwrap(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
     fn middle_delimiters_follow_the_enclosing_fence_across_normalization() {
         for (input, fence_count) in [
             (r"{uw//suA\middle|3}1", 0),
