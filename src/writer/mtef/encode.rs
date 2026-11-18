@@ -21,6 +21,7 @@ use super::chars::{
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::normalize::{can_carry_script, can_take_prescripts, is_blank, takes_limits};
+use crate::ast::style::MathStyle;
 use crate::ast::{
     AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, StrokeKind,
     TextStyle,
@@ -147,6 +148,10 @@ pub(super) struct Encoder<'a> {
     styled_start: Option<usize>,
     /// The style of an enclosing `Styled` node.
     style: Option<TextStyle>,
+    /// Effective TeX math style used to select lossy style-choice branches.
+    /// MTEF has no mathchoice record, so the encoder must resolve each choice
+    /// using the style of its position before writing the selected branch.
+    math_style: MathStyle,
 }
 
 impl<'a> Encoder<'a> {
@@ -177,6 +182,36 @@ impl<'a> Encoder<'a> {
             far_east: false,
             styled_start: None,
             style: None,
+            math_style: display.into(),
+        }
+    }
+
+    fn with_math_style<T>(
+        &mut self,
+        math_style: MathStyle,
+        write: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        let previous = self.math_style;
+        self.math_style = math_style;
+        let result = write(self);
+        self.math_style = previous;
+        result
+    }
+
+    fn array_cell_style(
+        &self,
+        arraystretch_pct: u8,
+        add_jot: bool,
+        array_style: bool,
+    ) -> MathStyle {
+        if array_style {
+            self.math_style
+        } else if add_jot {
+            MathStyle::Display
+        } else if arraystretch_pct == 50 {
+            MathStyle::Script
+        } else {
+            MathStyle::Text
         }
     }
 
@@ -480,6 +515,13 @@ impl<'a> Encoder<'a> {
     }
 
     fn list_ids(&mut self, ids: &[NodeId], size: Size) -> Result<()> {
+        let previous_style = self.math_style;
+        let result = self.list_ids_inner(ids, size);
+        self.math_style = previous_style;
+        result
+    }
+
+    fn list_ids_inner(&mut self, ids: &[NodeId], size: Size) -> Result<()> {
         let mut i = 0;
         while i < ids.len() {
             // A long division without a quotient reads back as the bracket
@@ -735,11 +777,17 @@ impl<'a> Encoder<'a> {
                 self.lose("MTEF cannot represent a raised or lowered box; the content was written in place");
                 self.node(content, size)
             },
-            CompactNode::MathChoice { display, .. } => {
+            CompactNode::MathChoice {
+                display,
+                text,
+                script,
+                script_script,
+            } => {
                 self.lose(
-                    "MTEF cannot represent a style choice; the display-style branch was written",
+                    "MTEF cannot represent a style choice; the branch for the current math style was written",
                 );
-                self.node(display, size)
+                let branch = self.math_style.choose(display, text, script, script_script);
+                self.node(branch, size)
             },
             CompactNode::Color { content, .. } => {
                 self.lose(
@@ -755,7 +803,12 @@ impl<'a> Encoder<'a> {
                 self.lose("MTEF cannot represent a rule; it was dropped");
                 Ok(())
             },
-            CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {
+            CompactNode::StyleSwitch(style) => {
+                self.lose("MTEF style switches are not written; their math style was applied to following content");
+                self.math_style = MathStyle::from_switch(style);
+                Ok(())
+            },
+            CompactNode::SizeScale(_) => {
                 self.lose("MTEF style and size switches are not written; they were dropped");
                 Ok(())
             },
@@ -1216,8 +1269,11 @@ impl<'a> Encoder<'a> {
         };
         self.template(size, selector, variation);
         let script = size.script();
-        self.slot(script, sub)?;
-        self.slot(script, sup)?;
+        let script_style = self.math_style.sub();
+        self.with_math_style(script_style, |this| {
+            this.slot(script, sub)?;
+            this.slot(script, sup)
+        })?;
         self.end();
         Ok(())
     }
@@ -1242,8 +1298,11 @@ impl<'a> Encoder<'a> {
         self.template(size, if self.v5 { 23 } else { 39 }, variation);
         self.slot(size, Some(base))?;
         let script = size.script();
-        self.slot(script, lower)?;
-        self.slot(script, upper)?;
+        let script_style = self.math_style.sub();
+        self.with_math_style(script_style, |this| {
+            this.slot(script, lower)?;
+            this.slot(script, upper)
+        })?;
         self.end();
         Ok(())
     }
@@ -1520,8 +1579,18 @@ impl<'a> Encoder<'a> {
             (false, _) => (14, 0, size),
         };
         self.template(size, selector, variation);
-        self.slot(slot_size, Some(num))?;
-        self.slot(slot_size, Some(den))?;
+        let forced_style = match kind {
+            FractionKind::Display => Some(MathStyle::Display),
+            FractionKind::Inline => Some(MathStyle::Text),
+            _ => None,
+        };
+        let fraction_style = forced_style.unwrap_or(self.math_style);
+        self.with_math_style(fraction_style.fracnum(), |this| {
+            this.slot(slot_size, Some(num))
+        })?;
+        self.with_math_style(fraction_style.fracden(), |this| {
+            this.slot(slot_size, Some(den))
+        })?;
         self.end();
         Ok(())
     }
@@ -1533,8 +1602,8 @@ impl<'a> Encoder<'a> {
         self.tag(PILE, 0);
         self.out.push(2);
         self.out.push(1);
-        self.slot(size, Some(num))?;
-        self.slot(size, Some(den))?;
+        self.with_math_style(self.math_style.fracnum(), |this| this.slot(size, Some(num)))?;
+        self.with_math_style(self.math_style.fracden(), |this| this.slot(size, Some(den)))?;
         self.end();
         Ok(())
     }
@@ -1547,7 +1616,8 @@ impl<'a> Encoder<'a> {
             u16::from(index.is_some()),
         );
         self.slot(size, Some(radicand))?;
-        self.slot(size.script(), index)?;
+        let index_style = self.math_style.sup().sup();
+        self.with_math_style(index_style, |this| this.slot(size.script(), index))?;
         self.end();
         Ok(())
     }
@@ -1616,8 +1686,11 @@ impl<'a> Encoder<'a> {
             );
         self.template(size, selector, u16::from(variation));
         self.slot(size, Some(body))?;
-        self.slot(script, sub)?;
-        self.slot(script, sup)?;
+        let script_style = self.math_style.sub();
+        self.with_math_style(script_style, |this| {
+            this.slot(script, sub)?;
+            this.slot(script, sup)
+        })?;
         self.glyph(symbol, chars::symbol_glyph(op), false, &[])?;
         self.end();
         Ok(())
@@ -1806,16 +1879,20 @@ impl<'a> Encoder<'a> {
             None if left => (&children[..], &children[..0]),
             None => (&children[..0], &children[..]),
         };
-        for (present, part) in [(left, before), (right, after)] {
-            if present {
-                self.need(size);
-                self.tag(LINE, 0);
-                self.list_ids(part, size)?;
-                self.end();
-            } else {
-                self.null_line(size);
+        let current_style = self.math_style;
+        self.with_math_style(current_style, |this| {
+            for (present, part) in [(left, before), (right, after)] {
+                if present {
+                    this.need(size);
+                    this.tag(LINE, 0);
+                    this.list_ids_inner(part, size)?;
+                    this.end();
+                } else {
+                    this.null_line(size);
+                }
             }
-        }
+            Ok(())
+        })?;
         let mut glyphs: SmallVec<[char; 3]> = SmallVec::new();
         if left {
             glyphs.push(DIRAC_LEFT);
@@ -1866,7 +1943,12 @@ impl<'a> Encoder<'a> {
     /// PILE: halign, valign (baseline of the centre line), one line per row.
     fn pile(&mut self, id: NodeId, size: Size) -> Result<()> {
         let CompactNode::Array {
-            col_aligns, cells, ..
+            col_aligns,
+            cells,
+            arraystretch_pct,
+            add_jot,
+            array_style,
+            ..
         } = *self.arena.node(id)
         else {
             return Ok(());
@@ -1877,8 +1959,9 @@ impl<'a> Encoder<'a> {
         self.out.push(halign);
         self.out.push(1);
         let rows: SmallVec<[NodeId; 8]> = self.arena.children(cells).into();
+        let cell_style = self.array_cell_style(arraystretch_pct, add_jot, array_style);
         for row in rows {
-            self.slot(size, Some(row))?;
+            self.with_math_style(cell_style, |this| this.slot(size, Some(row)))?;
         }
         self.end();
         Ok(())
@@ -1894,6 +1977,9 @@ impl<'a> Encoder<'a> {
             num_cols,
             col_seps,
             row_seps,
+            arraystretch_pct,
+            add_jot,
+            array_style,
             ..
         } = *self.arena.node(id)
         else {
@@ -1921,9 +2007,12 @@ impl<'a> Encoder<'a> {
         self.out.push(cols_u8);
         self.partition_lines(row_seps, rows + 1);
         self.partition_lines(col_seps, cols + 1);
+        let cell_style = self.array_cell_style(arraystretch_pct, add_jot, array_style);
         for index in 0..rows * cols {
             match cells.get(index) {
-                Some(&cell) => self.cell(cell, size)?,
+                Some(&cell) => {
+                    self.with_math_style(cell_style, |this| this.cell(cell, size))?;
+                },
                 None => {
                     self.need(size);
                     self.tag(LINE, 0);

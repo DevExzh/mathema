@@ -19,7 +19,7 @@
 //! line spacing, explicit point sizes or colours. Typesize records are
 //! written where scripts, limits and operator signs change the size, as the
 //! applications do. Nodes MTEF cannot represent (colours, phantoms, rules,
-//! scaling, raised boxes, style switches) are written as their content or
+//! scaling, raised boxes, style switches and math choices) are written as their content or
 //! dropped, and each such loss is reported by
 //! [`MtefWriter::write_bytes_with_diagnostics`].
 

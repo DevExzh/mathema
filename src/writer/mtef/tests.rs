@@ -41,6 +41,24 @@ fn write_hex(node: MathNode) -> String {
     MtefWriter::write(&expr, &Config::default()).unwrap()
 }
 
+fn mtef_latex(input: &str, display: DisplayStyle, options: MtefWriteOptions) -> String {
+    let config = Config::default().with_display(display);
+    let result = crate::from_latex_with(input, &config).unwrap();
+    let bytes = result.to_mtef_bytes(&options).unwrap();
+    crate::from_mtef_bytes_with(&bytes, &config)
+        .unwrap()
+        .to_latex()
+        .unwrap()
+}
+
+fn mtef_latex_heap(input: &str, display: DisplayStyle) -> String {
+    let config = Config::default().with_display(display);
+    let result = crate::from_latex_with(input, &config).unwrap();
+    let hex = MtefWriter::write(&result.expr(), &config).unwrap();
+    let parsed = MtefReader::parse(&hex, &config).unwrap();
+    crate::writer::latex::LatexWriter::write(&parsed.expr, &config).unwrap()
+}
+
 #[test]
 fn records5_core_template_selectors_are_written() {
     assert!(
@@ -554,6 +572,117 @@ fn every_node_kind_reads_back_in_strict_mode() {
         for options in [MtefWriteOptions::default(), v3()] {
             let data = result.to_mtef_bytes(&options).unwrap();
             crate::from_mtef_bytes(&data).unwrap_or_else(|e| panic!("{latex}: {e}"));
+        }
+    }
+}
+
+#[test]
+fn mathchoice_mtef_uses_the_effective_style() {
+    let choice = r"\mathchoice{D}{T}{S}{Q}";
+    for options in [MtefWriteOptions::default(), v3()] {
+        assert_eq!(
+            mtef_latex(choice, DisplayStyle::Block, options.clone()),
+            "D"
+        );
+        assert_eq!(
+            mtef_latex(choice, DisplayStyle::Inline, options.clone()),
+            "T"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"x^{\mathchoice{D}{T}{S}{Q}}",
+                DisplayStyle::Block,
+                options.clone()
+            ),
+            "x^S"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"x_{y^{\mathchoice{D}{T}{S}{Q}}}",
+                DisplayStyle::Block,
+                options.clone()
+            ),
+            "x_{y^Q}"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"\frac{\mathchoice{D}{T}{S}{Q}}{\mathchoice{D}{T}{S}{Q}}",
+                DisplayStyle::Block,
+                options.clone()
+            ),
+            r"\frac{T}{T}"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"\sqrt[\mathchoice{D}{T}{S}{Q}]{z}",
+                DisplayStyle::Block,
+                options.clone()
+            ),
+            r"\sqrt[Q]{z}"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"\dfrac{\mathchoice{D}{T}{S}{Q}}{z}",
+                DisplayStyle::Inline,
+                options.clone()
+            ),
+            r"\frac{T}{z}"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"\tfrac{\mathchoice{D}{T}{S}{Q}}{z}",
+                DisplayStyle::Block,
+                options.clone()
+            ),
+            r"\tfrac{S}{z}"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"{\displaystyle\mathchoice{D}{T}{S}{Q}}",
+                DisplayStyle::Inline,
+                options.clone()
+            ),
+            "D"
+        );
+        assert_eq!(
+            mtef_latex(
+                r"{\scriptstyle\mathchoice{D}{T}{S}{Q}}\mathchoice{D}{T}{S}{Q}",
+                DisplayStyle::Block,
+                options
+            ),
+            "SD"
+        );
+    }
+    for source in [choice, r"x^{\mathchoice{D}{T}{S}{Q}}"] {
+        assert_eq!(
+            mtef_latex(source, DisplayStyle::Block, MtefWriteOptions::default()),
+            mtef_latex_heap(source, DisplayStyle::Block),
+            "compact/heap MTEF choice mismatch for {source}"
+        );
+    }
+}
+
+#[test]
+fn mathchoice_mtef_uses_table_cell_styles() {
+    let cases = [
+        (r"\begin{matrix}\mathchoice{D}{T}{S}{Q}\end{matrix}", "T"),
+        (
+            r"\begin{smallmatrix}\mathchoice{D}{T}{S}{Q}\end{smallmatrix}",
+            "S",
+        ),
+        (r"\begin{aligned}\mathchoice{D}{T}{S}{Q}\end{aligned}", "D"),
+    ];
+    for options in [MtefWriteOptions::default(), v3()] {
+        for (source, expected) in cases {
+            let written = mtef_latex(source, DisplayStyle::Inline, options.clone());
+            let branches: String = written
+                .chars()
+                .filter(|ch| matches!(ch, 'D' | 'T' | 'S' | 'Q'))
+                .collect();
+            assert!(
+                branches == expected,
+                "{source} selected the wrong MTEF branch: {written}"
+            );
         }
     }
 }
