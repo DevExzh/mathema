@@ -2450,6 +2450,36 @@ fn structured_operatorname_preserves_mixed_content_and_outer_placement() {
 }
 
 #[test]
+fn structured_operatorname_body_uses_upright_face_without_flattening_styles() {
+    let upright = crate::from_latex(r"\operatorname{\underline{x}}").unwrap();
+    let upright_mathml = upright.to_mathml().unwrap();
+    assert!(
+        upright_mathml.contains(r#"<mstyle mathvariant="normal"><munder"#),
+        "{upright_mathml}"
+    );
+
+    let mixed = crate::from_latex(r"\operatorname{\mathbf{Re}\overline{x}}").unwrap();
+    let mixed_mathml = mixed.to_mathml().unwrap();
+    assert!(mixed_mathml.contains(r#"<mstyle mathvariant="normal">"#));
+    assert!(mixed_mathml.contains(r#"<mstyle mathvariant="bold">"#));
+    assert!(mixed.to_latex().unwrap().contains(r"\mathbf{Re}"));
+
+    let explicit = crate::from_latex(r"\operatorname{\mathrm{rate}}").unwrap();
+    let explicit_latex = explicit.to_latex().unwrap();
+    assert!(
+        explicit_latex.contains(r"\mathrm{rate}"),
+        "{explicit_latex}"
+    );
+    assert_eq!(
+        explicit_latex,
+        crate::from_latex(&explicit_latex)
+            .unwrap()
+            .to_latex()
+            .unwrap()
+    );
+}
+
+#[test]
 fn structured_operatorname_reaches_all_public_format_writers() {
     for source in [
         r"\operatorname*{\overline{lim}}_n x",
