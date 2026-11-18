@@ -2209,6 +2209,78 @@ mod tests {
     }
 
     #[test]
+    fn mathchoice_uses_its_local_style_in_both_writers() {
+        fn xml(latex: &str, display: DisplayStyle) -> String {
+            let config = Config::default().with_display(display);
+            let parsed = crate::from_latex_with(latex, &config).unwrap();
+            let xml = parsed.to_mathml().unwrap();
+            assert_eq!(
+                xml,
+                MathmlWriter::write(&parsed.expr(), &config).unwrap(),
+                "{latex}"
+            );
+            xml
+        }
+        let choice = r"\mathchoice{D}{T}{S}{Q}";
+        for (source, mode, expected) in [
+            (choice, DisplayStyle::Block, "<mi>D</mi>"),
+            (choice, DisplayStyle::Inline, "<mi>T</mi>"),
+            (
+                r"x^{\mathchoice{D}{T}{S}{Q}}",
+                DisplayStyle::Block,
+                "<msup><mi>x</mi><mi>S</mi></msup>",
+            ),
+            (
+                r"x_{y^{\mathchoice{D}{T}{S}{Q}}}",
+                DisplayStyle::Inline,
+                "<msup><mi>y</mi><mi>Q</mi></msup>",
+            ),
+            (
+                r"\frac{\mathchoice{D}{T}{S}{Q}}{y}",
+                DisplayStyle::Block,
+                "<mfrac><mi>T</mi><mi>y</mi>",
+            ),
+            (
+                r"\sqrt[\mathchoice{D}{T}{S}{Q}]{z}",
+                DisplayStyle::Block,
+                "<mroot><mi>z</mi><mi>Q</mi></mroot>",
+            ),
+            (
+                r"{\scriptstyle\mathchoice{D}{T}{S}{Q}}\mathchoice{D}{T}{S}{Q}",
+                DisplayStyle::Block,
+                r#"<mstyle displaystyle="false" scriptlevel="1"><mi>S</mi></mstyle><mi>D</mi>"#,
+            ),
+        ] {
+            let written = xml(source, mode);
+            assert!(written.contains(expected), "{source}: {written}");
+        }
+        let inline = xml(
+            r"\mathchoice{D}{T}{S}{Q}\displaystyle\mathchoice{D}{T}{S}{Q}",
+            DisplayStyle::Inline,
+        );
+        assert!(inline.contains(r#"display="inline"><mi>T</mi><mstyle displaystyle="true" scriptlevel="0"><mi>D</mi></mstyle>"#), "{inline}");
+    }
+
+    #[test]
+    fn forced_fraction_styles_match_explicit_switches_in_scripts() {
+        for (command, declaration, child) in
+            [("dfrac", "displaystyle", "T"), ("tfrac", "textstyle", "S")]
+        {
+            let choice = r"\mathchoice{D}{T}{S}{Q}";
+            let fraction = format!(r"x_{{\{command}{{{choice}}}{{{choice}}}}}");
+            let declared = format!(r"x_{{\{declaration}\frac{{{choice}}}{{{choice}}}}}");
+            let expected = crate::from_latex(&fraction).unwrap().to_mathml().unwrap();
+            let actual = crate::from_latex(&declared).unwrap().to_mathml().unwrap();
+            assert_eq!(expected, actual);
+            assert!(actual.contains(&format!("<mfrac><mi>{child}</mi><mi>{child}</mi></mfrac>")));
+            assert_eq!(
+                crate::from_mathml(&actual).unwrap().to_mathml().unwrap(),
+                actual
+            );
+        }
+    }
+
+    #[test]
     fn named_operators_employ_the_requested_mathml_limit_style() {
         for (style, start) in [
             (

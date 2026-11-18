@@ -1325,14 +1325,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             }
             parser.arena.check_limits()?;
             let roots = parser.arena.push_children(&ids)?;
-            let display = if parser.display_override {
-                DisplayStyle::Block
-            } else {
-                config.display
-            };
             let diagnostics = std::mem::take(&mut parser.diagnostics);
             Ok(CompactParseResult::with_diagnostics(
-                CompactExpr::new(parser.arena, roots, display),
+                CompactExpr::new(parser.arena, roots, config.display),
                 diagnostics,
             ))
         },
@@ -1374,14 +1369,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 }
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&result_ids)?;
-                let display = if parser.display_override {
-                    DisplayStyle::Block
-                } else {
-                    config.display
-                };
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(parser.arena, roots, display),
+                    CompactExpr::new(parser.arena, roots, config.display),
                     diagnostics,
                 ))
             }
@@ -1414,14 +1404,9 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 }
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
-                let display = if parser.display_override {
-                    DisplayStyle::Block
-                } else {
-                    config.display
-                };
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(parser.arena, roots, display),
+                    CompactExpr::new(parser.arena, roots, config.display),
                     diagnostics,
                 ))
             } else {
@@ -1452,8 +1437,6 @@ pub(crate) struct LatexCompactParser {
     abort: Option<Error>,
     /// Maximum number of nodes created while parsing, if configured.
     max_nodes: Option<usize>,
-    /// Set to `true` when `\displaystyle` is encountered at the top level.
-    pub(crate) display_override: bool,
     /// User-defined colors registered via `\definecolor`/`\colorlet`,
     /// keyed by exact name, resolved to RGB bytes.
     colors: HashMap<String, [u8; 3]>,
@@ -1502,7 +1485,6 @@ impl LatexCompactParser {
             depth: 0,
             abort: None,
             max_nodes,
-            display_override: false,
             colors: HashMap::new(),
             diagnostics: Vec::new(),
             rowcolors: None,
@@ -3914,12 +3896,7 @@ impl LatexCompactParser {
             "negthickspace" => space(-5, 18),
             // Style commands — emit StyleSwitch nodes that the layout engine uses
             // to change the math style for subsequent siblings in the same row.
-            "displaystyle" => {
-                if self.depth == 1 {
-                    self.display_override = true;
-                }
-                Some(self.arena.push_node(CompactNode::StyleSwitch(0)))
-            },
+            "displaystyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(0))),
             "textstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(1))),
             "scriptstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(2))),
             "scriptscriptstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(3))),

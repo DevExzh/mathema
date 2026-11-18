@@ -170,12 +170,8 @@ impl LatexCompactParser {
             self.ensure_node_budget(rest)?;
             if let Some(close) = close {
                 let (remaining, math) = math_end(after, close)?;
-                // A local style switch inside inline math cannot change the display
-                // preference of the whole expression.
-                let display = self.display_override;
                 let pending_script = self.implicit_base_script.take();
                 let parsed = self.parse_node_list(math);
-                self.display_override = display;
                 self.implicit_base_script = pending_script;
                 let (left, math_nodes) = parsed?;
                 if !left.is_empty() {
