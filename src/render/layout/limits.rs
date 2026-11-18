@@ -23,7 +23,19 @@ pub(super) fn inline_limit_base(
         };
         base = child;
     }
-    is_large_op(base).then_some(base)
+    matches!(
+        base,
+        MathNode::Symbol(SymbolKind::LargeOp, _)
+            | MathNode::Operator(OperatorAttr {
+                limit_style: LimitStyle::Default,
+                ..
+            })
+            | MathNode::MathAtom {
+                atom_type: MathAtomType::Op,
+                ..
+            }
+    )
+    .then_some(base)
 }
 
 pub(super) fn inline_limit_base_c(
@@ -41,7 +53,19 @@ pub(super) fn inline_limit_base_c(
         };
         base = child;
     }
-    is_large_op_c(ast, base).then_some(base)
+    matches!(
+        *ast.node(base),
+        CompactNode::Symbol(SymbolKind::LargeOp, _)
+            | CompactNode::Operator {
+                limits: LimitStyle::Default,
+                ..
+            }
+            | CompactNode::MathAtom {
+                atom_type: MathAtomType::Op,
+                ..
+            }
+    )
+    .then_some(base)
 }
 
 /// Check whether a MathNode wants above/below limits in the given style.

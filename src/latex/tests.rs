@@ -1,3 +1,4 @@
+use crate::ast::DisplayStyle;
 use crate::ast::compact::CompactNode;
 use crate::ast::normalize::normalize_compact_expr;
 use crate::error::{Config, Error, LimitKind, Strictness};
@@ -45,6 +46,106 @@ fn round_trip_simple() {
     )
     .unwrap();
     assert!(math_mathml.contains("<msup>"));
+}
+
+#[test]
+fn named_operator_limit_styles_reach_mathml() {
+    for (display, expected) in [
+        (
+            DisplayStyle::Inline,
+            [
+                (r"\lim_{x\to0}f(x)", "<msub>"),
+                (r"\sin_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname{lim}_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname*{lim}_{x\to0}f(x)", "<msub>"),
+                (r"\lim\limits_{x\to0}f(x)", "<munder>"),
+                (r"\lim\nolimits_{x\to0}f(x)", "<msub>"),
+                (r"\mathop{\rm lim}_{x\to0}f(x)", "<msub>"),
+                (r"\mathop{\rm lim}\limits_{x\to0}f(x)", "<munder>"),
+                (r"\mathop{\rm lim}\nolimits_{x\to0}f(x)", "<msub>"),
+            ],
+        ),
+        (
+            DisplayStyle::Block,
+            [
+                (r"\lim_{x\to0}f(x)", "<munder>"),
+                (r"\sin_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname{lim}_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname*{lim}_{x\to0}f(x)", "<munder>"),
+                (r"\lim\limits_{x\to0}f(x)", "<munder>"),
+                (r"\lim\nolimits_{x\to0}f(x)", "<msub>"),
+                (r"\mathop{\rm lim}_{x\to0}f(x)", "<munder>"),
+                (r"\mathop{\rm lim}\limits_{x\to0}f(x)", "<munder>"),
+                (r"\mathop{\rm lim}\nolimits_{x\to0}f(x)", "<msub>"),
+            ],
+        ),
+    ] {
+        let config = Config::default().with_display(display);
+        for (input, tag) in expected {
+            let mathml =
+                crate::convert_with(input, crate::Format::LaTeX, crate::Format::MathML, &config)
+                    .unwrap();
+            assert!(mathml.contains(tag), "{display:?} {input}: {mathml}");
+        }
+    }
+}
+
+#[test]
+fn named_operator_scripts_preserve_operator_limit_metadata() {
+    let parse = |input| {
+        LatexReader::parse_compact(input, &Config::default())
+            .unwrap()
+            .expr
+    };
+    let expr = parse(r"\lim\limits_{x\to0}f");
+    let root = expr.arena.children(expr.roots)[0];
+    let CompactNode::Subscript { base, .. } = *expr.arena.node(root) else {
+        panic!("named operator should retain an ordinary subscript wrapper");
+    };
+    assert!(matches!(
+        *expr.arena.node(base),
+        CompactNode::Operator {
+            limits: crate::ast::LimitStyle::AboveBelow,
+            ..
+        }
+    ));
+
+    let expr = parse(r"\operatorname*{lim}_{x\to0}f");
+    let root = expr.arena.children(expr.roots)[0];
+    let CompactNode::Subscript { base, .. } = *expr.arena.node(root) else {
+        panic!("starred operatorname should retain an ordinary subscript wrapper");
+    };
+    assert!(matches!(
+        *expr.arena.node(base),
+        CompactNode::Operator {
+            limits: crate::ast::LimitStyle::Default,
+            ..
+        }
+    ));
+
+    let expr = parse(r"\mathop{a+b}_{i}^{j}");
+    let root = expr.arena.children(expr.roots)[0];
+    assert!(matches!(
+        *expr.arena.node(root),
+        CompactNode::UnderOver {
+            movable_limits: true,
+            ..
+        }
+    ));
+
+    let expr = parse(r"\mathop{a+b}\limits_{i}^{j}");
+    let root = expr.arena.children(expr.roots)[0];
+    assert!(matches!(
+        *expr.arena.node(root),
+        CompactNode::UnderOver {
+            movable_limits: false,
+            ..
+        }
+    ));
+
+    let expr = parse(r"\mathop{a+b}\nolimits_{i}^{j}");
+    let root = expr.arena.children(expr.roots)[0];
+    assert!(matches!(*expr.arena.node(root), CompactNode::SubSup { .. }));
 }
 
 #[test]
@@ -618,10 +719,7 @@ fn named_operator_limit_modifiers_round_trip() {
     for (input, expected) in [
         (r"\lim\limits\nolimits", r"\lim\nolimits"),
         (r"\sin\nolimits\limits", r"\sin\limits"),
-        (
-            r"\operatorname*{argmax}\nolimits",
-            r"\operatorname{argmax}\nolimits",
-        ),
+        (r"\operatorname*{argmax}\nolimits", r"\operatorname{argmax}"),
     ] {
         let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
         normalize_compact_expr(&mut parsed.expr).unwrap();
@@ -679,7 +777,7 @@ fn operatorname_special_content_round_trips_through_public_apis() {
         },
     )]);
     let direct_latex = LatexWriter::write(&direct, &config).unwrap();
-    assert_eq!(direct_latex, r"\operatorname*{rate\%}");
+    assert_eq!(direct_latex, r"\operatorname{rate\%}\limits");
     assert_eq!(
         crate::convert(&direct_latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
         direct_latex

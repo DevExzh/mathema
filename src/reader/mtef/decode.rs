@@ -1288,7 +1288,15 @@ impl<'a> Decoder<'a> {
                             }
                             self.str_node(&name, |s| CompactNode::Operator {
                                 name: s,
-                                limits: LimitStyle::Default,
+                                // MTEF records the function class but not an
+                                // explicit movable/side limit modifier.  Use
+                                // each native command's TeX default instead
+                                // of treating every function as a limit.
+                                limits: if crate::unicode::symbols::operator_has_limits(&name) {
+                                    LimitStyle::Default
+                                } else {
+                                    LimitStyle::SubSup
+                                },
                             })?
                         },
                         Class::Number => {
@@ -1413,7 +1421,10 @@ impl<'a> Decoder<'a> {
             Class::Text => self.char_node(ch, |s| CompactNode::Text(TextStyle::Normal, s)),
             Class::Function => self.char_node(ch, |s| CompactNode::Operator {
                 name: s,
-                limits: LimitStyle::Default,
+                // This fallback is a single function glyph, not a complete
+                // native command name; it cannot denote one of the known
+                // limit functions.
+                limits: LimitStyle::SubSup,
             }),
             Class::Number => self.char_node(ch, CompactNode::Number),
             Class::Ident => self.char_node(ch, CompactNode::Identifier),

@@ -2394,7 +2394,8 @@ impl LatexCompactParser {
             return self.parse_nary_rest(input, base);
         }
 
-        // Check for repeated \limits/\nolimits after Operator nodes.
+        // Named operators retain ordinary script nodes; their Operator.limits
+        // field carries the effective modifier for writers/renderers.
         if let CompactNode::Operator { name, .. } = *self.arena.node(base) {
             let (rest, limit_style) = consume_limit_modifiers(input);
             if let Some(limits) = limit_style {
@@ -2403,7 +2404,66 @@ impl LatexCompactParser {
             }
         }
 
+        // Compound `\mathop` bases need an under/over wrapper because the
+        // existing MathAtom node has no limit-style field.
+        if let Some(default_style) = self.operator_limit_style(base) {
+            let (rest, limit_style) = consume_limit_modifiers(input);
+            let style = limit_style.unwrap_or(default_style);
+            return self.parse_scripts_with_limit_style(rest, base, style);
+        }
+
         self.parse_scripts(input, base)
+    }
+
+    fn operator_limit_style(&self, id: NodeId) -> Option<LimitStyle> {
+        match *self.arena.node(id) {
+            CompactNode::MathAtom {
+                atom_type: MathAtomType::Op,
+                ..
+            } => Some(LimitStyle::Default),
+            _ => None,
+        }
+    }
+
+    fn parse_scripts_with_limit_style<'a>(
+        &mut self,
+        input: &'a str,
+        base: NodeId,
+        style: LimitStyle,
+    ) -> IResult<&'a str, NodeId> {
+        let (rest, id) = self.parse_scripts(input, base)?;
+        let id = match style {
+            LimitStyle::SubSup => id,
+            LimitStyle::AboveBelow | LimitStyle::Default => {
+                let movable_limits = style == LimitStyle::Default;
+                match *self.arena.node(id) {
+                    CompactNode::Subscript { base, sub } => {
+                        self.arena.push_node(CompactNode::Underscript {
+                            base,
+                            under: sub,
+                            movable_limits,
+                        })
+                    },
+                    CompactNode::Superscript { base, sup } => {
+                        self.arena.push_node(CompactNode::Overscript {
+                            base,
+                            over: sup,
+                            movable_limits,
+                        })
+                    },
+                    CompactNode::SubSup { base, sub, sup } => {
+                        self.arena.push_node(CompactNode::UnderOver {
+                            base,
+                            under: sub,
+                            over: sup,
+                            movable_limits,
+                        })
+                    },
+                    _ => id,
+                }
+            },
+        };
+        Ok((rest, id))
     }
 
     #[inline]
@@ -4510,11 +4570,12 @@ impl LatexCompactParser {
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        // Handle \operatorname* (limits placement)
+        // A starred operatorname uses TeX's context-dependent movable limits;
+        // an unstarred operatorname is an ordinary side-script operator.
         let (input, limits) = if let Some(rest) = input.strip_prefix('*') {
-            (rest, LimitStyle::AboveBelow)
+            (rest, LimitStyle::Default)
         } else {
-            (input, LimitStyle::Default)
+            (input, LimitStyle::SubSup)
         };
         let (input, _) = ws(input)?;
         // Accept both braced {name} and unbraced single letter

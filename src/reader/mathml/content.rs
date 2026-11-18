@@ -229,7 +229,14 @@ impl<'a> MathmlCompactParser<'a> {
         let name = self.arena.push_str(s);
         self.arena.push_node(CompactNode::Operator {
             name,
-            limits: LimitStyle::Default,
+            // Content functions such as `ln` and `sin` are ordinary
+            // side-script operators; only native limit names retain their
+            // context-dependent default placement.
+            limits: if crate::unicode::symbols::operator_has_limits(s) {
+                LimitStyle::Default
+            } else {
+                LimitStyle::SubSup
+            },
         })
     }
     fn c_row(&mut self, ids: &[NodeId]) -> NodeId {

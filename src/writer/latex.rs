@@ -1395,15 +1395,16 @@ fn is_latex_operator_command(name: &str) -> bool {
 /// `\operatorname{…}`, or `\operatorname*{…}` for one whose scripts are
 /// limits (`argmax`).
 fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
-    if is_latex_operator_command(name) {
+    if is_latex_operator_command(name)
+        && !(limits == LimitStyle::Default && !crate::unicode::symbols::operator_has_limits(name))
+    {
         buf.push('\\');
         buf.push_str(name);
         match limits {
             LimitStyle::AboveBelow => buf.push_str("\\limits"),
-            // Named limit operators default to above/below in display mode,
-            // so preserve an explicit nolimits modifier when it changes that
-            // behavior. For ordinary functions SubSup is already their
-            // default and does not need a redundant modifier.
+            // A native limit command needs an explicit modifier to force
+            // side scripts; ordinary native functions already have that
+            // placement by default.
             LimitStyle::SubSup if crate::unicode::symbols::operator_has_limits(name) => {
                 buf.push_str("\\nolimits");
             },
@@ -1412,22 +1413,21 @@ fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
     } else {
         match limits {
             LimitStyle::AboveBelow => {
-                buf.push_str("\\operatorname*{");
+                // Keep the base unstarred and carry the requested fixed
+                // placement explicitly.  A starred operatorname alone is
+                // still movable in inline style and cannot represent this
+                // AST state faithfully.
+                buf.push_str("\\operatorname{");
                 write_operator_name_content(buf, name);
-                buf.push('}');
-            },
-            LimitStyle::Default if crate::ast::normalize::is_limit_function(name) => {
-                buf.push_str("\\operatorname*{");
-                write_operator_name_content(buf, name);
-                buf.push('}');
+                buf.push_str("}\\limits");
             },
             LimitStyle::SubSup => {
                 buf.push_str("\\operatorname{");
                 write_operator_name_content(buf, name);
-                buf.push_str("}\\nolimits");
+                buf.push('}');
             },
             LimitStyle::Default => {
-                buf.push_str("\\operatorname{");
+                buf.push_str("\\operatorname*{");
                 write_operator_name_content(buf, name);
                 buf.push('}');
             },
@@ -1502,7 +1502,16 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
             || (kind == SymbolKind::Ordinary
                 && (first_is_ascii_letter || has_operator_name_escape)))
     {
-        write_operator_name(buf, s, LimitStyle::Default);
+        // A generic MathML `<mo>` does not carry TeX's starred
+        // `operatorname` distinction.  Preserve the historical unstarred
+        // spelling for ordinary/custom names, while native limit commands
+        // retain their established defaults (`<mo>lim</mo>` -> `\lim`).
+        let limits = if crate::unicode::symbols::operator_has_limits(s) {
+            LimitStyle::Default
+        } else {
+            LimitStyle::SubSup
+        };
+        write_operator_name(buf, s, limits);
         return;
     }
     // A handful of ASCII characters are active or classed specially in math
@@ -2226,6 +2235,21 @@ mod tests {
     fn named_operator() {
         let output = roundtrip("\\sin");
         assert_eq!(output, "\\sin");
+    }
+
+    #[test]
+    fn named_operator_limit_styles_have_stable_canonical_spellings() {
+        for (input, expected) in [
+            (r"\operatorname*{sin}", r"\operatorname*{sin}"),
+            (r"\operatorname{sin}", r"\sin"),
+            (r"\operatorname*{lim}", r"\lim"),
+            (r"\operatorname{lim}", r"\lim\nolimits"),
+            (r"\operatorname*{rate}", r"\operatorname*{rate}"),
+            (r"\operatorname{rate}", r"\operatorname{rate}"),
+            (r"\operatorname{rate}\limits", r"\operatorname{rate}\limits"),
+        ] {
+            assert_eq!(roundtrip(input), expected, "wrong spelling for {input:?}");
+        }
     }
 
     #[test]

@@ -520,6 +520,24 @@ fn layout_hphantom_has_zero_height_depth() {
 }
 
 #[test]
+fn named_operator_limits_follow_math_style() {
+    let expr = MathExpr::inline(vec![MathNode::Subscript {
+        base: Box::new(MathNode::Operator(OperatorAttr {
+            name: "lim".into(),
+            limit_style: LimitStyle::Default,
+        })),
+        sub: Box::new(MathNode::Identifier("x".into())),
+    }]);
+    let options = default_options();
+    let display = layout_expr(&expr, MathStyle::Display, &options);
+    let inline = layout_expr(&expr, MathStyle::Text, &options);
+    assert!(
+        display.height + display.depth > inline.height + inline.depth,
+        "display limit should occupy more vertical extent"
+    );
+}
+
+#[test]
 fn layout_smash_renders_with_zero_height_depth() {
     let expr = MathExpr::inline(vec![MathNode::Phantom(
         Box::new(MathNode::Identifier("X".into())),
