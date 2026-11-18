@@ -1309,14 +1309,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             write_node_c(out, arena, content, style);
         },
         CompactNode::StructuredOperator { content, .. } => {
-            let grouped = structured_content_needs_group_c(arena, content);
-            if grouped {
-                out.push('〖');
-            }
-            write_structured_content_c(out, arena, content, style);
-            if grouped {
-                out.push('〗');
-            }
+            write_structured_operator_c(out, arena, content, style);
         },
         CompactNode::Reflect { content, .. } => write_node_c(out, arena, content, style),
 
@@ -1326,6 +1319,23 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         | CompactNode::StyleSwitch(_)
         | CompactNode::SizeScale(_)
         | CompactNode::Newline => {},
+    }
+}
+
+#[inline(never)]
+fn write_structured_operator_c(
+    out: &mut String,
+    arena: &AstArena,
+    content: NodeId,
+    style: MathStyle,
+) {
+    let grouped = structured_content_needs_group_c(arena, content);
+    if grouped {
+        out.push('〖');
+    }
+    write_structured_content_c(out, arena, content, style);
+    if grouped {
+        out.push('〗');
     }
 }
 
