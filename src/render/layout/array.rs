@@ -142,6 +142,7 @@ pub(super) fn layout_array(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn layout_array_arena(
     ast: &AstArena,
+    smallmatrix: bool,
     col_aligns: NodeSpan,
     cells: NodeSpan,
     num_cols: u16,
@@ -154,7 +155,8 @@ pub(super) fn layout_array_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let size = ctx.size();
-
+    // Small matrices use script-sized cells, while their TeX glue is measured
+    // in the surrounding math quad. Generic arrays retain the existing path.
     // KaTeX strut-based row spacing (no explicit inter-row gap)
     let arraystretch = arraystretch_pct as f64 / 100.0;
     let baselineskip = 1.2 * size;
@@ -234,10 +236,40 @@ pub(super) fn layout_array_arena(
     // `array`-style tables pad outer edges with
     // `\arraycolsep` and use 2·arraycolsep between columns.
     let colsep = ARRAY_COLSEP_EM * size;
-    let lead_pad = if array_style { colsep } else { 0.0 };
-    let trail_pad = if array_style { colsep } else { 0.0 };
+    let smallmatrix_pad = if smallmatrix {
+        crate::ast::style::space_width_in_em(
+            Rational::new(1, 6),
+            Some(SpaceBasis::MathMu),
+            ctx.style,
+            ctx.size_scale,
+        )
+    } else {
+        0.0
+    };
+    let lead_pad = if smallmatrix {
+        smallmatrix_pad
+    } else if array_style {
+        colsep
+    } else {
+        0.0
+    };
+    let trail_pad = if smallmatrix {
+        smallmatrix_pad
+    } else if array_style {
+        colsep
+    } else {
+        0.0
+    };
     let gap_after = |j: usize| -> f64 {
-        if array_style {
+        if smallmatrix {
+            let _ = j;
+            crate::ast::style::space_width_in_em(
+                Rational::new(5, 18),
+                Some(SpaceBasis::TextEm),
+                ctx.style,
+                ctx.size_scale,
+            )
+        } else if array_style {
             2.0 * colsep
         } else {
             col_gap_after(j, aligned, size)

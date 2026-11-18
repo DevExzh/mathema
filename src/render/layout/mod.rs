@@ -1498,6 +1498,10 @@ fn layout_node_arena(
             array_style,
         } => layout_array_arena(
             ast,
+            matches!(
+                ast.array_environment(id),
+                Some(crate::ast::arena::ArrayEnvironment::SmallMatrix)
+            ),
             col_aligns,
             cells,
             num_cols,

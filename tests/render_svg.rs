@@ -22,6 +22,19 @@ fn render_latex(input: &str) -> String {
     render_to_svg(&parsed.expr, &options).unwrap()
 }
 
+fn compact_latex_to_svg(input: &str) -> String {
+    let config = Config::default();
+    let parsed = LatexReader::parse_compact(input, &config).unwrap();
+    render_to_svg_compact(&parsed.expr, &RenderOptions::default()).unwrap()
+}
+
+fn text_x_positions(svg: &str) -> Vec<f64> {
+    svg.split("<text x=\"")
+        .skip(1)
+        .map(|part| part.split('"').next().unwrap().parse().unwrap())
+        .collect()
+}
+
 /// Every SVG must have proper structure.
 fn assert_valid_svg(svg: &str, label: &str) {
     assert!(svg.starts_with("<svg"), "{label}: missing <svg> open tag");
@@ -42,6 +55,53 @@ fn invisible_operator_latex_boundary_is_zero_width() {
         viewbox_values(&with_mathord),
         "the LaTeX round-trip boundary must not alter invisible-times layout"
     );
+}
+
+#[test]
+fn compact_smallmatrix_uses_script_quad_and_exterior_thin_spaces() {
+    let small = compact_latex_to_svg(r"\begin{smallmatrix}a&b\\c&d\end{smallmatrix}");
+    let full = compact_latex_to_svg(r"\begin{matrix}a&b\\c&d\end{matrix}");
+    let small_x = text_x_positions(&small);
+    let full_x = text_x_positions(&full);
+    assert_eq!(small_x.len(), 4);
+    assert_eq!(full_x.len(), 4);
+
+    let small_width = viewbox_values(&small)[2];
+    let full_width = viewbox_values(&full)[2];
+    assert!((small_width - 24.087).abs() < 0.02, "{small}");
+    assert!((full_width - 32.144).abs() < 0.02, "{full}");
+    assert!(small_x[0] > 2.0, "smallmatrix exterior thin space missing");
+    assert!(
+        (small_x[1] - small_x[0] - 10.879).abs() < 0.03,
+        "smallmatrix intercolumn spacing is not script-sized: {small}"
+    );
+    assert!(
+        full_x[1] - full_x[0] > 18.0,
+        "full matrix spacing changed unexpectedly: {full}"
+    );
+}
+
+#[test]
+fn compact_smallmatrix_zero_width_advances_follow_mathmu_and_textem() {
+    let one = compact_latex_to_svg(r"\begin{smallmatrix}\kern0pt\end{smallmatrix}");
+    let two = compact_latex_to_svg(r"\begin{smallmatrix}\kern0pt&\kern0pt\end{smallmatrix}");
+    let sup_one = compact_latex_to_svg(r"x^{\begin{smallmatrix}\kern0pt\end{smallmatrix}}");
+    let sup_two =
+        compact_latex_to_svg(r"x^{\begin{smallmatrix}\kern0pt&\kern0pt\end{smallmatrix}}");
+    let sub_one = compact_latex_to_svg(r"x_{\begin{smallmatrix}\kern0pt\end{smallmatrix}}");
+    let sub_two =
+        compact_latex_to_svg(r"x_{\begin{smallmatrix}\kern0pt&\kern0pt\end{smallmatrix}}");
+
+    let one_width = viewbox_values(&one)[2] - 2.56;
+    let two_width = viewbox_values(&two)[2] - 2.56;
+    assert!((one_width - 5.333).abs() < 0.02, "{one}");
+    assert!((two_width - 9.778).abs() < 0.02, "{two}");
+    for (single, double) in [(sup_one, sup_two), (sub_one, sub_two)] {
+        assert!(
+            (viewbox_values(&double)[2] - viewbox_values(&single)[2] - 4.444).abs() < 0.02,
+            "nested smallmatrix advance drifted"
+        );
+    }
 }
 
 /// The legacy heap layout engine and the production arena engine must render
