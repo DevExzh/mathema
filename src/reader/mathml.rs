@@ -82,6 +82,8 @@ impl MathReader for MathmlReader {
 }
 
 const MAX_PARSE_DEPTH: u32 = 128;
+type MathmlTableRow = Vec<SmallVec<[NodeId; 8]>>;
+type MathmlTableRows = Vec<MathmlTableRow>;
 
 #[derive(Clone, Copy)]
 enum ScriptChildMode {
@@ -1088,10 +1090,7 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(nodes)
     }
 
-    fn parse_table(
-        &mut self,
-        parent_tag: &str,
-    ) -> Result<(Vec<Vec<SmallVec<[NodeId; 8]>>>, Vec<ColumnAlign>)> {
+    fn parse_table(&mut self, parent_tag: &str) -> Result<(MathmlTableRows, Vec<ColumnAlign>)> {
         let mut rows = Vec::new();
         let mut columns = Vec::new();
         loop {
@@ -1119,10 +1118,7 @@ impl<'a> MathmlCompactParser<'a> {
         Ok((rows, columns))
     }
 
-    fn parse_table_row(
-        &mut self,
-        parent_tag: &str,
-    ) -> Result<(Vec<SmallVec<[NodeId; 8]>>, Vec<ColumnAlign>)> {
+    fn parse_table_row(&mut self, parent_tag: &str) -> Result<(MathmlTableRow, Vec<ColumnAlign>)> {
         let mut cells = Vec::new();
         let mut columns = Vec::new();
         loop {
