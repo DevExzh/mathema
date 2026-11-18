@@ -912,9 +912,12 @@ fn compound_named_limits_are_operators_with_canonical_spacing() {
     let result = crate::from_latex(r"\plim").unwrap();
     let mathml = result.to_mathml().unwrap();
     assert!(mathml.contains("plim"), "{mathml}");
-    assert!(mathml.contains(r#"movablelimits="false""#), "{mathml}");
+    assert!(mathml.contains(r#"data-mjx-texclass="OP""#), "{mathml}");
     let latex = result.to_latex().unwrap();
-    assert!(latex.contains(r"\operatorname*{plim}\limits"), "{latex}");
+    assert!(
+        latex.contains(r"\mathop{\operatorname{plim}}\limits"),
+        "{latex}"
+    );
 }
 
 #[test]

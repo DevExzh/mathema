@@ -308,7 +308,6 @@ pub(crate) fn is_limit_function(name: &str) -> bool {
             | "lim\u{2009}inf"
             | "inj\u{2009}lim"
             | "proj\u{2009}lim"
-            | "plim"
     )
 }
 

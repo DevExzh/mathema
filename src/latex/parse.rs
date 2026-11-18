@@ -3899,9 +3899,7 @@ impl LatexCompactParser {
                     }
                 } else if is_operator_command(name) {
                     // Named operators (sin, cos, lim, ...)
-                    let limit_style = if name == "plim" {
-                        LimitStyle::AboveBelow
-                    } else if operator_has_limits(name) {
+                    let limit_style = if operator_has_limits(name) {
                         LimitStyle::Default
                     } else {
                         LimitStyle::SubSup

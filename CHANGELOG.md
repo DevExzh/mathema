@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `\limsup`, `\liminf`, `\injlim`, and `\projlim` now render as movable
+  operators with a thin space between their words. `\plim` uses the KaTeX
+  expansion for an operator with forced limits.
 - Fixed-size `\braket` and `\set` and scalable `\Braket` and `\Set` now retain
   the package's separator spacing and nested scopes. An explicitly doubled bar
   in `\Braket` uses native LaTeX double-bar semantics.
