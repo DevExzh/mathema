@@ -561,6 +561,45 @@ mod tests {
     }
 
     #[test]
+    fn authored_cell_alignment_reports_loss_in_other_table_formats() {
+        let source = r#"<math><mtable columnalign="left left"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr columnalign="right center"><mtd><mi>LONG</mi></mtd><mtd><mi>c</mi></mtd></mtr></mtable></math>"#;
+        let result = from_mathml(source).unwrap();
+
+        let (_, omml) = result.to_omml_with_diagnostics().unwrap();
+        assert!(
+            omml.iter()
+                .any(|diagnostic| diagnostic.message.contains("cell alignment"))
+        );
+
+        let (_, mtef) = result.to_mtef_with_diagnostics().unwrap();
+        assert!(
+            mtef.iter()
+                .any(|diagnostic| diagnostic.message.contains("per-cell alignment"))
+        );
+
+        let (_, unicode_math) = result.to_unicode_math_with_diagnostics().unwrap();
+        assert!(
+            unicode_math
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("per-cell alignment"))
+        );
+
+        let uniform = from_mathml(
+            r#"<math><mtable columnalign="left"><mtr><mtd><mi>a</mi></mtd></mtr></mtable></math>"#,
+        )
+        .unwrap();
+        assert!(uniform.to_omml_with_diagnostics().unwrap().1.is_empty());
+        assert!(uniform.to_mtef_with_diagnostics().unwrap().1.is_empty());
+        assert!(
+            uniform
+                .to_unicode_math_with_diagnostics()
+                .unwrap()
+                .1
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn from_latex_expr_access() {
         let result = from_latex("x").unwrap();
         let expr = result.expr();

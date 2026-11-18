@@ -38,6 +38,9 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathChoice { .. } => {
             Some("UnicodeMath keeps only the branch of \\mathchoice active at this style".into())
         },
+        CompactNode::AlignedCell { alignment, .. } => Some(format!(
+            "UnicodeMath tables have no per-cell alignment; the authored {alignment:?} alignment was dropped"
+        )),
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
