@@ -466,7 +466,9 @@ impl CompactParser {
     }
 
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
-        if let Some((rest, accent, position, wide)) = unicode_accent_suffix(input) {
+        if input.as_bytes().first().is_some_and(|byte| *byte >= 0x80)
+            && let Some((rest, accent, position, wide)) = unicode_accent_suffix(input)
+        {
             let id = self.push_node(CompactNode::Accent {
                 base,
                 accent,
@@ -656,14 +658,16 @@ impl CompactParser {
             // UnicodeMath atom when used as a fraction/script operand. This
             // keeps a/b̅ and the corresponding structured operator body
             // from detaching the accent into a later text fallback.
-            while let Some((after, accent, position, wide)) = unicode_accent_suffix(rest) {
-                id = self.push_node(CompactNode::Accent {
-                    base: id,
-                    accent,
-                    position,
-                    wide,
-                });
-                rest = after;
+            if rest.as_bytes().first().is_some_and(|byte| *byte >= 0x80) {
+                while let Some((after, accent, position, wide)) = unicode_accent_suffix(rest) {
+                    id = self.push_node(CompactNode::Accent {
+                        base: id,
+                        accent,
+                        position,
+                        wide,
+                    });
+                    rest = after;
+                }
             }
             return Ok((rest, id));
         }
@@ -722,14 +726,29 @@ impl CompactParser {
         let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             self.tick(1);
-            // ASCII whitespace separates UnicodeMath atoms, but the
-            // typographic spaces emitted by the writer (thin/en/em) are
-            // meaningful content inside an invisible group.
-            remaining = remaining.trim_start_matches([' ', '\t', '\r', '\n']);
+            // ASCII whitespace separates UnicodeMath atoms. Check for it by
+            // byte before calling the general trim matcher so ordinary ASCII
+            // groups avoid the Unicode-space path entirely.
+            if remaining
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+            {
+                remaining = remaining.trim_start_matches([' ', '\t', '\r', '\n']);
+                continue;
+            }
             if remaining.starts_with(close) {
                 break;
             }
-            if let Some((rest, width)) = unicode_math_space(remaining) {
+            // The typographic spaces emitted by the writer (thin/en/em) are
+            // meaningful content inside an invisible group. Their UTF-8
+            // encodings are non-ASCII, so ASCII atoms skip this lookup.
+            if remaining
+                .as_bytes()
+                .first()
+                .is_some_and(|byte| *byte >= 0x80)
+                && let Some((rest, width)) = unicode_math_space(remaining)
+            {
                 children.push(self.push_node(CompactNode::Space(width)));
                 remaining = rest;
                 continue;
