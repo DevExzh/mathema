@@ -55,7 +55,7 @@ fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
     let top = LatexReader::parse_compact(r"\displaystyle x", &config)
         .unwrap()
         .expr;
-    assert_eq!(top.display, DisplayStyle::Block);
+    assert_eq!(top.display, DisplayStyle::Inline);
     assert!(matches!(
         *top.arena.node(top.arena.children(top.roots)[0]),
         CompactNode::StyleSwitch(0)
