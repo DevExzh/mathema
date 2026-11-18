@@ -165,7 +165,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::Subscript { base, sub } => {
             write_base(out, base, style);
-            if has_forced_operator_limits(base) {
+            if has_forced_operator_limits(base, style) {
                 out.push('┬');
             } else {
                 out.push('_');
@@ -175,7 +175,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::Superscript { base, sup } => {
             write_base(out, base, style);
-            out.push(if has_forced_operator_limits(base) {
+            out.push(if has_forced_operator_limits(base, style) {
                 '┴'
             } else {
                 '^'
@@ -185,13 +185,13 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::SubSup { base, sub, sup } => {
             write_base(out, base, style);
-            out.push(if has_forced_operator_limits(base) {
+            out.push(if has_forced_operator_limits(base, style) {
                 '┬'
             } else {
                 '_'
             });
             write_script_arg(out, sub, style.sub());
-            out.push(if has_forced_operator_limits(base) {
+            out.push(if has_forced_operator_limits(base, style) {
                 '┴'
             } else {
                 '^'
@@ -971,31 +971,39 @@ fn is_overunder_line_node(node: &MathNode) -> bool {
     matches!(node, MathNode::Symbol(_, text) if text == "\u{203E}")
 }
 
-fn has_forced_operator_limits(node: &MathNode) -> bool {
+fn has_forced_operator_limits(node: &MathNode, style: MathStyle) -> bool {
     match node {
         MathNode::Operator(attr) => attr.limit_style == LimitStyle::AboveBelow,
-        MathNode::StructuredOperator { form, .. } => form.limit_style() == LimitStyle::AboveBelow,
+        MathNode::StructuredOperator { form, .. } => {
+            form.limit_style() == LimitStyle::AboveBelow
+                || (style.is_display()
+                    && matches!(form, OperatorNameForm::Starred(LimitStyle::Default)))
+        },
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
-        } => has_forced_operator_limits(content),
-        MathNode::Row(children) if children.len() == 1 => has_forced_operator_limits(&children[0]),
+        } => has_forced_operator_limits(content, style),
+        MathNode::Row(children) if children.len() == 1 => {
+            has_forced_operator_limits(&children[0], style)
+        },
         _ => false,
     }
 }
 
-fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId) -> bool {
+fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
     match *arena.node(id) {
         CompactNode::Operator { limits, .. } => limits == LimitStyle::AboveBelow,
         CompactNode::StructuredOperator { form, .. } => {
             form.limit_style() == LimitStyle::AboveBelow
+                || (style.is_display()
+                    && matches!(form, OperatorNameForm::Starred(LimitStyle::Default)))
         },
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
-        } => has_forced_operator_limits_c(arena, content),
+        } => has_forced_operator_limits_c(arena, content, style),
         CompactNode::Row(span) if arena.children(span).len() == 1 => {
-            has_forced_operator_limits_c(arena, arena.children(span)[0])
+            has_forced_operator_limits_c(arena, arena.children(span)[0], style)
         },
         _ => false,
     }
@@ -1049,7 +1057,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::Subscript { base, sub } => {
             write_base_c(out, arena, base, style);
-            out.push(if has_forced_operator_limits_c(arena, base) {
+            out.push(if has_forced_operator_limits_c(arena, base, style) {
                 '┬'
             } else {
                 '_'
@@ -1059,7 +1067,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::Superscript { base, sup } => {
             write_base_c(out, arena, base, style);
-            out.push(if has_forced_operator_limits_c(arena, base) {
+            out.push(if has_forced_operator_limits_c(arena, base, style) {
                 '┴'
             } else {
                 '^'
@@ -1069,13 +1077,13 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::SubSup { base, sub, sup } => {
             write_base_c(out, arena, base, style);
-            out.push(if has_forced_operator_limits_c(arena, base) {
+            out.push(if has_forced_operator_limits_c(arena, base, style) {
                 '┬'
             } else {
                 '_'
             });
             write_script_arg_c(out, arena, sub, style.sub());
-            out.push(if has_forced_operator_limits_c(arena, base) {
+            out.push(if has_forced_operator_limits_c(arena, base, style) {
                 '┴'
             } else {
                 '^'
