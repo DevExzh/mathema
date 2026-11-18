@@ -12,7 +12,14 @@ export interface MathExpr {
   display: "Block" | "Inline";
 }
 
-/** Discriminated union of all 26 AST node variants (serde externally-tagged) */
+/**
+ * Discriminated union of the externally tagged `MathNode` enum.
+ *
+ * Tuple variants are represented by arrays and boxed values are transparent
+ * under serde. The `serde-wasm-bindgen` serializer omits `None` object
+ * properties, so optional fields below are absent when their Rust value is
+ * `None`.
+ */
 export type MathNode =
   | { Number: string }
   | { Identifier: string }
@@ -20,12 +27,13 @@ export type MathNode =
   | { Symbol: [SymbolKind, string] }
   | { Text: [TextStyle, string] }
   | { Space: Rational }
+  | { ExplicitSpace: { width: Rational; basis: SpaceBasis } }
   | { Row: MathNode[] }
   | { Fenced: { open: string; close: string; content: FencedItem[] } }
   | { Subscript: { base: MathNode; sub: MathNode } }
   | { Superscript: { base: MathNode; sup: MathNode } }
   | { SubSup: { base: MathNode; sub: MathNode; sup: MathNode } }
-  | { PreScripts: { base: MathNode; pre_sub: MathNode | null; pre_sup: MathNode | null } }
+  | { PreScripts: { base: MathNode; pre_sub?: MathNode; pre_sup?: MathNode } }
   | { Overscript: { base: MathNode; over: MathNode; movable_limits: boolean } }
   | { Underscript: { base: MathNode; under: MathNode; movable_limits: boolean } }
   | { UnderOver: { base: MathNode; under: MathNode; over: MathNode; movable_limits: boolean } }
@@ -33,13 +41,41 @@ export type MathNode =
   | { Sqrt: MathNode }
   | { Root: { index: MathNode; radicand: MathNode } }
   | { Nary: { op: string; sub: MathNode | null; sup: MathNode | null; body: MathNode; limits: LimitStyle } }
-  | { Accent: { base: MathNode; accent: string; position: AccentPosition } }
-  | { Array: { columns: ColumnAlign[]; rows: MathNode[][][] } }
-  | { Phantom: MathNode }
-  | { Boxed: MathNode }
+  | { Accent: { base: MathNode; accent: string; position: AccentPosition; wide: boolean } }
+  | {
+      Array: {
+        columns: ColumnAlign[];
+        rows: MathNode[][][];
+        arraystretch?: number;
+        add_jot: boolean;
+      };
+    }
+  | { Phantom: [MathNode, PhantomKind] }
+  | { Reflect: { content: MathNode; text_mode: boolean } }
+  | { Rule: { width: Rational; height: Rational; lift: Rational } }
+  | {
+      Boxed: {
+        content: MathNode;
+        bg_color?: string;
+        border_color?: string;
+      };
+    }
+  | { Actuarial: { content: MathNode; text_mode: boolean } }
   | { Cancel: { stroke: StrokeKind; content: MathNode } }
   | { Scaled: { factor: Rational; content: MathNode } }
-  | { Styled: [TextStyle, MathNode[]] };
+  | { RaiseBox: { shift: Rational; height?: Rational; depth?: Rational; content: MathNode } }
+  | { Styled: [TextStyle, MathNode[]] }
+  | { Color: { color: string; content: MathNode } }
+  | {
+      MathChoice: {
+        display: MathNode;
+        text: MathNode;
+        script: MathNode;
+        script_script: MathNode;
+      };
+    }
+  | { StyleSwitch: number }
+  | { MathAtom: { atom_type: MathAtomType; content: MathNode } };
 
 export type FencedItem =
   | { Element: MathNode }
@@ -68,7 +104,10 @@ export type FractionKind = "Normal" | "Display" | "Inline" | "NoBar" | "Skewed";
 export type ColumnAlign = "Left" | "Center" | "Right";
 export type AccentPosition = "Above" | "Below";
 export type StrokeKind = "Forward" | "Backward" | "Cross" | "Horizontal" | "Vertical";
+export type PhantomKind = "Full" | "Vertical" | "Horizontal" | "SmashBoth" | "SmashBottom" | "SmashTop";
+export type MathAtomType = "Ord" | "Op" | "Bin" | "Rel" | "Open" | "Close" | "Punct" | "Inner";
 export type LimitStyle = "Default" | "AboveBelow" | "SubSup";
+export type SpaceBasis = "TextEm" | "MathMu" | "Physical";
 
 /** Diagnostic message from lenient parsing */
 export interface Diagnostic {
