@@ -58,7 +58,7 @@ fn legacy_font_declarations_scope_like_grouped_fonts() {
         (r"\it xyz", r"\mathit{xyz}"),
         (r"\cal xyz", r"\mathcal{xyz}"),
         (r"{\rm xyz}q", r"\mathrm{xyz}q"),
-        (r"\rm x\sf y z", r"\mathrm{x\mathsf{yz}}"),
+        (r"\rm x\sf y z", r"\mathrm{x}\mathsf{yz}"),
         (r"{\rm x{\sf y}z}q", r"\mathrm{x\mathsf{y}z}q"),
         (r"\rm x_i^2 y", r"\mathrm{x_i^{2}y}"),
     ] {
@@ -101,9 +101,9 @@ fn legacy_font_scopes_cross_infix_fractions_without_hiding_markers() {
         ),
         (
             r"x+\bf\it a\over b+c",
-            r"\frac{x+ \mathbf{\mathit{a}}}{\mathbf{\mathit{b+ c}}}",
-            "<mstyle mathvariant=\"bold\"><mstyle mathvariant=\"italic\"><mi>a</mi></mstyle></mstyle>",
-            "<mstyle mathvariant=\"bold\"><mstyle mathvariant=\"italic\"><mi>b</mi>",
+            r"\frac{x+ \mathit{a}}{\mathit{b+ c}}",
+            "<mstyle mathvariant=\"italic\"><mi>a</mi></mstyle>",
+            "<mstyle mathvariant=\"italic\"><mi>b</mi>",
         ),
     ] {
         let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();

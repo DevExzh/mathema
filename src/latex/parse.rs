@@ -509,10 +509,22 @@ fn strip_control_word<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     }
 }
 
-fn starts_legacy_font_command(input: &str) -> bool {
-    ["rm", "it", "bf", "sf", "tt", "cal"]
-        .into_iter()
-        .any(|name| strip_control_word(input, name).is_some())
+fn legacy_font_style(name: &str) -> Option<TextStyle> {
+    Some(match name {
+        "rm" => TextStyle::Normal,
+        "it" => TextStyle::Italic,
+        "bf" => TextStyle::Bold,
+        "sf" => TextStyle::SansSerif,
+        "tt" => TextStyle::Monospace,
+        "cal" => TextStyle::Script,
+        _ => return None,
+    })
+}
+
+fn legacy_font_declaration(input: &str) -> Option<(&str, TextStyle)> {
+    let tail = input.strip_prefix('\\')?;
+    let len = super::control_word_len(tail);
+    Some((&tail[len..], legacy_font_style(&tail[..len])?))
 }
 
 /// Parse an optional leading `[model]` color-model argument (xcolor color
@@ -2793,7 +2805,7 @@ impl LatexCompactParser {
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             ));
         }
-        if starts_legacy_font_command(input) {
+        if legacy_font_declaration(input).is_some() {
             // A legacy font declaration is a scope command, not an argument.
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -3928,7 +3940,7 @@ impl LatexCompactParser {
         } else {
             // LaTeX allows single unbraced tokens as arguments:
             // \frac12 → \frac{1}{2}, \vec x → \vec{x}
-            if starts_legacy_font_command(input) {
+            if legacy_font_declaration(input).is_some() {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::Tag,
@@ -5814,54 +5826,21 @@ impl LatexCompactParser {
         }
     }
 
-    /// Old-style font declarations apply to the rest of the current group (or
-    /// table cell), matching KaTeX's `parseExpression` implementation.  The
-    /// recursive parser already stops at `}`, `&`, and row/environment
-    /// boundaries, so the resulting Styled node has exactly the declaration's
-    /// scope while nested switches override it in their own nested wrappers.
+    /// Parse font declarations as runs in the enclosing list. Switching
+    /// fonts at the same brace level does not introduce a new TeX group.
     fn parse_old_font_switch<'a>(
         &mut self,
         input: &'a str,
         name: &str,
     ) -> IResult<&'a str, NodeId> {
-        // Consume the declaration's current group or cell scope while
-        // keeping repeated declarations shallow through style_font_run.
-        let style = match name {
-            "rm" => TextStyle::Normal,
-            "it" => TextStyle::Italic,
-            "bf" => TextStyle::Bold,
-            "sf" => TextStyle::SansSerif,
-            "tt" => TextStyle::Monospace,
-            "cal" => TextStyle::Script,
-            _ => TextStyle::Normal,
-        };
+        let style = legacy_font_style(name).expect("legacy font command");
         let (input, _) = ws(input)?;
-        if input.is_empty()
-            || input.starts_with('}')
-            || input.starts_with('&')
-            || input.starts_with("\\\\")
-            || strip_control_word(input, "end").is_some()
-        {
-            return Ok((
-                input,
-                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-            ));
-        }
-        let preserve_breaks = self.font_scope_preserve_breaks;
-        if self.depth == 1 {
-            self.font_scope_preserve_breaks = true;
-        }
-        let scoped = self.parse_font_scope(input);
-        self.font_scope_preserve_breaks = preserve_breaks;
+        let previous = self.font_scope_preserve_breaks;
+        self.font_scope_preserve_breaks = self.depth == 1;
+        let scoped = self.parse_font_scope(input, style);
+        self.font_scope_preserve_breaks = previous;
         let (rest, ids) = scoped?;
-        if ids.is_empty() {
-            return Ok((
-                rest,
-                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-            ));
-        }
-        let styled = self.style_font_scope(style, ids);
-        Ok((rest, styled))
+        Ok((rest, self.flatten_single(&ids)))
     }
 
     /// Parse the expression controlled by an old-style font declaration. This
@@ -5869,7 +5848,11 @@ impl LatexCompactParser {
     /// sentinels such as `\end` are valid input to the outer parser but must
     /// terminate a declaration before they are interpreted as ordinary
     /// commands.
-    fn parse_font_scope<'a>(&mut self, input: &'a str) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+    fn parse_font_scope<'a>(
+        &mut self,
+        input: &'a str,
+        mut style: TextStyle,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
         if self.depth >= MAX_PARSE_DEPTH {
             return Err(nom::Err::Failure(nom::error::Error::new(
                 input,
@@ -5879,22 +5862,22 @@ impl LatexCompactParser {
         self.depth += 1;
         let result = (|| {
             let mut ids = SmallVec::new();
+            let mut run = SmallVec::new();
             let mut rest = input;
             loop {
                 self.ensure_node_budget(rest)?;
                 if self.font_scope_preserve_breaks {
-                    let skip = skip_horizontal_ws_bytes(rest.as_bytes());
-                    rest = &rest[skip..];
-                    if let Some(after_newline) = consume_source_newline(rest) {
+                    rest = &rest[skip_horizontal_ws_bytes(rest.as_bytes())..];
+                    if let Some(after) = consume_source_newline(rest) {
                         if source_newline_is_hard_break(input, rest) {
+                            self.flush_font_run(style, &mut run, &mut ids);
                             ids.push(self.arena.push_node(CompactNode::Newline));
                         }
-                        rest = after_newline;
+                        rest = after;
                         continue;
                     }
                 } else {
-                    let (r, _) = ws(rest)?;
-                    rest = r;
+                    rest = ws(rest)?.0;
                 }
                 if is_table_boundary(rest)
                     || rest.starts_with('}')
@@ -5904,56 +5887,43 @@ impl LatexCompactParser {
                 {
                     break;
                 }
-                match self.parse_element(rest) {
-                    Ok((r, id)) => {
-                        self.push_element(&mut ids, id);
-                        rest = r;
-                    },
-                    Err(error) => return Err(error),
+                if let Some((after, next_style)) = legacy_font_declaration(rest) {
+                    if next_style != style {
+                        self.flush_font_run(style, &mut run, &mut ids);
+                        style = next_style;
+                    }
+                    rest = after;
+                    continue;
                 }
+                let (after, id) = self.parse_element(rest)?;
+                if self.infix_marker_seen && self.is_infix_marker_id(id) {
+                    // The fraction belongs to the enclosing list; the font
+                    // remains in force for the denominator after the marker.
+                    self.flush_font_run(style, &mut run, &mut ids);
+                    ids.push(id);
+                } else {
+                    self.push_element(&mut run, id);
+                }
+                rest = after;
             }
+            self.flush_font_run(style, &mut run, &mut ids);
             Ok((rest, ids))
         })();
         self.depth -= 1;
         result
     }
 
-    /// Wrap one declaration run in a font style, reusing an existing wrapper
-    /// when repeated declarations request the same style.
-    fn style_font_run(&mut self, style: TextStyle, ids: &[NodeId]) -> NodeId {
-        if ids.len() == 1
-            && let CompactNode::Styled(existing, _) = *self.arena.node(ids[0])
-            && existing == style
-        {
-            return ids[0];
-        }
-        let span = self.arena.push_children_deferred(ids);
-        self.arena.push_node(CompactNode::Styled(style, span))
-    }
-
-    /// Wrap declaration runs while leaving infix fraction markers visible to
-    /// the surrounding sequence resolver.
-    fn style_font_scope(&mut self, style: TextStyle, ids: SmallVec<[NodeId; 8]>) -> NodeId {
-        let ids = self.flatten_infix_marker_rows(ids);
-        let mut result: SmallVec<[NodeId; 8]> = SmallVec::new();
-        let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
-        for id in ids {
-            let boundary =
-                self.is_infix_marker_id(id) || matches!(*self.arena.node(id), CompactNode::Newline);
-            if boundary {
-                if !run.is_empty() {
-                    result.push(self.style_font_run(style, &run));
-                    run.clear();
-                }
-                result.push(id);
-            } else {
-                run.push(id);
-            }
-        }
+    fn flush_font_run(
+        &mut self,
+        style: TextStyle,
+        run: &mut SmallVec<[NodeId; 8]>,
+        ids: &mut SmallVec<[NodeId; 8]>,
+    ) {
         if !run.is_empty() {
-            result.push(self.style_font_run(style, &run));
+            let span = self.arena.push_children_deferred(run);
+            ids.push(self.arena.push_node(CompactNode::Styled(style, span)));
+            run.clear();
         }
-        self.flatten_single(&result)
     }
 
     /// Parse \\DeclareMathOperator and similar declaration commands — consume all arguments.
