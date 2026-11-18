@@ -2627,11 +2627,13 @@ impl LatexCompactParser {
             CompactNode::MathAtom {
                 atom_type: MathAtomType::Op,
                 content,
-            } => Some(
+            } => Some(if self.last_unstarred_operator == Some(id) {
+                LimitStyle::SubSup
+            } else {
                 self.structured_operator_limit_style(content)
                     .filter(|style| *style == LimitStyle::SubSup)
-                    .unwrap_or(LimitStyle::Default),
-            ),
+                    .unwrap_or(LimitStyle::Default)
+            }),
             _ => None,
         }
     }

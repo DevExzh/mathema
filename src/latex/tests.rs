@@ -2085,6 +2085,21 @@ fn structured_operatorname_decorations_preserve_operator_semantics() {
         side,
         crate::from_mathml(&side).unwrap().to_mathml().unwrap()
     );
+
+    let spaced_result = crate::from_latex(r"\operatorname{\overline{lim\,sup}}_n x").unwrap();
+    let spaced_side = spaced_result.to_mathml().unwrap();
+    assert!(spaced_side.contains("<msub>"), "{spaced_side}");
+    assert!(spaced_side.contains("<mi>l</mi>"), "{spaced_side}");
+    assert!(spaced_side.contains("<mi>s</mi>"), "{spaced_side}");
+    assert!(spaced_side.contains("mspace"), "{spaced_side}");
+    assert_eq!(
+        spaced_side,
+        crate::from_mathml(&spaced_side)
+            .unwrap()
+            .to_mathml()
+            .unwrap()
+    );
+    assert!(spaced_result.to_latex().unwrap().contains(r"\,"));
 }
 
 #[test]
@@ -2100,6 +2115,11 @@ fn structured_operatorname_keeps_resource_failures_visible() {
     assert!(
         crate::from_latex_with(long, &limited).is_err(),
         "structured operator content bypassed the node limit"
+    );
+    let long_sequence = format!(r"\operatorname*{{\overline{{{}}}}}", "a".repeat(32));
+    assert!(
+        crate::from_latex_with(&long_sequence, &limited).is_err(),
+        "a long structured name bypassed the node limit"
     );
 }
 
