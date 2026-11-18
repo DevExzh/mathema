@@ -175,7 +175,17 @@ pub(crate) fn expansion_work_cap(input_len: usize) -> usize {
 /// macros are present. Expansion errors identify whether output bytes, token
 /// work, or recursive depth stopped the traversal.
 pub fn preprocess_cow(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
-    let (source, needs_expansion) = prepare_source(input);
+    expand_source(input, false)
+}
+
+/// Only the main math parser can consume a leading `\plim` directly.
+/// Nested occurrences can be arguments to text or other raw-token readers.
+pub(super) fn prepare_math_input(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
+    expand_source(input, true)
+}
+
+fn expand_source(input: &str, direct_leading_plim: bool) -> Result<Cow<'_, str>, ExpansionFailure> {
+    let (source, needs_expansion) = prepare_source(input, direct_leading_plim);
     if needs_expansion {
         Ok(Cow::Owned(ordered_stream::expand(&source)?))
     } else {
@@ -185,7 +195,7 @@ pub fn preprocess_cow(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
 
 /// Locate expandable words and strip comments in one traversal. Only allocate
 /// a replacement string if a real comment, outside a verbatim block, is found.
-fn prepare_source(input: &str) -> (Cow<'_, str>, bool) {
+fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool) {
     let mut offset = 0;
     let mut copy_from = 0;
     let mut stripped: Option<String> = None;
@@ -230,7 +240,8 @@ fn prepare_source(input: &str) -> (Cow<'_, str>, bool) {
                         | "@ifnextchar"
                         | "TextOrMath"
                         | "newenvironment"
-                ) || (name != "plim" && packages::is_builtin_macro_name(name));
+                ) || (!(direct_leading_plim && start == 0 && name == "plim")
+                    && packages::is_builtin_macro_name(name));
             }
             offset = input.len() - rest.len();
         } else {

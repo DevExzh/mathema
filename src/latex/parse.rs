@@ -1341,7 +1341,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
         )));
     }
     let (processed, warning) =
-        match preprocess_cow(trimmed) {
+        match super::preprocess::prepare_math_input(trimmed) {
             Ok(processed) => (processed, None),
             Err(
                 failure @ (ExpansionFailure::Syntax { .. } | ExpansionFailure::Arguments { .. }),

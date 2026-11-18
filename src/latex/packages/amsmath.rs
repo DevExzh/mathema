@@ -146,6 +146,16 @@ mod tests {
     }
 
     #[test]
+    fn plim_expansion_reaches_raw_arguments_and_the_public_preprocessor() {
+        let expanded = crate::latex::preprocess::preprocess_cow(r"\plim").unwrap();
+        assert_eq!(expanded, r"\mathop{\operatorname{plim}}\limits");
+        for source in [r"\text{rate \plim}+x", r"\operatorname{\plim}x"] {
+            let explicit = source.replace(r"\plim", &expanded);
+            assert_eq!(to_mathml(source), to_mathml(&explicit), "{source}");
+        }
+    }
+
+    #[test]
     fn plim_definitions_still_use_macro_expansion() {
         let redefined = crate::convert(
             r"\newcommand{\plim}{Z}\plim",
