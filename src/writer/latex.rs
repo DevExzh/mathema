@@ -1304,12 +1304,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         }
                         let cell_id = cell_ids[row_idx * nc + col_idx];
                         // Each cell is a Row node wrapping cell contents
-                        if env != "array"
-                            && let Some(content) = super::cell_after_style(
-                                arena,
-                                cell_id,
-                                if env == "smallmatrix" { 2 } else { 0 },
-                            )
+                        if let Some(marker) = match env {
+                            "smallmatrix" => Some(2),
+                            "aligned" | "gathered" => Some(0),
+                            _ => None,
+                        } && let Some(content) = super::cell_after_style(arena, cell_id, marker)
                         {
                             write_node_slice(buf, arena, content, false);
                         } else if let CompactNode::Row(span) = *arena.node(cell_id) {
