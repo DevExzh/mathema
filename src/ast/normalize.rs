@@ -1106,10 +1106,10 @@ fn is_empty_base_script(arena: &AstArena, id: NodeId) -> bool {
 
 /// True for a node that can serve as the base of a sub/superscript.
 ///
-/// Script-marker nodes and spacing/helpers are excluded because they cannot
-/// serve as a stable base. Symbols are allowed: `=^{\prime}`, `+^{2}`,
-/// `)^{\prime}`, and `.*^{\prime}` are all valid TeX and round-trip stably
-/// when the empty-base script is attached to the preceding atom.
+/// Script-marker nodes and spacing helpers are excluded because they cannot
+/// serve as a stable base. Fence separators are allowed here because a
+/// following empty-base script is a script on that separator in the current
+/// row, and retaining the helper node would make writer passes disagree.
 pub(crate) fn can_carry_script(node: CompactNode) -> bool {
     !matches!(
         node,
@@ -1117,7 +1117,6 @@ pub(crate) fn can_carry_script(node: CompactNode) -> bool {
             | CompactNode::Superscript { .. }
             | CompactNode::SubSup { .. }
             | CompactNode::PreScripts { .. }
-            | CompactNode::Middle(_)
             | CompactNode::ColAlign(_)
             | CompactNode::StyleSwitch(_)
             | CompactNode::SizeScale(_)

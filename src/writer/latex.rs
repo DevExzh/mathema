@@ -58,7 +58,18 @@ fn write_node_slice(
         if is_script_with_empty_base(arena, id) {
             let next = children.get(i + 1).copied();
             let output_start = buf.len();
-            write_standalone_empty_base_script(buf, arena, id, next);
+            // A Middle node is only a fence separator while it is inside a
+            // left/right construction. It can also occur in a nested group
+            // after infix-fraction splitting. Writing an explicit empty group
+            // after it makes the next parser pass treat the literal `|` as a
+            // new fence atom, which changes the spelling on the second write.
+            // The empty base is already implicit at this boundary, so retain
+            // just the markers and their arguments.
+            if i > 0 && matches!(*arena.node(children[i - 1]), CompactNode::Middle(_)) {
+                write_empty_base_script_markers(buf, arena, id, next);
+            } else {
+                write_standalone_empty_base_script(buf, arena, id, next);
+            }
             ends_with_command =
                 appended_ends_with_letter_command(buf, output_start, ends_with_command);
             i += 1;
@@ -106,8 +117,18 @@ fn write_node_slice(
             } else {
                 // Complex or merge-prone base: keep the script as a separate
                 // atom so the output shape is preserved.
-                write_node(buf, arena, id);
-                write_standalone_empty_base_script(buf, arena, script_id, next);
+                if matches!(*arena.node(id), CompactNode::Middle(_)) {
+                    // The parser treats `\middle|` followed by a script as
+                    // one scripted Middle base. Group it now so the next
+                    // writer pass sees the same base shape.
+                    buf.push('{');
+                    write_node(buf, arena, id);
+                    buf.push('}');
+                    write_empty_base_script_markers(buf, arena, script_id, next);
+                } else {
+                    write_node(buf, arena, id);
+                    write_standalone_empty_base_script(buf, arena, script_id, next);
+                }
             }
             ends_with_command =
                 appended_ends_with_letter_command(buf, output_start, ends_with_command);
@@ -1338,7 +1359,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         // Helper nodes — should not appear as standalone roots, but handle gracefully
         CompactNode::Middle(sid) => {
-            buf.push_str(arena.str_val(sid));
+            // A middle delimiter can survive inside an infix-fraction
+            // argument. Preserve its node class when emitted outside the
+            // immediate `\left...\right` writer loop.
+            buf.push_str("\\middle");
+            write_delim(buf, arena.str_val(sid));
         },
         CompactNode::ColAlign(_) => {},
         CompactNode::Rule {

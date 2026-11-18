@@ -3419,6 +3419,25 @@ impl LatexCompactParser {
                 }
                 let (input, sid) = self.parse_delimiter_into(input)?;
                 let ch = self.arena.str_val(sid).chars().next().unwrap_or('\0');
+                if self.depth > 1 && ch != '~' {
+                    // A serialized Middle can be grouped when it is followed
+                    // by an implicit empty-base script. Keep the helper node
+                    // through that group so the writer does not downgrade it
+                    // to an ordinary fence on the next pass.
+                    return Ok((input, self.arena.push_node(CompactNode::Middle(sid))));
+                }
+                // Preserve an internal Middle node when the writer emits it
+                // beside an implicit empty-base script. A bare `\middle|`
+                // remains unsupported outside a fence, but this marker form
+                // is a stable serialization of the already parsed node.
+                if ch == '|'
+                    && input
+                        .chars()
+                        .next()
+                        .is_some_and(|next| matches!(next, '^' | '_' | '\''))
+                {
+                    return Ok((input, self.arena.push_node(CompactNode::Middle(sid))));
+                }
                 // The active-character `~` is a non-breaking space in LaTeX, not a
                 // delimiter. Treating it as a bare symbol would write a literal `~`
                 // that re-parses as a space and breaks round-trip idempotency.
