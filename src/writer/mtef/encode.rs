@@ -198,23 +198,6 @@ impl<'a> Encoder<'a> {
         result
     }
 
-    fn array_cell_style(
-        &self,
-        arraystretch_pct: u8,
-        add_jot: bool,
-        array_style: bool,
-    ) -> MathStyle {
-        if array_style {
-            self.math_style
-        } else if add_jot {
-            MathStyle::Display
-        } else if arraystretch_pct == 50 {
-            MathStyle::Script
-        } else {
-            MathStyle::Text
-        }
-    }
-
     // ── Diagnostics and limits ─────────────────────────────────────────
 
     fn lose(&mut self, message: &str) {
@@ -1943,12 +1926,7 @@ impl<'a> Encoder<'a> {
     /// PILE: halign, valign (baseline of the centre line), one line per row.
     fn pile(&mut self, id: NodeId, size: Size) -> Result<()> {
         let CompactNode::Array {
-            col_aligns,
-            cells,
-            arraystretch_pct,
-            add_jot,
-            array_style,
-            ..
+            col_aligns, cells, ..
         } = *self.arena.node(id)
         else {
             return Ok(());
@@ -1959,9 +1937,8 @@ impl<'a> Encoder<'a> {
         self.out.push(halign);
         self.out.push(1);
         let rows: SmallVec<[NodeId; 8]> = self.arena.children(cells).into();
-        let cell_style = self.array_cell_style(arraystretch_pct, add_jot, array_style);
         for row in rows {
-            self.with_math_style(cell_style, |this| this.slot(size, Some(row)))?;
+            self.with_math_style(MathStyle::Text, |this| this.slot(size, Some(row)))?;
         }
         self.end();
         Ok(())
@@ -1977,9 +1954,6 @@ impl<'a> Encoder<'a> {
             num_cols,
             col_seps,
             row_seps,
-            arraystretch_pct,
-            add_jot,
-            array_style,
             ..
         } = *self.arena.node(id)
         else {
@@ -2007,11 +1981,10 @@ impl<'a> Encoder<'a> {
         self.out.push(cols_u8);
         self.partition_lines(row_seps, rows + 1);
         self.partition_lines(col_seps, cols + 1);
-        let cell_style = self.array_cell_style(arraystretch_pct, add_jot, array_style);
         for index in 0..rows * cols {
             match cells.get(index) {
                 Some(&cell) => {
-                    self.with_math_style(cell_style, |this| this.cell(cell, size))?;
+                    self.with_math_style(MathStyle::Text, |this| this.cell(cell, size))?;
                 },
                 None => {
                     self.need(size);

@@ -670,6 +670,14 @@ fn mathchoice_mtef_uses_table_cell_styles() {
             r"\begin{smallmatrix}\mathchoice{D}{T}{S}{Q}\end{smallmatrix}",
             "S",
         ),
+        (
+            r"x^{\begin{array}{c}\mathchoice{D}{T}{S}{Q}\end{array}}",
+            "T",
+        ),
+        (
+            r"\begin{matrix}\scriptstyle\mathchoice{D}{T}{S}{Q}\end{matrix}",
+            "S",
+        ),
         (r"\begin{aligned}\mathchoice{D}{T}{S}{Q}\end{aligned}", "D"),
     ];
     for options in [MtefWriteOptions::default(), v3()] {
