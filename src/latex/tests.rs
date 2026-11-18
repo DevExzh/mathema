@@ -322,6 +322,31 @@ fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
 }
 
 #[test]
+fn text_control_symbols_keep_following_spaces() {
+    for (input, expected) in [
+        (r"\text{a\} b}", "a} b"),
+        (r"\text{a\{ b}", "a{ b"),
+        (r"\hbox{a\}\\b}", "a} b"),
+        (r"\text{\! word}", "! word"),
+        (r"\text{\KaTeX word}", "KaTeXword"),
+    ] {
+        let parsed = crate::from_latex(input).unwrap();
+        assert_eq!(
+            parsed.expr().nodes,
+            [crate::ast::MathNode::Text(
+                crate::ast::TextStyle::Normal,
+                expected.into()
+            )],
+            "{input}"
+        );
+        let first = parsed.to_latex().unwrap();
+        let again = crate::from_latex(&first).unwrap();
+        assert_eq!(again.to_mathml().unwrap(), parsed.to_mathml().unwrap());
+        assert_eq!(again.to_latex().unwrap(), first);
+    }
+}
+
+#[test]
 fn negated_operators_preserve_bounds_bodies_and_following_operands() {
     let config = Config::default();
     for input in [

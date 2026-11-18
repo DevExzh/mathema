@@ -280,10 +280,11 @@ fn clean_text_content(raw: &str) -> String {
                             i += 1;
                         }
                         if i == start && i < len {
-                            // Single non-alpha char after \, pass through
+                            // A control symbol consumes only its own character.
                             let ch = raw[i..].chars().next().unwrap();
                             out.push(ch);
                             i += ch.len_utf8();
+                            continue;
                         } else if &raw[start..i] == "KaTeX" {
                             out.push_str("KaTeX");
                         } else if &raw[start..i] == "LaTeX" {
