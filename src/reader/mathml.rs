@@ -1045,8 +1045,9 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "mtable" => {
+                let table_columns = parse_column_aligns(get_attr(start, "columnalign"));
                 let (rows, columns) =
-                    self.with_table_style(start, true, |p| p.parse_table(name))?;
+                    self.with_table_style(start, true, |p| p.parse_table(name, &table_columns))?;
                 let ncols = columns.len();
                 let stride = ncols.max(1);
                 if rows.len().saturating_mul(stride) > AstArena::MAX_CHILDREN {
@@ -1312,18 +1313,34 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(nodes)
     }
 
-    fn parse_table(&mut self, parent_tag: &str) -> Result<(MathmlTableRows, Vec<ColumnAlign>)> {
+    fn parse_table(
+        &mut self,
+        parent_tag: &str,
+        table_columns: &[ColumnAlign],
+    ) -> Result<(MathmlTableRows, Vec<ColumnAlign>)> {
         let mut rows = Vec::new();
-        let mut columns = Vec::new();
+        let mut columns = table_columns.to_vec();
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtr" || name == "mlabeledtr" {
-                        let (row, row_columns) =
-                            self.with_table_style(&e, false, |p| p.parse_table_row(&name))?;
-                        if row_columns.len() > columns.len() {
-                            columns.extend_from_slice(&row_columns[columns.len()..]);
+                        let row_columns = parse_column_aligns(get_attr(&e, "columnalign"));
+                        let (row, row_columns) = self.with_table_style(&e, false, |p| {
+                            p.parse_table_row(&name, table_columns, &row_columns)
+                        })?;
+                        if rows.is_empty() {
+                            for (index, alignment) in row_columns.iter().copied().enumerate() {
+                                if let Some(column) = columns.get_mut(index) {
+                                    *column = alignment;
+                                } else {
+                                    columns.push(alignment);
+                                }
+                            }
+                        } else {
+                            for &alignment in row_columns.iter().skip(columns.len()) {
+                                columns.push(alignment);
+                            }
                         }
                         rows.push(row);
                     }
@@ -1345,7 +1362,12 @@ impl<'a> MathmlCompactParser<'a> {
         Ok((rows, columns))
     }
 
-    fn parse_table_row(&mut self, parent_tag: &str) -> Result<(MathmlTableRow, Vec<ColumnAlign>)> {
+    fn parse_table_row(
+        &mut self,
+        parent_tag: &str,
+        table_columns: &[ColumnAlign],
+        row_columns: &[ColumnAlign],
+    ) -> Result<(MathmlTableRow, Vec<ColumnAlign>)> {
         let mut cells = Vec::new();
         let mut columns = Vec::new();
         loop {
@@ -1353,11 +1375,22 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
-                        columns.push(parse_column_align(get_attr(&e, "columnalign")));
+                        let index = cells.len();
+                        columns.push(effective_alignment(
+                            table_columns,
+                            row_columns,
+                            get_attr(&e, "columnalign"),
+                            index,
+                        ));
                         cells.push(self.with_table_style(&e, false, Self::parse_table_cell)?);
                     } else {
                         // Inferred cell: a non-<mtd> child is its own cell.
-                        columns.push(ColumnAlign::Center);
+                        columns.push(effective_alignment(
+                            table_columns,
+                            row_columns,
+                            None,
+                            cells.len(),
+                        ));
                         let id = self.parse_element_by_name(&name, &e)?;
                         cells.push(smallvec::smallvec![id]);
                     }
@@ -1365,10 +1398,21 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Empty(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
-                        columns.push(parse_column_align(get_attr(&e, "columnalign")));
+                        let index = cells.len();
+                        columns.push(effective_alignment(
+                            table_columns,
+                            row_columns,
+                            get_attr(&e, "columnalign"),
+                            index,
+                        ));
                         cells.push(SmallVec::new());
                     } else {
-                        columns.push(ColumnAlign::Center);
+                        columns.push(effective_alignment(
+                            table_columns,
+                            row_columns,
+                            None,
+                            cells.len(),
+                        ));
                         let id = self.parse_empty_element(&name, &e)?;
                         cells.push(smallvec::smallvec![id]);
                     }
@@ -1377,7 +1421,12 @@ impl<'a> MathmlCompactParser<'a> {
                     let text = unescape_text(&e);
                     if !text.trim().is_empty() {
                         let id = self.classify_text_compact(&text);
-                        columns.push(ColumnAlign::Center);
+                        columns.push(effective_alignment(
+                            table_columns,
+                            row_columns,
+                            None,
+                            cells.len(),
+                        ));
                         cells.push(smallvec::smallvec![id]);
                     }
                 },
@@ -1385,7 +1434,12 @@ impl<'a> MathmlCompactParser<'a> {
                     let text = resolve_general_ref(&r);
                     if !text.trim().is_empty() {
                         let id = self.classify_text_compact(&text);
-                        columns.push(ColumnAlign::Center);
+                        columns.push(effective_alignment(
+                            table_columns,
+                            row_columns,
+                            None,
+                            cells.len(),
+                        ));
                         cells.push(smallvec::smallvec![id]);
                     }
                 },
@@ -2021,18 +2075,42 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
 
 fn parse_column_align(value: Option<String>) -> ColumnAlign {
     value
-        .and_then(|value| {
+        .and_then(|value| parse_column_aligns(Some(value)).into_iter().next())
+        .unwrap_or(ColumnAlign::Center)
+}
+
+fn parse_column_aligns(value: Option<String>) -> Vec<ColumnAlign> {
+    value
+        .into_iter()
+        .flat_map(|value| {
             value
                 .split_ascii_whitespace()
-                .next()
-                .map(str::to_ascii_lowercase)
+                .map(|token| match token.to_ascii_lowercase().as_str() {
+                    "left" => ColumnAlign::Left,
+                    "right" => ColumnAlign::Right,
+                    _ => ColumnAlign::Center,
+                })
+                .collect::<Vec<_>>()
         })
-        .as_deref()
-        .map_or(ColumnAlign::Center, |value| match value {
-            "left" => ColumnAlign::Left,
-            "right" => ColumnAlign::Right,
-            _ => ColumnAlign::Center,
-        })
+        .collect()
+}
+
+fn alignment_at(values: &[ColumnAlign], index: usize) -> ColumnAlign {
+    values
+        .get(index)
+        .copied()
+        .or_else(|| values.last().copied())
+        .unwrap_or(ColumnAlign::Center)
+}
+
+fn effective_alignment(
+    table: &[ColumnAlign],
+    row: &[ColumnAlign],
+    cell: Option<String>,
+    index: usize,
+) -> ColumnAlign {
+    cell.map(|value| parse_column_align(Some(value)))
+        .unwrap_or_else(|| alignment_at(if row.is_empty() { table } else { row }, index))
 }
 
 /// Unescape text content, resolving the full MathML/HTML named-entity set
@@ -3205,6 +3283,33 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn authored_table_row_and_cell_alignment_follow_mathml_precedence() {
+        let inherited = r#"<math><mtable columnalign="left"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>"#;
+        let inherited = crate::from_mathml(inherited).unwrap();
+        let MathNode::Array { columns, .. } = &inherited.expr().nodes[0] else {
+            panic!("expected an inherited table")
+        };
+        assert_eq!(columns, &[ColumnAlign::Left, ColumnAlign::Left]);
+
+        let table = r#"<math><mtable columnalign="left right"><mtr><mtd><mi>a</mi></mtd><mtd columnalign="center"><mi>b</mi></mtd><mtd><mi>c</mi></mtd></mtr><mtr columnalign="right left"><mtd><mi>d</mi></mtd><mtd><mi>e</mi></mtd><mtd columnalign="left"><mi>f</mi></mtd></mtr></mtable></math>"#;
+        let result = crate::from_mathml(table).unwrap();
+        let MathNode::Array { columns, rows, .. } = &result.expr().nodes[0] else {
+            panic!("expected an authored table")
+        };
+        // The table list supplies the first row, the row list overrides the
+        // second row, and an mtd value wins over both. Compact AST stores one
+        // alignment per column, so the first row's explicit cell values are
+        // the representable global result.
+        assert_eq!(
+            columns,
+            &[ColumnAlign::Left, ColumnAlign::Center, ColumnAlign::Right]
+        );
+        assert_eq!(rows.len(), 2);
+        let canonical = result.to_latex().unwrap();
+        assert!(canonical.contains(r"\begin{array}{lcr}"), "{canonical}");
     }
 
     #[test]
