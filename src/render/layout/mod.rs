@@ -512,11 +512,40 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             pre_sub,
             pre_sup,
         } => layout_prescripts(base, pre_sub, pre_sup, ctx),
-        MathNode::Overscript { base, over, .. } => layout_overscript(base, over, ctx),
-        MathNode::Underscript { base, under, .. } => layout_underscript(base, under, ctx),
+        MathNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
+            if *movable_limits && is_large_op(base) && !ctx.style.is_display() {
+                layout_superscript(base, over, ctx)
+            } else {
+                layout_overscript(base, over, ctx)
+            }
+        },
+        MathNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
+            if *movable_limits && is_large_op(base) && !ctx.style.is_display() {
+                layout_subscript(base, under, ctx)
+            } else {
+                layout_underscript(base, under, ctx)
+            }
+        },
         MathNode::UnderOver {
-            base, under, over, ..
-        } => layout_underover(base, under, over, ctx),
+            base,
+            under,
+            over,
+            movable_limits,
+        } => {
+            if *movable_limits && is_large_op(base) && !ctx.style.is_display() {
+                layout_subsup(base, under, over, ctx)
+            } else {
+                layout_underover(base, under, over, ctx)
+            }
+        },
         MathNode::Fraction { kind, num, den } => layout_fraction(*kind, num, den, ctx),
         MathNode::Sqrt(radicand) => layout_sqrt(radicand, None, ctx),
         MathNode::Root { index, radicand } => layout_sqrt(radicand, Some(index), ctx),
@@ -1322,15 +1351,40 @@ fn layout_node_arena(
             pre_sub,
             pre_sup,
         } => layout_prescripts_arena(ast, base, pre_sub, pre_sup, arena, ctx),
-        CompactNode::Overscript { base, over, .. } => {
-            layout_overscript_arena(ast, base, over, arena, ctx)
+        CompactNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
+            if movable_limits && is_large_op_c(ast, base) && !ctx.style.is_display() {
+                layout_superscript_arena(ast, base, over, arena, ctx)
+            } else {
+                layout_overscript_arena(ast, base, over, arena, ctx)
+            }
         },
-        CompactNode::Underscript { base, under, .. } => {
-            layout_underscript_arena(ast, base, under, arena, ctx)
+        CompactNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
+            if movable_limits && is_large_op_c(ast, base) && !ctx.style.is_display() {
+                layout_subscript_arena(ast, base, under, arena, ctx)
+            } else {
+                layout_underscript_arena(ast, base, under, arena, ctx)
+            }
         },
         CompactNode::UnderOver {
-            base, under, over, ..
-        } => layout_underover_arena(ast, base, under, over, arena, ctx),
+            base,
+            under,
+            over,
+            movable_limits,
+        } => {
+            if movable_limits && is_large_op_c(ast, base) && !ctx.style.is_display() {
+                layout_subsup_arena(ast, base, under, over, arena, ctx)
+            } else {
+                layout_underover_arena(ast, base, under, over, arena, ctx)
+            }
+        },
         CompactNode::Fraction { kind, num, den } => {
             layout_fraction_arena(ast, kind, num, den, arena, ctx)
         },

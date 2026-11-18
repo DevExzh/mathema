@@ -283,6 +283,118 @@ fn layout_underover() {
 }
 
 #[test]
+fn movable_large_operator_limits_follow_math_style_on_heap_and_arena() {
+    fn movable_integral() -> MathNode {
+        MathNode::UnderOver {
+            base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "∫".into())),
+            under: Box::new(MathNode::Number("0".into())),
+            over: Box::new(MathNode::Number("1".into())),
+            movable_limits: true,
+        }
+    }
+
+    let options = default_options();
+    let inline = layout_expr(
+        &MathExpr::inline(vec![movable_integral()]),
+        MathStyle::Text,
+        &options,
+    );
+    let script = layout_expr(
+        &MathExpr::inline(vec![movable_integral()]),
+        MathStyle::Script,
+        &options,
+    );
+    let display = layout_expr(
+        &MathExpr::inline(vec![movable_integral()]),
+        MathStyle::Display,
+        &options,
+    );
+    fn child_kind(root: &LayoutBox) -> &BoxKind {
+        match &root.kind {
+            BoxKind::HBox { children } => &children[0].layout.kind,
+            _ => panic!("single-node expression should have an outer HBox"),
+        }
+    }
+    assert!(matches!(child_kind(&inline), BoxKind::HBox { .. }));
+    assert!(matches!(child_kind(&script), BoxKind::HBox { .. }));
+    assert!(matches!(child_kind(&display), BoxKind::VBox { .. }));
+
+    let fixed = layout_expr(
+        &MathExpr::inline(vec![MathNode::UnderOver {
+            base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "∫".into())),
+            under: Box::new(MathNode::Number("0".into())),
+            over: Box::new(MathNode::Number("1".into())),
+            movable_limits: false,
+        }]),
+        MathStyle::Text,
+        &options,
+    );
+    let ordinary = layout_expr(
+        &MathExpr::inline(vec![MathNode::UnderOver {
+            base: Box::new(MathNode::Identifier("x".into())),
+            under: Box::new(MathNode::Number("0".into())),
+            over: Box::new(MathNode::Number("1".into())),
+            movable_limits: true,
+        }]),
+        MathStyle::Text,
+        &options,
+    );
+    assert!(matches!(child_kind(&fixed), BoxKind::VBox { .. }));
+    assert!(matches!(child_kind(&ordinary), BoxKind::VBox { .. }));
+
+    let one_bound = |style| {
+        layout_expr(
+            &MathExpr::inline(vec![MathNode::Overscript {
+                base: Box::new(MathNode::Symbol(SymbolKind::LargeOp, "∫".into())),
+                over: Box::new(MathNode::Number("1".into())),
+                movable_limits: true,
+            }]),
+            style,
+            &options,
+        )
+    };
+    assert!(matches!(
+        child_kind(&one_bound(MathStyle::Script)),
+        BoxKind::HBox { .. }
+    ));
+    assert!(matches!(
+        child_kind(&one_bound(MathStyle::Display)),
+        BoxKind::VBox { .. }
+    ));
+
+    use crate::reader::Reader;
+    use crate::render::arena::{ArenaBoxKind, LayoutArena};
+    let compact = crate::reader::mathml::MathmlReader::parse_compact(
+        "<math><munderover><mo movablelimits=\"true\">∫</mo><mn>0</mn><mn>1</mn></munderover></math>",
+        &crate::error::Config::default(),
+    )
+    .unwrap()
+    .expr;
+    let mut arena = LayoutArena::new();
+    let text_builder = LayoutBuilder::new(MathStyle::Text, &options);
+    let text_id = text_builder.layout(&mut arena, &compact);
+    let text_child = match arena.get(text_id).kind {
+        ArenaBoxKind::HBox { children } => arena.children(children)[0].id,
+        _ => panic!("single-node arena expression should have an outer HBox"),
+    };
+    assert!(matches!(
+        arena.get(text_child).kind,
+        ArenaBoxKind::HBox { .. }
+    ));
+    arena.clear();
+    let display_builder = LayoutBuilder::new(MathStyle::Display, &options);
+    let display_id = display_builder.layout(&mut arena, &compact);
+    let display_child = match arena.get(display_id).kind {
+        ArenaBoxKind::HBox { children } => arena.children(children)[0].id,
+        _ => panic!("single-node arena expression should have an outer HBox"),
+    };
+    assert!(matches!(
+        arena.get(display_child).kind,
+        ArenaBoxKind::VBox { .. }
+    ));
+}
+
+#[test]
 fn layout_phantom_has_dimensions_but_invisible() {
     let content = MathNode::Identifier("x".into());
     let visible = layout_node(
