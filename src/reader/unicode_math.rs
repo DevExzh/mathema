@@ -524,6 +524,12 @@ impl CompactParser {
     }
 
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Tables are single UnicodeMath atoms. They can therefore be used as
+        // a script argument without an additional grouping pair, just like a
+        // box or radical emitted by this writer.
+        if input.starts_with('\u{25A0}') {
+            return self.parse_matrix(input);
+        }
         // In argument position (after √/∛ or ^/_), a parenthesized group is a
         // grouping delimiter, not literal parentheses (UTN#28): absorb the parens
         // and return the inner content. This keeps the writer's `√(x)` / `x^(a+b)`
@@ -1239,7 +1245,7 @@ fn is_integral(c: char) -> bool {
 
 fn is_math_symbol(c: char) -> bool {
     matches!(c,
-        '+' | '-' | '=' | '<' | '>' | ',' | ';' | '!' | '?' | ':' |
+        '+' | '-' | '=' | '<' | '>' | ',' | ';' | '!' | '?' | ':' | '|' | '\u{2016}' |
         '\u{00B1}' | '\u{00D7}' | '\u{00F7}' | // ±, ×, ÷
         '\u{2200}'..='\u{22FF}' | // Mathematical Operators
         '\u{2190}'..='\u{21FF}' | // Arrows
@@ -1499,6 +1505,37 @@ mod tests {
         assert!(matches!(&nodes[0], MathNode::Array { .. }));
         if let MathNode::Array { rows, .. } = &nodes[0] {
             assert_eq!(rows.len(), 2);
+        }
+    }
+
+    #[test]
+    fn matrix_is_a_script_atom() {
+        let nodes = parse("x^\u{25A0}(a&b@c&d)");
+        assert!(matches!(
+            &nodes[0],
+            MathNode::Superscript { base, sup }
+                if matches!(base.as_ref(), MathNode::Identifier(value) if value == "x")
+                    && matches!(sup.as_ref(), MathNode::Array { rows, .. } if rows.len() == 2)
+        ));
+
+        let config = Config::default().with_display(DisplayStyle::Inline);
+        let source =
+            crate::from_latex_with(r"x^{\begin{matrix}a&b\\c&d\end{matrix}}", &config).unwrap();
+        let unicode = source.to_unicode_math().unwrap();
+        let reparsed = crate::from_unicode_math_with(&unicode, &config).unwrap();
+        assert_eq!(reparsed.to_mathml().unwrap(), source.to_mathml().unwrap());
+    }
+
+    #[test]
+    fn vertical_bars_inside_fences_are_math_atoms() {
+        for source in ["(273|275)", "[282|286]", "(x|y)"] {
+            let nodes = parse(source);
+            assert!(
+                matches!(&nodes[0], MathNode::Fenced { .. }),
+                "{source}: {nodes:?}"
+            );
+            let result = crate::from_unicode_math(source).unwrap();
+            assert_eq!(result.to_unicode_math().unwrap(), source);
         }
     }
 
