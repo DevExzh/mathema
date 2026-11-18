@@ -916,17 +916,14 @@ fn write_mo_fence(w: &mut XmlWriter, text: &str, form: Option<&str>, stretchy: b
     Ok(())
 }
 
+/// Neutral delimiters already have a middle position here. Other glyphs,
+/// including bracket-shaped middles, need their infix role to survive import.
+fn middle_form(text: &str) -> Option<&'static str> {
+    (!matches!(text, "" | "|" | "‖" | "∣" | "∥" | "/")).then_some("infix")
+}
+
 fn write_mo_middle(w: &mut XmlWriter, text: &str) -> Result<()> {
-    let mut elem = BytesStart::new("mo");
-    elem.push_attribute(("fence", "true"));
-    elem.push_attribute(("stretchy", "true"));
-    elem.push_attribute(("symmetric", "true"));
-    w.write_event(Event::Start(elem)).map_err(to_err)?;
-    w.write_event(Event::Text(BytesText::new(text)))
-        .map_err(to_err)?;
-    w.write_event(Event::End(BytesEnd::new("mo")))
-        .map_err(to_err)?;
-    Ok(())
+    write_mo_fence(w, text, middle_form(text), true)
 }
 
 fn write_literal_fence(w: &mut XmlWriter, text: &str) -> Result<()> {
@@ -2003,9 +2000,7 @@ fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>, stretch
 }
 
 fn write_mo_middle_fast(buf: &mut String, text: &str) {
-    buf.push_str("<mo fence=\"true\" stretchy=\"true\" symmetric=\"true\">");
-    xml_escape_into(buf, text);
-    buf.push_str("</mo>");
+    write_mo_fence_fast(buf, text, middle_form(text), true);
 }
 
 fn write_literal_fence_fast(buf: &mut String, text: &str) {

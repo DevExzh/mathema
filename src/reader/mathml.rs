@@ -706,10 +706,7 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
-        if attrs.fenced
-            || ((attrs.form == FenceRole::Infix || attrs.possible_middle())
-                && is_middle_delimiter(name))
-        {
+        if attrs.fenced {
             self.fence_marks.push((id, attrs.fence_role()));
         }
         if kind == SymbolKind::LargeOp {
@@ -1711,8 +1708,6 @@ struct OperatorAttributes {
     fenced: bool,
     form: FenceRole,
     constrained: bool,
-    stretchy: Option<bool>,
-    symmetric: Option<bool>,
 }
 
 impl OperatorAttributes {
@@ -1722,10 +1717,6 @@ impl OperatorAttributes {
         } else {
             self.form
         }
-    }
-
-    fn possible_middle(&self) -> bool {
-        self.stretchy == Some(true) && self.symmetric == Some(true)
     }
 }
 
@@ -1739,10 +1730,6 @@ fn writable_middle(text: &str) -> bool {
             && !c.is_control()
             && !matches!(c, '%' | '#' | '$' | '&' | '~' | '^' | '_' | '.')
     })
-}
-
-fn is_middle_delimiter(text: &str) -> bool {
-    matches!(text, "" | "|" | "‖" | "∣" | "∥" | "/" | "\\")
 }
 
 fn known_fence_endpoint(text: &str) -> bool {
@@ -1783,15 +1770,9 @@ fn operator_attributes(
                     .eq_ignore_ascii_case("true");
             },
             "stretchy" | "symmetric" if inspect_fences => {
-                let value = fence_attr_value(&attr.value)
+                result.constrained |= !fence_attr_value(&attr.value)
                     .trim()
                     .eq_ignore_ascii_case("true");
-                if attr.key.as_ref() == "stretchy" {
-                    result.stretchy = Some(value);
-                } else {
-                    result.symmetric = Some(value);
-                }
-                result.constrained |= !value;
             },
             "form" if inspect_fences => {
                 let value = fence_attr_value(&attr.value);
@@ -2773,6 +2754,27 @@ mod tests {
             );
             assert!(matches!(parse_one(&xml), MathNode::Row(_)), "{xml}");
         }
+    }
+
+    #[test]
+    fn infix_form_without_a_fence_does_not_create_a_middle() {
+        for attributes in [
+            r#"form="infix""#,
+            r#"fence="false" form="infix""#,
+            r#"stretchy="true" symmetric="true""#,
+        ] {
+            let xml = format!(
+                r#"<math><mrow><mo fence="true">(</mo><mi>x</mi><mo {attributes}>|</mo><mi>y</mi><mo fence="true">)</mo></mrow></math>"#
+            );
+            assert!(
+                matches!(parse_one(&xml), MathNode::Fenced {content,..}
+                if content.iter().all(|v|matches!(v,FencedItem::Element(_)))),
+                "{xml}"
+            );
+        }
+        let original = crate::from_latex(r"\left(1\middle] 2\right)").unwrap();
+        let reimport = crate::from_mathml(&original.to_mathml().unwrap()).unwrap();
+        assert_eq!(original.to_latex().unwrap(), reimport.to_latex().unwrap());
     }
 
     #[test]
