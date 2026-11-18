@@ -945,8 +945,34 @@ impl<'a> MathmlCompactParser<'a> {
                     .read_children_with_script_modes(name, false, Some(&child_styles))
                     .map(|(children, _)| children)?;
                 let (base, over) = self.two_child_ids(children);
-                if get_attr(start, "data-mathema-accent-decoration").as_deref() == Some("overline")
-                {
+                let decoration = get_attr(start, "data-mathema-accent-decoration");
+                if matches!(decoration.as_deref(), Some("accent-overline")) {
+                    return Ok(self.arena.push_node(CompactNode::Accent {
+                        base,
+                        accent: '\u{0304}',
+                        position: AccentPosition::Above,
+                        wide: false,
+                    }));
+                }
+                if matches!(decoration.as_deref(), Some("overbrace" | "overbracket")) {
+                    return Ok(self.arena.push_node(
+                        if decoration.as_deref() == Some("overbrace") {
+                            CompactNode::Overscript {
+                                base,
+                                over,
+                                movable_limits: false,
+                            }
+                        } else {
+                            CompactNode::Accent {
+                                base,
+                                accent: '\u{23B4}',
+                                position: AccentPosition::Above,
+                                wide: true,
+                            }
+                        },
+                    ));
+                }
+                if decoration.as_deref() == Some("overline") {
                     if let CompactNode::Operator { limits, .. } = self.arena.node_mut(base)
                         && *limits == LimitStyle::AboveBelow
                     {
@@ -989,8 +1015,34 @@ impl<'a> MathmlCompactParser<'a> {
                     .read_children_with_script_modes(name, false, Some(&child_styles))
                     .map(|(children, _)| children)?;
                 let (base, under) = self.two_child_ids(children);
-                if get_attr(start, "data-mathema-accent-decoration").as_deref() == Some("underline")
-                {
+                let decoration = get_attr(start, "data-mathema-accent-decoration");
+                if matches!(decoration.as_deref(), Some("accent-underline")) {
+                    return Ok(self.arena.push_node(CompactNode::Accent {
+                        base,
+                        accent: '\u{0332}',
+                        position: AccentPosition::Below,
+                        wide: false,
+                    }));
+                }
+                if matches!(decoration.as_deref(), Some("underbrace" | "underbracket")) {
+                    return Ok(self.arena.push_node(
+                        if decoration.as_deref() == Some("underbrace") {
+                            CompactNode::Underscript {
+                                base,
+                                under,
+                                movable_limits: false,
+                            }
+                        } else {
+                            CompactNode::Accent {
+                                base,
+                                accent: '\u{23B5}',
+                                position: AccentPosition::Below,
+                                wide: true,
+                            }
+                        },
+                    ));
+                }
+                if decoration.as_deref() == Some("underline") {
                     return Ok(self.arena.push_node(CompactNode::Underscript {
                         base,
                         under,

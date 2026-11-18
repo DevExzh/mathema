@@ -600,7 +600,7 @@ fn write_node_in(
             base,
             accent,
             position,
-            ..
+            wide,
         } => {
             let tag = match position {
                 AccentPosition::Above => "mover",
@@ -610,6 +610,9 @@ fn write_node_in(
             match position {
                 AccentPosition::Above => elem.push_attribute(("accent", "true")),
                 AccentPosition::Below => elem.push_attribute(("accentunder", "true")),
+            }
+            if let Some(name) = accent_decoration(*accent, *position, *wide) {
+                elem.push_attribute(("data-mathema-accent-decoration", name));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_argument(w, base, display_style)?;
@@ -1068,6 +1071,18 @@ fn mathml_accent_glyph(ch: char) -> char {
     match ch {
         '\u{0304}' => '\u{203E}',
         _ => ch,
+    }
+}
+
+fn accent_decoration(ch: char, position: AccentPosition, wide: bool) -> Option<&'static str> {
+    match (ch, position, wide) {
+        ('\u{0304}' | '\u{203E}', AccentPosition::Above, false) => Some("accent-overline"),
+        ('\u{0332}', AccentPosition::Below, false) => Some("accent-underline"),
+        ('\u{23DE}', AccentPosition::Above, _) => Some("overbrace"),
+        ('\u{23DF}', AccentPosition::Below, _) => Some("underbrace"),
+        ('\u{23B4}', AccentPosition::Above, _) => Some("overbracket"),
+        ('\u{23B5}', AccentPosition::Below, _) => Some("underbracket"),
+        _ => None,
     }
 }
 
@@ -1569,7 +1584,7 @@ fn write_node_fast_in(
             base,
             accent,
             position,
-            ..
+            wide,
         } => {
             let tag = match position {
                 AccentPosition::Above => "mover",
@@ -1578,9 +1593,17 @@ fn write_node_fast_in(
             buf.push('<');
             buf.push_str(tag);
             match position {
-                AccentPosition::Above => buf.push_str(" accent=\"true\">"),
-                AccentPosition::Below => buf.push_str(" accentunder=\"true\">"),
+                AccentPosition::Above => buf.push_str(" accent=\"true\""),
+                AccentPosition::Below => buf.push_str(" accentunder=\"true\""),
             }
+            if let Some(name) = accent_decoration(accent, position, wide) {
+                // The marker disambiguates wide TeX decorations from a generic
+                // MathML accent with the same glyph.
+                buf.push_str(" data-mathema-accent-decoration=\"");
+                buf.push_str(name);
+                buf.push('"');
+            }
+            buf.push('>');
             write_argument_fast(buf, arena, base, display_style);
             write_mo_char_fast(buf, mathml_accent_glyph(accent), None);
             close_tag(buf, tag);
@@ -2025,6 +2048,31 @@ fn is_mathml_underline_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
     matches!(arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(*sid) == "\u{0332}")
 }
 
+fn mathml_script_decoration(node: &MathNode, position: AccentPosition) -> Option<&'static str> {
+    let MathNode::Symbol(_, text) = node else {
+        return None;
+    };
+    let ch = text.chars().next()?;
+    (text.chars().count() == 1)
+        .then(|| accent_decoration(ch, position, true))
+        .flatten()
+}
+
+fn mathml_script_decoration_fast(
+    arena: &AstArena,
+    id: NodeId,
+    position: AccentPosition,
+) -> Option<&'static str> {
+    let CompactNode::Symbol(_, sid) = *arena.node(id) else {
+        return None;
+    };
+    let text = arena.str_val(sid);
+    let ch = text.chars().next()?;
+    (text.chars().count() == 1)
+        .then(|| accent_decoration(ch, position, true))
+        .flatten()
+}
+
 fn write_scripts(
     w: &mut XmlWriter,
     base: &MathNode,
@@ -2045,10 +2093,14 @@ fn write_scripts(
     };
     let mut elem = BytesStart::new(tag);
     if under_over == Some(false) {
-        if upper.is_some_and(is_mathml_overline_glyph) {
-            elem.push_attribute(("data-mathema-accent-decoration", "overline"));
-        } else if lower.is_some_and(is_mathml_underline_glyph) {
-            elem.push_attribute(("data-mathema-accent-decoration", "underline"));
+        if let Some(name) =
+            upper.and_then(|node| mathml_script_decoration(node, AccentPosition::Above))
+        {
+            elem.push_attribute(("data-mathema-accent-decoration", name));
+        } else if let Some(name) =
+            lower.and_then(|node| mathml_script_decoration(node, AccentPosition::Below))
+        {
+            elem.push_attribute(("data-mathema-accent-decoration", name));
         }
     }
     if place.stacked {
@@ -2099,10 +2151,22 @@ fn write_scripts_fast(
     buf.push('<');
     buf.push_str(tag);
     if under_over == Some(false) {
-        if upper.is_some() && is_mathml_overline_glyph_fast(arena, upper) {
-            buf.push_str(" data-mathema-accent-decoration=\"overline\"");
-        } else if lower.is_some() && is_mathml_underline_glyph_fast(arena, lower) {
-            buf.push_str(" data-mathema-accent-decoration=\"underline\"");
+        if let Some(name) = upper
+            .is_some()
+            .then(|| mathml_script_decoration_fast(arena, upper, AccentPosition::Above))
+            .flatten()
+        {
+            buf.push_str(" data-mathema-accent-decoration=\"");
+            buf.push_str(name);
+            buf.push('"');
+        } else if let Some(name) = lower
+            .is_some()
+            .then(|| mathml_script_decoration_fast(arena, lower, AccentPosition::Below))
+            .flatten()
+        {
+            buf.push_str(" data-mathema-accent-decoration=\"");
+            buf.push_str(name);
+            buf.push('"');
         }
     }
     if place.stacked {
@@ -2844,6 +2908,50 @@ mod tests {
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();
         assert!(output.contains("<munder accentunder=\"true\">"));
         assert!(!output.contains("<munder accent=\"true\">"));
+    }
+
+    #[test]
+    #[cfg(feature = "render")]
+    fn builtin_accent_identity_survives_mathml_roundtrip_on_both_paths() {
+        use crate::reader::Reader;
+        use crate::reader::latex::LatexReader;
+        use crate::render::{RenderOptions, render_to_svg, render_to_svg_compact};
+
+        let config = Config::default();
+        for source in [
+            r"\underline{x}",
+            r"\overline{lim}",
+            r"\underbracket{end}",
+            r"\overbracket{rate}",
+            r"\overbrace{rate}",
+            r"\underbrace{rate}",
+            r"\underleftarrow{lim}",
+        ] {
+            let heap = LatexReader::parse(source, &config).unwrap().expr;
+            let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            let heap_xml = MathmlWriter::write(&heap, &config).unwrap();
+            let compact_xml = MathmlWriter::write_compact(&compact, &config).unwrap();
+            assert_eq!(
+                heap_xml, compact_xml,
+                "heap/compact MathML mismatch: {source}"
+            );
+            let imported = crate::from_mathml(&heap_xml).unwrap();
+            assert_eq!(
+                heap_xml,
+                imported.to_mathml().unwrap(),
+                "MathML instability: {source}"
+            );
+            assert_eq!(
+                render_to_svg(&heap, &RenderOptions::default()).unwrap(),
+                imported.to_svg().unwrap(),
+                "heap geometry changed: {source}"
+            );
+            assert_eq!(
+                render_to_svg_compact(&compact, &RenderOptions::default()).unwrap(),
+                imported.to_svg().unwrap(),
+                "compact geometry changed: {source}"
+            );
+        }
     }
 
     fn assert_rule_outputs_match(
