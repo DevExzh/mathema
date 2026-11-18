@@ -2419,6 +2419,17 @@ mod tests {
             authored.contains("<mstyle displaystyle=\"false\" scriptlevel=\"0\"><mtable>"),
             "authored nested table did not retain text sizing: {authored}"
         );
+
+        let explicit = crate::from_mathml(
+            r#"<math><msup><mi>x</mi><mstyle scriptlevel="0"><mtable><mtr><mtd><mi>a</mi></mtd></mtr></mtable></mstyle></msup></math>"#,
+        )
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+        assert!(
+            explicit.contains("<mstyle displaystyle=\"false\" scriptlevel=\"0\"><mtable>"),
+            "explicit table scriptlevel was not preserved: {explicit}"
+        );
     }
 
     #[test]
