@@ -1276,19 +1276,10 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 && row_seps == 0
                 && arraystretch_pct == 50
             {
-                // `smallmatrix` is the only compact-table form with a
-                // half-height strut. Preserve it explicitly so a reparse
-                // does not turn its script-sized rows into a normal matrix.
+                // The half-height strut is unambiguous compact metadata for
+                // `smallmatrix`, whose rows would otherwise become normal
+                // array rows after a reparse.
                 "smallmatrix"
-            } else if !array_style
-                && !add_jot
-                && col_seps == 0
-                && row_seps == 0
-                && arraystretch_pct == 100
-            {
-                // Matrix-style tables have no outer array-column padding.
-                // The compact metadata records that distinction directly.
-                "matrix"
             } else {
                 "array"
             };

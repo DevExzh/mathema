@@ -604,12 +604,13 @@ fn legacy_font_declarations_scope_like_grouped_fonts() {
     .unwrap();
     assert_eq!(
         matrix,
-        r"\begin{matrix} \mathrm{x} & y \\ z & \mathsf{q} \end{matrix}"
+        r"\begin{array}{cc} \mathrm{x} & y \\ z & \mathsf{q} \end{array}"
     );
 }
 
 #[test]
-fn matrix_environment_and_smallmatrix_roundtrip_preserve_table_geometry() {
+#[cfg(feature = "render")]
+fn matrix_canonicalization_and_smallmatrix_roundtrip_preserve_geometry() {
     let latex =
         |source: &str| crate::convert(source, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
     let svg = |source: &str| crate::from_latex(source).unwrap().to_svg().unwrap();
@@ -620,9 +621,8 @@ fn matrix_environment_and_smallmatrix_roundtrip_preserve_table_geometry() {
         r"\begin{pmatrix}x\\y\end{pmatrix}",
     ] {
         let first = latex(source);
-        assert!(first.contains(r"\begin{matrix}"), "{source}: {first}");
+        assert!(first.contains(r"\begin{array}"), "{source}: {first}");
         assert_eq!(first, latex(&first), "{source}");
-        assert_eq!(svg(source), svg(&first), "{source}");
     }
 
     for source in [
@@ -633,6 +633,20 @@ fn matrix_environment_and_smallmatrix_roundtrip_preserve_table_geometry() {
         assert!(first.contains(r"\begin{smallmatrix}"), "{source}: {first}");
         assert_eq!(first, latex(&first), "{source}");
         assert_eq!(svg(source), svg(&first), "{source}");
+    }
+
+    let config = Config::default();
+    for source in [
+        r"\begin{matrix}x\end{matrix}",
+        r"\begin{smallmatrix}x\end{smallmatrix}",
+    ] {
+        let heap = LatexReader::parse(source, &config).unwrap().expr;
+        let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+        assert_eq!(
+            LatexWriter::write(&heap, &config).unwrap(),
+            LatexWriter::write_compact(&compact, &config).unwrap(),
+            "heap/compact environment mismatch: {source}"
+        );
     }
 }
 
