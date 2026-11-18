@@ -422,7 +422,7 @@ fn structured_content_needs_group(node: &MathNode) -> bool {
         MathNode::Color { content, .. }
         | MathNode::MathAtom { content, .. }
         | MathNode::StructuredOperator { content, .. } => structured_content_needs_group(content),
-        MathNode::Accent { wide, .. } => *wide,
+        MathNode::Accent { accent, wide, .. } => *wide || !is_unicode_combining_accent(*accent),
         MathNode::Overscript {
             over,
             movable_limits,
@@ -548,7 +548,7 @@ fn write_accent(
     wide: bool,
     style: MathStyle,
 ) {
-    if wide {
+    if wide || !is_unicode_combining_accent(accent) {
         write_structured_content(out, base, style);
         out.push(match position {
             AccentPosition::Above => '┴',
@@ -559,6 +559,10 @@ fn write_accent(
         write_structured_content(out, base, style);
         out.push(accent);
     }
+}
+
+fn is_unicode_combining_accent(accent: char) -> bool {
+    matches!(accent, '\u{0300}'..='\u{036F}' | '\u{20D0}'..='\u{20FF}')
 }
 
 /// Write a structured operator's body without introducing the literal
@@ -1265,7 +1269,7 @@ fn structured_content_needs_group_c(arena: &AstArena, id: NodeId) -> bool {
         | CompactNode::StructuredOperator { content, .. } => {
             structured_content_needs_group_c(arena, content)
         },
-        CompactNode::Accent { wide, .. } => wide,
+        CompactNode::Accent { accent, wide, .. } => wide || !is_unicode_combining_accent(accent),
         CompactNode::Overscript {
             over,
             movable_limits,
@@ -1372,7 +1376,7 @@ fn write_accent_c(
     wide: bool,
     style: MathStyle,
 ) {
-    if wide {
+    if wide || !is_unicode_combining_accent(accent) {
         write_structured_content_c(out, arena, base, style);
         out.push(match position {
             AccentPosition::Above => '┴',
@@ -1996,6 +2000,7 @@ mod tests {
     fn structured_operator_unicode_transport_is_stable_and_preserves_bounds() {
         for source in [
             r"\operatorname{\overline{lim}}_i x",
+            r"\operatorname{\underleftarrow{lim}}_i x",
             r"\operatorname*{\overline{lim}}\limits_i x",
             r"\operatorname{A\overline{lim}B}_i x",
             r"\operatorname*{\underbracket{end}}_i x",
