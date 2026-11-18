@@ -2001,6 +2001,9 @@ mod tests {
             r"\operatorname*{\underbracket{end}}_i x",
             r"\operatorname*{\overbrace{rate}}\limits_i x",
             r"\operatorname*{\mathbf{Re}\overline{x}}_i x",
+            r"\operatorname{A\underline{a\,b}B}_i x",
+            r"\operatorname{\overline{\frac{a}{b}}}_i x",
+            r"\operatorname{\overline{x}\,\underline{y}}_i x",
         ] {
             let parsed = crate::from_latex(source).unwrap();
             let unicode = parsed.to_unicode_math().unwrap();
