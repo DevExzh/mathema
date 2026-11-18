@@ -82,6 +82,17 @@ fn unicode_math_reports_box_and_cancel_loss() {
 }
 
 #[test]
+fn unicode_math_reports_structured_operator_source_loss() {
+    let expr = compact(r"\operatorname*{\overline{lim}}_n x");
+    let (_, diagnostics) =
+        UnicodeMathWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    assert!(
+        has_warning(&diagnostics, "structuredoperator"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn mtef_reports_phantom_loss() {
     let expr = compact(r"\phantom{x}");
     let (_, diags) = MtefWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();

@@ -466,6 +466,16 @@ impl CompactParser {
     }
 
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
+        if let Some((rest, accent, position, wide)) = unicode_accent_suffix(input) {
+            let id = self.push_node(CompactNode::Accent {
+                base,
+                accent,
+                position,
+                wide,
+            });
+            return self.parse_scripts(rest, id);
+        }
+
         // UTN #28 uses ┬ (U+252C) and ┴ (U+2534) for explicitly forced
         // below/above placement. These markers differ from _/^ because they
         // remain stacked in inline math.
@@ -572,6 +582,19 @@ impl CompactParser {
             }
         }
         for (mark, parent) in deferred.into_iter().rev() {
+            if let Some(accent) = self.wide_bound_accent(base) {
+                base = self.push_node(CompactNode::Accent {
+                    base: parent,
+                    accent,
+                    position: if mark == '┬' {
+                        AccentPosition::Below
+                    } else {
+                        AccentPosition::Above
+                    },
+                    wide: true,
+                });
+                continue;
+            }
             base = self.push_node(if mark == '┬' {
                 CompactNode::Underscript {
                     base: parent,
@@ -587,6 +610,16 @@ impl CompactParser {
             });
         }
         base
+    }
+
+    fn wide_bound_accent(&self, id: NodeId) -> Option<char> {
+        let CompactNode::Symbol(_, sid) = *self.arena.node(id) else {
+            return None;
+        };
+        let glyph = self.arena.str_val(sid);
+        (glyph.chars().count() == 1)
+            .then(|| glyph.chars().next().unwrap())
+            .filter(|ch| matches!(ch, '\u{23B4}'..='\u{23B5}' | '\u{23DC}'..='\u{23DF}'))
     }
 
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -669,6 +702,7 @@ impl CompactParser {
         let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             self.tick(1);
+            remaining = remaining.trim_start();
             if remaining.starts_with(close) {
                 break;
             }
@@ -783,8 +817,10 @@ impl CompactParser {
         if input.starts_with('〖') {
             let (rest, children) = self.parse_delimited(input, '〖', '〗')?;
             let base = self.flatten_single(&children);
-            // A subscript on an explicitly grouped function belongs at the
-            // side, even when its ungrouped name would take display limits.
+            // A subscript on an explicitly grouped named function belongs at
+            // the side, even when its ungrouped name would take display
+            // limits. Preserve this long-standing ordinary UnicodeMath rule;
+            // decorated structured bodies are retained below as Inner atoms.
             if rest.starts_with(['_', '^'])
                 && let CompactNode::Operator { name, .. } = *self.arena.node(base)
             {
@@ -796,7 +832,14 @@ impl CompactParser {
                     }),
                 ));
             }
-            return Ok((rest, base));
+            // Retain explicit UnicodeMath invisible grouping as an inner
+            // atom. This gives a later script a stable base without adding a
+            // private marker or a visible fence.
+            let grouped = self.push_node(CompactNode::MathAtom {
+                atom_type: MathAtomType::Inner,
+                content: base,
+            });
+            return Ok((rest, grouped));
         }
         try_alt!(
             self,
@@ -1304,12 +1347,25 @@ fn is_integral(c: char) -> bool {
     matches!(c, '\u{222B}' | '\u{222C}' | '\u{222D}' | '\u{222E}')
 }
 
+fn unicode_accent_suffix(input: &str) -> Option<(&str, char, AccentPosition, bool)> {
+    let ch = input.chars().next()?;
+    let (position, wide) = match ch {
+        '\u{0304}' | '\u{0305}' => (AccentPosition::Above, false),
+        '\u{0332}' => (AccentPosition::Below, false),
+        '\u{23B4}' | '\u{23DE}' => (AccentPosition::Above, true),
+        '\u{23B5}' | '\u{23DF}' => (AccentPosition::Below, true),
+        _ => return None,
+    };
+    Some((&input[ch.len_utf8()..], ch, position, wide))
+}
+
 fn is_math_symbol(c: char) -> bool {
     matches!(c,
         '+' | '-' | '=' | '<' | '>' | ',' | ';' | '!' | '?' | ':' | '|' | '\u{2016}' |
         '\u{00B1}' | '\u{00D7}' | '\u{00F7}' | // ±, ×, ÷
         '\u{2200}'..='\u{22FF}' | // Mathematical Operators
         '\u{2190}'..='\u{21FF}' | // Arrows
+        '\u{23B4}'..='\u{23DF}' | // horizontal braces and bracket accents
         '\u{27C0}'..='\u{27EF}' | // Misc Math Symbols-A
         '\u{2980}'..='\u{29FF}' | // Misc Math Symbols-B
         '\u{2A00}'..='\u{2AFF}'   // Supplemental Math Operators

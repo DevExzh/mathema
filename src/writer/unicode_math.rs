@@ -38,6 +38,9 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathChoice { .. } => {
             Some("UnicodeMath keeps only the branch of \\mathchoice active at this style".into())
         },
+        CompactNode::StructuredOperator { .. } => Some(
+            "UnicodeMath has no source-level StructuredOperator marker; the body and representable bounds were written with standard grouping and script syntax".into(),
+        ),
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
@@ -395,8 +398,276 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, branch, style);
         },
         MathNode::MathAtom { content, .. } => write_node(out, content, style),
-        MathNode::StructuredOperator { content, .. } => write_node(out, content, style),
+        MathNode::StructuredOperator { content, .. } => {
+            // UnicodeMath's invisible grouping delimiters preserve the
+            // operator body as one script base. The form itself is carried by
+            // the ordinary or forced script markers emitted by the parent.
+            let grouped = structured_content_needs_group(content);
+            if grouped {
+                out.push('〖');
+            }
+            write_structured_content(out, content, style);
+            if grouped {
+                out.push('〗');
+            }
+        },
         MathNode::Reflect { content, .. } => write_node(out, content, style),
+    }
+}
+
+fn structured_content_needs_group(node: &MathNode) -> bool {
+    match node {
+        MathNode::Row(children) => children.len() > 1,
+        MathNode::Styled(_, children) => children.len() > 1,
+        MathNode::Color { content, .. }
+        | MathNode::MathAtom { content, .. }
+        | MathNode::StructuredOperator { content, .. } => structured_content_needs_group(content),
+        MathNode::Accent { wide, .. } => *wide,
+        MathNode::Overscript {
+            over,
+            movable_limits,
+            ..
+        } => !*movable_limits || !is_overunder_line_node(over),
+        MathNode::Underscript {
+            under,
+            movable_limits,
+            ..
+        } => !*movable_limits || !is_overunder_line_node(under),
+        MathNode::UnderOver { .. } => true,
+        MathNode::Fraction { .. }
+        | MathNode::Subscript { .. }
+        | MathNode::Superscript { .. }
+        | MathNode::SubSup { .. } => false,
+        _ => false,
+    }
+}
+
+fn grouped_content_needs_structured(node: &MathNode) -> bool {
+    match node {
+        MathNode::Accent { .. }
+        | MathNode::Overscript { .. }
+        | MathNode::Underscript { .. }
+        | MathNode::UnderOver { .. }
+        | MathNode::StructuredOperator { .. } => true,
+        MathNode::Row(children) | MathNode::Styled(_, children) => {
+            children.iter().any(grouped_content_needs_structured)
+        },
+        MathNode::Color { content, .. } | MathNode::MathAtom { content, .. } => {
+            grouped_content_needs_structured(content)
+        },
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => [display, text, script, script_script]
+            .into_iter()
+            .any(|branch| grouped_content_needs_structured(branch)),
+        _ => false,
+    }
+}
+
+fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle) {
+    let mut current_style = style;
+    let mut wrote_node = false;
+    let mut previous_operator = false;
+    let mut identifier_run = String::new();
+    for node in nodes {
+        if let MathNode::StyleSwitch(value) = node {
+            if !identifier_run.is_empty() {
+                write_structured_identifier_run(out, &identifier_run);
+                identifier_run.clear();
+                wrote_node = true;
+                previous_operator = false;
+            }
+            current_style = MathStyle::branch_from_switch(*value);
+            continue;
+        }
+        if let MathNode::Identifier(value) = node {
+            identifier_run.push_str(value);
+            continue;
+        }
+        if !identifier_run.is_empty() {
+            if wrote_node
+                && needs_space_before_with_style(
+                    &MathNode::Identifier(identifier_run.clone()),
+                    current_style,
+                )
+            {
+                out.push(' ');
+            }
+            write_structured_identifier_run(out, &identifier_run);
+            identifier_run.clear();
+            wrote_node = true;
+            previous_operator = false;
+        }
+        if wrote_node
+            && !matches!(node, MathNode::Text(_, _))
+            && needs_space_before_with_style(node, current_style)
+        {
+            out.push(' ');
+        }
+        let start = out.len();
+        write_structured_content(out, node, current_style);
+        separate_following_operand(out, start, previous_operator);
+        previous_operator = needs_operator_terminator(node, current_style);
+        wrote_node = true;
+    }
+    if !identifier_run.is_empty() {
+        if wrote_node
+            && needs_space_before_with_style(
+                &MathNode::Identifier(identifier_run.clone()),
+                current_style,
+            )
+        {
+            out.push(' ');
+        }
+        write_structured_identifier_run(out, &identifier_run);
+    }
+}
+
+fn write_structured_identifier_run(out: &mut String, value: &str) {
+    if crate::unicode::symbols::unicode_math_operator_prefix(value).is_some()
+        || value
+            .chars()
+            .all(|ch| crate::unicode::fonts::unstyled_char(ch).is_some())
+    {
+        out.push_str(value);
+    } else {
+        out.push('"');
+        out.push_str(value);
+        out.push('"');
+    }
+}
+
+fn write_accent(
+    out: &mut String,
+    base: &MathNode,
+    accent: char,
+    position: AccentPosition,
+    wide: bool,
+    style: MathStyle,
+) {
+    if wide {
+        write_structured_content(out, base, style);
+        out.push(match position {
+            AccentPosition::Above => '┴',
+            AccentPosition::Below => '┬',
+        });
+        out.push(accent);
+    } else {
+        write_structured_content(out, base, style);
+        out.push(accent);
+    }
+}
+
+/// Write a structured operator's body without introducing the literal
+/// parentheses used by ordinary UnicodeMath grouping. Decorations and nested
+/// rows remain linear and can be recovered by the UnicodeMath parser.
+fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle) {
+    match node {
+        MathNode::Row(children) => write_structured_nodes_with_style(out, children, style),
+        MathNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
+            write_structured_content(out, base, style);
+            write_bound(
+                out,
+                AccentPosition::Above,
+                *movable_limits,
+                is_overunder_line_node(over),
+                |out| {
+                    write_structured_content(out, over, style.sup());
+                },
+            );
+        },
+        MathNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
+            write_structured_content(out, base, style);
+            write_bound(
+                out,
+                AccentPosition::Below,
+                *movable_limits,
+                is_overunder_line_node(under),
+                |out| {
+                    write_structured_content(out, under, style.sub());
+                },
+            );
+        },
+        MathNode::UnderOver {
+            base,
+            under,
+            over,
+            movable_limits,
+        } => {
+            write_structured_content(out, base, style);
+            write_bound(
+                out,
+                AccentPosition::Below,
+                *movable_limits,
+                is_overunder_line_node(under),
+                |out| {
+                    write_structured_content(out, under, style.sub());
+                },
+            );
+            write_bound(
+                out,
+                AccentPosition::Above,
+                *movable_limits,
+                is_overunder_line_node(over),
+                |out| {
+                    write_structured_content(out, over, style.sup());
+                },
+            );
+        },
+        MathNode::Accent {
+            base,
+            accent,
+            position,
+            wide,
+        } => {
+            write_accent(out, base, *accent, *position, *wide, style);
+        },
+        MathNode::Styled(text_style, children) => {
+            let mut current_style = style;
+            for child in children {
+                if let MathNode::StyleSwitch(value) = child {
+                    current_style = MathStyle::branch_from_switch(*value);
+                    continue;
+                }
+                match child {
+                    MathNode::Identifier(s) | MathNode::Number(s) | MathNode::Text(_, s) => {
+                        for ch in s.chars() {
+                            out.push(
+                                crate::unicode::fonts::styled_char(ch, *text_style).unwrap_or(ch),
+                            );
+                        }
+                    },
+                    _ => write_structured_content(out, child, current_style),
+                }
+            }
+        },
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => write_structured_content(
+            out,
+            style.choose(display, text, script, script_script),
+            style,
+        ),
+        MathNode::Color { content, .. }
+        | MathNode::MathAtom { content, .. }
+        | MathNode::StructuredOperator { content, .. } => {
+            write_structured_content(out, content, style);
+        },
+        _ => write_node(out, node, style),
     }
 }
 
@@ -427,6 +698,18 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
             out.push('(');
             write_node(out, node, style);
             out.push(')');
+        },
+        MathNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            content,
+        } => {
+            out.push('〖');
+            if grouped_content_needs_structured(content) {
+                write_structured_content(out, content, style);
+            } else {
+                write_node(out, content, style);
+            }
+            out.push('〗');
         },
         _ => write_node(out, node, style),
     }
@@ -954,7 +1237,14 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             write_node_c(out, arena, content, style);
         },
         CompactNode::StructuredOperator { content, .. } => {
-            write_node_c(out, arena, content, style);
+            let grouped = structured_content_needs_group_c(arena, content);
+            if grouped {
+                out.push('〖');
+            }
+            write_structured_content_c(out, arena, content, style);
+            if grouped {
+                out.push('〗');
+            }
         },
         CompactNode::Reflect { content, .. } => write_node_c(out, arena, content, style),
 
@@ -964,6 +1254,234 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         | CompactNode::StyleSwitch(_)
         | CompactNode::SizeScale(_)
         | CompactNode::Newline => {},
+    }
+}
+
+fn structured_content_needs_group_c(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => arena.children(span).len() > 1,
+        CompactNode::Color { content, .. }
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => {
+            structured_content_needs_group_c(arena, content)
+        },
+        CompactNode::Accent { wide, .. } => wide,
+        CompactNode::Overscript {
+            over,
+            movable_limits,
+            ..
+        } => !movable_limits || !is_overunder_line(arena, over),
+        CompactNode::Underscript {
+            under,
+            movable_limits,
+            ..
+        } => !movable_limits || !is_overunder_line(arena, under),
+        CompactNode::UnderOver { .. } => true,
+        CompactNode::Fraction { .. }
+        | CompactNode::Subscript { .. }
+        | CompactNode::Superscript { .. }
+        | CompactNode::SubSup { .. } => false,
+        _ => false,
+    }
+}
+
+fn grouped_content_needs_structured_c(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Accent { .. }
+        | CompactNode::Overscript { .. }
+        | CompactNode::Underscript { .. }
+        | CompactNode::UnderOver { .. }
+        | CompactNode::StructuredOperator { .. } => true,
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => arena
+            .children(span)
+            .iter()
+            .copied()
+            .any(|child| grouped_content_needs_structured_c(arena, child)),
+        CompactNode::Color { content, .. } | CompactNode::MathAtom { content, .. } => {
+            grouped_content_needs_structured_c(arena, content)
+        },
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => [display, text, script, script_script]
+            .into_iter()
+            .any(|child| grouped_content_needs_structured_c(arena, child)),
+        _ => false,
+    }
+}
+
+fn write_structured_nodes_c_with_style(
+    out: &mut String,
+    arena: &AstArena,
+    span: crate::ast::compact::NodeSpan,
+    style: MathStyle,
+) {
+    let mut current_style = style;
+    let mut wrote_node = false;
+    let mut previous_operator = false;
+    let mut identifier_run = String::new();
+    for &id in arena.children(span) {
+        if let CompactNode::StyleSwitch(value) = *arena.node(id) {
+            if !identifier_run.is_empty() {
+                write_structured_identifier_run(out, &identifier_run);
+                identifier_run.clear();
+                wrote_node = true;
+                previous_operator = false;
+            }
+            current_style = MathStyle::branch_from_switch(value);
+            continue;
+        }
+        if let CompactNode::Identifier(sid) = *arena.node(id) {
+            identifier_run.push_str(arena.str_val(sid));
+            continue;
+        }
+        if !identifier_run.is_empty() {
+            if wrote_node && needs_space_before_c_with_style(arena, id, current_style) {
+                out.push(' ');
+            }
+            write_structured_identifier_run(out, &identifier_run);
+            identifier_run.clear();
+            wrote_node = true;
+            previous_operator = false;
+        }
+        if wrote_node
+            && !matches!(*arena.node(id), CompactNode::Text(_, _))
+            && needs_space_before_c_with_style(arena, id, current_style)
+        {
+            out.push(' ');
+        }
+        let start = out.len();
+        write_structured_content_c(out, arena, id, current_style);
+        separate_following_operand(out, start, previous_operator);
+        previous_operator = needs_operator_terminator_c(arena, id, current_style);
+        wrote_node = true;
+    }
+    if !identifier_run.is_empty() {
+        write_structured_identifier_run(out, &identifier_run);
+    }
+}
+
+fn write_accent_c(
+    out: &mut String,
+    arena: &AstArena,
+    base: NodeId,
+    accent: char,
+    position: AccentPosition,
+    wide: bool,
+    style: MathStyle,
+) {
+    if wide {
+        write_structured_content_c(out, arena, base, style);
+        out.push(match position {
+            AccentPosition::Above => '┴',
+            AccentPosition::Below => '┬',
+        });
+        out.push(accent);
+    } else {
+        write_structured_content_c(out, arena, base, style);
+        out.push(accent);
+    }
+}
+
+fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    match *arena.node(id) {
+        CompactNode::Row(span) => write_structured_nodes_c_with_style(out, arena, span, style),
+        CompactNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
+            write_structured_content_c(out, arena, base, style);
+            write_bound(
+                out,
+                AccentPosition::Above,
+                movable_limits,
+                is_overunder_line(arena, over),
+                |out| write_structured_content_c(out, arena, over, style.sup()),
+            );
+        },
+        CompactNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
+            write_structured_content_c(out, arena, base, style);
+            write_bound(
+                out,
+                AccentPosition::Below,
+                movable_limits,
+                is_overunder_line(arena, under),
+                |out| write_structured_content_c(out, arena, under, style.sub()),
+            );
+        },
+        CompactNode::UnderOver {
+            base,
+            under,
+            over,
+            movable_limits,
+        } => {
+            write_structured_content_c(out, arena, base, style);
+            write_bound(
+                out,
+                AccentPosition::Below,
+                movable_limits,
+                is_overunder_line(arena, under),
+                |out| write_structured_content_c(out, arena, under, style.sub()),
+            );
+            write_bound(
+                out,
+                AccentPosition::Above,
+                movable_limits,
+                is_overunder_line(arena, over),
+                |out| write_structured_content_c(out, arena, over, style.sup()),
+            );
+        },
+        CompactNode::Accent {
+            base,
+            accent,
+            position,
+            wide,
+        } => write_accent_c(out, arena, base, accent, position, wide, style),
+        CompactNode::Styled(text_style, span) => {
+            let mut current_style = style;
+            for &child in arena.children(span) {
+                if let CompactNode::StyleSwitch(value) = *arena.node(child) {
+                    current_style = MathStyle::branch_from_switch(value);
+                    continue;
+                }
+                match *arena.node(child) {
+                    CompactNode::Identifier(sid)
+                    | CompactNode::Number(sid)
+                    | CompactNode::Text(_, sid) => {
+                        for ch in arena.str_val(sid).chars() {
+                            out.push(
+                                crate::unicode::fonts::styled_char(ch, text_style).unwrap_or(ch),
+                            );
+                        }
+                    },
+                    _ => write_structured_content_c(out, arena, child, current_style),
+                }
+            }
+        },
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => write_structured_content_c(
+            out,
+            arena,
+            style.choose(display, text, script, script_script),
+            style,
+        ),
+        CompactNode::Color { content, .. }
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => {
+            write_structured_content_c(out, arena, content, style);
+        },
+        _ => write_node_c(out, arena, id, style),
     }
 }
 
@@ -988,6 +1506,18 @@ fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             out.push('(');
             write_node_c(out, arena, id, style);
             out.push(')');
+        },
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            content,
+        } => {
+            out.push('〖');
+            if grouped_content_needs_structured_c(arena, content) {
+                write_structured_content_c(out, arena, content, style);
+            } else {
+                write_node_c(out, arena, content, style);
+            }
+            out.push('〗');
         },
         _ => write_node_c(out, arena, id, style),
     }
@@ -1460,5 +1990,35 @@ mod tests {
             text_mode: false,
         });
         assert_eq!(output, "▭(6&x)");
+    }
+
+    #[test]
+    fn structured_operator_unicode_transport_is_stable_and_preserves_bounds() {
+        for source in [
+            r"\operatorname{\overline{lim}}_i x",
+            r"\operatorname*{\overline{lim}}\limits_i x",
+            r"\operatorname{A\overline{lim}B}_i x",
+            r"\operatorname*{\underbracket{end}}_i x",
+            r"\operatorname*{\overbrace{rate}}\limits_i x",
+            r"\operatorname*{\mathbf{Re}\overline{x}}_i x",
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            let unicode = parsed.to_unicode_math().unwrap();
+            let imported = crate::from_unicode_math(&unicode).unwrap();
+            let again = imported.to_unicode_math().unwrap();
+            assert_eq!(
+                unicode, again,
+                "UnicodeMath was not idempotent for {source}"
+            );
+            assert!(
+                unicode.contains('_') || unicode.contains('┬') || unicode.contains('┴'),
+                "bound placement was lost: {unicode}"
+            );
+            let imported_mathml = imported.to_mathml().unwrap();
+            assert!(
+                !imported_mathml.is_empty(),
+                "operator body was lost: {source}"
+            );
+        }
     }
 }
