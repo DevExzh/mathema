@@ -2714,7 +2714,16 @@ impl LatexCompactParser {
         let mut consumed = 0;
         while let Some((end, glyph)) = glyphs.next() {
             consumed = end;
-            let id = if glyph.is_ascii_digit() {
+            let id = if self.in_operator_name && glyph == '-' {
+                // amsopn assigns a literal hyphen in an operator-name math
+                // list an ordinary punctuation class. Keep Unicode
+                // superscript-minus runs on that same path as an explicit
+                // `^{-...}` spelling; outside an operator name the normal
+                // binary minus class is still produced below.
+                let sid = self.push_char_str('-');
+                self.arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid))
+            } else if glyph.is_ascii_digit() {
                 // Store a contiguous number as one atom, just like ASCII
                 // input. Each digit is already a single decoded ASCII byte.
                 let mut digits = SmallVec::<[u8; 16]>::new();
