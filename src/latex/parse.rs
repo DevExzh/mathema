@@ -5004,15 +5004,15 @@ impl LatexCompactParser {
     }
 
     fn structured_content_needs_normal_style(&self, id: NodeId) -> bool {
-        match *self.arena.node(id) {
-            CompactNode::Row(span) => self.arena.children(span).iter().any(|&child| {
-                matches!(
-                    *self.arena.node(child),
-                    CompactNode::Identifier(_) | CompactNode::Number(_)
-                )
-            }),
-            _ => false,
-        }
+        // `\operatorname` applies an upright text face to its complete
+        // argument. Preserve explicit `\mathrm` at the root, since that is
+        // authored style, and add one synthetic outer normal scope for all
+        // other structured content. Nested `\mathbf`/`\mathit`/color scopes
+        // continue to override this inherited face.
+        !matches!(
+            *self.arena.node(id),
+            CompactNode::Styled(TextStyle::Normal, _)
+        )
     }
 
     /// A parsed decoration around `lim` initially contains a row of identifier
