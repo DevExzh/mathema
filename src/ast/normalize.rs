@@ -338,7 +338,7 @@ fn is_function_name(name: &str) -> bool {
 fn takes_limits_math(node: &MathNode) -> bool {
     match node {
         MathNode::Symbol(SymbolKind::LargeOp, _) => true,
-        MathNode::Operator(_) => true,
+        MathNode::Operator(_) | MathNode::StructuredOperator { .. } => true,
         MathNode::Identifier(name) | MathNode::Symbol(_, name) => is_function_name(name),
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
@@ -556,6 +556,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         MathNode::Number(_)
         | MathNode::Identifier(_)
         | MathNode::Operator(_)
+        | MathNode::StructuredOperator { .. }
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
@@ -1062,6 +1063,7 @@ fn normalize_compact_node(
         CompactNode::Number(_)
         | CompactNode::Identifier(_)
         | CompactNode::Operator { .. }
+        | CompactNode::StructuredOperator { .. }
         | CompactNode::Symbol(_, _)
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)
@@ -1284,7 +1286,7 @@ pub(crate) fn takes_limits(arena: &AstArena, node: CompactNode) -> bool {
         CompactNode::Symbol(SymbolKind::LargeOp, _) => true,
         // Function names take the script as their limit (lim) or as an
         // ordinary script (`\sin {}^2 x` is sin squared).
-        CompactNode::Operator { .. } => true,
+        CompactNode::Operator { .. } | CompactNode::StructuredOperator { .. } => true,
         // MathML writes function names as `<mi>lim</mi>` or `<mo>sin</mo>`.
         CompactNode::Identifier(name) | CompactNode::Symbol(_, name) => {
             is_function_name(arena.str_val(name))

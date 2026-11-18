@@ -661,7 +661,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 .choose(display, text, script, script_script);
             layout_node(chosen, ctx)
         },
-        MathNode::MathAtom { content, .. } => layout_node(content, ctx),
+        MathNode::MathAtom { content, .. } | MathNode::StructuredOperator { content, .. } => {
+            layout_node(content, ctx)
+        },
         // A declaration controls its enclosing math list and has no box of its own.
         MathNode::StyleSwitch(_) => LayoutBox::kern(0.0),
     }
@@ -1598,7 +1600,9 @@ fn layout_node_arena(
                 .choose(display, text, script, script_script);
             layout_node_arena(ast, chosen, arena, ctx)
         },
-        CompactNode::MathAtom { content, .. } => layout_node_arena(ast, content, arena, ctx),
+        CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
+            layout_node_arena(ast, content, arena, ctx)
+        },
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::SizeScale(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),

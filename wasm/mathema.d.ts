@@ -74,6 +74,7 @@ export type MathNode =
     }
   | { StyleSwitch: number }
   | { MathAtom: { atom_type: MathAtomType; content: MathNode } }
+  | { StructuredOperator: { content: MathNode; limit_style: LimitStyle; starred: boolean } }
   | { Color: { color: string; content: MathNode } };
 
 export type FencedItem =

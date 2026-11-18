@@ -44,7 +44,7 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
     match node {
         MathNode::Number(_) => AtomType::Ord,
         MathNode::Identifier(_) => AtomType::Ord,
-        MathNode::Operator(_) => AtomType::Op,
+        MathNode::Operator(_) | MathNode::StructuredOperator { .. } => AtomType::Op,
         MathNode::Symbol(kind, _) => match kind {
             SymbolKind::Ordinary | SymbolKind::Alphabetic => AtomType::Ord,
             SymbolKind::LargeOp => AtomType::Op,
@@ -127,7 +127,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
     match *arena.node(id) {
         CompactNode::Number(_) => AtomType::Ord,
         CompactNode::Identifier(_) => AtomType::Ord,
-        CompactNode::Operator { .. } => AtomType::Op,
+        CompactNode::Operator { .. } | CompactNode::StructuredOperator { .. } => AtomType::Op,
         CompactNode::Symbol(kind, _) => match kind {
             SymbolKind::Ordinary | SymbolKind::Alphabetic => AtomType::Ord,
             SymbolKind::LargeOp => AtomType::Op,

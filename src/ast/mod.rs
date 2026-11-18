@@ -318,6 +318,16 @@ pub enum MathNode {
         /// Colored content.
         content: Box<MathNode>,
     },
+    /// A structured operatorname/operatorname-star whose content remains an
+    /// expression, preserving decorations, spaces, and limit placement.
+    StructuredOperator {
+        /// Parsed operator content.
+        content: Box<MathNode>,
+        /// Effective placement for scripts attached to this operator.
+        limit_style: LimitStyle,
+        /// Whether the source used the starred form.
+        starred: bool,
+    },
 }
 
 /// TeX math class of a symbol, controlling spacing and stretchiness.
@@ -718,7 +728,8 @@ pub(crate) fn compact_children(
         | CompactNode::Scaled { content, .. }
         | CompactNode::RaiseBox { content, .. }
         | CompactNode::Color { content, .. }
-        | CompactNode::MathAtom { content, .. } => push(content),
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => push(content),
         CompactNode::MathChoice {
             display,
             text,
@@ -839,7 +850,8 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         MathNode::Cancel { content, .. }
         | MathNode::Scaled { content, .. }
         | MathNode::RaiseBox { content, .. }
-        | MathNode::Color { content, .. } => check_node_depth(content, d),
+        | MathNode::Color { content, .. }
+        | MathNode::StructuredOperator { content, .. } => check_node_depth(content, d),
         MathNode::MathChoice {
             display,
             text,
@@ -1040,8 +1052,13 @@ mod tests {
                 atom_type: MathAtomType::Op,
                 content: Box::new(MathNode::Identifier("f".into())),
             },
+            MathNode::StructuredOperator {
+                content: Box::new(MathNode::Identifier("f".into())),
+                limit_style: LimitStyle::Default,
+                starred: true,
+            },
         ];
-        assert_eq!(nodes.len(), 35);
+        assert_eq!(nodes.len(), 36);
         #[cfg(feature = "serde")]
         for node in nodes {
             let json = serde_json::to_value(&node).unwrap();

@@ -587,6 +587,7 @@ impl<'a> Encoder<'a> {
             CompactNode::Number(s) => self.leaf(size, Leaf::Number, s),
             CompactNode::Identifier(s) => self.leaf(size, Leaf::Identifier, s),
             CompactNode::Operator { name, .. } => self.leaf(size, Leaf::Operator, name),
+            CompactNode::StructuredOperator { content, .. } => self.node(content, size),
             CompactNode::Symbol(_, s) => self.leaf(size, Leaf::Symbol, s),
             CompactNode::Text(style, s) => {
                 if style != TextStyle::Normal {
@@ -1093,6 +1094,27 @@ impl<'a> Encoder<'a> {
                 LimitStyle::Default => return self.limit(size, base, sub, sup),
                 LimitStyle::AboveBelow => {
                     return self.compound_operator_template(size, base, sub, sup, true, false);
+                },
+                LimitStyle::SubSup => {},
+            }
+        }
+        if let CompactNode::StructuredOperator {
+            content, limits, ..
+        } = *self.arena.node(base)
+        {
+            match limits {
+                LimitStyle::Default => {
+                    return self.compound_operator_template(
+                        size,
+                        content,
+                        sub,
+                        sup,
+                        self.movable_compound_is_stacked(size),
+                        true,
+                    );
+                },
+                LimitStyle::AboveBelow => {
+                    return self.compound_operator_template(size, content, sub, sup, true, false);
                 },
                 LimitStyle::SubSup => {},
             }

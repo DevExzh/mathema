@@ -679,8 +679,10 @@ impl<'a> Emitter<'a> {
     /// side in text or script styles. Explicit `\limits` always stack, while
     /// `\nolimits` always stays a side script.
     fn named_operator_stacks(&self, id: NodeId) -> bool {
-        let CompactNode::Operator { limits, .. } = *self.arena.node(id) else {
-            return false;
+        let limits = match *self.arena.node(id) {
+            CompactNode::Operator { limits, .. }
+            | CompactNode::StructuredOperator { limits, .. } => limits,
+            _ => return false,
         };
         match limits {
             LimitStyle::AboveBelow => true,
@@ -704,6 +706,7 @@ impl<'a> Emitter<'a> {
             CompactNode::Number(sid) => self.leaf(sid, Leaf::Number, fmt),
             CompactNode::Identifier(sid) => self.leaf(sid, Leaf::Identifier, fmt),
             CompactNode::Operator { name, .. } => self.leaf(name, Leaf::Operator, fmt),
+            CompactNode::StructuredOperator { content, .. } => self.node(content, fmt),
             CompactNode::Symbol(_, sid) => self.leaf(sid, Leaf::Symbol, fmt),
             CompactNode::Text(style, sid) => self.text_node(style, sid, fmt),
             CompactNode::Space(width) => {

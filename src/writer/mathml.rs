@@ -839,6 +839,9 @@ fn write_node_in(
         MathNode::MathAtom { content, .. } => {
             write_node_in(w, content, single_argument, display_style)
         },
+        MathNode::StructuredOperator { content, .. } => {
+            write_operator_group(w, content, false, display_style)
+        },
     }
 }
 
@@ -1650,6 +1653,9 @@ fn write_node_fast_in(
         CompactNode::MathAtom { content, .. } => {
             write_node_fast_in(buf, arena, content, single_argument, display_style);
         },
+        CompactNode::StructuredOperator { content, .. } => {
+            write_operator_group_fast(buf, arena, content, false, display_style)
+        },
     }
 }
 
@@ -1658,6 +1664,7 @@ fn write_node_fast_in(
 // enclosing script element must reflect the current math style.
 enum ScriptBase {
     Named(LimitStyle),
+    Structured(LimitStyle),
     OperatorGroup,
     Other,
 }
@@ -1675,6 +1682,7 @@ impl ScriptBase {
         }
         match node {
             MathNode::Operator(attr) => Self::Named(attr.limit_style),
+            MathNode::StructuredOperator { limit_style, .. } => Self::Structured(*limit_style),
             MathNode::MathAtom {
                 atom_type: MathAtomType::Op,
                 ..
@@ -1690,6 +1698,7 @@ impl ScriptBase {
         }
         match *arena.node(id) {
             CompactNode::Operator { limits, .. } => Self::Named(limits),
+            CompactNode::StructuredOperator { limits, .. } => Self::Structured(limits),
             CompactNode::MathAtom {
                 atom_type: MathAtomType::Op,
                 ..
@@ -1711,6 +1720,19 @@ impl ScriptBase {
                     base_movable: movable,
                 }
             },
+            Self::Structured(style) => ScriptPlacement {
+                stacked: match (style, under_over) {
+                    (LimitStyle::AboveBelow, _) => true,
+                    (LimitStyle::Default, Some(movable)) => !movable || display.is_display(),
+                    (LimitStyle::Default, None) => display.is_display(),
+                    (LimitStyle::SubSup, _) => false,
+                },
+                base_movable: match style {
+                    LimitStyle::AboveBelow => Some(false),
+                    LimitStyle::Default => Some(true),
+                    _ => None,
+                },
+            },
             Self::OperatorGroup => ScriptPlacement {
                 stacked: under_over.is_some_and(|movable| !movable || display.is_display()),
                 base_movable: under_over,
@@ -1725,6 +1747,7 @@ impl ScriptBase {
     fn allows_glyph_accent(&self) -> bool {
         match self {
             Self::Named(style) => *style != LimitStyle::AboveBelow,
+            Self::Structured(style) => *style != LimitStyle::AboveBelow,
             Self::Other => true,
             // An explicit `\limits` on a compound operator has no style field
             // in MathAtom. Keep its fixed under/over wrapper unaccented.
@@ -1965,6 +1988,9 @@ fn write_limit_base_fast(
             atom_type: MathAtomType::Op,
             content,
         } => write_operator_group_fast(buf, arena, content, movable, display_style),
+        CompactNode::StructuredOperator { content, .. } => {
+            write_operator_group_fast(buf, arena, content, movable, display_style)
+        },
         CompactNode::Symbol(SymbolKind::LargeOp, sid) if movable => {
             if let Some(ch) = single_operator_char(arena.str_val(sid)) {
                 write_mo_char_fast(buf, ch, Some(true));
