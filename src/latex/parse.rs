@@ -197,15 +197,15 @@ fn expand_braket_separators(
                     .count();
             if end > after {
                 let name = &source[after..end];
-                output.push_str(&source[index..end]);
+                let command_start = index;
                 index = end;
                 if name == "left" || name == "right" {
+                    output.push_str(&source[command_start..end]);
                     protect_delimiter = true;
                 } else if nested_braket_command(name) {
                     // Each braket helper opens its own temporary separator
                     // scope. Expand a nested helper first so its generated
                     // middle tokens cannot be consumed by the outer scope.
-                    let whitespace_start = index;
                     while source[index..]
                         .chars()
                         .next()
@@ -213,7 +213,6 @@ fn expand_braket_separators(
                     {
                         index += source[index..].chars().next().unwrap().len_utf8();
                     }
-                    output.push_str(&source[whitespace_start..index]);
                     if let Some(group_end) = braced_end(source, index) {
                         let raw_start = index + 1;
                         let raw_end = group_end.saturating_sub(1);
@@ -225,8 +224,11 @@ fn expand_braket_separators(
                             output.push_str(&source[index..group_end]);
                         }
                         index = group_end;
+                    } else {
+                        output.push_str(&source[command_start..index]);
                     }
                 } else if text_command(name) {
+                    output.push_str(&source[command_start..end]);
                     let whitespace_start = index;
                     while source[index..]
                         .chars()
@@ -240,6 +242,8 @@ fn expand_braket_separators(
                         output.push_str(&source[index..end]);
                         index = end;
                     }
+                } else {
+                    output.push_str(&source[command_start..end]);
                 }
             } else {
                 output.push(ch);

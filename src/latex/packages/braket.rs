@@ -138,6 +138,10 @@ mod tests {
             r"\set{x|x<5|S|}",
             r"\Braket{a\text{ | }b}",
             r"\Braket{a\left|b\right|c}",
+            r"\Set{\Set{x|P}|Q}",
+            r"\Set{\Braket{a|b}|Q}",
+            r"\Braket{\Set{x|P}|b}",
+            r"\def\inside{\Set{x|P}}\Set{\inside|Q}",
         ] {
             let first = crate::from_latex(source).unwrap();
             let latex = first.to_latex().unwrap();
