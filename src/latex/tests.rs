@@ -2510,6 +2510,10 @@ fn structured_operator_mathml_preserves_spelling_and_script_geometry() {
             xml.contains("data-mathema-structured-operator"),
             "{source}: {xml}"
         );
+        if source.contains("textcolor") {
+            assert!(xml.contains("mathcolor=\"red\""), "{source}: {xml}");
+            assert!(xml.contains("mathvariant=\"normal\""), "{source}: {xml}");
+        }
         let from_xml = crate::from_mathml(&xml).unwrap();
         assert!(has_structured(&from_xml.expr()), "{source}: {xml}");
         let canonical = from_xml.to_latex().unwrap();
