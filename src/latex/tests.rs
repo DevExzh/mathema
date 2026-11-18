@@ -49,6 +49,42 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn legacy_font_declarations_scope_like_grouped_fonts() {
+    for (source, expected) in [
+        (r"\rm xyz", r"\mathrm{xyz}"),
+        (r"\sf xyz", r"\mathsf{xyz}"),
+        (r"\tt xyz", r"\mathtt{xyz}"),
+        (r"\bf xyz", r"\mathbf{xyz}"),
+        (r"\it xyz", r"\mathit{xyz}"),
+        (r"\cal xyz", r"\mathcal{xyz}"),
+        (r"{\rm xyz}q", r"\mathrm{xyz}q"),
+        (r"\rm x\sf y z", r"\mathrm{x\mathsf{yz}}"),
+        (r"{\rm x{\sf y}z}q", r"\mathrm{x\mathsf{y}z}q"),
+        (r"\rm x_i^2 y", r"\mathrm{x_i^{2}y}"),
+    ] {
+        let actual = crate::convert(source, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(actual, expected, "wrong legacy-font scope for {source}");
+    }
+    let legacy_mathml =
+        crate::convert(r"\rm xyz", crate::Format::LaTeX, crate::Format::MathML).unwrap();
+    assert!(
+        legacy_mathml.contains(r#"<mstyle mathvariant="normal"><mi mathvariant="normal">xyz</mi>"#),
+        "legacy declaration did not style its full remaining expression: {legacy_mathml}"
+    );
+
+    let matrix = crate::convert(
+        r"\begin{matrix}\rm x&y\\z&\sf q\end{matrix}",
+        crate::Format::LaTeX,
+        crate::Format::LaTeX,
+    )
+    .unwrap();
+    assert_eq!(
+        matrix,
+        r"\begin{array}{cc} \mathrm{x} & y \\ z & \mathsf{q} \end{array}"
+    );
+}
+
+#[test]
 fn canonical_tex_attaches_bounds_to_the_operator_itself() {
     for (source, canonical) in [
         (r"\lim_i^j", r"\lim_i^j"),

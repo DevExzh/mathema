@@ -1458,6 +1458,11 @@ pub(crate) struct LatexCompactParser {
     /// base of its own (`^`, `_` or `'` after white space), which TeX attaches to the
     /// preceding atom.
     implicit_base_script: Option<NodeId>,
+    /// Whether the current old-style font declaration began in the top-level
+    /// expression. Such scopes retain Mathema's existing hard source-newline
+    /// behavior while nested group parsers continue to treat newlines as
+    /// ordinary whitespace.
+    font_scope_preserve_breaks: bool,
 }
 
 impl LatexCompactParser {
@@ -1482,6 +1487,7 @@ impl LatexCompactParser {
             paired_delims: HashMap::new(),
             infix_marker_seen: false,
             implicit_base_script: None,
+            font_scope_preserve_breaks: false,
         }
     }
 
@@ -2673,7 +2679,7 @@ impl LatexCompactParser {
 
     #[inline]
     fn skip_script_ws(&self, input: &[u8]) -> usize {
-        if self.depth == 1 {
+        if self.depth == 1 || (self.font_scope_preserve_breaks && self.depth <= 2) {
             skip_horizontal_ws_bytes(input)
         } else {
             skip_ws_bytes(input)
@@ -3619,8 +3625,8 @@ impl LatexCompactParser {
             // --- Vcenter (vertical centering — just emit content) ---
             "vcenter" => self.parse_required_group(input),
 
-            // --- Old-style font switches (TeX two-letter commands) ---
-            "rm" | "it" | "bf" | "sf" | "tt" => self.parse_old_font_switch(input, name),
+            // --- Old-style font switches (TeX declarations) ---
+            "rm" | "it" | "bf" | "sf" | "tt" | "cal" => self.parse_old_font_switch(input, name),
 
             // --- Above (infix with dimension) ---
             "above" => {
@@ -5776,8 +5782,11 @@ impl LatexCompactParser {
         }
     }
 
-    /// Old-style font switches: `\rm`, `\it`, `\bf`, `\sf`, `\tt`.
-    /// These apply to the rest of the current group.
+    /// Old-style font declarations apply to the rest of the current group (or
+    /// table cell), matching KaTeX's `parseExpression` implementation.  The
+    /// recursive parser already stops at `}`, `&`, and row/environment
+    /// boundaries, so the resulting Styled node has exactly the declaration's
+    /// scope while nested switches override it in their own nested wrappers.
     fn parse_old_font_switch<'a>(
         &mut self,
         input: &'a str,
@@ -5794,6 +5803,7 @@ impl LatexCompactParser {
             "bf" => TextStyle::Bold,
             "sf" => TextStyle::SansSerif,
             "tt" => TextStyle::Monospace,
+            "cal" => TextStyle::Script,
             _ => TextStyle::Normal,
         };
         let (input, _) = ws(input)?;
@@ -5808,26 +5818,106 @@ impl LatexCompactParser {
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             ));
         }
-        match self.parse_element(input) {
-            Ok((rest, id)) => {
-                let id = self.resolve_stray_infix_marker(id);
-                let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-                ids.push(id);
-                let ids = self.resolve_infix_fraction(ids);
-                let content_span = self.arena.push_children_deferred(&ids);
-                Ok((
-                    rest,
-                    self.arena
-                        .push_node(CompactNode::Styled(style, content_span)),
-                ))
-            },
-            // A failed scoped parse must not return the same input slice with
-            // a successful empty node: enclosing parse paths would repeatedly
-            // retry it without making progress and grow the arena until OOM.
-            // Propagate both recoverable and hard failures; lenient top-level
-            // recovery will consume the offending text one character at a time.
-            Err(error) => Err(error),
+        let preserve_breaks = self.font_scope_preserve_breaks;
+        if self.depth == 1 {
+            self.font_scope_preserve_breaks = true;
         }
+        let scoped = self.parse_font_scope(input);
+        self.font_scope_preserve_breaks = preserve_breaks;
+        let (rest, ids) = scoped?;
+        if ids.is_empty() {
+            return Ok((
+                rest,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ));
+        }
+        let styled = if ids
+            .iter()
+            .any(|&id| matches!(*self.arena.node(id), CompactNode::Newline))
+        {
+            // Styled layout wrappers intentionally use one horizontal line;
+            // keep hard source-newline nodes outside them so the existing
+            // multiline row layout remains effective.
+            let mut segments: SmallVec<[NodeId; 8]> = SmallVec::new();
+            let mut segment: SmallVec<[NodeId; 8]> = SmallVec::new();
+            for id in ids {
+                if matches!(*self.arena.node(id), CompactNode::Newline) {
+                    if !segment.is_empty() {
+                        let span = self.arena.push_children_deferred(&segment);
+                        segments.push(self.arena.push_node(CompactNode::Styled(style, span)));
+                        segment.clear();
+                    }
+                    segments.push(id);
+                } else {
+                    segment.push(id);
+                }
+            }
+            if !segment.is_empty() {
+                let span = self.arena.push_children_deferred(&segment);
+                segments.push(self.arena.push_node(CompactNode::Styled(style, span)));
+            }
+            self.flatten_single(&segments)
+        } else {
+            let content_span = self.arena.push_children_deferred(&ids);
+            self.arena
+                .push_node(CompactNode::Styled(style, content_span))
+        };
+        Ok((rest, styled))
+    }
+
+    /// Parse the expression controlled by an old-style font declaration. This
+    /// is deliberately separate from `parse_node_list`: table/environment
+    /// sentinels such as `\end` are valid input to the outer parser but must
+    /// terminate a declaration before they are interpreted as ordinary
+    /// commands.
+    fn parse_font_scope<'a>(&mut self, input: &'a str) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
+        self.depth += 1;
+        let result = (|| {
+            let mut ids = SmallVec::new();
+            let mut rest = input;
+            loop {
+                self.ensure_node_budget(rest)?;
+                if self.font_scope_preserve_breaks {
+                    let skip = skip_horizontal_ws_bytes(rest.as_bytes());
+                    rest = &rest[skip..];
+                    if let Some(after_newline) = consume_source_newline(rest) {
+                        if source_newline_is_hard_break(input, rest) {
+                            ids.push(self.arena.push_node(CompactNode::Newline));
+                        }
+                        rest = after_newline;
+                        continue;
+                    }
+                } else {
+                    let (r, _) = ws(rest)?;
+                    rest = r;
+                }
+                if is_table_boundary(rest)
+                    || rest.starts_with('}')
+                    || is_cr_row_separator(rest)
+                    || strip_control_word(rest, "right").is_some()
+                    || strip_control_word(rest, "middle").is_some()
+                {
+                    break;
+                }
+                match self.parse_element(rest) {
+                    Ok((r, id)) => {
+                        self.push_element(&mut ids, id);
+                        rest = r;
+                    },
+                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok((rest, self.resolve_infix_fraction(ids)))
+        })();
+        self.depth -= 1;
+        result
     }
 
     /// Parse \DeclareMathOperator and similar declaration commands — consume all arguments.
@@ -7502,7 +7592,26 @@ impl LatexCompactParser {
                         break;
                     }
                 },
-                Err(_) => {
+                Err(error) => {
+                    // A scoped declaration can fail after consuming a large
+                    // prefix (for example, a deeply nested legacy-font
+                    // reproducer). Resume at the parser's error cursor when
+                    // it is a strict suffix of the current input; retrying
+                    // from the first byte would repeatedly rebuild the same
+                    // discarded prefix until the node budget is exhausted.
+                    let error_input = match error {
+                        nom::Err::Error(inner) | nom::Err::Failure(inner) => inner.input,
+                        nom::Err::Incomplete(_) => input,
+                    };
+                    if error_input.len() < input.len() && input.ends_with(error_input) {
+                        diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: "skipped malformed scoped input during recovery".into(),
+                            span: None,
+                        });
+                        input = error_input;
+                        continue;
+                    }
                     if let Some(ch) = input.chars().next() {
                         let sid = self.push_char_str(ch);
                         ids.push(
