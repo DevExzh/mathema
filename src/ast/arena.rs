@@ -31,27 +31,16 @@ enum ProvenanceStore {
 impl ProvenanceStore {
     #[inline]
     fn insert(&mut self, id: NodeId, value: Provenance) {
-        if let Self::Overflow(map) = self {
-            map.insert(id, value);
-            return;
+        match self {
+            Self::Empty => *self = Self::Inline((id, value)),
+            Self::Inline((key, stored)) if *key == id => *stored = value,
+            Self::Inline(first) => {
+                *self = Self::Overflow(Box::new(HashMap::from([*first, (id, value)])));
+            },
+            Self::Overflow(map) => {
+                map.insert(id, value);
+            },
         }
-        let current = std::mem::take(self);
-        *self = match current {
-            Self::Empty => Self::Inline((id, value)),
-            Self::Inline((existing_id, _existing_value)) if existing_id == id => {
-                Self::Inline((id, value))
-            },
-            Self::Inline((existing_id, existing_value)) => {
-                let mut map = HashMap::with_capacity(2);
-                map.insert(existing_id, existing_value);
-                map.insert(id, value);
-                Self::Overflow(Box::new(map))
-            },
-            Self::Overflow(mut map) => {
-                map.insert(id, value);
-                Self::Overflow(map)
-            },
-        };
     }
 
     #[inline]
@@ -69,18 +58,13 @@ impl ProvenanceStore {
             Self::Empty => {},
             Self::Inline((entry_id, _)) if *entry_id == id => *self = Self::Empty,
             Self::Inline(_) => {},
-            Self::Overflow(_) => {
-                let Self::Overflow(mut map) = std::mem::take(self) else {
-                    unreachable!("provenance store variant changed")
-                };
-                map.remove(&id);
-                *self = if map.is_empty() {
-                    Self::Empty
-                } else if map.len() == 1 {
-                    Self::Inline(map.into_iter().next().expect("one provenance entry"))
-                } else {
-                    Self::Overflow(map)
-                };
+            Self::Overflow(map) => {
+                // Overflow starts with two entries and returns to inline as
+                // soon as only one remains.
+                if map.remove(&id).is_some() && map.len() == 1 {
+                    let (&key, &value) = map.iter().next().expect("one provenance entry");
+                    *self = Self::Inline((key, value));
+                }
             },
         }
     }
