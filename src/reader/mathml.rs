@@ -106,6 +106,7 @@ struct MathmlCompactParser<'a> {
     /// need to survive until its closing tag. Nested rows use their own slice.
     fence_depth: Option<u32>,
     fence_marks: SmallVec<[(NodeId, FenceRole); 4]>,
+    fixed_literal_bars: SmallVec<[NodeId; 4]>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -138,6 +139,7 @@ impl<'a> MathmlCompactParser<'a> {
             style_level: 0,
             fence_depth: None,
             fence_marks: SmallVec::new(),
+            fixed_literal_bars: SmallVec::new(),
         })
     }
 
@@ -229,7 +231,12 @@ impl<'a> MathmlCompactParser<'a> {
     /// Recover explicitly marked delimiters of a single MathML row. Interior
     /// brackets may belong to separate pairs; a prefix or postfix vertical
     /// bar inside parentheses is an ordinary child rather than a middle.
-    fn recover_fenced_row(&mut self, children: &mut [NodeId], start: usize) -> Option<NodeId> {
+    fn recover_fenced_row(
+        &mut self,
+        children: &mut [NodeId],
+        start: usize,
+        fixed_start: usize,
+    ) -> Option<NodeId> {
         let [(first, open_role), interior @ .., (last, close_role)] = &self.fence_marks[start..]
         else {
             return None;
@@ -260,7 +267,6 @@ impl<'a> MathmlCompactParser<'a> {
         let mut marks = interior.iter().copied().peekable();
         let mut middles = SmallVec::<[(usize, StrId); 2]>::new();
         let mut inner_pairs = SmallVec::<[&'static str; 2]>::new();
-        let mut previous_unmarked_vertical = false;
         let end = children.len() - 1;
         let content = &mut children[1..end];
         for (i, &id) in content.iter().enumerate() {
@@ -283,20 +289,17 @@ impl<'a> MathmlCompactParser<'a> {
                         // the surrounding prefix/postfix fence. Other
                         // unmarked delimiters still conservatively terminate
                         // recovery so adjacent fence pairs cannot be joined.
-                        if explicit && is_vertical_bar(glyph) {
-                            if previous_unmarked_vertical {
-                                return None;
-                            }
-                            previous_unmarked_vertical = true;
+                        if explicit
+                            && is_vertical_bar(glyph)
+                            && self.fixed_literal_bars[fixed_start..].contains(&id)
+                        {
                             continue;
                         }
                         return None;
                     }
                 }
-                previous_unmarked_vertical = false;
                 continue;
             };
-            previous_unmarked_vertical = false;
             let sid = self.fence_delimiter(id)?;
             let glyph = self.arena.str_val(sid);
             if (role == FenceRole::Infix && writable_middle(glyph))
@@ -731,6 +734,9 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
+        if attrs.fixed_literal && !attrs.fenced && !attrs.explicit_form && is_vertical_bar(name) {
+            self.fixed_literal_bars.push(id);
+        }
         if attrs.fenced {
             self.fence_marks.push((id, attrs.fence_role()));
         }
@@ -813,6 +819,7 @@ impl<'a> MathmlCompactParser<'a> {
                     None => matches!(attrs.reflect.as_deref(), Some("text" | "math")),
                 };
                 let mark_start = self.fence_marks.len();
+                let fixed_start = self.fixed_literal_bars.len();
                 let enclosing = self.fence_depth;
                 self.fence_depth = start
                     .attributes()
@@ -821,8 +828,9 @@ impl<'a> MathmlCompactParser<'a> {
                     .then_some(self.depth + 1);
                 let (mut children, sized) = self.read_children(name, reflected)?;
                 self.fence_depth = enclosing;
-                let fenced = self.recover_fenced_row(&mut children, mark_start);
+                let fenced = self.recover_fenced_row(&mut children, mark_start, fixed_start);
                 self.fence_marks.truncate(mark_start);
+                self.fixed_literal_bars.truncate(fixed_start);
                 if let Some(fenced) = fenced {
                     return Ok(fenced);
                 }
@@ -1731,6 +1739,8 @@ struct OperatorAttributes {
     fenced: bool,
     form: FenceRole,
     constrained: bool,
+    fixed_literal: bool,
+    explicit_form: bool,
 }
 
 impl OperatorAttributes {
@@ -1797,12 +1807,22 @@ fn operator_attributes(
                     .trim()
                     .eq_ignore_ascii_case("true");
             },
-            "stretchy" | "symmetric" if inspect_fences => {
+            "stretchy" => {
+                let false_value = !fence_attr_value(&attr.value)
+                    .trim()
+                    .eq_ignore_ascii_case("true");
+                result.fixed_literal |= false_value;
+                if inspect_fences {
+                    result.constrained |= false_value;
+                }
+            },
+            "symmetric" if inspect_fences => {
                 result.constrained |= !fence_attr_value(&attr.value)
                     .trim()
                     .eq_ignore_ascii_case("true");
             },
             "form" if inspect_fences => {
+                result.explicit_form = true;
                 let value = fence_attr_value(&attr.value);
                 result.form = match value.trim() {
                     s if s.eq_ignore_ascii_case("prefix") => FenceRole::Prefix,
@@ -2927,6 +2947,7 @@ mod tests {
         for source in [
             r"\bra{\phi|\psi}",
             r"\bra{\phi\|\psi}",
+            r"\bra{a||b}",
             r"\left\langle\phi|x\right|",
         ] {
             let first = crate::from_latex(source).unwrap();
@@ -2938,6 +2959,12 @@ mod tests {
                 [MathNode::Fenced { .. }]
             ));
         }
+
+        let authored_fixed = r#"<math><mrow><mo fence="true" form="prefix">⟨</mo><mi>a</mi><mo stretchy="false">|</mo><mo stretchy="false">|</mo><mi>b</mi><mo fence="true" form="postfix" stretchy="true">|</mo></mrow></math>"#;
+        assert!(matches!(parse_one(authored_fixed), MathNode::Fenced { .. }));
+
+        let constrained_endpoint = r#"<math><mrow><mo fence="true" form="prefix" stretchy="false">⟨</mo><mi>a</mi><mo stretchy="false">|</mo><mo fence="true" form="postfix" stretchy="false">|</mo></mrow></math>"#;
+        assert!(matches!(parse_one(constrained_endpoint), MathNode::Row(_)));
     }
 
     #[test]
