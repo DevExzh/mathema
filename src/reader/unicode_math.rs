@@ -469,45 +469,20 @@ impl CompactParser {
         // UTN #28 uses ┬ (U+252C) and ┴ (U+2534) for explicitly forced
         // below/above placement. These markers differ from _/^ because they
         // remain stacked in inline math.
-        if let Some(rest) = input.strip_prefix(['┬', '┴']) {
-            let marker = input.chars().next().unwrap();
-            let (mut rest, first) = self.parse_script_arg(rest)?;
-            let mut under = None;
-            let mut over = None;
-            if marker == '┬' {
-                under = Some(first);
-            } else {
-                over = Some(first);
-            }
-            if let Some(next) = rest.strip_prefix(['┬', '┴']) {
-                let second_marker = rest.chars().next().unwrap();
-                let (tail, second) = self.parse_script_arg(next)?;
-                rest = tail;
-                if second_marker == '┬' {
-                    under = Some(second);
-                } else {
-                    over = Some(second);
+        if input.starts_with(['┬', '┴']) {
+            let mut rest = input;
+            let mut forced = SmallVec::<[(char, NodeId); 4]>::new();
+            while let Some(marker @ ('┬' | '┴')) = rest.chars().next() {
+                if forced.len() >= self.max_depth as usize {
+                    self.depth_limit();
+                    return Err(abort_failure(rest));
                 }
+                rest = &rest[marker.len_utf8()..];
+                let (tail, argument) = self.parse_script_arg(rest)?;
+                forced.push((marker, argument));
+                rest = tail;
             }
-            let id = match (under, over) {
-                (Some(under), Some(over)) => self.push_node(CompactNode::UnderOver {
-                    base,
-                    under,
-                    over,
-                    movable_limits: false,
-                }),
-                (Some(under), None) => self.push_node(CompactNode::Underscript {
-                    base,
-                    under,
-                    movable_limits: false,
-                }),
-                (None, Some(over)) => self.push_node(CompactNode::Overscript {
-                    base,
-                    over,
-                    movable_limits: false,
-                }),
-                (None, None) => base,
-            };
+            let id = self.apply_forced_bounds(base, &forced);
             return self.parse_scripts(rest, id);
         }
 
@@ -565,6 +540,44 @@ impl CompactParser {
                 let id = self.push_node(CompactNode::SubSup { base, sub, sup });
                 Ok((input, id))
             },
+        }
+    }
+
+    /// Build forced above/below chains from right to left. A complementary
+    /// pair immediately following a base is the compact spelling for one
+    /// UnderOver node. Repeated markers otherwise associate to the right,
+    /// matching UTN 28's sub/superscript rule.
+    fn apply_forced_bounds(&mut self, base: NodeId, bounds: &[(char, NodeId)]) -> NodeId {
+        if bounds.is_empty() {
+            return base;
+        }
+        if bounds.len() >= 2 && bounds[0].0 != bounds[1].0 {
+            let (under, over) = if bounds[0].0 == '┬' {
+                (bounds[0].1, bounds[1].1)
+            } else {
+                (bounds[1].1, bounds[0].1)
+            };
+            let paired = self.push_node(CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits: false,
+            });
+            return self.apply_forced_bounds(paired, &bounds[2..]);
+        }
+        let nested = self.apply_forced_bounds(bounds[0].1, &bounds[1..]);
+        match bounds[0].0 {
+            '┬' => self.push_node(CompactNode::Underscript {
+                base,
+                under: nested,
+                movable_limits: false,
+            }),
+            '┴' => self.push_node(CompactNode::Overscript {
+                base,
+                over: nested,
+                movable_limits: false,
+            }),
+            _ => base,
         }
     }
 
@@ -1807,6 +1820,61 @@ mod tests {
         );
         let reparsed = crate::from_unicode_math(&unicode).unwrap();
         assert_eq!(reparsed.to_unicode_math().unwrap(), unicode);
+    }
+
+    #[test]
+    fn forced_bound_chains_associate_right_to_left_without_losing_operands() {
+        let same_below = parse("lim┬a┬b x");
+        assert!(
+            matches!(
+                &same_below[0],
+                MathNode::Underscript {
+                    base,
+                    under,
+                    movable_limits: false,
+                } if matches!(**base, MathNode::Operator(_))
+                    && matches!(**under, MathNode::Underscript { .. })
+            ),
+            "{same_below:?}"
+        );
+
+        let same_above = parse("lim┴a┴b x");
+        assert!(
+            matches!(
+                &same_above[0],
+                MathNode::Overscript {
+                    base,
+                    over,
+                    movable_limits: false,
+                } if matches!(**base, MathNode::Operator(_))
+                    && matches!(**over, MathNode::Overscript { .. })
+            ),
+            "{same_above:?}"
+        );
+
+        for source in ["lim┬a┴b x", "lim┴a┬b x"] {
+            let nodes = parse(source);
+            assert!(
+                matches!(
+                    nodes[0],
+                    MathNode::UnderOver {
+                        movable_limits: false,
+                        ..
+                    }
+                ),
+                "{source}: {nodes:?}"
+            );
+        }
+
+        let config = Config::default().with_max_depth(4);
+        let too_deep = format!("lim{}x", "┬a".repeat(8));
+        assert!(matches!(
+            crate::from_unicode_math_with(&too_deep, &config),
+            Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::Depth,
+                ..
+            })
+        ));
     }
 
     #[test]

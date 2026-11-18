@@ -481,15 +481,15 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
             out.push(' ');
         }
         write_node(out, node, current_style);
-        if index + 1 < nodes.len() && needs_operator_terminator(node) {
+        if index + 1 < nodes.len() && needs_operator_terminator(node, current_style) {
             out.push(' ');
         }
         wrote_node = true;
     }
 }
 
-fn needs_operator_terminator(node: &MathNode) -> bool {
-    match select_mathchoice(node, MathStyle::Text) {
+fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
+    match select_mathchoice(node, style) {
         MathNode::Operator(OperatorAttr { name, .. }) => name.contains('\u{00a0}'),
         _ => false,
     }
@@ -1043,15 +1043,15 @@ fn write_nodes_c_with_style(
             out.push(' ');
         }
         write_node_c(out, arena, id, current_style);
-        if index + 1 < children.len() && needs_operator_terminator_c(arena, id) {
+        if index + 1 < children.len() && needs_operator_terminator_c(arena, id, current_style) {
             out.push(' ');
         }
         wrote_node = true;
     }
 }
 
-fn needs_operator_terminator_c(arena: &AstArena, id: NodeId) -> bool {
-    match *arena.node(select_mathchoice_c(arena, id, MathStyle::Text)) {
+fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+    match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Operator { name, .. } => arena.str_val(name).contains('\u{00a0}'),
         _ => false,
     }
