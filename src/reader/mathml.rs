@@ -619,6 +619,14 @@ impl<'a> MathmlCompactParser<'a> {
         }
         scoped_children.extend(children);
         let content = self.flatten_ids(&scoped_children);
+        let content = if let Some(color) =
+            get_attr(start, "mathcolor").filter(|color| !color.trim().is_empty())
+        {
+            let color = self.arena.push_str(color.trim());
+            self.arena.push_node(CompactNode::Color { color, content })
+        } else {
+            content
+        };
         if let Some(variant) = get_attr(start, "mathvariant")
             && let Some(style) = mathvariant_to_style(&variant)
         {
@@ -2400,6 +2408,41 @@ mod tests {
         };
         assert!(matches!(*num, MathNode::Row(_)));
         assert_eq!(*den, MathNode::Number("2".into()));
+    }
+
+    #[test]
+    fn mstyle_mathcolor_survives_compact_reimport_and_stays_scoped() {
+        let input = r#"<math><mstyle mathcolor="red"><mi>x</mi><mstyle mathcolor="blue"><mi>y</mi></mstyle><mi>z</mi></mstyle><mi>w</mi></math>"#;
+        let result = crate::from_mathml(input).unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert!(mathml.contains(r#"<mstyle mathcolor="red">"#), "{mathml}");
+        assert!(mathml.contains(r#"<mstyle mathcolor="blue">"#), "{mathml}");
+        assert!(mathml.ends_with("<mi>w</mi></math>"), "{mathml}");
+
+        let reparsed = crate::from_mathml(&mathml).unwrap();
+        assert_eq!(reparsed.to_mathml().unwrap(), mathml);
+        assert_eq!(reparsed.to_latex().unwrap(), result.to_latex().unwrap());
+
+        #[cfg(feature = "render")]
+        {
+            let svg = result.to_svg_text().unwrap();
+            assert!(svg.contains(r#"fill="red""#), "{svg}");
+            assert!(svg.contains(r#"fill="blue""#), "{svg}");
+        }
+    }
+
+    #[test]
+    fn mstyle_mathcolor_combines_with_mathvariant_without_leaking() {
+        let input = r##"<math><mstyle mathcolor="#6495ed" mathvariant="bold"><mi>x</mi></mstyle><mi>y</mi></math>"##;
+        let result = crate::from_mathml(input).unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert!(mathml.contains(r##"mathcolor="#6495ed""##), "{mathml}");
+        assert!(mathml.contains(r#"mathvariant="bold""#), "{mathml}");
+        assert!(mathml.ends_with("<mi>y</mi></math>"), "{mathml}");
+        assert_eq!(
+            crate::from_mathml(&mathml).unwrap().to_mathml().unwrap(),
+            mathml
+        );
     }
 
     #[test]
