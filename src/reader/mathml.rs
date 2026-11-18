@@ -1430,12 +1430,28 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             let index = table.cells.len() - start;
             let event = self.reader.read_event();
+            if index >= max_columns {
+                // At the rectangular limit only whitespace or the end of the
+                // row can follow. Check the borrowed token before interning it.
+                match &event {
+                    Ok(Event::Text(text)) if text.as_ref().trim().is_empty() => continue,
+                    Ok(Event::GeneralRef(reference))
+                        if crate::unicode::resolve_entity(reference.as_ref())
+                            .is_some_and(|text| text.trim().is_empty()) =>
+                    {
+                        continue;
+                    },
+                    Ok(
+                        Event::Start(_) | Event::Empty(_) | Event::Text(_) | Event::GeneralRef(_),
+                    ) => {
+                        return Err(table_length_error());
+                    },
+                    _ => {},
+                }
+            }
             let empty = matches!(event, Ok(Event::Empty(_)));
             let (children, own_alignment) = match event {
                 Ok(Event::Start(e) | Event::Empty(e)) => {
-                    if index >= max_columns {
-                        return Err(table_length_error());
-                    }
                     let name = Self::local_name(&e);
                     if name == "mtd" {
                         let children = if empty {
@@ -1476,9 +1492,6 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 _ => continue,
             };
-            if index >= max_columns {
-                return Err(table_length_error());
-            }
             let alignment = cell_alignment(inherited, index, own_alignment);
             if index == table.columns.len() {
                 table.columns.push(alignment);
@@ -3471,6 +3484,25 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn full_row_accepts_whitespace_and_does_not_intern_excess_text() {
+        for (suffix, accepted) in [
+            ("  &#x2009;&nbsp;", true),
+            ("x", false),
+            ("&alpha;", false),
+            ("&unknown;", false),
+        ] {
+            let xml = format!("<mtr><mtd/>{suffix}</mtr>");
+            let mut parser = MathmlCompactParser::new(&xml, DisplayStyle::Inline).unwrap();
+            assert!(matches!(parser.reader.read_event(), Ok(Event::Start(_))));
+            let mut table = MathmlTable::default();
+            let result = parser.parse_table_row("mtr", &[], 1, &mut table);
+            assert_eq!(result.is_ok(), accepted, "{suffix}");
+            assert_eq!(table.cells.len(), 1);
+            assert_eq!(parser.arena.string_count(), 0);
+        }
     }
 
     #[test]
