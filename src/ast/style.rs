@@ -22,7 +22,36 @@ pub enum MathStyle {
     ScriptScriptCramped,
 }
 
+impl From<super::DisplayStyle> for MathStyle {
+    fn from(style: super::DisplayStyle) -> Self {
+        match style {
+            super::DisplayStyle::Block => Self::Display,
+            super::DisplayStyle::Inline => Self::Text,
+        }
+    }
+}
+
 impl MathStyle {
+    pub(crate) fn from_switch(value: u8) -> Self {
+        match value {
+            0 => Self::Display,
+            1 => Self::Text,
+            2 => Self::Script,
+            _ => Self::ScriptScript,
+        }
+    }
+
+    /// Select a TeX mathchoice branch. Cramped styles select the same branch
+    /// as their uncramped counterparts.
+    pub(crate) fn choose<T>(self, display: T, text: T, script: T, scriptscript: T) -> T {
+        match self {
+            Self::Display | Self::DisplayCramped => display,
+            Self::Text | Self::TextCramped => text,
+            Self::Script | Self::ScriptCramped => script,
+            Self::ScriptScript | Self::ScriptScriptCramped => scriptscript,
+        }
+    }
+
     /// Style for superscripts (TeXBook: D→S, T→S, S→SS, SS→SS; cramped stays cramped).
     #[must_use]
     #[inline]

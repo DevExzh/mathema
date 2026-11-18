@@ -11,6 +11,8 @@ pub mod arena;
 pub mod compact;
 /// Structural normalization passes over the AST.
 pub mod normalize;
+/// TeX math styles and their transitions inside expressions.
+pub mod style;
 /// Traversal helpers for walking the AST.
 pub mod visit;
 

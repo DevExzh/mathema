@@ -411,12 +411,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
 
     for node in nodes {
         if let MathNode::StyleSwitch(style) = node {
-            current_ctx = current_ctx.with_style(match style {
-                0 => MathStyle::Display,
-                1 => MathStyle::Text,
-                2 => MathStyle::Script,
-                _ => MathStyle::ScriptScript,
-            });
+            current_ctx = current_ctx.with_style(MathStyle::from_switch(*style));
             continue;
         }
 
@@ -620,12 +615,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             script,
             script_script,
         } => {
-            let chosen = match ctx.style {
-                MathStyle::Display | MathStyle::DisplayCramped => display.as_ref(),
-                MathStyle::Text | MathStyle::TextCramped => text.as_ref(),
-                MathStyle::Script | MathStyle::ScriptCramped => script.as_ref(),
-                MathStyle::ScriptScript | MathStyle::ScriptScriptCramped => script_script.as_ref(),
-            };
+            let chosen = ctx.style.choose(display, text, script, script_script);
             layout_node(chosen, ctx)
         },
         MathNode::MathAtom { content, .. } => layout_node(content, ctx),
@@ -1237,12 +1227,7 @@ fn layout_row_segment_arena(
     for &id in ids {
         // Handle style switches — update context for subsequent children
         if let CompactNode::StyleSwitch(s) = *ast.node(id) {
-            current_ctx = match s {
-                0 => current_ctx.with_style(MathStyle::Display),
-                1 => current_ctx.with_style(MathStyle::Text),
-                2 => current_ctx.with_style(MathStyle::Script),
-                _ => current_ctx.with_style(MathStyle::ScriptScript),
-            };
+            current_ctx = current_ctx.with_style(MathStyle::from_switch(s));
             continue;
         }
 
@@ -1533,12 +1518,7 @@ fn layout_node_arena(
             script,
             script_script,
         } => {
-            let chosen = match ctx.style {
-                MathStyle::Display | MathStyle::DisplayCramped => display,
-                MathStyle::Text | MathStyle::TextCramped => text,
-                MathStyle::Script | MathStyle::ScriptCramped => script,
-                MathStyle::ScriptScript | MathStyle::ScriptScriptCramped => script_script,
-            };
+            let chosen = ctx.style.choose(display, text, script, script_script);
             layout_node_arena(ast, chosen, arena, ctx)
         },
         CompactNode::MathAtom { content, .. } => layout_node_arena(ast, content, arena, ctx),

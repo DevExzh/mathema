@@ -1,3 +1,4 @@
+use crate::ast::style::MathStyle;
 use quick_xml::Writer;
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::borrow::Cow;
@@ -16,7 +17,7 @@ use crate::writer::Writer as MathWriter;
 fn mathml_loss(_arena: &AstArena, node: &CompactNode) -> Option<String> {
     match node {
         CompactNode::MathChoice { .. } => {
-            Some("MathML output keeps only the display-style branch of \\mathchoice".into())
+            Some("MathML output keeps only the applicable branch of \\mathchoice".into())
         },
         CompactNode::MathAtom { atom_type: MathAtomType::Op, .. } => {
             Some("MathML records the compound operator class as an annotation. Native operator spacing can differ.".into())
@@ -52,9 +53,7 @@ impl MathWriter for MathmlWriter {
         ));
         writer.write_event(Event::Start(math)).map_err(to_err)?;
 
-        for node in &expr.nodes {
-            write_node(&mut writer, node, expr.display)?;
-        }
+        write_nodes(&mut writer, &expr.nodes, expr.display.into(), false)?;
 
         writer
             .write_event(Event::End(BytesEnd::new("math")))
@@ -85,9 +84,13 @@ impl MathWriter for MathmlWriter {
             buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">");
         }
 
-        for &root_id in arena.children(expr.roots) {
-            write_node_fast(&mut buf, arena, root_id, expr.display);
-        }
+        write_nodes_fast(
+            &mut buf,
+            arena,
+            arena.children(expr.roots),
+            expr.display.into(),
+            false,
+        );
 
         buf.push_str("</math>");
         Ok(buf)
@@ -100,13 +103,174 @@ fn to_err(e: std::io::Error) -> crate::error::Error {
     crate::error::Error::Io(e)
 }
 
-fn write_node(w: &mut XmlWriter, node: &MathNode, display_style: DisplayStyle) -> Result<()> {
+fn fraction_style(kind: FractionKind) -> Option<MathStyle> {
+    match kind {
+        FractionKind::Display => Some(MathStyle::Display),
+        FractionKind::Inline => Some(MathStyle::Text),
+        _ => None,
+    }
+}
+
+fn math_style_attrs(style: MathStyle) -> (&'static str, &'static str) {
+    let depth = match style.size_class() {
+        0 => "0",
+        1 => "1",
+        _ => "2",
+    };
+    (if style.is_display() { "true" } else { "false" }, depth)
+}
+
+fn start_math_style(w: &mut XmlWriter, style: MathStyle) -> Result<()> {
+    let (display, depth) = math_style_attrs(style);
+    let mut tag = BytesStart::new("mstyle");
+    tag.push_attribute(("displaystyle", display));
+    tag.push_attribute(("scriptlevel", depth));
+    w.write_event(Event::Start(tag)).map_err(to_err)?;
+    Ok(())
+}
+
+fn start_math_style_fast(buf: &mut String, style: MathStyle) {
+    let (display, depth) = math_style_attrs(style);
+    buf.push_str("<mstyle displaystyle=\"");
+    buf.push_str(display);
+    buf.push_str("\" scriptlevel=\"");
+    buf.push_str(depth);
+    buf.push_str("\">");
+}
+
+/// Consecutive declarations replace one another and a trailing declaration
+/// contributes no content. Keep the runs borrowed from their original row.
+fn style_runs<T>(
+    mut nodes: &[T],
+    switch: impl Fn(&T) -> Option<u8>,
+) -> impl Iterator<Item = (Option<MathStyle>, &[T])> {
+    let mut style = None;
+    std::iter::from_fn(move || {
+        while let Some((node, rest)) = nodes.split_first()
+            && let Some(value) = switch(node)
+        {
+            style = Some(MathStyle::from_switch(value));
+            nodes = rest;
+        }
+        let (_, tail) = nodes.split_first()?;
+        let n = 1 + tail
+            .iter()
+            .position(|node| switch(node).is_some())
+            .unwrap_or(tail.len());
+        let (run, rest) = nodes.split_at(n);
+        nodes = rest;
+        Some((style, run))
+    })
+}
+
+/// A single styled run supplies its own grouping via mstyle. All other
+/// explicit rows still need mrow, especially in fixed-arity elements.
+fn needs_mrow<T>(nodes: &[T], switch: impl Fn(&T) -> Option<u8>) -> bool {
+    let mut iter = nodes.iter();
+    if !iter.next().is_some_and(|node| switch(node).is_some()) {
+        return true;
+    }
+    if !iter.any(|node| switch(node).is_none()) {
+        return true;
+    }
+    iter.any(|node| switch(node).is_some())
+}
+
+fn write_sequence<T>(
+    w: &mut XmlWriter,
+    nodes: &[T],
+    inherited: MathStyle,
+    explicit_row: bool,
+    switch: impl Fn(&T) -> Option<u8>,
+    emit: impl Fn(&mut XmlWriter, &T, MathStyle) -> Result<()>,
+) -> Result<()> {
+    let grouped = explicit_row && needs_mrow(nodes, &switch);
+    if grouped {
+        w.write_event(Event::Start(BytesStart::new("mrow")))
+            .map_err(to_err)?;
+    }
+    for (style, run) in style_runs(nodes, switch) {
+        if let Some(style) = style {
+            start_math_style(w, style)?;
+        }
+        for node in run {
+            emit(w, node, style.unwrap_or(inherited))?;
+        }
+        if style.is_some() {
+            w.write_event(Event::End(BytesEnd::new("mstyle")))
+                .map_err(to_err)?;
+        }
+    }
+    if grouped {
+        w.write_event(Event::End(BytesEnd::new("mrow")))
+            .map_err(to_err)?;
+    }
+    Ok(())
+}
+
+fn write_nodes(
+    w: &mut XmlWriter,
+    nodes: &[MathNode],
+    inherited: MathStyle,
+    explicit_row: bool,
+) -> Result<()> {
+    write_sequence(
+        w,
+        nodes,
+        inherited,
+        explicit_row,
+        |node| {
+            if let MathNode::StyleSwitch(value) = node {
+                Some(*value)
+            } else {
+                None
+            }
+        },
+        write_node,
+    )
+}
+
+fn write_nodes_fast(
+    buf: &mut String,
+    arena: &AstArena,
+    nodes: &[NodeId],
+    inherited: MathStyle,
+    explicit_row: bool,
+) {
+    let switch = |&id: &NodeId| {
+        if let CompactNode::StyleSwitch(value) = *arena.node(id) {
+            Some(value)
+        } else {
+            None
+        }
+    };
+    let grouped = explicit_row && needs_mrow(nodes, switch);
+    if grouped {
+        open_tag(buf, "mrow");
+    }
+    for (style, run) in style_runs(nodes, switch) {
+        if let Some(style) = style {
+            start_math_style_fast(buf, style);
+        }
+        for &id in run {
+            write_node_fast(buf, arena, id, style.unwrap_or(inherited));
+        }
+        if style.is_some() {
+            close_tag(buf, "mstyle");
+        }
+    }
+    if grouped {
+        close_tag(buf, "mrow");
+    }
+}
+
+fn write_node(w: &mut XmlWriter, node: &MathNode, display_style: MathStyle) -> Result<()> {
     write_node_in(w, node, false, display_style)
 }
 
 /// A positional MathML child must occupy exactly one element, even when it
 /// contains an operator followed by its operand.
-fn write_argument(w: &mut XmlWriter, node: &MathNode, display_style: DisplayStyle) -> Result<()> {
+fn write_argument(w: &mut XmlWriter, node: &MathNode, display_style: MathStyle) -> Result<()> {
     write_node_in(w, node, true, display_style)
 }
 
@@ -114,7 +278,7 @@ fn write_node_in(
     w: &mut XmlWriter,
     node: &MathNode,
     single_argument: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) -> Result<()> {
     match node {
         MathNode::Number(s) => write_simple_element(w, "mn", s),
@@ -177,16 +341,7 @@ fn write_node_in(
             Ok(())
         },
 
-        MathNode::Row(children) => {
-            w.write_event(Event::Start(BytesStart::new("mrow")))
-                .map_err(to_err)?;
-            for child in children {
-                write_node(w, child, display_style)?;
-            }
-            w.write_event(Event::End(BytesEnd::new("mrow")))
-                .map_err(to_err)?;
-            Ok(())
-        },
+        MathNode::Row(children) => write_nodes(w, children, display_style, true),
 
         MathNode::Fenced {
             open,
@@ -202,12 +357,27 @@ fn write_node_in(
             }
 
             // Content
-            for item in content {
-                match item {
-                    FencedItem::Element(node) => write_node(w, node, display_style)?,
-                    FencedItem::Middle(delim) => {
-                        write_mo(w, delim, Some("true"), None)?;
+            for segment in content.split_inclusive(|item| matches!(item, FencedItem::Middle(_))) {
+                let (elements, middle) = match segment.split_last() {
+                    Some((FencedItem::Middle(delim), prefix)) => (prefix, Some(delim)),
+                    _ => (segment, None),
+                };
+                write_sequence(
+                    w,
+                    elements,
+                    display_style,
+                    false,
+                    |item| match item {
+                        FencedItem::Element(MathNode::StyleSwitch(value)) => Some(*value),
+                        _ => None,
                     },
+                    |w, item, style| match item {
+                        FencedItem::Element(node) => write_node(w, node, style),
+                        FencedItem::Middle(_) => Ok(()),
+                    },
+                )?;
+                if let Some(delim) = middle {
+                    write_mo(w, delim, Some("true"), None)?;
                 }
             }
 
@@ -242,14 +412,14 @@ fn write_node_in(
             w.write_event(Event::Empty(BytesStart::new("mprescripts")))
                 .map_err(to_err)?;
             match pre_sub {
-                Some(s) => write_argument(w, s, DisplayStyle::Inline)?,
+                Some(s) => write_argument(w, s, display_style.sup())?,
                 None => {
                     w.write_event(Event::Empty(BytesStart::new("none")))
                         .map_err(to_err)?;
                 },
             }
             match pre_sup {
-                Some(s) => write_argument(w, s, DisplayStyle::Inline)?,
+                Some(s) => write_argument(w, s, display_style.sup())?,
                 None => {
                     w.write_event(Event::Empty(BytesStart::new("none")))
                         .map_err(to_err)?;
@@ -299,15 +469,24 @@ fn write_node_in(
         ),
 
         MathNode::Fraction { kind, num, den } => {
+            let forced = fraction_style(*kind);
+            if let Some(style) = forced {
+                start_math_style(w, style)?;
+            }
+            let style = forced.unwrap_or(display_style);
             let mut elem = BytesStart::new("mfrac");
             if *kind == FractionKind::NoBar {
                 elem.push_attribute(("linethickness", "0"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_argument(w, num, DisplayStyle::Inline)?;
-            write_argument(w, den, DisplayStyle::Inline)?;
+            write_argument(w, num, style.fracnum())?;
+            write_argument(w, den, style.fracden())?;
             w.write_event(Event::End(BytesEnd::new("mfrac")))
                 .map_err(to_err)?;
+            if forced.is_some() {
+                w.write_event(Event::End(BytesEnd::new("mstyle")))
+                    .map_err(to_err)?;
+            }
             Ok(())
         },
 
@@ -324,7 +503,7 @@ fn write_node_in(
             w.write_event(Event::Start(BytesStart::new("mroot")))
                 .map_err(to_err)?;
             write_argument(w, radicand, display_style)?;
-            write_argument(w, index, DisplayStyle::Inline)?;
+            write_argument(w, index, MathStyle::ScriptScript)?;
             w.write_event(Event::End(BytesEnd::new("mroot")))
                 .map_err(to_err)?;
             Ok(())
@@ -350,10 +529,10 @@ fn write_node_in(
                     .map_err(to_err)?;
                 write_mo_char(w, *op, Some(movable))?;
                 if let Some(lower) = sub {
-                    write_argument(w, lower, DisplayStyle::Inline)?;
+                    write_argument(w, lower, display_style.sub())?;
                 }
                 if let Some(upper) = sup {
-                    write_argument(w, upper, DisplayStyle::Inline)?;
+                    write_argument(w, upper, display_style.sup())?;
                 }
                 w.write_event(Event::End(BytesEnd::new(tag)))
                     .map_err(to_err)?;
@@ -410,9 +589,7 @@ fn write_node_in(
                         td.push_attribute(("columnalign", val));
                     }
                     w.write_event(Event::Start(td)).map_err(to_err)?;
-                    for node in cell {
-                        write_node(w, node, DisplayStyle::Inline)?;
-                    }
+                    write_nodes(w, cell, MathStyle::Text, false)?;
                     w.write_event(Event::End(BytesEnd::new("mtd")))
                         .map_err(to_err)?;
                 }
@@ -513,18 +690,27 @@ fn write_node_in(
             let mut elem = BytesStart::new("mstyle");
             elem.push_attribute(("mathvariant", variant));
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            for child in children {
-                write_node(w, child, display_style)?;
-            }
+            write_nodes(w, children, display_style, false)?;
             w.write_event(Event::End(BytesEnd::new("mstyle")))
                 .map_err(to_err)?;
             Ok(())
         },
-        MathNode::MathChoice { display, .. } => {
-            // MathML doesn't have mathchoice; output the display branch
-            write_node_in(w, display, single_argument, display_style)
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
+            let branch = display_style.choose(display, text, script, script_script);
+            write_node_in(w, branch, single_argument, display_style)
         },
-        MathNode::StyleSwitch(_) => Ok(()),
+        MathNode::StyleSwitch(_) => {
+            if single_argument {
+                w.write_event(Event::Empty(BytesStart::new("mrow")))
+                    .map_err(to_err)?;
+            }
+            Ok(())
+        },
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
@@ -539,7 +725,7 @@ fn write_box_child(
     w: &mut XmlWriter,
     child: &MathNode,
     text_size: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) -> Result<()> {
     if text_size {
         let mut style = BytesStart::new("mstyle");
@@ -551,7 +737,7 @@ fn write_box_child(
         w,
         child,
         if text_size {
-            DisplayStyle::Inline
+            MathStyle::Text
         } else {
             display_style
         },
@@ -643,7 +829,7 @@ fn write_limit_base(
     w: &mut XmlWriter,
     node: &MathNode,
     movable: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) -> Result<()> {
     match node {
         MathNode::Operator(attr) => write_named_operator(
@@ -681,7 +867,7 @@ fn write_operator_group(
     w: &mut XmlWriter,
     content: &MathNode,
     movable: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) -> Result<()> {
     let mut group = BytesStart::new("mrow");
     group.push_attribute(("data-mjx-texclass", "OP"));
@@ -690,9 +876,7 @@ fn write_operator_group(
     }
     w.write_event(Event::Start(group)).map_err(to_err)?;
     if let MathNode::Row(children) = content {
-        for child in children {
-            write_node(w, child, display_style)?;
-        }
+        write_nodes(w, children, display_style, false)?;
     } else {
         write_node(w, content, display_style)?;
     }
@@ -845,16 +1029,11 @@ fn canonical_mathml_text(text: &str) -> Cow<'_, str> {
 }
 
 #[inline]
-fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId, display_style: DisplayStyle) {
+fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId, display_style: MathStyle) {
     write_node_fast_in(buf, arena, id, false, display_style);
 }
 
-fn write_argument_fast(
-    buf: &mut String,
-    arena: &AstArena,
-    id: NodeId,
-    display_style: DisplayStyle,
-) {
+fn write_argument_fast(buf: &mut String, arena: &AstArena, id: NodeId, display_style: MathStyle) {
     write_node_fast_in(buf, arena, id, true, display_style);
 }
 
@@ -863,7 +1042,7 @@ fn write_node_fast_in(
     arena: &AstArena,
     id: NodeId,
     single_argument: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) {
     match *arena.node(id) {
         CompactNode::Number(sid) => simple_element(buf, "mn", arena.str_val(sid)),
@@ -882,11 +1061,7 @@ fn write_node_fast_in(
         },
 
         CompactNode::Row(span) => {
-            buf.push_str("<mrow>");
-            for &child_id in arena.children(span) {
-                write_node_fast(buf, arena, child_id, display_style);
-            }
-            buf.push_str("</mrow>");
+            write_nodes_fast(buf, arena, arena.children(span), display_style, true)
         },
 
         CompactNode::Fenced {
@@ -901,12 +1076,17 @@ fn write_node_fast_in(
                 write_mo_fence_fast(buf, open_s);
             }
 
-            for &child_id in arena.children(content) {
-                match *arena.node(child_id) {
-                    CompactNode::Middle(sid) => {
-                        write_mo_fence_fast(buf, arena.str_val(sid));
-                    },
-                    _ => write_node_fast(buf, arena, child_id, display_style),
+            for segment in arena
+                .children(content)
+                .split_inclusive(|&id| matches!(arena.node(id), CompactNode::Middle(_)))
+            {
+                if let Some((&last, prefix)) = segment.split_last()
+                    && let CompactNode::Middle(sid) = *arena.node(last)
+                {
+                    write_nodes_fast(buf, arena, prefix, display_style, false);
+                    write_mo_fence_fast(buf, arena.str_val(sid));
+                } else {
+                    write_nodes_fast(buf, arena, segment, display_style, false);
                 }
             }
 
@@ -937,12 +1117,12 @@ fn write_node_fast_in(
             write_argument_fast(buf, arena, base, display_style);
             buf.push_str("<mprescripts/>");
             if pre_sub.is_some() {
-                write_argument_fast(buf, arena, pre_sub, DisplayStyle::Inline);
+                write_argument_fast(buf, arena, pre_sub, display_style.sub());
             } else {
                 buf.push_str("<none/>");
             }
             if pre_sup.is_some() {
-                write_argument_fast(buf, arena, pre_sup, DisplayStyle::Inline);
+                write_argument_fast(buf, arena, pre_sup, display_style.sup());
             } else {
                 buf.push_str("<none/>");
             }
@@ -991,14 +1171,22 @@ fn write_node_fast_in(
         ),
 
         CompactNode::Fraction { kind, num, den } => {
+            let forced = fraction_style(kind);
+            if let Some(style) = forced {
+                start_math_style_fast(buf, style);
+            }
+            let style = forced.unwrap_or(display_style);
             if kind == FractionKind::NoBar {
                 buf.push_str("<mfrac linethickness=\"0\">");
             } else {
                 buf.push_str("<mfrac>");
             }
-            write_argument_fast(buf, arena, num, DisplayStyle::Inline);
-            write_argument_fast(buf, arena, den, DisplayStyle::Inline);
+            write_argument_fast(buf, arena, num, style.fracnum());
+            write_argument_fast(buf, arena, den, style.fracden());
             buf.push_str("</mfrac>");
+            if forced.is_some() {
+                close_tag(buf, "mstyle");
+            }
         },
 
         CompactNode::Sqrt(inner) => {
@@ -1010,7 +1198,7 @@ fn write_node_fast_in(
         CompactNode::Root { index, radicand } => {
             buf.push_str("<mroot>");
             write_argument_fast(buf, arena, radicand, display_style);
-            write_argument_fast(buf, arena, index, DisplayStyle::Inline);
+            write_argument_fast(buf, arena, index, MathStyle::ScriptScript);
             buf.push_str("</mroot>");
         },
 
@@ -1031,10 +1219,10 @@ fn write_node_fast_in(
                 open_tag(buf, tag);
                 write_mo_char_fast(buf, op, Some(movable));
                 if sub.is_some() {
-                    write_argument_fast(buf, arena, sub, DisplayStyle::Inline);
+                    write_argument_fast(buf, arena, sub, display_style.sub());
                 }
                 if sup.is_some() {
-                    write_argument_fast(buf, arena, sup, DisplayStyle::Inline);
+                    write_argument_fast(buf, arena, sup, display_style.sup());
                 }
                 close_tag(buf, tag);
             } else {
@@ -1103,12 +1291,16 @@ fn write_node_fast_in(
                     // Write cell contents
                     match *arena.node(cell_id) {
                         CompactNode::Row(span) => {
-                            for &child_id in arena.children(span) {
-                                write_node_fast(buf, arena, child_id, DisplayStyle::Inline);
-                            }
+                            write_nodes_fast(
+                                buf,
+                                arena,
+                                arena.children(span),
+                                MathStyle::Text,
+                                false,
+                            );
                         },
                         _ => {
-                            write_node_fast(buf, arena, cell_id, DisplayStyle::Inline);
+                            write_node_fast(buf, arena, cell_id, MathStyle::Text);
                         },
                     }
                     buf.push_str("</mtd>");
@@ -1190,9 +1382,7 @@ fn write_node_fast_in(
             buf.push_str("<mstyle mathvariant=\"");
             buf.push_str(variant);
             buf.push_str("\">");
-            for &child_id in arena.children(span) {
-                write_node_fast(buf, arena, child_id, display_style);
-            }
+            write_nodes_fast(buf, arena, arena.children(span), display_style, false);
             buf.push_str("</mstyle>");
         },
 
@@ -1223,12 +1413,21 @@ fn write_node_fast_in(
             let _ = write!(buf, " depth=\"{}em\"", (-lift.as_f64()).max(0.0));
             buf.push_str("/>");
         },
-        CompactNode::StyleSwitch(_) => {},
+        CompactNode::StyleSwitch(_) => {
+            if single_argument {
+                buf.push_str("<mrow/>");
+            }
+        },
         CompactNode::SizeScale(_) => {},
         CompactNode::Newline => {},
-        CompactNode::MathChoice { display, .. } => {
-            // MathML doesn't have mathchoice; output the display branch
-            write_node_fast_in(buf, arena, display, single_argument, display_style);
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => {
+            let branch = display_style.choose(display, text, script, script_script);
+            write_node_fast_in(buf, arena, branch, single_argument, display_style);
         },
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
@@ -1285,7 +1484,7 @@ impl ScriptBase {
         }
     }
 
-    fn placement(&self, under_over: Option<bool>, display: DisplayStyle) -> ScriptPlacement {
+    fn placement(&self, under_over: Option<bool>, display: MathStyle) -> ScriptPlacement {
         match self {
             Self::Named(style) => {
                 let movable = under_over.or(match style {
@@ -1299,8 +1498,7 @@ impl ScriptBase {
                 }
             },
             Self::OperatorGroup => ScriptPlacement {
-                stacked: under_over
-                    .is_some_and(|movable| !movable || display == DisplayStyle::Block),
+                stacked: under_over.is_some_and(|movable| !movable || display.is_display()),
                 base_movable: under_over,
             },
             Self::Other => ScriptPlacement {
@@ -1375,7 +1573,7 @@ fn write_scripts(
     lower: Option<&MathNode>,
     upper: Option<&MathNode>,
     under_over: Option<bool>,
-    display: DisplayStyle,
+    display: MathStyle,
 ) -> Result<()> {
     let script_base = ScriptBase::for_node(base);
     let place = script_base.placement(under_over, display);
@@ -1403,10 +1601,10 @@ fn write_scripts(
         write_argument(w, base, display)?;
     }
     if let Some(sub) = lower {
-        write_argument(w, sub, DisplayStyle::Inline)?;
+        write_argument(w, sub, display.sub())?;
     }
     if let Some(sup) = upper {
-        write_argument(w, sup, DisplayStyle::Inline)?;
+        write_argument(w, sup, display.sup())?;
     }
     w.write_event(Event::End(BytesEnd::new(tag)))
         .map_err(to_err)
@@ -1419,7 +1617,7 @@ fn write_scripts_fast(
     lower: NodeId,
     upper: NodeId,
     under_over: Option<bool>,
-    display: DisplayStyle,
+    display: MathStyle,
 ) {
     let script_base = ScriptBase::for_compact(arena, base);
     let place = script_base.placement(under_over, display);
@@ -1451,10 +1649,10 @@ fn write_scripts_fast(
         write_argument_fast(buf, arena, base, display);
     }
     if lower.is_some() {
-        write_argument_fast(buf, arena, lower, DisplayStyle::Inline);
+        write_argument_fast(buf, arena, lower, display.sub());
     }
     if upper.is_some() {
-        write_argument_fast(buf, arena, upper, DisplayStyle::Inline);
+        write_argument_fast(buf, arena, upper, display.sup());
     }
     close_tag(buf, tag);
 }
@@ -1524,7 +1722,7 @@ fn write_limit_base_fast(
     arena: &AstArena,
     id: NodeId,
     movable: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) {
     match *arena.node(id) {
         CompactNode::Operator { name, .. } => write_named_operator_fast(
@@ -1561,7 +1759,7 @@ fn write_operator_group_fast(
     arena: &AstArena,
     content: NodeId,
     movable: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) {
     buf.push_str(if movable {
         r#"<mrow data-mjx-texclass="OP" data-mathema-limits="movable">"#
@@ -1569,9 +1767,7 @@ fn write_operator_group_fast(
         r#"<mrow data-mjx-texclass="OP">"#
     });
     if let CompactNode::Row(span) = *arena.node(content) {
-        for &child in arena.children(span) {
-            write_node_fast(buf, arena, child, display_style);
-        }
+        write_nodes_fast(buf, arena, arena.children(span), display_style, false);
     } else {
         write_node_fast(buf, arena, content, display_style);
     }
@@ -1599,7 +1795,7 @@ fn write_box_child_fast(
     arena: &AstArena,
     child: NodeId,
     text_size: bool,
-    display_style: DisplayStyle,
+    display_style: MathStyle,
 ) {
     if text_size {
         buf.push_str(r#"<mstyle displaystyle="false" scriptlevel="0">"#);
@@ -1609,7 +1805,7 @@ fn write_box_child_fast(
         arena,
         child,
         if text_size {
-            DisplayStyle::Inline
+            MathStyle::Text
         } else {
             display_style
         },

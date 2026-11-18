@@ -28,7 +28,7 @@ pub(crate) mod path_writer;
 #[cfg(feature = "raster")]
 pub mod raster;
 pub mod spacing;
-pub mod style;
+pub use crate::ast::style;
 #[cfg(feature = "render")]
 pub(crate) mod subset;
 #[cfg(feature = "render")]
