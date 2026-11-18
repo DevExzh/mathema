@@ -3834,6 +3834,31 @@ mod tests {
     }
 
     #[test]
+    fn multicolumn_groups_are_only_interpreted_at_table_cell_boundaries() {
+        let canonical = |input: &str| {
+            let config = Config::default();
+            let mut expr = LatexReader::parse_compact(input, &config).unwrap().expr;
+            crate::ast::normalize::normalize_compact_expr(&mut expr).unwrap();
+            LatexWriter::write_compact(&expr, &config).unwrap()
+        };
+        for (source, overrides) in [
+            (r"x\multicolumn{1}{r}{\kern1pt y}+z", 0),
+            (
+                r"\begin{array}{l}a\\\multicolumn{1}{r}{\kern1pt y}\end{array}",
+                1,
+            ),
+            (
+                r"\begin{array}{l}\frac{x}{\multicolumn{1}{r}{ab}}\end{array}",
+                0,
+            ),
+        ] {
+            let first = canonical(source);
+            assert_eq!(first.matches(r"\multicolumn").count(), overrides, "{first}");
+            assert_eq!(canonical(&first), first);
+        }
+    }
+
+    #[test]
     fn nested_empty_color_script_roundtrip_stays_canonical() {
         let config = Config::default();
         let input = r"A\teal^\teal^2";

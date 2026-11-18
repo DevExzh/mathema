@@ -3538,7 +3538,6 @@ impl LatexCompactParser {
 
             // --- Operatorname ---
             "operatorname" => self.parse_operatorname(input),
-            "multicolumn" => self.parse_multicolumn(input),
 
             // --- Additional binomials ---
             "dbinom" => self.parse_styled_binom(input, 0),
@@ -4902,7 +4901,7 @@ impl LatexCompactParser {
         }
     }
 
-    fn parse_multicolumn<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+    fn parse_multicolumn<'a>(&mut self, input: &'a str) -> IResult<&'a str, (ColumnAlign, NodeId)> {
         let (input, _) = ws(input)?;
         let Some((input, span_count)) = super::mhchem::capture_braced(input) else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -4936,11 +4935,7 @@ impl LatexCompactParser {
             },
         };
         let (input, content) = self.parse_required_group(input)?;
-        Ok((
-            input,
-            self.arena
-                .push_node(CompactNode::AlignedCell { alignment, content }),
-        ))
+        Ok((input, (alignment, content)))
     }
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -7837,6 +7832,22 @@ impl LatexCompactParser {
                 continue;
             }
             break;
+        }
+        if let Some(after) = strip_control_word(rest, "multicolumn") {
+            // An alignment override belongs to a cell template. Recognizing
+            // it here keeps it out of unrelated math lists and nested groups.
+            self.ensure_node_budget(rest)?;
+            let (after, (alignment, content)) = self.parse_multicolumn(after)?;
+            let (rest, mut trailing) = self.parse_table_cell(after)?;
+            if trailing.is_empty() {
+                trailing.push(
+                    self.arena
+                        .push_node(CompactNode::AlignedCell { alignment, content }),
+                );
+            } else {
+                trailing.insert(0, content);
+            }
+            return Ok((rest, (trailing, cc)));
         }
         let (rest, ids) = self.parse_table_cell(rest)?;
         Ok((rest, (ids, cc)))
