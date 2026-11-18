@@ -656,6 +656,31 @@ fn matrix_canonicalization_and_smallmatrix_roundtrip_preserve_geometry() {
 }
 
 #[test]
+fn starred_matrix_alignment_extends_through_later_rows() {
+    for (option, expected) in [('l', "left"), ('r', "right")] {
+        let source = format!(r"\begin{{pmatrix*}}[{option}]x\\x&yy\\xxx&y\end{{pmatrix*}}");
+        let parsed = crate::from_latex(&source).unwrap();
+        let canonical = parsed.to_latex().unwrap();
+        let reparsed = crate::from_latex(&canonical).unwrap();
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(canonical.contains(&format!(r"\begin{{matrix*}}[{option}]")));
+        assert_eq!(
+            mathml
+                .matches(&format!("columnalign=\"{expected}\""))
+                .count(),
+            6
+        );
+        assert_eq!(mathml, reparsed.to_mathml().unwrap());
+        #[cfg(feature = "render")]
+        assert_eq!(parsed.to_svg().unwrap(), reparsed.to_svg().unwrap());
+    }
+    let config = Config::default().with_strictness(Strictness::Strict);
+    for source in [r"\begin{matrix*}[", r"\begin{matrix*}[左"] {
+        assert!(crate::from_latex_with(source, &config).is_err());
+    }
+}
+
+#[test]
 #[cfg(feature = "render")]
 fn matrix_cell_display_choice_survives_raw_and_normalized_export() {
     use crate::{Format, convert, from_latex};

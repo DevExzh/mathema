@@ -1236,7 +1236,10 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             cells,
             num_cols,
             add_jot,
-            ..
+            arraystretch_pct,
+            array_style,
+            col_seps,
+            row_seps,
         } => {
             let columns = arena.children(col_aligns);
             let cell_ids = arena.children(cells);
@@ -1249,36 +1252,64 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 && cell_ids
                     .iter()
                     .all(|&cell| super::cell_after_style(arena, cell, 0).is_some());
-            let env = match arena.array_environment(id) {
-                Some(crate::ast::arena::ArrayEnvironment::Matrix) => "matrix",
-                Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) => "smallmatrix",
-                None => {
-                    if ams
-                        && nc == 1
-                        && matches!(columns, [id] if matches!(*arena.node(*id), CompactNode::ColAlign(ColumnAlign::Center)))
-                    {
-                        "gathered"
-                    } else if ams
-                        && nc >= 2
-                        && columns.len() == nc
-                        && columns.iter().enumerate().all(|(i, &id)| {
-                            let expected = if i % 2 == 0 {
-                                ColumnAlign::Right
-                            } else {
-                                ColumnAlign::Left
-                            };
-                            matches!(*arena.node(id), CompactNode::ColAlign(col) if col == expected)
-                        })
-                    {
-                        "aligned"
+            // Public arena callers can edit a parsed table. Trust its source
+            // environment only while the current columns and spacing fit it.
+            let matrix = arena.array_environment(id).and_then(|source| {
+                if array_style || add_jot || col_seps != 0 || row_seps != 0 {
+                    return None;
+                }
+                let align =
+                    columns
+                        .first()
+                        .map_or(ColumnAlign::Center, |&col| match *arena.node(col) {
+                            CompactNode::ColAlign(align) => align,
+                            _ => ColumnAlign::Center,
+                        });
+                if !columns
+                    .iter()
+                    .all(|&col| matches!(*arena.node(col), CompactNode::ColAlign(a) if a == align))
+                    || (align != ColumnAlign::Center && columns.len() != nc)
+                {
+                    return None;
+                }
+                use crate::ast::arena::ArrayEnvironment;
+                match (source, arraystretch_pct, align) {
+                    (ArrayEnvironment::Matrix, 100, ColumnAlign::Center) => Some(("matrix", "")),
+                    (ArrayEnvironment::Matrix, 100, ColumnAlign::Left) => Some(("matrix*", "[l]")),
+                    (ArrayEnvironment::Matrix, 100, ColumnAlign::Right) => Some(("matrix*", "[r]")),
+                    (ArrayEnvironment::SmallMatrix, 50, ColumnAlign::Center) => {
+                        Some(("smallmatrix", ""))
+                    },
+                    _ => None,
+                }
+            });
+            let (env, option) = if let Some(matrix) = matrix {
+                matrix
+            } else if ams
+                && nc == 1
+                && matches!(columns, [id] if matches!(*arena.node(*id), CompactNode::ColAlign(ColumnAlign::Center)))
+            {
+                ("gathered", "")
+            } else if ams
+                && nc >= 2
+                && columns.len() == nc
+                && columns.iter().enumerate().all(|(i, &id)| {
+                    let expected = if i % 2 == 0 {
+                        ColumnAlign::Right
                     } else {
-                        "array"
-                    }
-                },
+                        ColumnAlign::Left
+                    };
+                    matches!(*arena.node(id), CompactNode::ColAlign(col) if col == expected)
+                })
+            {
+                ("aligned", "")
+            } else {
+                ("array", "")
             };
             buf.push_str(r"\begin{");
             buf.push_str(env);
             buf.push('}');
+            buf.push_str(option);
             if env == "array" {
                 buf.push('{');
                 for &id in columns {

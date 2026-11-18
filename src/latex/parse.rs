@@ -8,7 +8,7 @@ use nom::character::complete::char;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{ArrayEnvironment, AstArena};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
@@ -2228,14 +2228,6 @@ impl LatexCompactParser {
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
         self.build_array_with_spacing(columns, rows, 100, false, 0, 0, false)
-    }
-
-    fn mark_array_environment(
-        &mut self,
-        id: NodeId,
-        environment: crate::ast::arena::ArrayEnvironment,
-    ) {
-        self.arena.mark_array_environment(id, environment);
     }
 
     fn build_array_with_seps_rows(
@@ -6245,22 +6237,22 @@ impl LatexCompactParser {
     }
 
     fn parse_matrix_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
-        // Starred variants (matrix*, pmatrix*, etc.) accept optional [l], [r], [c]
-        let (input, col_align) = if env_name.ends_with('*') {
+        let (input, align) = if env_name.ends_with('*') {
             let (input, _) = ws(input)?;
-            if input.starts_with('[') {
-                let a = match input.as_bytes().get(1) {
+            if let Some(option) = input.strip_prefix('[') {
+                let (input, spec) = nom::bytes::complete::take_until("]")(option)?;
+                let (input, _) = char(']')(input)?;
+                let align = match spec.trim().as_bytes().first() {
                     Some(b'l') => ColumnAlign::Left,
                     Some(b'r') => ColumnAlign::Right,
                     _ => ColumnAlign::Center,
                 };
-                let end = input.find(']').unwrap_or(2);
-                (&input[end + 1..], Some(a))
+                (input, align)
             } else {
-                (input, None)
+                (input, ColumnAlign::Center)
             }
         } else {
-            (input, None)
+            (input, ColumnAlign::Center)
         };
 
         let (input, rows) = self.parse_table_body(input)?;
@@ -6281,15 +6273,12 @@ impl LatexCompactParser {
             _ => ("", ""),
         };
 
-        let align = col_align.unwrap_or(ColumnAlign::Center);
-        let columns: SmallVec<[ColumnAlign; 4]> = if let Some(first_row) = rows.first() {
-            smallvec::smallvec![align; first_row.len()]
-        } else {
-            SmallVec::new()
-        };
-
+        // mathtools repeats the optional alignment for every matrix column.
+        let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![align; width];
         let array_id = self.build_array(&columns, rows);
-        self.mark_array_environment(array_id, crate::ast::arena::ArrayEnvironment::Matrix);
+        self.arena
+            .mark_array_environment(array_id, ArrayEnvironment::Matrix);
 
         if open_s.is_empty() {
             Ok((input, array_id))
@@ -7383,7 +7372,8 @@ impl LatexCompactParser {
 
         self.apply_table_cell_style(&mut rows, 2);
         let array = self.build_array_with_spacing(&columns, rows, 50, false, 0, 0, false);
-        self.mark_array_environment(array, crate::ast::arena::ArrayEnvironment::SmallMatrix);
+        self.arena
+            .mark_array_environment(array, ArrayEnvironment::SmallMatrix);
         Ok((input, array))
     }
 

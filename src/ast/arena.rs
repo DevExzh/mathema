@@ -9,20 +9,10 @@ pub(crate) enum ArrayEnvironment {
     SmallMatrix,
 }
 
-impl From<ArrayEnvironment> for Provenance {
-    fn from(environment: ArrayEnvironment) -> Self {
-        match environment {
-            ArrayEnvironment::Matrix => Self::Matrix,
-            ArrayEnvironment::SmallMatrix => Self::SmallMatrix,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Provenance {
     SpaceBasis(SpaceBasis),
-    Matrix,
-    SmallMatrix,
+    Array(ArrayEnvironment),
 }
 
 /// Arena-based storage for compact AST nodes.
@@ -235,7 +225,7 @@ impl AstArena {
         &mut self.nodes[id.index()]
     }
 
-    /// Replace a node by an existing node, preserving sparse spacing data
+    /// Replace a node by an existing node, preserving its source metadata
     /// when normalization unwraps a group or elides an empty script field.
     pub(crate) fn replace_from(&mut self, destination: NodeId, source: NodeId) {
         if destination == source {
@@ -252,23 +242,28 @@ impl AstArena {
     /// Return the explicit unit basis for a spacing node, if one was parsed.
     #[inline]
     pub fn space_basis(&self, id: NodeId) -> Option<SpaceBasis> {
-        match (self.provenance.get(&id).copied(), self.node(id)) {
-            (Some(Provenance::SpaceBasis(basis)), CompactNode::Space(_)) => Some(basis),
+        match *self.provenance.get(&id)? {
+            Provenance::SpaceBasis(basis) if matches!(self.node(id), CompactNode::Space(_)) => {
+                Some(basis)
+            },
             _ => None,
         }
     }
 
     #[inline]
     pub(crate) fn mark_array_environment(&mut self, id: NodeId, environment: ArrayEnvironment) {
-        self.provenance.insert(id, environment.into());
+        // A refused push returns the last existing id. Its metadata belongs to
+        // the original node, even while propagating the arena size error.
+        if !self.size_overflow {
+            self.provenance.insert(id, Provenance::Array(environment));
+        }
     }
 
     #[inline]
     pub(crate) fn array_environment(&self, id: NodeId) -> Option<ArrayEnvironment> {
-        match (self.provenance.get(&id).copied(), self.node(id)) {
-            (Some(Provenance::Matrix), CompactNode::Array { .. }) => Some(ArrayEnvironment::Matrix),
-            (Some(Provenance::SmallMatrix), CompactNode::Array { .. }) => {
-                Some(ArrayEnvironment::SmallMatrix)
+        match *self.provenance.get(&id)? {
+            Provenance::Array(env) if matches!(self.node(id), CompactNode::Array { .. }) => {
+                Some(env)
             },
             _ => None,
         }
@@ -409,6 +404,17 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn absent_or_refused_nodes_do_not_acquire_provenance() {
+        let mut arena = small_arena(1);
+        assert_eq!(arena.space_basis(NodeId::NONE), None);
+        let space = arena.push_space(crate::ast::Rational::new(1, 2), SpaceBasis::TextEm);
+        let refused = arena.push_node(CompactNode::Newline);
+        assert_eq!(refused, space);
+        arena.mark_array_environment(refused, ArrayEnvironment::Matrix);
+        assert_eq!(arena.space_basis(space), Some(SpaceBasis::TextEm));
     }
 
     #[test]
