@@ -283,6 +283,25 @@ fn layout_underover() {
 }
 
 #[test]
+fn singleton_rows_preserve_inline_integral_limit_geometry() {
+    let parse = |base: &str| {
+        let xml = format!(
+            r#"<math display="inline"><munderover>{base}<mi>a</mi><mi>b</mi></munderover></math>"#
+        );
+        crate::from_mathml(&xml).unwrap()
+    };
+    let integral = r#"<mo movablelimits="true">∫</mo>"#;
+    let bare = parse(integral);
+    let wrapped = parse(&format!("<mrow><mrow>{integral}</mrow></mrow>"));
+    for style in [MathStyle::Text, MathStyle::Script] {
+        let b = layout_expr(&bare.expr(), style, &default_options());
+        let w = layout_expr(&wrapped.expr(), style, &default_options());
+        assert_eq!((b.width, b.height, b.depth), (w.width, w.height, w.depth));
+    }
+    assert_eq!(bare.to_svg_text().unwrap(), wrapped.to_svg_text().unwrap());
+}
+
+#[test]
 fn movable_large_operator_limits_follow_math_style_on_heap_and_arena() {
     fn movable_integral() -> MathNode {
         MathNode::UnderOver {

@@ -7,6 +7,43 @@ pub(super) fn is_large_op(node: &MathNode) -> bool {
     matches!(node, MathNode::Symbol(SymbolKind::LargeOp, _))
 }
 
+/// MathML lets a singleton row stand in for its core operator when deciding
+/// whether under/over limits move to the side in compact styles.
+pub(super) fn inline_limit_base(
+    mut base: &MathNode,
+    movable: bool,
+    style: MathStyle,
+) -> Option<&MathNode> {
+    if !movable || style.is_display() {
+        return None;
+    }
+    while let MathNode::Row(nodes) = base {
+        let [child] = nodes.as_slice() else {
+            return None;
+        };
+        base = child;
+    }
+    is_large_op(base).then_some(base)
+}
+
+pub(super) fn inline_limit_base_c(
+    ast: &AstArena,
+    mut base: NodeId,
+    movable: bool,
+    style: MathStyle,
+) -> Option<NodeId> {
+    if !movable || style.is_display() {
+        return None;
+    }
+    while let CompactNode::Row(span) = *ast.node(base) {
+        let &[child] = ast.children(span) else {
+            return None;
+        };
+        base = child;
+    }
+    is_large_op_c(ast, base).then_some(base)
+}
+
 /// Check whether a MathNode wants above/below limits in the given style.
 /// Returns true for: Symbol(LargeOp) in display mode, Operator with AboveBelow limits,
 /// or Operator with Default limits in display mode.

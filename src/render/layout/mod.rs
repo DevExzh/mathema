@@ -517,7 +517,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             over,
             movable_limits,
         } => {
-            if *movable_limits && is_large_op(base) && !ctx.style.is_display() {
+            if let Some(base) = inline_limit_base(base, *movable_limits, ctx.style) {
                 layout_superscript(base, over, ctx)
             } else {
                 layout_overscript(base, over, ctx)
@@ -528,7 +528,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             under,
             movable_limits,
         } => {
-            if *movable_limits && is_large_op(base) && !ctx.style.is_display() {
+            if let Some(base) = inline_limit_base(base, *movable_limits, ctx.style) {
                 layout_subscript(base, under, ctx)
             } else {
                 layout_underscript(base, under, ctx)
@@ -540,7 +540,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             over,
             movable_limits,
         } => {
-            if *movable_limits && is_large_op(base) && !ctx.style.is_display() {
+            if let Some(base) = inline_limit_base(base, *movable_limits, ctx.style) {
                 layout_subsup(base, under, over, ctx)
             } else {
                 layout_underover(base, under, over, ctx)
@@ -1356,7 +1356,7 @@ fn layout_node_arena(
             over,
             movable_limits,
         } => {
-            if movable_limits && is_large_op_c(ast, base) && !ctx.style.is_display() {
+            if let Some(base) = inline_limit_base_c(ast, base, movable_limits, ctx.style) {
                 layout_superscript_arena(ast, base, over, arena, ctx)
             } else {
                 layout_overscript_arena(ast, base, over, arena, ctx)
@@ -1367,7 +1367,7 @@ fn layout_node_arena(
             under,
             movable_limits,
         } => {
-            if movable_limits && is_large_op_c(ast, base) && !ctx.style.is_display() {
+            if let Some(base) = inline_limit_base_c(ast, base, movable_limits, ctx.style) {
                 layout_subscript_arena(ast, base, under, arena, ctx)
             } else {
                 layout_underscript_arena(ast, base, under, arena, ctx)
@@ -1379,7 +1379,7 @@ fn layout_node_arena(
             over,
             movable_limits,
         } => {
-            if movable_limits && is_large_op_c(ast, base) && !ctx.style.is_display() {
+            if let Some(base) = inline_limit_base_c(ast, base, movable_limits, ctx.style) {
                 layout_subsup_arena(ast, base, under, over, arena, ctx)
             } else {
                 layout_underover_arena(ast, base, under, over, arena, ctx)
