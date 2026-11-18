@@ -462,6 +462,25 @@ fn text_in_math() {
 }
 
 #[test]
+fn scoped_color_preserves_the_enclosing_math_font() {
+    use mathema::render::{RenderOptions, render_to_svg};
+
+    let options = RenderOptions::default();
+    for font in [r"\mathbf", r"\mathsf", r"\mathbb"] {
+        let inner = mathema::from_latex(&format!(r"{font}{{\textcolor{{red}}{{a}}}}")).unwrap();
+        let outer = mathema::from_latex(&format!(r"\textcolor{{red}}{{{font}{{a}}}}")).unwrap();
+        let svg = outer.to_svg_text_with(&options).unwrap();
+        assert!(svg.contains(r#"fill="red""#), "{font}");
+        assert_eq!(inner.to_svg_text_with(&options).unwrap(), svg, "{font}");
+        assert_eq!(
+            render_to_svg(&inner.expr(), &options).unwrap(),
+            svg,
+            "{font}"
+        );
+    }
+}
+
+#[test]
 fn color_node() {
     let svg = latex_to_svg(r"\textcolor{red}{x}");
     assert_valid_svg(&svg, "color");

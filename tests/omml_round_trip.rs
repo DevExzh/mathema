@@ -34,39 +34,20 @@ fn nodes(para: &OmmlParagraph) -> Vec<Vec<MathNode>> {
         .collect()
 }
 
-struct DropColors;
-
-impl MutVisitor for DropColors {
-    fn visit_node_mut(&mut self, node: &mut MathNode) {
-        if matches!(node, MathNode::Color { .. }) {
-            let replacement = match std::mem::replace(node, MathNode::Row(Vec::new())) {
-                MathNode::Color { content, .. } => *content,
-                other => other,
-            };
-            *node = replacement;
-            self.visit_node_mut(node);
-        } else {
+/// Default OMML export omits host run properties, including foreground color.
+fn drop_expected_colors(nodes: &mut [MathNode]) {
+    struct DropColors;
+    impl MutVisitor for DropColors {
+        fn visit_node_mut(&mut self, node: &mut MathNode) {
+            while let MathNode::Color { content, .. } = node {
+                *node = std::mem::replace(content.as_mut(), MathNode::Row(Vec::new()));
+            }
             walk_node_mut(self, node);
         }
     }
-}
-
-fn without_colors(mut equations: Vec<Vec<MathNode>>) -> Vec<Vec<MathNode>> {
-    let mut visitor = DropColors;
-    for equation in &mut equations {
-        for node in equation {
-            visitor.visit_node_mut(node);
-        }
+    for node in nodes {
+        DropColors.visit_node_mut(node);
     }
-    equations
-}
-
-fn without_colors_expr(mut nodes: Vec<MathNode>) -> Vec<MathNode> {
-    let mut visitor = DropColors;
-    for node in &mut nodes {
-        visitor.visit_node_mut(node);
-    }
-    nodes
 }
 
 /// Read, write, read again and write again: the AST and the markup must be
@@ -75,20 +56,18 @@ fn round_trip(name: &str, options: &OmmlOptions) -> (OmmlParagraph, String) {
     let config = Config::default();
     let source = fixture(name);
     let first = OmmlReader::parse_paragraph(&source, &config).unwrap();
-    let (out1, _) = OmmlWriter::write_paragraph(&first, &config, options).unwrap();
+    let (out1, diagnostics) = OmmlWriter::write_paragraph(&first, &config, options).unwrap();
     check_schema(&out1);
     let second = OmmlReader::parse_paragraph(&out1, &config).unwrap();
-    let first_nodes = nodes(&first);
-    let second_nodes = nodes(&second);
-    if options.run_properties == OmmlRunProperties::None {
-        assert_eq!(
-            without_colors(first_nodes),
-            without_colors(second_nodes),
-            "{name}: AST changed\n{out1}"
-        );
-    } else {
-        assert_eq!(first_nodes, second_nodes, "{name}: AST changed\n{out1}");
+    let mut expected = nodes(&first);
+    if options.run_properties == OmmlRunProperties::None
+        && diagnostics.iter().any(|d| d.message.contains("run color"))
+    {
+        for equation in &mut expected {
+            drop_expected_colors(equation);
+        }
     }
+    assert_eq!(expected, nodes(&second), "{name}: AST changed\n{out1}");
     assert_eq!(first.justification, second.justification);
     let (out2, _) = OmmlWriter::write_paragraph(&second, &config, options).unwrap();
     assert_eq!(out1, out2, "{name}: OMML not stable");
@@ -281,11 +260,9 @@ fn single_expression_api_round_trips_fixtures() {
         let out1 = <OmmlWriter as mathema::writer::Writer>::write(&first.expr, &config).unwrap();
         check_schema(&out1);
         let second = OmmlReader::parse(&out1, &config).unwrap();
-        assert_eq!(
-            without_colors_expr(first.expr.nodes),
-            without_colors_expr(second.expr.nodes),
-            "{name}\n{out1}"
-        );
+        let mut expected = first.expr.nodes;
+        drop_expected_colors(&mut expected);
+        assert_eq!(expected, second.expr.nodes, "{name}\n{out1}");
     }
 }
 

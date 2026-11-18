@@ -17,6 +17,18 @@ pub fn normalize_expr(expr: &mut MathExpr) {
     normalize_nodes_depth(&mut expr.nodes, 0);
 }
 
+/// Match the compact normalizer when a row contains a color name that the
+/// LaTeX writer elides: its content joins the surrounding sequence.
+fn push_row_child(children: &mut Vec<MathNode>, node: MathNode) {
+    match node {
+        MathNode::Color { color, content } if is_unwritable_color(&color) => match *content {
+            MathNode::Row(inner) => children.extend(inner),
+            other => children.push(other),
+        },
+        other => children.push(other),
+    }
+}
+
 fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
     // Phase 1: recursively normalize each child
     for node in nodes.iter_mut() {
@@ -41,9 +53,11 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
             },
             MathNode::Row(children) => {
                 // Flatten
-                flattened.extend(children);
+                for child in children {
+                    push_row_child(&mut flattened, child);
+                }
             },
-            other => flattened.push(other),
+            other => push_row_child(&mut flattened, other),
         }
     }
 

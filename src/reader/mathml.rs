@@ -2512,6 +2512,17 @@ mod tests {
     }
 
     #[test]
+    fn normalized_heap_and_compact_rows_agree_on_unwritable_color() {
+        let xml = r#"<math><mstyle mathcolor="red&amp;blue"><mrow><mi>x</mi><mo>+</mo><mi>y</mi></mrow></mstyle><mi>z</mi></math>"#;
+        let cfg = Config::default();
+        let mut heap = MathmlReader::parse(xml, &cfg).unwrap().expr;
+        let mut compact = MathmlReader::parse_compact(xml, &cfg).unwrap().expr;
+        crate::ast::normalize::normalize_expr(&mut heap);
+        crate::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        assert_eq!(heap, compact.to_math_expr());
+    }
+
+    #[test]
     fn mstyle_mathcolor_survives_compact_reimport_and_stays_scoped() {
         let input = r#"<math><mstyle mathcolor="red"><mi>x</mi><mstyle mathcolor="blue"><mi>y</mi></mstyle><mi>z</mi></mstyle><mi>w</mi></math>"#;
         let result = crate::from_mathml(input).unwrap();
