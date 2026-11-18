@@ -717,7 +717,7 @@ impl<'a> MathmlCompactParser<'a> {
                 } else {
                     self.arena.push_node(CompactNode::Symbol(kind, sid))
                 };
-                if let Some(attributes) = fence_attributes(start) {
+                if let Some(attributes) = attrs.fence {
                     self.fence_attributes.insert(id, attributes);
                 }
                 if kind == SymbolKind::LargeOp {
@@ -1677,37 +1677,7 @@ struct OperatorAttributes {
     movable_limits: Option<bool>,
     named_operator: bool,
     texclass_op: bool,
-}
-
-fn fence_attributes(start: &quick_xml::events::BytesStart<'_>) -> Option<FenceAttributes> {
-    let mut result = FenceAttributes::default();
-    let mut found = false;
-    for attr in start.attributes().flatten() {
-        match attr.key.as_ref() {
-            "fence" => {
-                found = true;
-                result.fence = match unescape_attr(&attr.value).trim() {
-                    value if value.eq_ignore_ascii_case("true") => Some(true),
-                    value if value.eq_ignore_ascii_case("false") => Some(false),
-                    _ => None,
-                };
-            },
-            "stretchy" => {
-                found = true;
-                result.stretchy = match unescape_attr(&attr.value).trim() {
-                    value if value.eq_ignore_ascii_case("true") => Some(true),
-                    value if value.eq_ignore_ascii_case("false") => Some(false),
-                    _ => None,
-                };
-            },
-            "form" => {
-                found = true;
-                result.form = Some(unescape_attr(&attr.value));
-            },
-            _ => {},
-        }
-    }
-    found.then_some(result)
+    fence: Option<FenceAttributes>,
 }
 
 fn matching_fence(open: &str, close: &str) -> bool {
@@ -1748,6 +1718,24 @@ fn operator_attributes(start: &quick_xml::events::BytesStart<'_>) -> OperatorAtt
     let mut result = OperatorAttributes::default();
     for attr in start.attributes().flatten() {
         match attr.key.as_ref() {
+            key @ ("fence" | "stretchy") => {
+                let value = unescape_attr(&attr.value);
+                let value = match value.trim() {
+                    v if v.eq_ignore_ascii_case("true") => Some(true),
+                    v if v.eq_ignore_ascii_case("false") => Some(false),
+                    _ => None,
+                };
+                let attrs = result.fence.get_or_insert_with(FenceAttributes::default);
+                if key == "fence" {
+                    attrs.fence = value;
+                } else {
+                    attrs.stretchy = value;
+                }
+            },
+            "form" => {
+                let attrs = result.fence.get_or_insert_with(FenceAttributes::default);
+                attrs.form = Some(unescape_attr(&attr.value).trim().to_ascii_lowercase());
+            },
             "movablelimits" => {
                 if result.movable_limits.is_none() {
                     result.movable_limits = match unescape_attr(&attr.value).as_str() {
