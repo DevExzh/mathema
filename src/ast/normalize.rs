@@ -119,8 +119,32 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
 
 fn is_effectively_empty_math(node: &MathNode) -> bool {
     match node {
-        MathNode::Row(children) => children.is_empty(),
+        MathNode::Row(children) => children.iter().all(is_effectively_empty_math),
+        // Styled wrappers are the heap representation for transparent
+        // compact wrappers such as an empty color argument.
+        MathNode::Styled(_, children) => children.iter().all(is_effectively_empty_math),
         MathNode::Scaled { content, .. } => is_effectively_empty_math(content),
+        MathNode::Space(width) => width.num == 0,
+        MathNode::Subscript { base, sub } => {
+            is_effectively_empty_math(base) && is_effectively_empty_math(sub)
+        },
+        MathNode::Superscript { base, sup } => {
+            is_effectively_empty_math(base) && is_effectively_empty_math(sup)
+        },
+        MathNode::SubSup { base, sub, sup } => {
+            is_effectively_empty_math(base)
+                && is_effectively_empty_math(sub)
+                && is_effectively_empty_math(sup)
+        },
+        MathNode::PreScripts {
+            base,
+            pre_sub,
+            pre_sup,
+        } => {
+            is_effectively_empty_math(base)
+                && pre_sub.as_deref().is_none_or(is_effectively_empty_math)
+                && pre_sup.as_deref().is_none_or(is_effectively_empty_math)
+        },
         _ => false,
     }
 }
@@ -965,9 +989,20 @@ fn is_effectively_empty_node(arena: &AstArena, id: NodeId) -> bool {
         return true;
     }
     match *arena.node(id) {
-        CompactNode::Row(span) => arena.children(span).is_empty(),
+        CompactNode::Row(span) => arena
+            .children(span)
+            .iter()
+            .all(|&child| is_effectively_empty_node(arena, child)),
         CompactNode::Scaled { content, .. } => is_effectively_empty_node(arena, content),
         CompactNode::Space(r) => r == Rational::zero(),
+        CompactNode::Styled(_, span) => arena
+            .children(span)
+            .iter()
+            .all(|&child| is_effectively_empty_node(arena, child)),
+        // A color wrapper with no visible content is transparent to every
+        // writer. Recognize it here so an empty colored prescript is removed
+        // before a following empty-base script is classified.
+        CompactNode::Color { content, .. } => is_effectively_empty_node(arena, content),
         _ => false,
     }
 }
@@ -1281,6 +1316,40 @@ mod tests {
     }
 
     // ── Compact normalize equivalence tests ────────────────────────────
+    #[test]
+    fn normalize_heap_elides_empty_styled_prescript_before_following_script() {
+        let mut expr = MathExpr::inline(vec![
+            MathNode::Superscript {
+                base: Box::new(MathNode::Row(Vec::new())),
+                sup: Box::new(MathNode::Styled(TextStyle::Normal, Vec::new())),
+            },
+            MathNode::Identifier("x".into()),
+            MathNode::Superscript {
+                base: Box::new(MathNode::Row(Vec::new())),
+                sup: Box::new(MathNode::Number("2".into())),
+            },
+        ]);
+        normalize_expr(&mut expr);
+        assert_eq!(
+            expr.nodes,
+            vec![MathNode::Superscript {
+                base: Box::new(MathNode::Identifier("x".into())),
+                sup: Box::new(MathNode::Number("2".into())),
+            }]
+        );
+
+        assert_normalize_equiv(MathExpr::inline(vec![
+            MathNode::Superscript {
+                base: Box::new(MathNode::Row(Vec::new())),
+                sup: Box::new(MathNode::Styled(TextStyle::Normal, Vec::new())),
+            },
+            MathNode::Identifier("x".into()),
+            MathNode::Superscript {
+                base: Box::new(MathNode::Row(Vec::new())),
+                sup: Box::new(MathNode::Number("2".into())),
+            },
+        ]));
+    }
 
     /// Assert that normalizing via MathExpr and via CompactExpr produce the same result.
     fn assert_normalize_equiv(input: MathExpr) {

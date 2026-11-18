@@ -2207,6 +2207,53 @@ fn trailing_empty_implicit_scripts_do_not_regroup_the_preceding_base() {
 }
 
 #[test]
+fn empty_colored_prescripts_normalize_before_following_scripts() {
+    let write = |input: &str| -> String {
+        crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap()
+    };
+    for (input, expected, structure) in [
+        (
+            r"{}^{\color{red}{}}x{}^2",
+            r"x^{2}",
+            "<msup><mi>x</mi><mn>2</mn></msup>",
+        ),
+        (
+            r"{}_{\color{red}{}}x{}_2",
+            r"x_{2}",
+            "<msub><mi>x</mi><mn>2</mn></msub>",
+        ),
+        (
+            r"{}^{\color{red}{}}x{}^2+b",
+            r"x {{}^{2}+} b",
+            "<mmultiscripts><mo>+</mo><mprescripts/><none/><mn>2</mn></mmultiscripts>",
+        ),
+        (
+            r"{}^{\color{red}{a}}x{}^2",
+            r"{{}^{\textcolor{red}{a}}x}{}^{2}",
+            "mathcolor=\"red\"><mi>a</mi>",
+        ),
+        (
+            r"{}^{\color{red}{\ }}x{}^2",
+            r"{{}^{\textcolor{red}{\ }}x}{}^{2}",
+            "mathcolor=\"red\"><mspace width=\"0.25em\"/>",
+        ),
+    ] {
+        let first = write(input);
+        assert_eq!(first, expected, "{input}");
+        let second = write(&first);
+        assert_eq!(first, second, "{input} changed on the second write");
+        let mathml = crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        let canonical_mathml =
+            crate::convert(&first, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert_eq!(mathml, canonical_mathml, "{input} changed structure");
+        assert!(
+            canonical_mathml.contains(structure),
+            "{input} -> {first} -> {canonical_mathml}"
+        );
+    }
+}
+
+#[test]
 fn fence_boundaries_match_complete_control_words() {
     for (input, equiv) in [
         (r"\left(\rightarrow\right)", r"\left(\to\right )"),
