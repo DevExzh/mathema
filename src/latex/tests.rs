@@ -887,6 +887,63 @@ fn named_operator_limit_styles_reach_mathml() {
 }
 
 #[test]
+fn compound_named_limits_are_operators_with_canonical_spacing() {
+    for (source, expected_name) in [
+        (r"\limsup", "lim\u{2009}sup"),
+        (r"\liminf", "lim\u{2009}inf"),
+        (r"\injlim", "inj\u{2009}lim"),
+        (r"\projlim", "proj\u{2009}lim"),
+    ] {
+        let result = crate::from_latex(source).unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert!(mathml.contains(expected_name), "{source}: {mathml}");
+        assert!(
+            mathml.contains(r#"movablelimits="true""#),
+            "{source}: {mathml}"
+        );
+        let latex = result.to_latex().unwrap();
+        assert_eq!(
+            crate::from_latex(&latex).unwrap().to_mathml().unwrap(),
+            mathml
+        );
+        assert!(latex.contains(r"\operatorname*{"), "{source}: {latex}");
+    }
+
+    let result = crate::from_latex(r"\plim").unwrap();
+    let mathml = result.to_mathml().unwrap();
+    assert!(mathml.contains("plim"), "{mathml}");
+    assert!(mathml.contains(r#"movablelimits="false""#), "{mathml}");
+    let latex = result.to_latex().unwrap();
+    assert!(latex.contains(r"\operatorname*{plim}\limits"), "{latex}");
+}
+
+#[test]
+fn compound_named_limit_scripts_keep_placement() {
+    for (source, inline_tag, display_tag) in [
+        (r"\limsup_{n}f", "<munder>", "<munder>"),
+        (r"\injlim_{n}f", "<munder>", "<munder>"),
+        (r"\plim_{n}f", "<munder>", "<munder>"),
+    ] {
+        let inline = crate::convert_with(
+            source,
+            crate::Format::LaTeX,
+            crate::Format::MathML,
+            &Config::default().with_display(DisplayStyle::Inline),
+        )
+        .unwrap();
+        let block = crate::convert_with(
+            source,
+            crate::Format::LaTeX,
+            crate::Format::MathML,
+            &Config::default().with_display(DisplayStyle::Block),
+        )
+        .unwrap();
+        assert!(inline.contains(inline_tag), "{source}: {inline}");
+        assert!(block.contains(display_tag), "{source}: {block}");
+    }
+}
+
+#[test]
 fn named_operator_scripts_preserve_operator_limit_metadata() {
     let parse = |input| {
         LatexReader::parse_compact(input, &Config::default())

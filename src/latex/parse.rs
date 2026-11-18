@@ -3920,7 +3920,9 @@ impl LatexCompactParser {
                     }
                 } else if is_operator_command(name) {
                     // Named operators (sin, cos, lim, ...)
-                    let limit_style = if operator_has_limits(name) {
+                    let limit_style = if name == "plim" {
+                        LimitStyle::AboveBelow
+                    } else if operator_has_limits(name) {
                         LimitStyle::Default
                     } else {
                         LimitStyle::SubSup
@@ -3931,6 +3933,10 @@ impl LatexCompactParser {
                     let canonical_name = match name {
                         "argmin" => "arg\u{2009}min",
                         "argmax" => "arg\u{2009}max",
+                        "limsup" => "lim\u{2009}sup",
+                        "liminf" => "lim\u{2009}inf",
+                        "injlim" => "inj\u{2009}lim",
+                        "projlim" => "proj\u{2009}lim",
                         _ => name,
                     };
                     let sid = self.arena.push_str(canonical_name);
