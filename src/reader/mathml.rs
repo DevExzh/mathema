@@ -2760,6 +2760,27 @@ mod tests {
     }
 
     #[test]
+    fn infix_form_without_a_fence_does_not_create_a_middle() {
+        for attributes in [
+            r#"form="infix""#,
+            r#"fence="false" form="infix""#,
+            r#"stretchy="true" symmetric="true""#,
+        ] {
+            let xml = format!(
+                r#"<math><mrow><mo fence="true">(</mo><mi>x</mi><mo {attributes}>|</mo><mi>y</mi><mo fence="true">)</mo></mrow></math>"#
+            );
+            assert!(
+                matches!(parse_one(&xml), MathNode::Fenced {content,..}
+                if content.iter().all(|v|matches!(v,FencedItem::Element(_)))),
+                "{xml}"
+            );
+        }
+        let original = crate::from_latex(r"\left(1\middle] 2\right)").unwrap();
+        let reimport = crate::from_mathml(&original.to_mathml().unwrap()).unwrap();
+        assert_eq!(original.to_latex().unwrap(), reimport.to_latex().unwrap());
+    }
+
+    #[test]
     fn adjacent_fence_pairs_and_explicit_endpoint_roles_are_preserved() {
         for inputs in [
             r#"<mo fence="true">(</mo><mi>a</mi><mo>)</mo><mo>(</mo><mi>b</mi><mo fence="true">)</mo>"#,
