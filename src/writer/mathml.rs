@@ -725,7 +725,8 @@ fn write_node_in(
                     } else {
                         cell.as_slice()
                     };
-                    let small = kind == Some(MatrixKind::SmallMatrix)
+                    let small = promoted.is_none()
+                        && kind == Some(MatrixKind::SmallMatrix)
                         && cell
                             .first()
                             .is_some_and(|n| !matches!(n, MathNode::StyleSwitch(_)));
@@ -1571,7 +1572,8 @@ fn write_node_fast_in(
                             if promoted.is_some() && !nodes.is_empty() {
                                 nodes = &nodes[1..];
                             }
-                            if environment == Some(MatrixKind::SmallMatrix)
+                            if promoted.is_none()
+                                && environment == Some(MatrixKind::SmallMatrix)
                                 && nodes.first().is_some_and(|&n| {
                                     !matches!(arena.node(n), CompactNode::StyleSwitch(_))
                                 })
