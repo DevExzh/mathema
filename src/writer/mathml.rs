@@ -807,6 +807,15 @@ fn write_node_in(
                 .map_err(to_err)?;
             Ok(())
         },
+        MathNode::Color { color, content } => {
+            let mut elem = BytesStart::new("mstyle");
+            elem.push_attribute(("mathcolor", color.as_str()));
+            w.write_event(Event::Start(elem)).map_err(to_err)?;
+            write_node_in(w, content, single_argument, display_style)?;
+            w.write_event(Event::End(BytesEnd::new("mstyle")))
+                .map_err(to_err)?;
+            Ok(())
+        },
         MathNode::MathChoice {
             display,
             text,

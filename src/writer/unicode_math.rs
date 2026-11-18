@@ -321,6 +321,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                 }
             }
         },
+        MathNode::Color { content, .. } => write_node(out, content, style),
         MathNode::MathChoice {
             display,
             text,

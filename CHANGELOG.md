@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the package's separator spacing and nested scopes. An explicitly doubled bar
   in `\Braket` uses native LaTeX double-bar semantics.
 - MathML reimport preserves foreground colors in `mstyle` scopes and fixed
-  interior bars inside explicitly marked bra and ket delimiters.
+  interior bars inside explicitly marked bra and ket delimiters. The additive
+  `MathNode::Color` variant keeps those foreground scopes when compact input is
+  materialized as the public heap AST.
 
 - Named LaTeX operators and compound `\mathop` expressions retain their
   side, movable, or fixed limits in MathML and canonical LaTeX. In inline

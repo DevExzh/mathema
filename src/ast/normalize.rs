@@ -167,6 +167,7 @@ fn is_effectively_empty_math(node: &MathNode) -> bool {
         // Styled wrappers are the heap representation for transparent
         // compact wrappers such as an empty color argument.
         MathNode::Styled(_, children) => children.iter().all(is_effectively_empty_math),
+        MathNode::Color { content, .. } => is_effectively_empty_math(content),
         MathNode::Scaled { content, .. } => is_effectively_empty_math(content),
         MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
         MathNode::Subscript { base, sub } => {
@@ -241,8 +242,23 @@ fn is_empty_base_script_math(node: &MathNode) -> bool {
         MathNode::Subscript { base, .. }
             | MathNode::Superscript { base, .. }
             | MathNode::SubSup { base, .. }
-            if is_effectively_empty_math(base)
+            if is_empty_script_base_math(base)
     )
+}
+
+/// Whether a heap node is an implicit empty script base. Expressible colors
+/// remain explicit atoms even when their content is empty, matching the
+/// compact writer's color handling.
+fn is_empty_script_base_math(node: &MathNode) -> bool {
+    match node {
+        MathNode::Row(children) => children.iter().all(is_empty_script_base_math),
+        MathNode::Scaled { content, .. } => is_empty_script_base_math(content),
+        MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
+        MathNode::Color { color, content } => {
+            is_unwritable_color(color) && is_empty_script_base_math(content)
+        },
+        _ => false,
+    }
 }
 
 /// True for a node that can serve as the base of a sub/superscript in the
@@ -516,6 +532,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         MathNode::Styled(_, children) => {
             normalize_nodes_depth(children, d);
         },
+        MathNode::Color { content, .. } => normalize_node_depth(content, d),
         MathNode::MathChoice {
             display,
             text,

@@ -87,6 +87,7 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
                 AtomType::Ord
             }
         },
+        MathNode::Color { content, .. } => classify_node_depth(content, style, depth + 1),
         MathNode::MathChoice {
             display,
             text,

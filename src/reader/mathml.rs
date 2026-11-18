@@ -2077,6 +2077,7 @@ fn mathvariant_to_style(variant: &str) -> Option<TextStyle> {
 mod tests {
     use super::*;
     use crate::error::Config;
+    use crate::writer::Writer;
 
     fn parse(input: &str) -> Vec<MathNode> {
         let config = Config::default();
@@ -2445,6 +2446,69 @@ mod tests {
         };
         assert!(matches!(*num, MathNode::Row(_)));
         assert_eq!(*den, MathNode::Number("2".into()));
+    }
+
+    #[test]
+    fn mstyle_mathcolor_materializes_in_the_heap_ast() {
+        let node = parse_one(r#"<math><mstyle mathcolor="red"><mi>x</mi></mstyle></math>"#);
+        assert_eq!(
+            node,
+            MathNode::Color {
+                color: "red".into(),
+                content: Box::new(MathNode::Identifier("x".into())),
+            }
+        );
+
+        let input = r#"<math><mstyle mathcolor="red"><mi>x</mi><mstyle mathcolor="blue"><mi>y</mi></mstyle><mi>z</mi></mstyle><mi>w</mi></math>"#;
+        let result = crate::from_mathml(input).unwrap();
+        let heap = result.expr();
+        let latex = crate::writer::latex::LatexWriter::write(&heap, &Config::default()).unwrap();
+        assert!(latex.contains(r#"\textcolor{red}"#), "{latex}");
+        assert!(latex.contains(r#"\textcolor{blue}"#), "{latex}");
+        assert_eq!(latex, result.to_latex().unwrap());
+
+        let reparsed = crate::from_latex(&latex).unwrap();
+        assert_eq!(reparsed.to_latex().unwrap(), latex);
+    }
+
+    #[test]
+    fn colored_empty_script_bases_match_heap_and_compact_normalization() {
+        for input in [
+            r#"<math><msup><mstyle mathcolor="red"><mrow/></mstyle><mn>2</mn></msup></math>"#,
+            r#"<math><msup><mstyle mathcolor="red"><mi>x</mi></mstyle><mrow/></msup></math>"#,
+        ] {
+            let config = Config::default();
+            let mut compact = MathmlReader::parse_compact(input, &config).unwrap().expr;
+            crate::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+            let compact_latex =
+                crate::writer::latex::LatexWriter::write_compact(&compact, &config).unwrap();
+
+            let mut heap = MathmlReader::parse(input, &config).unwrap().expr;
+            crate::ast::normalize::normalize_expr(&mut heap);
+            let heap_latex = crate::writer::latex::LatexWriter::write(&heap, &config).unwrap();
+            assert_eq!(compact_latex, heap_latex, "{input}");
+            assert_eq!(
+                crate::from_latex(&compact_latex)
+                    .unwrap()
+                    .to_latex()
+                    .unwrap(),
+                compact_latex
+            );
+        }
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn mstyle_mathcolor_renders_through_heap_and_compact_paths() {
+        let input = r#"<math><mstyle mathcolor="red"><mi>x</mi><mstyle mathcolor="blue"><mi>y</mi></mstyle><mi>z</mi></mstyle><mi>w</mi></math>"#;
+        let result = crate::from_mathml(input).unwrap();
+        let options = crate::render::RenderOptions::default();
+        let compact_svg = result.to_svg_text().unwrap();
+        let heap_svg = crate::render::render_to_svg(&result.expr(), &options).unwrap();
+        for svg in [compact_svg, heap_svg] {
+            assert!(svg.contains(r#"fill="red""#), "{svg}");
+            assert!(svg.contains(r#"fill="blue""#), "{svg}");
+        }
     }
 
     #[test]

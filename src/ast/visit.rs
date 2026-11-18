@@ -147,6 +147,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
                 v.visit_node(child);
             }
         },
+        MathNode::Color { content, .. } => v.visit_node(content),
         MathNode::MathChoice {
             display,
             text,
@@ -308,6 +309,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
                 v.visit_node_mut(child);
             }
         },
+        MathNode::Color { content, .. } => v.visit_node_mut(content),
         MathNode::MathChoice {
             display,
             text,

@@ -637,6 +637,21 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             }
         },
         MathNode::Styled(style, children) => layout_styled(*style, children, ctx),
+        MathNode::Color { color, content } => {
+            let child = layout_node(content, ctx);
+            let width = child.width;
+            let height = child.height;
+            let depth = child.depth;
+            LayoutBox {
+                width,
+                height,
+                depth,
+                kind: BoxKind::Color {
+                    color: color.clone(),
+                    child: Box::new(PositionedBox::at_origin(child)),
+                },
+            }
+        },
         MathNode::MathChoice {
             display,
             text,
