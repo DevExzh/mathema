@@ -1,6 +1,6 @@
 use crate::ast::DisplayStyle;
 use crate::ast::compact::CompactNode;
-use crate::ast::normalize::normalize_compact_expr;
+use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
 use crate::error::{Config, Error, LimitKind, Strictness};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
@@ -139,6 +139,39 @@ fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
             .unwrap()
             .contains(r"\displaystyle")
     );
+}
+
+#[test]
+fn style_switch_normalization_matches_heap_and_compact_scopes() {
+    let config = Config::default();
+    for source in [
+        r"{\displaystyle x}y",
+        r"{{\scriptstyle x}y}z",
+        r"x_{{\displaystyle a}b}",
+        r"{x_{\scriptscriptstyle a}}y",
+    ] {
+        let mut compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let compact_latex = LatexWriter::write_compact(&compact, &config).unwrap();
+
+        let mut heap = compact.to_math_expr();
+        normalize_expr(&mut heap);
+        let heap_latex = LatexWriter::write(&heap, &config).unwrap();
+        assert_eq!(
+            compact_latex, heap_latex,
+            "heap/compact mismatch for {source}"
+        );
+
+        let mut reparsed = LatexReader::parse_compact(&compact_latex, &config)
+            .unwrap()
+            .expr;
+        normalize_compact_expr(&mut reparsed).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed, &config).unwrap(),
+            compact_latex,
+            "style scope was not stable for {source}"
+        );
+    }
 }
 
 #[test]
