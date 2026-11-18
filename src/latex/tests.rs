@@ -912,6 +912,21 @@ fn named_operator_limit_styles_reach_mathml() {
 }
 
 #[test]
+fn a_plain_mathop_keeps_its_authored_group_and_inline_script() {
+    let cfg = Config::default().with_display(crate::ast::DisplayStyle::Inline);
+    for name in ["foo", "lim"] {
+        let input = format!(r"\mathop{{\operatorname{{{name}}}}}_i x");
+        let p = crate::from_latex_with(&input, &cfg).unwrap();
+        let xml = p.to_mathml().unwrap();
+        assert!(
+            xml.contains(r#"<msub><mrow data-mjx-texclass="OP""#),
+            "{xml}"
+        );
+        assert!(p.to_latex().unwrap().starts_with(r"\mathop{"));
+    }
+}
+
+#[test]
 fn explicit_joined_names_do_not_acquire_a_native_thin_space() {
     for name in ["limsup", "liminf", "injlim", "projlim"] {
         for star in ["", "*"] {

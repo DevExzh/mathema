@@ -2546,6 +2546,18 @@ impl LatexCompactParser {
         if let Some(default_style) = self.operator_limit_style(base) {
             let (rest, ((sub, sup), modifier)) =
                 self.parse_script_fields_with_limits(input, false)?;
+            // Named content already has a field for a placement override.
+            // Keep a plain outer mathop grouped when no override was given.
+            if let Some(limits) = modifier
+                && let CompactNode::MathAtom {
+                    atom_type: MathAtomType::Op,
+                    content,
+                } = *self.arena.node(base)
+                && let CompactNode::Operator { name, .. } = *self.arena.node(content)
+            {
+                let named = self.arena.push_node(CompactNode::Operator { name, limits });
+                return Ok((rest, self.make_script_node(named, sub, sup)));
+            }
             let style = modifier.unwrap_or(default_style);
             let scripted = self.make_script_node(base, sub, sup);
             return Ok((rest, self.apply_limit_style(scripted, style)));
@@ -3411,19 +3423,6 @@ impl LatexCompactParser {
                     "mathinner" => MathAtomType::Inner,
                     _ => MathAtomType::Ord,
                 };
-                // A single named operator can carry the outer placement
-                // directly, including an explicit modifier before any bound.
-                if atom_type == MathAtomType::Op
-                    && let CompactNode::Operator { name, .. } = *self.arena.node(arg_id)
-                {
-                    return Ok((
-                        input,
-                        self.arena.push_node(CompactNode::Operator {
-                            name,
-                            limits: LimitStyle::Default,
-                        }),
-                    ));
-                }
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::MathAtom {
