@@ -28,12 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
-- Legacy font scope traversal now protects tables nested in fractions, roots,
-  scripts, operators, accents, and other compound nodes.
-- Legacy font scopes stop at table cells while continuing through surrounding
-  fractions, fences, and siblings.
-- Legacy font declarations now remain visible to plain-TeX infix fraction
-  resolution, so scoped styles reach both numerator and denominator.
+- The legacy LaTeX declarations `\rm`, `\sf`, `\tt`, `\bf`, `\it`, and
+  `\cal` apply to the remainder of their group or table cell. Infix fractions
+  keep their numerator and denominator in scope, and a nested matrix lets each
+  cell establish its own font before the outer declaration resumes.
 - `\\argmin` and `\\argmax` retain the thin mathematical space used by
   their canonical `\\operatorname*{arg\\,min/max}` forms through LaTeX,
   MathML, and rendering.

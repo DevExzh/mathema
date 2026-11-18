@@ -1724,12 +1724,8 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
         _ => canonical_command,
     };
     if let Some(cmd) = command {
-        // Keep an explicitly ordinary symbol ordinary when its canonical
-        // control word normally parses as another atom class.  This matters
-        // for glyphs such as U+2223, whose ordinary spelling is `\mid` but
-        // whose command is a relation.  Without the wrapper, a second parse
-        // changes the preceding-node spacing decision and can add a literal
-        // separator on the next write.
+        // For example, U+2223 has the relation command `\mid`. Preserve
+        // the ordinary atom class when the source gave it ordinary spacing.
         if kind == SymbolKind::Ordinary
             && canonical_command == Some(cmd)
             && mapped_symbol_kind(ch).is_some_and(|mapped| {
