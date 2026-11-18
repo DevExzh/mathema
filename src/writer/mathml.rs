@@ -347,6 +347,7 @@ fn write_node_in(
         MathNode::Operator(attr) => write_named_operator(w, &attr.name, attr.limit_style),
         MathNode::Symbol(kind, s) => {
             let mut elem = BytesStart::new("mo");
+            let ordinary_literal_bar = *kind == SymbolKind::Ordinary && is_literal_fence_glyph(s);
             match kind {
                 SymbolKind::LargeOp => {
                     elem.push_attribute(("largeop", "true"));
@@ -356,18 +357,23 @@ fn write_node_in(
                 },
                 _ => {},
             }
-            // Enrich from operator dictionary
-            if let Some(ch) = s.chars().next() {
-                let form = symbol_kind_to_form(*kind);
-                if let Some(entry) = lookup_operator_any(ch, form) {
-                    if entry.stretchy {
-                        elem.push_attribute(("stretchy", "true"));
-                    }
-                    if entry.form != OperatorForm::Infix {
-                        elem.push_attribute((
-                            "form",
-                            crate::unicode::operators::form_str(entry.form),
-                        ));
+            if ordinary_literal_bar {
+                elem.push_attribute(("fence", "false"));
+                elem.push_attribute(("stretchy", "false"));
+            } else {
+                // Enrich from operator dictionary
+                if let Some(ch) = s.chars().next() {
+                    let form = symbol_kind_to_form(*kind);
+                    if let Some(entry) = lookup_operator_any(ch, form) {
+                        if entry.stretchy {
+                            elem.push_attribute(("stretchy", "true"));
+                        }
+                        if entry.form != OperatorForm::Infix {
+                            elem.push_attribute((
+                                "form",
+                                crate::unicode::operators::form_str(entry.form),
+                            ));
+                        }
                     }
                 }
             }
@@ -2077,12 +2083,15 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
 
 fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
     buf.push_str("<mo");
+    let ordinary_literal_bar = kind == SymbolKind::Ordinary && is_literal_fence_glyph(s);
     match kind {
         SymbolKind::LargeOp => buf.push_str(" largeop=\"true\""),
         SymbolKind::Fence => buf.push_str(" fence=\"true\""),
         _ => {},
     }
-    if let Some(ch) = s.chars().next() {
+    if ordinary_literal_bar {
+        buf.push_str(" fence=\"false\" stretchy=\"false\"");
+    } else if let Some(ch) = s.chars().next() {
         let form = symbol_kind_to_form(kind);
         if let Some(entry) = lookup_operator_any(ch, form) {
             if entry.stretchy {
@@ -2180,6 +2189,28 @@ mod tests {
                 let rewritten = MathmlWriter::write(&parsed, &config).unwrap();
                 assert_eq!(rewritten, heap, "style: {style:?}, source: {source:?}");
             }
+        }
+    }
+
+    #[test]
+    fn ordinary_vertical_bars_keep_their_mathml_class() {
+        for source in [
+            r"\vert",
+            r"\Vert",
+            r"\left(\vert x\vert\right)",
+            r"\Set{\vert x\vert|P}",
+        ] {
+            let original = crate::from_latex(source).unwrap();
+            let mathml = original.to_mathml().unwrap();
+            assert!(mathml.contains("fence=\"false\""), "{source}: {mathml}");
+            assert!(mathml.contains("stretchy=\"false\""), "{source}: {mathml}");
+            let imported = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(imported.to_mathml().unwrap(), mathml, "{source}");
+            #[cfg(feature = "render")]
+            assert_eq!(
+                imported.to_svg_text().unwrap(),
+                original.to_svg_text().unwrap()
+            );
         }
     }
 
