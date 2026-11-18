@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Table normalization preserves explicit spaces and signed kerns at both cell
+  edges, including native spacing in imported MathType equations.
+
 - Fixed-size `\braket` and `\set` and scalable `\Braket` and `\Set` now retain
   the package's separator spacing and nested scopes. An explicitly doubled bar
   in `\Braket` uses native LaTeX double-bar semantics.

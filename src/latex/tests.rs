@@ -49,6 +49,31 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn table_cells_keep_explicit_edge_spacing_and_scoped_groups() {
+    let latex = |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let mathml = |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+    let rows = r"\begin{matrix}p&{\textstyle a\\b}~~\\q&r\end{matrix}";
+    let first = latex(rows);
+    assert_eq!(first, latex(&first));
+    assert_eq!(mathml(rows), mathml(&first));
+    assert_eq!(mathml(rows).matches("<mtr>").count(), 2);
+
+    for (space, expected) in [
+        (r"\kern5pt ", r#"width="0.5em""#),
+        (r"\hskip5pt ", r#"width="0.5em""#),
+        (r"\quad ", r#"width="1em""#),
+        (r"\kern-2pt ", "margin-inline-start:-0.2em"),
+    ] {
+        for cell in [format!("{space}x"), format!("x{space}")] {
+            let source = format!(r"\begin{{array}}{{c}}{cell}\end{{array}}");
+            let xml = mathml(&source);
+            assert!(xml.contains(expected), "{source}: {xml}");
+            assert_eq!(xml, mathml(&latex(&source)));
+        }
+    }
+}
+
+#[test]
 fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
     let config = Config::default().with_display(DisplayStyle::Inline);
 

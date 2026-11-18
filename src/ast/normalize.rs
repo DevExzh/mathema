@@ -1175,43 +1175,28 @@ fn has_direct_style_switch(arena: &AstArena, span: NodeSpan) -> bool {
         .any(|&id| matches!(*arena.node(id), CompactNode::StyleSwitch(_)))
 }
 
-/// Normalize an array/matrix cell. Trims leading/trailing whitespace and
-/// converts any internal row separator (`Newline`) into ordinary space, because
-/// `\\`/`\cr` inside a cell is always interpreted as ending the row on
-/// re-parse. Keeping it as a node makes the written shape flip between
-/// `...t\\ +...` and `...t \\\\ +...`.
+/// Source whitespace is consumed by the parser. Keep authored math spaces,
+/// including edge kerns. A row separator stored as direct cell content
+/// continues to use the writer's horizontal-space fallback.
 fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::Result<NodeId> {
-    let span = match *arena.node(cell_id) {
-        CompactNode::Row(span) => span,
-        _ => return Ok(cell_id),
+    let CompactNode::Row(span) = *arena.node(cell_id) else {
+        return Ok(cell_id);
     };
-    let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
-    let is_ws = |arena: &AstArena, id: NodeId| {
-        matches!(
-            *arena.node(id),
-            CompactNode::Space(_) | CompactNode::Newline
-        )
+    let children = arena.children(span);
+    let Some(first_break) = children
+        .iter()
+        .position(|&id| matches!(arena.node(id), CompactNode::Newline))
+    else {
+        return Ok(cell_id);
     };
-    // Trim leading whitespace.
-    let mut start = 0;
-    while start < children.len() && is_ws(arena, children[start]) {
-        start += 1;
-    }
-    // Trim trailing whitespace.
-    let mut end = children.len();
-    while end > start && is_ws(arena, children[end - 1]) {
-        end -= 1;
-    }
-    let mut new_children: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &child_id in &children[start..end] {
-        if matches!(*arena.node(child_id), CompactNode::Newline) {
-            new_children.push(arena.push_node(CompactNode::Space(Rational::new(1, 4))));
-        } else {
-            new_children.push(child_id);
+    let mut children: SmallVec<[NodeId; 8]> = children.into();
+    for id in &mut children[first_break..] {
+        if matches!(arena.node(*id), CompactNode::Newline) {
+            *id = arena.push_node(CompactNode::Space(Rational::new(1, 4)));
         }
     }
-    let new_span = arena.push_children(&new_children)?;
-    Ok(arena.push_node(CompactNode::Row(new_span)))
+    let span = arena.push_children(&children)?;
+    Ok(arena.push_node(CompactNode::Row(span)))
 }
 
 /// True for color strings that the LaTeX writer cannot emit verbatim inside
