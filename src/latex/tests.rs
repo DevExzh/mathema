@@ -85,6 +85,75 @@ fn legacy_font_declarations_scope_like_grouped_fonts() {
 }
 
 #[test]
+fn legacy_font_scopes_cross_infix_fractions_without_hiding_markers() {
+    for (input, expected, numerator, denominator) in [
+        (
+            r"x+\bf a\over b+c",
+            r"\frac{x+ \mathbf{a}}{\mathbf{b+ c}}",
+            "<mi>x</mi><mo>+</mo><mstyle mathvariant=\"bold\"><mi>a</mi></mstyle>",
+            "<mstyle mathvariant=\"bold\"><mi>b</mi><mo>+</mo><mi>c</mi></mstyle>",
+        ),
+        (
+            r"x+\bf\bf a\over b+c",
+            r"\frac{x+ \mathbf{a}}{\mathbf{b+ c}}",
+            "<mi>x</mi><mo>+</mo><mstyle mathvariant=\"bold\"><mi>a</mi></mstyle>",
+            "<mstyle mathvariant=\"bold\"><mi>b</mi><mo>+</mo><mi>c</mi></mstyle>",
+        ),
+        (
+            r"x+\bf\it a\over b+c",
+            r"\frac{x+ \mathbf{\mathit{a}}}{\mathbf{\mathit{b+ c}}}",
+            "<mstyle mathvariant=\"bold\"><mstyle mathvariant=\"italic\"><mi>a</mi></mstyle></mstyle>",
+            "<mstyle mathvariant=\"bold\"><mstyle mathvariant=\"italic\"><mi>b</mi>",
+        ),
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, expected, "wrong font/fraction scope for {input}");
+        assert_eq!(
+            first,
+            crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+            "font/fraction output was unstable for {input}"
+        );
+        let mathml = crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert!(
+            mathml.contains("<mfrac>"),
+            "fraction marker was hidden: {mathml}"
+        );
+        assert!(
+            mathml.contains(numerator),
+            "numerator style changed: {mathml}"
+        );
+        assert!(
+            mathml.contains(denominator),
+            "denominator style changed: {mathml}"
+        );
+    }
+
+    let grouped = crate::convert(
+        r"{\bf a\over b}+c",
+        crate::Format::LaTeX,
+        crate::Format::LaTeX,
+    )
+    .unwrap();
+    assert_eq!(grouped, r"\frac{\mathbf{a}}{\mathbf{b}+ c}");
+}
+
+#[test]
+fn legacy_font_declarations_are_not_unbraced_script_arguments() {
+    for input in [r"x^\bf", r"x_\bf", r"\frac\bf{a}{b}", r"\sqrt\bf x"] {
+        assert!(
+            LatexReader::parse_compact(input, &Config::default()).is_err(),
+            "bare legacy declaration was accepted as an argument: {input}"
+        );
+    }
+    for input in [r"x^{\bf a}", r"\frac{\bf a}{b}"] {
+        assert!(
+            LatexReader::parse_compact(input, &Config::default()).is_ok(),
+            "grouped legacy declaration was rejected: {input}"
+        );
+    }
+}
+
+#[test]
 fn canonical_tex_attaches_bounds_to_the_operator_itself() {
     for (source, canonical) in [
         (r"\lim_i^j", r"\lim_i^j"),

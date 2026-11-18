@@ -509,6 +509,12 @@ fn strip_control_word<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     }
 }
 
+fn starts_legacy_font_command(input: &str) -> bool {
+    ["rm", "it", "bf", "sf", "tt", "cal"]
+        .into_iter()
+        .any(|name| strip_control_word(input, name).is_some())
+}
+
 /// Parse an optional leading `[model]` color-model argument (xcolor color
 /// model: `rgb`, `RGB`, `HTML`, `gray`, `cmyk`, …). Returns `(rest, None)` when
 /// no bracket group is present.
@@ -1670,13 +1676,49 @@ impl LatexCompactParser {
         }
     }
 
-    /// Resolve a top-level/group infix fraction operator (`\over`/`\atop`/
-    /// `\choose`/`\brace`/`\brack`) into the corresponding node, returning the
-    /// rewritten node list. If no infix marker is present the list is returned
-    /// unchanged. This must be applied to the top-level node list (not only to
-    /// braced groups) so unbraced plain-TeX input like `a \over b` builds an
-    /// `mfrac` instead of leaking a `__infix_over__` sentinel into output.
+    /// Flatten rows produced by a scoped declaration when they contain an
+    /// infix marker. Ordinary grouping rows remain intact.
+    fn flatten_infix_marker_rows(&self, ids: SmallVec<[NodeId; 8]>) -> SmallVec<[NodeId; 8]> {
+        let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for id in ids {
+            let CompactNode::Row(span) = *self.arena.node(id) else {
+                out.push(id);
+                continue;
+            };
+            let children = self.arena.children(span);
+            if children
+                .iter()
+                .copied()
+                .any(|child| self.contains_infix_marker(child))
+            {
+                for &child in children {
+                    out.push(child);
+                }
+            } else {
+                out.push(id);
+            }
+        }
+        out
+    }
+
+    fn contains_infix_marker(&self, id: NodeId) -> bool {
+        if self.is_infix_marker_id(id) {
+            return true;
+        }
+        match *self.arena.node(id) {
+            CompactNode::Row(span) | CompactNode::Styled(_, span) => self
+                .arena
+                .children(span)
+                .iter()
+                .copied()
+                .any(|child| self.contains_infix_marker(child)),
+            _ => false,
+        }
+    }
+
+    /// Resolve a top-level/group infix fraction operator into the corresponding node.
     fn resolve_infix_fraction(&mut self, ids: SmallVec<[NodeId; 8]>) -> SmallVec<[NodeId; 8]> {
+        let ids = self.flatten_infix_marker_rows(ids);
         match self.check_infix_fraction(&ids) {
             Some(node) => {
                 let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
@@ -2769,6 +2811,13 @@ impl LatexCompactParser {
                 input,
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             ));
+        }
+        if starts_legacy_font_command(input) {
+            // A legacy font declaration is a scope command, not an argument.
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Tag,
+            )));
         }
         let (input, arg) = self.parse_atom(input)?;
         if self.check_node_limit() {
@@ -3902,6 +3951,12 @@ impl LatexCompactParser {
         } else {
             // LaTeX allows single unbraced tokens as arguments:
             // \frac12 → \frac{1}{2}, \vec x → \vec{x}
+            if starts_legacy_font_command(input) {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Tag,
+                )));
+            }
             self.parse_single_token(input)
         }
     }
@@ -5792,11 +5847,8 @@ impl LatexCompactParser {
         input: &'a str,
         name: &str,
     ) -> IResult<&'a str, NodeId> {
-        // In math mode these are typically no-ops or apply a style to the next
-        // token only. Consuming all remaining content used to create deeply
-        // nested `Styled` nodes for inputs like `\sf\sf\sf...`, which could
-        // exhaust memory during parsing. Limiting the scope to a single token
-        // keeps the AST shallow and round-trip stable.
+        // Consume the declaration's current group or cell scope while
+        // keeping repeated declarations shallow through style_font_run.
         let style = match name {
             "rm" => TextStyle::Normal,
             "it" => TextStyle::Italic,
@@ -5831,37 +5883,7 @@ impl LatexCompactParser {
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             ));
         }
-        let styled = if ids
-            .iter()
-            .any(|&id| matches!(*self.arena.node(id), CompactNode::Newline))
-        {
-            // Styled layout wrappers intentionally use one horizontal line;
-            // keep hard source-newline nodes outside them so the existing
-            // multiline row layout remains effective.
-            let mut segments: SmallVec<[NodeId; 8]> = SmallVec::new();
-            let mut segment: SmallVec<[NodeId; 8]> = SmallVec::new();
-            for id in ids {
-                if matches!(*self.arena.node(id), CompactNode::Newline) {
-                    if !segment.is_empty() {
-                        let span = self.arena.push_children_deferred(&segment);
-                        segments.push(self.arena.push_node(CompactNode::Styled(style, span)));
-                        segment.clear();
-                    }
-                    segments.push(id);
-                } else {
-                    segment.push(id);
-                }
-            }
-            if !segment.is_empty() {
-                let span = self.arena.push_children_deferred(&segment);
-                segments.push(self.arena.push_node(CompactNode::Styled(style, span)));
-            }
-            self.flatten_single(&segments)
-        } else {
-            let content_span = self.arena.push_children_deferred(&ids);
-            self.arena
-                .push_node(CompactNode::Styled(style, content_span))
-        };
+        let styled = self.style_font_scope(style, ids);
         Ok((rest, styled))
     }
 
@@ -5914,13 +5936,94 @@ impl LatexCompactParser {
                     Err(error) => return Err(error),
                 }
             }
-            Ok((rest, self.resolve_infix_fraction(ids)))
+            Ok((rest, ids))
         })();
         self.depth -= 1;
         result
     }
 
-    /// Parse \DeclareMathOperator and similar declaration commands — consume all arguments.
+    /// Wrap one declaration run in a font style, reusing an existing wrapper
+    /// when repeated declarations request the same style.
+    fn style_font_run(&mut self, style: TextStyle, ids: &[NodeId]) -> NodeId {
+        if ids.len() == 1
+            && let CompactNode::Styled(existing, _) = *self.arena.node(ids[0])
+            && existing == style
+        {
+            return ids[0];
+        }
+        let span = self.arena.push_children_deferred(ids);
+        self.arena.push_node(CompactNode::Styled(style, span))
+    }
+
+    /// Expose infix markers nested inside font-generated rows or styled runs
+    /// so the enclosing sequence resolver can classify the fraction.
+    fn expose_infix_markers(&mut self, ids: &[NodeId]) -> SmallVec<[NodeId; 8]> {
+        let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for &id in ids {
+            self.expose_infix_marker_node(id, &mut out);
+        }
+        out
+    }
+
+    fn expose_infix_marker_node(&mut self, id: NodeId, out: &mut SmallVec<[NodeId; 8]>) {
+        match *self.arena.node(id) {
+            CompactNode::Row(span) if self.contains_infix_marker(id) => {
+                let children: SmallVec<[NodeId; 8]> = self.arena.children(span).into();
+                for child in children {
+                    self.expose_infix_marker_node(child, out);
+                }
+            },
+            CompactNode::Styled(font, span) if self.contains_infix_marker(id) => {
+                let children: SmallVec<[NodeId; 8]> = self.arena.children(span).into();
+                let expanded = self.expose_infix_markers(&children);
+                let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
+                for child in expanded {
+                    if self.is_infix_marker_id(child)
+                        || matches!(*self.arena.node(child), CompactNode::Newline)
+                    {
+                        if !run.is_empty() {
+                            out.push(self.style_font_run(font, &run));
+                            run.clear();
+                        }
+                        out.push(child);
+                    } else {
+                        run.push(child);
+                    }
+                }
+                if !run.is_empty() {
+                    out.push(self.style_font_run(font, &run));
+                }
+            },
+            _ => out.push(id),
+        }
+    }
+
+    /// Wrap declaration runs while leaving infix fraction markers visible to
+    /// the surrounding sequence resolver.
+    fn style_font_scope(&mut self, style: TextStyle, ids: SmallVec<[NodeId; 8]>) -> NodeId {
+        let ids = self.expose_infix_markers(&ids);
+        let mut result: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
+        for id in ids {
+            let boundary =
+                self.is_infix_marker_id(id) || matches!(*self.arena.node(id), CompactNode::Newline);
+            if boundary {
+                if !run.is_empty() {
+                    result.push(self.style_font_run(style, &run));
+                    run.clear();
+                }
+                result.push(id);
+            } else {
+                run.push(id);
+            }
+        }
+        if !run.is_empty() {
+            result.push(self.style_font_run(style, &run));
+        }
+        self.flatten_single(&result)
+    }
+
+    /// Parse \\DeclareMathOperator and similar declaration commands — consume all arguments.
     fn parse_declaration<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         // Optional *
