@@ -802,22 +802,43 @@ fn cd_body_len(input: &str) -> usize {
     input.len()
 }
 
-/// Split a `CD` body into rows on top-level `\\` (or `\cr`).
-fn cd_split_rows(body: &str) -> SmallVec<[&str; 4]> {
+/// Split a diagram body into rows on top-level `\\` or `\cr` separators.
+/// Escaped braces remain literal tokens, and xymatrix may additionally protect
+/// row separators inside optional direction brackets.
+fn split_diagram_rows(body: &str, track_brackets: bool) -> SmallVec<[&str; 4]> {
     let bytes = body.as_bytes();
     let mut rows: SmallVec<[&str; 4]> = SmallVec::new();
-    let mut depth = 0i32;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
     let mut start = 0;
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'{' => depth += 1,
-            b'}' if depth > 0 => depth -= 1,
-            b'\\' if depth == 0 && bytes.get(i + 1) == Some(&b'\\') => {
-                rows.push(&body[start..i]);
-                i += 2;
-                start = i;
-                continue;
+            b'{' => brace_depth += 1,
+            b'}' if brace_depth > 0 => brace_depth -= 1,
+            b'[' if track_brackets && brace_depth == 0 => bracket_depth += 1,
+            b']' if track_brackets && brace_depth == 0 && bracket_depth > 0 => {
+                bracket_depth -= 1;
+            },
+            b'\\' => {
+                let top_level = brace_depth == 0 && (!track_brackets || bracket_depth == 0);
+                if bytes
+                    .get(i + 1)
+                    .is_some_and(|b| matches!(b, b'{' | b'}' | b'[' | b']'))
+                {
+                    i += 2;
+                    continue;
+                }
+                if top_level {
+                    let is_double_backslash = bytes.get(i + 1) == Some(&b'\\');
+                    let is_cr = is_cr_row_separator(&body[i..]);
+                    if is_double_backslash || is_cr {
+                        rows.push(&body[start..i]);
+                        i += if is_double_backslash { 2 } else { 3 };
+                        start = i;
+                        continue;
+                    }
+                }
             },
             _ => {},
         }
@@ -825,6 +846,12 @@ fn cd_split_rows(body: &str) -> SmallVec<[&str; 4]> {
     }
     rows.push(&body[start..]);
     rows
+}
+
+/// Split a `CD` body. Connector syntax may use brackets as token content, so
+/// only braces shield row separators here, preserving the historical contract.
+fn cd_split_rows(body: &str) -> SmallVec<[&str; 4]> {
+    split_diagram_rows(body, false)
 }
 
 /// Tokenize a single `CD` row into objects and `@`-connectors. Whitespace and
@@ -1026,6 +1053,12 @@ fn xy_split_cells(row: &str) -> SmallVec<[&str; 8]> {
     }
     out.push(&row[start..]);
     out
+}
+
+/// Split an xymatrix body. Optional direction brackets shield their contents
+/// from row splitting, while a standalone `\cr` remains a row separator.
+fn xy_split_rows(body: &str) -> SmallVec<[&str; 4]> {
+    split_diagram_rows(body, true)
 }
 
 /// Find the byte offset of the next top-level `\ar` command in `s`, or
@@ -6533,7 +6566,7 @@ impl LatexCompactParser {
     fn build_xymatrix(&mut self, body: &str) -> Result<NodeId> {
         let mut rows: Vec<Vec<SmallVec<[NodeId; 8]>>> = Vec::new();
         let mut num_cols = 0usize;
-        for row_src in cd_split_rows(body) {
+        for row_src in xy_split_rows(body) {
             if let Some(error) = self.take_resource_error() {
                 return Err(error);
             }

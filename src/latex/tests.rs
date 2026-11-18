@@ -1196,6 +1196,21 @@ fn cd_horizontal_chain_parses() {
 }
 
 #[test]
+fn cd_cr_rows_and_escaped_braces_keep_their_grid_shape() {
+    use crate::convert::from_latex;
+    for src in [
+        r"\begin{CD} A \cr B \end{CD}",
+        r"\begin{CD} \{ @>>> B \cr C @>>> \} \end{CD}",
+    ] {
+        let first = crate::convert(src, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{src} => {first:?}");
+        let mathml = from_latex(src).unwrap().to_mathml().unwrap();
+        assert_eq!(mathml.matches("<mtr>").count(), 2, "{src}: {mathml}");
+    }
+}
+
+#[test]
 fn cd_equals_and_double_line_parse() {
     use crate::convert::from_latex;
     let src = r"\begin{CD} A @= B \\ @VVV @| \\ C @>>> D \end{CD}";
@@ -1724,6 +1739,34 @@ fn xymatrix_grid_with_arrows() {
     assert!(ml.contains("<mi>f</mi>"), "missing label f:\n{ml}");
     #[cfg(feature = "render")]
     assert!(r.to_svg().is_ok());
+}
+
+#[test]
+fn xymatrix_cr_keeps_empty_row_shape_and_stable_export() {
+    use crate::convert::from_latex;
+
+    let write =
+        |input: &str| crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let first = write(r"\xymatrix{\cr}");
+    assert!(
+        !first.contains(r"\\"),
+        "empty xymatrix row gained a separator: {first:?}"
+    );
+    assert_eq!(first, write(&first));
+
+    let mathml = from_latex(r"\xymatrix{\cr}").unwrap().to_mathml().unwrap();
+    assert_eq!(mathml.matches("<mtr>").count(), 1, "{mathml}");
+    assert_eq!(mathml.matches("<mtd ").count(), 1, "{mathml}");
+
+    for input in [
+        r"\xymatrix{A\cr B}",
+        r"\xymatrix{&A\cr B&}",
+        r"\xymatrix{A\\B}",
+        r"\begin{xy}\xymatrix{\cr}\end{xy}",
+    ] {
+        let first = write(input);
+        assert_eq!(first, write(&first), "{input} => {first:?}");
+    }
 }
 
 #[test]
