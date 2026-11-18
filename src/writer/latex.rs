@@ -2880,15 +2880,21 @@ mod tests {
             assert_eq!(first, roundtrip(&first), "unstable spelling for {input:?}");
         }
 
-        let mathml =
-            crate::from_mathml("<math><msup><mo>\u{2212}</mo><mo>\u{2032}</mo></msup></math>")
-                .unwrap();
-        let first = mathml.to_latex().unwrap();
-        assert_eq!(first, r"{\mathord{-}}^{\prime}");
-        assert_eq!(
-            first,
-            crate::from_latex(&first).unwrap().to_latex().unwrap()
-        );
+        for (minus, expected) in [
+            ("<mo>−</mo>", r"-^{\prime}"),
+            (
+                r#"<mo data-mjx-texclass="ORD">−</mo>"#,
+                r"{\mathord{-}}^{\prime}",
+            ),
+        ] {
+            let xml = format!("<math><msup>{minus}<mo>′</mo></msup></math>");
+            let first = crate::from_mathml(&xml).unwrap().to_latex().unwrap();
+            assert_eq!(first, expected, "{xml}");
+            assert_eq!(
+                first,
+                crate::from_latex(&first).unwrap().to_latex().unwrap()
+            );
+        }
     }
 
     #[test]
