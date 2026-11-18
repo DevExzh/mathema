@@ -2113,7 +2113,9 @@ fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
     use crate::reader::Reader;
+    use crate::reader::latex::LatexReader;
 
     fn write(node: MathNode) -> String {
         let expr = MathExpr::inline(vec![node]);
@@ -2195,6 +2197,7 @@ mod tests {
 
     #[test]
     fn ordinary_vertical_bars_keep_their_mathml_class() {
+        let config = Config::default();
         for source in [
             r"\vert",
             r"\Vert",
@@ -2211,6 +2214,24 @@ mod tests {
             assert_eq!(
                 imported.to_svg_text().unwrap(),
                 original.to_svg_text().unwrap()
+            );
+
+            let raw_heap = LatexReader::parse(source, &config).unwrap().expr;
+            let raw_compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            assert_eq!(
+                MathmlWriter::write(&raw_heap, &config).unwrap(),
+                MathmlWriter::write_compact(&raw_compact, &config).unwrap(),
+                "raw heap/compact: {source}"
+            );
+
+            let mut normalized_heap = raw_heap.clone();
+            normalize_expr(&mut normalized_heap);
+            let mut normalized_compact = raw_compact.clone();
+            normalize_compact_expr(&mut normalized_compact).unwrap();
+            assert_eq!(
+                MathmlWriter::write(&normalized_heap, &config).unwrap(),
+                MathmlWriter::write_compact(&normalized_compact, &config).unwrap(),
+                "normalized heap/compact: {source}"
             );
         }
     }
