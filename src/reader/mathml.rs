@@ -102,6 +102,11 @@ struct MathmlCompactParser<'a> {
     /// levels. Keep the full non-negative level while reading nested
     /// `mstyle` attributes and clamp only when lowering to a StyleSwitch.
     style_level: i64,
+    /// The active font variant inherited from an `mstyle`, when one is
+    /// present. A multi-letter normal identifier is already upright under
+    /// MathML's default rules, so it needs an AST style wrapper only when it
+    /// overrides a different inherited variant.
+    mathvariant_style: Option<TextStyle>,
     /// Only direct, explicitly fenced operators of a potential fenced row
     /// need to survive until its closing tag. Nested rows use their own slice.
     fence_depth: Option<u32>,
@@ -137,6 +142,7 @@ impl<'a> MathmlCompactParser<'a> {
             movable_limit_operators: HashMap::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
+            mathvariant_style: None,
             fence_depth: None,
             fence_marks: SmallVec::new(),
         })
@@ -598,6 +604,12 @@ impl<'a> MathmlCompactParser<'a> {
         omit_text_marker: bool,
     ) -> Result<NodeId> {
         let previous = (self.style_display, self.style_level);
+        let previous_variant = self.mathvariant_style;
+        if let Some(variant) =
+            get_attr(start, "mathvariant").and_then(|value| mathvariant_to_style(&value))
+        {
+            self.mathvariant_style = Some(variant);
+        }
         let scoped = self.scoped_style(start);
         if let Some((display, level)) = scoped {
             self.style_display = display;
@@ -606,6 +618,7 @@ impl<'a> MathmlCompactParser<'a> {
         let children = self.parse_children("mstyle")?;
         self.style_display = previous.0;
         self.style_level = previous.1;
+        self.mathvariant_style = previous_variant;
 
         // An empty style element has no descendant to which its attributes
         // can apply. Emitting a leading StyleSwitch here would incorrectly
@@ -774,6 +787,11 @@ impl<'a> MathmlCompactParser<'a> {
                 if let Some(variant) = mathvariant
                     && let Some(style) = mathvariant_to_style(&variant)
                     && style != TextStyle::Italic
+                    && !(style == TextStyle::Normal
+                        && text.chars().count() > 1
+                        && self
+                            .mathvariant_style
+                            .is_none_or(|inherited| inherited == TextStyle::Normal))
                 {
                     let inner = self.arena.push_node(CompactNode::Identifier(sid));
                     let span = self.arena.push_children_deferred(&[inner]);
@@ -2174,6 +2192,55 @@ mod tests {
     fn simple_identifier() {
         let node = parse_one("<math><mi>x</mi></math>");
         assert_eq!(node, MathNode::Identifier("x".into()));
+    }
+
+    #[test]
+    fn normal_multiletter_identifiers_do_not_gain_nested_style_wrappers() {
+        let ordinary = r#"<math><mi mathvariant="normal">xy</mi></math>"#;
+        let ordinary_output = crate::from_mathml(ordinary).unwrap().to_mathml().unwrap();
+        assert!(
+            !ordinary_output.contains("<mstyle mathvariant=\"normal\">"),
+            "{ordinary_output}"
+        );
+        assert_eq!(
+            crate::from_mathml(&ordinary_output)
+                .unwrap()
+                .to_mathml()
+                .unwrap(),
+            ordinary_output
+        );
+
+        let single = r#"<math><mi mathvariant="normal">x</mi></math>"#;
+        let single_output = crate::from_mathml(single).unwrap().to_mathml().unwrap();
+        assert!(
+            single_output.contains("mathvariant=\"normal\""),
+            "{single_output}"
+        );
+        assert_eq!(
+            crate::from_mathml(&single_output)
+                .unwrap()
+                .to_mathml()
+                .unwrap(),
+            single_output
+        );
+
+        for variant in ["bold", "italic", "bold-italic"] {
+            let input = format!(
+                r#"<math><mstyle mathvariant="{variant}"><mi mathvariant="normal">xy</mi><mi>z</mi></mstyle></math>"#
+            );
+            let output = crate::from_mathml(&input).unwrap().to_mathml().unwrap();
+            assert!(
+                output.contains(
+                    r#"<mstyle mathvariant="normal"><mi mathvariant="normal">xy</mi></mstyle>"#
+                ),
+                "{output}"
+            );
+            assert!(output.contains("<mi>z</mi>"), "{output}");
+            assert_eq!(
+                crate::from_mathml(&output).unwrap().to_mathml().unwrap(),
+                output
+            );
+        }
     }
 
     #[test]
