@@ -377,7 +377,8 @@ impl<'a> MathmlCompactParser<'a> {
                 let kind = classify_mo(&text);
                 let sid = self.arena.push_str(&text);
                 let id = self.arena.push_node(CompactNode::Symbol(kind, sid));
-                if let Some(value) = get_attr(start, "movablelimits")
+                if kind == SymbolKind::LargeOp
+                    && let Some(value) = get_attr(start, "movablelimits")
                     && matches!(value.as_str(), "true" | "false")
                 {
                     self.movable_limit_operators.insert(id, value == "true");
@@ -461,16 +462,25 @@ impl<'a> MathmlCompactParser<'a> {
             "msub" => {
                 let children = self.parse_children(name)?;
                 let (base, sub) = self.two_child_ids(children);
+                if let Some((op, _)) = self.limit_operator(base) {
+                    return Ok(self.make_nary(op, sub, NodeId::NONE, LimitStyle::SubSup));
+                }
                 Ok(self.arena.push_node(CompactNode::Subscript { base, sub }))
             },
             "msup" => {
                 let children = self.parse_children(name)?;
                 let (base, sup) = self.two_child_ids(children);
+                if let Some((op, _)) = self.limit_operator(base) {
+                    return Ok(self.make_nary(op, NodeId::NONE, sup, LimitStyle::SubSup));
+                }
                 Ok(self.arena.push_node(CompactNode::Superscript { base, sup }))
             },
             "msubsup" => {
                 let children = self.parse_children(name)?;
                 let (base, sub, sup) = self.three_child_ids(children);
+                if let Some((op, _)) = self.limit_operator(base) {
+                    return Ok(self.make_nary(op, sub, sup, LimitStyle::SubSup));
+                }
                 Ok(self.arena.push_node(CompactNode::SubSup { base, sub, sup }))
             },
             "mover" => {
@@ -491,28 +501,8 @@ impl<'a> MathmlCompactParser<'a> {
                         }));
                     }
                 }
-                if movable && let Some((op, moves_limits)) = self.limit_operator(base) {
-                    // MathML can explicitly make an integral's limits movable.
-                    // Keep the under/over node so the display-style placement
-                    // survives the conversion. A TeX `Default` n-ary integral
-                    // deliberately uses side scripts in display mode.
-                    if moves_limits && crate::unicode::symbols::is_integral_operator(op) {
-                        return Ok(self.arena.push_node(CompactNode::Overscript {
-                            base,
-                            over,
-                            movable_limits: true,
-                        }));
-                    }
-                    return Ok(self.make_nary(
-                        op,
-                        NodeId::NONE,
-                        over,
-                        if moves_limits {
-                            LimitStyle::Default
-                        } else {
-                            LimitStyle::AboveBelow
-                        },
-                    ));
+                if movable && let Some(node) = self.stacked_nary(base, NodeId::NONE, over) {
+                    return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::Overscript {
                     base,
@@ -535,24 +525,8 @@ impl<'a> MathmlCompactParser<'a> {
                         wide: false,
                     }));
                 }
-                if !is_accent && let Some((op, moves_limits)) = self.limit_operator(base) {
-                    if moves_limits && crate::unicode::symbols::is_integral_operator(op) {
-                        return Ok(self.arena.push_node(CompactNode::Underscript {
-                            base,
-                            under,
-                            movable_limits: true,
-                        }));
-                    }
-                    return Ok(self.make_nary(
-                        op,
-                        under,
-                        NodeId::NONE,
-                        if moves_limits {
-                            LimitStyle::Default
-                        } else {
-                            LimitStyle::AboveBelow
-                        },
-                    ));
+                if !is_accent && let Some(node) = self.stacked_nary(base, under, NodeId::NONE) {
+                    return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::Underscript {
                     base,
@@ -582,25 +556,8 @@ impl<'a> MathmlCompactParser<'a> {
                         movable_limits: !accent,
                     }));
                 }
-                if let Some((op, moves_limits)) = self.limit_operator(base) {
-                    if moves_limits && crate::unicode::symbols::is_integral_operator(op) {
-                        return Ok(self.arena.push_node(CompactNode::UnderOver {
-                            base,
-                            under,
-                            over,
-                            movable_limits: true,
-                        }));
-                    }
-                    return Ok(self.make_nary(
-                        op,
-                        under,
-                        over,
-                        if moves_limits {
-                            LimitStyle::Default
-                        } else {
-                            LimitStyle::AboveBelow
-                        },
-                    ));
+                if let Some(node) = self.stacked_nary(base, under, over) {
+                    return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::UnderOver {
                     base,
@@ -891,17 +848,19 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn limit_operator(&self, id: NodeId) -> Option<(char, bool)> {
         match *self.arena.node(id) {
-            CompactNode::Symbol(SymbolKind::LargeOp, sid) => self
-                .movable_limit_operators
-                .get(&id)
-                .copied()
-                .and_then(|movable| {
-                    self.arena
-                        .str_val(sid)
-                        .chars()
-                        .next()
-                        .map(|op| (op, movable))
-                }),
+            CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
+                let text = self.arena.str_val(sid).trim();
+                let op = text.chars().next()?;
+                if text.len() != op.len_utf8() {
+                    return None;
+                }
+                let movable = self
+                    .movable_limit_operators
+                    .get(&id)
+                    .copied()
+                    .unwrap_or_else(|| !crate::unicode::symbols::is_integral_operator(op));
+                Some((op, movable))
+            },
             CompactNode::Row(span) => {
                 let children = self.arena.children(span);
                 if children.len() == 1 {
@@ -912,6 +871,22 @@ impl<'a> MathmlCompactParser<'a> {
             },
             _ => None,
         }
+    }
+
+    /// Fixed under/over scripts and movable sum-like operators have TeX n-ary
+    /// equivalents. An integral with movable limits needs the generic MathML
+    /// under/over representation to retain its placement in compact style.
+    fn stacked_nary(&mut self, base: NodeId, sub: NodeId, sup: NodeId) -> Option<NodeId> {
+        let (op, movable) = self.limit_operator(base)?;
+        if movable && crate::unicode::symbols::is_integral_operator(op) {
+            return None;
+        }
+        let style = if movable {
+            LimitStyle::Default
+        } else {
+            LimitStyle::AboveBelow
+        };
+        Some(self.make_nary(op, sub, sup, style))
     }
 
     fn make_nary(&mut self, op: char, sub: NodeId, sup: NodeId, limits: LimitStyle) -> NodeId {
@@ -1466,6 +1441,61 @@ mod tests {
         let input = "<math><munderover accent=\"true\" accentunder=\"true\"><mo>∫</mo><mo>_</mo><mo>¯</mo></munderover></math>";
         let output = crate::convert(input, crate::Format::MathML, crate::Format::MathML).unwrap();
         assert!(output.contains("<mover accent=\"true\"><munder accentunder=\"true\">"));
+    }
+
+    #[test]
+    fn large_operator_bounds_follow_the_element_and_dictionary_defaults() {
+        for (tag, token, bounds, canonical_operator) in [
+            (
+                "msub",
+                "<mo> ∑ </mo>",
+                "<mi>i</mi>",
+                r#"<mo movablelimits="false">∑</mo>"#,
+            ),
+            (
+                "msup",
+                r#"<mo movablelimits="true">∏</mo>"#,
+                "<mi>n</mi>",
+                r#"<mo movablelimits="false">∏</mo>"#,
+            ),
+            (
+                "munder",
+                "<mo> ∑ </mo>",
+                "<mi>i</mi>",
+                r#"<mo movablelimits="true">∑</mo>"#,
+            ),
+            (
+                "mover",
+                "<mrow><mo>⨆</mo></mrow>",
+                "<mi>n</mi>",
+                r#"<mo movablelimits="true">⨆</mo>"#,
+            ),
+            (
+                "munderover",
+                "<mo>∲</mo>",
+                "<mi>a</mi><mi>b</mi>",
+                r#"<mo movablelimits="false">∲</mo>"#,
+            ),
+            (
+                "msubsup",
+                "<mo>⨌</mo>",
+                "<mi>a</mi><mi>b</mi>",
+                r#"<mo movablelimits="false">⨌</mo>"#,
+            ),
+        ] {
+            let authored = format!("<math><{tag}>{token}{bounds}</{tag}><mi>x</mi></math>");
+            let first = crate::from_mathml(&authored).unwrap().to_mathml().unwrap();
+            assert!(
+                first.contains(&format!(
+                    "<{tag}>{canonical_operator}{bounds}</{tag}><mi>x</mi>"
+                )),
+                "{first}"
+            );
+            assert_eq!(
+                crate::from_mathml(&first).unwrap().to_mathml().unwrap(),
+                first
+            );
+        }
     }
 
     #[test]

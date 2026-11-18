@@ -1693,6 +1693,11 @@ mod tests {
                     xml.contains(before) && xml.contains(after),
                     "{source}: {xml}"
                 );
+                assert_eq!(
+                    crate::from_mathml(&xml).unwrap().to_mathml().unwrap(),
+                    xml,
+                    "{source}"
+                );
             }
         }
     }
