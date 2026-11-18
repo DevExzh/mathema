@@ -354,6 +354,7 @@ pub(crate) fn closing_fence(open: &str) -> Option<&'static str> {
         "⦓" => "⦔",
         "⦕" => "⦖",
         "⦗" => "⦘",
+        "\\" => "/",
         _ => return None,
     })
 }

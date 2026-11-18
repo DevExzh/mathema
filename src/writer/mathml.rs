@@ -423,12 +423,17 @@ fn write_node_in(
                         _ => None,
                     },
                     |w, item, style| match item {
+                        FencedItem::Element(MathNode::Symbol(SymbolKind::Fence, text))
+                            if is_literal_fence_glyph(text) =>
+                        {
+                            write_literal_fence(w, text)
+                        },
                         FencedItem::Element(node) => write_node(w, node, style),
                         FencedItem::Middle(_) => Ok(()),
                     },
                 )?;
                 if let Some(delim) = middle {
-                    write_mo_fence(w, delim, Some("infix"))?;
+                    write_mo_middle(w, delim)?;
                 }
             }
 
@@ -874,9 +879,33 @@ fn write_mo_fence(w: &mut XmlWriter, text: &str, form: Option<&str>) -> Result<(
     elem.push_attribute(("fence", "true"));
     if let Some(form) = form {
         elem.push_attribute(("form", form));
-        elem.push_attribute(("stretchy", "true"));
-        elem.push_attribute(("symmetric", "true"));
     }
+    elem.push_attribute(("stretchy", "true"));
+    elem.push_attribute(("symmetric", "true"));
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mo")))
+        .map_err(to_err)?;
+    Ok(())
+}
+
+fn write_mo_middle(w: &mut XmlWriter, text: &str) -> Result<()> {
+    let mut elem = BytesStart::new("mo");
+    elem.push_attribute(("form", "infix"));
+    elem.push_attribute(("stretchy", "true"));
+    elem.push_attribute(("symmetric", "true"));
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mo")))
+        .map_err(to_err)?;
+    Ok(())
+}
+
+fn write_literal_fence(w: &mut XmlWriter, text: &str) -> Result<()> {
+    let mut elem = BytesStart::new("mo");
+    elem.push_attribute(("stretchy", "false"));
     w.write_event(Event::Start(elem)).map_err(to_err)?;
     w.write_event(Event::Text(BytesText::new(text)))
         .map_err(to_err)?;
@@ -1159,10 +1188,10 @@ fn write_node_fast_in(
                 if let Some((&last, prefix)) = segment.split_last()
                     && let CompactNode::Middle(sid) = *arena.node(last)
                 {
-                    write_nodes_fast(buf, arena, prefix, display_style, false);
-                    write_mo_fence_fast(buf, arena.str_val(sid), Some("infix"));
+                    write_nodes_fenced_fast(buf, arena, prefix, display_style);
+                    write_mo_middle_fast(buf, arena.str_val(sid));
                 } else {
-                    write_nodes_fast(buf, arena, segment, display_style, false);
+                    write_nodes_fenced_fast(buf, arena, segment, display_style);
                 }
             }
 
@@ -1911,11 +1940,45 @@ fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>) {
         buf.push_str(" form=\"");
         buf.push_str(form);
         buf.push('"');
-        buf.push_str(" stretchy=\"true\" symmetric=\"true\"");
     }
+    buf.push_str(" stretchy=\"true\" symmetric=\"true\"");
     buf.push('>');
     xml_escape_into(buf, text);
     buf.push_str("</mo>");
+}
+
+fn write_mo_middle_fast(buf: &mut String, text: &str) {
+    buf.push_str("<mo form=\"infix\" stretchy=\"true\" symmetric=\"true\">");
+    xml_escape_into(buf, text);
+    buf.push_str("</mo>");
+}
+
+fn write_literal_fence_fast(buf: &mut String, text: &str) {
+    buf.push_str("<mo stretchy=\"false\">");
+    xml_escape_into(buf, text);
+    buf.push_str("</mo>");
+}
+
+fn is_literal_fence_glyph(text: &str) -> bool {
+    matches!(text, "|" | "‖" | "∣" | "∥")
+}
+
+fn write_nodes_fenced_fast(
+    buf: &mut String,
+    arena: &AstArena,
+    nodes: &[NodeId],
+    display_style: MathStyle,
+) {
+    for &id in nodes {
+        if let CompactNode::Symbol(SymbolKind::Fence, sid) = *arena.node(id) {
+            let text = arena.str_val(sid);
+            if is_literal_fence_glyph(text) {
+                write_literal_fence_fast(buf, text);
+                continue;
+            }
+        }
+        write_node_fast(buf, arena, id, display_style);
+    }
 }
 
 fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
@@ -2047,7 +2110,7 @@ mod tests {
             ),
             (
                 r"\left\backslash\frac{1}{x}\right/",
-                r#"form="prefix" stretchy="true" symmetric="true">\</mo>"#,
+                r#"fence="true" stretchy="true" symmetric="true">\</mo>"#,
             ),
         ] {
             let result = crate::from_latex(source).unwrap();

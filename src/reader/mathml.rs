@@ -706,7 +706,7 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
-        if attrs.fenced {
+        if attrs.fenced || (attrs.form == FenceRole::Infix && is_middle_delimiter(name)) {
             self.fence_marks.push((id, attrs.fence_role()));
         }
         if kind == SymbolKind::LargeOp {
@@ -1730,6 +1730,10 @@ fn writable_middle(text: &str) -> bool {
             && !c.is_control()
             && !matches!(c, '%' | '#' | '$' | '&' | '~' | '^' | '_' | '.')
     })
+}
+
+fn is_middle_delimiter(text: &str) -> bool {
+    matches!(text, "" | "|" | "‖" | "∣" | "∥" | "/" | "\\")
 }
 
 fn known_fence_endpoint(text: &str) -> bool {
