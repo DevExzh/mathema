@@ -1913,6 +1913,46 @@ impl<'i> Parser<'i> {
         }
         let base = self.or_empty(base);
         let lim = self.or_empty(lim);
+        // The native limit object fixes this bound above or below its
+        // base. A function name carries that placement directly; combine
+        // nested complementary limit objects into its two script fields.
+        let named = |node: &CompactNode| {
+            matches!(
+                node,
+                CompactNode::Operator {
+                    limits: LimitStyle::AboveBelow,
+                    ..
+                }
+            )
+        };
+        match *self.arena.node(base) {
+            CompactNode::Operator { name, .. } => {
+                let base = self.arena.push_node(CompactNode::Operator {
+                    name,
+                    limits: LimitStyle::AboveBelow,
+                });
+                return Ok(self.arena.push_node(if upper {
+                    CompactNode::Superscript { base, sup: lim }
+                } else {
+                    CompactNode::Subscript { base, sub: lim }
+                }));
+            },
+            CompactNode::Subscript { base, sub } if upper && named(self.arena.node(base)) => {
+                return Ok(self.arena.push_node(CompactNode::SubSup {
+                    base,
+                    sub,
+                    sup: lim,
+                }));
+            },
+            CompactNode::Superscript { base, sup } if !upper && named(self.arena.node(base)) => {
+                return Ok(self.arena.push_node(CompactNode::SubSup {
+                    base,
+                    sub: lim,
+                    sup,
+                }));
+            },
+            _ => {},
+        }
         Ok(self.arena.push_node(if upper {
             CompactNode::Overscript {
                 base,

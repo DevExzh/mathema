@@ -107,9 +107,19 @@ fn compound_limit_objects_decode_side_and_stacked_bounds() {
     let stacked = omath(
         r#"<m:limLow><m:e><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>lim sup</m:t></m:r></m:e><m:lim><m:r><m:t>n</m:t></m:r></m:lim></m:limLow>"#,
     );
-    assert!(matches!(parse_one(&stacked), MathNode::Underscript { .. }));
-    let output = crate::from_omml(&stacked).unwrap().to_mathml().unwrap();
-    assert!(output.contains("lim sup"), "{output}");
+    assert!(
+        matches!(parse_one(&stacked), MathNode::Subscript { base, .. }
+        if matches!(*base, MathNode::Operator(ref op) if op.limit_style == LimitStyle::AboveBelow))
+    );
+    let inline = Config::default().with_display(crate::ast::DisplayStyle::Inline);
+    let output = crate::from_omml_with(&stacked, &inline)
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        output.contains("lim sup") && output.contains(r#"movablelimits="false""#),
+        "{output}"
+    );
     assert!(output.contains("<munder>"), "{output}");
 }
 
