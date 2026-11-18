@@ -1033,12 +1033,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // always braced: `{}^{6}6`, not `{}^66`.
             let bare_space_base = match *arena.node(base) {
                 CompactNode::Space(width) => width.num != 0,
-                CompactNode::Symbol(_, sid) => {
-                    arena.str_val(sid).chars().next().is_some_and(|ch| {
-                        arena.str_val(sid).chars().count() == 1
-                            && crate::unicode::math_space_width(ch).is_some()
-                    })
-                },
+                CompactNode::Symbol(_, sid) => single_math_space(arena.str_val(sid)).is_some(),
                 CompactNode::MathAtom {
                     atom_type: MathAtomType::Ord,
                     content,
@@ -1686,7 +1681,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if atom_type == MathAtomType::Ord
                 && let Some(text) = authored_math_space_symbol(arena, content)
             {
-                write_literal_math_char(buf, text);
+                write_decimal_math_char(buf, text);
                 return;
             }
             if atom_type == MathAtomType::Op {
@@ -2109,9 +2104,7 @@ fn write_math_char(buf: &mut String, ch: char) {
         // A raw C0, C1, or DEL character is not a parseable LaTeX atom. Use
         // decimal \\char syntax and retain a source-space terminator so a
         // following digit cannot be consumed as part of the character code.
-        buf.push_str("\\char");
-        buf.push_str(&(ch as u32).to_string());
-        buf.push(' ');
+        write_decimal_math_char(buf, ch);
         return;
     }
     buf.push_str(r"\char`");
@@ -2124,23 +2117,22 @@ fn write_math_char(buf: &mut String, ch: char) {
     buf.push(ch);
 }
 
-/// Emit an authored `\char` glyph rather than converting Unicode math-space
-/// characters to TeX glue. The terminator keeps decimal character terminals
-/// from consuming a following digit or letter.
-fn write_literal_math_char(buf: &mut LatexBuffer, ch: char) {
-    buf.push_str("\\char");
+/// End the decimal character code before a following digit.
+fn write_decimal_math_char(buf: &mut String, ch: char) {
+    buf.push_str(r"\char");
     buf.push_str(&(ch as u32).to_string());
     buf.push(' ');
 }
 
+fn single_math_space(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    (chars.next().is_none() && crate::unicode::math_space_width(ch).is_some()).then_some(ch)
+}
+
 fn authored_math_space_symbol(arena: &AstArena, id: NodeId) -> Option<char> {
     match *arena.node(id) {
-        CompactNode::Symbol(SymbolKind::Ordinary, sid) => {
-            let text = arena.str_val(sid);
-            (text.chars().count() == 1)
-                .then(|| text.chars().next().unwrap())
-                .filter(|ch| crate::unicode::math_space_width(*ch).is_some())
-        },
+        CompactNode::Symbol(SymbolKind::Ordinary, sid) => single_math_space(arena.str_val(sid)),
         _ => None,
     }
 }
