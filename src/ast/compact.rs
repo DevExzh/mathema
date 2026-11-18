@@ -822,13 +822,15 @@ fn push_array_node(
             cell_ids.push(arena.push_node(CompactNode::Row(span)));
         }
         for _ in row.len()..(num_cols as usize) {
-            let padding = *synthetic_padding.get_or_insert_with(|| {
-                let id = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-                if environment.is_some() {
+            let padding = if environment.is_some() {
+                *synthetic_padding.get_or_insert_with(|| {
+                    let id = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
                     arena.mark_matrix_padding(id);
-                }
-                id
-            });
+                    id
+                })
+            } else {
+                arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+            };
             cell_ids.push(padding);
         }
     }
@@ -1045,30 +1047,20 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 Some(arraystretch_pct as f64 / 100.0)
             };
 
-            let matrix_kind = arena.array_environment(id).filter(|kind| {
-                let expected_pitch = if *kind == MatrixKind::SmallMatrix {
-                    50
-                } else {
-                    100
-                };
-                if array_style
-                    || add_jot
-                    || col_seps != 0
-                    || row_seps != 0
-                    || arraystretch_pct != expected_pitch
-                    || (!cell_ids.is_empty() && columns.len() != nc)
-                {
-                    return false;
-                }
-                columns
-                    .iter()
-                    .all(|alignment| *alignment == columns.first().copied().unwrap_or(*alignment))
-            });
-
-            match matrix_kind {
-                Some(kind) => MathNode::Matrix {
+            match arena.valid_matrix_environment(
+                id,
+                col_aligns,
+                cells,
+                num_cols,
+                arraystretch_pct,
+                add_jot,
+                array_style,
+                col_seps,
+                row_seps,
+            ) {
+                Some((kind, alignment)) => MathNode::Matrix {
                     kind,
-                    alignment: columns.first().copied().unwrap_or(ColumnAlign::Center),
+                    alignment,
                     rows,
                 },
                 None => MathNode::Array {
@@ -1254,6 +1246,26 @@ mod tests {
             compact.to_math_expr().nodes.as_slice(),
             [MathNode::Array { .. }]
         ));
+    }
+
+    #[test]
+    fn generic_array_padding_rows_keep_distinct_node_ids() {
+        let expr = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Center],
+            rows: vec![vec![vec![MathNode::Identifier("x".into())]], vec![]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let root = compact.arena.children(compact.roots)[0];
+        let CompactNode::Array { cells, .. } = *compact.arena.node(root) else {
+            panic!("expected array node")
+        };
+        let ids = compact.arena.children(cells);
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        assert!(!compact.arena.is_matrix_padding(ids[0]));
+        assert!(!compact.arena.is_matrix_padding(ids[1]));
     }
 
     #[test]
