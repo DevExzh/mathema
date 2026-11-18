@@ -1,6 +1,6 @@
 #![cfg(feature = "render")]
 
-use mathema::ast::{AccentPosition, FractionKind, LimitStyle, MathExpr, MathNode, TextStyle};
+use mathema::ast::{AccentPosition, FractionKind, MathExpr, MathNode, OperatorNameForm, TextStyle};
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
@@ -57,8 +57,7 @@ fn svg_width(svg: &str) -> f64 {
 fn structured(content: MathNode) -> MathExpr {
     MathExpr::inline(vec![MathNode::StructuredOperator {
         content: Box::new(content),
-        limit_style: LimitStyle::Default,
-        starred: false,
+        form: OperatorNameForm::Unstarred,
     }])
 }
 
