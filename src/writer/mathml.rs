@@ -892,7 +892,6 @@ fn write_mo_fence(w: &mut XmlWriter, text: &str, form: Option<&str>) -> Result<(
 
 fn write_mo_middle(w: &mut XmlWriter, text: &str) -> Result<()> {
     let mut elem = BytesStart::new("mo");
-    elem.push_attribute(("form", "infix"));
     elem.push_attribute(("stretchy", "true"));
     elem.push_attribute(("symmetric", "true"));
     w.write_event(Event::Start(elem)).map_err(to_err)?;
@@ -1948,7 +1947,7 @@ fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>) {
 }
 
 fn write_mo_middle_fast(buf: &mut String, text: &str) {
-    buf.push_str("<mo form=\"infix\" stretchy=\"true\" symmetric=\"true\">");
+    buf.push_str("<mo stretchy=\"true\" symmetric=\"true\">");
     xml_escape_into(buf, text);
     buf.push_str("</mo>");
 }
@@ -2106,7 +2105,7 @@ mod tests {
         for (source, operator) in [
             (
                 r"\left(\frac{1}{x}\middle|y\right)",
-                r#"form="infix" stretchy="true" symmetric="true">|</mo>"#,
+                r#"stretchy="true" symmetric="true">|</mo>"#,
             ),
             (
                 r"\left\backslash\frac{1}{x}\right/",

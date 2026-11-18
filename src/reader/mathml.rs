@@ -706,7 +706,10 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
-        if attrs.fenced || (attrs.form == FenceRole::Infix && is_middle_delimiter(name)) {
+        if attrs.fenced
+            || ((attrs.form == FenceRole::Infix || attrs.possible_middle())
+                && is_middle_delimiter(name))
+        {
             self.fence_marks.push((id, attrs.fence_role()));
         }
         if kind == SymbolKind::LargeOp {
@@ -1708,6 +1711,8 @@ struct OperatorAttributes {
     fenced: bool,
     form: FenceRole,
     constrained: bool,
+    stretchy: Option<bool>,
+    symmetric: Option<bool>,
 }
 
 impl OperatorAttributes {
@@ -1717,6 +1722,10 @@ impl OperatorAttributes {
         } else {
             self.form
         }
+    }
+
+    fn possible_middle(&self) -> bool {
+        self.stretchy == Some(true) && self.symmetric == Some(true)
     }
 }
 
@@ -1774,9 +1783,15 @@ fn operator_attributes(
                     .eq_ignore_ascii_case("true");
             },
             "stretchy" | "symmetric" if inspect_fences => {
-                result.constrained |= !fence_attr_value(&attr.value)
+                let value = fence_attr_value(&attr.value)
                     .trim()
                     .eq_ignore_ascii_case("true");
+                if attr.key.as_ref() == "stretchy" {
+                    result.stretchy = Some(value);
+                } else {
+                    result.symmetric = Some(value);
+                }
+                result.constrained |= !value;
             },
             "form" if inspect_fences => {
                 let value = fence_attr_value(&attr.value);
