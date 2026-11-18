@@ -1,3 +1,4 @@
+mod dimension;
 mod hbox;
 mod unicode_scripts;
 
@@ -3762,7 +3763,7 @@ impl LatexCompactParser {
                 // Consume optional dimension, produce infix marker (treated like \over)
                 let (input, _) = ws(input)?;
                 // Try to consume a dimension
-                let input = match self.parse_dimension(input) {
+                let input = match dimension::width(input) {
                     Ok((rest, _)) => rest,
                     Err(_) => input,
                 };
@@ -4885,87 +4886,8 @@ impl LatexCompactParser {
         ))
     }
 
-    /// Parse a TeX dimension: an optional sign, a number (integer or decimal),
-    /// followed by a unit. Returns a value in em.
-    fn parse_dimension<'a>(&mut self, input: &'a str) -> IResult<&'a str, Rational> {
-        let (input, _) = ws(input)?;
-        let bytes = input.as_bytes();
-        let mut i = 0;
-        // Optional sign
-        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
-            i += 1;
-        }
-        // Digits (integer part)
-        let digit_start = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
-        }
-        // Optional decimal point + fractional digits
-        if i < bytes.len() && bytes[i] == b'.' {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-        }
-        if i == digit_start
-            && !(digit_start > 0
-                && (bytes[digit_start - 1] == b'+' || bytes[digit_start - 1] == b'-'))
-        {
-            // No number found at all
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Digit,
-            )));
-        }
-        let num_str = &input[..i];
-        let rest = &input[i..];
-        let value: f64 = num_str.parse().unwrap_or(0.0);
-
-        // Skip optional whitespace before unit
-        let skip = skip_ws_bytes(rest.as_bytes());
-        let rest = &rest[skip..];
-
-        // Parse unit
-        let (rest, em_value) = if let Some(r) = rest.strip_prefix("em") {
-            (r, value)
-        } else if let Some(r) = rest.strip_prefix("ex") {
-            (r, value * 0.43) // 1ex ~ 0.43em
-        } else if let Some(r) = rest.strip_prefix("pt") {
-            (r, value * 0.1) // 1pt ~ 0.1em at 10pt base
-        } else if let Some(r) = rest.strip_prefix("mu") {
-            if !num_str.contains('.')
-                && let Ok(mu) = num_str.parse::<i32>()
-            {
-                return Ok((r, Rational::new(mu, 18)));
-            }
-            (r, value / 18.0) // 1mu = 1/18 em
-        } else if let Some(r) = rest.strip_prefix("mm") {
-            (r, value * 0.284) // approximate
-        } else if let Some(r) = rest.strip_prefix("cm") {
-            (r, value * 2.84) // approximate
-        } else if let Some(r) = rest.strip_prefix("in") {
-            (r, value * 7.23) // approximate
-        } else if let Some(r) = rest.strip_prefix("pc") {
-            (r, value * 1.2) // 1pc = 12pt
-        } else if let Some(r) = rest.strip_prefix("bp") {
-            (r, value * 0.1) // 1bp ~ 1pt
-        } else if let Some(r) = rest.strip_prefix("sp") {
-            (r, value * 0.0000015) // 1sp = 1/65536 pt, negligible
-        } else {
-            // No unit — assume pt (common in TeX)
-            (rest, value * 0.1)
-        };
-
-        // Ensure the unit isn't followed by an alphabetic char (e.g. "emph" isn't "em"+"ph")
-        // But since we already stripped, this is just a safety check handled by the strip_prefix.
-
-        // Convert f64 to rational: multiply by 100, round, use den=100
-        let num_i = (em_value * 100.0).round() as i32;
-        Ok((rest, Rational::new(num_i, 100)))
-    }
-
     /// A kern takes a fixed dimension. Glue additionally accepts stretch and
-    /// shrink components. An un-stretched math list uses the natural width.
+    /// shrink components. An unstretched math list uses the natural width.
     fn parse_kern<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         let group = if input.starts_with('{') {
@@ -4976,14 +4898,16 @@ impl LatexCompactParser {
             None
         };
         let dimension = group.map_or(input, |(_, body)| body);
-        let Ok((mut rest, width)) = self.parse_dimension(dimension) else {
+        let Ok((mut rest, parsed)) = dimension::parse(dimension) else {
             return Ok((
                 group.map_or(input, |(tail, _)| tail),
                 self.arena.push_node(CompactNode::Space(Rational::zero())),
             ));
         };
         let is_mu = matches!(name, "mkern" | "mskip");
-        self.warn_kern_unit(is_mu, &dimension[..dimension.len() - rest.len()]);
+        if let Some(unit) = parsed.unit {
+            self.warn_kern_unit(is_mu, unit);
+        }
         if matches!(name, "hskip" | "mskip") {
             let fixed_end = rest;
             for keyword in ["plus", "minus"] {
@@ -4996,7 +4920,7 @@ impl LatexCompactParser {
                 {
                     continue;
                 }
-                if let Some((tail, unit)) = Self::glue_component(operand) {
+                if let Some((tail, unit)) = dimension::glue_component(operand) {
                     self.warn_kern_unit(is_mu, unit);
                     rest = tail;
                 } else {
@@ -5018,59 +4942,11 @@ impl LatexCompactParser {
             }
             rest = tail;
         }
-        Ok((rest, self.arena.push_node(CompactNode::Space(width))))
+        Ok((rest, self.arena.push_node(CompactNode::Space(parsed.width))))
     }
 
-    /// Read a complete flexible dimension without consuming an unrelated
-    /// following expression. Infinite orders also take a numeric coefficient.
-    fn glue_component(input: &str) -> Option<(&str, &str)> {
-        let mut number = &input[skip_ws_bytes(input.as_bytes())..];
-        while matches!(number.as_bytes().first(), Some(b'+' | b'-')) {
-            number = &number[1..];
-            number = &number[skip_ws_bytes(number.as_bytes())..];
-        }
-        let before_dot = number.bytes().take_while(u8::is_ascii_digit).count();
-        let mut end = before_dot;
-        if number.as_bytes().get(end) == Some(&b'.') {
-            end += 1;
-            let decimals = number[end..].bytes().take_while(u8::is_ascii_digit).count();
-            if before_dot == 0 && decimals == 0 {
-                return None;
-            }
-            end += decimals;
-        } else if before_dot == 0 {
-            return None;
-        }
-        let rest = &number[end..];
-        let rest = &rest[skip_ws_bytes(rest.as_bytes())..];
-        for unit in [
-            "filll", "fill", "fil", "em", "ex", "pt", "pc", "bp", "sp", "dd", "cc", "mm", "cm",
-            "in", "mu",
-        ] {
-            if let Some((found, after)) = rest.split_at_checked(unit.len())
-                && found.eq_ignore_ascii_case(unit)
-            {
-                return Some((after, found));
-            }
-        }
-        None
-    }
-
-    fn warn_kern_unit(&mut self, is_mu: bool, dimension: &str) {
-        let dimension = dimension.trim_end();
-        let unit = ["em", "ex", "mu", "pt", "pc", "bp", "cm", "mm", "in", "sp"]
-            .iter()
-            .find(|unit| {
-                dimension
-                    .get(dimension.len().saturating_sub(unit.len())..)
-                    .is_some_and(|end| end.eq_ignore_ascii_case(unit))
-            })
-            .copied();
-        let wrong = match unit {
-            Some("mu") => !is_mu,
-            Some(_) => is_mu,
-            None => false,
-        };
+    fn warn_kern_unit(&mut self, is_mu: bool, unit: &str) {
+        let wrong = !matches!(unit, "fil" | "fill" | "filll") && (unit == "mu") != is_mu;
         if wrong {
             self.warn(if is_mu {
                 "\\mkern/\\mskip spacing expects a mu unit"
@@ -5093,8 +4969,7 @@ impl LatexCompactParser {
         let dim_str = &input[..end];
         let rest = &input[end + 1..];
         // Parse dimension
-        let mut sub_parser = LatexCompactParser::with_capacity(dim_str.len(), None);
-        if let Ok((_, r)) = sub_parser.parse_dimension(dim_str) {
+        if let Ok((_, r)) = dimension::width(dim_str) {
             return Ok((rest, self.arena.push_node(CompactNode::Space(r))));
         }
         Ok((
@@ -5112,9 +4987,7 @@ impl LatexCompactParser {
             })?;
             let lift_str = &input[1..end];
             let rest = &input[end + 1..];
-            let mut lp = LatexCompactParser::with_capacity(lift_str.len(), None);
-            let lift = lp
-                .parse_dimension(lift_str)
+            let lift = dimension::width(lift_str)
                 .map(|(_, r)| r)
                 .unwrap_or(Rational::zero());
             (rest, lift)
@@ -5129,9 +5002,7 @@ impl LatexCompactParser {
         })?;
         let width_str = &input[..width_end];
         let input = &input[width_end + 1..];
-        let mut wp = LatexCompactParser::with_capacity(width_str.len(), None);
-        let width = wp
-            .parse_dimension(width_str)
+        let width = dimension::width(width_str)
             .map(|(_, r)| r)
             .unwrap_or(Rational::zero());
 
@@ -5143,9 +5014,7 @@ impl LatexCompactParser {
         })?;
         let height_str = &input[..height_end];
         let input = &input[height_end + 1..];
-        let mut hp = LatexCompactParser::with_capacity(height_str.len(), None);
-        let height = hp
-            .parse_dimension(height_str)
+        let height = dimension::width(height_str)
             .map(|(_, r)| r)
             .unwrap_or(Rational::zero());
 
@@ -5901,9 +5770,7 @@ impl LatexCompactParser {
             nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
         })?;
         let dim_str = &input[..end];
-        let mut dp = LatexCompactParser::with_capacity(dim_str.len(), None);
-        let shift = dp
-            .parse_dimension(dim_str)
+        let shift = dimension::width(dim_str)
             .map(|(_, r)| r)
             .unwrap_or_else(|_| Rational::zero());
         let rest = &input[end + 1..];
@@ -5943,8 +5810,7 @@ impl LatexCompactParser {
         })?;
         let dim_str = &input[..end];
         let rest = &input[end + 1..];
-        let mut dp = LatexCompactParser::with_capacity(dim_str.len(), None);
-        let dim = dp.parse_dimension(dim_str).map(|(_, r)| r).ok();
+        let dim = dimension::width(dim_str).map(|(_, r)| r).ok();
         Ok((rest, dim))
     }
 
@@ -7642,18 +7508,15 @@ impl LatexCompactParser {
                     if let Some(dim_str) = extra
                         && let Some(row) = rows.last_mut()
                         && let Some(cell) = row.last_mut()
+                        && let Ok((_, d)) = dimension::width(dim_str)
+                        && d.num > 0
                     {
-                        let mut dp = LatexCompactParser::with_capacity(dim_str.len(), None);
-                        if let Ok((_, d)) = dp.parse_dimension(dim_str)
-                            && d.as_f64() > 0.0
-                        {
-                            let strut = self.arena.push_node(CompactNode::Rule {
-                                width: Rational::zero(),
-                                height: d,
-                                lift: Rational::new(-d.num, d.den),
-                            });
-                            cell.push(strut);
-                        }
+                        let strut = self.arena.push_node(CompactNode::Rule {
+                            width: Rational::zero(),
+                            height: d,
+                            lift: Rational::new(-d.num, d.den),
+                        });
+                        cell.push(strut);
                     }
                     // A `\hline` after this separator precedes the next row.
                     if hline && rows.len() < 32 {

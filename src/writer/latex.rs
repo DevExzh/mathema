@@ -1894,34 +1894,8 @@ fn write_space(buf: &mut String, r: Rational) {
 }
 
 fn write_rational_dimension(buf: &mut String, value: Rational) {
-    // The parser's em conversion is exact at hundredths. Use a reduced
-    // decimal only when it terminates, otherwise use an explicit fraction
-    // inside a dimension is impossible, so retain hundredths in points.
-    let numerator = i64::from(value.num) * 10;
-    let denominator = i64::from(value.den) * 10;
-    let mut decimal = String::new();
-    let sign = if numerator < 0 { "-" } else { "" };
-    let magnitude = numerator.unsigned_abs();
-    let whole = magnitude / denominator.unsigned_abs();
-    let rem = magnitude % denominator.unsigned_abs();
-    decimal.push_str(sign);
-    decimal.push_str(&whole.to_string());
-    if rem != 0 {
-        decimal.push('.');
-        let mut scale = 10_u64;
-        let mut r = rem;
-        while r != 0 && scale <= 1_000_000 {
-            r *= 10;
-            decimal.push(char::from(b'0' + (r / denominator.unsigned_abs()) as u8));
-            r %= denominator.unsigned_abs();
-            scale *= 10;
-        }
-        while decimal.ends_with('0') {
-            decimal.pop();
-        }
-    }
-    buf.push_str(&decimal);
-    buf.push_str("em");
+    use std::fmt::Write;
+    let _ = write!(buf, "{}em", value.as_f64());
 }
 
 fn write_delim(buf: &mut String, delim: &str) {
@@ -2602,6 +2576,56 @@ mod tests {
     }
 
     #[test]
+    fn fixed_space_widths_survive_both_public_reimport_paths() {
+        for (unit, expected) in [
+            (".004em", Rational::new(1, 250)),
+            (".5mu", Rational::new(1, 36)),
+            ("1sp", Rational::new(1, 655360)),
+            ("1bp", Rational::new(803, 8000)),
+            ("1dd", Rational::new(1238, 11570)),
+            ("-.001in", Rational::new(-7227, 1_000_000)),
+            ("+ - .125EM", Rational::new(-1, 8)),
+        ] {
+            let src = format!(r"a\hskip{unit} b");
+            let parsed = crate::from_latex(&src).unwrap();
+            let space = |expr: MathExpr| {
+                expr.nodes.into_iter().find_map(|n| {
+                    if let MathNode::Space(r) = n {
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+            };
+            assert_eq!(space(parsed.expr()), Some(expected), "{src}");
+            let latex = parsed.to_latex().unwrap();
+            let xml = parsed.to_mathml().unwrap();
+            assert_eq!(
+                space(crate::from_latex(&latex).unwrap().expr()),
+                Some(expected),
+                "{latex}"
+            );
+            assert_eq!(
+                space(crate::from_mathml(&xml).unwrap().expr()),
+                Some(expected),
+                "{xml}"
+            );
+        }
+        for width in [
+            Rational::new(1, 7),
+            Rational::new(-1, 37),
+            Rational::new(1, 65537),
+        ] {
+            let source = MathExpr::inline(vec![MathNode::Space(width)]);
+            let latex = LatexWriter::write(&source, &Config::default()).unwrap();
+            assert_eq!(
+                crate::from_latex(&latex).unwrap().expr().nodes,
+                source.nodes
+            );
+        }
+    }
+
+    #[test]
     fn word_sized_spaces_in_operator_names_round_trip_without_growing() {
         for (input, expected) in [
             (r"\operatorname{a\quad{}b}", r"\operatorname{a\quad{}b}"),
@@ -3270,8 +3294,8 @@ mod tests {
             (r"\text{a\textellipsis b}", r"{\text{a}\ldots\text{b}}"),
             (r"\text{a \textellipsis b}", r"{\text{a }\ldots\text{b}}"),
             (r"\text{a\textellipsis\ b}", r"{\text{a}\ldots\text{ b}}"),
-            (r"\kern2\relax", r"\;"),
-            (r"\kern2\relax em", r"\;em"),
+            (r"\kern2\relax", r"\kern0.2em "),
+            (r"\kern2\relax em", r"\kern0.2em em"),
         ] {
             let first = roundtrip(input);
             assert_eq!(first, expected, "unexpected output for {input:?}");

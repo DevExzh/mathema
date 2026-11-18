@@ -9,6 +9,7 @@
 pub mod arena;
 /// Compact, `Copy`-able arena-indexed AST node representation.
 pub mod compact;
+mod decimal;
 /// Structural normalization passes over the AST.
 pub mod normalize;
 /// TeX math styles and their transitions inside expressions.

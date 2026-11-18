@@ -1973,15 +1973,10 @@ fn single_accent_char(s: &str) -> Option<char> {
 }
 
 fn parse_em_width(s: &str) -> Rational {
-    let s = s.trim();
-    if s.ends_with("em") {
-        let num_str = s.trim_end_matches("em").trim();
-        if let Ok(f) = num_str.parse::<f64>() {
-            let scaled = (f * 18.0).round() as i32;
-            return Rational::new(scaled, 18);
-        }
-    }
-    Rational::zero()
+    s.trim()
+        .strip_suffix("em")
+        .and_then(|v| Rational::from_scaled_decimal(v.trim(), Rational::one()))
+        .unwrap_or_else(Rational::zero)
 }
 
 /// Apply MathML token whitespace rules to the four XML whitespace characters.
