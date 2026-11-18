@@ -10,6 +10,21 @@ use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 
+/// The contents of a table cell after an environment-provided style marker.
+fn cell_after_style(arena: &AstArena, cell: NodeId, marker: u8) -> Option<&[NodeId]> {
+    let CompactNode::Row(span) = *arena.node(cell) else {
+        return None;
+    };
+    let nodes = arena.children(span);
+    match nodes.split_first() {
+        None => Some(nodes),
+        Some((&first, rest)) if matches!(*arena.node(first), CompactNode::StyleSwitch(value) if value == marker) => {
+            Some(rest)
+        },
+        _ => None,
+    }
+}
+
 /// Walk a compact expression and collect a `Warning` for every node the target
 /// writer cannot represent, using a per-format `classify` closure that returns
 /// the warning message for a lossy node (or `None`). Shared by the format

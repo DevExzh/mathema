@@ -1180,21 +1180,58 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             col_aligns,
             cells,
             num_cols,
+            add_jot,
             ..
         } => {
-            buf.push_str("\\begin{array}{");
-            for &align_id in arena.children(col_aligns) {
-                if let CompactNode::ColAlign(col) = *arena.node(align_id) {
-                    buf.push(match col {
-                        ColumnAlign::Left => 'l',
-                        ColumnAlign::Center => 'c',
-                        ColumnAlign::Right => 'r',
-                    });
-                }
-            }
-            buf.push_str("} ");
+            let columns = arena.children(col_aligns);
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
+            // Preserve the display-style alignment semantics when this table
+            // came from an AMS environment. An ordinary array or an isolated
+            // cell declaration cannot establish that style for the table.
+            let ams = add_jot
+                && !cell_ids.is_empty()
+                && cell_ids
+                    .iter()
+                    .all(|&cell| super::cell_after_style(arena, cell, 0).is_some());
+            let env = if ams
+                && nc == 1
+                && matches!(columns, [id] if matches!(*arena.node(*id), CompactNode::ColAlign(ColumnAlign::Center)))
+            {
+                "gathered"
+            } else if ams
+                && nc >= 2
+                && columns.len() == nc
+                && columns.iter().enumerate().all(|(i, &id)| {
+                    let expected = if i % 2 == 0 {
+                        ColumnAlign::Right
+                    } else {
+                        ColumnAlign::Left
+                    };
+                    matches!(*arena.node(id), CompactNode::ColAlign(col) if col == expected)
+                })
+            {
+                "aligned"
+            } else {
+                "array"
+            };
+            buf.push_str(r"\begin{");
+            buf.push_str(env);
+            buf.push('}');
+            if env == "array" {
+                buf.push('{');
+                for &id in columns {
+                    if let CompactNode::ColAlign(col) = *arena.node(id) {
+                        buf.push(match col {
+                            ColumnAlign::Left => 'l',
+                            ColumnAlign::Center => 'c',
+                            ColumnAlign::Right => 'r',
+                        });
+                    }
+                }
+                buf.push('}');
+            }
+            buf.push(' ');
             if nc > 0 {
                 let num_rows = cell_ids.len() / nc.max(1);
                 for row_idx in 0..num_rows {
@@ -1207,7 +1244,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         }
                         let cell_id = cell_ids[row_idx * nc + col_idx];
                         // Each cell is a Row node wrapping cell contents
-                        if let CompactNode::Row(span) = *arena.node(cell_id) {
+                        if env != "array"
+                            && let Some(content) = super::cell_after_style(arena, cell_id, 0)
+                        {
+                            write_node_slice(buf, arena, content, false);
+                        } else if let CompactNode::Row(span) = *arena.node(cell_id) {
                             write_nodes(buf, arena, span);
                         } else {
                             write_node(buf, arena, cell_id);
@@ -1215,7 +1256,9 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                     }
                 }
             }
-            buf.push_str(" \\end{array}");
+            buf.push_str(r" \end{");
+            buf.push_str(env);
+            buf.push('}');
         },
 
         CompactNode::Phantom(inner, kind) => {

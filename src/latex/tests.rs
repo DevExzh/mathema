@@ -169,6 +169,26 @@ fn forced_binomials_preserve_the_barless_fraction_and_local_style() {
 }
 
 #[test]
+fn canonical_latex_preserves_nested_ams_table_style() {
+    let choice = r"\mathchoice{D}{T}{S}{Q}";
+    for (env, cells) in [
+        ("aligned", format!("{choice}&={choice}")),
+        ("gathered", choice.to_owned()),
+    ] {
+        let input = format!(r"x^{{\begin{{{env}}}{cells}\end{{{env}}}}}");
+        let parsed = crate::from_latex(&input).unwrap();
+        let canonical = parsed.to_latex().unwrap();
+        assert!(
+            canonical.contains(&format!(r"\begin{{{env}}}")),
+            "{canonical}"
+        );
+        let reparsed = crate::from_latex(&canonical).unwrap();
+        assert_eq!(reparsed.to_latex().unwrap(), canonical);
+        assert_eq!(reparsed.to_mathml().unwrap(), parsed.to_mathml().unwrap());
+    }
+}
+
+#[test]
 fn math_style_declarations_in_scripts_require_a_group() {
     for cmd in [
         r"\displaystyle",

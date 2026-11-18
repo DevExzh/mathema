@@ -1306,12 +1306,9 @@ fn write_node_fast_in(
             let nc = num_cols as usize;
             let cell_ids = arena.children(cells);
             let promoted = inherited_table_marker(display_style, add_jot, |marker| {
-                cell_ids.iter().all(|&cell| {
-                match *arena.node(cell) {
-                    CompactNode::Row(span) => arena.children(span).first().is_none_or(|&id| matches!(*arena.node(id), CompactNode::StyleSwitch(value) if value == marker)),
-                    _ => false,
-                }
-            })
+                cell_ids
+                    .iter()
+                    .all(|&cell| super::cell_after_style(arena, cell, marker).is_some())
             });
             let reset_to_text = display_style.size_class() > 0 && promoted.is_none();
             let cell_style = promoted.map_or(MathStyle::Text, MathStyle::from_switch);
