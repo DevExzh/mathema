@@ -612,7 +612,7 @@ static OPERATOR_COMMANDS: phf::Set<&'static str> = phf_set! {
     "arcsin", "arccos", "arctan",
     "sinh", "cosh", "tanh", "coth",
     "log", "ln", "lg", "exp",
-    "lim", "liminf", "limsup",
+    "lim", "liminf", "limsup", "injlim", "projlim", "plim",
     "sup", "inf", "min", "max",
     "det", "dim", "ker", "hom", "arg", "deg",
     "gcd", "lcm", "sgn",
@@ -621,8 +621,9 @@ static OPERATOR_COMMANDS: phf::Set<&'static str> = phf_set! {
 };
 
 static LIMIT_OPERATORS: phf::Set<&'static str> = phf_set! {
-    "lim", "liminf", "limsup", "sup", "inf", "min", "max", "det", "gcd", "Pr",
-    "argmax", "argmin",
+    "lim", "liminf", "limsup", "injlim", "projlim", "plim",
+    "lim\u{2009}sup", "lim\u{2009}inf", "inj\u{2009}lim", "proj\u{2009}lim",
+    "sup", "inf", "min", "max", "det", "gcd", "Pr", "argmax", "argmin",
 };
 
 // ---------------------------------------------------------------------------
