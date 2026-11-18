@@ -2304,7 +2304,27 @@ impl LatexCompactParser {
         array_style: bool,
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        self.build_array_with_spacing(columns, rows, 100, false, col_seps, row_seps, array_style)
+        let needs_native = col_seps != 0
+            || row_seps != 0
+            || rows.iter().flatten().any(|cell| {
+                matches!(
+                    cell.first().map(|id| self.arena.node(*id)),
+                    Some(CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. })
+                )
+            });
+        let id = self.build_array_with_spacing(
+            columns,
+            rows,
+            100,
+            false,
+            col_seps,
+            row_seps,
+            array_style,
+        );
+        if needs_native {
+            self.arena.mark_native_array(id);
+        }
+        id
     }
 
     /// Record a table environment that overrides the default text style of its cells.
@@ -2339,7 +2359,18 @@ impl LatexCompactParser {
         // column spec and the widest row.  This ensures the flat cell array
         // stride is correct even when rows contain more `&` separators than
         // the column spec declares (e.g. multi-pair `aligned` environments).
-        let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let max_row_len = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| match cell.first().map(|id| self.arena.node(*id)) {
+                        Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
+                        _ => 1,
+                    })
+                    .sum()
+            })
+            .max()
+            .unwrap_or(0);
         let Some(num_cols) = self
             .arena
             .array_stride_deferred(rows.len(), columns.len().max(max_row_len))
@@ -2357,6 +2388,7 @@ impl LatexCompactParser {
         let col_aligns = self.arena.push_children_deferred(&align_ids);
 
         let mut cell_ids: SmallVec<[NodeId; 16]> = SmallVec::new();
+        let mut span_padding = None;
         for row in &rows {
             if self.check_node_limit() {
                 break;
@@ -2365,8 +2397,17 @@ impl LatexCompactParser {
                 if self.check_node_limit() {
                     break;
                 }
+                let width = match cell.first().map(|id| self.arena.node(*id)) {
+                    Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
+                    _ => 1,
+                };
                 let id = match cell.as_slice() {
-                    [node] if matches!(self.arena.node(*node), CompactNode::AlignedCell { .. }) => {
+                    [node]
+                        if matches!(
+                            self.arena.node(*node),
+                            CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+                        ) =>
+                    {
                         *node
                     },
                     _ => {
@@ -2375,9 +2416,24 @@ impl LatexCompactParser {
                     },
                 };
                 cell_ids.push(id);
+                for _ in 1..width {
+                    let padding = *span_padding.get_or_insert_with(|| {
+                        let id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                        self.arena.mark_span_padding(id);
+                        id
+                    });
+                    cell_ids.push(padding);
+                }
             }
             // Pad short rows to num_cols
-            for _ in row.len()..(num_cols as usize) {
+            let used = row
+                .iter()
+                .map(|cell| match cell.first().map(|id| self.arena.node(*id)) {
+                    Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
+                    _ => 1,
+                })
+                .sum::<usize>();
+            for _ in used..(num_cols as usize) {
                 if self.check_node_limit() {
                     break;
                 }
@@ -4927,7 +4983,11 @@ impl LatexCompactParser {
         }
     }
 
-    fn parse_multicolumn<'a>(&mut self, input: &'a str) -> IResult<&'a str, (ColumnAlign, NodeId)> {
+    #[allow(clippy::type_complexity)]
+    fn parse_multicolumn<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> IResult<&'a str, (u16, ColumnAlign, bool, bool, bool, bool, NodeId)> {
         let (input, _) = ws(input)?;
         let Some((input, span_count)) = super::mhchem::capture_braced(input) else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -4935,7 +4995,13 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Char,
             )));
         };
-        if span_count.trim() != "1" {
+        let Ok(span) = span_count.trim().parse::<u16>() else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        };
+        if span == 0 {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Verify,
@@ -4948,8 +5014,40 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Char,
             )));
         };
-        let spec = spec.trim().replace("@{}", "");
-        let alignment = match spec.as_str() {
+        let mut spec = spec.trim();
+        let mut left_rule = false;
+        let mut right_rule = false;
+        let mut left_padding = false;
+        let mut right_padding = false;
+        loop {
+            if let Some(rest) = spec.strip_prefix("@{}") {
+                left_padding = true;
+                spec = rest.trim_start();
+            } else if let Some(rest) = spec.strip_prefix('|') {
+                left_rule = true;
+                spec = rest.trim_start();
+            } else {
+                break;
+            }
+        }
+        loop {
+            if let Some(rest) = spec.strip_suffix("@{}") {
+                right_padding = true;
+                spec = rest.trim_end();
+            } else if let Some(rest) = spec.strip_suffix('|') {
+                right_rule = true;
+                spec = rest.trim_end();
+            } else {
+                break;
+            }
+        }
+        if spec.contains('|') {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        let alignment = match spec {
             "l" => ColumnAlign::Left,
             "r" => ColumnAlign::Right,
             "c" => ColumnAlign::Center,
@@ -4961,7 +5059,18 @@ impl LatexCompactParser {
             },
         };
         let (input, content) = self.parse_required_group(input)?;
-        Ok((input, (alignment, content)))
+        Ok((
+            input,
+            (
+                span,
+                alignment,
+                left_rule,
+                right_rule,
+                left_padding,
+                right_padding,
+                content,
+            ),
+        ))
     }
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -7863,13 +7972,27 @@ impl LatexCompactParser {
             // An alignment override belongs to a cell template. Recognizing
             // it here keeps it out of unrelated math lists and nested groups.
             self.ensure_node_budget(rest)?;
-            let (after, (alignment, content)) = self.parse_multicolumn(after)?;
+            let (
+                after,
+                (span, alignment, left_rule, right_rule, left_padding, right_padding, content),
+            ) = self.parse_multicolumn(after)?;
             let (rest, mut trailing) = self.parse_table_cell(after)?;
             if trailing.is_empty() {
-                trailing.push(
-                    self.arena
-                        .push_node(CompactNode::AlignedCell { alignment, content }),
-                );
+                trailing.push(self.arena.push_node(
+                    if span == 1 && !left_rule && !right_rule && !left_padding && !right_padding {
+                        CompactNode::AlignedCell { alignment, content }
+                    } else {
+                        CompactNode::SpannedCell {
+                            alignment,
+                            span,
+                            left_rule,
+                            right_rule,
+                            left_padding,
+                            right_padding,
+                            content,
+                        }
+                    },
+                ));
             } else {
                 trailing.insert(0, content);
             }

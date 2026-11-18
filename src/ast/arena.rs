@@ -9,6 +9,7 @@ enum Provenance {
     Array(MatrixKind),
     NativeArray,
     MatrixPadding,
+    SpanPadding,
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -422,13 +423,29 @@ impl AstArena {
             && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
+    #[inline]
+    pub(crate) fn mark_span_padding(&mut self, id: NodeId) {
+        if !self.size_overflow {
+            self.provenance.insert(id, Provenance::SpanPadding);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_span_padding(&self, id: NodeId) -> bool {
+        matches!(self.provenance.get(id), Some(Provenance::SpanPadding))
+            && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
+    }
+
     /// Resolve the cell's alignment and the math list to typeset in it.
     pub(crate) fn table_cell_parts<'a>(
         &'a self,
         cell: &'a NodeId,
     ) -> (Option<ColumnAlign>, &'a [NodeId]) {
         let (alignment, content) = match self.node(*cell) {
-            CompactNode::AlignedCell { alignment, content } => (Some(*alignment), content),
+            CompactNode::AlignedCell { alignment, content }
+            | CompactNode::SpannedCell {
+                alignment, content, ..
+            } => (Some(*alignment), content),
             _ => (None, cell),
         };
         let nodes = match *self.node(*content) {

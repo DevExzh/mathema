@@ -297,6 +297,23 @@ pub enum CompactNode {
         /// Cell content node.
         content: NodeId,
     },
+    /// A native table cell occupying multiple logical columns.
+    SpannedCell {
+        /// Authored alignment of the complete span.
+        alignment: ColumnAlign,
+        /// Number of logical columns occupied by this cell.
+        span: u16,
+        /// Whether the native preamble draws a left edge rule.
+        left_rule: bool,
+        /// Whether the native preamble draws a right edge rule.
+        right_rule: bool,
+        /// Whether the native preamble suppresses the left intercolumn glue.
+        left_padding: bool,
+        /// Whether the native preamble suppresses the right intercolumn glue.
+        right_padding: bool,
+        /// Cell content node.
+        content: NodeId,
+    },
 
     // ── Decorators ─────────────────────────────────────────────────
     /// Invisible (phantom) content occupying space per the given `PhantomKind`.
@@ -735,6 +752,26 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 content,
             })
         },
+        MathNode::SpannedCell {
+            alignment,
+            span,
+            left_rule,
+            right_rule,
+            left_padding,
+            right_padding,
+            content,
+        } => {
+            let content = push_math_node(arena, content);
+            arena.push_node(CompactNode::SpannedCell {
+                alignment: *alignment,
+                span: (*span).max(1),
+                left_rule: *left_rule,
+                right_rule: *right_rule,
+                left_padding: *left_padding,
+                right_padding: *right_padding,
+                content,
+            })
+        },
 
         MathNode::Phantom(inner, kind) => {
             let inner_id = push_math_node(arena, inner);
@@ -885,7 +922,18 @@ fn push_array_node_with_geometry(
     environment: Option<MatrixKind>,
     native_array: bool,
 ) -> NodeId {
-    let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let widest = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| match cell.as_slice() {
+                    [MathNode::SpannedCell { span, .. }] => (*span).max(1) as usize,
+                    _ => 1,
+                })
+                .sum()
+        })
+        .max()
+        .unwrap_or(0);
     let Some(num_cols) = arena.array_stride_deferred(rows.len(), columns.len().max(widest)) else {
         return arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
     };
@@ -896,17 +944,34 @@ fn push_array_node_with_geometry(
     let col_aligns = arena.push_children_deferred(&align_ids);
     let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
     let mut synthetic_padding = None;
+    let mut span_padding = None;
     for row in rows {
+        let mut used = 0usize;
         for cell in row {
-            let id = if let [node @ MathNode::AlignedCell { .. }] = cell.as_slice() {
+            let width = match cell.as_slice() {
+                [MathNode::SpannedCell { span, .. }] => (*span).max(1) as usize,
+                _ => 1,
+            };
+            let id = if let [node @ (MathNode::AlignedCell { .. } | MathNode::SpannedCell { .. })] =
+                cell.as_slice()
+            {
                 push_math_node(arena, node)
             } else {
                 let span = push_children(arena, cell);
                 arena.push_node(CompactNode::Row(span))
             };
             cell_ids.push(id);
+            used = used.saturating_add(width);
+            for _ in 1..width {
+                let padding = *span_padding.get_or_insert_with(|| {
+                    let id = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                    arena.mark_span_padding(id);
+                    id
+                });
+                cell_ids.push(padding);
+            }
         }
-        for _ in row.len()..(num_cols as usize) {
+        for _ in used..(num_cols as usize) {
             let padding = if environment.is_some() {
                 *synthetic_padding.get_or_insert_with(|| {
                     let id = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
@@ -1116,7 +1181,7 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 let mut row = Vec::with_capacity(chunk.len());
                 for &cell_id in chunk {
                     // Each cell is a Row node wrapping the cell contents
-                    if arena.is_matrix_padding(cell_id) {
+                    if arena.is_matrix_padding(cell_id) || arena.is_span_padding(cell_id) {
                         continue;
                     }
                     row.push(match *arena.node(cell_id) {
@@ -1262,6 +1327,23 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         },
         CompactNode::AlignedCell { alignment, content } => MathNode::AlignedCell {
             alignment,
+            content: Box::new(reconstruct_node(arena, content)),
+        },
+        CompactNode::SpannedCell {
+            alignment,
+            span,
+            left_rule,
+            right_rule,
+            left_padding,
+            right_padding,
+            content,
+        } => MathNode::SpannedCell {
+            alignment,
+            span,
+            left_rule,
+            right_rule,
+            left_padding,
+            right_padding,
             content: Box::new(reconstruct_node(arena, content)),
         },
 

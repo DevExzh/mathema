@@ -539,7 +539,7 @@ fn normalize_node_depth_with_identifiers(
                 }
             }
         },
-        MathNode::AlignedCell { content, .. } => {
+        MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
             // Preserve identifier atom boundaries while retaining every other
             // normalization phase for the cell's math list.
             match content.as_mut() {
@@ -1061,7 +1061,7 @@ fn normalize_compact_node_with_identifiers(
                 *c = new_cells_span;
             }
         },
-        CompactNode::AlignedCell { content, .. } => {
+        CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
             // Preserve separate TeX identifier atoms within the whole cell
             // math list. Other normalization phases still run, including
             // nested row flattening, number/text merging and script

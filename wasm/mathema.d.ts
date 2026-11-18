@@ -57,6 +57,7 @@ export type MathNode =
       };
     }
   | { AlignedCell: { alignment: ColumnAlign; content: MathNode } }
+  | { SpannedCell: { alignment: ColumnAlign; span: number; left_rule: boolean; right_rule: boolean; content: MathNode } }
   | {
       NativeArray: {
         columns: ColumnAlign[];

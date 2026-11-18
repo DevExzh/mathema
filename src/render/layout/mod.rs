@@ -687,7 +687,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             0,
             ctx,
         ),
-        MathNode::AlignedCell { content, .. } => layout_node(content, ctx),
+        MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
+            layout_node(content, ctx)
+        },
         MathNode::Phantom(content, kind) => layout_phantom(content, *kind, ctx),
         MathNode::Reflect { content, text_mode } => layout_reflect(content, *text_mode, ctx),
         MathNode::Boxed {
@@ -1618,7 +1620,9 @@ fn layout_node_arena(
             arena,
             ctx,
         ),
-        CompactNode::AlignedCell { content, .. } => layout_node_arena(ast, content, arena, ctx),
+        CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
+            layout_node_arena(ast, content, arena, ctx)
+        },
         CompactNode::Phantom(inner, kind) => layout_phantom_arena(ast, inner, kind, arena, ctx),
         CompactNode::Reflect {
             content: inner,

@@ -1450,7 +1450,15 @@ impl<'a> MathmlCompactParser<'a> {
                 }
             }
             let empty = matches!(event, Ok(Event::Empty(_)));
-            let (children, own_alignment) = match event {
+            let (
+                children,
+                own_alignment,
+                cell_span,
+                left_rule,
+                right_rule,
+                left_padding,
+                right_padding,
+            ) = match event {
                 Ok(Event::Start(e) | Event::Empty(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
@@ -1459,14 +1467,34 @@ impl<'a> MathmlCompactParser<'a> {
                         } else {
                             self.with_table_style(&e, false, Self::parse_table_cell)?
                         };
-                        (children, get_attr(&e, "columnalign"))
+                        (
+                            children,
+                            get_attr(&e, "columnalign"),
+                            parse_column_span(get_attr(&e, "columnspan")),
+                            get_attr(&e, "data-mathema-left-rule")
+                                .is_some_and(|value| value == "true"),
+                            get_attr(&e, "data-mathema-right-rule")
+                                .is_some_and(|value| value == "true"),
+                            get_attr(&e, "data-mathema-left-padding")
+                                .is_some_and(|value| value == "true"),
+                            get_attr(&e, "data-mathema-right-padding")
+                                .is_some_and(|value| value == "true"),
+                        )
                     } else {
                         let child = if empty {
                             self.parse_empty_element(&name, &e)?
                         } else {
                             self.parse_element_by_name(&name, &e)?
                         };
-                        (smallvec::smallvec![child], None)
+                        (
+                            smallvec::smallvec![child],
+                            None,
+                            1,
+                            false,
+                            false,
+                            false,
+                            false,
+                        )
                     }
                 },
                 Ok(Event::Text(e)) => {
@@ -1474,14 +1502,30 @@ impl<'a> MathmlCompactParser<'a> {
                     if text.trim().is_empty() {
                         continue;
                     }
-                    (smallvec::smallvec![self.classify_text_compact(&text)], None)
+                    (
+                        smallvec::smallvec![self.classify_text_compact(&text)],
+                        None,
+                        1,
+                        false,
+                        false,
+                        false,
+                        false,
+                    )
                 },
                 Ok(Event::GeneralRef(r)) => {
                     let text = resolve_general_ref(&r);
                     if text.trim().is_empty() {
                         continue;
                     }
-                    (smallvec::smallvec![self.classify_text_compact(&text)], None)
+                    (
+                        smallvec::smallvec![self.classify_text_compact(&text)],
+                        None,
+                        1,
+                        false,
+                        false,
+                        false,
+                        false,
+                    )
                 },
                 Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
                 Ok(Event::Eof) => break,
@@ -1492,19 +1536,45 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 _ => continue,
             };
+            if cell_span == 0 || index.saturating_add(cell_span) > max_columns {
+                return Err(table_length_error());
+            }
             let alignment = cell_alignment(inherited, index, own_alignment);
-            if index == table.columns.len() {
+            while table.columns.len() < index + cell_span {
                 table.columns.push(alignment);
             }
-            let id = if table.columns[index] == alignment {
+            let id = if cell_span == 1
+                && !left_rule
+                && !right_rule
+                && !left_padding
+                && !right_padding
+                && table.columns[index] == alignment
+            {
                 let span = self.arena.push_children(&children)?;
                 self.arena.push_node(CompactNode::Row(span))
-            } else {
+            } else if cell_span == 1 && !left_rule && !right_rule && !left_padding && !right_padding
+            {
                 let content = self.flatten_ids(&children);
                 self.arena
                     .push_node(CompactNode::AlignedCell { alignment, content })
+            } else {
+                let content = self.flatten_ids(&children);
+                self.arena.push_node(CompactNode::SpannedCell {
+                    alignment,
+                    span: cell_span as u16,
+                    left_rule,
+                    right_rule,
+                    left_padding,
+                    right_padding,
+                    content,
+                })
             };
             table.cells.push(id);
+            for _ in 1..cell_span {
+                let padding = self.empty_row();
+                self.arena.mark_span_padding(padding);
+                table.cells.push(padding);
+            }
         }
         Ok(table.cells.len() - start)
     }
@@ -2199,6 +2269,15 @@ fn parse_column_aligns(value: Option<String>) -> SmallVec<[ColumnAlign; 4]> {
         .take(AstArena::MAX_CHILDREN)
         .map(column_alignment)
         .collect()
+}
+
+fn parse_column_span(value: Option<String>) -> usize {
+    value
+        .as_deref()
+        .and_then(|text| text.trim().parse::<usize>().ok())
+        .filter(|&span| span > 0)
+        .map(|span| span.min(AstArena::MAX_CHILDREN))
+        .unwrap_or(1)
 }
 
 fn table_length_error() -> Error {

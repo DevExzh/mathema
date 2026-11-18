@@ -1297,7 +1297,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
         },
 
-        CompactNode::AlignedCell { content, .. } => write_node(buf, arena, content),
+        CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
+            write_node(buf, arena, content)
+        },
         CompactNode::Array {
             col_aligns,
             cells,
@@ -1370,9 +1372,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push_str(option);
             let trim_edges = env == "array"
                 && !array_style
-                && cell_ids
-                    .iter()
-                    .any(|&cell| matches!(arena.node(cell), CompactNode::AlignedCell { .. }));
+                && cell_ids.iter().any(|&cell| {
+                    matches!(
+                        arena.node(cell),
+                        CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+                    )
+                });
             if env == "array" {
                 buf.push('{');
                 if trim_edges {
@@ -1412,24 +1417,57 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             buf.push_str(r"\hline ");
                         }
                     }
-                    for col_idx in 0..nc {
-                        if col_idx > 0 {
+                    let mut col_idx = 0;
+                    let mut emitted = false;
+                    while col_idx < nc {
+                        let cell_id = &cell_ids[row_idx * nc + col_idx];
+                        if arena.is_span_padding(*cell_id) {
+                            col_idx += 1;
+                            continue;
+                        }
+                        if emitted {
                             buf.push_str(" & ");
                         }
-                        let cell_id = &cell_ids[row_idx * nc + col_idx];
+                        emitted = true;
                         let (alignment, nodes) = arena.table_cell_parts(cell_id);
+                        let (cell_span, left_rule, right_rule, left_padding, right_padding) =
+                            match *arena.node(*cell_id) {
+                                CompactNode::SpannedCell {
+                                    span,
+                                    left_rule,
+                                    right_rule,
+                                    left_padding,
+                                    right_padding,
+                                    ..
+                                } => (
+                                    span.max(1) as usize,
+                                    left_rule,
+                                    right_rule,
+                                    left_padding,
+                                    right_padding,
+                                ),
+                                _ => (1, false, false, false, false),
+                            };
                         if let Some(alignment) = alignment {
-                            buf.push_str(r"\multicolumn{1}{");
-                            if trim_edges && col_idx == 0 {
+                            buf.push_str(r"\multicolumn{");
+                            buf.push_str(&cell_span.to_string());
+                            buf.push_str("}{");
+                            if left_padding || (trim_edges && col_idx == 0) {
                                 buf.push_str("@{}");
+                            }
+                            if left_rule {
+                                buf.push('|');
                             }
                             buf.push(match alignment {
                                 ColumnAlign::Left => 'l',
                                 ColumnAlign::Center => 'c',
                                 ColumnAlign::Right => 'r',
                             });
-                            if trim_edges && col_idx + 1 == nc {
+                            if right_padding || (trim_edges && col_idx + cell_span == nc) {
                                 buf.push_str("@{}");
+                            }
+                            if right_rule {
+                                buf.push('|');
                             }
                             buf.push_str("}{");
                         }
@@ -1447,6 +1485,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         } else {
                             write_node_slice(buf, arena, nodes, false);
                         }
+                        col_idx = col_idx.saturating_add(cell_span);
                     }
                 }
                 if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {
@@ -4035,6 +4074,20 @@ mod tests {
             assert_eq!(first.matches(r"\multicolumn").count(), overrides, "{first}");
             assert_eq!(canonical(&first), first);
         }
+    }
+
+    #[test]
+    #[cfg(feature = "render")]
+    fn positive_multicolumn_span_renders_without_a_second_cell() {
+        let source = r"\begin{array}{ll}a&b\\\multicolumn{2}{r}{LONG}\end{array}";
+        let svg = crate::from_latex(source).unwrap().to_svg().unwrap();
+        assert!(svg.contains("<use"), "{svg}");
+        let width = svg
+            .split_once("width=\"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .and_then(|(value, _)| value.trim_end_matches("px").parse::<f64>().ok())
+            .unwrap();
+        assert!(width > 30.0, "{width}");
     }
 
     #[test]
