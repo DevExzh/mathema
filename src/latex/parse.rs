@@ -3448,8 +3448,8 @@ impl LatexCompactParser {
             "pmod" | "pod" => self.parse_pmod(input),
 
             // --- Kern/space dimension commands ---
-            "kern" => self.parse_kern(input, false),
-            "mkern" => self.parse_kern(input, true),
+            "kern" | "hskip" => self.parse_kern(input, false),
+            "mkern" | "mskip" => self.parse_kern(input, true),
             "hspace" => self.parse_hspace(input),
             "mspace" => self.parse_hspace(input),
 
@@ -4967,7 +4967,7 @@ impl LatexCompactParser {
 
     /// `\kern<dimension>` or `\mkern<dimension>` — explicit spacing.
     /// `is_mu` indicates math units (1mu = 1/18 em).
-    fn parse_kern<'a>(&mut self, input: &'a str, is_mu: bool) -> IResult<&'a str, NodeId> {
+    fn parse_kern<'a>(&mut self, input: &'a str, _is_mu: bool) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         // If the dimension is braced, handle {dim}
         if input.starts_with('{') {
@@ -4979,7 +4979,10 @@ impl LatexCompactParser {
             let after = &rest[end + 1..];
             // Parse the dimension within the braces
             let mut sub_parser = LatexCompactParser::with_capacity(dim_str.len(), None);
-            if let Ok((_, r)) = sub_parser.parse_dimension(dim_str) {
+            if let Ok((remaining, r)) = sub_parser.parse_dimension(dim_str) {
+                if !remaining.trim().is_empty() {
+                    self.warn_kern_suffix(remaining);
+                }
                 return Ok((after, self.arena.push_node(CompactNode::Space(r))));
             }
             // Failed to parse dimension; emit thin space
@@ -4990,12 +4993,9 @@ impl LatexCompactParser {
         }
         match self.parse_dimension(input) {
             Ok((rest, r)) => {
-                let r = if is_mu {
-                    // parse_dimension with "mu" already handled; for bare numbers assume mu
-                    r
-                } else {
-                    r
-                };
+                if !rest.trim().is_empty() {
+                    self.warn_kern_suffix(rest);
+                }
                 Ok((rest, self.arena.push_node(CompactNode::Space(r))))
             },
             Err(_) => {
@@ -5005,6 +5005,22 @@ impl LatexCompactParser {
                     self.arena.push_node(CompactNode::Space(Rational::zero())),
                 ))
             },
+        }
+    }
+
+    fn warn_kern_suffix(&mut self, suffix: &str) {
+        let suffix = suffix.trim_start();
+        let glue = ["plus", "minus"].into_iter().any(|word| {
+            suffix.strip_prefix(word).is_some_and(|rest| {
+                rest.chars()
+                    .next()
+                    .is_none_or(|ch| !ch.is_ascii_alphabetic())
+            })
+        });
+        if glue {
+            self.warn("stretch and shrink components in \\kern/\\hskip dimensions were dropped");
+        } else {
+            self.warn("extra tokens in a \\kern/\\hskip dimension were dropped");
         }
     }
 

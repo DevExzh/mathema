@@ -723,6 +723,50 @@ mod tests {
     }
 
     #[test]
+    fn hskip_and_mskip_share_their_kern_spacing_nodes() {
+        let hskip = parse("a\\hskip{1em}b");
+        let kern = parse("a\\kern1em b");
+        assert_eq!(
+            hskip, kern,
+            "hskip and kern should have the same fixed spacing"
+        );
+
+        let mskip = parse("a\\mskip{18mu}b");
+        let mkern = parse("a\\mkern18mu b");
+        assert_eq!(
+            mskip, mkern,
+            "mskip and mkern should have the same fixed spacing"
+        );
+    }
+
+    #[test]
+    fn kern_glue_reports_the_unrepresentable_component() {
+        let parsed =
+            LatexReader::parse_compact(r"a\hskip{1em plus .5em}b", &Config::default()).unwrap();
+        assert!(parsed.has_warnings());
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("stretch and shrink") })
+        );
+
+        let parsed = LatexReader::parse_compact(r"a\hskip1em + b", &Config::default()).unwrap();
+        assert!(parsed.has_warnings());
+        let expr = parsed.to_parse_result().expr;
+        assert!(
+            expr.nodes
+                .iter()
+                .any(|node| { matches!(node, MathNode::Symbol(_, text) if text == "+") })
+        );
+        assert!(
+            expr.nodes
+                .iter()
+                .any(|node| { matches!(node, MathNode::Identifier(text) if text == "b") })
+        );
+    }
+
+    #[test]
     fn hspace_braced() {
         let nodes = parse("a\\hspace{1em}b");
         assert!(

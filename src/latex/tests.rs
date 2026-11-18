@@ -1622,6 +1622,19 @@ fn zero_width_nary_bodies_keep_following_tokens_stable() {
 }
 
 #[test]
+fn hskip_and_mskip_match_kern_and_mkern() {
+    let config = Config::default();
+    for (left, right) in [
+        (r"a\hskip{1em}b", r"a\kern1em b"),
+        (r"a\mskip{18mu}b", r"a\mkern18mu b"),
+    ] {
+        let left = LatexReader::parse_compact(left, &config).unwrap().expr;
+        let right = LatexReader::parse_compact(right, &config).unwrap().expr;
+        assert_eq!(left.to_math_expr(), right.to_math_expr());
+    }
+}
+
+#[test]
 fn repeated_limit_modifiers_use_the_last_style() {
     let config = Config::default();
     let cases = [
