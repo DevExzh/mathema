@@ -1869,40 +1869,65 @@ fn write_math_char(buf: &mut String, ch: char) {
 }
 
 fn write_space(buf: &mut String, r: Rational) {
-    // Use exact Rational matching for all known LaTeX spacing commands
-    // to ensure round-trip idempotency.
-    if r == Rational::new(1, 18) {
-        buf.push_str("\\mkern1mu ");
-    } else if r == Rational::new(-3, 18) {
-        buf.push_str("\\!");
-    } else if r == Rational::new(-4, 18) {
-        buf.push_str("\\negmedspace ");
-    } else if r == Rational::new(-5, 18) {
-        buf.push_str("\\negthickspace ");
-    } else if r == Rational::new(3, 18) {
-        buf.push_str("\\,");
-    } else if r == Rational::new(4, 18) {
-        buf.push_str("\\:");
-    } else if r == Rational::new(5, 18) {
-        buf.push_str("\\;");
-    } else if r == Rational::new(1, 3) {
-        buf.push_str("\\mkern6mu ");
-    } else if r == Rational::new(1, 4) {
-        buf.push_str("\\ ");
-    } else if r == Rational::new(1, 2) {
-        buf.push_str("\\enspace ");
-    } else if r == Rational::new(1, 1) {
-        buf.push_str("\\quad ");
-    } else if r == Rational::new(2, 1) {
-        buf.push_str("\\qquad ");
-    } else if r == Rational::zero() {
-        // Zero-width spacing commands (e.g. a malformed/empty `\kern` or
-        // `\hspace{}`) produce no visible output and must not be emitted as
-        // `\\`, which would be re-parsed as a row separator and change the
-        // array structure. Real line breaks are represented by `Newline` nodes.
-    } else {
-        buf.push_str("\\;");
+    // Named TeX spaces are retained for their canonical widths. Every other
+    // rational width uses a fixed em kern so reimport preserves the AST.
+    match r {
+        r if r == Rational::new(1, 18) => buf.push_str(r"\mkern1mu "),
+        r if r == Rational::new(-3, 18) => buf.push_str(r"\!"),
+        r if r == Rational::new(-4, 18) => buf.push_str(
+            r"
+egmedspace ",
+        ),
+        r if r == Rational::new(-5, 18) => buf.push_str(
+            r"
+egthickspace ",
+        ),
+        r if r == Rational::new(3, 18) => buf.push_str(r"\,"),
+        r if r == Rational::new(4, 18) => buf.push_str(r"\:"),
+        r if r == Rational::new(5, 18) => buf.push_str(r"\;"),
+        r if r == Rational::new(1, 3) => buf.push_str(r"\mkern6mu "),
+        r if r == Rational::new(1, 4) => buf.push_str(r"\ "),
+        r if r == Rational::new(1, 2) => buf.push_str(r"\enspace "),
+        r if r == Rational::new(1, 1) => buf.push_str(r"\quad "),
+        r if r == Rational::new(2, 1) => buf.push_str(r"\qquad "),
+        r if r == Rational::zero() => {},
+        r => {
+            buf.push_str(r"\kern");
+            write_rational_dimension(buf, r);
+            buf.push(' ');
+        },
     }
+}
+
+fn write_rational_dimension(buf: &mut String, value: Rational) {
+    // The parser's em conversion is exact at hundredths. Use a reduced
+    // decimal only when it terminates, otherwise use an explicit fraction
+    // inside a dimension is impossible, so retain hundredths in points.
+    let numerator = i64::from(value.num) * 10;
+    let denominator = i64::from(value.den) * 10;
+    let mut decimal = String::new();
+    let sign = if numerator < 0 { "-" } else { "" };
+    let magnitude = numerator.unsigned_abs();
+    let whole = magnitude / denominator.unsigned_abs();
+    let rem = magnitude % denominator.unsigned_abs();
+    decimal.push_str(sign);
+    decimal.push_str(&whole.to_string());
+    if rem != 0 {
+        decimal.push('.');
+        let mut scale = 10_u64;
+        let mut r = rem;
+        while r != 0 && scale <= 1_000_000 {
+            r *= 10;
+            decimal.push(char::from(b'0' + (r / denominator.unsigned_abs()) as u8));
+            r %= denominator.unsigned_abs();
+            scale *= 10;
+        }
+        while decimal.ends_with('0') {
+            decimal.pop();
+        }
+    }
+    buf.push_str(&decimal);
+    buf.push_str("em");
 }
 
 fn write_delim(buf: &mut String, delim: &str) {
@@ -2968,6 +2993,31 @@ mod tests {
         // Scripts on an invisible atom must not attach to the preceding
         // identifier when the output is parsed again.
         assert_eq!(roundtrip("A\u{2062}^2"), r"A{\mathord{}}^{2}");
+    }
+
+    #[test]
+    fn arbitrary_space_widths_round_trip_without_thickspace_quantization() {
+        for width in [
+            Rational::new(1, 10),
+            Rational::new(-1, 10),
+            Rational::new(7, 20),
+            Rational::new(13, 100),
+        ] {
+            let compact = CompactExpr::from_math_expr(&MathExpr::inline(vec![
+                MathNode::Identifier("a".into()),
+                MathNode::Space(width),
+                MathNode::Identifier("b".into()),
+            ]))
+            .unwrap();
+            let first = LatexWriter::write_compact(&compact, &Config::default()).unwrap();
+            let reparsed = LatexReader::parse_compact(&first, &Config::default()).unwrap();
+            assert_eq!(
+                reparsed.expr.to_math_expr(),
+                compact.to_math_expr(),
+                "{first}"
+            );
+            assert!(first.contains(r"\kern"), "{first}");
+        }
     }
 
     #[test]
