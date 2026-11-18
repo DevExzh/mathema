@@ -31,6 +31,10 @@ enum ProvenanceStore {
 impl ProvenanceStore {
     #[inline]
     fn insert(&mut self, id: NodeId, value: Provenance) {
+        if let Self::Overflow(map) = self {
+            map.insert(id, value);
+            return;
+        }
         let current = std::mem::take(self);
         *self = match current {
             Self::Empty => Self::Inline((id, value)),
