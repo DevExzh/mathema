@@ -670,12 +670,7 @@ impl<'a> Emitter<'a> {
     fn cell_content(&mut self, id: NodeId, fmt: Fmt) {
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.children(span, fmt),
-            CompactNode::AlignedCell { alignment, content } => {
-                self.loss(format!(
-                    "OMML matrices have column alignment only; the authored {alignment:?} cell alignment was dropped"
-                ));
-                self.node(content, fmt);
-            },
+            CompactNode::AlignedCell { content, .. } => self.node(content, fmt),
             _ => self.node(id, fmt),
         }
     }
@@ -733,12 +728,7 @@ impl<'a> Emitter<'a> {
                 self.space(width);
             },
             CompactNode::Row(span) => self.children(span, fmt),
-            CompactNode::AlignedCell { alignment, content } => {
-                self.loss(format!(
-                    "OMML has no standalone cell alignment; the authored {alignment:?} alignment was dropped"
-                ));
-                self.node(content, fmt);
-            },
+            CompactNode::AlignedCell { content, .. } => self.node(content, fmt),
             CompactNode::Fenced {
                 open,
                 close,
@@ -1270,6 +1260,8 @@ impl<'a> Emitter<'a> {
                             "a literal & in an equation array reads back as an alignment point",
                         );
                     }
+                    let column = aligns.get(i).copied().unwrap_or(ColumnAlign::Center);
+                    self.note_cell_alignment(cell, column);
                     self.with_style(MathStyle::Text, |e| e.cell_content(cell, fmt));
                 }
                 self.close("m:e");
@@ -1306,12 +1298,28 @@ impl<'a> Emitter<'a> {
         }
         for row in cell_ids.chunks(ncols) {
             self.open("m:mr");
-            for &cell in row {
+            for (column_index, &cell) in row.iter().enumerate() {
+                let column = aligns
+                    .get(column_index)
+                    .copied()
+                    .unwrap_or(ColumnAlign::Center);
+                self.note_cell_alignment(cell, column);
                 self.with_style(MathStyle::Text, |e| e.cell(cell, fmt));
             }
             self.close("m:mr");
         }
         self.close("m:m");
+    }
+
+    fn note_cell_alignment(&mut self, cell: NodeId, column: ColumnAlign) {
+        let CompactNode::AlignedCell { alignment, .. } = *self.arena.node(cell) else {
+            return;
+        };
+        if alignment != column {
+            self.loss(format!(
+                "OMML has column alignment only; the authored {alignment:?} cell alignment differs from the exported {column:?} column"
+            ));
+        }
     }
 }
 

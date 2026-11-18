@@ -1,8 +1,9 @@
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::style::MathStyle;
+use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 use crate::writer::Writer as MathWriter;
 
 /// Classifies a compact node that the UnicodeMath writer cannot fully or
@@ -38,9 +39,6 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathChoice { .. } => {
             Some("UnicodeMath keeps only the branch of \\mathchoice active at this style".into())
         },
-        CompactNode::AlignedCell { alignment, .. } => Some(format!(
-            "UnicodeMath tables have no per-cell alignment; the authored {alignment:?} alignment was dropped"
-        )),
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
@@ -78,7 +76,8 @@ impl MathWriter for UnicodeMathWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let out = Self::write_compact(expr, config)?;
-        let diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        let mut diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        diags.extend(unicode_math_alignment_diagnostics(expr));
         Ok((out, diags))
     }
 
@@ -88,6 +87,53 @@ impl MathWriter for UnicodeMathWriter {
         write_nodes_c_with_style(&mut out, arena, expr.roots, MathStyle::from(expr.display));
         Ok(out)
     }
+}
+
+fn unicode_math_alignment_diagnostics(expr: &CompactExpr) -> Vec<Diagnostic> {
+    struct AlignmentVisitor {
+        diagnostics: Vec<Diagnostic>,
+    }
+
+    impl CompactVisitor for AlignmentVisitor {
+        fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+            if let CompactNode::Array {
+                cells, num_cols, ..
+            } = *arena.node(id)
+            {
+                let columns = usize::from(num_cols.max(1));
+                for (index, &cell) in arena.children(cells).iter().enumerate() {
+                    let CompactNode::AlignedCell { alignment, .. } = *arena.node(cell) else {
+                        continue;
+                    };
+                    if alignment == ColumnAlign::Center {
+                        continue;
+                    }
+                    let column = index % columns;
+                    let message = match alignment {
+                        ColumnAlign::Left => {
+                            "UnicodeMath has centered table columns; the authored left cell alignment was dropped"
+                        },
+                        ColumnAlign::Right => {
+                            "UnicodeMath has centered table columns; the authored right cell alignment was dropped"
+                        },
+                        ColumnAlign::Center => unreachable!(),
+                    };
+                    self.diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::Warning,
+                        message: format!("{message} in column {}", column + 1),
+                        span: None,
+                    });
+                }
+            }
+            walk_compact_node(self, arena, id);
+        }
+    }
+
+    let mut visitor = AlignmentVisitor {
+        diagnostics: Vec::new(),
+    };
+    visitor.visit_expr(expr);
+    visitor.diagnostics
 }
 
 /// Forced bounds keep their position in inline math. Movable bounds use

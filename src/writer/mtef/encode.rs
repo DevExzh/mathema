@@ -345,12 +345,7 @@ impl<'a> Encoder<'a> {
     fn content(&mut self, id: NodeId, size: Size) -> Result<()> {
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.list(span, size),
-            CompactNode::AlignedCell { alignment, content } => {
-                self.lose(&format!(
-                    "MTEF has no per-cell alignment; the authored {alignment:?} alignment was dropped"
-                ));
-                self.node(content, size)
-            },
+            CompactNode::AlignedCell { content, .. } => self.node(content, size),
             _ => self.node(id, size),
         }
     }
@@ -625,12 +620,7 @@ impl<'a> Encoder<'a> {
                 Ok(())
             },
             CompactNode::Row(span) => self.list(span, size),
-            CompactNode::AlignedCell { alignment, content } => {
-                self.lose(&format!(
-                    "MTEF has no standalone cell alignment; the authored {alignment:?} alignment was dropped"
-                ));
-                self.node(content, size)
-            },
+            CompactNode::AlignedCell { content, .. } => self.node(content, size),
             CompactNode::Fenced {
                 open,
                 close,
@@ -1988,7 +1978,13 @@ impl<'a> Encoder<'a> {
         self.out.push(halign);
         self.out.push(1);
         let rows: SmallVec<[NodeId; 8]> = self.arena.children(cells).into();
+        let exported = match halign {
+            1 => ColumnAlign::Left,
+            3 => ColumnAlign::Right,
+            _ => ColumnAlign::Center,
+        };
         for row in rows {
+            self.note_cell_alignment(row, exported);
             self.with_math_style(MathStyle::Text, |this| this.slot(size, Some(row)))?;
         }
         self.end();
@@ -2032,9 +2028,15 @@ impl<'a> Encoder<'a> {
         self.out.push(cols_u8);
         self.partition_lines(row_seps, rows + 1);
         self.partition_lines(col_seps, cols + 1);
+        let exported = match h_just {
+            1 => ColumnAlign::Left,
+            3 => ColumnAlign::Right,
+            _ => ColumnAlign::Center,
+        };
         for index in 0..rows * cols {
             match cells.get(index) {
                 Some(&cell) => {
+                    self.note_cell_alignment(cell, exported);
                     self.with_math_style(MathStyle::Text, |this| this.cell(cell, size))?;
                 },
                 None => {
@@ -2046,6 +2048,17 @@ impl<'a> Encoder<'a> {
         }
         self.end();
         Ok(())
+    }
+
+    fn note_cell_alignment(&mut self, cell: NodeId, exported: ColumnAlign) {
+        let CompactNode::AlignedCell { alignment, .. } = *self.arena.node(cell) else {
+            return;
+        };
+        if alignment != exported {
+            self.lose(&format!(
+                "MTEF exports one matrix alignment ({exported:?}); the authored {alignment:?} cell alignment was dropped"
+            ));
+        }
     }
 
     fn cell(&mut self, cell: NodeId, size: Size) -> Result<()> {

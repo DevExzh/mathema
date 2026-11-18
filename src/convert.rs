@@ -572,16 +572,17 @@ mod tests {
         );
 
         let (_, mtef) = result.to_mtef_with_diagnostics().unwrap();
-        assert!(
-            mtef.iter()
-                .any(|diagnostic| diagnostic.message.contains("per-cell alignment"))
-        );
+        assert!(mtef.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("MTEF exports one matrix alignment")
+        }));
 
         let (_, unicode_math) = result.to_unicode_math_with_diagnostics().unwrap();
         assert!(
             unicode_math
                 .iter()
-                .any(|diagnostic| diagnostic.message.contains("per-cell alignment"))
+                .any(|diagnostic| diagnostic.message.contains("table columns"))
         );
 
         let uniform = from_mathml(
@@ -597,6 +598,101 @@ mod tests {
                 .1
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn alignment_diagnostics_require_a_whole_cell_and_actual_loss() {
+        use crate::ast::{ColumnAlign, MathExpr, MathNode};
+
+        let standalone = MathExpr::inline(vec![MathNode::AlignedCell {
+            alignment: ColumnAlign::Right,
+            content: Box::new(MathNode::Identifier("x".into())),
+        }]);
+        let mixed = MathExpr::inline(vec![MathNode::Row(vec![
+            MathNode::AlignedCell {
+                alignment: ColumnAlign::Right,
+                content: Box::new(MathNode::Identifier("x".into())),
+            },
+            MathNode::Identifier("y".into()),
+        ])]);
+        for expr in [standalone, mixed] {
+            let compact = CompactExpr::from_math_expr(&expr).unwrap();
+            assert!(
+                OmmlWriter::write_compact_with_diagnostics(&compact, &Config::default())
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+            assert!(
+                MtefWriter::write_compact_with_diagnostics(&compact, &Config::default())
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+            assert!(
+                UnicodeMathWriter::write_compact_with_diagnostics(&compact, &Config::default())
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+        }
+
+        let omml_redundant = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Right],
+            rows: vec![vec![vec![MathNode::AlignedCell {
+                alignment: ColumnAlign::Right,
+                content: Box::new(MathNode::Identifier("x".into())),
+            }]]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let unicode_redundant = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Center],
+            rows: vec![vec![vec![MathNode::AlignedCell {
+                alignment: ColumnAlign::Center,
+                content: Box::new(MathNode::Identifier("x".into())),
+            }]]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let compact = CompactExpr::from_math_expr(&omml_redundant).unwrap();
+        assert!(
+            OmmlWriter::write_compact_with_diagnostics(&compact, &Config::default())
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert!(
+            MtefWriter::write_compact_with_diagnostics(&compact, &Config::default())
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        let compact = CompactExpr::from_math_expr(&unicode_redundant).unwrap();
+        assert!(
+            UnicodeMathWriter::write_compact_with_diagnostics(&compact, &Config::default())
+                .unwrap()
+                .1
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn nested_authored_cell_content_survives_lossy_table_formats() {
+        let source = r#"<math><mtable columnalign="left"><mtr><mtd><mi>a</mi></mtd></mtr><mtr><mtd columnalign="right"><mtable><mtr><mtd><mi>x</mi></mtd><mtd><mi>y</mi></mtd></mtr></mtable></mtd></mtr></mtable></math>"#;
+        let result = from_mathml(source).unwrap();
+
+        let omml = result.to_omml().unwrap();
+        let omml_back = from_omml(&omml).unwrap().to_mathml().unwrap();
+        assert!(omml_back.contains(">x<") && omml_back.contains(">y<"));
+
+        let mtef = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+        let mtef_back = from_mtef_bytes(&mtef).unwrap().to_mathml().unwrap();
+        assert!(mtef_back.contains(">x<") && mtef_back.contains(">y<"));
+
+        let unicode = result.to_unicode_math().unwrap();
+        let unicode_back = from_unicode_math(&unicode).unwrap().to_mathml().unwrap();
+        assert!(unicode_back.contains(">x<") && unicode_back.contains(">y<"));
     }
 
     #[test]
