@@ -233,7 +233,7 @@ pub(super) fn layout_rule(
     }
 }
 
-fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
+pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     use crate::unicode::fonts::styled_char;
 
     match node {
@@ -281,7 +281,7 @@ fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> Lay
         MathNode::Row(children) => layout_styled(style, children, ctx),
         MathNode::Styled(inner_style, children) => layout_styled(*inner_style, children, ctx),
         MathNode::StyleSwitch(_) => LayoutBox::kern(0.0),
-        other => layout_node(other, ctx),
+        other => layout_node(other, &ctx.with_styled_face(style)),
     }
 }
 
@@ -596,7 +596,7 @@ pub(super) fn layout_reflect_arena(
     })
 }
 
-fn layout_styled_node_arena(
+pub(super) fn layout_styled_node_arena(
     style: TextStyle,
     ast: &AstArena,
     id: NodeId,
@@ -662,7 +662,7 @@ fn layout_styled_node_arena(
             layout_styled_arena(ast, inner_style, span, arena, ctx)
         },
         CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
-        _ => layout_node_arena(ast, id, arena, ctx),
+        _ => layout_node_arena(ast, id, arena, &ctx.with_styled_face(style)),
     }
 }
 

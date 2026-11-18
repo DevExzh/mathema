@@ -1,5 +1,6 @@
 #![cfg(feature = "render")]
 
+use mathema::ast::{AccentPosition, FractionKind, LimitStyle, MathExpr, MathNode, TextStyle};
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::latex::LatexReader;
@@ -46,6 +47,21 @@ fn assert_valid_svg(svg: &str, label: &str) {
     assert!(svg.contains("viewBox"), "{label}: missing viewBox");
 }
 
+fn svg_width(svg: &str) -> f64 {
+    svg.split_once("width=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .and_then(|(width, _)| width.parse().ok())
+        .expect("SVG width")
+}
+
+fn structured(content: MathNode) -> MathExpr {
+    MathExpr::inline(vec![MathNode::StructuredOperator {
+        content: Box::new(content),
+        limit_style: LimitStyle::Default,
+        starred: false,
+    }])
+}
+
 #[test]
 fn invisible_operator_latex_boundary_is_zero_width() {
     let with_invisible = render_latex("A\u{2062}B");
@@ -54,6 +70,56 @@ fn invisible_operator_latex_boundary_is_zero_width() {
         viewbox_values(&with_invisible),
         viewbox_values(&with_mathord),
         "the LaTeX round-trip boundary must not alter invisible-times layout"
+    );
+}
+
+#[test]
+fn structured_operator_inherits_roman_face_through_composite_boxes() {
+    let accent = structured(MathNode::Accent {
+        base: Box::new(MathNode::Identifier("x".into())),
+        accent: '\u{0304}',
+        position: AccentPosition::Above,
+        wide: false,
+    });
+    let styled_accent = structured(MathNode::Row(vec![
+        MathNode::Styled(TextStyle::Bold, vec![MathNode::Identifier("R".into())]),
+        MathNode::Accent {
+            base: Box::new(MathNode::Identifier("x".into())),
+            accent: '\u{0304}',
+            position: AccentPosition::Above,
+            wide: false,
+        },
+    ]));
+    let fraction = structured(MathNode::Fraction {
+        kind: FractionKind::Normal,
+        num: Box::new(MathNode::Identifier("a".into())),
+        den: Box::new(MathNode::Identifier("b".into())),
+    });
+    let options = RenderOptions::default();
+    for (label, expr) in [
+        ("accent", accent),
+        ("mixed", styled_accent),
+        ("fraction", fraction),
+    ] {
+        let heap = render_to_svg(&expr, &options).unwrap();
+        let compact = mathema::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+        let mut layout_arena = LayoutArena::new();
+        let arena = render_to_svg_compact_arena(&compact, &options, &mut layout_arena).unwrap();
+        assert_eq!(heap, arena, "heap/arena mismatch for {label}");
+        assert!(svg_width(&heap) > 0.0, "empty {label} glyph output");
+    }
+
+    let plain = render_to_svg(
+        &MathExpr::inline(vec![MathNode::Identifier("x".into())]),
+        &options,
+    )
+    .unwrap();
+    let operator = structured(MathNode::Identifier("x".into()));
+    let roman = render_to_svg(&operator, &options).unwrap();
+    assert_ne!(
+        svg_width(&plain),
+        svg_width(&roman),
+        "operator x kept italic metrics"
     );
 }
 

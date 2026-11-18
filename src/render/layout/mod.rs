@@ -360,6 +360,10 @@ struct LayoutCtx<'a> {
     spacing_style: Option<MathStyle>,
     /// MathML can request the display branch while retaining script optical size.
     display_choice: bool,
+    /// Inherited typography for a structured operator body. Explicit
+    /// `Styled` descendants replace this face while composite descendants
+    /// continue to pass it to their leaves.
+    styled_face: Option<TextStyle>,
 }
 
 impl<'a> LayoutCtx<'a> {
@@ -381,7 +385,14 @@ impl<'a> LayoutCtx<'a> {
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
             display_choice: false,
+            styled_face: self.styled_face,
         }
+    }
+
+    fn with_styled_face(&self, style: TextStyle) -> LayoutCtx<'a> {
+        let mut next = self.clone();
+        next.styled_face = Some(style);
+        next
     }
 
     fn branch_style(&self) -> MathStyle {
@@ -414,6 +425,7 @@ impl<'a> LayoutCtx<'a> {
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
             display_choice: self.display_choice,
+            styled_face: self.styled_face,
         }
     }
 }
@@ -430,6 +442,7 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
         size_scale: 1.0,
         spacing_style: None,
         display_choice: false,
+        styled_face: None,
     };
     layout_row(&expr.nodes, &ctx)
 }
@@ -491,8 +504,14 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     }
     let ctx = &ctx.deeper();
     match node {
-        MathNode::Number(s) => layout_text_run(s, ctx, false, None),
+        MathNode::Number(s) => ctx.styled_face.map_or_else(
+            || layout_text_run(s, ctx, false, None),
+            |style| layout_styled_node(style, node, ctx),
+        ),
         MathNode::Identifier(s) => {
+            if let Some(style) = ctx.styled_face {
+                return layout_styled_node(style, node, ctx);
+            }
             if s.chars().count() == 1 {
                 // Single-char identifiers are italic; chars().next() is safe
                 // because chars().count() == 1 guarantees at least one char
@@ -677,8 +696,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 .choose(display, text, script, script_script);
             layout_node(chosen, ctx)
         },
-        MathNode::MathAtom { content, .. } | MathNode::StructuredOperator { content, .. } => {
-            layout_node(content, ctx)
+        MathNode::MathAtom { content, .. } => layout_node(content, ctx),
+        MathNode::StructuredOperator { content, .. } => {
+            layout_node(content, &ctx.with_styled_face(TextStyle::Normal))
         },
         // A declaration controls its enclosing math list and has no box of its own.
         MathNode::StyleSwitch(_) => LayoutBox::kern(0.0),
@@ -988,6 +1008,7 @@ impl<'a> LayoutBuilder<'a> {
             size_scale: 1.0,
             spacing_style: None,
             display_choice: false,
+            styled_face: None,
         };
         layout_row_arena(&expr.arena, expr.roots, arena, &ctx)
     }
@@ -1004,6 +1025,7 @@ struct ArenaLayoutCtx<'a> {
     /// `self.style`.  See `LayoutCtx::spacing_style` for rationale.
     spacing_style: Option<MathStyle>,
     display_choice: bool,
+    styled_face: Option<TextStyle>,
 }
 
 impl<'a> ArenaLayoutCtx<'a> {
@@ -1025,7 +1047,14 @@ impl<'a> ArenaLayoutCtx<'a> {
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
             display_choice: false,
+            styled_face: self.styled_face,
         }
+    }
+
+    fn with_styled_face(&self, style: TextStyle) -> ArenaLayoutCtx<'a> {
+        let mut next = self.clone();
+        next.styled_face = Some(style);
+        next
     }
 
     fn branch_style(&self) -> MathStyle {
@@ -1057,6 +1086,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             size_scale: self.size_scale,
             spacing_style: self.spacing_style,
             display_choice: self.display_choice,
+            styled_face: self.styled_face,
         }
     }
 }
@@ -1375,10 +1405,14 @@ fn layout_node_arena(
     }
     let ctx = &ctx.deeper();
     match *ast.node(id) {
-        CompactNode::Number(sid) => {
-            layout_text_run_arena(ast.str_val(sid), arena, ctx, false, None)
+        CompactNode::Number(sid) => match ctx.styled_face {
+            Some(style) => layout_styled_node_arena(style, ast, id, arena, ctx),
+            None => layout_text_run_arena(ast.str_val(sid), arena, ctx, false, None),
         },
         CompactNode::Identifier(sid) => {
+            if let Some(style) = ctx.styled_face {
+                return layout_styled_node_arena(style, ast, id, arena, ctx);
+            }
             let s = ast.str_val(sid);
             if s.chars().count() == 1 {
                 let ch = s.chars().next().expect("non-empty checked");
@@ -1630,9 +1664,13 @@ fn layout_node_arena(
                 .choose(display, text, script, script_script);
             layout_node_arena(ast, chosen, arena, ctx)
         },
-        CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
-            layout_node_arena(ast, content, arena, ctx)
-        },
+        CompactNode::MathAtom { content, .. } => layout_node_arena(ast, content, arena, ctx),
+        CompactNode::StructuredOperator { content, .. } => layout_node_arena(
+            ast,
+            content,
+            arena,
+            &ctx.with_styled_face(TextStyle::Normal),
+        ),
         CompactNode::Middle(_) | CompactNode::ColAlign(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
         CompactNode::SizeScale(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
