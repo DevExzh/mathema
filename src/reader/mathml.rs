@@ -3501,6 +3501,30 @@ mod tests {
     }
 
     #[test]
+    fn canonical_latex_preserves_both_sides_of_table_column_defaults() {
+        use crate::reader::latex::LatexReader;
+        use crate::writer::{Writer, latex::LatexWriter};
+
+        let config = Config::default();
+        let native = r"\begin{array}{lll}\multicolumn{1}{r}{LONG}&\multicolumn{1}{c}{c}&\multicolumn{1}{r}{x}\end{array}";
+        let compact = LatexReader::parse_compact(native, &config).unwrap().expr;
+        let latex = LatexWriter::write_compact(&compact, &config).unwrap();
+        assert!(!latex.contains("@{}"), "{latex}");
+        assert_eq!(latex.matches(r"\multicolumn{1}{r}").count(), 2);
+        assert!(latex.contains(r"\multicolumn{1}{c}"));
+
+        let xml = r#"<math><mtable columnalign="left"><mtr><mi>a</mi><mi>b</mi><mi>c</mi></mtr><mtr columnalign="right"><mi>x</mi><mi>y</mi><mi>z</mi></mtr></mtable></math>"#;
+        let latex = crate::from_mathml(xml).unwrap().to_latex().unwrap();
+        assert!(latex.contains(r"\begin{array}{@{}lll@{}}"), "{latex}");
+        for arg in ["@{}r", "r", "r@{}"] {
+            assert!(
+                latex.contains(&format!(r"\multicolumn{{1}}{{{arg}}}")),
+                "{latex}"
+            );
+        }
+    }
+
+    #[test]
     fn aligned_text_uses_the_normal_text_escapes() {
         let xml = r#"<math><mtable><mtr><mi>x</mi></mtr><mtr><mtd columnalign="right"><mtext>A#--B\c</mtext></mtd></mtr></mtable></math>"#;
         let parsed = crate::from_mathml(xml).unwrap();

@@ -1350,12 +1350,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push_str(env);
             buf.push('}');
             buf.push_str(option);
-            if env == "array" {
-                buf.push('{');
-                let aligned_cells = cell_ids
+            let trim_edges = env == "array"
+                && !array_style
+                && cell_ids
                     .iter()
                     .any(|&cell| matches!(arena.node(cell), CompactNode::AlignedCell { .. }));
-                if aligned_cells {
+            if env == "array" {
+                buf.push('{');
+                if trim_edges {
                     buf.push_str("@{}");
                 }
                 for &id in columns {
@@ -1367,7 +1369,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         });
                     }
                 }
-                if aligned_cells {
+                if trim_edges {
                     buf.push_str("@{}");
                 }
                 buf.push('}');
@@ -1386,13 +1388,19 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         let cell_id = &cell_ids[row_idx * nc + col_idx];
                         let (alignment, nodes) = arena.table_cell_parts(cell_id);
                         if let Some(alignment) = alignment {
-                            buf.push_str(r"\multicolumn{1}{@{}");
+                            buf.push_str(r"\multicolumn{1}{");
+                            if trim_edges && col_idx == 0 {
+                                buf.push_str("@{}");
+                            }
                             buf.push(match alignment {
                                 ColumnAlign::Left => 'l',
                                 ColumnAlign::Center => 'c',
                                 ColumnAlign::Right => 'r',
                             });
-                            buf.push_str(r"@{}}{");
+                            if trim_edges && col_idx + 1 == nc {
+                                buf.push_str("@{}");
+                            }
+                            buf.push_str("}{");
                         }
                         let marker = match env {
                             "smallmatrix" | "smallmatrix*" => Some(2),
