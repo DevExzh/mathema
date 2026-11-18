@@ -111,26 +111,6 @@ fn script_argument_boundary(input: &str) -> bool {
         || strip_control_word(input, "middle").is_some()
 }
 
-#[inline]
-fn is_accent_glyph(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{0300}'..='\u{036F}'
-            | '\u{20D0}'..='\u{20FF}'
-            | '\u{00AF}' // macron
-            | '\u{02C9}' // modifier letter macron
-            | '\u{203E}' // overline
-            | '\u{23B4}' // overbracket
-            | '\u{23B5}' // underbracket
-            | '\u{23DC}' // top brace
-            | '\u{23DD}' // bottom brace
-            | '\u{23DE}' // overbrace
-            | '\u{23DF}' // underbrace
-            | '_'
-            | '^'
-    )
-}
-
 /// Consume consecutive `\\limits` and `\\nolimits` modifiers after an
 /// operator. TeX permits repeated placement modifiers and the last modifier
 /// determines the operator's placement. A control-word boundary is required
@@ -4257,6 +4237,7 @@ impl LatexCompactParser {
         wide: bool,
     ) -> IResult<&'a str, NodeId> {
         let (input, base_id) = self.parse_required_group(input)?;
+        self.fix_accent_base(base_id);
         Ok((
             input,
             self.arena.push_node(CompactNode::Accent {
@@ -4589,6 +4570,7 @@ impl LatexCompactParser {
         let (input, over_id) = self.parse_required_group(input)?;
         let (input, base_id) = self.parse_required_group(input)?;
         if let Some(ch) = self.single_accent_glyph(over_id) {
+            self.fix_accent_base(base_id);
             return Ok((
                 input,
                 self.arena.push_node(CompactNode::Accent {
@@ -4613,6 +4595,7 @@ impl LatexCompactParser {
         let (input, under_id) = self.parse_required_group(input)?;
         let (input, base_id) = self.parse_required_group(input)?;
         if let Some(ch) = self.single_accent_glyph(under_id) {
+            self.fix_accent_base(base_id);
             return Ok((
                 input,
                 self.arena.push_node(CompactNode::Accent {
@@ -4633,12 +4616,23 @@ impl LatexCompactParser {
         ))
     }
 
+    /// A TeX accent stays attached to its base even in inline math. In
+    /// native MathML a movable <mo> would move the accent to a side script.
+    fn fix_accent_base(&mut self, base: NodeId) {
+        if let CompactNode::Operator { limits, .. } = self.arena.node_mut(base)
+            && *limits == LimitStyle::Default
+        {
+            *limits = LimitStyle::AboveBelow;
+        }
+    }
+
     fn single_accent_glyph(&self, id: NodeId) -> Option<char> {
         match *self.arena.node(id) {
             CompactNode::Symbol(_, sid) => {
                 let mut chars = self.arena.str_val(sid).chars();
                 let ch = chars.next()?;
-                (chars.next().is_none() && is_accent_glyph(ch)).then_some(ch)
+                (chars.next().is_none() && crate::unicode::symbols::is_accent_glyph(ch))
+                    .then_some(ch)
             },
             CompactNode::Row(span) => {
                 let &[only] = self.arena.children(span) else {

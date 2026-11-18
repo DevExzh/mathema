@@ -523,24 +523,14 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(self.arena.push_node(CompactNode::SubSup { base, sub, sup }))
             },
             "mover" => {
-                let movable = get_attr(start, "accent").as_deref() != Some("true");
+                let accent = get_attr(start, "accent");
+                let movable = accent.as_deref() != Some("true");
                 let children = self.parse_children(name)?;
                 let (base, over) = self.two_child_ids(children);
-                // An explicitly accented mover may decorate a named or
-                // compound operator just like an ordinary base. Keep a
-                // genuine one-character accent typed so the MathML writer
-                // emits `accent="true"` instead of treating it as a fixed
-                // operator limit.
-                if let CompactNode::Symbol(_, sid) = *self.arena.node(over)
-                    && let Some(ch) = single_accent_char(self.arena.str_val(sid))
-                    && (get_attr(start, "accent").as_deref() == Some("true") || is_accent_glyph(ch))
+                if let Some(node) =
+                    self.mathml_accent(base, over, AccentPosition::Above, accent.as_deref())
                 {
-                    return Ok(self.arena.push_node(CompactNode::Accent {
-                        base,
-                        accent: ch,
-                        position: AccentPosition::Above,
-                        wide: false,
-                    }));
+                    return Ok(node);
                 }
                 if movable
                     && let Some(node) = self.scripted_operator(base, NodeId::NONE, over, true)
@@ -554,31 +544,14 @@ impl<'a> MathmlCompactParser<'a> {
                 }))
             },
             "munder" => {
-                let is_accent = get_attr(start, "accentunder").as_deref() == Some("true");
+                let accent = get_attr(start, "accentunder");
+                let is_accent = accent.as_deref() == Some("true");
                 let children = self.parse_children(name)?;
                 let (base, under) = self.two_child_ids(children);
-                if is_accent
-                    && let CompactNode::Symbol(_, sid) = *self.arena.node(under)
-                    && let Some(ch) = single_accent_char(self.arena.str_val(sid))
+                if let Some(node) =
+                    self.mathml_accent(base, under, AccentPosition::Below, accent.as_deref())
                 {
-                    return Ok(self.arena.push_node(CompactNode::Accent {
-                        base,
-                        accent: ch,
-                        position: AccentPosition::Below,
-                        wide: false,
-                    }));
-                }
-                if !is_accent
-                    && let CompactNode::Symbol(_, sid) = *self.arena.node(under)
-                    && let Some(ch) = single_accent_char(self.arena.str_val(sid))
-                    && is_accent_glyph(ch)
-                {
-                    return Ok(self.arena.push_node(CompactNode::Accent {
-                        base,
-                        accent: ch,
-                        position: AccentPosition::Below,
-                        wide: false,
-                    }));
+                    return Ok(node);
                 }
                 if !is_accent
                     && let Some(node) = self.scripted_operator(base, under, NodeId::NONE, true)
@@ -901,6 +874,46 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn is_empty_row_id(&self, id: NodeId) -> bool {
         matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
+    }
+
+    fn mathml_accent(
+        &mut self,
+        base: NodeId,
+        script: NodeId,
+        position: AccentPosition,
+        attr: Option<&str>,
+    ) -> Option<NodeId> {
+        let CompactNode::Symbol(_, sid) = *self.arena.node(script) else {
+            return None;
+        };
+        let ch = single_accent_char(self.arena.str_val(sid))?;
+        let accent = match attr {
+            Some("true") => true,
+            Some("false") => false,
+            _ => crate::unicode::symbols::is_accent_glyph(ch),
+        };
+        if !accent {
+            return None;
+        }
+        let mut core = base;
+        while let CompactNode::Row(span) = *self.arena.node(core) {
+            let &[only] = self.arena.children(span) else {
+                break;
+            };
+            core = only;
+        }
+        if self.movable_limit_operators.get(&core) != Some(&true)
+            && let CompactNode::Operator { limits, .. } = self.arena.node_mut(core)
+            && *limits == LimitStyle::Default
+        {
+            *limits = LimitStyle::AboveBelow;
+        }
+        Some(self.arena.push_node(CompactNode::Accent {
+            base,
+            accent: ch,
+            position,
+            wide: false,
+        }))
     }
 
     /// Script elements place their bounds at the side. Under/over elements
@@ -1306,32 +1319,6 @@ fn classify_mo(text: &str) -> SymbolKind {
         '|' | '\u{2016}' => SymbolKind::Fence,
         _ => SymbolKind::Ordinary,
     }
-}
-
-fn is_combining_accent(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{0300}'..='\u{036F}' | '\u{20D0}'..='\u{20FF}'
-    )
-}
-
-#[inline]
-fn is_accent_glyph(ch: char) -> bool {
-    is_combining_accent(ch)
-        || matches!(
-            ch,
-            '\u{00AF}' // macron
-                | '\u{02C9}' // modifier letter macron
-                | '\u{203E}' // overline
-                | '\u{23B4}' // overbracket
-                | '\u{23B5}' // underbracket
-                | '\u{23DC}' // top brace
-                | '\u{23DD}' // bottom brace
-                | '\u{23DE}' // overbrace
-                | '\u{23DF}' // underbrace
-                | '_'
-                | '^'
-        )
 }
 
 fn single_accent_char(s: &str) -> Option<char> {

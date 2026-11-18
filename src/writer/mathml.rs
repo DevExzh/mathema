@@ -1248,7 +1248,6 @@ enum ScriptBase {
 struct ScriptPlacement {
     stacked: bool,
     base_movable: Option<bool>,
-    accent: bool,
 }
 
 impl ScriptBase {
@@ -1290,32 +1289,19 @@ impl ScriptBase {
                     LimitStyle::AboveBelow => Some(false),
                     LimitStyle::SubSup => None,
                 });
-                let stacked = match style {
-                    LimitStyle::Default => {
-                        under_over == Some(false) || display == DisplayStyle::Block
-                    },
-                    LimitStyle::AboveBelow => true,
-                    LimitStyle::SubSup => false,
-                };
                 ScriptPlacement {
-                    stacked,
+                    stacked: movable.is_some(),
                     base_movable: movable,
-                    accent: false,
                 }
             },
             Self::OperatorGroup => ScriptPlacement {
                 stacked: under_over
                     .is_some_and(|movable| !movable || display == DisplayStyle::Block),
                 base_movable: under_over,
-                accent: false,
             },
             Self::Other => ScriptPlacement {
                 stacked: under_over.is_some(),
                 base_movable: under_over,
-                // A decorative `\overset` label is an under/over element, not
-                // automatically a MathML accent. Genuine line/combining glyphs
-                // are recognized below using the actual script node.
-                accent: false,
             },
         }
     }
@@ -1355,27 +1341,11 @@ fn is_mathml_accent_glyph(node: &MathNode) -> bool {
             let Some(ch) = chars.next() else {
                 return false;
             };
-            chars.next().is_none() && is_mathml_accent_char(ch)
+            chars.next().is_none() && crate::unicode::symbols::is_accent_glyph(ch)
         },
         MathNode::Row(nodes) if nodes.len() == 1 => is_mathml_accent_glyph(&nodes[0]),
         _ => false,
     }
-}
-
-#[inline]
-fn is_mathml_accent_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{0300}'..='\u{036F}'
-            | '\u{20D0}'..='\u{20FF}'
-            | '\u{00AF}'
-            | '\u{02C9}'
-            | '\u{203E}'
-            | '\u{23B4}'..='\u{23B5}'
-            | '\u{23DC}'..='\u{23DF}'
-            | '_'
-            | '^'
-    )
 }
 
 #[inline]
@@ -1386,7 +1356,7 @@ fn is_mathml_accent_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
             let Some(ch) = chars.next() else {
                 return false;
             };
-            chars.next().is_none() && is_mathml_accent_char(ch)
+            chars.next().is_none() && crate::unicode::symbols::is_accent_glyph(ch)
         },
         CompactNode::Row(span) if arena.children(span).len() == 1 => {
             is_mathml_accent_glyph_fast(arena, arena.children(span)[0])
@@ -1404,27 +1374,23 @@ fn write_scripts(
     display: DisplayStyle,
 ) -> Result<()> {
     let script_base = ScriptBase::for_node(base);
-    let mut place = script_base.placement(under_over, display);
-    if !place.accent
-        && script_base.allows_glyph_accent()
-        && under_over == Some(false)
-        && lower.or(upper).is_some_and(is_mathml_accent_glyph)
-    {
-        place.accent = true;
-    }
+    let place = script_base.placement(under_over, display);
+    let accent_value = if under_over == Some(false) && script_base.allows_glyph_accent() {
+        "true"
+    } else {
+        "false"
+    };
     let Some(tag) = script_tag(place.stacked, lower.is_some(), upper.is_some()) else {
         return write_argument(w, base, display);
     };
     let mut elem = BytesStart::new(tag);
-    if place.accent {
-        elem.push_attribute((
-            if upper.is_some() {
-                "accent"
-            } else {
-                "accentunder"
-            },
-            "true",
-        ));
+    if place.stacked {
+        if lower.is_some_and(is_mathml_accent_glyph) {
+            elem.push_attribute(("accentunder", accent_value));
+        }
+        if upper.is_some_and(is_mathml_accent_glyph) {
+            elem.push_attribute(("accent", accent_value));
+        }
     }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
     if let Some(movable) = place.base_movable {
@@ -1452,28 +1418,29 @@ fn write_scripts_fast(
     display: DisplayStyle,
 ) {
     let script_base = ScriptBase::for_compact(arena, base);
-    let mut place = script_base.placement(under_over, display);
-    if !place.accent
-        && script_base.allows_glyph_accent()
-        && under_over == Some(false)
-        && is_mathml_accent_glyph_fast(arena, if lower.is_some() { lower } else { upper })
-    {
-        place.accent = true;
-    }
+    let place = script_base.placement(under_over, display);
+    let accent_value = if under_over == Some(false) && script_base.allows_glyph_accent() {
+        "true"
+    } else {
+        "false"
+    };
     let Some(tag) = script_tag(place.stacked, lower.is_some(), upper.is_some()) else {
         return write_argument_fast(buf, arena, base, display);
     };
-    if place.accent {
-        buf.push('<');
-        buf.push_str(tag);
-        buf.push_str(if upper.is_some() {
-            r#" accent="true">"#
-        } else {
-            r#" accentunder="true">"#
-        });
-    } else {
-        open_tag(buf, tag);
+    buf.push('<');
+    buf.push_str(tag);
+    if place.stacked {
+        for (attr, id) in [("accentunder", lower), ("accent", upper)] {
+            if id.is_some() && is_mathml_accent_glyph_fast(arena, id) {
+                buf.push(' ');
+                buf.push_str(attr);
+                buf.push_str("=\"");
+                buf.push_str(accent_value);
+                buf.push('"');
+            }
+        }
     }
+    buf.push('>');
     if let Some(movable) = place.base_movable {
         write_limit_base_fast(buf, arena, base, movable, display);
     } else {
@@ -1794,7 +1761,7 @@ mod tests {
             (r"\overset{!}{=}", false),
         ] {
             let result = crate::from_latex(latex).unwrap();
-            let heap = result.to_mathml().unwrap();
+            let heap = MathmlWriter::write(&result.expr(), &Config::default()).unwrap();
             let compact =
                 MathmlWriter::write_compact(result.compact_expr(), &Config::default()).unwrap();
             assert_eq!(heap, compact, "heap/compact mismatch for {latex}");
@@ -1804,7 +1771,18 @@ mod tests {
         let authored = r#"<math><mover accent="true"><mo>lim</mo><mo>¯</mo></mover></math>"#;
         let output =
             crate::convert(authored, crate::Format::MathML, crate::Format::MathML).unwrap();
+        assert!(output.contains(r#"<mover accent="true"><mo movablelimits="false">lim</mo>"#));
+        let movable = authored.replace("<mo>lim", r#"<mo movablelimits="true">lim"#);
+        let output = crate::from_mathml(&movable).unwrap().to_mathml().unwrap();
         assert!(output.contains(r#"<mover accent="true"><mo movablelimits="true">lim</mo>"#));
+        for source in [r"\lim\limits^¯", r"\mathop{x}\limits_¯"] {
+            let xml = crate::from_latex(source).unwrap().to_mathml().unwrap();
+            assert!(
+                xml.contains(r#"accent="false""#) || xml.contains(r#"accentunder="false""#),
+                "{xml}"
+            );
+            assert_eq!(crate::from_mathml(&xml).unwrap().to_mathml().unwrap(), xml);
+        }
     }
 
     #[test]

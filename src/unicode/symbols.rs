@@ -697,6 +697,23 @@ pub fn nary_op_to_latex(ch: char) -> Option<&'static str> {
     NARY_OP_LATEX.get(&ch).copied()
 }
 
+/// Glyphs used as a single over- or under-accent in mathematical notation.
+#[inline]
+pub(crate) fn is_accent_glyph(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0300}'..='\u{036F}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{00AF}'
+            | '\u{02C9}'
+            | '\u{203E}'
+            | '\u{23B4}'..='\u{23B5}'
+            | '\u{23DC}'..='\u{23DF}'
+            | '_'
+            | '^'
+    )
+}
+
 /// Integral operators use side scripts by default in every TeX math style.
 #[inline]
 pub(crate) fn is_integral_operator(ch: char) -> bool {
