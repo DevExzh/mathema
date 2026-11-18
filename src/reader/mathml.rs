@@ -244,14 +244,22 @@ impl<'a> MathmlCompactParser<'a> {
         let open = self.fence_delimiter(*first)?;
         let close = self.fence_delimiter(*last)?;
         let pair = (self.arena.str_val(open), self.arena.str_val(close));
+        let explicit = matches!(
+            (open_role, close_role),
+            (FenceRole::Prefix, FenceRole::Postfix)
+        );
         let bars = matches!(pair, ("|", "|") | ("‖", "‖"));
-        if !bars && !matching_fence(pair.0, pair.1) {
+        let natural_close = crate::unicode::operators::closing_fence(pair.0);
+        if !bars
+            && natural_close != Some(pair.1)
+            && !(explicit && known_fence_endpoint(pair.0) && known_fence_endpoint(pair.1))
+        {
             return None;
         }
 
         let mut marks = interior.iter().copied().peekable();
         let mut middles = SmallVec::<[(usize, StrId); 2]>::new();
-        let mut inner_pairs = 0usize;
+        let mut inner_pairs = SmallVec::<[&'static str; 2]>::new();
         let end = children.len() - 1;
         let content = &mut children[1..end];
         for (i, &id) in content.iter().enumerate() {
@@ -261,20 +269,20 @@ impl<'a> MathmlCompactParser<'a> {
                 // attributes. Do not join those pairs into one fence.
                 if let Some(sid) = self.fence_delimiter(id) {
                     let glyph = self.arena.str_val(sid);
-                    if glyph == pair.0 {
-                        if bars {
-                            return None;
-                        }
-                        inner_pairs += 1;
-                    } else if glyph == pair.1 {
-                        inner_pairs = inner_pairs.checked_sub(1)?;
+                    if let Some(partner) = crate::unicode::operators::closing_fence(glyph) {
+                        inner_pairs.push(partner);
+                    } else if inner_pairs.last() == Some(&glyph) {
+                        inner_pairs.pop();
+                    } else if (!glyph.is_empty() && glyph == pair.1) || natural_close == Some(glyph)
+                    {
+                        return None;
                     }
                 }
                 continue;
             };
             let sid = self.fence_delimiter(id)?;
             let glyph = self.arena.str_val(sid);
-            if role == FenceRole::Infix
+            if (role == FenceRole::Infix && writable_middle(glyph))
                 || (role == FenceRole::Inferred
                     && matches!(glyph, "" | "|" | "‖" | "∣" | "∥" | "/"))
             {
@@ -286,16 +294,10 @@ impl<'a> MathmlCompactParser<'a> {
                 return None;
             }
         }
-        if inner_pairs != 0 {
+        if !inner_pairs.is_empty() {
             return None;
         }
-        if bars
-            && middles.is_empty()
-            && !matches!(
-                (open_role, close_role),
-                (FenceRole::Prefix, FenceRole::Postfix)
-            )
-        {
+        if bars && middles.is_empty() && !explicit {
             return None;
         }
         for (i, sid) in middles {
@@ -680,7 +682,8 @@ impl<'a> MathmlCompactParser<'a> {
         let name = text.trim();
         // Multi-letter operator tokens and explicitly named operators
         // are distinct from ordinary identifiers in <mi>.
-        let attrs = operator_attributes(start, self.fence_depth == Some(self.depth));
+        let attrs =
+            operator_attributes(start, self.fence_depth == Some(self.depth), text.is_empty());
         let movable = attrs.movable_limits;
         let mut chars = name.chars();
         let named = attrs.named_operator
@@ -1718,28 +1721,31 @@ impl OperatorAttributes {
     }
 }
 
-fn matching_fence(open: &str, close: &str) -> bool {
-    matches!(
-        (open, close),
-        ("(", ")")
-            | ("[", "]")
-            | ("{", "}")
-            | ("⟨", "⟩")
-            | ("⌈", "⌉")
-            | ("⌊", "⌋")
-            | ("⟦", "⟧")
-            | ("⟮", "⟯")
-            | ("⦃", "⦄")
-            | ("⦇", "⦈")
-            | ("⦉", "⦊")
-            | ("⦋", "⦌")
-            | ("⦍", "⦎")
-            | ("⦏", "⦐")
-            | ("⦑", "⦒")
-            | ("⦓", "⦔")
-            | ("⦕", "⦖")
-            | ("⦗", "⦘")
-    )
+/// The LaTeX delimiter scanner accepts a single glyph or a null delimiter.
+fn writable_middle(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_none_or(|c| {
+        chars.as_str().is_empty()
+            && !c.is_ascii_alphanumeric()
+            && !c.is_whitespace()
+            && !c.is_control()
+            && !matches!(c, '%' | '#' | '$' | '&' | '~' | '^' | '_' | '.')
+    })
+}
+
+fn known_fence_endpoint(text: &str) -> bool {
+    if matches!(text, "" | "/" | "\\" | "|" | "‖" | "∣" | "∥") {
+        return true;
+    }
+    let mut chars = text.chars();
+    chars.next().is_some_and(|ch| {
+        chars.as_str().is_empty()
+            && (crate::unicode::operators::is_stretchy(ch)
+                || matches!(
+                    classify_mo(text),
+                    SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence
+                ))
+    })
 }
 
 fn fence_attr_value(raw: &str) -> std::borrow::Cow<'_, str> {
@@ -1755,6 +1761,7 @@ fn fence_attr_value(raw: &str) -> std::borrow::Cow<'_, str> {
 fn operator_attributes(
     start: &quick_xml::events::BytesStart<'_>,
     inspect_fences: bool,
+    empty: bool,
 ) -> OperatorAttributes {
     let mut result = OperatorAttributes::default();
     for attr in start.attributes().flatten() {
@@ -1778,8 +1785,15 @@ fn operator_attributes(
                     _ => FenceRole::Constrained,
                 };
             },
-            "minsize" | "maxsize" | "symmetric" | "lspace" | "rspace" | "style" | "mathsize"
-            | "displaystyle" | "scriptlevel"
+            "symmetric" if inspect_fences => {
+                // An empty delimiter has no glyph to stretch about the axis.
+                result.constrained |= !empty
+                    || !fence_attr_value(&attr.value)
+                        .trim()
+                        .eq_ignore_ascii_case("true");
+            },
+            "minsize" | "maxsize" | "lspace" | "rspace" | "style" | "mathsize" | "mathvariant"
+            | "mathcolor" | "mathbackground" | "class" | "displaystyle" | "scriptlevel"
                 if inspect_fences =>
             {
                 result.constrained = true;
@@ -2782,6 +2796,48 @@ mod tests {
 
         let fixed = r#"<math><mrow><mo fence="true" stretchy="false">(</mo><mi>x</mi><mo fence="true" stretchy="false">)</mo></mrow></math>"#;
         assert!(matches!(parse_one(fixed), MathNode::Row(_)));
+    }
+
+    #[test]
+    fn writer_fence_roles_roundtrip_bars_mismatches_and_null_endpoints() {
+        use crate::writer::Writer;
+
+        for source in [
+            r"\left\backslash x \right/",
+            r"\left. x \right.",
+            r"\left|x\right|",
+            r"\left[x\right)",
+            r"\left(x\right]",
+            r"\left[ a(b) \right)",
+            r"\left. f\right|",
+            r"\left|f\right.",
+            r"\left(x|y\right)",
+            r"\left(x\middle. y\right)",
+        ] {
+            let first = crate::from_latex(source).unwrap();
+            let mathml = first.to_mathml().unwrap();
+            let heap =
+                crate::writer::mathml::MathmlWriter::write(&first.expr(), &Config::default())
+                    .unwrap();
+            assert_eq!(heap, mathml, "heap/compact mismatch for {source}");
+            let requires_endpoint_roles = source.contains(r"\left|")
+                || source.contains(r"\right.")
+                || source == r"\left[x\right)"
+                || source == r"\left(x\right]";
+            if requires_endpoint_roles {
+                assert!(
+                    mathml.contains("form=\"prefix\"") && mathml.contains("form=\"postfix\""),
+                    "endpoint roles missing for {source}: {mathml}"
+                );
+            }
+            let reparsed = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(reparsed.to_latex().unwrap(), first.to_latex().unwrap());
+            assert_eq!(reparsed.to_mathml().unwrap(), mathml);
+            assert!(matches!(
+                reparsed.expr().nodes.as_slice(),
+                [MathNode::Fenced { .. }]
+            ));
+        }
     }
 
     #[test]

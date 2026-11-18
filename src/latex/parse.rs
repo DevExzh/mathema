@@ -2289,7 +2289,12 @@ impl LatexCompactParser {
                         // math symbol (e.g. \langle, \Vert). Unknown command
                         // names are not valid delimiters and would produce
                         // unparseable output when written back.
-                        let ch = latex_to_unicode(name).ok_or_else(|| {
+                        let ch = if name == "backslash" {
+                            Some('\\')
+                        } else {
+                            latex_to_unicode(name)
+                        }
+                        .ok_or_else(|| {
                             nom::Err::Error(nom::error::Error::new(
                                 input,
                                 nom::error::ErrorKind::Char,

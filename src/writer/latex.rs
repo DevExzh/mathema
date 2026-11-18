@@ -1894,6 +1894,7 @@ fn write_space(buf: &mut String, r: Rational) {
 fn write_delim(buf: &mut String, delim: &str) {
     match delim {
         "" => buf.push('.'),
+        "\\" => buf.push_str("\\backslash"),
         "{" => buf.push_str("\\{"),
         "}" => buf.push_str("\\}"),
         "\u{2016}" => buf.push_str("\\|"),

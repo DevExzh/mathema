@@ -31,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MathML import recovers matching structural fences and middle delimiters from
   explicitly fenced operator rows. Reimporting a fraction between delimiters
   preserves scalable brackets, literal interior bars, and invisible middles.
+  Explicit MathML operator roles also preserve absolute values, half-open
+  intervals, and one-sided LaTeX delimiters.
 - LaTeX math style declarations are scoped to their group. MathML, SVG, OMML,
   MTEF, and UnicodeMath select the active `\mathchoice` branch in scripts,
   fractions, roots, and table cells. LaTeX export retains all four branches.

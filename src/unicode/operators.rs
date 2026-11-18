@@ -332,6 +332,32 @@ pub fn lookup_operator_any(ch: char, preferred: OperatorForm) -> Option<&'static
     })
 }
 
+/// The usual closing glyph for a directional pair. Symmetric and null
+/// delimiters need explicit operator roles to identify the endpoints.
+pub(crate) fn closing_fence(open: &str) -> Option<&'static str> {
+    Some(match open {
+        "(" => ")",
+        "[" => "]",
+        "{" => "}",
+        "⟨" => "⟩",
+        "⌈" => "⌉",
+        "⌊" => "⌋",
+        "⟦" => "⟧",
+        "⟮" => "⟯",
+        "⦃" => "⦄",
+        "⦇" => "⦈",
+        "⦉" => "⦊",
+        "⦋" => "⦌",
+        "⦍" => "⦎",
+        "⦏" => "⦐",
+        "⦑" => "⦒",
+        "⦓" => "⦔",
+        "⦕" => "⦖",
+        "⦗" => "⦘",
+        _ => return None,
+    })
+}
+
 /// Determine if a character is a stretchy operator in some form.
 #[inline]
 pub fn is_stretchy(ch: char) -> bool {
