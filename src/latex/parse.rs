@@ -4053,10 +4053,11 @@ impl LatexCompactParser {
             },
 
             // --- Braket/Set (physics notation) ---
-            // `\braket` is a regular builtin macro. These three commands
-            // need the braket.sty token-level bar helper, so their arguments
-            // are rewritten into ordinary LaTeX and parsed by the normal
-            // fence and text machinery below.
+            // The fixed lower-case form is cheap to build directly. The
+            // dynamic forms need the braket.sty token-level bar helper, so
+            // their arguments are rewritten into ordinary LaTeX and parsed
+            // by the normal fence and text machinery below.
+            "braket" => self.parse_fixed_braket(input),
             "Braket" | "Set" | "set" => self.parse_braket_macro(input, name),
 
             // --- \cr (row separator used outside table context) ---
@@ -4357,13 +4358,39 @@ impl LatexCompactParser {
         ))
     }
 
+    /// Build the fixed `\mathinner{\langle{#1}\rangle}` form directly. The
+    /// argument remains one child of the inner row, matching the explicit
+    /// group in the package expansion while avoiding a full preprocessor pass.
+    fn parse_fixed_braket<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, content) = self.parse_required_group(input)?;
+        let open_sid = self.arena.push_str("\u{27E8}");
+        let close_sid = self.arena.push_str("\u{27E9}");
+        let open = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Open, open_sid));
+        let close = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Close, close_sid));
+        let children = self.arena.push_children_deferred(&[open, content, close]);
+        let row = self.arena.push_node(CompactNode::Row(children));
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::MathAtom {
+                atom_type: MathAtomType::Inner,
+                content: row,
+            }),
+        ))
+    }
+
     /// Expand one braket/set argument into the same constructs used by the
     /// ordinary parser. This keeps the dynamic separator behavior local to a
     /// short token rewrite while preserving parser resource checks and all
     /// existing AST construction paths.
     fn parse_braket_macro<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let Some((rest, raw)) = super::mhchem::capture_braced(input) else {
+        let Some((rest, raw)) = super::mhchem::capture_braced(input)
+            .or_else(|| super::split_token(input).map(|(rest, token)| (rest, token)))
+        else {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Char,
