@@ -156,6 +156,27 @@ mod tests {
     }
 
     #[test]
+    fn expanded_operators_contribute_their_printed_name() {
+        for (source, expected) in [
+            (r"\operatorname{\plim}+x", r"\operatorname{plim}+x"),
+            (r"\operatorname{A\plim B}+x", r"\operatorname{AplimB}+x"),
+            (
+                r"\def\F{\mathop{\operatorname* {a\,b}}\nolimits}\operatorname{A\F B}",
+                r"\operatorname{Aa\,bB}",
+            ),
+            (
+                r"\def\plim{Z}\operatorname{A\plim B}",
+                r"\operatorname{AZB}",
+            ),
+        ] {
+            assert_eq!(to_mathml(source), to_mathml(expected), "{source}");
+        }
+        // A defined macro protected outside an expanded definition acts as
+        // \relax in TeX. The next math atom remains available to the parser.
+        assert_eq!(to_mathml(r"\noexpand\plim x"), to_mathml("x"));
+    }
+
+    #[test]
     fn plim_definitions_still_use_macro_expansion() {
         let redefined = crate::convert(
             r"\newcommand{\plim}{Z}\plim",

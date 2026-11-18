@@ -402,6 +402,19 @@ fn decode_operator_name(raw: &str) -> String {
                             break;
                         }
                     }
+                    // Nested operator constructors contribute their argument to
+                    // the printed name. Their script-placement controls have
+                    // no glyph. This also applies when a macro expands here.
+                    if matches!(
+                        command.as_str(),
+                        "mathop" | "operatorname" | "limits" | "nolimits" | "displaylimits"
+                    ) {
+                        while chars.next_if(|ch| ch.is_ascii_whitespace()).is_some() {}
+                        if command == "operatorname" && chars.next_if_eq(&'*').is_some() {
+                            while chars.next_if(|ch| ch.is_ascii_whitespace()).is_some() {}
+                        }
+                        continue;
+                    }
                     if let Some(unicode) = latex_to_unicode(&command) {
                         out.push(unicode);
                     } else if let Some((unicode, _)) =
