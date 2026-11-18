@@ -39,9 +39,14 @@ impl MathWriter for MathmlWriter {
 
         let mut math = BytesStart::new("math");
         math.push_attribute(("xmlns", "http://www.w3.org/1998/Math/MathML"));
-        if expr.display == DisplayStyle::Block {
-            math.push_attribute(("display", "block"));
-        }
+        math.push_attribute((
+            "display",
+            if expr.display == DisplayStyle::Block {
+                "block"
+            } else {
+                "inline"
+            },
+        ));
         writer.write_event(Event::Start(math)).map_err(to_err)?;
 
         for node in &expr.nodes {
@@ -74,7 +79,7 @@ impl MathWriter for MathmlWriter {
         if expr.display == DisplayStyle::Block {
             buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">");
         } else {
-            buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\">");
+            buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">");
         }
 
         for &root_id in arena.children(expr.roots) {
@@ -1914,6 +1919,72 @@ mod tests {
             "compact output: {output}"
         );
         assert!(!output.contains("><<"), "compact output: {output}");
+    }
+
+    #[test]
+    fn named_operators_employ_the_requested_mathml_limit_style() {
+        for (style, start) in [
+            (
+                LimitStyle::Default,
+                r#"<munder><mo movablelimits="true">lim</mo>"#,
+            ),
+            (
+                LimitStyle::AboveBelow,
+                r#"<munder><mo movablelimits="false">lim</mo>"#,
+            ),
+            (LimitStyle::SubSup, "<msub><mo>lim</mo>"),
+        ] {
+            let expr = MathExpr::block(vec![MathNode::Subscript {
+                base: Box::new(MathNode::Operator(OperatorAttr {
+                    name: "lim".into(),
+                    limit_style: style,
+                })),
+                sub: Box::new(MathNode::Identifier("i".into())),
+            }]);
+            let compact = CompactExpr::from_math_expr(&expr).unwrap();
+            let xml = MathmlWriter::write(&expr, &Config::default()).unwrap();
+            assert!(xml.contains(start), "{xml}");
+            assert_eq!(
+                MathmlWriter::write_compact(&compact, &Config::default()).unwrap(),
+                xml
+            );
+            assert_eq!(crate::from_mathml(&xml).unwrap().to_mathml().unwrap(), xml);
+        }
+    }
+
+    #[test]
+    fn compound_operator_limits_follow_their_local_math_style() {
+        let operator = || MathNode::Underscript {
+            base: Box::new(MathNode::MathAtom {
+                atom_type: MathAtomType::Op,
+                content: Box::new(MathNode::Row(vec![
+                    MathNode::Identifier("a".into()),
+                    MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+                    MathNode::Identifier("b".into()),
+                ])),
+            }),
+            under: Box::new(MathNode::Identifier("i".into())),
+            movable_limits: true,
+        };
+        let nested = MathNode::Superscript {
+            base: Box::new(MathNode::Identifier("z".into())),
+            sup: Box::new(operator()),
+        };
+        for (expr, tag) in [
+            (MathExpr::block(vec![operator()]), "munder"),
+            (MathExpr::inline(vec![operator()]), "msub"),
+            (MathExpr::block(vec![nested]), "msub"),
+        ] {
+            let config = Config::default();
+            let xml = MathmlWriter::write(&expr, &config).unwrap();
+            let fragment = format!(
+                r#"<{tag}><mrow data-mjx-texclass="OP" data-mathema-limits="movable"><mi>a</mi><mo>+</mo><mi>b</mi></mrow><mi>i</mi></{tag}>"#
+            );
+            assert!(xml.contains(&fragment), "{xml}");
+            let packed = CompactExpr::from_math_expr(&expr).unwrap();
+            assert_eq!(MathmlWriter::write_compact(&packed, &config).unwrap(), xml);
+            assert_eq!(crate::from_mathml(&xml).unwrap().to_mathml().unwrap(), xml);
+        }
     }
 
     #[test]
