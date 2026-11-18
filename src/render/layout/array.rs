@@ -452,7 +452,7 @@ pub(super) fn layout_array_arena(
                 let b = arena.get(cell_layout_ids[idx]);
                 if !matches!(
                     *ast.node(cell_ids_ast[idx]),
-                    CompactNode::SpannedCell { .. }
+                    CompactNode::SpannedCell { span, .. } if span > 1
                 ) {
                     col_widths[j] = col_widths[j].max(b.width);
                 }
