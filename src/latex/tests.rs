@@ -2575,6 +2575,93 @@ fn ordinary_character_codes_remain_ordinary_through_repeated_latex_export() {
 }
 
 #[test]
+fn thin_space_prescripts_are_canonical_and_idempotent() {
+    let config = Config::default();
+    for (input, expected) in [
+        ("'\\char8201|' ", r"{}^{\prime}\char8201 |^{\prime}"),
+        ("'\\char\"2009|' ", r"{}^{\prime}\char8201 |^{\prime}"),
+        ("'\\char'20011|' ", r"{}^{\prime}\char8201 |^{\prime}"),
+        ("'\\char`\u{2009}|' ", r"{}^{\prime}\char8201 |^{\prime}"),
+        ("'\\,|' ", r"{}^{\prime}\,|^{\prime}"),
+        ("'\\thinspace|' ", r"{}^{\prime}\,|^{\prime}"),
+        ("'\u{2009}|' ", r"{}^{\prime}\,|^{\prime}"),
+    ] {
+        let mut first = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut first.expr).unwrap();
+        let out1 = LatexWriter::write_compact(&first.expr, &config).unwrap();
+        assert_eq!(out1, expected, "{input}");
+        let heap = LatexWriter::write(&first.expr.to_math_expr(), &config).unwrap();
+        assert_eq!(heap, out1, "heap/compact mismatch for {input}");
+        let mut second = LatexReader::parse_compact(&out1, &config).unwrap();
+        normalize_compact_expr(&mut second.expr).unwrap();
+        let out2 = LatexWriter::write_compact(&second.expr, &config).unwrap();
+        assert_eq!(out1, out2, "{input}");
+    }
+}
+
+#[test]
+fn numeric_math_space_chars_keep_their_authored_glyph_and_binding() {
+    let config = Config::default();
+    for code in [
+        0x00A0_u32, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2009, 0x200A, 0x202F,
+        0x205F, 0x3000,
+    ] {
+        let input = format!("'\\char{code}' A1");
+        let mut compact = LatexReader::parse_compact(&input, &config).unwrap();
+        normalize_compact_expr(&mut compact.expr).unwrap();
+        let compact_latex = LatexWriter::write_compact(&compact.expr, &config).unwrap();
+        assert!(
+            compact_latex.contains(&format!(r"\char{code}")),
+            "{input}: {compact_latex}"
+        );
+        assert!(compact_latex.contains("A1"), "{input}: {compact_latex}");
+
+        let heap_latex = LatexWriter::write(&compact.expr.to_math_expr(), &config).unwrap();
+        assert_eq!(
+            heap_latex, compact_latex,
+            "heap/compact mismatch for {input}"
+        );
+
+        let mut reparsed = LatexReader::parse_compact(&compact_latex, &config).unwrap();
+        normalize_compact_expr(&mut reparsed.expr).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed.expr, &config).unwrap(),
+            compact_latex,
+            "unstable authored code for {input}"
+        );
+    }
+}
+
+#[test]
+fn numeric_math_space_glyphs_survive_public_format_writers() {
+    for code in [
+        0x00A0_u32, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2009, 0x200A, 0x202F,
+        0x205F, 0x3000,
+    ] {
+        let glyph = char::from_u32(code).unwrap();
+        let result = crate::from_latex(&format!(r"\char{code} x")).unwrap();
+        assert_eq!(result.to_latex().unwrap(), format!(r"\char{code} x"));
+        let mathml = result.to_mathml().unwrap();
+        let heap_mathml =
+            crate::writer::mathml::MathmlWriter::write(&result.expr(), &Config::default()).unwrap();
+        assert_eq!(mathml, heap_mathml);
+        assert!(mathml.contains(glyph), "{mathml}");
+        let unicode = result.to_unicode_math().unwrap();
+        assert!(unicode.contains(glyph), "{unicode:?}");
+        let omml = result.to_omml().unwrap();
+        assert!(omml.contains(glyph), "{omml}");
+        for version in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+            let bytes = result
+                .to_mtef_bytes(&crate::MtefWriteOptions::new(version))
+                .unwrap();
+            let roundtrip = crate::from_mtef_bytes(&bytes).unwrap();
+            let recovered = roundtrip.to_mathml().unwrap();
+            assert!(recovered.contains(glyph), "{recovered}");
+        }
+    }
+}
+
+#[test]
 fn operator_name_punctuation_is_local_to_its_math_list() {
     let src = r"x'+\operatorname{A'-*\overline{x}\kern-2pt}_i+y'";
     let parsed = crate::from_latex(src).unwrap();

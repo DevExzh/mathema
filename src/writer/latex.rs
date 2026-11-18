@@ -1031,7 +1031,28 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // let `\int` take `{}` as its body, or join the base with the node
             // after. The base follows the scripts directly, so a script is
             // always braced: `{}^{6}6`, not `{}^66`.
-            buf.push_str("{{}");
+            let bare_space_base = match *arena.node(base) {
+                CompactNode::Space(width) => width.num != 0,
+                CompactNode::Symbol(_, sid) => {
+                    arena.str_val(sid).chars().next().is_some_and(|ch| {
+                        arena.str_val(sid).chars().count() == 1
+                            && crate::unicode::math_space_width(ch).is_some()
+                    })
+                },
+                CompactNode::MathAtom {
+                    atom_type: MathAtomType::Ord,
+                    content,
+                } => authored_math_space_symbol(arena, content).is_some(),
+                _ => false,
+            };
+            if bare_space_base {
+                // A nonzero math space cannot absorb a script or adjacent
+                // token. Avoid an unnecessary outer group, which disappears
+                // on reparse and makes the first LaTeX write non-canonical.
+                buf.push_str("{}");
+            } else {
+                buf.push_str("{{}");
+            }
             let mut scalar_last = false;
             for (mark, script, visible) in
                 [('_', pre_sub, sub_visible), ('^', pre_sup, sup_visible)]
@@ -1055,7 +1076,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 CompactNode::Row(span) => write_nodes(buf, arena, span),
                 _ => write_node_slice(buf, arena, &[base], false),
             }
-            buf.push('}');
+            if !bare_space_base {
+                buf.push('}');
+            }
         },
 
         CompactNode::Overscript {
@@ -1660,6 +1683,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push('}');
         },
         CompactNode::MathAtom { atom_type, content } => {
+            if atom_type == MathAtomType::Ord
+                && let Some(text) = authored_math_space_symbol(arena, content)
+            {
+                write_literal_math_char(buf, text);
+                return;
+            }
             if atom_type == MathAtomType::Op {
                 write_math_atom_op(buf, arena, content, true);
                 return;
@@ -2093,6 +2122,27 @@ fn write_math_char(buf: &mut String, ch: char) {
         buf.push('\\');
     }
     buf.push(ch);
+}
+
+/// Emit an authored `\char` glyph rather than converting Unicode math-space
+/// characters to TeX glue. The terminator keeps decimal character terminals
+/// from consuming a following digit or letter.
+fn write_literal_math_char(buf: &mut LatexBuffer, ch: char) {
+    buf.push_str("\\char");
+    buf.push_str(&(ch as u32).to_string());
+    buf.push(' ');
+}
+
+fn authored_math_space_symbol(arena: &AstArena, id: NodeId) -> Option<char> {
+    match *arena.node(id) {
+        CompactNode::Symbol(SymbolKind::Ordinary, sid) => {
+            let text = arena.str_val(sid);
+            (text.chars().count() == 1)
+                .then(|| text.chars().next().unwrap())
+                .filter(|ch| crate::unicode::math_space_width(*ch).is_some())
+        },
+        _ => None,
+    }
 }
 
 fn write_space(buf: &mut String, r: Rational) {
