@@ -3172,6 +3172,16 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
         );
     }
 
+    for input in ["8 .888 88 8.9 8.88", "1 . 2", "1.2 .3^a"] {
+        let tex = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let xml =
+            |src: &str| crate::convert(src, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert!(xml(input).contains("<mo>.</mo>"), "{input}");
+        assert_eq!(xml(input), xml(&tex), "{tex}");
+        let again = crate::convert(&tex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(tex, again);
+    }
+
     let imported =
         crate::from_mathml(r#"<math><mrow><mn>1.2</mn><mn>3.4</mn></mrow></math>"#).unwrap();
     let first = imported.to_latex().unwrap();

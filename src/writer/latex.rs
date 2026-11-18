@@ -1797,6 +1797,9 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
     // ASCII symbols are written directly
     if ch.is_ascii() {
         match ch {
+            // A literal dot after a digit must stay a separate atom even
+            // when the following node starts with another digit.
+            '.' if buf.as_bytes().last().is_some_and(u8::is_ascii_digit) => buf.push_str(" ."),
             '{' => buf.push_str("\\{"),
             '}' => buf.push_str("\\}"),
             '#' => buf.push_str("\\#"),
