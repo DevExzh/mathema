@@ -2509,6 +2509,18 @@ fn empty_base_prime_after_middle_stays_stable_in_nested_fraction() {
 }
 
 #[test]
+fn prescript_and_scripted_middle_canonicalize_as_one_fenced_sequence() {
+    let input = "''>_-'\\ip\t\t\t''\t\t\t\t\t\t\t\t\t\t\t'\t\t\t\t\\r'enew\\p\\r'>_-'\\ip\\r'enew>_-'\\ip\\r'enew\\pw>_\\r'>_-'\\ip\\r'enew^iJ";
+    let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(
+        crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap(),
+        crate::convert(&first, crate::Format::LaTeX, crate::Format::MathML).unwrap(),
+    );
+}
+
+#[test]
 fn token_selectors_choose_before_expanding() {
     for (input, expected) in [
         (r"\@firstoftwo{ab}{\missing}", "ab"),
