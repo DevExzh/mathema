@@ -260,11 +260,64 @@ fn unicode_script_mapping_covers_katex_greek_and_modifier_letters() {
 }
 
 #[test]
-fn unicode_script_runs_stop_when_the_kind_changes() {
+fn unicode_script_runs_replace_a_previous_same_kind_slot() {
     let result = crate::from_latex("x₂³₄").unwrap();
     let mathml = result.to_mathml().unwrap();
-    assert!(mathml.contains("<msubsup><mi>x</mi><mn>2</mn><mn>3</mn></msubsup>"));
-    assert!(mathml.contains("<msub><mrow></mrow><mn>4</mn></msub>"));
+    assert!(mathml.contains("<msubsup><mi>x</mi><mn>4</mn><mn>3</mn></msubsup>"));
+    assert!(!mathml.contains("<msub><mrow></mrow><mn>4</mn></msub>"));
+}
+
+#[test]
+fn unicode_scripts_complete_existing_ascii_scripts_and_operator_limits() {
+    for (input, expected) in [
+        ("X_i²", "<msubsup><mi>X</mi><mi>i</mi><mn>2</mn></msubsup>"),
+        ("x'₂", "<msubsup><mi>x</mi><mn>2</mn>"),
+        (
+            r"\sumₙ² x",
+            "<munderover><mo movablelimits=\"true\">∑</mo><mi>n</mi><mn>2</mn></munderover>",
+        ),
+    ] {
+        let mathml = crate::from_latex(input).unwrap().to_mathml().unwrap();
+        assert!(mathml.contains(expected), "{input}: {mathml}");
+        let first = crate::from_latex(input).unwrap().to_latex().unwrap();
+        assert_eq!(
+            first,
+            crate::from_latex(&first).unwrap().to_latex().unwrap(),
+            "unstable Unicode script: {input}"
+        );
+    }
+
+    assert!(matches!(
+        crate::from_latex("X_i²").unwrap().expr().nodes.as_slice(),
+        [crate::ast::MathNode::SubSup { .. }]
+    ));
+    assert!(matches!(
+        crate::from_latex("x'₂").unwrap().expr().nodes.as_slice(),
+        [crate::ast::MathNode::SubSup { .. }]
+    ));
+    let nary = crate::from_latex(r"\sumₙ² x").unwrap().expr();
+    assert!(matches!(
+        nary.nodes.as_slice(),
+        [crate::ast::MathNode::Nary {
+            sub: Some(_),
+            sup: Some(_),
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn unicode_script_scalars_in_explicit_script_arguments_are_literal_content() {
+    let first = crate::from_latex(r"D^²").unwrap().to_latex().unwrap();
+    assert_eq!(first, r"D^{\text{²}}");
+    assert_eq!(
+        first,
+        crate::from_latex(&first).unwrap().to_latex().unwrap()
+    );
+
+    let minus = crate::from_latex("x₋").unwrap().to_mathml().unwrap();
+    let explicit = crate::from_latex(r"x_{-}").unwrap().to_mathml().unwrap();
+    assert_eq!(minus, explicit);
 }
 
 #[test]

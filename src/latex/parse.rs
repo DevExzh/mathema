@@ -196,7 +196,7 @@ fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
         '⁸' => (false, '8'),
         '⁹' => (false, '9'),
         '⁺' => (false, '+'),
-        '⁻' => (false, '-'),
+        '⁻' => (false, '−'),
         '⁼' => (false, '='),
         '⁽' => (false, '('),
         '⁾' => (false, ')'),
@@ -262,7 +262,7 @@ fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
         '₈' => (true, '8'),
         '₉' => (true, '9'),
         '₊' => (true, '+'),
-        '₋' => (true, '-'),
+        '₋' => (true, '−'),
         '₌' => (true, '='),
         '₍' => (true, '('),
         '₎' => (true, ')'),
@@ -2527,17 +2527,61 @@ impl LatexCompactParser {
             );
         if implicit
             && let Some(&prev) = ids.last()
-            && crate::ast::normalize::can_carry_script(*self.arena.node(prev))
+            && (crate::ast::normalize::can_carry_script(*self.arena.node(prev))
+                || self.can_merge_implicit_script(prev, id))
         {
             ids.pop();
-            ids.push(crate::ast::normalize::make_script_with_base(
-                &mut self.arena,
-                prev,
-                id,
-            ));
+            ids.push(self.merge_implicit_script(prev, id));
             return;
         }
         ids.push(id);
+    }
+
+    /// Attach an implicit Unicode script to an existing ASCII script when the
+    /// two occupy complementary slots on the same base. TeX and KaTeX expose
+    /// `x_i²` and `x'₂` as one `msubsup`, while the generic prescript helper
+    /// would otherwise wrap the existing script as a new base.
+    fn merge_implicit_script(&mut self, base: NodeId, script: NodeId) -> NodeId {
+        match (*self.arena.node(base), *self.arena.node(script)) {
+            (CompactNode::Subscript { base, sub }, CompactNode::Superscript { sup, .. }) => {
+                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
+            },
+            (CompactNode::Superscript { base, sup }, CompactNode::Subscript { sub, .. }) => {
+                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
+            },
+            (CompactNode::SubSup { base, sup, .. }, CompactNode::Subscript { sub, .. }) => {
+                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
+            },
+            (CompactNode::SubSup { base, sub, .. }, CompactNode::Superscript { sup, .. }) => {
+                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
+            },
+            (CompactNode::Subscript { base, .. }, CompactNode::Subscript { sub, .. }) => {
+                self.arena.push_node(CompactNode::Subscript { base, sub })
+            },
+            (CompactNode::Superscript { base, .. }, CompactNode::Superscript { sup, .. }) => {
+                self.arena.push_node(CompactNode::Superscript { base, sup })
+            },
+            _ => crate::ast::normalize::make_script_with_base(&mut self.arena, base, script),
+        }
+    }
+
+    fn can_merge_implicit_script(&self, base: NodeId, script: NodeId) -> bool {
+        matches!(
+            (*self.arena.node(base), *self.arena.node(script)),
+            (
+                CompactNode::Subscript { .. },
+                CompactNode::Superscript { .. }
+            ) | (
+                CompactNode::Superscript { .. },
+                CompactNode::Subscript { .. }
+            ) | (CompactNode::SubSup { .. }, CompactNode::Subscript { .. })
+                | (CompactNode::SubSup { .. }, CompactNode::Superscript { .. })
+                | (CompactNode::Subscript { .. }, CompactNode::Subscript { .. })
+                | (
+                    CompactNode::Superscript { .. },
+                    CompactNode::Superscript { .. }
+                )
+        )
     }
 
     /// Parse one element: an atom optionally followed by scripts.
@@ -2714,6 +2758,24 @@ impl LatexCompactParser {
             }
             i += 1;
         }
+    }
+
+    /// Inside an explicit `^`/`_` argument a Unicode superscript or subscript
+    /// scalar is literal argument content. Demote it to its mapped base glyph
+    /// so `D^²` canonicalizes to `D^{2}` instead of becoming a nested empty-base
+    /// script on the next parse.
+    fn parse_unicode_script_scalar_argument<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> Option<IResult<&'a str, NodeId>> {
+        unicode_script_kind(input.chars().next())?;
+        let scalar = input.chars().next()?;
+        let width = scalar.len_utf8();
+        let sid = self.arena.push_str(&scalar.to_string());
+        let id = self
+            .arena
+            .push_node(CompactNode::Text(TextStyle::Normal, sid));
+        Some(Ok((&input[width..], id)))
     }
 
     fn operator_limit_style(&self, id: NodeId) -> Option<LimitStyle> {
@@ -3086,6 +3148,40 @@ impl LatexCompactParser {
     /// Parse optional _{...} and ^{...} in any order, returning (sub, sup).
     /// Uses `NodeId::NONE` for absent limits.
     fn parse_optional_limits<'a>(&mut self, input: &'a str) -> IResult<&'a str, (NodeId, NodeId)> {
+        if let Some((first_sub, _)) = unicode_script_kind(input.chars().next()) {
+            let (rest, Some((_, first_arg))) =
+                self.parse_unicode_script_arg_run(input, Some(first_sub))?
+            else {
+                unreachable!("Unicode script kind was checked above")
+            };
+            let skip = self.skip_script_ws(rest.as_bytes());
+            let after_ws = &rest[skip..];
+            if let Some((second_sub, _)) = unicode_script_kind(after_ws.chars().next())
+                && second_sub != first_sub
+            {
+                let (after_second, Some((_, second_arg))) =
+                    self.parse_unicode_script_arg_run(after_ws, Some(second_sub))?
+                else {
+                    unreachable!("Unicode complementary script kind was checked above")
+                };
+                return Ok((
+                    after_second,
+                    if first_sub {
+                        (first_arg, second_arg)
+                    } else {
+                        (second_arg, first_arg)
+                    },
+                ));
+            }
+            return Ok((
+                rest,
+                if first_sub {
+                    (first_arg, NodeId::NONE)
+                } else {
+                    (NodeId::NONE, first_arg)
+                },
+            ));
+        }
         let first_ch = match input.as_bytes().first() {
             Some(b'_') => '_',
             Some(b'^') => '^',
@@ -3132,6 +3228,9 @@ impl LatexCompactParser {
                 input,
                 nom::error::ErrorKind::Tag,
             )));
+        }
+        if let Some(result) = self.parse_unicode_script_scalar_argument(input) {
+            return result;
         }
         let argument_start = input;
         let (input, arg) = self.parse_atom(input)?;
