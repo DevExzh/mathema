@@ -31,6 +31,53 @@ pub(super) fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
     }
 }
 
+/// Rule masks cover at most the first 32 boundaries. Compute these positions
+/// on demand so ordinary unruled tables need no boundary storage.
+fn column_rules(
+    widths: &[f64],
+    gap_after: impl Fn(usize) -> f64,
+    edge: f64,
+    total: f64,
+    mask: u32,
+) -> impl Iterator<Item = f64> {
+    let mut next_column = edge;
+    (0..=widths.len())
+        .take(u32::BITS as usize)
+        .filter_map(move |index| {
+            let boundary = if index == 0 {
+                0.0
+            } else if index == widths.len() {
+                total
+            } else {
+                next_column - gap_after(index - 1) / 2.0
+            };
+            if let Some(width) = widths.get(index) {
+                next_column += width;
+                if index + 1 < widths.len() {
+                    next_column += gap_after(index);
+                }
+            }
+            (mask & (1 << index) != 0).then_some(boundary)
+        })
+}
+
+fn row_rules<'a>(
+    heights: &'a [f64],
+    depths: &'a [f64],
+    mask: u32,
+) -> impl Iterator<Item = f64> + 'a {
+    let bottoms = heights.iter().zip(depths).scan(0.0, |y, (height, depth)| {
+        *y += height;
+        *y += depth;
+        Some(*y)
+    });
+    std::iter::once(0.0)
+        .chain(bottoms)
+        .take(u32::BITS as usize)
+        .enumerate()
+        .filter_map(move |(index, boundary)| (mask & (1 << index) != 0).then_some(boundary))
+}
+
 /// amsmath's smallmatrix uses no minimum strut. In a regular array the
 /// height and depth of the strut split the stretched baseline skip 70:30.
 fn array_strut(smallmatrix: bool, size: f64, stretch: f64) -> (f64, f64) {
@@ -62,7 +109,6 @@ fn smallmatrix_horizontal_spacing(style: MathStyle, scale: f64) -> (f64, f64) {
     )
 }
 
-#[allow(clippy::needless_range_loop)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn layout_array(
     smallmatrix: bool,
@@ -130,12 +176,9 @@ pub(super) fn layout_array(
     // Position cells — consume cell_layouts by ownership to avoid cloning
     let mut children = Vec::new();
     let mut cursor_y = 0.0;
-    let mut row_boundary_y = Vec::with_capacity(n_rows + 1);
-    let small_spacing =
-        smallmatrix.then(|| smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale));
     let colsep = ARRAY_COLSEP_EM * size;
     let (outer_pad, uniform_gap) = if smallmatrix {
-        let (edge, gap) = small_spacing.expect("smallmatrix spacing");
+        let (edge, gap) = smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale);
         (edge, Some(gap))
     } else if array_style {
         (colsep, Some(2.0 * colsep))
@@ -146,7 +189,6 @@ pub(super) fn layout_array(
 
     // Start from top
     for (i, row) in cell_layouts.into_iter().enumerate() {
-        row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
         let mut cursor_x = outer_pad;
         let mut row_iter = row.into_iter();
@@ -172,7 +214,6 @@ pub(super) fn layout_array(
 
         cursor_y += row_depths[i];
     }
-    row_boundary_y.push(cursor_y);
 
     let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
     let total_width: f64 = outer_pad * 2.0 + col_widths.iter().sum::<f64>() + total_gap;
@@ -196,27 +237,7 @@ pub(super) fn layout_array(
     if col_seps != 0 {
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + box_depth;
-        let mut boundary_x = Vec::with_capacity(n_cols + 1);
-        let mut x_acc = outer_pad;
-        for j in 0..n_cols {
-            boundary_x.push(x_acc);
-            x_acc += col_widths[j];
-            if j < n_cols - 1 {
-                x_acc += gap_after(j);
-            }
-        }
-        boundary_x.push(x_acc);
-        for pos in 0..=n_cols {
-            if pos >= 32 || (col_seps >> pos) & 1 == 0 {
-                continue;
-            }
-            let bx = if pos == 0 {
-                0.0
-            } else if pos == n_cols {
-                total_width
-            } else {
-                boundary_x[pos] - gap_after(pos - 1) / 2.0
-            };
+        for bx in column_rules(&col_widths, gap_after, outer_pad, total_width, col_seps) {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
@@ -236,10 +257,7 @@ pub(super) fn layout_array(
 
     if row_seps != 0 {
         let rule_t = 0.04 * size;
-        for (pos, &boundary) in row_boundary_y.iter().enumerate() {
-            if pos >= 32 || (row_seps >> pos) & 1 == 0 {
-                continue;
-            }
+        for boundary in row_rules(&row_heights, &row_depths, row_seps) {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 total_width, total_width, rule_t, rule_t
@@ -366,7 +384,6 @@ pub(super) fn layout_array_arena(
     // Position cells
     let children_start = arena.begin_children();
     let mut cursor_y = 0.0;
-    let mut row_boundary_y: Vec<f64> = Vec::with_capacity(n_rows + 1);
 
     // `array`-style tables pad outer edges with
     // `\arraycolsep` and use 2·arraycolsep between columns.
@@ -382,7 +399,6 @@ pub(super) fn layout_array_arena(
     let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
 
     for i in 0..n_rows {
-        row_boundary_y.push(cursor_y);
         cursor_y += row_heights[i];
         let mut cursor_x = edge_pad;
 
@@ -416,24 +432,9 @@ pub(super) fn layout_array_arena(
 
         cursor_y += row_depths[i];
     }
-    row_boundary_y.push(cursor_y); // bottom edge
 
     let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
     let total_width: f64 = edge_pad + col_widths.iter().sum::<f64>() + total_gap + edge_pad;
-
-    // Column boundary x positions (left edge of each column), incl. lead pad.
-    let mut boundary_x = Vec::with_capacity(n_cols + 1);
-    {
-        let mut x_acc = edge_pad;
-        for j in 0..n_cols {
-            boundary_x.push(x_acc);
-            x_acc += col_widths.get(j).copied().unwrap_or(0.0);
-            if j < n_cols - 1 {
-                x_acc += gap_after(j);
-            }
-        }
-        boundary_x.push(x_acc);
-    }
 
     // Add vertical separator rules if col_seps is non-zero
     if col_seps != 0 {
@@ -441,56 +442,45 @@ pub(super) fn layout_array_arena(
         let rule_total_h = box_height + (half - axis);
         let box_depth = half - axis;
 
-        for pos in 0..=n_cols {
-            if pos < 32 && (col_seps >> pos) & 1 != 0 {
-                let bx = if pos == 0 {
-                    0.0
-                } else if pos == n_cols {
-                    total_width
-                } else {
-                    boundary_x[pos] - gap_after(pos - 1) / 2.0
-                };
-                let path = format!(
-                    "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                    rule_w, rule_w, rule_total_h, rule_total_h
-                );
-                let rule_id = arena.alloc(ArenaLayoutBox {
-                    width: rule_w,
-                    height: box_height,
-                    depth: box_depth,
-                    kind: ArenaBoxKind::SvgPath(path),
-                });
-                arena.push_child(ArenaPositionedBox {
-                    dx: bx - rule_w / 2.0,
-                    dy: 0.0,
-                    id: rule_id,
-                });
-            }
+        for bx in column_rules(&col_widths, gap_after, edge_pad, total_width, col_seps) {
+            let path = format!(
+                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                rule_w, rule_w, rule_total_h, rule_total_h
+            );
+            let rule_id = arena.alloc(ArenaLayoutBox {
+                width: rule_w,
+                height: box_height,
+                depth: box_depth,
+                kind: ArenaBoxKind::SvgPath(path),
+            });
+            arena.push_child(ArenaPositionedBox {
+                dx: bx - rule_w / 2.0,
+                dy: 0.0,
+                id: rule_id,
+            });
         }
     }
 
     // Add horizontal rules (\hline) if row_seps is non-zero.
     if row_seps != 0 {
         let rule_t = 0.04 * size;
-        for (pos, &by) in row_boundary_y.iter().enumerate() {
-            if pos < 32 && (row_seps >> pos) & 1 != 0 {
-                let line_dy = box_height - by;
-                let path = format!(
-                    "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                    total_width, total_width, rule_t, rule_t
-                );
-                let rule_id = arena.alloc(ArenaLayoutBox {
-                    width: total_width,
-                    height: rule_t,
-                    depth: 0.0,
-                    kind: ArenaBoxKind::SvgPath(path),
-                });
-                arena.push_child(ArenaPositionedBox {
-                    dx: 0.0,
-                    dy: line_dy - rule_t / 2.0,
-                    id: rule_id,
-                });
-            }
+        for by in row_rules(&row_heights, &row_depths, row_seps) {
+            let line_dy = box_height - by;
+            let path = format!(
+                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+                total_width, total_width, rule_t, rule_t
+            );
+            let rule_id = arena.alloc(ArenaLayoutBox {
+                width: total_width,
+                height: rule_t,
+                depth: 0.0,
+                kind: ArenaBoxKind::SvgPath(path),
+            });
+            arena.push_child(ArenaPositionedBox {
+                dx: 0.0,
+                dy: line_dy - rule_t / 2.0,
+                id: rule_id,
+            });
         }
     }
 
