@@ -2817,7 +2817,16 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Tag,
             )));
         }
+        let argument_start = input;
         let (input, arg) = self.parse_atom(input)?;
+        if matches!(self.arena.node(arg), CompactNode::StyleSwitch(_)) {
+            // TeX requires a braced math list around a style declaration in
+            // a subscript or superscript. A braced empty scope is a Row.
+            return Err(nom::Err::Error(nom::error::Error::new(
+                argument_start,
+                nom::error::ErrorKind::Tag,
+            )));
+        }
         if self.check_node_limit() {
             return Err(nom::Err::Failure(nom::error::Error::new(
                 input,

@@ -142,6 +142,29 @@ fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
 }
 
 #[test]
+fn math_style_declarations_in_scripts_require_a_group() {
+    for cmd in [
+        r"\displaystyle",
+        r"\textstyle",
+        r"\scriptstyle",
+        r"\scriptscriptstyle",
+    ] {
+        for marker in ['_', '^'] {
+            let bare = format!("x{marker}{cmd} y");
+            assert!(crate::from_latex(&bare).is_err(), "{bare}");
+            for body in ["", " y"] {
+                let grouped = format!("x{marker}{{{cmd}{body}}}z");
+                assert!(crate::from_latex(&grouped).is_ok(), "{grouped}");
+            }
+        }
+    }
+    // Macro arguments, unlike TeX's unbraced script fields, accept the
+    // declaration token as their entire (visually empty) argument.
+    assert!(crate::from_latex(r"\frac\scriptstyle x y").is_ok());
+    assert!(crate::from_latex(r"\sqrt\scriptscriptstyle x").is_ok());
+}
+
+#[test]
 fn style_switch_normalization_matches_heap_and_compact_scopes() {
     let config = Config::default();
     for source in [
