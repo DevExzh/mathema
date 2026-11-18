@@ -49,6 +49,28 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn braces_keep_named_and_compound_operator_scripts_at_the_side() {
+    for source in [
+        r"{\lim}_i",
+        r"{{\sin\limits}}_i",
+        r"{\operatorname*{score}}_i",
+        r"{\mathop{a+b}}_i",
+        r"{\lim}^i",
+    ] {
+        let v = crate::from_latex(source).unwrap();
+        let h = v.to_mathml().unwrap();
+        assert!(
+            h.contains("<msub>") || h.contains("<msup>"),
+            "{source}: {h}"
+        );
+        let first = v.to_latex().unwrap();
+        let again = crate::from_latex(&first).unwrap();
+        assert_eq!(again.to_mathml().unwrap(), h, "{source}: {first}");
+        assert_eq!(again.to_latex().unwrap(), first);
+    }
+}
+
+#[test]
 fn named_operator_limit_styles_reach_mathml() {
     for (display, expected) in [
         (

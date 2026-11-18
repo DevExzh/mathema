@@ -2387,7 +2387,30 @@ impl LatexCompactParser {
             }
             return result;
         }
+        let grouped = input.starts_with('{');
         let (input, base) = self.parse_atom(input)?;
+        if grouped
+            && matches!(
+                *self.arena.node(base),
+                CompactNode::Operator { .. }
+                    | CompactNode::MathAtom {
+                        atom_type: MathAtomType::Op,
+                        ..
+                    }
+            )
+            && matches!(
+                input.as_bytes().get(self.skip_script_ws(input.as_bytes())),
+                Some(b'^' | b'_' | b'\'')
+            )
+        {
+            // Braces make a TeX ordinary atom. Preserve that boundary when
+            // flattening a singleton operator group would move its scripts.
+            let ordinary = self.arena.push_node(CompactNode::MathAtom {
+                atom_type: MathAtomType::Ord,
+                content: base,
+            });
+            return self.parse_scripts(input, ordinary);
+        }
 
         // N-ary operators consume scripts + body specially
         if self.is_nary_id(base) {
