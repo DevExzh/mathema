@@ -274,7 +274,8 @@ pub enum MathNode {
     },
     /// Explicit TeX math-style declaration (`\displaystyle`, `\textstyle`,
     /// `\scriptstyle`, or `\scriptscriptstyle`). The compact representation
-    /// stores the same value in [`compact::CompactNode::StyleSwitch`].
+    /// stores the same value in [`compact::CompactNode::StyleSwitch`]. Values
+    /// 4 and 5 are reserved for MathML's display style at script optical sizes.
     StyleSwitch(u8),
     /// Explicit atom-type override: \mathop, \mathrel, \mathbin, etc.
     MathAtom {

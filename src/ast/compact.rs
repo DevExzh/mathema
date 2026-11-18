@@ -393,6 +393,8 @@ pub enum CompactNode {
     },
 
     /// Math style switch: 0=Display, 1=Text, 2=Script, 3=ScriptScript.
+    /// Values 4 and 5 preserve MathML's `displaystyle=true` at script and
+    /// scriptscript optical sizes respectively.
     StyleSwitch(u8),
 
     /// Font size scale: 0=tiny..9=Huge. See SIZE_SCALE_TABLE in layout.rs.
