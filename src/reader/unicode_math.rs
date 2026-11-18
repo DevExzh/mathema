@@ -42,6 +42,36 @@ fn matching_paren_end(input: &str) -> Option<usize> {
     None
 }
 
+/// Find the top-level `&` in the body of an nth-root argument. UnicodeMath
+/// uses the same separator inside matrix and other grouped constructs, so only
+/// an ampersand outside all nested delimiters belongs to the root itself.
+fn root_separator(input: &str) -> Option<usize> {
+    let mut round = 0_u32;
+    let mut square = 0_u32;
+    let mut curly = 0_u32;
+    let mut quoted = false;
+    for (index, character) in input.char_indices() {
+        if character == '"' {
+            quoted = !quoted;
+            continue;
+        }
+        if quoted {
+            continue;
+        }
+        match character {
+            '(' => round = round.saturating_add(1),
+            ')' => round = round.saturating_sub(1),
+            '[' => square = square.saturating_add(1),
+            ']' => square = square.saturating_sub(1),
+            '{' => curly = curly.saturating_add(1),
+            '}' => curly = curly.saturating_sub(1),
+            '&' if round == 0 && square == 0 && curly == 0 => return Some(index),
+            _ => {},
+        }
+    }
+    None
+}
+
 impl Reader for UnicodeMathReader {
     fn parse(input: &str, config: &Config) -> Result<ParseResult> {
         Self::parse_compact(input, config).map(|r| r.to_parse_result())
@@ -736,9 +766,46 @@ impl CompactParser {
 
     fn parse_sqrt<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = satisfy(|c| c == '\u{221A}')(input)?; // √
+        // The writer's general nth-root spelling is `√(index&radicand)`.
+        // Parentheses following a radical normally denote a grouping argument,
+        // so recognize the separator before handing the input to the ordinary
+        // radical parser. The separator search is depth-aware so nested
+        // grouped operands and matrix contents remain intact.
+        if input.starts_with('(')
+            && let Some(end) = matching_paren_end(input)
+            && let Some(separator) = root_separator(&input[1..end - 1])
+        {
+            let inner = &input[1..end - 1];
+            let (_, index) = self.parse_root_operand(&inner[..separator])?;
+            let (_, radicand) = self.parse_root_operand(&inner[separator + 1..])?;
+            let id = self.push_node(CompactNode::Root { index, radicand });
+            return Ok((&input[end..], id));
+        }
         let (input, content) = self.parse_script_arg(input)?;
         let id = self.push_node(CompactNode::Sqrt(content));
         Ok((input, id))
+    }
+
+    /// Parse one complete operand from one side of `√(index&radicand)`.
+    fn parse_root_operand<'a>(&mut self, mut input: &'a str) -> IResult<&'a str, NodeId> {
+        let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+        loop {
+            input = input.trim_start();
+            if input.is_empty() {
+                break;
+            }
+            let before = input.len();
+            let (rest, id) = self.parse_element(input)?;
+            if rest.len() >= before {
+                return Err(parse_error(input, nom::error::ErrorKind::Verify));
+            }
+            ids.push(id);
+            input = rest;
+        }
+        if ids.is_empty() {
+            return Err(parse_error(input, nom::error::ErrorKind::Verify));
+        }
+        Ok((input, self.flatten_single(&ids)))
     }
 
     fn parse_cbrt<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -1359,6 +1426,50 @@ mod tests {
         // Bare parentheses (not in argument position) stay literal.
         let lit = parse("(x)");
         assert!(matches!(&lit[0], MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn nth_root_separator_builds_a_root_node() {
+        let nodes = parse("√(204&206)");
+        assert!(matches!(
+            &nodes[0],
+            MathNode::Root { index, radicand }
+                if matches!(&**index, MathNode::Number(value) if value == "204")
+                    && matches!(&**radicand, MathNode::Number(value) if value == "206")
+        ));
+
+        let converted = crate::from_unicode_math("√(204&206)").unwrap();
+        assert_eq!(converted.to_unicode_math().unwrap(), "√(204&206)");
+    }
+
+    #[test]
+    fn nth_root_separator_ignores_nested_group_ampersands() {
+        let nodes = parse("√(■(1&2)&(x+y))");
+        let MathNode::Root { index, radicand } = &nodes[0] else {
+            panic!("expected nth root, got {nodes:?}");
+        };
+        assert!(matches!(&**index, MathNode::Array { .. }));
+        assert!(matches!(&**radicand, MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn nth_root_separator_ignores_quoted_ampersands() {
+        let nodes = parse("√(\"a&b\"&x)");
+        let MathNode::Root { index, radicand } = &nodes[0] else {
+            panic!("expected nth root, got {nodes:?}");
+        };
+        assert!(matches!(&**index, MathNode::Text(_, text) if text == "a&b"));
+        assert!(matches!(&**radicand, MathNode::Identifier(text) if text == "x"));
+    }
+
+    #[test]
+    fn latex_nth_root_unicode_roundtrip_preserves_mathml() {
+        let config = Config::default().with_display(DisplayStyle::Inline);
+        let source = crate::from_latex_with(r"\sqrt[204]{206}", &config).unwrap();
+        let unicode = source.to_unicode_math().unwrap();
+        assert_eq!(unicode, "√(204&206)");
+        let reparsed = crate::from_unicode_math_with(&unicode, &config).unwrap();
+        assert_eq!(reparsed.to_mathml().unwrap(), source.to_mathml().unwrap());
     }
 
     #[test]
