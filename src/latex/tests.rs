@@ -2556,6 +2556,24 @@ fn structured_operatorname_reaches_all_public_format_writers() {
 }
 
 #[test]
+fn ordinary_character_codes_remain_ordinary_through_repeated_latex_export() {
+    let witness = r"\o'peratorname{A\char42\overline{x}}";
+    let canonical = crate::convert(witness, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    assert_eq!(
+        canonical,
+        crate::convert(&canonical, crate::Format::LaTeX, crate::Format::LaTeX).unwrap()
+    );
+    for code in 32..=126 {
+        let first = crate::from_latex(&format!(r"x\char{code} y")).unwrap();
+        let tex = first.to_latex().unwrap();
+        let second =
+            crate::from_latex(&tex).unwrap_or_else(|e| panic!("character {code} in {tex:?}: {e}"));
+        assert_eq!(tex, second.to_latex().unwrap(), "character {code}");
+        assert_eq!(first.expr(), second.expr(), "character {code} in {tex}");
+    }
+}
+
+#[test]
 fn operator_name_punctuation_is_local_to_its_math_list() {
     let src = r"x'+\operatorname{A'-*\overline{x}\kern-2pt}_i+y'";
     let parsed = crate::from_latex(src).unwrap();

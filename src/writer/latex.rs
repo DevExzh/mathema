@@ -1787,6 +1787,17 @@ fn write_symbol(buf: &mut String, arena: &AstArena, kind: SymbolKind, sid: compa
 }
 
 fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
+    if kind == SymbolKind::Ordinary
+        && let [byte] = s.as_bytes()
+        && crate::latex::parse::ascii_ordinary_needs_char(char::from(*byte))
+    {
+        write_math_char(buf, char::from(*byte));
+        return;
+    }
+    write_symbol_spelling(buf, kind, s);
+}
+
+fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     let ch = s.chars().next().unwrap_or('?');
     // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064 INVISIBLE
     // PLUS) have no glyph or width in LaTeX. Emit an empty ordinary atom
@@ -1953,7 +1964,7 @@ fn math_literal_needs_char(ch: char) -> bool {
 /// control characters and comment characters are escaped inside the backtick
 /// token; the emitted form remains a single ordinary symbol to the reader.
 fn write_math_char(buf: &mut String, ch: char) {
-    if ch.is_control() {
+    if ch.is_ascii_whitespace() || ch.is_control() {
         // A raw C0, C1, or DEL character is not a parseable LaTeX atom. Use
         // decimal \\char syntax and retain a source-space terminator so a
         // following digit cannot be consumed as part of the character code.
@@ -2418,9 +2429,11 @@ fn script_base_char(arena: &AstArena, id: NodeId) -> Option<char> {
 fn write_script_base_token(buf: &mut String, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Identifier(sid) => {
-            let ch = arena.str_val(sid).chars().next();
-            if ch.is_some_and(|ch| ch.is_ascii()) {
-                write_symbol(buf, arena, SymbolKind::Ordinary, sid);
+            let text = arena.str_val(sid);
+            if text.is_ascii() {
+                // Identifier spelling is independent of the math class
+                // carried by an explicit Symbol from the character primitive.
+                write_symbol_spelling(buf, SymbolKind::Ordinary, text);
             } else {
                 write_identifier(buf, arena, sid);
             }

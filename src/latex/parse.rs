@@ -215,6 +215,20 @@ fn is_nary_body_boundary(input: &str) -> bool {
         || strip_control_word(input, "right").is_some()
 }
 
+/// A bare character in the math parser would not reconstruct an ordinary
+/// symbol made by TeX's character primitive.
+pub(crate) fn ascii_ordinary_needs_char(ch: char) -> bool {
+    if !ch.is_ascii() {
+        return false;
+    }
+    if SYMBOL_BYTES.contains(&(ch as u8)) {
+        return classify_char(ch) != SymbolKind::Ordinary;
+    }
+    // The symbol writer already emits literal control symbols for these
+    // four, and the math reader accepts a backtick as an ordinary atom.
+    !matches!(ch, '#' | '$' | '%' | '&' | '`')
+}
+
 fn classify_char(c: char) -> SymbolKind {
     match c {
         '+' | '-' | '*' => SymbolKind::BinaryOp,
