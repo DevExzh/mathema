@@ -221,7 +221,7 @@ fn write_script_node_with_next(
                 write_node(buf, arena, base);
                 return;
             }
-            write_script_base(buf, arena, base);
+            write_postscript_base(buf, arena, base);
             buf.push('_');
             write_script_arg(buf, arena, sub, next);
         },
@@ -230,7 +230,7 @@ fn write_script_node_with_next(
                 write_node(buf, arena, base);
                 return;
             }
-            write_script_base(buf, arena, base);
+            write_postscript_base(buf, arena, base);
             buf.push('^');
             write_script_arg(buf, arena, sup, next);
         },
@@ -241,7 +241,7 @@ fn write_script_node_with_next(
                 write_node(buf, arena, base);
                 return;
             }
-            write_script_base(buf, arena, base);
+            write_postscript_base(buf, arena, base);
             if !sub_empty {
                 buf.push('_');
                 // The subscript argument is always followed by the `^` marker, so
@@ -255,6 +255,53 @@ fn write_script_node_with_next(
         },
         _ => write_node(buf, arena, id),
     }
+}
+
+/// Bracing an operator before its scripts turns it into an ordinary TeX
+/// group. Write the operator token directly so its requested limit policy
+/// stays in effect. A side-scripted compound operator needs explicit nolimits.
+fn write_postscript_base(buf: &mut String, arena: &AstArena, base: NodeId) {
+    match *arena.node(base) {
+        CompactNode::Operator { .. } => write_node(buf, arena, base),
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            ..
+        } => {
+            write_node(buf, arena, base);
+            buf.push_str("\\nolimits");
+        },
+        _ => write_script_base(buf, arena, base),
+    }
+}
+
+fn write_compound_limits(
+    buf: &mut String,
+    arena: &AstArena,
+    base: NodeId,
+    lower: NodeId,
+    upper: NodeId,
+    movable: bool,
+) -> bool {
+    if !matches!(
+        *arena.node(base),
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            ..
+        }
+    ) {
+        return false;
+    }
+    write_node(buf, arena, base);
+    if !movable {
+        buf.push_str("\\limits");
+    }
+    for (marker, limit) in [('_', lower), ('^', upper)] {
+        if !is_effectively_empty_arg(arena, limit) {
+            buf.push(marker);
+            write_script_arg(buf, arena, limit, None);
+        }
+    }
+    true
 }
 
 /// Write a script argument.  Digit sequences are always braced so that a
@@ -744,7 +791,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push('_');
                 write_always_braced(buf, arena, sub);
             } else {
-                write_script_base(buf, arena, base);
+                write_postscript_base(buf, arena, base);
                 buf.push('_');
                 write_braced(buf, arena, sub);
             }
@@ -760,7 +807,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push('^');
                 write_always_braced(buf, arena, sup);
             } else {
-                write_script_base(buf, arena, base);
+                write_postscript_base(buf, arena, base);
                 buf.push('^');
                 write_braced(buf, arena, sup);
             }
@@ -784,7 +831,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                     write_always_braced(buf, arena, sup);
                 }
             } else {
-                write_script_base(buf, arena, base);
+                write_postscript_base(buf, arena, base);
                 if !sub_empty {
                     buf.push('_');
                     write_braced(buf, arena, sub);
@@ -839,8 +886,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Overscript {
             base,
             over,
-            movable_limits: _,
+            movable_limits,
         } => {
+            if write_compound_limits(buf, arena, base, NodeId::NONE, over, movable_limits) {
+                return;
+            }
             if is_line_symbol(arena, over) {
                 buf.push_str("\\overline{");
                 write_wrapped_content(buf, arena, base);
@@ -861,8 +911,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         CompactNode::Underscript {
             base,
             under,
-            movable_limits: _,
+            movable_limits,
         } => {
+            if write_compound_limits(buf, arena, base, under, NodeId::NONE, movable_limits) {
+                return;
+            }
             if is_line_symbol(arena, under) {
                 buf.push_str("\\underline{");
                 write_wrapped_content(buf, arena, base);
@@ -884,8 +937,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             base,
             under,
             over,
-            movable_limits: _,
+            movable_limits,
         } => {
+            if write_compound_limits(buf, arena, base, under, over, movable_limits) {
+                return;
+            }
             buf.push_str("\\underset{");
             write_wrapped_content(buf, arena, under);
             buf.push_str("}{\\overset{");

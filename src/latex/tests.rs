@@ -54,11 +54,14 @@ fn named_operator_limit_styles_reach_mathml() {
         (
             DisplayStyle::Inline,
             [
-                (r"\lim_{x\to0}f(x)", "<msub>"),
+                (r"\lim_{x\to0}f(x)", r#"<munder><mo movablelimits="true">"#),
                 (r"\sin_{x\to0}f(x)", "<msub>"),
                 (r"\operatorname{lim}_{x\to0}f(x)", "<msub>"),
                 (r"\operatorname{lim}\limits_{x\to0}f(x)", "<msub>"),
-                (r"\operatorname*{lim}_{x\to0}f(x)", "<msub>"),
+                (
+                    r"\operatorname*{lim}_{x\to0}f(x)",
+                    r#"<munder><mo movablelimits="true">"#,
+                ),
                 (r"\operatorname*{lim}\limits_{x\to0}f(x)", "<munder>"),
                 (r"\lim\limits_{x\to0}f(x)", "<munder>"),
                 (r"\lim\nolimits_{x\to0}f(x)", "<msub>"),
