@@ -903,14 +903,9 @@ fn write_node_in(
                 write_node_in(w, content, single_argument, display_style)
             }
         },
-        MathNode::StructuredOperator { content, form } => write_structured_operator_group(
-            w,
-            content,
-            form.limit_style(),
-            form.is_starred(),
-            false,
-            display_style,
-        ),
+        MathNode::StructuredOperator { content, form } => {
+            write_structured_operator_group(w, content, *form, false, display_style)
+        },
     }
 }
 
@@ -1149,14 +1144,9 @@ fn write_limit_base(
             atom_type: MathAtomType::Op,
             content,
         } => write_atom_group(w, content, "OP", movable, display_style),
-        MathNode::StructuredOperator { content, form } => write_structured_operator_group(
-            w,
-            content,
-            form.limit_style(),
-            form.is_starred(),
-            movable,
-            display_style,
-        ),
+        MathNode::StructuredOperator { content, form } => {
+            write_structured_operator_group(w, content, *form, movable, display_style)
+        },
         MathNode::Symbol(SymbolKind::LargeOp, text) if movable => {
             if let Some(ch) = single_operator_char(text) {
                 write_mo_char(w, ch, Some(true))
@@ -1206,20 +1196,19 @@ fn write_atom_group(
         .map_err(to_err)
 }
 
-fn structured_operator_marker(limits: LimitStyle, starred: bool) -> &'static str {
-    match (starred, limits) {
-        (true, LimitStyle::Default) => "starred-default",
-        (true, LimitStyle::AboveBelow) => "starred-limits",
-        (true, LimitStyle::SubSup) => "starred-nolimits",
-        (false, _) => "unstarred",
+fn structured_operator_marker(form: OperatorNameForm) -> &'static str {
+    match form {
+        OperatorNameForm::Unstarred => "unstarred",
+        OperatorNameForm::Starred(LimitStyle::Default) => "starred-default",
+        OperatorNameForm::Starred(LimitStyle::AboveBelow) => "starred-limits",
+        OperatorNameForm::Starred(LimitStyle::SubSup) => "starred-nolimits",
     }
 }
 
 fn write_structured_operator_group(
     w: &mut XmlWriter,
     content: &MathNode,
-    limits: LimitStyle,
-    starred: bool,
+    form: OperatorNameForm,
     movable: bool,
     display_style: MathStyle,
 ) -> Result<()> {
@@ -1227,7 +1216,7 @@ fn write_structured_operator_group(
     group.push_attribute(("data-mjx-texclass", "OP"));
     group.push_attribute((
         "data-mathema-structured-operator",
-        structured_operator_marker(limits, starred),
+        structured_operator_marker(form),
     ));
     if movable {
         group.push_attribute(("data-mathema-limits", "movable"));
@@ -1892,15 +1881,9 @@ fn write_node_fast_in(
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
         },
-        CompactNode::StructuredOperator { content, form } => write_structured_operator_group_fast(
-            buf,
-            arena,
-            content,
-            form.limit_style(),
-            form.is_starred(),
-            false,
-            display_style,
-        ),
+        CompactNode::StructuredOperator { content, form } => {
+            write_structured_operator_group_fast(buf, arena, content, form, false, display_style)
+        },
     }
 }
 
@@ -1979,18 +1962,16 @@ impl ScriptBase {
                     base_movable: movable,
                 }
             },
-            Self::Structured(style) => ScriptPlacement {
-                stacked: match (style, under_over) {
-                    (LimitStyle::AboveBelow, _) => true,
-                    (LimitStyle::Default, Some(movable)) => !movable || display.is_display(),
-                    (LimitStyle::Default, None) => display.is_display(),
-                    (LimitStyle::SubSup, _) => false,
-                },
-                base_movable: match style {
-                    LimitStyle::AboveBelow => Some(false),
+            Self::Structured(style) => {
+                let movable = under_over.or(match style {
                     LimitStyle::Default => Some(true),
-                    _ => None,
-                },
+                    LimitStyle::AboveBelow => Some(false),
+                    LimitStyle::SubSup => None,
+                });
+                ScriptPlacement {
+                    stacked: movable.is_some_and(|moves| !moves || display.is_display()),
+                    base_movable: movable,
+                }
             },
             Self::OperatorGroup => ScriptPlacement {
                 stacked: under_over.is_some_and(|movable| !movable || display.is_display()),
@@ -2314,15 +2295,9 @@ fn write_limit_base_fast(
             atom_type: MathAtomType::Op,
             content,
         } => write_atom_group_fast(buf, arena, content, "OP", movable, display_style),
-        CompactNode::StructuredOperator { content, form } => write_structured_operator_group_fast(
-            buf,
-            arena,
-            content,
-            form.limit_style(),
-            form.is_starred(),
-            movable,
-            display_style,
-        ),
+        CompactNode::StructuredOperator { content, form } => {
+            write_structured_operator_group_fast(buf, arena, content, form, movable, display_style)
+        },
         CompactNode::Symbol(SymbolKind::LargeOp, sid) if movable => {
             if let Some(ch) = single_operator_char(arena.str_val(sid)) {
                 write_mo_char_fast(buf, ch, Some(true));
@@ -2366,14 +2341,13 @@ fn write_structured_operator_group_fast(
     buf: &mut XmlBuffer,
     arena: &AstArena,
     content: NodeId,
-    limits: LimitStyle,
-    starred: bool,
+    form: OperatorNameForm,
     movable: bool,
     display_style: MathStyle,
 ) {
     buf.push_str(r#"<mrow data-mjx-texclass="OP""#);
     buf.push_str(r#" data-mathema-structured-operator=""#);
-    buf.push_str(structured_operator_marker(limits, starred));
+    buf.push_str(structured_operator_marker(form));
     buf.push('"');
     if movable {
         buf.push_str(r#" data-mathema-limits="movable""#);

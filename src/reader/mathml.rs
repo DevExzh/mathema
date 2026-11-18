@@ -874,22 +874,7 @@ impl<'a> MathmlCompactParser<'a> {
                         .push_node(CompactNode::Reflect { content, text_mode }))
                 } else if let Some(atom_type) = attrs.atom_type {
                     let content = self.flatten_ids(&children);
-                    if atom_type == MathAtomType::Op {
-                        if let Some((limits, starred)) = attrs.structured_operator {
-                            Ok(self.arena.push_node(CompactNode::StructuredOperator {
-                                content,
-                                form: if starred {
-                                    OperatorNameForm::Starred(limits)
-                                } else {
-                                    OperatorNameForm::Unstarred
-                                },
-                            }))
-                        } else {
-                            Ok(self.marked_atom(atom_type, content, attrs.movable_limits))
-                        }
-                    } else {
-                        Ok(self.marked_atom(atom_type, content, attrs.movable_limits))
-                    }
+                    Ok(self.marked_atom(atom_type, content, &attrs))
                 } else {
                     let span = self.arena.push_children_deferred(&children);
                     Ok(self.arena.push_node(CompactNode::Row(span)))
@@ -1265,11 +1250,23 @@ impl<'a> MathmlCompactParser<'a> {
         }
     }
 
-    fn marked_atom(&mut self, atom_type: MathAtomType, content: NodeId, movable: bool) -> NodeId {
+    fn marked_atom(
+        &mut self,
+        atom_type: MathAtomType,
+        content: NodeId,
+        attrs: &MrowAttributes,
+    ) -> NodeId {
+        if atom_type == MathAtomType::Op
+            && let Some(form) = attrs.structured_operator
+        {
+            return self
+                .arena
+                .push_node(CompactNode::StructuredOperator { content, form });
+        }
         let id = self
             .arena
             .push_node(CompactNode::MathAtom { atom_type, content });
-        if movable && atom_type == MathAtomType::Op {
+        if attrs.movable_limits && atom_type == MathAtomType::Op {
             self.movable_limit_operators.insert(id, true);
         }
         id
@@ -1285,22 +1282,7 @@ impl<'a> MathmlCompactParser<'a> {
                 let attrs = mrow_attributes(start);
                 let empty = self.empty_row();
                 Ok(if let Some(atom_type) = attrs.atom_type {
-                    if atom_type == MathAtomType::Op {
-                        if let Some((limits, starred)) = attrs.structured_operator {
-                            self.arena.push_node(CompactNode::StructuredOperator {
-                                content: empty,
-                                form: if starred {
-                                    OperatorNameForm::Starred(limits)
-                                } else {
-                                    OperatorNameForm::Unstarred
-                                },
-                            })
-                        } else {
-                            self.marked_atom(atom_type, empty, attrs.movable_limits)
-                        }
-                    } else {
-                        self.marked_atom(atom_type, empty, attrs.movable_limits)
-                    }
+                    self.marked_atom(atom_type, empty, &attrs)
                 } else {
                     empty
                 })
@@ -1615,25 +1597,24 @@ impl<'a> MathmlCompactParser<'a> {
                 Some(self.arena.push_node(node))
             },
             CompactNode::StructuredOperator { content, form } => {
-                let starred = form.is_starred();
-                let old_limits = form.limit_style();
-                let limits = if stacked {
-                    if starred && old_limits == LimitStyle::Default {
-                        LimitStyle::Default
-                    } else {
+                let expected_stacked = match form.limit_style() {
+                    LimitStyle::AboveBelow => true,
+                    LimitStyle::Default => self.style_display,
+                    LimitStyle::SubSup => false,
+                };
+                // A movable operator legitimately uses msub in inline MathML.
+                // Keep its original form when the visible placement agrees.
+                if expected_stacked != stacked {
+                    let effective = if stacked {
                         LimitStyle::AboveBelow
-                    }
-                } else {
-                    LimitStyle::SubSup
-                };
-                *self.arena.node_mut(base) = CompactNode::StructuredOperator {
-                    content,
-                    form: if starred {
-                        OperatorNameForm::Starred(limits)
                     } else {
-                        OperatorNameForm::Unstarred
-                    },
-                };
+                        LimitStyle::SubSup
+                    };
+                    *self.arena.node_mut(base) = CompactNode::StructuredOperator {
+                        content,
+                        form: OperatorNameForm::Starred(effective),
+                    };
+                }
                 Some(self.make_script_pair(base, sub, sup))
             },
             CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
@@ -2095,7 +2076,7 @@ struct MrowAttributes {
     reflect: Option<String>,
     style: Option<String>,
     atom_type: Option<MathAtomType>,
-    structured_operator: Option<(LimitStyle, bool)>,
+    structured_operator: Option<OperatorNameForm>,
     movable_limits: bool,
     explicit_text_size: bool,
 }
@@ -2128,10 +2109,10 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
             },
             "data-mathema-structured-operator" => {
                 result.structured_operator = match unescape_attr(&attr.value).as_str() {
-                    "starred-default" => Some((LimitStyle::Default, true)),
-                    "starred-limits" => Some((LimitStyle::AboveBelow, true)),
-                    "starred-nolimits" => Some((LimitStyle::SubSup, true)),
-                    "unstarred" => Some((LimitStyle::SubSup, false)),
+                    "starred-default" => Some(OperatorNameForm::Starred(LimitStyle::Default)),
+                    "starred-limits" => Some(OperatorNameForm::Starred(LimitStyle::AboveBelow)),
+                    "starred-nolimits" => Some(OperatorNameForm::Starred(LimitStyle::SubSup)),
+                    "unstarred" => Some(OperatorNameForm::Unstarred),
                     _ => None,
                 };
             },
@@ -3329,6 +3310,50 @@ mod tests {
                 .unwrap()
                 .contains(r"\begin{smallmatrix}")
         );
+    }
+
+    #[test]
+    fn mathml_preserves_an_operator_names_form_across_display_modes() {
+        for (src, expected) in [
+            (r"\operatorname{\overline{x}}", OperatorNameForm::Unstarred),
+            (
+                r"\operatorname*{\overline{x}}",
+                OperatorNameForm::Starred(LimitStyle::Default),
+            ),
+            (
+                r"\operatorname*{\overline{x}}\limits",
+                OperatorNameForm::Starred(LimitStyle::AboveBelow),
+            ),
+            (
+                r"\operatorname*{\overline{x}}\nolimits",
+                OperatorNameForm::Starred(LimitStyle::SubSup),
+            ),
+        ] {
+            for mode in [DisplayStyle::Inline, DisplayStyle::Block] {
+                let cfg = Config::default().with_display(mode);
+                let parsed = crate::from_latex_with(&format!("{src}_i^j"), &cfg).unwrap();
+                let xml = parsed.to_mathml().unwrap();
+                let imported = crate::from_mathml(&xml).unwrap();
+                assert!(
+                    matches!(&imported.expr().nodes[..], [MathNode::SubSup { base, .. }]
+                    if matches!(base.as_ref(), MathNode::StructuredOperator { form, .. } if *form == expected)),
+                    "{src}: {xml}"
+                );
+                assert_eq!(
+                    parsed.to_latex().unwrap(),
+                    imported.to_latex().unwrap(),
+                    "{src}"
+                );
+            }
+        }
+        let xml = r#"<math><mrow data-mjx-texclass="OP" data-mathema-structured-operator="starred-default"/></math>"#;
+        assert!(matches!(
+            &crate::from_mathml(xml).unwrap().expr().nodes[..],
+            [MathNode::StructuredOperator {
+                form: OperatorNameForm::Starred(LimitStyle::Default),
+                ..
+            }]
+        ));
     }
 
     #[test]
