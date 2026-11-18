@@ -748,6 +748,29 @@ fn smallmatrix_macros_keep_their_environment_and_cell_scopes() {
 }
 
 #[test]
+fn literal_smallmatrix_rewrite_respects_strict_limits_and_raw_tokens() {
+    let deep = format!(
+        r"\begin{{psmallmatrix}}{}x{}\end{{psmallmatrix}}",
+        "{".repeat(160),
+        "}".repeat(160)
+    );
+    let depth = Config::default().with_max_depth(8);
+    assert!(LatexReader::parse_compact(&deep, &depth).is_err());
+
+    let oversized = r"\begin{psmallmatrix}a\end{psmallmatrix}";
+    let input_limit = Config::default().with_max_input_bytes(Some(16));
+    assert!(LatexReader::parse_compact(oversized, &input_limit).is_err());
+
+    let verb = r"\begin{psmallmatrix}\verb|\begin{psmallmatrix}|a\end{psmallmatrix}";
+    assert!(crate::from_latex_with(verb, &Config::default()).is_ok());
+    let text = r"\text{\begin{psmallmatrix}}";
+    assert!(crate::from_latex_with(text, &Config::default()).is_err());
+    let unknown = r"\begin{psmallmatrix}\unknown a\end{psmallmatrix}";
+    let strict = Config::default().with_strictness(Strictness::Strict);
+    assert!(crate::from_latex_with(unknown, &strict).is_ok());
+}
+
+#[test]
 fn environment_names_expand_before_fence_and_cell_scope_selection() {
     for (source, explicit) in [
         (
