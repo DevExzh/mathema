@@ -1033,11 +1033,16 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // always braced: `{}^{6}6`, not `{}^66`.
             let bare_space_base = match *arena.node(base) {
                 CompactNode::Space(width) => width.num != 0,
-                CompactNode::Symbol(_, sid) => arena
-                    .str_val(sid)
-                    .chars()
-                    .next()
-                    .is_some_and(|ch| crate::unicode::math_space_width(ch).is_some()),
+                CompactNode::Symbol(_, sid) => {
+                    arena.str_val(sid).chars().next().is_some_and(|ch| {
+                        arena.str_val(sid).chars().count() == 1
+                            && crate::unicode::math_space_width(ch).is_some()
+                    })
+                },
+                CompactNode::MathAtom {
+                    atom_type: MathAtomType::Ord,
+                    content,
+                } => authored_math_space_symbol(arena, content).is_some(),
                 _ => false,
             };
             if bare_space_base {
@@ -1633,6 +1638,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push('}');
         },
         CompactNode::MathAtom { atom_type, content } => {
+            if atom_type == MathAtomType::Ord
+                && let Some(text) = authored_math_space_symbol(arena, content)
+            {
+                write_literal_math_char(buf, text);
+                return;
+            }
             if atom_type == MathAtomType::Op {
                 write_math_atom_op(buf, arena, content, true);
                 return;
@@ -2039,6 +2050,27 @@ fn write_math_char(buf: &mut String, ch: char) {
         buf.push('\\');
     }
     buf.push(ch);
+}
+
+/// Emit an authored `\char` glyph rather than converting Unicode math-space
+/// characters to TeX glue. The terminator keeps decimal character terminals
+/// from consuming a following digit or letter.
+fn write_literal_math_char(buf: &mut LatexBuffer, ch: char) {
+    buf.push_str("\\char");
+    buf.push_str(&(ch as u32).to_string());
+    buf.push(' ');
+}
+
+fn authored_math_space_symbol(arena: &AstArena, id: NodeId) -> Option<char> {
+    match *arena.node(id) {
+        CompactNode::Symbol(SymbolKind::Ordinary, sid) => {
+            let text = arena.str_val(sid);
+            (text.chars().count() == 1)
+                .then(|| text.chars().next().unwrap())
+                .filter(|ch| crate::unicode::math_space_width(*ch).is_some())
+        },
+        _ => None,
+    }
 }
 
 fn write_space(buf: &mut String, r: Rational) {
