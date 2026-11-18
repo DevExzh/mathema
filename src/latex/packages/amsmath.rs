@@ -21,6 +21,7 @@ pub const MACROS: &[(&str, u8, &str)] = &[
     ("varliminf", 0, r"\mathop{\underline{\lim}}"),
     ("varinjlim", 0, r"\mathop{\underrightarrow{\lim}}"),
     ("varprojlim", 0, r"\mathop{\underleftarrow{\lim}}"),
+    ("plim", 0, r"\mathop{\operatorname{plim}}\limits"),
 ];
 
 /// Symbol entries contributed by `amsmath`: none.

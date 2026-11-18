@@ -612,7 +612,7 @@ static OPERATOR_COMMANDS: phf::Set<&'static str> = phf_set! {
     "arcsin", "arccos", "arctan",
     "sinh", "cosh", "tanh", "coth",
     "log", "ln", "lg", "exp",
-    "lim", "liminf", "limsup", "injlim", "projlim", "plim",
+    "lim", "liminf", "limsup", "injlim", "projlim",
     "sup", "inf", "min", "max",
     "det", "dim", "ker", "hom", "arg", "deg",
     "gcd", "lcm", "sgn",
@@ -621,7 +621,7 @@ static OPERATOR_COMMANDS: phf::Set<&'static str> = phf_set! {
 };
 
 static LIMIT_OPERATORS: phf::Set<&'static str> = phf_set! {
-    "lim", "liminf", "limsup", "injlim", "projlim", "plim",
+    "lim", "liminf", "limsup", "injlim", "projlim",
     "lim\u{2009}sup", "lim\u{2009}inf", "inj\u{2009}lim", "proj\u{2009}lim",
     "sup", "inf", "min", "max", "det", "gcd", "Pr", "argmax", "argmin",
 };
@@ -822,7 +822,7 @@ mod tests {
 
     #[test]
     fn compound_limit_aliases_are_named_limit_operators() {
-        for name in ["limsup", "liminf", "injlim", "projlim", "plim"] {
+        for name in ["limsup", "liminf", "injlim", "projlim"] {
             assert!(is_operator_command(name), "{name}");
             assert!(operator_has_limits(name), "{name}");
         }
