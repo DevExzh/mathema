@@ -457,6 +457,7 @@ fn contains_structured_operator_command(raw: &str) -> bool {
     }
     let commands = [
         "overline",
+        "bar",
         "underline",
         "underrightarrow",
         "underleftarrow",
@@ -478,6 +479,8 @@ fn contains_structured_operator_command(raw: &str) -> bool {
         "mathscr",
         "mathfrak",
         "text",
+        "textcolor",
+        "color",
     ];
     let bytes = raw.as_bytes();
     let mut i = 0;
