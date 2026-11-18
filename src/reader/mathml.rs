@@ -696,8 +696,14 @@ impl<'a> MathmlCompactParser<'a> {
         let name = text.trim();
         // Multi-letter operator tokens and explicitly named operators
         // are distinct from ordinary identifiers in <mi>.
-        let attrs = operator_attributes(start, self.fence_depth == Some(self.depth));
-        if attrs.non_fence && is_vertical_bar(name) {
+        let mark_fences = self.fence_depth == Some(self.depth);
+        let vertical_line = matches!(name, "|" | "‖");
+        let attrs = operator_attributes(start, mark_fences || vertical_line);
+        if vertical_line
+            && attrs.non_fence
+            && attrs.fixed_literal
+            && attrs.form == FenceRole::Inferred
+        {
             kind = SymbolKind::Ordinary;
         }
         let movable = attrs.movable_limits;
@@ -723,9 +729,10 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
-        if attrs.fenced {
+        if mark_fences && attrs.fenced {
             self.fence_marks.push((id, attrs.fence_role()));
-        } else if attrs.fixed_literal
+        } else if mark_fences
+            && attrs.fixed_literal
             && !attrs.constrained
             && attrs.form == FenceRole::Inferred
             && is_vertical_bar(name)
@@ -1792,13 +1799,11 @@ fn operator_attributes(
     let mut result = OperatorAttributes::default();
     for attr in start.attributes().flatten() {
         match attr.key.as_ref() {
-            "fence" => {
+            "fence" if inspect_fences => {
                 let value = fence_attr_value(&attr.value);
                 let value = value.trim();
                 result.non_fence = value.eq_ignore_ascii_case("false");
-                if inspect_fences {
-                    result.fenced = value.eq_ignore_ascii_case("true");
-                }
+                result.fenced = value.eq_ignore_ascii_case("true");
             },
             "stretchy" if inspect_fences => {
                 let value = fence_attr_value(&attr.value);
@@ -1985,9 +1990,8 @@ fn classify_mo(text: &str) -> SymbolKind {
         | '\u{2218}' | '*' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' | '\u{2248}' | '\u{2261}'
         | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}' | '\u{2208}' | '\u{2223}'
-        | '\u{2192}' | '\u{2190}' | '\u{21A4}' | '\u{21A6}' | '\u{21D2}' | '\u{21D0}' => {
-            SymbolKind::Relation
-        },
+        | '\u{2225}' | '\u{2192}' | '\u{2190}' | '\u{21A4}' | '\u{21A6}' | '\u{21D2}'
+        | '\u{21D0}' => SymbolKind::Relation,
         '(' | '[' | '{' | '\u{27E8}' | '\u{230A}' | '\u{2308}' => SymbolKind::Open,
         ')' | ']' | '}' | '\u{27E9}' | '\u{230B}' | '\u{2309}' => SymbolKind::Close,
         ',' | ';' => SymbolKind::Punctuation,
@@ -2929,6 +2933,27 @@ mod tests {
                 [MathNode::Fenced { .. }]
             ));
         }
+    }
+
+    #[test]
+    fn non_fence_attributes_preserve_divides_and_parallel_relations() {
+        for glyph in ["∣", "∥"] {
+            for attrs in [
+                "",
+                r#" fence="false""#,
+                r#" fence="false" stretchy="false""#,
+            ] {
+                let xml = format!("<math><mo{attrs}>{glyph}</mo></math>");
+                assert!(
+                    matches!(parse_one(&xml), MathNode::Symbol(SymbolKind::Relation, _)),
+                    "{xml}"
+                );
+            }
+        }
+        assert!(matches!(
+            parse_one(r#"<math><mo fence="false" stretchy="false">|</mo></math>"#),
+            MathNode::Symbol(SymbolKind::Ordinary, _)
+        ));
     }
 
     #[test]

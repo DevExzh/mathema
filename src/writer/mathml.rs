@@ -347,7 +347,8 @@ fn write_node_in(
         MathNode::Operator(attr) => write_named_operator(w, &attr.name, attr.limit_style),
         MathNode::Symbol(kind, s) => {
             let mut elem = BytesStart::new("mo");
-            let ordinary_literal_bar = *kind == SymbolKind::Ordinary && is_literal_fence_glyph(s);
+            let ordinary_literal_bar =
+                *kind == SymbolKind::Ordinary && matches!(s.as_str(), "|" | "‖");
             match kind {
                 SymbolKind::LargeOp => {
                     elem.push_attribute(("largeop", "true"));
@@ -2083,7 +2084,7 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
 
 fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
     buf.push_str("<mo");
-    let ordinary_literal_bar = kind == SymbolKind::Ordinary && is_literal_fence_glyph(s);
+    let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
     match kind {
         SymbolKind::LargeOp => buf.push_str(" largeop=\"true\""),
         SymbolKind::Fence => buf.push_str(" fence=\"true\""),
