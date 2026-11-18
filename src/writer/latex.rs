@@ -65,7 +65,10 @@ fn write_node_slice(
             // new fence atom, which changes the spelling on the second write.
             // The empty base is already implicit at this boundary, so retain
             // just the markers and their arguments.
-            if i > 0 && matches!(*arena.node(children[i - 1]), CompactNode::Middle(_)) {
+            if i > 0
+                && (matches!(*arena.node(children[i - 1]), CompactNode::Middle(_))
+                    || is_escaped_brace_symbol(arena, children[i - 1]))
+            {
                 write_empty_base_script_markers(buf, arena, id, next);
             } else {
                 write_standalone_empty_base_script(buf, arena, id, next);
@@ -192,6 +195,17 @@ fn write_node_slice(
         ends_with_command = appended_ends_with_letter_command(buf, output_start, ends_with_command);
         i += 1;
     }
+}
+
+/// A literal brace is already emitted as a control sequence (`\{`/`\}`).
+/// An explicit empty script base after it changes how the next parser pass
+/// attaches the script, so keep only the script marker here.
+fn is_escaped_brace_symbol(arena: &AstArena, id: NodeId) -> bool {
+    matches!(
+        *arena.node(id),
+        CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close, sid)
+            if matches!(arena.str_val(sid), "{" | "}")
+    )
 }
 
 /// True if the node is, or its LaTeX ends with, a Nary operator with an
@@ -2340,6 +2354,9 @@ fn is_empty_row(arena: &AstArena, id: NodeId) -> bool {
 fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
     is_empty_row(arena, id)
         || matches!(*arena.node(id), CompactNode::Space(width) if width.num == 0)
+        || matches!(*arena.node(id), CompactNode::Color { color, content }
+            if latex_color(arena.str_val(color)).is_none()
+                && is_effectively_empty_arg(arena, content))
 }
 
 /// Check if a Nary body is effectively empty (empty Row, zero-width Space, or
