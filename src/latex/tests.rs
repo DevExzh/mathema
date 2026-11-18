@@ -2022,6 +2022,60 @@ fn operatorname_special_content_round_trips_through_public_apis() {
 }
 
 #[test]
+fn structured_operatorname_decorations_preserve_operator_semantics() {
+    for (structured, native, marker) in [
+        (r"\operatorname*{\overline{lim}}", r"\varlimsup", "mover"),
+        (r"\operatorname*{\underline{lim}}", r"\varliminf", "munder"),
+        (
+            r"\operatorname*{\underrightarrow{lim}}",
+            r"\varinjlim",
+            "munder",
+        ),
+        (
+            r"\operatorname*{\underleftarrow{lim}}",
+            r"\varprojlim",
+            "munder",
+        ),
+    ] {
+        for suffix in ["", "_n x", r"\limits_n x", r"\nolimits_n x"] {
+            let source = format!("{structured}{suffix}");
+            let expected = format!("{native}{suffix}");
+            let source_mathml =
+                crate::convert(&source, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+            let expected_mathml =
+                crate::convert(&expected, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+            assert!(source_mathml.contains(marker), "{source}: {source_mathml}");
+            assert!(source_mathml.contains("lim"), "{source}: {source_mathml}");
+            assert_eq!(
+                crate::from_mathml(&source_mathml)
+                    .unwrap()
+                    .to_mathml()
+                    .unwrap(),
+                source_mathml,
+                "MathML was not stable for {source}"
+            );
+            assert_eq!(source_mathml, expected_mathml, "{source} vs {expected}");
+        }
+    }
+
+    for source in [
+        r"\operatorname*{\overline{rate}}",
+        r"\operatorname{\underline{rate}}_i x",
+        r"\operatorname*{\overline{\frac{a}{b}}}",
+    ] {
+        let first = crate::convert(source, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{source}");
+        let mathml = crate::convert(source, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert_eq!(
+            mathml,
+            crate::from_mathml(&mathml).unwrap().to_mathml().unwrap(),
+            "MathML was not stable for {source}"
+        );
+    }
+}
+
+#[test]
 fn nary_body_boundaries_allow_missing_bodies_and_propagate_errors() {
     let config = Config::default();
     for input in [
