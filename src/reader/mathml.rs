@@ -3291,7 +3291,10 @@ mod tests {
         );
         assert_eq!(rows.len(), 2);
         let canonical = result.to_latex().unwrap();
-        assert!(canonical.contains(r"\begin{array}{lcr}"), "{canonical}");
+        assert!(
+            canonical.contains(r"\begin{array}{@{}lcr@{}}"),
+            "{canonical}"
+        );
     }
 
     #[test]
