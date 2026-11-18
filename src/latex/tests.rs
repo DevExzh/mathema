@@ -49,6 +49,26 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn canonical_tex_attaches_bounds_to_the_operator_itself() {
+    for (source, canonical) in [
+        (r"\lim_i^j", r"\lim_i^j"),
+        (r"\sin\limits_i^j", r"\sin\limits_i^j"),
+        (
+            r"\operatorname{score}\limits_i^j",
+            r"\operatorname{score}_i^j",
+        ),
+        (r"\mathop{a+b}_i^j", r"\mathop{a+ b}_i^j"),
+        (r"\mathop{a+b}\limits_i^j", r"\mathop{a+ b}\limits_i^j"),
+        (r"\mathop{a+b}\nolimits_i^j", r"\mathop{a+ b}\nolimits_i^j"),
+    ] {
+        let parsed = crate::from_latex(source).unwrap();
+        assert_eq!(parsed.to_latex().unwrap(), canonical, "{source}");
+        let round_trip = crate::from_mathml(&parsed.to_mathml().unwrap()).unwrap();
+        assert_eq!(round_trip.to_latex().unwrap(), canonical, "{source}");
+    }
+}
+
+#[test]
 fn braces_keep_named_and_compound_operator_scripts_at_the_side() {
     for source in [
         r"{\lim}_i",
