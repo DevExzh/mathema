@@ -789,6 +789,11 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             let span = push_children(arena, children);
             arena.push_node(CompactNode::Styled(*style, span))
         },
+        MathNode::Color { color, content } => {
+            let color = arena.push_str(color);
+            let content = push_math_node(arena, content);
+            arena.push_node(CompactNode::Color { color, content })
+        },
         MathNode::MathChoice {
             display,
             text,
@@ -1094,9 +1099,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             script_script: Box::new(reconstruct_node(arena, script_script)),
         },
 
-        // Color wrapper — no MathNode::Color exists, so reconstruct content only.
-        // Color is handled directly in the compact/arena layout paths.
-        CompactNode::Color { content, .. } => reconstruct_node(arena, content),
+        CompactNode::Color { color, content } => MathNode::Color {
+            color: arena.str_val(color).to_owned(),
+            content: Box::new(reconstruct_node(arena, content)),
+        },
 
         CompactNode::MathAtom { atom_type, content } => MathNode::MathAtom {
             atom_type,
@@ -1350,6 +1356,10 @@ mod tests {
                 MathNode::Number("2".into()),
             ]),
             MathNode::Styled(TextStyle::Bold, vec![MathNode::Identifier("x".into())]),
+            MathNode::Color {
+                color: "red".into(),
+                content: Box::new(MathNode::Identifier("y".into())),
+            },
         ]));
     }
 

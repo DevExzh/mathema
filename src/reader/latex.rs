@@ -441,7 +441,13 @@ mod tests {
     #[test]
     fn textcolor() {
         let node = parse_one("\\textcolor{blue}{x}");
-        assert!(matches!(node, MathNode::Identifier(_)));
+        assert_eq!(
+            node,
+            MathNode::Color {
+                color: "blue".into(),
+                content: Box::new(MathNode::Identifier("x".into())),
+            }
+        );
     }
 
     #[test]
@@ -1081,9 +1087,13 @@ mod tests {
     fn color_shorthand_blue() {
         let nodes = parse("\\blue{x}");
         assert_eq!(nodes.len(), 1);
-        // In the MathNode representation, Color is unwrapped to content
-        // since MathNode doesn't have a Color variant
-        assert!(matches!(nodes[0], MathNode::Identifier(_)));
+        assert_eq!(
+            nodes[0],
+            MathNode::Color {
+                color: "blue".into(),
+                content: Box::new(MathNode::Identifier("x".into())),
+            }
+        );
     }
 
     #[test]
@@ -1091,7 +1101,10 @@ mod tests {
         let nodes = parse("\\red x");
         // Should wrap x in color
         assert!(!nodes.is_empty());
-        // The content should be identifier "x" (Color stripped during reconstruction)
-        assert!(nodes.iter().any(|n| matches!(n, MathNode::Identifier(_))));
+        assert!(matches!(
+            &nodes[..],
+            [MathNode::Color { color, content }]
+                if color == "red" && matches!(content.as_ref(), MathNode::Identifier(x) if x == "x")
+        ));
     }
 }

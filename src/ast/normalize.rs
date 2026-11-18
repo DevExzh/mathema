@@ -17,6 +17,18 @@ pub fn normalize_expr(expr: &mut MathExpr) {
     normalize_nodes_depth(&mut expr.nodes, 0);
 }
 
+/// Match the compact normalizer when a row contains a color name that the
+/// LaTeX writer elides: its content joins the surrounding sequence.
+fn push_row_child(children: &mut Vec<MathNode>, node: MathNode) {
+    match node {
+        MathNode::Color { color, content } if is_unwritable_color(&color) => match *content {
+            MathNode::Row(inner) => children.extend(inner),
+            other => children.push(other),
+        },
+        other => children.push(other),
+    }
+}
+
 fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
     // Phase 1: recursively normalize each child
     for node in nodes.iter_mut() {
@@ -41,9 +53,11 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
             },
             MathNode::Row(children) => {
                 // Flatten
-                flattened.extend(children);
+                for child in children {
+                    push_row_child(&mut flattened, child);
+                }
             },
-            other => flattened.push(other),
+            other => push_row_child(&mut flattened, other),
         }
     }
 
@@ -164,9 +178,11 @@ fn number_decimal_points(text: &str) -> Option<usize> {
 fn is_effectively_empty_math(node: &MathNode) -> bool {
     match node {
         MathNode::Row(children) => children.iter().all(is_effectively_empty_math),
-        // Styled wrappers are the heap representation for transparent
-        // compact wrappers such as an empty color argument.
+        // Empty styled and color wrappers are transparent when they occur as
+        // script arguments. Explicit writable color bases are handled by the
+        // separate empty-base predicate below.
         MathNode::Styled(_, children) => children.iter().all(is_effectively_empty_math),
+        MathNode::Color { content, .. } => is_effectively_empty_math(content),
         MathNode::Scaled { content, .. } => is_effectively_empty_math(content),
         MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
         MathNode::Subscript { base, sub } => {
@@ -241,8 +257,23 @@ fn is_empty_base_script_math(node: &MathNode) -> bool {
         MathNode::Subscript { base, .. }
             | MathNode::Superscript { base, .. }
             | MathNode::SubSup { base, .. }
-            if is_effectively_empty_math(base)
+            if is_empty_script_base_math(base)
     )
+}
+
+/// Whether a heap node is an implicit empty script base. Expressible colors
+/// remain explicit atoms even when their content is empty, matching the
+/// compact writer's color handling.
+fn is_empty_script_base_math(node: &MathNode) -> bool {
+    match node {
+        MathNode::Row(children) => children.iter().all(is_empty_script_base_math),
+        MathNode::Scaled { content, .. } => is_empty_script_base_math(content),
+        MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
+        MathNode::Color { color, content } => {
+            is_unwritable_color(color) && is_empty_script_base_math(content)
+        },
+        _ => false,
+    }
 }
 
 /// True for a node that can serve as the base of a sub/superscript in the
@@ -505,6 +536,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         MathNode::Styled(_, children) => {
             normalize_nodes_depth(children, d);
         },
+        MathNode::Color { content, .. } => normalize_node_depth(content, d),
         MathNode::MathChoice {
             display,
             text,
@@ -1132,43 +1164,28 @@ fn has_direct_style_switch(arena: &AstArena, span: NodeSpan) -> bool {
         .any(|&id| matches!(*arena.node(id), CompactNode::StyleSwitch(_)))
 }
 
-/// Normalize an array/matrix cell. Trims leading/trailing whitespace and
-/// converts any internal row separator (`Newline`) into ordinary space, because
-/// `\\`/`\cr` inside a cell is always interpreted as ending the row on
-/// re-parse. Keeping it as a node makes the written shape flip between
-/// `...t\\ +...` and `...t \\\\ +...`.
+/// Source whitespace is consumed by the parser. Keep authored math spaces,
+/// including edge kerns. A row separator stored as direct cell content
+/// continues to use the writer's horizontal-space fallback.
 fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::Result<NodeId> {
-    let span = match *arena.node(cell_id) {
-        CompactNode::Row(span) => span,
-        _ => return Ok(cell_id),
+    let CompactNode::Row(span) = *arena.node(cell_id) else {
+        return Ok(cell_id);
     };
-    let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
-    let is_ws = |arena: &AstArena, id: NodeId| {
-        matches!(
-            *arena.node(id),
-            CompactNode::Space(_) | CompactNode::Newline
-        )
+    let children = arena.children(span);
+    let Some(first_break) = children
+        .iter()
+        .position(|&id| matches!(arena.node(id), CompactNode::Newline))
+    else {
+        return Ok(cell_id);
     };
-    // Trim leading whitespace.
-    let mut start = 0;
-    while start < children.len() && is_ws(arena, children[start]) {
-        start += 1;
-    }
-    // Trim trailing whitespace.
-    let mut end = children.len();
-    while end > start && is_ws(arena, children[end - 1]) {
-        end -= 1;
-    }
-    let mut new_children: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &child_id in &children[start..end] {
-        if matches!(*arena.node(child_id), CompactNode::Newline) {
-            new_children.push(arena.push_node(CompactNode::Space(Rational::new(1, 4))));
-        } else {
-            new_children.push(child_id);
+    let mut children: SmallVec<[NodeId; 8]> = children.into();
+    for id in &mut children[first_break..] {
+        if matches!(arena.node(*id), CompactNode::Newline) {
+            *id = arena.push_node(CompactNode::Space(Rational::new(1, 4)));
         }
     }
-    let new_span = arena.push_children(&new_children)?;
-    Ok(arena.push_node(CompactNode::Row(new_span)))
+    let span = arena.push_children(&children)?;
+    Ok(arena.push_node(CompactNode::Row(span)))
 }
 
 /// True for color strings that the LaTeX writer cannot emit verbatim inside

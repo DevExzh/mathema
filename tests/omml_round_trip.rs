@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use mathema::ast::visit::{MutVisitor, walk_node_mut};
 use mathema::ast::{ColumnAlign, MathAtomType, MathNode, TextStyle};
 use mathema::reader::Reader;
 use mathema::reader::omml::OmmlReader;
@@ -33,16 +34,40 @@ fn nodes(para: &OmmlParagraph) -> Vec<Vec<MathNode>> {
         .collect()
 }
 
+/// Default OMML export omits host run properties, including foreground color.
+fn drop_expected_colors(nodes: &mut [MathNode]) {
+    struct DropColors;
+    impl MutVisitor for DropColors {
+        fn visit_node_mut(&mut self, node: &mut MathNode) {
+            while let MathNode::Color { content, .. } = node {
+                *node = std::mem::replace(content.as_mut(), MathNode::Row(Vec::new()));
+            }
+            walk_node_mut(self, node);
+        }
+    }
+    for node in nodes {
+        DropColors.visit_node_mut(node);
+    }
+}
+
 /// Read, write, read again and write again: the AST and the markup must be
 /// stable after the first pass, and every output must be schema-shaped.
 fn round_trip(name: &str, options: &OmmlOptions) -> (OmmlParagraph, String) {
     let config = Config::default();
     let source = fixture(name);
     let first = OmmlReader::parse_paragraph(&source, &config).unwrap();
-    let (out1, _) = OmmlWriter::write_paragraph(&first, &config, options).unwrap();
+    let (out1, diagnostics) = OmmlWriter::write_paragraph(&first, &config, options).unwrap();
     check_schema(&out1);
     let second = OmmlReader::parse_paragraph(&out1, &config).unwrap();
-    assert_eq!(nodes(&first), nodes(&second), "{name}: AST changed\n{out1}");
+    let mut expected = nodes(&first);
+    if options.run_properties == OmmlRunProperties::None
+        && diagnostics.iter().any(|d| d.message.contains("run color"))
+    {
+        for equation in &mut expected {
+            drop_expected_colors(equation);
+        }
+    }
+    assert_eq!(expected, nodes(&second), "{name}: AST changed\n{out1}");
     assert_eq!(first.justification, second.justification);
     let (out2, _) = OmmlWriter::write_paragraph(&second, &config, options).unwrap();
     assert_eq!(out1, out2, "{name}: OMML not stable");
@@ -55,6 +80,7 @@ fn find<'a>(node: &'a MathNode, pred: &dyn Fn(&MathNode) -> bool) -> Option<&'a 
     }
     let children: Vec<&MathNode> = match node {
         MathNode::Row(c) | MathNode::Styled(_, c) => c.iter().collect(),
+        MathNode::Color { content, .. } => vec![content],
         MathNode::Fenced { content, .. } => content
             .iter()
             .filter_map(|i| match i {
@@ -234,7 +260,9 @@ fn single_expression_api_round_trips_fixtures() {
         let out1 = <OmmlWriter as mathema::writer::Writer>::write(&first.expr, &config).unwrap();
         check_schema(&out1);
         let second = OmmlReader::parse(&out1, &config).unwrap();
-        assert_eq!(first.expr.nodes, second.expr.nodes, "{name}\n{out1}");
+        let mut expected = first.expr.nodes;
+        drop_expected_colors(&mut expected);
+        assert_eq!(expected, second.expr.nodes, "{name}\n{out1}");
     }
 }
 

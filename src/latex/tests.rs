@@ -49,6 +49,31 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn table_cells_keep_explicit_edge_spacing_and_scoped_groups() {
+    let latex = |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let mathml = |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+    let rows = r"\begin{matrix}p&{\textstyle a\\b}~~\\q&r\end{matrix}";
+    let first = latex(rows);
+    assert_eq!(first, latex(&first));
+    assert_eq!(mathml(rows), mathml(&first));
+    assert_eq!(mathml(rows).matches("<mtr>").count(), 2);
+
+    for (space, expected) in [
+        (r"\kern5pt ", r#"width="0.5em""#),
+        (r"\hskip5pt ", r#"width="0.5em""#),
+        (r"\quad ", r#"width="1em""#),
+        (r"\kern-2pt ", "margin-inline-start:-0.2em"),
+    ] {
+        for cell in [format!("{space}x"), format!("x{space}")] {
+            let source = format!(r"\begin{{array}}{{c}}{cell}\end{{array}}");
+            let xml = mathml(&source);
+            assert!(xml.contains(expected), "{source}: {xml}");
+            assert_eq!(xml, mathml(&latex(&source)));
+        }
+    }
+}
+
+#[test]
 fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
     let config = Config::default().with_display(DisplayStyle::Inline);
 
@@ -3331,6 +3356,37 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
         crate::from_mathml(r#"<math><mrow><mn>1e3</mn><mn>4.5</mn></mrow></math>"#).unwrap();
     let first = non_decimal.to_latex().unwrap();
     assert_eq!(first, "{1e3 4.5}");
+}
+
+#[test]
+fn color_script_empty_arguments_match_heap_and_compact_normalization() {
+    let config = Config::default();
+    for input in [
+        r"A\teal^\teal^2",
+        r"a^{\textcolor{red}{}}",
+        r"a^{\textcolor{red_blue}{}}",
+        r"a{\textcolor{red}{}}^2",
+        r"a{\textcolor{red_blue}{}}^2",
+    ] {
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let compact_latex = LatexWriter::write_compact(&compact, &config).unwrap();
+
+        let mut heap = LatexReader::parse(input, &config).unwrap().expr;
+        normalize_expr(&mut heap);
+        let heap_latex = LatexWriter::write(&heap, &config).unwrap();
+        assert_eq!(compact_latex, heap_latex, "{input}");
+
+        let mut reparsed = LatexReader::parse_compact(&compact_latex, &config)
+            .unwrap()
+            .expr;
+        normalize_compact_expr(&mut reparsed).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed, &config).unwrap(),
+            compact_latex,
+            "{input} compact reimport"
+        );
+    }
 }
 
 #[test]

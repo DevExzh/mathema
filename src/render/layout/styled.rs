@@ -264,6 +264,9 @@ fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> Lay
                 layout_node(&MathNode::Number(mapped), ctx)
             }
         },
+        MathNode::Color { color, content } => {
+            layout_styled_node(style, content, ctx).with_color(color)
+        },
         MathNode::MathChoice {
             display,
             text,
@@ -494,25 +497,18 @@ pub(super) fn layout_actuarial_arena(
 }
 
 pub(super) fn layout_color_arena(
-    ast: &AstArena,
-    color: StrId,
-    content: NodeId,
+    color: &str,
+    child: LayoutBoxId,
     arena: &mut LayoutArena,
-    ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    let color_str = ast.str_val(color).to_owned();
-    let child_id = layout_node_arena(ast, content, arena, ctx);
-    let w = arena.get(child_id).width;
-    let h = arena.get(child_id).height;
-    let d = arena.get(child_id).depth;
-
+    let inner = arena.get(child);
     arena.alloc(ArenaLayoutBox {
-        width: w,
-        height: h,
-        depth: d,
+        width: inner.width,
+        height: inner.height,
+        depth: inner.depth,
         kind: ArenaBoxKind::Color {
-            color: color_str,
-            child: child_id,
+            color: color.to_owned(),
+            child,
         },
     })
 }
@@ -643,6 +639,10 @@ fn layout_styled_node_arena(
                     .collect();
                 layout_text_run_arena(&mapped, arena, ctx, false, None)
             }
+        },
+        CompactNode::Color { color, content } => {
+            let child = layout_styled_node_arena(style, ast, content, arena, ctx);
+            layout_color_arena(ast.str_val(color), child, arena)
         },
         CompactNode::MathChoice {
             display,

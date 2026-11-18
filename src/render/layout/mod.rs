@@ -116,6 +116,18 @@ impl PositionedBox {
 }
 
 impl LayoutBox {
+    fn with_color(self, color: &str) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            depth: self.depth,
+            kind: BoxKind::Color {
+                color: color.to_owned(),
+                child: Box::new(PositionedBox::at_origin(self)),
+            },
+        }
+    }
+
     #[inline]
     pub fn kern(width: f64) -> Self {
         Self {
@@ -637,6 +649,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             }
         },
         MathNode::Styled(style, children) => layout_styled(*style, children, ctx),
+        MathNode::Color { color, content } => layout_node(content, ctx).with_color(color),
         MathNode::MathChoice {
             display,
             text,
@@ -1571,7 +1584,8 @@ fn layout_node_arena(
         },
         CompactNode::Styled(style, span) => layout_styled_arena(ast, style, span, arena, ctx),
         CompactNode::Color { color, content } => {
-            layout_color_arena(ast, color, content, arena, ctx)
+            let child = layout_node_arena(ast, content, arena, ctx);
+            layout_color_arena(ast.str_val(color), child, arena)
         },
         CompactNode::MathChoice {
             display,

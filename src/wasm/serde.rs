@@ -72,4 +72,18 @@ mod tests {
         let roundtrip: MathExpr = serde_json::from_str(&json).unwrap();
         assert_eq!(roundtrip, expr);
     }
+
+    #[test]
+    fn roundtrip_color_via_json() {
+        let expr = MathExpr::new(
+            vec![MathNode::Color {
+                color: "red".into(),
+                content: Box::new(MathNode::Identifier("x".into())),
+            }],
+            DisplayStyle::Inline,
+        );
+        let json = serde_json::to_string(&expr).unwrap();
+        assert!(json.contains("Color"));
+        assert_eq!(serde_json::from_str::<MathExpr>(&json).unwrap(), expr);
+    }
 }
