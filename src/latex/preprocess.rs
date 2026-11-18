@@ -230,7 +230,7 @@ fn prepare_source(input: &str) -> (Cow<'_, str>, bool) {
                         | "@ifnextchar"
                         | "TextOrMath"
                         | "newenvironment"
-                ) || packages::is_builtin_macro_name(name);
+                ) || (name != "plim" && packages::is_builtin_macro_name(name));
             }
             offset = input.len() - rest.len();
         } else {

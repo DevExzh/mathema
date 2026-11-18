@@ -130,4 +130,37 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn plim_direct_path_matches_the_builtin_expansion() {
+        for source in [
+            r"\plim",
+            r"\plim_i x",
+            r"\plim\limits_{n\to\infty}X_n",
+            r"\plim\nolimits_{n\to\infty}X_n",
+            r"x+\plim_{n}y",
+        ] {
+            let explicit = source.replacen(r"\plim", r"\mathop{\operatorname{plim}}\limits", 1);
+            assert_eq!(to_mathml(source), to_mathml(&explicit), "{source}");
+        }
+    }
+
+    #[test]
+    fn plim_definitions_still_use_macro_expansion() {
+        let redefined = crate::convert(
+            r"\newcommand{\plim}{Z}\plim",
+            crate::Format::LaTeX,
+            crate::Format::LaTeX,
+        )
+        .unwrap();
+        assert_eq!(redefined, "Z");
+
+        let let_bound = crate::convert(
+            r"\let\foo\plim\foo_i x",
+            crate::Format::LaTeX,
+            crate::Format::MathML,
+        )
+        .unwrap();
+        assert!(let_bound.contains("plim"), "{let_bound}");
+    }
 }

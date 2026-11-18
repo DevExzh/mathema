@@ -3212,6 +3212,11 @@ impl LatexCompactParser {
             "floor" => self.parse_paired_delim(input, "\u{230A}", "\u{230B}"),
             // `\DeclarePairedDelimiter\cmd{open}{close}` — register a delimiter.
             "DeclarePairedDelimiter" => self.parse_declare_paired_delim(input),
+            // `plim` is a fixed, argument-free builtin. Keep the ordinary
+            // spelling on the parser's zero-copy path. Any definition or
+            // expansion trigger still reaches the package macro table through
+            // `preprocess_cow` before dispatch.
+            "plim" => self.parse_plim(input),
             // --- Fractions ---
             "frac" => self.parse_frac(input, FractionKind::Normal),
             "dfrac" | "cfrac" => self.parse_frac(input, FractionKind::Display),
@@ -3950,6 +3955,17 @@ impl LatexCompactParser {
                 }
             },
         }
+    }
+
+    fn parse_plim<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let name = self.arena.push_str("plim");
+        Ok((
+            input,
+            self.arena.push_node(CompactNode::Operator {
+                name,
+                limits: LimitStyle::AboveBelow,
+            }),
+        ))
     }
 
     /// Handle commands that produce a single node without consuming further input.
