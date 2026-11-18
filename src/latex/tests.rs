@@ -285,6 +285,30 @@ fn unicode_script_mapping_covers_katex_greek_and_modifier_letters() {
 }
 
 #[test]
+fn unicode_minus_inside_structured_operator_uses_amsopn_punctuation() {
+    let unicode = crate::from_latex(r"\operatorname{\bar{x}x⁻ᵝ}").unwrap();
+    let explicit = crate::from_latex(r"\operatorname{\bar{x}x^{-\beta}}").unwrap();
+
+    assert_eq!(unicode.to_mathml().unwrap(), explicit.to_mathml().unwrap());
+    let canonical = unicode.to_latex().unwrap();
+    assert_eq!(canonical, r"\operatorname{\bar{x}x^{-\beta}}");
+    assert_eq!(
+        canonical,
+        crate::from_latex(&canonical).unwrap().to_latex().unwrap()
+    );
+
+    // Outside amsopn's operator-name math list, the same Unicode script
+    // scalar remains a binary minus and matches the ordinary explicit form.
+    assert_eq!(
+        crate::from_latex("x⁻ᵝ").unwrap().to_mathml().unwrap(),
+        crate::from_latex(r"x^{-\beta}")
+            .unwrap()
+            .to_mathml()
+            .unwrap()
+    );
+}
+
+#[test]
 fn unicode_script_runs_replace_a_previous_same_kind_slot() {
     let result = crate::from_latex("x₂³₄").unwrap();
     let mathml = result.to_mathml().unwrap();
