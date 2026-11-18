@@ -177,47 +177,42 @@ pub(crate) fn expansion_work_cap(input_len: usize) -> usize {
 /// macros are present. Expansion errors identify whether output bytes, token
 /// work, or recursive depth stopped the traversal.
 pub fn preprocess_cow(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
-    expand_source(input, false, false)
+    expand_source(input, false)
 }
 
-/// Only the main math parser can consume a leading `\plim` directly.
-/// Nested occurrences can be arguments to text or other raw-token readers.
+/// Prepare parser input, allowing direct consumption of a leading `\plim`
+/// and a bounded literal rewrite of mathtools fences.
 pub(super) fn prepare_math_input(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
-    expand_source(input, true, true)
+    expand_source(input, true)
 }
 
-fn expand_source(
-    input: &str,
-    direct_leading_plim: bool,
-    direct_parser_environments: bool,
-) -> Result<Cow<'_, str>, ExpansionFailure> {
-    let (source, needs_expansion, has_literal_fenced_smallmatrix) =
-        prepare_source(input, direct_leading_plim, direct_parser_environments);
-    if needs_expansion {
-        Ok(Cow::Owned(ordered_stream::expand(&source)?))
-    } else if direct_parser_environments && has_literal_fenced_smallmatrix {
-        match rewrite_literal_smallmatrix(&source) {
-            LiteralRewrite::Unchanged => Ok(source),
-            LiteralRewrite::Rewritten(source) => Ok(Cow::Owned(source)),
-            LiteralRewrite::Fallback => Ok(Cow::Owned(ordered_stream::expand(&source)?)),
+fn expand_source(input: &str, for_parser: bool) -> Result<Cow<'_, str>, ExpansionFailure> {
+    let (source, needs_expansion, fenced_matrix) = prepare_source(input, for_parser);
+    if !needs_expansion {
+        if !fenced_matrix {
+            return Ok(source);
         }
-    } else {
-        Ok(source)
+        // With at least one input byte per potential group, a short literal input
+        // cannot exhaust the ordered stream's group or token budgets. Long or
+        // dynamic bodies retain the full expansion and its resource checks.
+        if for_parser
+            && source.len() <= crate::error::DEFAULT_MAX_DEPTH
+            && let Some(expanded) = rewrite_literal_smallmatrix(&source)
+        {
+            return Ok(Cow::Owned(expanded));
+        }
     }
+    Ok(Cow::Owned(ordered_stream::expand(&source)?))
 }
 
 /// Locate expandable words and strip comments in one traversal. Only allocate
 /// a replacement string if a real comment, outside a verbatim block, is found.
-fn prepare_source(
-    input: &str,
-    direct_leading_plim: bool,
-    direct_parser_environments: bool,
-) -> (Cow<'_, str>, bool, bool) {
+fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool, bool) {
     let mut offset = 0;
     let mut copy_from = 0;
     let mut stripped: Option<String> = None;
     let mut needs_expansion = false;
-    let mut has_literal_fenced_smallmatrix = false;
+    let mut fenced_matrix = false;
     while let Some(pos) = input[offset..].find(['\\', '%']) {
         let start = offset + pos;
         let tail = &input[start..];
@@ -233,15 +228,8 @@ fn prepare_source(
             offset = end;
         } else if let Some((rest, token)) = super::split_token(tail) {
             let name = &token[1..];
-            let (literal_fence, environment_needs_expansion) = if name == "begin" || name == "end" {
-                inspect_environment_name(rest)
-            } else {
-                (false, false)
-            };
-            if name == "begin" && literal_fence {
-                has_literal_fenced_smallmatrix = true;
-            }
             if !needs_expansion {
+                fenced_matrix |= name == "begin" && starts_fenced_smallmatrix(rest);
                 needs_expansion = matches!(
                     name,
                     "newcommand"
@@ -266,10 +254,8 @@ fn prepare_source(
                         | "@ifnextchar"
                         | "TextOrMath"
                         | "newenvironment"
-                ) || (!direct_parser_environments && literal_fence)
-                    || environment_needs_expansion
-                    || (!(direct_leading_plim && start == 0 && name == "plim")
-                        && packages::is_builtin_macro_name(name));
+                ) || (!(direct_leading_plim && start == 0 && name == "plim")
+                    && packages::is_builtin_macro_name(name));
             }
             offset = input.len() - rest.len();
         } else {
@@ -283,137 +269,75 @@ fn prepare_source(
         },
         None => Cow::Borrowed(input),
     };
-    (source, needs_expansion, has_literal_fenced_smallmatrix)
+    (source, needs_expansion, fenced_matrix)
 }
 
-/// Inspect the environment name once while preparing the source. Comments may
-/// separate the command from its opening brace before the ordered stream
-/// strips them.
-fn inspect_environment_name(mut rest: &str) -> (bool, bool) {
+/// Inspect only the environment name. Comments may separate the command
+/// from its opening brace before the ordered stream strips them.
+fn starts_fenced_smallmatrix(mut rest: &str) -> bool {
     loop {
         rest = rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
         if !rest.starts_with('%') {
             break;
         }
         let Some(end) = rest.find(['\r', '\n']) else {
-            return (false, true);
+            return false;
         };
         rest = &rest[end..];
     }
     let Some(name) = rest.strip_prefix('{') else {
-        return (false, true);
+        return false;
     };
-    let Some(end) = name.find('}') else {
-        return (false, true);
+    let Some(end) = name
+        .bytes()
+        .take("psmallmatrix*}".len())
+        .position(|b| b == b'}')
+    else {
+        return false;
     };
-    let name = &name[..end];
-    let literal = !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '*');
-    (
-        literal && packages::smallmatrix_fences(name).is_some(),
-        !literal,
-    )
+    packages::smallmatrix_fences(&name[..end]).is_some()
 }
 
-/// Rewrite only literal mathtools environment names. This keeps the ordered
-/// stream available for aliases, declarations, malformed names, and mismatched
-/// ends while avoiding its queue allocation for the common literal package
-/// shorthand.
-enum LiteralRewrite {
-    Unchanged,
-    Rewritten(String),
-    Fallback,
-}
-
-fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
-    let mut offset = 0;
+/// Apply the same literal replacements as the ordered processor. A mismatched
+/// or nonliteral environment name hands the entire input back to that processor.
+fn rewrite_literal_smallmatrix(input: &str) -> Option<String> {
+    let mut stack: SmallVec<[&str; 4]> = SmallVec::new();
+    let mut output = String::with_capacity(input.len());
     let mut copy_from = 0;
-    let mut output: Option<String> = None;
-    let mut stack: SmallVec<[&str; 8]> = SmallVec::new();
-    let mut changed = false;
-    let mut work = 0usize;
-    let work_limit = expansion_work_cap(input.len());
-    let output_limit = expansion_cap(input.len());
-    while let Some(relative) = input[offset..].find('\\') {
-        let start = offset + relative;
-        work = work.saturating_add(relative);
-        if work > work_limit {
-            return LiteralRewrite::Fallback;
-        }
+    let mut cursor = 0;
+    while let Some(pos) = input[cursor..].find('\\') {
+        let start = cursor + pos;
         if let Some(end) = find_verb_end(input, start) {
-            offset = end;
+            cursor = end;
             continue;
         }
-        let Some((rest, token)) = super::split_token(&input[start..]) else {
-            return LiteralRewrite::Fallback;
+        let (rest, token) = super::split_token(&input[start..])?;
+        cursor = input.len() - rest.len();
+        let begin = match token {
+            r"\begin" => true,
+            r"\end" => false,
+            _ => continue,
         };
-        work = work.saturating_add(token.len());
-        if work > work_limit {
-            return LiteralRewrite::Fallback;
+        let (consumed, name) = literal_environment_group(rest)?;
+        cursor += consumed;
+        if begin {
+            stack.push(name);
+        } else if stack.pop() != Some(name) {
+            return None;
         }
-        let name = &token[1..];
-        let after = input.len() - rest.len();
-        if name == "begin" || name == "end" {
-            let Some((group_end, env_name)) = literal_environment_group(&input[after..]) else {
-                return LiteralRewrite::Fallback;
-            };
-            if name == "begin" {
-                if stack.len() >= MAX_LITERAL_ENV_DEPTH {
-                    return LiteralRewrite::Fallback;
-                }
-                stack.push(env_name);
-            } else {
-                let Some(open_name) = stack.pop() else {
-                    return LiteralRewrite::Fallback;
-                };
-                if open_name != env_name {
-                    return LiteralRewrite::Fallback;
-                }
-            }
-            if packages::smallmatrix_fences(env_name).is_some() {
-                let Some(replacement) =
-                    ordered_stream::smallmatrix_environment_replacement(env_name, name == "begin")
-                else {
-                    return LiteralRewrite::Fallback;
-                };
-                output
-                    .get_or_insert_with(|| String::with_capacity(input.len() + replacement.len()))
-                    .push_str(&input[copy_from..start]);
-                let Some(output) = output.as_mut() else {
-                    return LiteralRewrite::Fallback;
-                };
-                if output.len().saturating_add(replacement.len()) > output_limit {
-                    return LiteralRewrite::Fallback;
-                }
-                output.push_str(&replacement);
-                copy_from = after + group_end;
-                changed = true;
-            }
-            offset = after + group_end;
-            continue;
+        if let Some(replacement) = ordered_stream::smallmatrix_environment_replacement(name, begin)
+        {
+            output.push_str(&input[copy_from..start]);
+            output.push_str(&replacement);
+            copy_from = cursor;
         }
-        offset = after;
     }
-    if !stack.is_empty() {
-        return LiteralRewrite::Fallback;
-    }
-    let Some(mut output) = output else {
-        return LiteralRewrite::Unchanged;
-    };
-    if output.len().saturating_add(input.len() - copy_from) > output_limit {
-        return LiteralRewrite::Fallback;
+    if !stack.is_empty() || copy_from == 0 {
+        return None;
     }
     output.push_str(&input[copy_from..]);
-    if changed {
-        LiteralRewrite::Rewritten(output)
-    } else {
-        LiteralRewrite::Unchanged
-    }
+    Some(output)
 }
-
-const MAX_LITERAL_ENV_DEPTH: usize = 128;
 
 fn literal_environment_group(input: &str) -> Option<(usize, &str)> {
     let skipped = input
@@ -521,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn public_preprocessing_expands_package_fences_but_math_parser_keeps_literal_names() {
+    fn public_and_parser_preprocessing_agree_on_literal_package_fences() {
         let source = r"\begin{psmallmatrix}a&b\\c&d\end{psmallmatrix}";
         let public = preprocess_cow(source).unwrap();
         assert!(
@@ -559,6 +483,19 @@ mod tests {
             expanded(r"\newcommand{\foo}{old}\renewcommand{\foo}{new}\foo"),
             "new"
         );
+    }
+
+    #[test]
+    fn long_literal_fences_keep_ordered_group_limits_even_in_text() {
+        let n = crate::error::DEFAULT_MAX_DEPTH + 8;
+        let source = format!(
+            r"\begin{{psmallmatrix}}\text{{{}x{}}}\end{{psmallmatrix}}",
+            "{".repeat(n),
+            "}".repeat(n)
+        );
+        let public = preprocess_cow(&source);
+        assert!(matches!(public, Err(ExpansionFailure::Depth { .. })));
+        assert_eq!(prepare_math_input(&source), public);
     }
 
     #[test]
