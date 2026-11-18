@@ -2287,7 +2287,26 @@ fn structured_operatorname_decorations_preserve_operator_semantics() {
                 source_mathml,
                 "MathML was not stable for {source}"
             );
-            assert_eq!(source_mathml, expected_mathml, "{source} vs {expected}");
+            let strip_marker = |xml: String| {
+                [
+                    "starred-default",
+                    "starred-limits",
+                    "starred-nolimits",
+                    "unstarred",
+                ]
+                .into_iter()
+                .fold(xml, |xml, value| {
+                    xml.replace(
+                        &format!(" data-mathema-structured-operator=\"{value}\""),
+                        "",
+                    )
+                })
+            };
+            assert_eq!(
+                strip_marker(source_mathml),
+                strip_marker(expected_mathml),
+                "{source} vs {expected}"
+            );
         }
     }
 
@@ -2482,6 +2501,36 @@ fn decorated_operator_bounds_use_the_outer_atom_and_local_display_style() {
 }
 
 #[test]
+fn structured_operatorname_body_uses_upright_face_without_flattening_styles() {
+    let upright = crate::from_latex(r"\operatorname{\underline{x}}").unwrap();
+    let upright_mathml = upright.to_mathml().unwrap();
+    assert!(
+        upright_mathml.contains(r#"<mstyle mathvariant="normal"><munder"#),
+        "{upright_mathml}"
+    );
+
+    let mixed = crate::from_latex(r"\operatorname{\mathbf{Re}\overline{x}}").unwrap();
+    let mixed_mathml = mixed.to_mathml().unwrap();
+    assert!(mixed_mathml.contains(r#"<mstyle mathvariant="normal">"#));
+    assert!(mixed_mathml.contains(r#"<mstyle mathvariant="bold">"#));
+    assert!(mixed.to_latex().unwrap().contains(r"\mathbf{Re}"));
+
+    let explicit = crate::from_latex(r"\operatorname{\mathrm{rate}}").unwrap();
+    let explicit_latex = explicit.to_latex().unwrap();
+    assert!(
+        explicit_latex.contains(r"\mathrm{rate}"),
+        "{explicit_latex}"
+    );
+    assert_eq!(
+        explicit_latex,
+        crate::from_latex(&explicit_latex)
+            .unwrap()
+            .to_latex()
+            .unwrap()
+    );
+}
+
+#[test]
 fn structured_operatorname_reaches_all_public_format_writers() {
     for source in [
         r"\operatorname*{\overline{lim}}_n x",
@@ -2511,6 +2560,75 @@ fn structured_operatorname_reaches_all_public_format_writers() {
             assert!(crate::from_mtef_bytes(&bytes).unwrap().to_latex().is_ok());
         }
     }
+}
+
+#[test]
+#[cfg(feature = "render")]
+fn structured_operator_mathml_preserves_spelling_and_script_geometry() {
+    fn has_structured(expr: &crate::ast::MathExpr) -> bool {
+        match expr.nodes.first() {
+            Some(MathNode::StructuredOperator { .. }) => true,
+            Some(
+                MathNode::Subscript { base, .. }
+                | MathNode::Superscript { base, .. }
+                | MathNode::SubSup { base, .. },
+            ) => matches!(base.as_ref(), MathNode::StructuredOperator { .. }),
+            _ => false,
+        }
+    }
+
+    for source in [
+        r"\operatorname*{\overline{lim}}",
+        r"\operatorname*{\overline{lim}}\limits",
+        r"\operatorname*{\overline{lim}}\nolimits",
+        r"\operatorname{\overline{lim}}",
+        r"\operatorname{A\overline{lim}B}",
+        r"\operatorname{\textcolor{red}{A}\overline{lim}B}",
+    ] {
+        let original = crate::from_latex(source).unwrap();
+        let xml = original.to_mathml().unwrap();
+        assert!(
+            xml.contains("data-mathema-structured-operator"),
+            "{source}: {xml}"
+        );
+        if source.contains("textcolor") {
+            assert!(xml.contains("mathcolor=\"red\""), "{source}: {xml}");
+            assert!(xml.contains("mathvariant=\"normal\""), "{source}: {xml}");
+        }
+        let from_xml = crate::from_mathml(&xml).unwrap();
+        assert!(has_structured(&from_xml.expr()), "{source}: {xml}");
+        let canonical = from_xml.to_latex().unwrap();
+        let from_canonical = crate::from_latex(&canonical).unwrap();
+        assert_eq!(
+            xml,
+            from_canonical.to_mathml().unwrap(),
+            "{source}: {canonical}"
+        );
+
+        let source_with_script = format!("{source}_i^j x");
+        let canonical_with_script = format!("{canonical}_i^j x");
+        assert_eq!(
+            crate::from_latex(&source_with_script)
+                .unwrap()
+                .to_svg()
+                .unwrap(),
+            crate::from_latex(&canonical_with_script)
+                .unwrap()
+                .to_svg()
+                .unwrap(),
+            "{source}: {canonical}"
+        );
+    }
+
+    let generic = crate::from_latex(r"\mathop{\operatorname{foo}}_i x").unwrap();
+    let generic_xml = generic.to_mathml().unwrap();
+    assert!(!generic_xml.contains("data-mathema-structured-operator"));
+    let generic_back = crate::from_mathml(&generic_xml).unwrap();
+    let generic_latex = generic_back.to_latex().unwrap();
+    assert_eq!(
+        generic.to_svg().unwrap(),
+        crate::from_latex(&generic_latex).unwrap().to_svg().unwrap()
+    );
 }
 
 #[test]

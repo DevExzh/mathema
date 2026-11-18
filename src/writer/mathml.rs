@@ -613,7 +613,7 @@ fn write_node_in(
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_argument(w, base, display_style)?;
-            write_mo_char(w, *accent, None)?;
+            write_mo_char(w, mathml_accent_glyph(*accent), None)?;
             w.write_event(Event::End(BytesEnd::new(tag)))
                 .map_err(to_err)?;
             Ok(())
@@ -859,9 +859,18 @@ fn write_node_in(
                 write_node_in(w, content, single_argument, display_style)
             }
         },
-        MathNode::StructuredOperator { content, .. } => {
-            write_atom_group(w, content, "OP", false, display_style)
-        },
+        MathNode::StructuredOperator {
+            content,
+            limit_style,
+            starred,
+        } => write_structured_operator_group(
+            w,
+            content,
+            *limit_style,
+            *starred,
+            false,
+            display_style,
+        ),
     }
 }
 
@@ -1054,6 +1063,14 @@ fn write_mo_char(w: &mut XmlWriter, ch: char, movable: Option<bool>) -> Result<(
     Ok(())
 }
 
+#[inline]
+fn mathml_accent_glyph(ch: char) -> char {
+    match ch {
+        '\u{0304}' => '\u{203E}',
+        _ => ch,
+    }
+}
+
 /// An explicitly movable integral cannot be represented by the default TeX
 /// n-ary placement. Its generic under/over node carries the MathML attribute.
 fn write_limit_base(
@@ -1077,6 +1094,18 @@ fn write_limit_base(
             atom_type: MathAtomType::Op,
             content,
         } => write_atom_group(w, content, "OP", movable, display_style),
+        MathNode::StructuredOperator {
+            content,
+            limit_style,
+            starred,
+        } => write_structured_operator_group(
+            w,
+            content,
+            *limit_style,
+            *starred,
+            movable,
+            display_style,
+        ),
         MathNode::Symbol(SymbolKind::LargeOp, text) if movable => {
             if let Some(ch) = single_operator_char(text) {
                 write_mo_char(w, ch, Some(true))
@@ -1113,6 +1142,42 @@ fn write_atom_group(
 ) -> Result<()> {
     let mut group = BytesStart::new("mrow");
     group.push_attribute(("data-mjx-texclass", class));
+    if movable {
+        group.push_attribute(("data-mathema-limits", "movable"));
+    }
+    w.write_event(Event::Start(group)).map_err(to_err)?;
+    if let MathNode::Row(children) = content {
+        write_nodes(w, children, display_style, false)?;
+    } else {
+        write_node(w, content, display_style)?;
+    }
+    w.write_event(Event::End(BytesEnd::new("mrow")))
+        .map_err(to_err)
+}
+
+fn structured_operator_marker(limits: LimitStyle, starred: bool) -> &'static str {
+    match (starred, limits) {
+        (true, LimitStyle::Default) => "starred-default",
+        (true, LimitStyle::AboveBelow) => "starred-limits",
+        (true, LimitStyle::SubSup) => "starred-nolimits",
+        (false, _) => "unstarred",
+    }
+}
+
+fn write_structured_operator_group(
+    w: &mut XmlWriter,
+    content: &MathNode,
+    limits: LimitStyle,
+    starred: bool,
+    movable: bool,
+    display_style: MathStyle,
+) -> Result<()> {
+    let mut group = BytesStart::new("mrow");
+    group.push_attribute(("data-mjx-texclass", "OP"));
+    group.push_attribute((
+        "data-mathema-structured-operator",
+        structured_operator_marker(limits, starred),
+    ));
     if movable {
         group.push_attribute(("data-mathema-limits", "movable"));
     }
@@ -1517,7 +1582,7 @@ fn write_node_fast_in(
                 AccentPosition::Below => buf.push_str(" accentunder=\"true\">"),
             }
             write_argument_fast(buf, arena, base, display_style);
-            write_mo_char_fast(buf, accent, None);
+            write_mo_char_fast(buf, mathml_accent_glyph(accent), None);
             close_tag(buf, tag);
         },
 
@@ -1761,9 +1826,19 @@ fn write_node_fast_in(
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
         },
-        CompactNode::StructuredOperator { content, .. } => {
-            write_atom_group_fast(buf, arena, content, "OP", false, display_style)
-        },
+        CompactNode::StructuredOperator {
+            content,
+            limits,
+            starred,
+        } => write_structured_operator_group_fast(
+            buf,
+            arena,
+            content,
+            limits,
+            starred,
+            false,
+            display_style,
+        ),
     }
 }
 
@@ -1934,6 +2009,22 @@ fn is_mathml_accent_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
     }
 }
 
+fn is_mathml_overline_glyph(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(_, text) if matches!(text.as_str(), "‾" | "\u{0304}"))
+}
+
+fn is_mathml_underline_glyph(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(_, text) if text == "\u{0332}")
+}
+
+fn is_mathml_overline_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
+    matches!(arena.node(id), CompactNode::Symbol(_, sid) if matches!(arena.str_val(*sid), "‾" | "\u{0304}"))
+}
+
+fn is_mathml_underline_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
+    matches!(arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(*sid) == "\u{0332}")
+}
+
 fn write_scripts(
     w: &mut XmlWriter,
     base: &MathNode,
@@ -1953,6 +2044,13 @@ fn write_scripts(
         return write_argument(w, base, display);
     };
     let mut elem = BytesStart::new(tag);
+    if under_over == Some(false) {
+        if upper.is_some_and(is_mathml_overline_glyph) {
+            elem.push_attribute(("data-mathema-accent-decoration", "overline"));
+        } else if lower.is_some_and(is_mathml_underline_glyph) {
+            elem.push_attribute(("data-mathema-accent-decoration", "underline"));
+        }
+    }
     if place.stacked {
         if lower.is_some_and(is_mathml_accent_glyph) {
             elem.push_attribute(("accentunder", accent_value));
@@ -2000,6 +2098,13 @@ fn write_scripts_fast(
     };
     buf.push('<');
     buf.push_str(tag);
+    if under_over == Some(false) {
+        if upper.is_some() && is_mathml_overline_glyph_fast(arena, upper) {
+            buf.push_str(" data-mathema-accent-decoration=\"overline\"");
+        } else if lower.is_some() && is_mathml_underline_glyph_fast(arena, lower) {
+            buf.push_str(" data-mathema-accent-decoration=\"underline\"");
+        }
+    }
     if place.stacked {
         for (attr, id) in [("accentunder", lower), ("accent", upper)] {
             if id.is_some() && is_mathml_accent_glyph_fast(arena, id) {
@@ -2109,10 +2214,20 @@ fn write_limit_base_fast(
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
-        }
-        | CompactNode::StructuredOperator { content, .. } => {
-            write_atom_group_fast(buf, arena, content, "OP", movable, display_style)
-        },
+        } => write_atom_group_fast(buf, arena, content, "OP", movable, display_style),
+        CompactNode::StructuredOperator {
+            content,
+            limits,
+            starred,
+        } => write_structured_operator_group_fast(
+            buf,
+            arena,
+            content,
+            limits,
+            starred,
+            movable,
+            display_style,
+        ),
         CompactNode::Symbol(SymbolKind::LargeOp, sid) if movable => {
             if let Some(ch) = single_operator_char(arena.str_val(sid)) {
                 write_mo_char_fast(buf, ch, Some(true));
@@ -2144,6 +2259,31 @@ fn write_atom_group_fast(
     } else {
         buf.push_str(r#"">"#);
     }
+    if let CompactNode::Row(span) = *arena.node(content) {
+        write_nodes_fast(buf, arena, arena.children(span), display_style, false);
+    } else {
+        write_node_fast(buf, arena, content, display_style);
+    }
+    close_tag(buf, "mrow");
+}
+
+fn write_structured_operator_group_fast(
+    buf: &mut String,
+    arena: &AstArena,
+    content: NodeId,
+    limits: LimitStyle,
+    starred: bool,
+    movable: bool,
+    display_style: MathStyle,
+) {
+    buf.push_str(r#"<mrow data-mjx-texclass="OP""#);
+    buf.push_str(r#" data-mathema-structured-operator=""#);
+    buf.push_str(structured_operator_marker(limits, starred));
+    buf.push('"');
+    if movable {
+        buf.push_str(r#" data-mathema-limits="movable""#);
+    }
+    buf.push('>');
     if let CompactNode::Row(span) = *arena.node(content) {
         write_nodes_fast(buf, arena, arena.children(span), display_style, false);
     } else {

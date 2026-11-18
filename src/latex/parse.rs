@@ -457,6 +457,7 @@ fn contains_structured_operator_command(raw: &str) -> bool {
     }
     let commands = [
         "overline",
+        "bar",
         "underline",
         "underrightarrow",
         "underleftarrow",
@@ -478,6 +479,8 @@ fn contains_structured_operator_command(raw: &str) -> bool {
         "mathscr",
         "mathfrak",
         "text",
+        "textcolor",
+        "color",
     ];
     let bytes = raw.as_bytes();
     let mut i = 0;
@@ -4978,14 +4981,27 @@ impl LatexCompactParser {
     }
 
     fn structured_content_needs_normal_style(&self, id: NodeId) -> bool {
+        // `\operatorname` applies an upright text face to its complete
+        // argument. Preserve explicit `\mathrm` at the root, since that is
+        // authored style, and add one synthetic outer normal scope for all
+        // other structured content. Nested `\mathbf`/`\mathit`/color scopes
+        // continue to override this inherited face.
         match *self.arena.node(id) {
+            CompactNode::Styled(TextStyle::Normal, _) | CompactNode::Operator { .. } => false,
             CompactNode::Row(span) => self.arena.children(span).iter().any(|&child| {
                 matches!(
                     *self.arena.node(child),
-                    CompactNode::Identifier(_) | CompactNode::Number(_)
+                    CompactNode::Identifier(_)
+                        | CompactNode::Number(_)
+                        | CompactNode::Color { .. }
+                        | CompactNode::Styled(_, _)
                 )
             }),
-            _ => false,
+            CompactNode::Overscript { base, .. }
+            | CompactNode::Underscript { base, .. }
+            | CompactNode::UnderOver { base, .. }
+            | CompactNode::Accent { base, .. } => self.structured_content_needs_normal_style(base),
+            _ => true,
         }
     }
 

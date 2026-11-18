@@ -1629,7 +1629,18 @@ fn write_structured_operator(
         buf.push('*');
     }
     buf.push('{');
-    write_wrapped_content(buf, arena, content);
+    // The parser adds a normal face around structured operator content so
+    // accents, fractions, and nested text inherit the operator's upright
+    // typography. `\operatorname` already supplies that face in TeX, so omit
+    // only this outer Normal wrapper on LaTeX export. Nested explicit styles
+    // remain part of the written content.
+    if let CompactNode::Styled(TextStyle::Normal, span) = *arena.node(content)
+        && synthetic_operator_normal_scope(arena, span)
+    {
+        write_nodes(buf, arena, span);
+    } else {
+        write_wrapped_content(buf, arena, content);
+    }
     buf.push('}');
     match (starred, limits) {
         (true, LimitStyle::AboveBelow) => buf.push_str("\\limits"),
@@ -1637,6 +1648,22 @@ fn write_structured_operator(
         (false, LimitStyle::AboveBelow) => buf.push_str("\\limits"),
         _ => {},
     }
+}
+
+fn synthetic_operator_normal_scope(arena: &AstArena, span: NodeSpan) -> bool {
+    arena.children(span).iter().any(|&id| {
+        matches!(
+            *arena.node(id),
+            CompactNode::Accent { .. }
+                | CompactNode::Overscript { .. }
+                | CompactNode::Underscript { .. }
+                | CompactNode::UnderOver { .. }
+                | CompactNode::Fraction { .. }
+                | CompactNode::Color { .. }
+                | CompactNode::Styled(_, _)
+                | CompactNode::Operator { .. }
+        )
+    })
 }
 
 #[inline]

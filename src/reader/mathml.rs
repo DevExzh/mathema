@@ -866,7 +866,19 @@ impl<'a> MathmlCompactParser<'a> {
                         .push_node(CompactNode::Reflect { content, text_mode }))
                 } else if let Some(atom_type) = attrs.atom_type {
                     let content = self.flatten_ids(&children);
-                    Ok(self.marked_atom(atom_type, content, attrs.movable_limits))
+                    if atom_type == MathAtomType::Op {
+                        if let Some((limits, starred)) = attrs.structured_operator {
+                            Ok(self.arena.push_node(CompactNode::StructuredOperator {
+                                content,
+                                limits,
+                                starred,
+                            }))
+                        } else {
+                            Ok(self.marked_atom(atom_type, content, attrs.movable_limits))
+                        }
+                    } else {
+                        Ok(self.marked_atom(atom_type, content, attrs.movable_limits))
+                    }
                 } else {
                     let span = self.arena.push_children_deferred(&children);
                     Ok(self.arena.push_node(CompactNode::Row(span)))
@@ -933,6 +945,19 @@ impl<'a> MathmlCompactParser<'a> {
                     .read_children_with_script_modes(name, false, Some(&child_styles))
                     .map(|(children, _)| children)?;
                 let (base, over) = self.two_child_ids(children);
+                if get_attr(start, "data-mathema-accent-decoration").as_deref() == Some("overline")
+                {
+                    if let CompactNode::Operator { limits, .. } = self.arena.node_mut(base)
+                        && *limits == LimitStyle::AboveBelow
+                    {
+                        *limits = LimitStyle::Default;
+                    }
+                    return Ok(self.arena.push_node(CompactNode::Overscript {
+                        base,
+                        over,
+                        movable_limits: false,
+                    }));
+                }
                 if let Some(node) =
                     self.mathml_accent(base, over, AccentPosition::Above, accent.as_deref())
                 {
@@ -964,6 +989,14 @@ impl<'a> MathmlCompactParser<'a> {
                     .read_children_with_script_modes(name, false, Some(&child_styles))
                     .map(|(children, _)| children)?;
                 let (base, under) = self.two_child_ids(children);
+                if get_attr(start, "data-mathema-accent-decoration").as_deref() == Some("underline")
+                {
+                    return Ok(self.arena.push_node(CompactNode::Underscript {
+                        base,
+                        under,
+                        movable_limits: false,
+                    }));
+                }
                 if let Some(node) =
                     self.mathml_accent(base, under, AccentPosition::Below, accent.as_deref())
                 {
@@ -1189,7 +1222,19 @@ impl<'a> MathmlCompactParser<'a> {
                 let attrs = mrow_attributes(start);
                 let empty = self.empty_row();
                 Ok(if let Some(atom_type) = attrs.atom_type {
-                    self.marked_atom(atom_type, empty, attrs.movable_limits)
+                    if atom_type == MathAtomType::Op {
+                        if let Some((limits, starred)) = attrs.structured_operator {
+                            self.arena.push_node(CompactNode::StructuredOperator {
+                                content: empty,
+                                limits,
+                                starred,
+                            })
+                        } else {
+                            self.marked_atom(atom_type, empty, attrs.movable_limits)
+                        }
+                    } else {
+                        self.marked_atom(atom_type, empty, attrs.movable_limits)
+                    }
                 } else {
                     empty
                 })
@@ -1502,6 +1547,27 @@ impl<'a> MathmlCompactParser<'a> {
                     (false, false) => return Some(base),
                 };
                 Some(self.arena.push_node(node))
+            },
+            CompactNode::StructuredOperator {
+                content,
+                limits,
+                starred,
+            } => {
+                let limits = if stacked {
+                    if starred && limits == LimitStyle::Default {
+                        LimitStyle::Default
+                    } else {
+                        LimitStyle::AboveBelow
+                    }
+                } else {
+                    LimitStyle::SubSup
+                };
+                *self.arena.node_mut(base) = CompactNode::StructuredOperator {
+                    content,
+                    limits,
+                    starred,
+                };
+                Some(self.make_script_pair(base, sub, sup))
             },
             CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
                 let text = self.arena.str_val(sid).trim();
@@ -1962,6 +2028,7 @@ struct MrowAttributes {
     reflect: Option<String>,
     style: Option<String>,
     atom_type: Option<MathAtomType>,
+    structured_operator: Option<(LimitStyle, bool)>,
     movable_limits: bool,
     explicit_text_size: bool,
 }
@@ -1991,6 +2058,15 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
             },
             "data-mathema-limits" => {
                 result.movable_limits = unescape_attr(&attr.value) == "movable";
+            },
+            "data-mathema-structured-operator" => {
+                result.structured_operator = match unescape_attr(&attr.value).as_str() {
+                    "starred-default" => Some((LimitStyle::Default, true)),
+                    "starred-limits" => Some((LimitStyle::AboveBelow, true)),
+                    "starred-nolimits" => Some((LimitStyle::SubSup, true)),
+                    "unstarred" => Some((LimitStyle::SubSup, false)),
+                    _ => None,
+                };
             },
             "displaystyle" if display.is_none() => {
                 display = Some(unescape_attr(&attr.value));
@@ -2119,7 +2195,13 @@ fn single_accent_char(s: &str) -> Option<char> {
     let mut chars = s.chars();
     let ch = chars.next()?;
     if chars.next().is_none() {
-        Some(ch)
+        Some(match ch {
+            // The MathML writer uses the visual overline glyph while the
+            // LaTeX accent writer stores the combining accent code point.
+            '\u{203E}' => '\u{0304}',
+            '\u{23AF}' => '\u{0304}',
+            _ => ch,
+        })
     } else {
         None
     }
