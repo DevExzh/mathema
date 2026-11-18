@@ -559,6 +559,26 @@ mod tests {
     }
 
     #[test]
+    fn every_literal_smallmatrix_fence_uses_the_bounded_rewrite() {
+        for name in [
+            "psmallmatrix",
+            "bsmallmatrix",
+            "Bsmallmatrix",
+            "vsmallmatrix",
+            "Vsmallmatrix",
+            "psmallmatrix*",
+            "bsmallmatrix*",
+            "Bsmallmatrix*",
+            "vsmallmatrix*",
+            "Vsmallmatrix*",
+        ] {
+            let source = format!(r"\begin{{{name}}}a\end{{{name}}}");
+            let public = preprocess_cow(&source).unwrap();
+            assert_eq!(prepare_math_input(&source).unwrap(), public, "{name}");
+        }
+    }
+
+    #[test]
     fn primitive_definitions_expand() {
         assert_eq!(expanded(r"\def\hi{hello}\hi"), "hello");
         assert_eq!(expanded(r"\def\bold#1{\mathbf{#1}}\bold{x}"), r"\mathbf{x}");
