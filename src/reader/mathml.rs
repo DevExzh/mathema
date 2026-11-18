@@ -699,6 +699,9 @@ impl<'a> MathmlCompactParser<'a> {
         let mark_fences = self.fence_depth == Some(self.depth);
         let vertical_line = matches!(name, "|" | "‖");
         let attrs = operator_attributes(start, mark_fences || vertical_line);
+        if let Some(marked_kind) = attrs.symbol_kind {
+            kind = marked_kind;
+        }
         if vertical_line
             && attrs.non_fence
             && attrs.fixed_literal
@@ -1787,6 +1790,7 @@ fn has_horizontal_reflection(style: &str) -> bool {
 #[derive(Default)]
 struct OperatorAttributes {
     movable_limits: Option<bool>,
+    symbol_kind: Option<SymbolKind>,
     named_operator: bool,
     texclass_op: bool,
     fenced: bool,
@@ -1901,6 +1905,14 @@ fn operator_attributes(
             },
             "data-mjx-texclass" => {
                 result.texclass_op = unescape_attr(&attr.value) == "OP";
+            },
+            "data-mathema-symbol-kind" => {
+                result.symbol_kind = match unescape_attr(&attr.value).as_str() {
+                    "binary" => Some(SymbolKind::BinaryOp),
+                    "ordinary" => Some(SymbolKind::Ordinary),
+                    "relation" => Some(SymbolKind::Relation),
+                    _ => None,
+                };
             },
             _ => {},
         }
@@ -2047,8 +2059,8 @@ fn classify_mo(text: &str) -> SymbolKind {
     let text = text.trim();
     let ch = text.chars().next().unwrap_or(' ');
     match ch {
-        '+' | '-' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2217}'
-        | '\u{2218}' | '*' => SymbolKind::BinaryOp,
+        '+' | '-' | '\u{2212}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}'
+        | '\u{2217}' | '\u{2218}' | '*' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' | '\u{2248}' | '\u{2261}'
         | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}' | '\u{2208}' | '\u{2223}'
         | '\u{2225}' | '\u{2192}' | '\u{2190}' | '\u{21A4}' | '\u{21A6}' | '\u{21D2}'

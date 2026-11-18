@@ -349,44 +349,7 @@ fn write_node_in(
         MathNode::Identifier(s) => write_mi(w, s),
         MathNode::Operator(attr) => write_named_operator(w, &attr.name, attr.limit_style, false),
         MathNode::Symbol(kind, s) => {
-            let mut elem = BytesStart::new("mo");
-            let ordinary_literal_bar =
-                *kind == SymbolKind::Ordinary && matches!(s.as_str(), "|" | "‖");
-            match kind {
-                SymbolKind::LargeOp => {
-                    elem.push_attribute(("largeop", "true"));
-                },
-                SymbolKind::Fence => {
-                    elem.push_attribute(("fence", "true"));
-                },
-                _ => {},
-            }
-            if ordinary_literal_bar {
-                elem.push_attribute(("fence", "false"));
-                elem.push_attribute(("stretchy", "false"));
-            } else {
-                // Enrich from operator dictionary
-                if let Some(ch) = s.chars().next() {
-                    let form = symbol_kind_to_form(*kind);
-                    if let Some(entry) = lookup_operator_any(ch, form) {
-                        if entry.stretchy {
-                            elem.push_attribute(("stretchy", "true"));
-                        }
-                        if entry.form != OperatorForm::Infix {
-                            elem.push_attribute((
-                                "form",
-                                crate::unicode::operators::form_str(entry.form),
-                            ));
-                        }
-                    }
-                }
-            }
-            w.write_event(Event::Start(elem)).map_err(to_err)?;
-            w.write_event(Event::Text(BytesText::new(s)))
-                .map_err(to_err)?;
-            w.write_event(Event::End(BytesEnd::new("mo")))
-                .map_err(to_err)?;
-            Ok(())
+            return write_symbol_node(w, *kind, s, None);
         },
         MathNode::Text(style, s) => write_text(w, *style, s),
         MathNode::Space(r) => write_mspace(w, *r),
@@ -863,10 +826,63 @@ fn write_node_in(
         MathNode::MathAtom { atom_type, content } => {
             if let Some(class) = annotated_atom_class(*atom_type) {
                 write_atom_group(w, content, class, false, display_style)
+            } else if *atom_type == MathAtomType::Ord
+                && let MathNode::Symbol(kind, s) = content.as_ref()
+                && matches!(s.as_str(), "-" | "−")
+            {
+                write_symbol_node(w, *kind, s, Some("ordinary"))
             } else {
                 write_node_in(w, content, single_argument, display_style)
             }
         },
+    }
+}
+
+fn write_symbol_node(
+    w: &mut XmlWriter,
+    kind: SymbolKind,
+    text: &str,
+    forced_kind: Option<&str>,
+) -> Result<()> {
+    let mut elem = BytesStart::new("mo");
+    let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(text, "|" | "‖");
+    match kind {
+        SymbolKind::LargeOp => elem.push_attribute(("largeop", "true")),
+        SymbolKind::Fence => elem.push_attribute(("fence", "true")),
+        _ => {},
+    }
+    if ordinary_literal_bar {
+        elem.push_attribute(("fence", "false"));
+        elem.push_attribute(("stretchy", "false"));
+    } else if let Some(ch) = text.chars().next() {
+        let form = symbol_kind_to_form(kind);
+        if let Some(entry) = lookup_operator_any(ch, form) {
+            if entry.stretchy {
+                elem.push_attribute(("stretchy", "true"));
+            }
+            if entry.form != OperatorForm::Infix {
+                elem.push_attribute(("form", crate::unicode::operators::form_str(entry.form)));
+            }
+        }
+    }
+    if let Some(marker) = forced_kind.or_else(|| symbol_kind_marker(kind, text)) {
+        elem.push_attribute(("data-mathema-symbol-kind", marker));
+    }
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(text)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mo")))
+        .map_err(to_err)
+}
+
+fn symbol_kind_marker(kind: SymbolKind, text: &str) -> Option<&'static str> {
+    if !matches!(text, "-" | "−") {
+        return None;
+    }
+    match kind {
+        SymbolKind::BinaryOp => Some("binary"),
+        SymbolKind::Ordinary => Some("ordinary"),
+        _ => None,
     }
 }
 
@@ -1270,7 +1286,7 @@ fn write_node_fast_in(
         },
         CompactNode::Symbol(kind, sid) => {
             let s = arena.str_val(sid);
-            write_mo_symbol_fast(buf, kind, s);
+            write_mo_symbol_fast(buf, kind, s, None);
         },
         CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
@@ -1698,6 +1714,11 @@ fn write_node_fast_in(
         CompactNode::MathAtom { atom_type, content } => {
             if let Some(class) = annotated_atom_class(atom_type) {
                 write_atom_group_fast(buf, arena, content, class, false, display_style);
+            } else if atom_type == MathAtomType::Ord
+                && let CompactNode::Symbol(kind, sid) = *arena.node(content)
+                && matches!(arena.str_val(sid), "-" | "−")
+            {
+                write_mo_symbol_fast(buf, kind, arena.str_val(sid), Some("ordinary"));
             } else {
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
@@ -2178,7 +2199,7 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
     crate::unicode::operators::closing_fence(open) != Some(close)
 }
 
-fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
+fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str, forced_kind: Option<&str>) {
     buf.push_str("<mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
     match kind {
@@ -2200,6 +2221,11 @@ fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
                 buf.push('"');
             }
         }
+    }
+    if let Some(marker) = forced_kind.or_else(|| symbol_kind_marker(kind, s)) {
+        buf.push_str(" data-mathema-symbol-kind=\"");
+        buf.push_str(marker);
+        buf.push('"');
     }
     buf.push('>');
     xml_escape_into(buf, s);
@@ -2229,6 +2255,40 @@ mod tests {
     fn identifier() {
         let output = write(MathNode::Identifier("x".into()));
         assert!(output.contains("<mi>x</mi>"));
+    }
+
+    #[test]
+    fn minus_symbol_class_survives_mathml_round_trip() {
+        for (source, expected_class) in [
+            (r"x-y", "binary"),
+            (r"-x", "binary"),
+            (r"\mathord{-}", "ordinary"),
+            (r"\mathord{−}", "ordinary"),
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            let mathml = parsed.to_mathml().unwrap();
+            assert!(
+                mathml.contains(&format!("data-mathema-symbol-kind=\"{expected_class}\"")),
+                "{source}: {mathml}"
+            );
+            let roundtrip = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(mathml, roundtrip.to_mathml().unwrap(), "{source}");
+            #[cfg(feature = "render")]
+            assert_eq!(
+                parsed.to_svg().unwrap(),
+                roundtrip.to_svg().unwrap(),
+                "{source}"
+            );
+        }
+
+        let unmarked =
+            crate::from_mathml(r#"<math><mi>x</mi><mo>−</mo><mi>y</mi></math>"#).unwrap();
+        let marked = unmarked.to_mathml().unwrap();
+        assert!(marked.contains(r#"data-mathema-symbol-kind="binary""#));
+        assert_eq!(
+            marked,
+            crate::from_latex("x-y").unwrap().to_mathml().unwrap()
+        );
     }
 
     #[test]
