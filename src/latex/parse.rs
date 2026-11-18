@@ -75,6 +75,177 @@ fn trim_latex_input(input: &str) -> &str {
 /// Byte table of ASCII characters that are recognized as symbol tokens.
 const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@()[]";
 
+/// Rewrite the separator tokens used by braket.sty's four-argument helper.
+///
+/// The helper temporarily gives `|` and `\|` macro meanings while expanding
+/// one argument. Keeping this as a source rewrite lets the ordinary parser
+/// build its own `Fenced`, `Middle`, text, fraction, and style nodes. The
+/// scanner only protects a delimiter immediately following `\left` or
+/// `\right`, and copies braced text arguments without interpreting their bars.
+fn expand_braket_separators(
+    source: &str,
+    first_only: bool,
+    single: &str,
+    double: Option<&str>,
+) -> String {
+    fn text_command(name: &str) -> bool {
+        matches!(
+            name,
+            "text"
+                | "mbox"
+                | "hbox"
+                | "textrm"
+                | "textsf"
+                | "texttt"
+                | "textbf"
+                | "textit"
+                | "textup"
+                | "textsl"
+                | "textsc"
+                | "textnormal"
+        )
+    }
+
+    fn braced_end(source: &str, start: usize) -> Option<usize> {
+        if source.as_bytes().get(start) != Some(&b'{') {
+            return None;
+        }
+        let mut depth = 0usize;
+        let mut escaped = false;
+        for (offset, ch) in source[start..].char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return Some(start + offset + ch.len_utf8());
+                    }
+                },
+                _ => {},
+            }
+        }
+        None
+    }
+
+    let mut output = String::with_capacity(source.len() + 16);
+    let mut index = 0;
+    let mut protect_delimiter = false;
+    let mut seen_separator = false;
+
+    while index < source.len() {
+        let ch = source[index..].chars().next().unwrap();
+        if protect_delimiter {
+            if ch.is_ascii_whitespace() {
+                output.push(ch);
+                index += ch.len_utf8();
+                continue;
+            }
+            if ch == '\\' {
+                let after = index + 1;
+                let end = after
+                    + source[after..]
+                        .bytes()
+                        .take_while(u8::is_ascii_alphabetic)
+                        .count();
+                if end > after {
+                    output.push_str(&source[index..end]);
+                    index = end;
+                } else if source.as_bytes().get(after) == Some(&b'|') {
+                    output.push_str(r"\|");
+                    index = after + 1;
+                } else {
+                    output.push(ch);
+                    index += ch.len_utf8();
+                }
+            } else {
+                output.push(ch);
+                index += ch.len_utf8();
+            }
+            protect_delimiter = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            let after = index + 1;
+            if source.as_bytes().get(after) == Some(&b'|') {
+                if !first_only || !seen_separator {
+                    if let Some(replacement) = double {
+                        output.push_str(replacement);
+                        seen_separator = true;
+                    } else {
+                        output.push_str(r"\|");
+                    }
+                } else {
+                    output.push_str(r"\|");
+                }
+                index = after + 1;
+                continue;
+            }
+            let end = after
+                + source[after..]
+                    .bytes()
+                    .take_while(u8::is_ascii_alphabetic)
+                    .count();
+            if end > after {
+                let name = &source[after..end];
+                output.push_str(&source[index..end]);
+                index = end;
+                if name == "left" || name == "right" {
+                    protect_delimiter = true;
+                } else if text_command(name) {
+                    let whitespace_start = index;
+                    while source[index..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_whitespace())
+                    {
+                        index += source[index..].chars().next().unwrap().len_utf8();
+                    }
+                    output.push_str(&source[whitespace_start..index]);
+                    if let Some(end) = braced_end(source, index) {
+                        output.push_str(&source[index..end]);
+                        index = end;
+                    }
+                }
+            } else {
+                output.push(ch);
+                index += ch.len_utf8();
+            }
+            continue;
+        }
+
+        if ch == '|' {
+            if first_only && seen_separator {
+                output.push(ch);
+                index += ch.len_utf8();
+            } else if source[index + 1..].starts_with('|') {
+                if let Some(replacement) = double {
+                    output.push_str(replacement);
+                    seen_separator = true;
+                } else {
+                    output.push_str(single);
+                    seen_separator = true;
+                }
+                index += 2;
+            } else {
+                output.push_str(single);
+                seen_separator = true;
+                index += ch.len_utf8();
+            }
+            continue;
+        }
+
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+    output
+}
+
 // ---------------------------------------------------------------------------
 // Standalone helpers (stateless — no arena access needed)
 // ---------------------------------------------------------------------------
@@ -3861,36 +4032,11 @@ impl LatexCompactParser {
             },
 
             // --- Braket/Set (physics notation) ---
-            "Braket" | "braket" => {
-                // \Braket{...} → ⟨...⟩
-                let (input, content_id) = self.parse_required_group(input)?;
-                let open = self.arena.push_str("\u{27E8}");
-                let close = self.arena.push_str("\u{27E9}");
-                let content = self.arena.push_children_deferred(&[content_id]);
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Fenced {
-                        open,
-                        close,
-                        content,
-                    }),
-                ))
-            },
-            "Set" | "set" => {
-                // \Set{...} → {...}
-                let (input, content_id) = self.parse_required_group(input)?;
-                let open = self.arena.push_str("{");
-                let close = self.arena.push_str("}");
-                let content = self.arena.push_children_deferred(&[content_id]);
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Fenced {
-                        open,
-                        close,
-                        content,
-                    }),
-                ))
-            },
+            // `\braket` is a regular builtin macro. These three commands
+            // need the braket.sty token-level bar helper, so their arguments
+            // are rewritten into ordinary LaTeX and parsed by the normal
+            // fence and text machinery below.
+            "Braket" | "Set" | "set" => self.parse_braket_macro(input, name),
 
             // --- \cr (row separator used outside table context) ---
             "cr" => Ok((input, self.arena.push_node(CompactNode::Newline))),
@@ -4188,6 +4334,83 @@ impl LatexCompactParser {
             self.arena
                 .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
         ))
+    }
+
+    /// Expand one braket/set argument into the same constructs used by the
+    /// ordinary parser. This keeps the dynamic separator behavior local to a
+    /// short token rewrite while preserving parser resource checks and all
+    /// existing AST construction paths.
+    fn parse_braket_macro<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let Some((rest, raw)) = super::mhchem::capture_braced(input) else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        };
+
+        let mut expanded = String::with_capacity(raw.len() + 32);
+        let transformed = match name {
+            "Braket" => {
+                // The source-space terminates the `\langle` control word.
+                expanded.push_str(r"\left\langle ");
+                let value = expand_braket_separators(
+                    raw,
+                    false,
+                    r"\,\middle\vert\,",
+                    Some(r"\,\middle\Vert\,"),
+                );
+                expanded.push_str(&value);
+                expanded.push_str(r"\right\rangle");
+                None
+            },
+            "Set" => {
+                expanded.push_str(r"\left\{\:");
+                let value = expand_braket_separators(
+                    raw,
+                    true,
+                    r"\;\middle\vert\;",
+                    Some(r"\;\middle\Vert\;"),
+                );
+                expanded.push_str(&value);
+                expanded.push_str(r"\:\right\}");
+                None
+            },
+            "set" => {
+                expanded.push_str(r"\{\,");
+                let value = expand_braket_separators(raw, true, r"\mid", None);
+                expanded.push_str(&value);
+                expanded.push_str(r"\,\}");
+                None
+            },
+            _ => Some(raw),
+        };
+        if let Some(raw) = transformed {
+            expanded.push_str(raw);
+        }
+
+        let ids = match self.parse_node_list(&expanded) {
+            Ok((leftover, ids)) if leftover.trim().is_empty() => ids,
+            Ok(_) => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Tag,
+                )));
+            },
+            Err(nom::Err::Error(error)) => {
+                return Err(nom::Err::Error(nom::error::Error::new(input, error.code)));
+            },
+            Err(nom::Err::Failure(error)) => {
+                return Err(nom::Err::Failure(nom::error::Error::new(input, error.code)));
+            },
+            Err(nom::Err::Incomplete(_)) => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Eof,
+                )));
+            },
+        };
+        Ok((rest, self.flatten_single(&ids)))
     }
 
     /// Keep translation buffers and preprocessing errors off the recursive
