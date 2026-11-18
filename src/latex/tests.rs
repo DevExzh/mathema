@@ -504,6 +504,38 @@ fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
 }
 
 #[test]
+fn letterlike_operator_bodies_retain_their_atom_class_and_spelling() {
+    for (glyph, command) in [
+        ('ℜ', r"\Re"),
+        ('ℑ', r"\Im"),
+        ('ℏ', r"\hbar"),
+        ('ℓ', r"\ell"),
+        ('ℵ', r"\aleph"),
+        ('α', r"\alpha"),
+    ] {
+        let raw = crate::from_latex(&format!(r"\int{glyph}!")).unwrap();
+        let named = crate::from_latex(&format!(r"\int{command}!")).unwrap();
+        assert_eq!(
+            raw.to_mathml().unwrap(),
+            named.to_mathml().unwrap(),
+            "{glyph}"
+        );
+        let written = raw.to_latex().unwrap();
+        let again = crate::from_latex(&written).unwrap();
+        assert_eq!(written, again.to_latex().unwrap(), "{glyph}");
+        assert_eq!(
+            raw.to_mathml().unwrap(),
+            again.to_mathml().unwrap(),
+            "{glyph}"
+        );
+    }
+    assert!(matches!(
+        crate::from_latex("界").unwrap().expr().nodes.as_slice(),
+        [crate::ast::MathNode::Identifier(_)]
+    ));
+}
+
+#[test]
 fn radical_indices_retain_grouped_brackets_and_nested_roots() {
     for tex in [
         r"\sqrt[{a]b}]{z}",

@@ -2252,8 +2252,10 @@ fn is_simple_token(arena: &AstArena, id: NodeId) -> bool {
         CompactNode::Number(_) => true,
         CompactNode::Identifier(sid) => arena.str_val(sid).chars().count() == 1,
         CompactNode::Symbol(_, sid) => {
-            let s = arena.str_val(sid);
-            s.chars().count() == 1 && s.chars().next().is_some_and(|c| c.is_ascii())
+            let text = arena.str_val(sid);
+            text.chars().next().is_some_and(|ch| {
+                text.len() == ch.len_utf8() && (ch.is_ascii() || ch.is_alphabetic())
+            })
         },
         // An invalid \big-like sizing wrapper around a simple non-delimiter
         // should be treated as simple so that surrounding braces are not added

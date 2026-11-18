@@ -675,13 +675,16 @@ pub fn unicode_to_latex(ch: char) -> Option<&'static str> {
     UNICODE_TO_LATEX.get(&ch).map(|&(cmd, _)| cmd)
 }
 
+/// Return the declared atom class when the glyph has a canonical control word.
+#[inline]
+pub(crate) fn mapped_symbol_kind(ch: char) -> Option<SymbolKind> {
+    UNICODE_TO_LATEX.get(&ch).map(|&(_, kind)| kind)
+}
+
 /// Look up the math symbol kind for a Unicode character.
 #[inline]
 pub fn symbol_kind(ch: char) -> SymbolKind {
-    UNICODE_TO_LATEX
-        .get(&ch)
-        .map(|&(_, kind)| kind)
-        .unwrap_or(SymbolKind::Ordinary)
+    mapped_symbol_kind(ch).unwrap_or(SymbolKind::Ordinary)
 }
 
 /// Look up a symbol by LaTeX command name.

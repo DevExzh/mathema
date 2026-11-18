@@ -15,7 +15,7 @@ use crate::error::{
 };
 use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
-    is_operator_command, latex_to_unicode, lookup_command, operator_has_limits, symbol_kind,
+    is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
 };
 
 use super::error::LatexParseError;
@@ -2833,18 +2833,17 @@ impl LatexCompactParser {
                     ));
                 }
                 let sid = self.arena.push_str(&input[..len]);
-                if ch.is_alphabetic() {
-                    Ok((
-                        &input[len..],
-                        self.arena.push_node(CompactNode::Identifier(sid)),
-                    ))
-                } else {
-                    Ok((
-                        &input[len..],
-                        self.arena
-                            .push_node(CompactNode::Symbol(symbol_kind(ch), sid)),
-                    ))
-                }
+                // Letterlike symbols such as ℜ and ℑ have named ordinary
+                // atoms. Use the same class for their literals and commands,
+                // leaving unmapped Unicode letters as identifiers.
+                let kind = crate::unicode::symbols::mapped_symbol_kind(ch);
+                let node = match kind {
+                    None | Some(SymbolKind::Alphabetic) if ch.is_alphabetic() => {
+                        CompactNode::Identifier(sid)
+                    },
+                    _ => CompactNode::Symbol(kind.unwrap_or(SymbolKind::Ordinary), sid),
+                };
+                Ok((&input[len..], self.arena.push_node(node)))
             },
             _ => Err(nom::Err::Error(nom::error::Error::new(
                 input,
