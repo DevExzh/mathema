@@ -111,6 +111,26 @@ fn script_argument_boundary(input: &str) -> bool {
         || strip_control_word(input, "middle").is_some()
 }
 
+#[inline]
+fn is_accent_glyph(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0300}'..='\u{036F}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{00AF}' // macron
+            | '\u{02C9}' // modifier letter macron
+            | '\u{203E}' // overline
+            | '\u{23B4}' // overbracket
+            | '\u{23B5}' // underbracket
+            | '\u{23DC}' // top brace
+            | '\u{23DD}' // bottom brace
+            | '\u{23DE}' // overbrace
+            | '\u{23DF}' // underbrace
+            | '_'
+            | '^'
+    )
+}
+
 /// Consume consecutive `\\limits` and `\\nolimits` modifiers after an
 /// operator. TeX permits repeated placement modifiers and the last modifier
 /// determines the operator's placement. A control-word boundary is required
@@ -4568,6 +4588,17 @@ impl LatexCompactParser {
     fn parse_overset<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, over_id) = self.parse_required_group(input)?;
         let (input, base_id) = self.parse_required_group(input)?;
+        if let Some(ch) = self.single_accent_glyph(over_id) {
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Accent {
+                    base: base_id,
+                    accent: ch,
+                    position: AccentPosition::Above,
+                    wide: false,
+                }),
+            ));
+        }
         Ok((
             input,
             self.arena.push_node(CompactNode::Overscript {
@@ -4581,6 +4612,17 @@ impl LatexCompactParser {
     fn parse_underset<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, under_id) = self.parse_required_group(input)?;
         let (input, base_id) = self.parse_required_group(input)?;
+        if let Some(ch) = self.single_accent_glyph(under_id) {
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Accent {
+                    base: base_id,
+                    accent: ch,
+                    position: AccentPosition::Below,
+                    wide: false,
+                }),
+            ));
+        }
         Ok((
             input,
             self.arena.push_node(CompactNode::Underscript {
@@ -4589,6 +4631,23 @@ impl LatexCompactParser {
                 movable_limits: false,
             }),
         ))
+    }
+
+    fn single_accent_glyph(&self, id: NodeId) -> Option<char> {
+        match *self.arena.node(id) {
+            CompactNode::Symbol(_, sid) => {
+                let mut chars = self.arena.str_val(sid).chars();
+                let ch = chars.next()?;
+                (chars.next().is_none() && is_accent_glyph(ch)).then_some(ch)
+            },
+            CompactNode::Row(span) => {
+                let &[only] = self.arena.children(span) else {
+                    return None;
+                };
+                self.single_accent_glyph(only)
+            },
+            _ => None,
+        }
     }
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
