@@ -221,16 +221,12 @@ pub(super) fn layout_array(
                 ..
             }) = cell.first()
             {
-                if *left_padding {
-                    if logical == 0 {
-                        suppress_left_edge = true;
-                    }
+                if *left_padding && logical == 0 {
+                    suppress_left_edge = true;
                 }
-                if *right_padding {
-                    if uniform_gap.is_some() && logical + span < n_cols {
-                        gap_reductions[logical + span - 1] =
-                            gap_reductions[logical + span - 1].max(colsep);
-                    }
+                if *right_padding && uniform_gap.is_some() && logical + span < n_cols {
+                    gap_reductions[logical + span - 1] =
+                        gap_reductions[logical + span - 1].max(colsep);
                 }
             }
             logical += span;
@@ -572,16 +568,12 @@ pub(super) fn layout_array_arena(
                 ..
             } = *ast.node(cell_ids_ast[idx])
             {
-                if left_padding {
-                    if logical == 0 {
-                        suppress_left_edge = true;
-                    }
+                if left_padding && logical == 0 {
+                    suppress_left_edge = true;
                 }
-                if right_padding {
-                    if uniform_gap.is_some() && logical + span < n_cols {
-                        gap_reductions[logical + span - 1] =
-                            gap_reductions[logical + span - 1].max(colsep);
-                    }
+                if right_padding && uniform_gap.is_some() && logical + span < n_cols {
+                    gap_reductions[logical + span - 1] =
+                        gap_reductions[logical + span - 1].max(colsep);
                 }
             }
             logical += span;
