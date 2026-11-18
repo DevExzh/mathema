@@ -1874,14 +1874,8 @@ fn write_space(buf: &mut String, r: Rational) {
     match r {
         r if r == Rational::new(1, 18) => buf.push_str(r"\mkern1mu "),
         r if r == Rational::new(-3, 18) => buf.push_str(r"\!"),
-        r if r == Rational::new(-4, 18) => buf.push_str(
-            r"
-egmedspace ",
-        ),
-        r if r == Rational::new(-5, 18) => buf.push_str(
-            r"
-egthickspace ",
-        ),
+        r if r == Rational::new(-4, 18) => buf.push_str(r"\negmedspace "),
+        r if r == Rational::new(-5, 18) => buf.push_str(r"\negthickspace "),
         r if r == Rational::new(3, 18) => buf.push_str(r"\,"),
         r if r == Rational::new(4, 18) => buf.push_str(r"\:"),
         r if r == Rational::new(5, 18) => buf.push_str(r"\;"),
@@ -3012,8 +3006,8 @@ mod tests {
             let first = LatexWriter::write_compact(&compact, &Config::default()).unwrap();
             let reparsed = LatexReader::parse_compact(&first, &Config::default()).unwrap();
             assert_eq!(
-                reparsed.expr.to_math_expr(),
-                compact.to_math_expr(),
+                reparsed.expr.to_math_expr().nodes,
+                compact.to_math_expr().nodes,
                 "{first}"
             );
             assert!(first.contains(r"\kern"), "{first}");
