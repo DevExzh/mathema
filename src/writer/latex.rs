@@ -1644,7 +1644,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if atom_type == MathAtomType::Ord
                 && let Some(text) = authored_math_space_symbol(arena, content)
             {
-                write_decimal_math_char(buf, text);
+                write_decimal_char(buf, text, " ");
                 return;
             }
             if atom_type == MathAtomType::Op {
@@ -2040,7 +2040,7 @@ fn write_math_char(buf: &mut String, ch: char) {
         // A raw C0, C1, or DEL character is not a parseable LaTeX atom. Use
         // decimal \\char syntax and retain a source-space terminator so a
         // following digit cannot be consumed as part of the character code.
-        write_decimal_math_char(buf, ch);
+        write_decimal_char(buf, ch, " ");
         return;
     }
     buf.push_str(r"\char`");
@@ -2054,10 +2054,10 @@ fn write_math_char(buf: &mut String, ch: char) {
 }
 
 /// End the decimal character code before a following digit.
-fn write_decimal_math_char(buf: &mut String, ch: char) {
+fn write_decimal_char(buf: &mut String, ch: char, terminator: &str) {
     buf.push_str(r"\char");
     buf.push_str(&(ch as u32).to_string());
-    buf.push(' ');
+    buf.push_str(terminator);
 }
 
 fn single_math_space(text: &str) -> Option<char> {
@@ -2346,10 +2346,11 @@ fn write_verbatim_node(buf: &mut String, arena: &AstArena, id: NodeId) -> bool {
     if !content.contains(['\\', '{', '}']) || content.chars().any(char::is_control) {
         return false;
     }
-    let Some(delim) = ['|', '!', '@', '#', '%', '~', '`', ':', ';', '+', '=', '¶']
-        .into_iter()
-        .find(|delim| !content.contains(*delim))
-    else {
+    let Some(delim) = [
+        '|', '!', '@', '#', '%', '~', '`', ':', ';', '+', '=', '/', '?', '¶',
+    ]
+    .into_iter()
+    .find(|delim| !content.contains(*delim)) else {
         return false;
     };
     buf.push_str(r"\verb");
@@ -2398,12 +2399,15 @@ fn write_text_content(buf: &mut String, text: &str, monospace: bool) {
                     '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~'
                 ))
         {
-            write_decimal_math_char(buf, ch);
+            // An empty group terminates the number without introducing a
+            // text space in KaTeX. Adjacent control-spaces need their own
+            // groups for MathJax to keep each literal blank.
+            write_decimal_char(buf, ch, "{}");
             previous = Some(ch);
             continue;
         }
         match ch {
-            ' ' if monospace => buf.push_str(r"\ "),
+            ' ' if monospace => buf.push_str(r"{\ }"),
             '\\' => buf.push_str(r"\textbackslash{}"),
             '~' => buf.push_str(r"\textasciitilde{}"),
             '^' => buf.push_str(r"\textasciicircum{}"),

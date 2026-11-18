@@ -1955,7 +1955,7 @@ fn literal_typewriter_glyphs_keep_their_face_in_text_arguments() {
     let source = r"\frac{\verb|x  {a}\b!|}{2}";
     let latex = convert(source, Format::LaTeX, Format::LaTeX).unwrap();
     assert!(
-        latex.contains(r"\texttt{x\ \ \char123 a\char125 \char92 b!}"),
+        latex.contains(r"\texttt{x{\ }{\ }\char123{}a\char125{}\char92{}b!}"),
         "{latex}"
     );
     let round = convert(&latex, Format::LaTeX, Format::MathML).unwrap();
