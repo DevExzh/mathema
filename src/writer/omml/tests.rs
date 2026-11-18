@@ -1,5 +1,6 @@
 use super::*;
 use crate::reader::Reader as _;
+use crate::reader::latex::LatexReader;
 use crate::reader::omml::OmmlReader;
 
 fn write(node: MathNode) -> String {
@@ -22,12 +23,87 @@ fn reparse(omml: &str) -> Vec<MathNode> {
         .nodes
 }
 
+fn write_latex_choice(source: &str, display: DisplayStyle) -> String {
+    let config = Config::default().with_display(display);
+    let expr = LatexReader::parse_compact(source, &config).unwrap().expr;
+    OmmlWriter::write_compact(&expr, &config).unwrap()
+}
+
 #[test]
 fn number_and_identifier() {
     assert!(write(MathNode::Number("42".into())).contains("<m:r><m:t>42</m:t></m:r>"));
     // A single letter is math italic by default and needs no properties.
     assert!(write(id("x")).contains("<m:r><m:t>x</m:t></m:r>"));
     assert!(write(id("ab")).contains(r#"<m:rPr><m:sty m:val="i"/></m:rPr><m:t>ab</m:t>"#));
+}
+
+#[test]
+fn mathchoice_uses_the_applicable_omml_style_branch() {
+    let choice = r"\mathchoice{D}{T}{S}{Q}";
+    let block = write_latex_choice(choice, DisplayStyle::Block);
+    let inline = write_latex_choice(choice, DisplayStyle::Inline);
+    assert!(block.contains("<m:t>D</m:t>"), "{block}");
+    assert!(!block.contains("<m:t>T</m:t>"), "{block}");
+    assert!(inline.contains("<m:t>T</m:t>"), "{inline}");
+    assert!(!inline.contains("<m:t>D</m:t>"), "{inline}");
+}
+
+#[test]
+fn mathchoice_uses_script_and_fraction_transitions_in_omml() {
+    let superscript = write_latex_choice(r"x^{\mathchoice{D}{T}{S}{Q}}", DisplayStyle::Block);
+    assert!(superscript.contains("<m:t>S</m:t>"), "{superscript}");
+    assert!(!superscript.contains("<m:t>D</m:t>"), "{superscript}");
+
+    let nested = write_latex_choice(r"x_{y^{\mathchoice{D}{T}{S}{Q}}}", DisplayStyle::Inline);
+    assert!(nested.contains("<m:t>Q</m:t>"), "{nested}");
+
+    let fraction = write_latex_choice(
+        r"\frac{\mathchoice{D}{T}{S}{Q}}{\mathchoice{D}{T}{S}{Q}}",
+        DisplayStyle::Block,
+    );
+    assert_eq!(fraction.matches("<m:t>T</m:t>").count(), 2, "{fraction}");
+    assert!(!fraction.contains("<m:t>D</m:t>"), "{fraction}");
+
+    let root = write_latex_choice(r"\sqrt[\mathchoice{D}{T}{S}{Q}]{z}", DisplayStyle::Block);
+    assert!(root.contains("<m:t>Q</m:t>"), "{root}");
+    assert!(!root.contains("<m:t>D</m:t>"), "{root}");
+
+    let scoped = write_latex_choice(
+        r"{\scriptstyle\mathchoice{D}{T}{S}{Q}}\mathchoice{D}{T}{S}{Q}",
+        DisplayStyle::Block,
+    );
+    assert!(scoped.contains("<m:t>S</m:t>"), "{scoped}");
+    assert!(scoped.contains("<m:t>D</m:t>"), "{scoped}");
+}
+
+#[test]
+fn mathchoice_uses_explicit_table_cell_style_in_omml() {
+    let matrix = write_latex_choice(
+        r"\begin{matrix}\mathchoice{D}{T}{S}{Q}\end{matrix}",
+        DisplayStyle::Block,
+    );
+    assert!(matrix.contains("<m:t>T</m:t>"), "{matrix}");
+    assert!(!matrix.contains("<m:t>D</m:t>"), "{matrix}");
+
+    let array_in_script = write_latex_choice(
+        r"x^{\begin{array}{c}\mathchoice{D}{T}{S}{Q}\end{array}}",
+        DisplayStyle::Inline,
+    );
+    assert!(
+        array_in_script.contains("<m:t>T</m:t>"),
+        "{array_in_script}"
+    );
+    assert!(
+        !array_in_script.contains("<m:t>S</m:t>"),
+        "{array_in_script}"
+    );
+
+    let aligned = write_latex_choice(
+        r"\begin{aligned}\mathchoice{D}{T}{S}{Q}\end{aligned}",
+        DisplayStyle::Inline,
+    );
+    assert!(aligned.contains("<m:t>D</m:t>"), "{aligned}");
+    assert!(!aligned.contains("<m:t>T</m:t>"), "{aligned}");
 }
 
 #[test]

@@ -16,6 +16,7 @@ use std::collections::HashSet;
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
+use crate::ast::style::MathStyle;
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 use crate::reader::omml::{FUNCTION_APPLICATION, MATH_SPACES, OmmlJustification, OmmlParagraph};
@@ -128,7 +129,11 @@ impl OmmlWriter {
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
-        let mut e = Emitter::new(&expr.arena, options.run_properties);
+        let mut e = Emitter::new(
+            &expr.arena,
+            options.run_properties,
+            MathStyle::from(expr.display),
+        );
         if options.display_block {
             e.open_root("m:oMathPara");
             e.paragraph_props(options.justification);
@@ -169,12 +174,13 @@ impl OmmlWriter {
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let empty = AstArena::new();
-        let mut e = Emitter::new(&empty, options.run_properties);
+        let mut e = Emitter::new(&empty, options.run_properties, MathStyle::Text);
         e.open_root("m:oMathPara");
         e.paragraph_props(paragraph.justification.or(options.justification));
         for eq in &paragraph.equations {
             crate::ast::validate_compact_depth(&eq.arena, eq.roots)?;
             e.arena = &eq.arena;
+            e.style = MathStyle::from(eq.display);
             e.buf.push_str("<m:oMath>");
             e.seq(eq.arena.children(eq.roots), Fmt::default());
             e.buf.push_str("</m:oMath>");
@@ -256,16 +262,18 @@ struct Emitter<'a> {
     buf: String,
     arena: &'a AstArena,
     host: OmmlRunProperties,
+    style: MathStyle,
     diags: Vec<Diagnostic>,
     seen: HashSet<String>,
 }
 
 impl<'a> Emitter<'a> {
-    fn new(arena: &'a AstArena, host: OmmlRunProperties) -> Self {
+    fn new(arena: &'a AstArena, host: OmmlRunProperties, style: MathStyle) -> Self {
         Self {
             buf: String::with_capacity(512),
             arena,
             host,
+            style,
             diags: Vec::new(),
             seen: HashSet::new(),
         }
@@ -324,6 +332,15 @@ impl<'a> Emitter<'a> {
         self.buf.push_str("</");
         self.buf.push_str(tag);
         self.buf.push('>');
+    }
+
+    /// Run a child writer under a temporary TeX math style.
+    fn with_style<T>(&mut self, style: MathStyle, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.style;
+        self.style = style;
+        let result = f(self);
+        self.style = previous;
+        result
     }
 
     /// `<tag m:val="val"/>`.
@@ -595,8 +612,15 @@ impl<'a> Emitter<'a> {
     /// Write a sequence of siblings; `[name, U+2061, argument]` becomes
     /// `m:func`.
     fn seq(&mut self, ids: &[NodeId], fmt: Fmt) {
+        let previous_style = self.style;
         let mut i = 0;
         while i < ids.len() {
+            if let CompactNode::StyleSwitch(value) = *self.arena.node(ids[i]) {
+                self.style = MathStyle::from_switch(value);
+                self.loss("OMML output does not preserve math style or size switches");
+                i += 1;
+                continue;
+            }
             if i + 1 < ids.len() && self.is_apply(ids[i + 1]) {
                 self.open("m:func");
                 self.open("m:fName");
@@ -614,6 +638,7 @@ impl<'a> Emitter<'a> {
                 i += 1;
             }
         }
+        self.style = previous_style;
     }
 
     fn is_apply(&self, id: NodeId) -> bool {
@@ -674,22 +699,25 @@ impl<'a> Emitter<'a> {
                 content,
             } => self.fenced(open, close, content, fmt),
             CompactNode::Subscript { base, sub } => {
+                let style = self.style;
                 self.open("m:sSub");
-                self.arg("m:e", base, fmt);
-                self.arg("m:sub", sub, fmt);
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
+                self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
                 self.close("m:sSub");
             },
             CompactNode::Superscript { base, sup } => {
+                let style = self.style;
                 self.open("m:sSup");
-                self.arg("m:e", base, fmt);
-                self.arg("m:sup", sup, fmt);
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
+                self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
                 self.close("m:sSup");
             },
             CompactNode::SubSup { base, sub, sup } => {
+                let style = self.style;
                 self.open("m:sSubSup");
-                self.arg("m:e", base, fmt);
-                self.arg("m:sub", sub, fmt);
-                self.arg("m:sup", sup, fmt);
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
+                self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
+                self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
                 self.close("m:sSubSup");
             },
             CompactNode::PreScripts {
@@ -697,10 +725,11 @@ impl<'a> Emitter<'a> {
                 pre_sub,
                 pre_sup,
             } => {
+                let style = self.style;
                 self.open("m:sPre");
-                self.arg("m:sub", pre_sub, fmt);
-                self.arg("m:sup", pre_sup, fmt);
-                self.arg("m:e", base, fmt);
+                self.with_style(style.sub(), |e| e.arg("m:sub", pre_sub, fmt));
+                self.with_style(style.sup(), |e| e.arg("m:sup", pre_sup, fmt));
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
                 self.close("m:sPre");
             },
             CompactNode::Overscript {
@@ -716,17 +745,23 @@ impl<'a> Emitter<'a> {
             CompactNode::UnderOver {
                 base, under, over, ..
             } => {
+                let style = self.style;
                 self.open("m:limUpp");
                 self.open("m:e");
                 self.open("m:limLow");
-                self.arg("m:e", base, fmt);
-                self.arg("m:lim", under, fmt);
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
+                self.with_style(style.sub(), |e| e.arg("m:lim", under, fmt));
                 self.close("m:limLow");
                 self.close("m:e");
-                self.arg("m:lim", over, fmt);
+                self.with_style(style.sup(), |e| e.arg("m:lim", over, fmt));
                 self.close("m:limUpp");
             },
             CompactNode::Fraction { kind, num, den } => {
+                let style = match kind {
+                    FractionKind::Display => MathStyle::Display,
+                    FractionKind::Inline => MathStyle::Text,
+                    _ => self.style,
+                };
                 self.open("m:f");
                 let ty = match kind {
                     FractionKind::Normal => None,
@@ -743,8 +778,8 @@ impl<'a> Emitter<'a> {
                     self.val("m:type", ty);
                     self.close("m:fPr");
                 }
-                self.arg("m:num", num, fmt);
-                self.arg("m:den", den, fmt);
+                self.with_style(style.fracnum(), |e| e.arg("m:num", num, fmt));
+                self.with_style(style.fracden(), |e| e.arg("m:den", den, fmt));
                 self.close("m:f");
             },
             CompactNode::Sqrt(radicand) => {
@@ -753,13 +788,13 @@ impl<'a> Emitter<'a> {
                 self.on("m:degHide");
                 self.close("m:radPr");
                 self.buf.push_str("<m:deg/>");
-                self.arg("m:e", radicand, fmt);
+                self.with_style(self.style.cramped(), |e| e.arg("m:e", radicand, fmt));
                 self.close("m:rad");
             },
             CompactNode::Root { index, radicand } => {
                 self.open("m:rad");
-                self.arg("m:deg", index, fmt);
-                self.arg("m:e", radicand, fmt);
+                self.with_style(MathStyle::ScriptScript, |e| e.arg("m:deg", index, fmt));
+                self.with_style(self.style.cramped(), |e| e.arg("m:e", radicand, fmt));
                 self.close("m:rad");
             },
             CompactNode::Nary {
@@ -769,6 +804,7 @@ impl<'a> Emitter<'a> {
                 body,
                 limits,
             } => {
+                let style = self.style;
                 // CT_NaryPr: chr, limLoc, grow, subHide, supHide.
                 self.open("m:nary");
                 self.open("m:naryPr");
@@ -786,9 +822,9 @@ impl<'a> Emitter<'a> {
                     self.on("m:supHide");
                 }
                 self.close("m:naryPr");
-                self.arg("m:sub", sub, fmt);
-                self.arg("m:sup", sup, fmt);
-                self.arg("m:e", body, fmt);
+                self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
+                self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
+                self.with_style(style, |e| e.arg("m:e", body, fmt));
                 self.close("m:nary");
             },
             CompactNode::Accent {
@@ -830,12 +866,14 @@ impl<'a> Emitter<'a> {
                 add_jot,
                 col_seps,
                 row_seps,
-                ..
+                array_style,
             } => self.array(
                 col_aligns,
                 cells,
                 num_cols,
                 add_jot,
+                arraystretch_pct,
+                array_style,
                 arraystretch_pct != 100 || col_seps != 0 || row_seps != 0,
                 fmt,
             ),
@@ -935,9 +973,15 @@ impl<'a> Emitter<'a> {
                     },
                 );
             },
-            CompactNode::MathChoice { display, .. } => {
-                self.loss("OMML output keeps only the display-style branch of \\mathchoice");
-                self.node(display, fmt);
+            CompactNode::MathChoice {
+                display,
+                text,
+                script,
+                script_script,
+            } => {
+                self.loss("OMML output keeps only the applicable style branch of \\mathchoice");
+                let branch = self.style.choose(display, text, script, script_script);
+                self.node(branch, fmt);
             },
             CompactNode::MathAtom { atom_type, content } => match atom_type {
                 MathAtomType::Ord => {
@@ -969,7 +1013,11 @@ impl<'a> Emitter<'a> {
             CompactNode::Newline => {
                 self.loss("OMML output does not preserve line breaks inside an equation")
             },
-            CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {
+            CompactNode::StyleSwitch(value) => {
+                self.style = MathStyle::from_switch(value);
+                self.loss("OMML output does not preserve math style or size switches");
+            },
+            CompactNode::SizeScale(_) => {
                 self.loss("OMML output does not preserve math style or size switches")
             },
             CompactNode::ColAlign(_) => {},
@@ -1026,6 +1074,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn over_under(&mut self, base: NodeId, script: NodeId, movable: bool, top: bool, fmt: Fmt) {
+        let style = self.style;
         let (limit_tag, pos) = if top {
             ("m:limUpp", "top")
         } else {
@@ -1042,7 +1091,7 @@ impl<'a> Emitter<'a> {
                 self.open("m:barPr");
                 self.val("m:pos", pos);
                 self.close("m:barPr");
-                self.arg("m:e", base, fmt);
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
                 self.close("m:bar");
             },
             Some(chr) if !movable && chr.chars().count() <= 1 => {
@@ -1052,7 +1101,7 @@ impl<'a> Emitter<'a> {
                 self.val("m:chr", chr);
                 self.val("m:pos", pos);
                 self.close("m:groupChrPr");
-                self.arg("m:e", base, fmt);
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
                 self.close("m:groupChr");
             },
             _ => {
@@ -1062,8 +1111,9 @@ impl<'a> Emitter<'a> {
                     );
                 }
                 self.open(limit_tag);
-                self.arg("m:e", base, fmt);
-                self.arg("m:lim", script, fmt);
+                self.with_style(style, |e| e.arg("m:e", base, fmt));
+                let script_style = if top { style.sup() } else { style.sub() };
+                self.with_style(script_style, |e| e.arg("m:lim", script, fmt));
                 self.close(limit_tag);
             },
         }
@@ -1101,12 +1151,15 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn array(
         &mut self,
         col_aligns: NodeSpan,
         cells: NodeSpan,
         num_cols: u16,
         add_jot: bool,
+        arraystretch_pct: u8,
+        _array_style: bool,
         spacing_lost: bool,
         fmt: Fmt,
     ) {
@@ -1124,6 +1177,13 @@ impl<'a> Emitter<'a> {
         }
         let cell_ids = arena.children(cells);
         let ncols = usize::from(num_cols.max(1));
+        let cell_style = if add_jot {
+            MathStyle::Display
+        } else if arraystretch_pct == 50 {
+            MathStyle::Script
+        } else {
+            MathStyle::Text
+        };
         let centred = aligns.iter().all(|&a| a == ColumnAlign::Center);
         // Right/left alternating columns are an aligned equation array.
         let aligned = ncols >= 2
@@ -1154,7 +1214,7 @@ impl<'a> Emitter<'a> {
                             "a literal & in an equation array reads back as an alignment point",
                         );
                     }
-                    self.cell_content(cell, fmt);
+                    self.with_style(cell_style, |e| e.cell_content(cell, fmt));
                 }
                 self.close("m:e");
             }
@@ -1191,7 +1251,7 @@ impl<'a> Emitter<'a> {
         for row in cell_ids.chunks(ncols) {
             self.open("m:mr");
             for &cell in row {
-                self.cell(cell, fmt);
+                self.with_style(cell_style, |e| e.cell(cell, fmt));
             }
             self.close("m:mr");
         }
