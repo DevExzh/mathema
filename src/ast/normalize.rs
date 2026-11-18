@@ -620,43 +620,32 @@ fn normalize_compact_span(
     let mut with_limits: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in &merged_ids {
         if is_empty_base_script(arena, id)
-            && let Some(&prev_id) = with_limits.last()
-            && takes_limits(arena, *arena.node(prev_id))
+            && let Some((previous, preceding)) = with_limits.split_last_mut()
         {
-            with_limits.pop();
-            with_limits.push(make_script_with_base(arena, prev_id, id));
-            continue;
+            if takes_limits(arena, *arena.node(*previous)) {
+                *previous = make_script_with_base(arena, *previous, id);
+                continue;
+            }
+            // A fraction can split a fence leaving a middle delimiter with a
+            // script on each side. Retain both attachments on that delimiter.
+            if matches!(*arena.node(*previous), CompactNode::Middle(_))
+                && let Some((&lead, prefix)) = preceding.split_last()
+                && let Some((pre_sub, pre_sup)) = empty_base_scripts(arena, lead)
+            {
+                let keep = prefix.len();
+                let base = make_script_with_base(arena, *previous, id);
+                with_limits.truncate(keep);
+                with_limits.push(arena.push_node(CompactNode::PreScripts {
+                    base,
+                    pre_sub,
+                    pre_sup,
+                }));
+                continue;
+            }
         }
         with_limits.push(id);
     }
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
-    // A prescript and a scripted Middle can arise as three adjacent nodes
-    // after a left/right group was split by an infix fraction. Canonicalize
-    // that triplet as one prescript-bearing scripted Middle before the normal
-    // reverse scan. Otherwise the first writer pass emits three siblings and
-    // the next parser pass puts braces around the whole sequence.
-    let mut bridged: SmallVec<[NodeId; 8]> = SmallVec::new();
-    let mut i = 0;
-    while i < with_limits.len() {
-        if i + 2 < with_limits.len()
-            && let Some((pre_sub, pre_sup)) = empty_base_scripts(arena, with_limits[i])
-            && matches!(*arena.node(with_limits[i + 1]), CompactNode::Middle(_))
-            && empty_base_scripts(arena, with_limits[i + 2]).is_some()
-        {
-            let scripted_middle =
-                make_script_with_base(arena, with_limits[i + 1], with_limits[i + 2]);
-            bridged.push(arena.push_node(CompactNode::PreScripts {
-                base: scripted_middle,
-                pre_sub,
-                pre_sup,
-            }));
-            i += 3;
-        } else {
-            bridged.push(with_limits[i]);
-            i += 1;
-        }
-    }
-    let with_limits = bridged;
     for &id in with_limits.iter().rev() {
         if let Some(&next_id) = coalesced.last()
             && let Some((sub, sup)) = empty_base_scripts(arena, id)
