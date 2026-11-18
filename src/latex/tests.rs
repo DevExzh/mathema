@@ -504,6 +504,39 @@ fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
 }
 
 #[test]
+fn contour_integral_names_and_literals_keep_the_same_script_atom() {
+    for (cmd, glyph) in [
+        ("oiint", '∯'),
+        ("oiiint", '∰'),
+        ("varointclockwise", '∲'),
+        ("ointctrclockwise", '∳'),
+    ] {
+        let by_name = crate::from_latex(&format!(r"t_\{cmd} q")).unwrap();
+        let by_glyph = crate::from_latex(&format!("t_{glyph} q")).unwrap();
+        let output = by_name.to_latex().unwrap();
+        assert_eq!(
+            by_glyph.to_mathml().unwrap(),
+            by_name.to_mathml().unwrap(),
+            "{cmd}"
+        );
+        assert_eq!(by_glyph.to_latex().unwrap(), output);
+        let again = crate::from_latex(&output).unwrap();
+        assert_eq!(
+            again.to_mathml().unwrap(),
+            by_name.to_mathml().unwrap(),
+            "{output}"
+        );
+        assert_eq!(again.to_latex().unwrap(), output);
+    }
+    let source = r"t_\oiint_a^b x";
+    let canonical = crate::from_latex(source).unwrap().to_latex().unwrap();
+    assert_eq!(
+        crate::from_latex(&canonical).unwrap().to_latex().unwrap(),
+        canonical
+    );
+}
+
+#[test]
 fn letterlike_operator_bodies_retain_their_atom_class_and_spelling() {
     for (glyph, command) in [
         ('ℜ', r"\Re"),

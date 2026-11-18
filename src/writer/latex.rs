@@ -302,11 +302,45 @@ fn write_compound_limits(
     true
 }
 
+/// In an unbraced script a large-operator control word is one token. A
+/// group around the same command instead gives the parser an n-ary body.
+fn write_scalar_operator_arg(buf: &mut String, arena: &AstArena, arg: NodeId) -> bool {
+    let CompactNode::Symbol(SymbolKind::LargeOp, sid) = *arena.node(arg) else {
+        return false;
+    };
+    let text = arena.str_val(sid);
+    let Some(ch) = text.chars().next() else {
+        return false;
+    };
+    if text.len() == ch.len_utf8()
+        && let Some(cmd) = nary_op_to_latex(ch)
+    {
+        buf.push('\\');
+        buf.push_str(cmd);
+        true
+    } else {
+        false
+    }
+}
+
+fn write_grouped_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, force_group: bool) {
+    if !write_scalar_operator_arg(buf, arena, arg) {
+        if force_group {
+            write_always_braced(buf, arena, arg)
+        } else {
+            write_braced(buf, arena, arg)
+        }
+    }
+}
+
 /// Write a script argument.  Digit sequences are always braced so that a
 /// following `.` is not swallowed into a decimal literal and so that trailing
 /// vs. non-trailing position cannot change the bracing decision.
 fn write_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, _next: Option<NodeId>) {
     let arg = written_script_content(arena, arg);
+    if write_scalar_operator_arg(buf, arena, arg) {
+        return;
+    }
     if is_digit_sequence_script_arg(arena, arg) {
         buf.push('{');
         write_node(buf, arena, arg);
@@ -357,22 +391,22 @@ fn write_standalone_empty_base_script_markers(
     match *arena.node(script_id) {
         CompactNode::Subscript { sub, .. } if !is_effectively_empty_arg(arena, sub) => {
             buf.push('_');
-            write_always_braced(buf, arena, sub);
+            write_grouped_script_arg(buf, arena, sub, true);
         },
         CompactNode::Superscript { sup, .. } if !is_effectively_empty_arg(arena, sup) => {
             buf.push('^');
-            write_always_braced(buf, arena, sup);
+            write_grouped_script_arg(buf, arena, sup, true);
         },
         CompactNode::SubSup { sub, sup, .. } => {
             let sub_empty = is_effectively_empty_arg(arena, sub);
             let sup_empty = is_effectively_empty_arg(arena, sup);
             if !sub_empty {
                 buf.push('_');
-                write_always_braced(buf, arena, sub);
+                write_grouped_script_arg(buf, arena, sub, true);
             }
             if !sup_empty {
                 buf.push('^');
-                write_always_braced(buf, arena, sup);
+                write_grouped_script_arg(buf, arena, sup, true);
             }
         },
         _ => {},
@@ -792,11 +826,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             if is_empty_row(arena, base) {
                 buf.push_str("{}");
                 buf.push('_');
-                write_always_braced(buf, arena, sub);
+                write_grouped_script_arg(buf, arena, sub, true);
             } else {
                 write_postscript_base(buf, arena, base);
                 buf.push('_');
-                write_braced(buf, arena, sub);
+                write_grouped_script_arg(buf, arena, sub, false);
             }
         },
 
@@ -808,11 +842,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             if is_empty_row(arena, base) {
                 buf.push_str("{}");
                 buf.push('^');
-                write_always_braced(buf, arena, sup);
+                write_grouped_script_arg(buf, arena, sup, true);
             } else {
                 write_postscript_base(buf, arena, base);
                 buf.push('^');
-                write_braced(buf, arena, sup);
+                write_grouped_script_arg(buf, arena, sup, false);
             }
         },
 
@@ -827,21 +861,21 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push_str("{}");
                 if !sub_empty {
                     buf.push('_');
-                    write_always_braced(buf, arena, sub);
+                    write_grouped_script_arg(buf, arena, sub, true);
                 }
                 if !sup_empty {
                     buf.push('^');
-                    write_always_braced(buf, arena, sup);
+                    write_grouped_script_arg(buf, arena, sup, true);
                 }
             } else {
                 write_postscript_base(buf, arena, base);
                 if !sub_empty {
                     buf.push('_');
-                    write_braced(buf, arena, sub);
+                    write_grouped_script_arg(buf, arena, sub, false);
                 }
                 if !sup_empty {
                     buf.push('^');
-                    write_braced(buf, arena, sup);
+                    write_grouped_script_arg(buf, arena, sup, false);
                 }
             }
         },
@@ -867,15 +901,22 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             // after. The base follows the scripts directly, so a script is
             // always braced: `{}^{6}6`, not `{}^66`.
             buf.push_str("{{}");
+            let mut scalar_last = false;
             for (mark, script, visible) in
                 [('_', pre_sub, sub_visible), ('^', pre_sup, sup_visible)]
             {
                 if visible {
                     buf.push(mark);
-                    buf.push('{');
-                    write_wrapped_content(buf, arena, script);
-                    buf.push('}');
+                    scalar_last = write_scalar_operator_arg(buf, arena, script);
+                    if !scalar_last {
+                        buf.push('{');
+                        write_wrapped_content(buf, arena, script);
+                        buf.push('}');
+                    }
                 }
+            }
+            if scalar_last && node_starts_with_ascii_letter(arena, base) {
+                buf.push(' ');
             }
             // The base is written as a sequence of one node, as in a row,
             // so that its own scripts are braced as there.
@@ -1021,11 +1062,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             }
             if !is_effectively_empty_arg(arena, sub) {
                 buf.push('_');
-                write_braced(buf, arena, sub);
+                write_grouped_script_arg(buf, arena, sub, false);
             }
             if !is_effectively_empty_arg(arena, sup) {
                 buf.push('^');
-                write_braced(buf, arena, sup);
+                write_grouped_script_arg(buf, arena, sup, false);
             }
             // Only write the body if it's non-empty — avoids \prod vs \prod {} divergence
             if !is_empty_body(arena, body) {

@@ -507,6 +507,10 @@ static UNICODE_TO_LATEX: phf::Map<char, (&'static str, SymbolKind)> = phf_map! {
     '\u{222D}' => ("iiint", LargeOp),
     '\u{2A0C}' => ("iiiint", LargeOp),
     '\u{222E}' => ("oint", LargeOp),
+    '\u{222F}' => ("oiint", LargeOp),
+    '\u{2230}' => ("oiiint", LargeOp),
+    '\u{2232}' => ("varointclockwise", LargeOp),
+    '\u{2233}' => ("ointctrclockwise", LargeOp),
     '\u{2234}' => ("therefore", Relation),
     '\u{2235}' => ("because", Relation),
     '\u{223C}' => ("sim", Relation),
@@ -602,45 +606,7 @@ static UNICODE_TO_LATEX: phf::Map<char, (&'static str, SymbolKind)> = phf_map! {
     '\u{2AB0}' => ("succeq", Relation),
 };
 
-// ---------------------------------------------------------------------------
-// N-ary operator Unicode → LaTeX command name
-// ---------------------------------------------------------------------------
-
-static NARY_OP_LATEX: phf::Map<char, &'static str> = phf_map! {
-    '\u{220F}' => "prod",
-    '\u{2210}' => "coprod",
-    '\u{2211}' => "sum",
-    '\u{222B}' => "int",
-    '\u{222C}' => "iint",
-    '\u{222D}' => "iiint",
-    '\u{2A0C}' => "iiiint",
-    '\u{222E}' => "oint",
-    '\u{222F}' => "oiint",
-    '\u{2230}' => "oiiint",
-    '\u{2232}' => "varointclockwise",
-    '\u{2233}' => "ointctrclockwise",
-    '\u{22C0}' => "bigwedge",
-    '\u{22C1}' => "bigvee",
-    '\u{22C2}' => "bigcap",
-    '\u{22C3}' => "bigcup",
-    '\u{2A00}' => "bigodot",
-    '\u{2A01}' => "bigoplus",
-    '\u{2A02}' => "bigotimes",
-    '\u{2A04}' => "biguplus",
-    '\u{2A06}' => "bigsqcup",
-};
-
-// ---------------------------------------------------------------------------
-// Sets for classification checks
-// ---------------------------------------------------------------------------
-
-static NARY_COMMANDS: phf::Set<&'static str> = phf_set! {
-    "sum", "prod", "coprod", "int", "iint", "iiint", "iiiint", "oint",
-    "oiint", "oiiint", "ointctrclockwise", "varointclockwise",
-    "bigcap", "bigcup", "bigwedge", "bigvee",
-    "bigodot", "bigoplus", "bigotimes", "biguplus", "bigsqcup",
-};
-
+// Named functions have word-valued glyphs and are separate from n-ary symbols.
 static OPERATOR_COMMANDS: phf::Set<&'static str> = phf_set! {
     "sin", "cos", "tan", "sec", "csc", "cot",
     "arcsin", "arccos", "arctan",
@@ -697,7 +663,8 @@ pub fn lookup_command(command: &str) -> Option<(char, SymbolKind)> {
 /// Look up the LaTeX command for an n-ary operator Unicode character.
 #[inline]
 pub fn nary_op_to_latex(ch: char) -> Option<&'static str> {
-    NARY_OP_LATEX.get(&ch).copied()
+    let &(name, kind) = UNICODE_TO_LATEX.get(&ch)?;
+    (kind == SymbolKind::LargeOp).then_some(name)
 }
 
 /// Glyphs used as a single over- or under-accent in mathematical notation.
@@ -726,7 +693,7 @@ pub(crate) fn is_integral_operator(ch: char) -> bool {
 /// Check whether a LaTeX command is an n-ary (large) operator.
 #[inline]
 pub fn is_nary_command(command: &str) -> bool {
-    NARY_COMMANDS.contains(command)
+    matches!(lookup_command(command), Some((_, SymbolKind::LargeOp)))
 }
 
 /// Check whether a LaTeX command is a named operator (like sin, cos, lim).
