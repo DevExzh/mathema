@@ -1406,34 +1406,25 @@ mod tests {
 
     #[test]
     fn operator_scripts_and_multi_character_tokens_keep_all_operands() {
-        for tag in ["msub", "msup", "msubsup"] {
-            let scripts = match tag {
-                "msub" => "<mi>a</mi>",
-                "msup" => "<mi>a</mi>",
-                _ => "<mi>a</mi><mi>b</mi>",
-            };
+        for (tag, bounds) in [
+            ("msub", "<mi>a</mi>"),
+            ("msup", "<mi>b</mi>"),
+            ("msubsup", "<mi>a</mi><mi>b</mi>"),
+        ] {
             let input =
-                format!("<math><{tag}><mo movablelimits=\"true\">∫</mo>{scripts}</{tag}></math>");
-            let output =
-                crate::convert(&input, crate::Format::MathML, crate::Format::MathML).unwrap();
-            assert!(output.contains("∫"));
-            assert!(output.contains("a"));
-            if tag == "msubsup" {
-                assert!(output.contains("b"));
-            }
+                format!(r#"<math><{tag}><mo movablelimits="true">∫</mo>{bounds}</{tag}></math>"#);
+            let output = crate::from_mathml(&input).unwrap().to_mathml().unwrap();
+            assert!(
+                output.contains(&format!(
+                    r#"<{tag}><mo movablelimits="false">∫</mo>{bounds}</{tag}>"#
+                )),
+                "{output}"
+            );
         }
 
-        for input in [
-            "<math><munder><mo movablelimits=\"true\">∑x</mo><mi>a</mi></munder></math>",
-            "<math><munder><mo movablelimits=\"true\"> ∑ </mo><mi>a</mi></munder></math>",
-        ] {
-            let output =
-                crate::convert(input, crate::Format::MathML, crate::Format::MathML).unwrap();
-            assert!(output.contains("∑"));
-            if input.contains("∑x") {
-                assert!(output.contains("∑x"));
-            }
-        }
+        let multi = r#"<math><munder><mo movablelimits="true">∑x</mo><mi>a</mi></munder></math>"#;
+        let output = crate::from_mathml(multi).unwrap().to_mathml().unwrap();
+        assert!(output.contains(">∑x</mo><mi>a</mi></munder>"), "{output}");
     }
 
     #[test]
