@@ -72,8 +72,13 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         | MathNode::Underscript { base, .. }
         | MathNode::UnderOver { base, .. } => classify_node_depth(base, style, depth + 1),
         MathNode::Accent { base, .. } => classify_node_depth(base, style, depth + 1),
+        // TeX's bare `array`, `matrix`, `smallmatrix`, `aligned`, and
+        // `gathered` environments produce an ordinary/vcenter noad. Their
+        // table padding belongs to the node itself and does not trigger the
+        // thin Ord–Inner spaces that an explicitly fenced matrix receives.
+        // MathJax likewise emits a bare `mtable` with texClass=ORD.
         MathNode::Array { .. } | MathNode::Matrix { .. } | MathNode::NativeArray { .. } => {
-            AtomType::Inner
+            AtomType::Ord
         },
         MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
             classify_node_depth(content, style, depth + 1)
@@ -162,7 +167,10 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
             classify_node_c_depth(arena, base, style, depth + 1)
         },
         CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, style, depth + 1),
-        CompactNode::Array { .. } => AtomType::Inner,
+        // Keep heap and compact classification identical. Native tables are
+        // ordinary noads until a fence or explicit MathAtom wrapper changes
+        // their class.
+        CompactNode::Array { .. } => AtomType::Ord,
         CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
             classify_node_c_depth(arena, content, style, depth + 1)
         },
@@ -420,6 +428,44 @@ mod tests {
             den: Box::new(MathNode::Number("2".into())),
         };
         assert_eq!(classify_node(&frac), AtomType::Inner);
+    }
+
+    #[test]
+    fn bare_tables_are_ordinary_atoms_on_heap_and_compact_paths() {
+        let rows = vec![vec![vec![MathNode::Identifier("x".into())]]];
+        let array = MathNode::Array {
+            columns: vec![crate::ast::ColumnAlign::Center],
+            rows: rows.clone(),
+            arraystretch: None,
+            add_jot: false,
+        };
+        let matrix = MathNode::Matrix {
+            kind: crate::ast::MatrixKind::Matrix,
+            alignment: crate::ast::ColumnAlign::Center,
+            rows: rows.clone(),
+        };
+        let native = MathNode::NativeArray {
+            columns: vec![crate::ast::ColumnAlign::Center],
+            rows,
+            arraystretch: None,
+            add_jot: false,
+            array_style: true,
+            col_seps: 0,
+            row_seps: 0,
+        };
+        for node in [&array, &matrix, &native] {
+            assert_eq!(classify_node(node), AtomType::Ord);
+            let compact = crate::ast::compact::CompactExpr::from_math_expr(
+                &crate::ast::MathExpr::inline(vec![node.clone()]),
+            )
+            .expect("table compaction");
+            let id = compact
+                .arena
+                .children(compact.roots)
+                .first()
+                .expect("compact table root");
+            assert_eq!(classify_node_c(&compact.arena, *id), AtomType::Ord);
+        }
     }
 
     #[test]
