@@ -205,9 +205,8 @@ pub(super) fn layout_array(
     } else {
         (0.0, None)
     };
-    let mut suppressed_gaps = vec![false; n_cols.saturating_sub(1)];
+    let mut gap_reductions = vec![0.0_f64; n_cols.saturating_sub(1)];
     let mut suppress_left_edge = false;
-    let mut suppress_right_edge = false;
     for row in rows {
         let mut logical = 0usize;
         for cell in row {
@@ -225,15 +224,12 @@ pub(super) fn layout_array(
                 if *left_padding {
                     if logical == 0 {
                         suppress_left_edge = true;
-                    } else {
-                        suppressed_gaps[logical - 1] = true;
                     }
                 }
                 if *right_padding {
-                    if logical + span >= n_cols {
-                        suppress_right_edge = true;
-                    } else {
-                        suppressed_gaps[logical + span - 1] = true;
+                    if uniform_gap.is_some() && logical + span < n_cols {
+                        gap_reductions[logical + span - 1] =
+                            gap_reductions[logical + span - 1].max(colsep);
                     }
                 }
             }
@@ -241,14 +237,12 @@ pub(super) fn layout_array(
         }
     }
     let gap_after = |j| {
-        if suppressed_gaps.get(j).copied().unwrap_or(false) {
-            0.0
-        } else {
-            uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size))
-        }
+        (uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size))
+            - gap_reductions.get(j).copied().unwrap_or(0.0))
+        .max(0.0)
     };
     let left_edge = if suppress_left_edge { 0.0 } else { outer_pad };
-    let right_edge = if suppress_right_edge { 0.0 } else { outer_pad };
+    let right_edge = outer_pad;
 
     // Ordinary cells establish all column minima first. A spanning cell then
     // receives the remaining width across its logical columns, using the same
@@ -306,11 +300,23 @@ pub(super) fn layout_array(
                     .0
                     .or_else(|| columns.get(j).copied())
                     .unwrap_or(ColumnAlign::Center);
-                let dx = match align {
+                let mut dx = match align {
                     ColumnAlign::Left => 0.0,
                     ColumnAlign::Center => (merged_width - cell.width) / 2.0,
                     ColumnAlign::Right => merged_width - cell.width,
                 };
+                if uniform_gap.is_some()
+                    && matches!(
+                        rows[i][cell_index].first(),
+                        Some(MathNode::SpannedCell {
+                            right_padding: true,
+                            ..
+                        })
+                    )
+                    && j + span >= n_cols
+                {
+                    dx += colsep;
+                }
                 if let Some(MathNode::SpannedCell {
                     left_rule,
                     right_rule,
@@ -544,9 +550,8 @@ pub(super) fn layout_array_arena(
     } else {
         (0.0, None)
     };
-    let mut suppressed_gaps = vec![false; n_cols.saturating_sub(1)];
+    let mut gap_reductions = vec![0.0_f64; n_cols.saturating_sub(1)];
     let mut suppress_left_edge = false;
-    let mut suppress_right_edge = false;
     for i in 0..n_rows {
         let mut logical = 0usize;
         for slot in 0..nc.min(n_cols) {
@@ -570,15 +575,12 @@ pub(super) fn layout_array_arena(
                 if left_padding {
                     if logical == 0 {
                         suppress_left_edge = true;
-                    } else {
-                        suppressed_gaps[logical - 1] = true;
                     }
                 }
                 if right_padding {
-                    if logical + span >= n_cols {
-                        suppress_right_edge = true;
-                    } else {
-                        suppressed_gaps[logical + span - 1] = true;
+                    if uniform_gap.is_some() && logical + span < n_cols {
+                        gap_reductions[logical + span - 1] =
+                            gap_reductions[logical + span - 1].max(colsep);
                     }
                 }
             }
@@ -586,14 +588,12 @@ pub(super) fn layout_array_arena(
         }
     }
     let gap_after = |j| {
-        if suppressed_gaps.get(j).copied().unwrap_or(false) {
-            0.0
-        } else {
-            uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size))
-        }
+        (uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size))
+            - gap_reductions.get(j).copied().unwrap_or(0.0))
+        .max(0.0)
     };
     let left_edge = if suppress_left_edge { 0.0 } else { edge_pad };
-    let right_edge = if suppress_right_edge { 0.0 } else { edge_pad };
+    let right_edge = edge_pad;
 
     for i in 0..n_rows {
         let mut j = 0;
@@ -646,11 +646,23 @@ pub(super) fn layout_array_arena(
                     CompactNode::SpannedCell { alignment, .. } => alignment,
                     _ => columns.get(j).copied().unwrap_or(ColumnAlign::Center),
                 };
-                let dx = match align {
+                let mut dx = match align {
                     ColumnAlign::Left => 0.0,
                     ColumnAlign::Center => (merged_width - cell_w) / 2.0,
                     ColumnAlign::Right => merged_width - cell_w,
                 };
+                if uniform_gap.is_some()
+                    && matches!(
+                        *ast.node(cell_ids_ast[idx]),
+                        CompactNode::SpannedCell {
+                            right_padding: true,
+                            ..
+                        }
+                    )
+                    && j + cell_span >= n_cols
+                {
+                    dx += colsep;
+                }
                 if let CompactNode::SpannedCell {
                     left_rule,
                     right_rule,
