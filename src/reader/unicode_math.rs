@@ -466,6 +466,26 @@ impl CompactParser {
     }
 
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
+        // UTN #28 uses ┬ (U+252C) and ┴ (U+2534) for explicitly forced
+        // below/above placement. These markers differ from _/^ because they
+        // remain stacked in inline math.
+        if input.starts_with(['┬', '┴']) {
+            let mut rest = input;
+            let mut forced = SmallVec::<[(char, NodeId); 4]>::new();
+            while let Some(marker @ ('┬' | '┴')) = rest.chars().next() {
+                if forced.len() >= self.max_depth as usize {
+                    self.depth_limit();
+                    return Err(abort_failure(rest));
+                }
+                rest = &rest[marker.len_utf8()..];
+                let (tail, argument) = self.parse_script_arg(rest)?;
+                forced.push((marker, argument));
+                rest = tail;
+            }
+            let id = self.apply_forced_bounds(base, &forced);
+            return self.parse_scripts(rest, id);
+        }
+
         // Try subscript
         let (input, sub) = if let Some(rest) = input.strip_prefix('_') {
             match self.parse_script_arg(rest) {
@@ -520,6 +540,44 @@ impl CompactParser {
                 let id = self.push_node(CompactNode::SubSup { base, sub, sup });
                 Ok((input, id))
             },
+        }
+    }
+
+    /// Build forced above/below chains from right to left. A complementary
+    /// pair immediately following a base is the compact spelling for one
+    /// UnderOver node. Repeated markers otherwise associate to the right,
+    /// matching UTN 28's sub/superscript rule.
+    fn apply_forced_bounds(&mut self, base: NodeId, bounds: &[(char, NodeId)]) -> NodeId {
+        if bounds.is_empty() {
+            return base;
+        }
+        if bounds.len() >= 2 && bounds[0].0 != bounds[1].0 {
+            let (under, over) = if bounds[0].0 == '┬' {
+                (bounds[0].1, bounds[1].1)
+            } else {
+                (bounds[1].1, bounds[0].1)
+            };
+            let paired = self.push_node(CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits: false,
+            });
+            return self.apply_forced_bounds(paired, &bounds[2..]);
+        }
+        let nested = self.apply_forced_bounds(bounds[0].1, &bounds[1..]);
+        match bounds[0].0 {
+            '┬' => self.push_node(CompactNode::Underscript {
+                base,
+                under: nested,
+                movable_limits: false,
+            }),
+            '┴' => self.push_node(CompactNode::Overscript {
+                base,
+                over: nested,
+                movable_limits: false,
+            }),
+            _ => base,
         }
     }
 
@@ -1156,6 +1214,10 @@ impl CompactParser {
         // writes the thin space inside a compound limit name, so `lim sup`
         // must become one operator rather than `lim` followed by `sup`.
         let ops = [
+            "lim\u{00a0}sup",
+            "lim\u{00a0}inf",
+            "inj\u{00a0}lim",
+            "proj\u{00a0}lim",
             "lim\u{2009}sup",
             "lim\u{2009}inf",
             "inj\u{2009}lim",
@@ -1210,12 +1272,16 @@ impl CompactParser {
                     *op,
                     "limsup"
                         | "lim\u{2009}sup"
+                        | "lim\u{00a0}sup"
                         | "liminf"
                         | "lim\u{2009}inf"
+                        | "lim\u{00a0}inf"
                         | "injlim"
                         | "inj\u{2009}lim"
+                        | "inj\u{00a0}lim"
                         | "projlim"
                         | "proj\u{2009}lim"
+                        | "proj\u{00a0}lim"
                 );
                 let has_limits = matches!(
                     *op,
@@ -1223,11 +1289,15 @@ impl CompactParser {
                         | "liminf"
                         | "limsup"
                         | "lim\u{2009}sup"
+                        | "lim\u{00a0}sup"
                         | "lim\u{2009}inf"
+                        | "lim\u{00a0}inf"
                         | "injlim"
                         | "inj\u{2009}lim"
+                        | "inj\u{00a0}lim"
                         | "projlim"
                         | "proj\u{2009}lim"
+                        | "proj\u{00a0}lim"
                         | "plim"
                         | "sup"
                         | "inf"
@@ -1625,9 +1695,13 @@ mod tests {
     fn compound_limit_words_are_single_operators() {
         for source in [
             "lim\u{2009}sup x",
+            "lim\u{00a0}sup x",
             "lim\u{2009}inf x",
+            "lim\u{00a0}inf x",
             "inj\u{2009}lim x",
+            "inj\u{00a0}lim x",
             "proj\u{2009}lim x",
+            "proj\u{00a0}lim x",
             "limsup x",
             "liminf x",
             "injlim x",
@@ -1643,6 +1717,16 @@ mod tests {
                 matches!(&nodes[1], MathNode::Identifier(value) if value == "x"),
                 "{source}: {nodes:?}"
             );
+            if source.contains('\u{00a0}') {
+                assert_eq!(
+                    crate::from_unicode_math(source)
+                        .unwrap()
+                        .to_unicode_math()
+                        .unwrap(),
+                    source,
+                    "no-break name spacing changed: {source:?}"
+                );
+            }
         }
 
         let prefix = parse("limsupremo");
@@ -1658,6 +1742,15 @@ mod tests {
                 .to_unicode_math()
                 .unwrap(),
             "limsupremo"
+        );
+        let ascii_space = parse("lim sup");
+        assert!(
+            ascii_space
+                .iter()
+                .filter(|node| matches!(node, MathNode::Operator(_)))
+                .count()
+                >= 2,
+            "ASCII space keeps the two ordinary words separate: {ascii_space:?}"
         );
     }
 
@@ -1688,6 +1781,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn forced_stack_markers_bind_to_named_limits() {
+        let below = parse("lim\u{252C}(n→∞) a_n");
+        assert!(
+            matches!(
+                &below[0],
+                MathNode::Underscript {
+                    movable_limits: false,
+                    ..
+                }
+            ),
+            "{below:?}"
+        );
+        let both = parse("lim\u{252C}(n)\u{2534}(m) x");
+        assert!(
+            matches!(
+                &both[0],
+                MathNode::UnderOver {
+                    movable_limits: false,
+                    ..
+                }
+            ),
+            "{both:?}"
+        );
+
+        let source = crate::from_latex_with(
+            r"\lim\limits_{n}^{m} x",
+            &Config::default().with_display(DisplayStyle::Inline),
+        )
+        .unwrap();
+        let unicode = source.to_unicode_math().unwrap();
+        assert!(
+            unicode.contains('\u{252C}') && unicode.contains('\u{2534}'),
+            "{unicode}"
+        );
+        let reparsed = crate::from_unicode_math(&unicode).unwrap();
+        assert_eq!(reparsed.to_unicode_math().unwrap(), unicode);
+    }
+
+    #[test]
+    fn forced_bound_chains_associate_right_to_left_without_losing_operands() {
+        let same_below = parse("lim┬a┬b x");
+        assert!(
+            matches!(
+                &same_below[0],
+                MathNode::Underscript {
+                    base,
+                    under,
+                    movable_limits: false,
+                } if matches!(**base, MathNode::Operator(_))
+                    && matches!(**under, MathNode::Underscript { .. })
+            ),
+            "{same_below:?}"
+        );
+
+        let same_above = parse("lim┴a┴b x");
+        assert!(
+            matches!(
+                &same_above[0],
+                MathNode::Overscript {
+                    base,
+                    over,
+                    movable_limits: false,
+                } if matches!(**base, MathNode::Operator(_))
+                    && matches!(**over, MathNode::Overscript { .. })
+            ),
+            "{same_above:?}"
+        );
+
+        for source in ["lim┬a┴b x", "lim┴a┬b x"] {
+            let nodes = parse(source);
+            assert!(
+                matches!(
+                    nodes[0],
+                    MathNode::UnderOver {
+                        movable_limits: false,
+                        ..
+                    }
+                ),
+                "{source}: {nodes:?}"
+            );
+        }
+
+        for source in ["lim┬a┬b x", "lim┴a┴b x", "lim┬a┴b x", "lim┴a┬b x"] {
+            let first = crate::from_unicode_math(source).unwrap();
+            let written = first.to_unicode_math().unwrap();
+            let second = crate::from_unicode_math(&written).unwrap();
+            assert_eq!(
+                second.to_unicode_math().unwrap(),
+                written,
+                "{source}: {written}"
+            );
+        }
+
+        let config = Config::default().with_max_depth(4);
+        let too_deep = format!("lim{}x", "┬a".repeat(8));
+        assert!(matches!(
+            crate::from_unicode_math_with(&too_deep, &config),
+            Err(crate::error::Error::LimitExceeded {
+                kind: crate::error::LimitKind::Depth,
+                ..
+            })
+        ));
     }
 
     #[test]

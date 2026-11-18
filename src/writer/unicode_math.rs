@@ -141,21 +141,37 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::Subscript { base, sub } => {
             write_base(out, base, style);
-            out.push('_');
+            if has_forced_operator_limits(base) {
+                out.push('┬');
+            } else {
+                out.push('_');
+            }
             write_script_arg(out, sub, style.sub());
         },
 
         MathNode::Superscript { base, sup } => {
             write_base(out, base, style);
-            out.push('^');
+            out.push(if has_forced_operator_limits(base) {
+                '┴'
+            } else {
+                '^'
+            });
             write_script_arg(out, sup, style.sup());
         },
 
         MathNode::SubSup { base, sub, sup } => {
             write_base(out, base, style);
-            out.push('_');
+            out.push(if has_forced_operator_limits(base) {
+                '┬'
+            } else {
+                '_'
+            });
             write_script_arg(out, sub, style.sub());
-            out.push('^');
+            out.push(if has_forced_operator_limits(base) {
+                '┴'
+            } else {
+                '^'
+            });
             write_script_arg(out, sup, style.sup());
         },
 
@@ -178,29 +194,57 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, base, style);
         },
 
-        MathNode::Overscript { base, over, .. } => {
+        MathNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
             write_node(out, base, style);
-            out.push('\u{0305}'); // combining overline as approximation
-            // UnicodeMath limitation: arbitrary overscript content not representable;
-            // only a combining overline is emitted for the base.
-            let _ = over;
+            if !*movable_limits && !is_overunder_line_node(over) {
+                out.push('┴');
+                write_script_arg(out, over, style.sup());
+            } else {
+                out.push('\u{0305}'); // combining overline as approximation
+                // UnicodeMath limitation: arbitrary overscript content not representable;
+                // only a combining overline is emitted for the base.
+                let _ = over;
+            }
         },
 
-        MathNode::Underscript { base, under, .. } => {
+        MathNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
             write_node(out, base, style);
-            out.push('\u{0332}'); // combining underline as approximation
-            // UnicodeMath limitation: arbitrary underscript content not representable;
-            // only a combining underline is emitted for the base.
-            let _ = under;
+            if !*movable_limits && !is_overunder_line_node(under) {
+                out.push('┬');
+                write_script_arg(out, under, style.sub());
+            } else {
+                out.push('\u{0332}'); // combining underline as approximation
+                // UnicodeMath limitation: arbitrary underscript content not representable;
+                // only a combining underline is emitted for the base.
+                let _ = under;
+            }
         },
 
         MathNode::UnderOver {
-            base, under, over, ..
+            base,
+            under,
+            over,
+            movable_limits,
         } => {
             write_node(out, base, style);
-            // UnicodeMath limitation: under/over content not representable;
-            // only the base is emitted.
-            let _ = (under, over);
+            if !*movable_limits && !is_overunder_line_node(under) && !is_overunder_line_node(over) {
+                out.push('┬');
+                write_script_arg(out, under, style.sub());
+                out.push('┴');
+                write_script_arg(out, over, style.sup());
+            } else {
+                // UnicodeMath limitation: under/over content not representable;
+                // only the base is emitted.
+                let _ = (under, over);
+            }
         },
 
         MathNode::Fraction { num, den, kind } => {
@@ -425,7 +469,7 @@ fn select_mathchoice(node: &MathNode, style: MathStyle) -> &MathNode {
 fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle) {
     let mut current_style = style;
     let mut wrote_node = false;
-    for node in nodes {
+    for (index, node) in nodes.iter().enumerate() {
         if let MathNode::StyleSwitch(value) = node {
             current_style = MathStyle::branch_from_switch(*value);
             continue;
@@ -434,7 +478,17 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
             out.push(' ');
         }
         write_node(out, node, current_style);
+        if index + 1 < nodes.len() && needs_operator_terminator(node, current_style) {
+            out.push(' ');
+        }
         wrote_node = true;
+    }
+}
+
+fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
+    match select_mathchoice(node, style) {
+        MathNode::Operator(OperatorAttr { name, .. }) => name.contains('\u{00a0}'),
+        _ => false,
     }
 }
 
@@ -492,6 +546,36 @@ fn is_overunder_line(arena: &AstArena, id: NodeId) -> bool {
     matches!(arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(*sid) == "\u{203E}")
 }
 
+fn is_overunder_line_node(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(_, text) if text == "\u{203E}")
+}
+
+fn has_forced_operator_limits(node: &MathNode) -> bool {
+    match node {
+        MathNode::Operator(attr) => attr.limit_style == LimitStyle::AboveBelow,
+        MathNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            content,
+        } => has_forced_operator_limits(content),
+        MathNode::Row(children) if children.len() == 1 => has_forced_operator_limits(&children[0]),
+        _ => false,
+    }
+}
+
+fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Operator { limits, .. } => limits == LimitStyle::AboveBelow,
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            content,
+        } => has_forced_operator_limits_c(arena, content),
+        CompactNode::Row(span) if arena.children(span).len() == 1 => {
+            has_forced_operator_limits_c(arena, arena.children(span)[0])
+        },
+        _ => false,
+    }
+}
+
 fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
@@ -540,21 +624,37 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::Subscript { base, sub } => {
             write_base_c(out, arena, base, style);
-            out.push('_');
+            out.push(if has_forced_operator_limits_c(arena, base) {
+                '┬'
+            } else {
+                '_'
+            });
             write_script_arg_c(out, arena, sub, style.sub());
         },
 
         CompactNode::Superscript { base, sup } => {
             write_base_c(out, arena, base, style);
-            out.push('^');
+            out.push(if has_forced_operator_limits_c(arena, base) {
+                '┴'
+            } else {
+                '^'
+            });
             write_script_arg_c(out, arena, sup, style.sup());
         },
 
         CompactNode::SubSup { base, sub, sup } => {
             write_base_c(out, arena, base, style);
-            out.push('_');
+            out.push(if has_forced_operator_limits_c(arena, base) {
+                '┬'
+            } else {
+                '_'
+            });
             write_script_arg_c(out, arena, sub, style.sub());
-            out.push('^');
+            out.push(if has_forced_operator_limits_c(arena, base) {
+                '┴'
+            } else {
+                '^'
+            });
             write_script_arg_c(out, arena, sup, style.sup());
         },
 
@@ -577,9 +677,16 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             write_node_c(out, arena, base, style);
         },
 
-        CompactNode::Overscript { base, over, .. } => {
+        CompactNode::Overscript {
+            base,
+            over,
+            movable_limits,
+        } => {
             write_node_c(out, arena, base, style);
-            if is_overunder_line(arena, over) {
+            if !movable_limits && !is_overunder_line(arena, over) {
+                out.push('┴');
+                write_script_arg_c(out, arena, over, style.sup());
+            } else if is_overunder_line(arena, over) {
                 out.push('\u{0305}'); // combining overline for \overline / \bar
             } else {
                 // Preserve overset / brace / arrow content instead of dropping it.
@@ -588,9 +695,16 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             }
         },
 
-        CompactNode::Underscript { base, under, .. } => {
+        CompactNode::Underscript {
+            base,
+            under,
+            movable_limits,
+        } => {
             write_node_c(out, arena, base, style);
-            if is_overunder_line(arena, under) {
+            if !movable_limits && !is_overunder_line(arena, under) {
+                out.push('┬');
+                write_script_arg_c(out, arena, under, style.sub());
+            } else if is_overunder_line(arena, under) {
                 out.push('\u{0332}'); // combining underline for \underline
             } else {
                 out.push('_');
@@ -599,10 +713,21 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::UnderOver {
-            base, under, over, ..
+            base,
+            under,
+            over,
+            movable_limits,
         } => {
             write_node_c(out, arena, base, style);
-            if is_overunder_line(arena, under) {
+            if !movable_limits
+                && !is_overunder_line(arena, under)
+                && !is_overunder_line(arena, over)
+            {
+                out.push('┬');
+                write_script_arg_c(out, arena, under, style.sub());
+                out.push('┴');
+                write_script_arg_c(out, arena, over, style.sup());
+            } else if is_overunder_line(arena, under) {
                 out.push('\u{0332}');
             } else {
                 out.push('_');
@@ -610,7 +735,10 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             }
             if is_overunder_line(arena, over) {
                 out.push('\u{0305}');
-            } else {
+            } else if !(!movable_limits
+                && !is_overunder_line(arena, under)
+                && !is_overunder_line(arena, over))
+            {
                 out.push('^');
                 write_script_arg_c(out, arena, over, style.sup());
             }
@@ -868,7 +996,8 @@ fn write_nodes_c_with_style(
 ) {
     let mut current_style = style;
     let mut wrote_node = false;
-    for &id in arena.children(span) {
+    let children = arena.children(span);
+    for (index, &id) in children.iter().enumerate() {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
             current_style = MathStyle::branch_from_switch(value);
             continue;
@@ -877,7 +1006,17 @@ fn write_nodes_c_with_style(
             out.push(' ');
         }
         write_node_c(out, arena, id, current_style);
+        if index + 1 < children.len() && needs_operator_terminator_c(arena, id, current_style) {
+            out.push(' ');
+        }
         wrote_node = true;
+    }
+}
+
+fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+    match *arena.node(select_mathchoice_c(arena, id, style)) {
+        CompactNode::Operator { name, .. } => arena.str_val(name).contains('\u{00a0}'),
+        _ => false,
     }
 }
 
@@ -1137,6 +1276,36 @@ mod tests {
             UnicodeMathWriter::write(&expr, &Config::default()).unwrap(),
             "x +"
         );
+    }
+
+    #[test]
+    fn operator_terminator_uses_the_active_mathchoice_branch() {
+        let operator = |name: &str| {
+            MathNode::Operator(OperatorAttr {
+                name: name.into(),
+                limit_style: LimitStyle::Default,
+            })
+        };
+        let expr = MathExpr::block(vec![
+            MathNode::MathChoice {
+                display: Box::new(operator("lim\u{00a0}sup")),
+                text: Box::new(operator("T")),
+                script: Box::new(operator("S")),
+                script_script: Box::new(operator("Q")),
+            },
+            MathNode::Identifier("x".into()),
+        ]);
+        let config = Config::default();
+        let heap = UnicodeMathWriter::write(&expr, &config).unwrap();
+        let compact =
+            UnicodeMathWriter::write_compact(&CompactExpr::from_math_expr(&expr).unwrap(), &config)
+                .unwrap();
+        assert_eq!(heap, "lim\u{00a0}sup x");
+        assert_eq!(compact, heap);
+
+        let inline =
+            UnicodeMathWriter::write(&MathExpr::inline(expr.nodes.clone()), &config).unwrap();
+        assert_eq!(inline, "Tx");
     }
 
     #[test]
