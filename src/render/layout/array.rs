@@ -31,34 +31,220 @@ pub(super) fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
     }
 }
 
-/// Rule masks cover at most the first 32 boundaries. Compute these positions
-/// on demand so ordinary unruled tables need no boundary storage.
-fn column_rules(
-    widths: &[f64],
-    gap_after: impl Fn(usize) -> f64,
+/// The preamble of one cell. A normal cell inherits its column's alignment
+/// and the two adjacent half-gaps. A multicolumn can replace either side.
+#[derive(Clone, Copy)]
+struct CellTemplate {
+    span: usize,
+    alignment: Option<ColumnAlign>,
+    omit_left: bool,
+    omit_right: bool,
+    left_rule: bool,
+    right_rule: bool,
+}
+
+impl CellTemplate {
+    const ORDINARY: Self = Self {
+        span: 1,
+        alignment: None,
+        omit_left: false,
+        omit_right: false,
+        left_rule: false,
+        right_rule: false,
+    };
+
+    fn heap(nodes: &[MathNode]) -> Self {
+        match nodes {
+            [
+                MathNode::SpannedCell {
+                    alignment,
+                    span,
+                    left_padding,
+                    right_padding,
+                    left_rule,
+                    right_rule,
+                    ..
+                },
+            ] => Self {
+                span: usize::from((*span).max(1)),
+                alignment: Some(*alignment),
+                omit_left: *left_padding,
+                omit_right: *right_padding,
+                left_rule: *left_rule,
+                right_rule: *right_rule,
+            },
+            [MathNode::AlignedCell { alignment, .. }] => Self {
+                alignment: Some(*alignment),
+                ..Self::ORDINARY
+            },
+            _ => Self::ORDINARY,
+        }
+    }
+
+    fn compact(node: &CompactNode, remaining: usize) -> Self {
+        match *node {
+            CompactNode::SpannedCell {
+                alignment,
+                span,
+                left_padding,
+                right_padding,
+                left_rule,
+                right_rule,
+                ..
+            } => Self {
+                span: usize::from(span.max(1)).min(remaining),
+                alignment: Some(alignment),
+                omit_left: left_padding,
+                omit_right: right_padding,
+                left_rule,
+                right_rule,
+            },
+            CompactNode::AlignedCell { alignment, .. } => Self {
+                alignment: Some(alignment),
+                ..Self::ORDINARY
+            },
+            _ => Self::ORDINARY,
+        }
+    }
+}
+
+/// Physical column widths include both sides of the ordinary column template.
+/// Thus removing padding from one cell never changes another row's template.
+struct ColumnLayout {
+    widths: Vec<f64>,
+    spans: Vec<(usize, usize, f64)>,
     edge: f64,
-    total: f64,
-    mask: u32,
-) -> impl Iterator<Item = f64> {
-    let mut next_column = edge;
-    (0..=widths.len())
-        .take(u32::BITS as usize)
-        .filter_map(move |index| {
-            let boundary = if index == 0 {
-                0.0
-            } else if index == widths.len() {
-                total
-            } else {
-                next_column - gap_after(index - 1) / 2.0
-            };
-            if let Some(width) = widths.get(index) {
-                next_column += width;
-                if index + 1 < widths.len() {
-                    next_column += gap_after(index);
-                }
+    gap: Option<f64>,
+    aligned: bool,
+    size: f64,
+}
+
+impl ColumnLayout {
+    fn new(
+        count: usize,
+        small: Option<(f64, f64)>,
+        array: bool,
+        aligned: bool,
+        size: f64,
+        has_span: bool,
+    ) -> Self {
+        let colsep = ARRAY_COLSEP_EM * size;
+        let (edge, gap) = match small {
+            Some((edge, gap)) => (edge, Some(gap)),
+            None if array => (colsep, Some(2.0 * colsep)),
+            None => (0.0, None),
+        };
+        let mut layout = Self {
+            widths: vec![0.0; count],
+            spans: Vec::new(),
+            edge,
+            gap,
+            aligned,
+            size,
+        };
+        if !has_span {
+            for col in 0..count {
+                let (left, right) = layout.padding(col, CellTemplate::ORDINARY);
+                layout.widths[col] = left + right;
             }
-            (mask & (1 << index) != 0).then_some(boundary)
-        })
+        }
+        layout
+    }
+
+    fn padding(&self, col: usize, cell: CellTemplate) -> (f64, f64) {
+        let half_gap = |before| {
+            self.gap
+                .unwrap_or_else(|| col_gap_after(before, self.aligned, self.size))
+                * 0.5
+        };
+        let end = col + cell.span;
+        let left = if cell.omit_left {
+            0.0
+        } else if col == 0 {
+            self.edge
+        } else {
+            half_gap(col - 1)
+        };
+        let right = if cell.omit_right {
+            0.0
+        } else if end == self.widths.len() {
+            self.edge
+        } else {
+            half_gap(end - 1)
+        };
+        (left, right)
+    }
+
+    fn measure(&mut self, col: usize, cell: CellTemplate, width: f64) {
+        let (left, right) = self.padding(col, cell);
+        let required = width + left + right;
+        if cell.span == 1 {
+            self.widths[col] = self.widths[col].max(required);
+        } else {
+            self.spans.push((col, col + cell.span, required));
+        }
+    }
+
+    fn resolve(&mut self) {
+        // TeX assigns an unmet span width to its final column. Resolve earlier
+        // end columns first so overlapping spans use the same column minima in
+        // either input row order.
+        self.spans.sort_unstable_by_key(|&(_, end, _)| end);
+        for &(start, end, required) in &self.spans {
+            let current: f64 = self.widths[start..end].iter().sum();
+            if required > current {
+                self.widths[end - 1] += required - current;
+            }
+        }
+    }
+
+    fn place(
+        &self,
+        col: usize,
+        cell: CellTemplate,
+        content: f64,
+        columns: &[ColumnAlign],
+    ) -> (f64, f64) {
+        let width = if cell.span == 1 {
+            self.widths[col]
+        } else {
+            self.widths[col..col + cell.span].iter().sum()
+        };
+        let (left, right) = self.padding(col, cell);
+        let slack = width - left - right - content;
+        let align = cell
+            .alignment
+            .or_else(|| columns.get(col).copied())
+            .unwrap_or(ColumnAlign::Center);
+        (
+            width,
+            left + match align {
+                ColumnAlign::Left => 0.0,
+                ColumnAlign::Center => slack * 0.5,
+                ColumnAlign::Right => slack,
+            },
+        )
+    }
+
+    fn width(&self) -> f64 {
+        if self.widths.is_empty() {
+            2.0 * self.edge
+        } else {
+            self.widths.iter().sum()
+        }
+    }
+
+    fn rules(&self, mask: u32) -> impl Iterator<Item = f64> + '_ {
+        let ends = self.widths.iter().scan(0.0, |x, w| {
+            *x += w;
+            Some(*x)
+        });
+        std::iter::once(0.0)
+            .chain(ends)
+            .take(u32::BITS as usize)
+            .enumerate()
+            .filter_map(move |(index, x)| (mask & (1 << index) != 0).then_some(x))
+    }
 }
 
 fn row_rules<'a>(
@@ -139,9 +325,11 @@ pub(super) fn layout_array(
     } else {
         ctx.with_style(MathStyle::Text)
     };
+    let mut has_span = false;
     for row in rows {
         let mut row_layouts = Vec::new();
         for cell in row {
+            has_span |= matches!(cell.as_slice(), [MathNode::SpannedCell { .. }]);
             row_layouts.push(layout_row(crate::ast::table_cell_parts(cell).1, &cell_ctx));
         }
         cell_layouts.push(row_layouts);
@@ -150,21 +338,19 @@ pub(super) fn layout_array(
     let n_rows = cell_layouts.len();
 
     // Compute column widths and row heights/depths with strut minimums
-    let mut col_widths = vec![0.0_f64; n_cols];
+    let small = smallmatrix.then(|| smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale));
+    let mut grid = ColumnLayout::new(n_cols, small, array_style, aligned, size, has_span);
     let mut row_heights = vec![arstrut_height; n_rows];
     let mut row_depths = vec![arstrut_depth; n_rows];
 
     for (i, row) in cell_layouts.iter().enumerate() {
         let mut j = 0;
         for (cell_index, cell) in row.iter().enumerate() {
-            let span = crate::ast::table_cell_span(&rows[i][cell_index])
-                .min(n_cols.saturating_sub(j).max(1));
-            if span == 1 {
-                col_widths[j] = col_widths[j].max(cell.width);
-            }
+            let template = CellTemplate::heap(&rows[i][cell_index]);
+            grid.measure(j, template, cell.width);
             row_heights[i] = row_heights[i].max(cell.height);
             row_depths[i] = row_depths[i].max(cell.depth);
-            j += span;
+            j += template.span;
         }
     }
 
@@ -183,101 +369,30 @@ pub(super) fn layout_array(
     let mut children = Vec::new();
     let mut cell_rules = Vec::new();
     let mut cursor_y = 0.0;
-    let colsep = ARRAY_COLSEP_EM * size;
-    let (outer_pad, uniform_gap) = if smallmatrix {
-        let (edge, gap) = smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale);
-        (edge, Some(gap))
-    } else if array_style {
-        (colsep, Some(2.0 * colsep))
-    } else {
-        (0.0, None)
-    };
-    let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
-
-    // Ordinary cells establish all column minima first. A spanning cell then
-    // receives the remaining width across its logical columns, using the same
-    // effective gap as the positioning pass.
-    for (i, row) in cell_layouts.iter().enumerate() {
-        let mut j = 0;
-        for (cell_index, cell) in row.iter().enumerate() {
-            let span = crate::ast::table_cell_span(&rows[i][cell_index])
-                .min(n_cols.saturating_sub(j).max(1));
-            if span > 1 {
-                let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
-                    + (j..j.saturating_add(span).saturating_sub(1))
-                        .map(&gap_after)
-                        .sum::<f64>();
-                if cell.width > current {
-                    col_widths[j + span - 1] += cell.width - current;
-                }
-            }
-            j += span;
-        }
-    }
+    grid.resolve();
 
     // Start from top
     for (i, row) in cell_layouts.into_iter().enumerate() {
         cursor_y += row_heights[i];
-        let mut cursor_x = outer_pad;
-        let row_len = row.len();
-        let mut row_iter = row.into_iter();
-
-        let mut j = 0;
-        while j < n_cols {
-            let Some(cell) = row_iter.next() else {
-                cursor_x += col_widths[j];
-                j += 1;
-                if j < n_cols {
-                    cursor_x += gap_after(j - 1);
-                }
-                continue;
-            };
-            let cell_index = row_len.saturating_sub(row_iter.len()).saturating_sub(1);
-            let span = crate::ast::table_cell_span(&rows[i][cell_index])
-                .min(n_cols.saturating_sub(j).max(1));
-            let merged_width = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
-                + (j..j.saturating_add(span).saturating_sub(1))
-                    .map(&gap_after)
-                    .sum::<f64>();
-            {
-                let align = crate::ast::table_cell_parts(&rows[i][cell_index])
-                    .0
-                    .or_else(|| columns.get(j).copied())
-                    .unwrap_or(ColumnAlign::Center);
-                let dx = match align {
-                    ColumnAlign::Left => 0.0,
-                    ColumnAlign::Center => (merged_width - cell.width) / 2.0,
-                    ColumnAlign::Right => merged_width - cell.width,
-                };
-                if let [
-                    MathNode::SpannedCell {
-                        left_rule,
-                        right_rule,
-                        ..
-                    },
-                ] = rows[i][cell_index].as_slice()
-                {
-                    if *left_rule {
-                        cell_rules.push(cursor_x);
-                    }
-                    if *right_rule {
-                        cell_rules.push(cursor_x + merged_width);
-                    }
-                }
-                children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
+        let mut cursor_x = 0.0;
+        let mut col = 0;
+        for (cell, source) in row.into_iter().zip(&rows[i]) {
+            let template = CellTemplate::heap(source);
+            let (width, dx) = grid.place(col, template, cell.width, columns);
+            if template.left_rule {
+                cell_rules.push((cursor_x, i, cursor_y));
             }
-            cursor_x += merged_width;
-            j += span;
-            if j < n_cols {
-                cursor_x += gap_after(j - 1);
+            if template.right_rule {
+                cell_rules.push((cursor_x + width, i, cursor_y));
             }
+            children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
+            cursor_x += width;
+            col += template.span;
         }
-
         cursor_y += row_depths[i];
     }
 
-    let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
-    let total_width: f64 = outer_pad * 2.0 + col_widths.iter().sum::<f64>() + total_gap;
+    let total_width = grid.width();
     let total_extent = cursor_y;
     // Center vertically around the axis
     let axis = ctx.params.axis_height * size;
@@ -298,7 +413,7 @@ pub(super) fn layout_array(
     if col_seps != 0 {
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + box_depth;
-        for bx in column_rules(&col_widths, gap_after, outer_pad, total_width, col_seps) {
+        for bx in grid.rules(col_seps) {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
@@ -318,19 +433,19 @@ pub(super) fn layout_array(
 
     if !cell_rules.is_empty() {
         let rule_w = 0.04 * size;
-        let rule_total_h = box_height + box_depth;
-        for bx in cell_rules {
+        for (bx, row, baseline) in cell_rules {
+            let rule_total_h = row_heights[row] + row_depths[row];
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
             );
             children.push(PositionedBox::new(
                 bx - rule_w / 2.0,
-                0.0,
+                box_height - baseline,
                 LayoutBox {
                     width: rule_w,
-                    height: box_height,
-                    depth: box_depth,
+                    height: row_heights[row],
+                    depth: row_depths[row],
                     kind: BoxKind::SvgPath(path),
                 },
             ));
@@ -410,7 +525,9 @@ pub(super) fn layout_array_arena(
     } else {
         MathStyle::Text
     });
+    let mut has_span = false;
     for &cell_id in cell_ids_ast {
+        has_span |= matches!(ast.node(cell_id), CompactNode::SpannedCell { .. });
         match *ast.node(cell_id) {
             CompactNode::Row(span) => {
                 cell_layout_ids.push(layout_row_arena(ast, span, arena, &cell_ctx));
@@ -424,26 +541,24 @@ pub(super) fn layout_array_arena(
     let n_cols = columns.len().max(nc);
 
     // Compute column widths and row heights/depths with strut minimums
-    let mut col_widths = vec![0.0_f64; n_cols];
+    let small = smallmatrix.then(|| smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale));
+    let mut grid = ColumnLayout::new(n_cols, small, array_style, aligned, size, has_span);
     let mut row_heights = vec![arstrut_height; n_rows];
     let mut row_depths = vec![arstrut_depth; n_rows];
 
     for i in 0..n_rows {
-        for j in 0..nc.min(n_cols) {
+        let mut j = 0;
+        while j < nc {
             let idx = i * nc + j;
-            if idx < cell_layout_ids.len() {
-                let b = arena.get(cell_layout_ids[idx]);
-                if !matches!(
-                    *ast.node(cell_ids_ast[idx]),
-                    CompactNode::SpannedCell { span, .. } if span > 1
-                ) {
-                    col_widths[j] = col_widths[j].max(b.width);
-                }
-                row_heights[i] = row_heights[i].max(b.height);
-                row_depths[i] = row_depths[i].max(b.depth);
-            }
+            let template = CellTemplate::compact(ast.node(cell_ids_ast[idx]), nc - j);
+            let cell = arena.get(cell_layout_ids[idx]);
+            grid.measure(j, template, cell.width);
+            row_heights[i] = row_heights[i].max(cell.height);
+            row_depths[i] = row_depths[i].max(cell.depth);
+            j += template.span;
         }
     }
+    grid.resolve();
 
     if smallmatrix {
         add_smallmatrix_row_glue(&row_heights, &mut row_depths, ctx.size_scale);
@@ -473,109 +588,32 @@ pub(super) fn layout_array_arena(
     let mut cell_rules = Vec::new();
     let mut cursor_y = 0.0;
 
-    // `array`-style tables pad outer edges with
-    // `\arraycolsep` and use 2·arraycolsep between columns.
-    let colsep = ARRAY_COLSEP_EM * size;
-    let (edge_pad, uniform_gap) = if smallmatrix {
-        let (edge, gap) = smallmatrix_horizontal_spacing(ctx.style, ctx.size_scale);
-        (edge, Some(gap))
-    } else if array_style {
-        (colsep, Some(2.0 * colsep))
-    } else {
-        (0.0, None)
-    };
-    let gap_after = |j| uniform_gap.unwrap_or_else(|| col_gap_after(j, aligned, size));
-
-    for i in 0..n_rows {
-        let mut j = 0;
-        while j < nc.min(n_cols) {
-            let idx = i * nc + j;
-            if idx >= cell_layout_ids.len() {
-                break;
-            }
-            let span = match *ast.node(cell_ids_ast[idx]) {
-                CompactNode::SpannedCell { span, .. } => (span.max(1) as usize).min(n_cols - j),
-                _ => 1,
-            };
-            if span > 1 {
-                let width = arena.get(cell_layout_ids[idx]).width;
-                let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
-                    + (j..j.saturating_add(span).saturating_sub(1))
-                        .map(&gap_after)
-                        .sum::<f64>();
-                if width > current {
-                    col_widths[j + span - 1] += width - current;
-                }
-            }
-            j += span;
-        }
-    }
-
     for i in 0..n_rows {
         cursor_y += row_heights[i];
-        let mut cursor_x = edge_pad;
-
+        let mut cursor_x = 0.0;
         let mut j = 0;
-        while j < nc.min(n_cols) {
+        while j < nc {
             let idx = i * nc + j;
-            if idx < cell_layout_ids.len() {
-                if ast.is_span_padding(cell_ids_ast[idx]) {
-                    j += 1;
-                    continue;
-                }
-                let cell_w = arena.get(cell_layout_ids[idx]).width;
-                let cell_span = match *ast.node(cell_ids_ast[idx]) {
-                    CompactNode::SpannedCell { span, .. } => (span.max(1) as usize).min(n_cols - j),
-                    _ => 1,
-                };
-                let merged_width = (j..j + cell_span).map(|k| col_widths[k]).sum::<f64>()
-                    + (j..j.saturating_add(cell_span).saturating_sub(1))
-                        .map(gap_after)
-                        .sum::<f64>();
-                let align = match *ast.node(cell_ids_ast[idx]) {
-                    CompactNode::AlignedCell { alignment, .. } => alignment,
-                    CompactNode::SpannedCell { alignment, .. } => alignment,
-                    _ => columns.get(j).copied().unwrap_or(ColumnAlign::Center),
-                };
-                let dx = match align {
-                    ColumnAlign::Left => 0.0,
-                    ColumnAlign::Center => (merged_width - cell_w) / 2.0,
-                    ColumnAlign::Right => merged_width - cell_w,
-                };
-                if let CompactNode::SpannedCell {
-                    left_rule,
-                    right_rule,
-                    ..
-                } = *ast.node(cell_ids_ast[idx])
-                {
-                    if left_rule {
-                        cell_rules.push(cursor_x);
-                    }
-                    if right_rule {
-                        cell_rules.push(cursor_x + merged_width);
-                    }
-                }
-                arena.push_child(ArenaPositionedBox {
-                    dx: cursor_x + dx,
-                    dy: box_height - cursor_y,
-                    id: cell_layout_ids[idx],
-                });
-                cursor_x += merged_width;
-                j = j.saturating_add(cell_span);
-            } else {
-                cursor_x += col_widths.get(j).copied().unwrap_or(0.0);
-                j += 1;
+            let template = CellTemplate::compact(ast.node(cell_ids_ast[idx]), nc - j);
+            let cell = cell_layout_ids[idx];
+            let (width, dx) = grid.place(j, template, arena.get(cell).width, &columns);
+            if template.left_rule {
+                cell_rules.push((cursor_x, i, cursor_y));
             }
-            if j < n_cols {
-                cursor_x += gap_after(j - 1);
+            if template.right_rule {
+                cell_rules.push((cursor_x + width, i, cursor_y));
             }
+            arena.push_child(ArenaPositionedBox {
+                dx: cursor_x + dx,
+                dy: box_height - cursor_y,
+                id: cell,
+            });
+            cursor_x += width;
+            j += template.span;
         }
-
         cursor_y += row_depths[i];
     }
-
-    let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
-    let total_width: f64 = edge_pad + col_widths.iter().sum::<f64>() + total_gap + edge_pad;
+    let total_width = grid.width();
 
     // Add vertical separator rules if col_seps is non-zero
     if col_seps != 0 {
@@ -583,7 +621,7 @@ pub(super) fn layout_array_arena(
         let rule_total_h = box_height + (half - axis);
         let box_depth = half - axis;
 
-        for bx in column_rules(&col_widths, gap_after, edge_pad, total_width, col_seps) {
+        for bx in grid.rules(col_seps) {
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
@@ -604,22 +642,21 @@ pub(super) fn layout_array_arena(
 
     if !cell_rules.is_empty() {
         let rule_w = 0.04 * size;
-        let rule_total_h = box_height + (half - axis);
-        let box_depth = half - axis;
-        for bx in cell_rules {
+        for (bx, row, baseline) in cell_rules {
+            let rule_total_h = row_heights[row] + row_depths[row];
             let path = format!(
                 "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
                 rule_w, rule_w, rule_total_h, rule_total_h
             );
             let rule_id = arena.alloc(ArenaLayoutBox {
                 width: rule_w,
-                height: box_height,
-                depth: box_depth,
+                height: row_heights[row],
+                depth: row_depths[row],
                 kind: ArenaBoxKind::SvgPath(path),
             });
             arena.push_child(ArenaPositionedBox {
                 dx: bx - rule_w / 2.0,
-                dy: 0.0,
+                dy: box_height - baseline,
                 id: rule_id,
             });
         }
@@ -656,4 +693,61 @@ pub(super) fn layout_array_arena(
         depth: box_depth,
         kind: ArenaBoxKind::VBox { children },
     })
+}
+
+#[cfg(test)]
+mod span_tests {
+    use super::*;
+
+    #[test]
+    fn padding_is_local_to_the_spanning_cell() {
+        let mut grid = ColumnLayout::new(3, None, true, false, 1.0, true);
+        let usual = CellTemplate::ORDINARY;
+        for (col, width) in [1.0, 2.0, 1.0].into_iter().enumerate() {
+            grid.measure(col, usual, width);
+        }
+        let left = CellTemplate {
+            span: 2,
+            omit_left: true,
+            ..usual
+        };
+        let right = CellTemplate {
+            span: 2,
+            omit_right: true,
+            ..usual
+        };
+        grid.measure(1, left, 0.5);
+        grid.measure(1, right, 0.5);
+        grid.resolve();
+        let columns = [ColumnAlign::Left, ColumnAlign::Center, ColumnAlign::Right];
+        let (width, center) = grid.place(1, CellTemplate { span: 2, ..usual }, 0.5, &columns);
+        assert_eq!(
+            grid.place(1, left, 0.5, &columns),
+            (width, center - grid.edge / 2.0)
+        );
+        assert_eq!(
+            grid.place(1, right, 0.5, &columns),
+            (width, center + grid.edge / 2.0)
+        );
+        assert_eq!(grid.place(0, usual, 1.0, &columns).1, grid.edge);
+    }
+
+    #[test]
+    fn overlapping_spans_resolve_in_logical_column_order() {
+        let usual = CellTemplate::ORDINARY;
+        let span = CellTemplate { span: 2, ..usual };
+        for constraints in [[(1, 9.0), (0, 8.0)], [(0, 8.0), (1, 9.0)]] {
+            let mut grid = ColumnLayout::new(3, None, true, false, 1.0, true);
+            for col in 0..3 {
+                grid.measure(col, usual, 1.0);
+            }
+            for (start, width) in constraints {
+                grid.measure(start, span, width);
+            }
+            grid.resolve();
+            // Each padded ordinary cell initially needs two em. The two
+            // spanning cells require nine and ten em across their slots.
+            assert_eq!(grid.widths, [2.0, 7.0, 3.0]);
+        }
+    }
 }
