@@ -4968,7 +4968,7 @@ impl LatexCompactParser {
     /// Parse one of `\kern`, `\mkern`, `\hskip`, or `\mskip` as fixed
     /// horizontal spacing. The AST has no glue stretch/shrink fields, so any
     /// such suffix is retained as source input and reported as a diagnostic.
-    fn parse_kern<'a>(&mut self, input: &'a str, _is_mu: bool) -> IResult<&'a str, NodeId> {
+    fn parse_kern<'a>(&mut self, input: &'a str, is_mu: bool) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         // If the dimension is braced, handle {dim}
         if input.starts_with('{') {
@@ -4977,12 +4977,19 @@ impl LatexCompactParser {
                 nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
             })?;
             let dim_str = &rest[..end];
+            self.warn_kern_unit(is_mu, dim_str);
             let after = &rest[end + 1..];
             // Parse the dimension within the braces
             let mut sub_parser = LatexCompactParser::with_capacity(dim_str.len(), None);
             if let Ok((remaining, r)) = sub_parser.parse_dimension(dim_str) {
                 if !remaining.trim().is_empty() {
-                    self.warn_kern_suffix(remaining);
+                    if let Some(after_glue) = Self::consume_glue_suffix(remaining) {
+                        if after_glue != remaining {
+                            self.warn_kern_suffix(remaining);
+                        }
+                    } else {
+                        self.warn_kern_suffix(remaining);
+                    }
                 }
                 return Ok((after, self.arena.push_node(CompactNode::Space(r))));
             }
@@ -4994,10 +5001,13 @@ impl LatexCompactParser {
         }
         match self.parse_dimension(input) {
             Ok((rest, r)) => {
+                let dimension_text = &input[..input.len() - rest.len()];
+                self.warn_kern_unit(is_mu, dimension_text);
+                let after_glue = Self::consume_glue_suffix(rest).unwrap_or(rest);
                 if !rest.trim().is_empty() {
                     self.warn_kern_suffix(rest);
                 }
-                Ok((rest, self.arena.push_node(CompactNode::Space(r))))
+                Ok((after_glue, self.arena.push_node(CompactNode::Space(r))))
             },
             Err(_) => {
                 // Couldn't parse dimension; just emit zero space
@@ -5007,6 +5017,68 @@ impl LatexCompactParser {
                 ))
             },
         }
+    }
+
+    /// Consume the optional TeX glue stretch and shrink clauses after a fixed
+    /// dimension. The AST stores only fixed spacing, so the caller retains the
+    /// fixed value and reports one diagnostic for the discarded clauses.
+    ///
+    /// A suffix is consumed only when every clause is complete. This prevents
+    /// an incomplete `plus` or an unrelated following identifier from being
+    /// swallowed by a spacing primitive.
+    fn consume_glue_suffix(input: &str) -> Option<&str> {
+        let mut rest = input;
+        let mut found = false;
+        let mut phase = 0_u8;
+        for _ in 0..2 {
+            let trimmed = rest.trim_start();
+            let (keyword, next_phase) = if let Some(after) = trimmed.strip_prefix("plus") {
+                if after
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_alphabetic())
+                {
+                    return None;
+                }
+                (after, 1_u8)
+            } else if let Some(after) = trimmed.strip_prefix("minus") {
+                if after
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_alphabetic())
+                {
+                    return None;
+                }
+                (after, 2_u8)
+            } else {
+                break;
+            };
+            if phase & next_phase != 0 || (next_phase == 1 && phase == 2) {
+                return None;
+            }
+            let after_keyword = keyword.trim_start();
+            let after_value = if after_keyword.starts_with("fil") {
+                let end = after_keyword
+                    .char_indices()
+                    .take_while(|(_, ch)| ch.is_ascii_alphabetic())
+                    .map(|(index, ch)| index + ch.len_utf8())
+                    .last()
+                    .unwrap_or(0);
+                let word = &after_keyword[..end];
+                if !matches!(word, "fil" | "fill" | "filll") {
+                    return None;
+                }
+                &after_keyword[end..]
+            } else {
+                let mut probe = LatexCompactParser::with_capacity(after_keyword.len(), None);
+                let (after, _) = probe.parse_dimension(after_keyword).ok()?;
+                after
+            };
+            found = true;
+            phase |= next_phase;
+            rest = after_value;
+        }
+        found.then_some(rest)
     }
 
     fn warn_kern_suffix(&mut self, suffix: &str) {
@@ -5022,6 +5094,26 @@ impl LatexCompactParser {
             self.warn("stretch and shrink components in \\kern/\\hskip dimensions were dropped");
         } else {
             self.warn("extra tokens in a \\kern/\\hskip dimension were dropped");
+        }
+    }
+
+    fn warn_kern_unit(&mut self, is_mu: bool, dimension: &str) {
+        let dimension = dimension.trim_end();
+        let unit = ["em", "ex", "mu", "pt", "pc", "bp", "cm", "mm", "in", "sp"]
+            .iter()
+            .find(|unit| dimension.ends_with(**unit))
+            .copied();
+        let wrong = match unit {
+            Some("mu") => !is_mu,
+            Some(_) => is_mu,
+            None => false,
+        };
+        if wrong {
+            self.warn(if is_mu {
+                "\\mkern/\\mskip spacing expects a mu unit"
+            } else {
+                "\\kern/\\hskip spacing does not use a mu unit"
+            });
         }
     }
 

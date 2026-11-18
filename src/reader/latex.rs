@@ -767,6 +767,100 @@ mod tests {
     }
 
     #[test]
+    fn unbraced_glue_suffixes_are_consumed_without_swallowing_following_math() {
+        let parsed =
+            LatexReader::parse_compact(r"a\hskip 1em plus .5em minus .2em b", &Config::default())
+                .unwrap();
+        assert!(parsed.has_warnings());
+        let expr = parsed.to_parse_result().expr;
+        assert!(
+            expr.nodes
+                .iter()
+                .any(|node| matches!(node, MathNode::Identifier(text) if text == "b"))
+        );
+        assert!(
+            expr.nodes
+                .iter()
+                .any(|node| matches!(node, MathNode::Space(width) if width.as_f64() > 0.09))
+        );
+
+        let parsed =
+            LatexReader::parse_compact(r"a\hskip 1em plus fill minus 2pt b", &Config::default())
+                .unwrap();
+        assert!(parsed.has_warnings());
+        let expr = parsed.to_parse_result().expr;
+        assert!(
+            expr.nodes
+                .iter()
+                .any(|node| matches!(node, MathNode::Identifier(text) if text == "b"))
+        );
+    }
+
+    #[test]
+    fn incomplete_glue_is_left_for_the_outer_parser() {
+        let parsed = LatexReader::parse_compact(r"a\hskip 1em plus b", &Config::default()).unwrap();
+        assert!(parsed.has_warnings());
+        let expr = parsed.to_parse_result().expr;
+        assert!(
+            expr.nodes
+                .iter()
+                .any(|node| matches!(node, MathNode::Identifier(text) if text == "b"))
+        );
+    }
+
+    #[test]
+    fn glue_fixed_width_matches_kern_and_consumes_infinite_orders() {
+        for (glue, kern) in [
+            (r"a\hskip 1em plus .5em minus .2em b", r"a\kern1em b"),
+            (r"a\hskip 1em plus fill minus 2pt b", r"a\kern1em b"),
+            (r"a\mskip 18mu plus 1fil b", r"a\mkern18mu b"),
+        ] {
+            let glue = parse(glue);
+            let kern = parse(kern);
+            let glue_space = glue
+                .iter()
+                .find_map(|node| match node {
+                    MathNode::Space(value) => Some(value.as_f64()),
+                    _ => None,
+                })
+                .expect("glue should retain a fixed space");
+            let kern_space = kern
+                .iter()
+                .find_map(|node| match node {
+                    MathNode::Space(value) => Some(value.as_f64()),
+                    _ => None,
+                })
+                .expect("kern should retain a fixed space");
+            assert!((glue_space - kern_space).abs() < f64::EPSILON, "{glue:?}");
+            assert!(
+                glue.iter()
+                    .any(|node| matches!(node, MathNode::Identifier(text) if text == "b"))
+            );
+        }
+    }
+
+    #[test]
+    fn math_and_text_spacing_units_are_reported_without_rejecting_input() {
+        let text_unit = LatexReader::parse_compact(r"a\hskip1mu b", &Config::default()).unwrap();
+        assert!(text_unit.has_warnings());
+        assert!(
+            text_unit
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("does not use a mu unit") })
+        );
+
+        let math_unit = LatexReader::parse_compact(r"a\mskip1em b", &Config::default()).unwrap();
+        assert!(math_unit.has_warnings());
+        assert!(
+            math_unit
+                .diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic.message.contains("expects a mu unit") })
+        );
+    }
+
+    #[test]
     fn hspace_braced() {
         let nodes = parse("a\\hspace{1em}b");
         assert!(

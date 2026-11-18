@@ -516,3 +516,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UnicodeMath/MathML style round-trips recover all 13 text styles.**
   `unstyled_char` now reverses BoldItalic, Script, BoldScript, Fraktur,
   BoldFraktur, and every SansSerif variant in addition to the original four.
+- `\hskip` and `\mskip` accept fixed dimensions like their `\kern` and
+  `\mkern` counterparts. Native TeX glue suffixes such as `plus .5em`,
+  `minus 2pt`, and `fill` are consumed and reported as dropped stretch or
+  shrink because the public AST stores fixed spacing only.
