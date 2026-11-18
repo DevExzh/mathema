@@ -3325,8 +3325,8 @@ impl LatexCompactParser {
             "operatorname" => self.parse_operatorname(input),
 
             // --- Additional binomials ---
-            "dbinom" => self.parse_styled_binom(input, FractionKind::Display),
-            "tbinom" => self.parse_styled_binom(input, FractionKind::Inline),
+            "dbinom" => self.parse_styled_binom(input, 0),
+            "tbinom" => self.parse_styled_binom(input, 1),
 
             // --- Math atom type wrappers ---
             "@binrel" => self.parse_binrel(input),
@@ -4749,29 +4749,11 @@ impl LatexCompactParser {
         ))
     }
 
-    fn parse_styled_binom<'a>(
-        &mut self,
-        input: &'a str,
-        kind: FractionKind,
-    ) -> IResult<&'a str, NodeId> {
-        let (input, top_id) = self.parse_required_group(input)?;
-        let (input, bottom_id) = self.parse_required_group(input)?;
-        let frac_id = self.arena.push_node(CompactNode::Fraction {
-            kind,
-            num: top_id,
-            den: bottom_id,
-        });
-        let open = self.arena.push_str("(");
-        let close = self.arena.push_str(")");
-        let content = self.arena.push_children_deferred(&[frac_id]);
-        Ok((
-            input,
-            self.arena.push_node(CompactNode::Fenced {
-                open,
-                close,
-                content,
-            }),
-        ))
+    fn parse_styled_binom<'a>(&mut self, input: &'a str, style: u8) -> IResult<&'a str, NodeId> {
+        let (rest, binom) = self.parse_binom(input)?;
+        let marker = self.arena.push_node(CompactNode::StyleSwitch(style));
+        let span = self.arena.push_children_deferred(&[marker, binom]);
+        Ok((rest, self.arena.push_node(CompactNode::Row(span))))
     }
 
     fn parse_not<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

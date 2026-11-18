@@ -402,8 +402,16 @@ mod tests {
 
     #[test]
     fn dbinom() {
-        let node = parse_one("\\dbinom{n}{k}");
-        assert!(matches!(node, MathNode::Fenced { .. }));
+        let node = parse_one(r"\dbinom{n}{k}");
+        let MathNode::Row(nodes) = node else {
+            panic!("missing display-style scope")
+        };
+        assert!(
+            matches!(&nodes[..], [MathNode::StyleSwitch(0), MathNode::Fenced { content, .. }]
+            if matches!(&content[..], [crate::ast::FencedItem::Element(MathNode::Fraction {
+                kind: crate::ast::FractionKind::NoBar, ..
+            })]))
+        );
     }
 
     #[test]

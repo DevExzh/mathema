@@ -142,6 +142,33 @@ fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
 }
 
 #[test]
+fn forced_binomials_preserve_the_barless_fraction_and_local_style() {
+    let choice = r"\mathchoice{D}{T}{S}{Q}";
+    for (command, style, selected) in [
+        ("dbinom", "displaystyle", 'T'),
+        ("tbinom", "textstyle", 'S'),
+    ] {
+        let input = format!(r"x_{{\{command}{{{choice}}}{{n}}}}{choice}");
+        let explicit = format!(r"x_{{{{\{style}\binom{{{choice}}}{{n}}}}}}{choice}");
+        let result = crate::from_latex(&input).unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert_eq!(
+            mathml,
+            crate::from_latex(&explicit).unwrap().to_mathml().unwrap()
+        );
+        assert!(
+            mathml.contains(&format!(r#"<mfrac linethickness="0"><mi>{selected}</mi>"#)),
+            "{mathml}"
+        );
+        let canonical = result.to_latex().unwrap();
+        assert_eq!(
+            mathml,
+            crate::from_latex(&canonical).unwrap().to_mathml().unwrap()
+        );
+    }
+}
+
+#[test]
 fn math_style_declarations_in_scripts_require_a_group() {
     for cmd in [
         r"\displaystyle",
