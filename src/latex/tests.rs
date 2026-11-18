@@ -3152,6 +3152,8 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
         ".5 1.2",
         "1. 2.3",
         "x^1.2",
+        "{}_i1.2 3.4",
+        "{}_i1 2.3 4.5",
     ] {
         let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
         let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
@@ -3161,10 +3163,9 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
         let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
         normalize_compact_expr(&mut compact).unwrap();
         let compact = LatexWriter::write_compact(&compact, &config).unwrap();
-        let heap = crate::from_latex_with(input, &config)
-            .unwrap()
-            .to_latex()
-            .unwrap();
+        let mut heap = LatexReader::parse(input, &config).unwrap().expr;
+        normalize_expr(&mut heap);
+        let heap = LatexWriter::write(&heap, &config).unwrap();
         assert_eq!(
             compact, heap,
             "heap and compact writers diverged for {input}"
