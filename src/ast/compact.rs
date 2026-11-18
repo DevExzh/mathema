@@ -851,17 +851,12 @@ fn push_array_node(
     let mut synthetic_padding = None;
     for row in rows {
         for cell in row {
-            let (alignment, nodes): (Option<ColumnAlign>, &[MathNode]) = match cell.as_slice() {
-                [MathNode::AlignedCell { alignment, content }] => {
-                    (Some(*alignment), std::slice::from_ref(content.as_ref()))
-                },
-                _ => (None, cell.as_slice()),
+            let id = if let [node @ MathNode::AlignedCell { .. }] = cell.as_slice() {
+                push_math_node(arena, node)
+            } else {
+                let span = push_children(arena, cell);
+                arena.push_node(CompactNode::Row(span))
             };
-            let span = push_children(arena, nodes);
-            let id = arena.push_node(CompactNode::Row(span));
-            if let Some(alignment) = alignment {
-                arena.mark_cell_alignment(id, alignment);
-            }
             cell_ids.push(id);
         }
         for _ in row.len()..(num_cols as usize) {
@@ -1071,27 +1066,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                     if arena.is_matrix_padding(cell_id) {
                         continue;
                     }
-                    let alignment = arena.cell_alignment(cell_id);
-                    let content = match *arena.node(cell_id) {
+                    row.push(match *arena.node(cell_id) {
                         CompactNode::Row(span) => reconstruct_children(arena, span),
-                        _ => {
-                            // Fallback: wrap single node
-                            vec![reconstruct_node(arena, cell_id)]
-                        },
-                    };
-                    if let Some(alignment) = alignment {
-                        let content = if content.len() == 1 {
-                            content.into_iter().next().unwrap()
-                        } else {
-                            MathNode::Row(content)
-                        };
-                        row.push(vec![MathNode::AlignedCell {
-                            alignment,
-                            content: Box::new(content),
-                        }]);
-                    } else {
-                        row.push(content);
-                    }
+                        _ => vec![reconstruct_node(arena, cell_id)],
+                    });
                 }
                 rows.push(row);
             }
@@ -1337,6 +1315,76 @@ mod tests {
             )
             .unwrap(),
             crate::render::render_to_svg(&expr, &crate::render::RenderOptions::default()).unwrap()
+        );
+    }
+
+    #[test]
+    fn normalized_cell_keeps_alignment_and_content_metadata() {
+        use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
+        use crate::reader::{Reader, latex::LatexReader};
+
+        for body in [r"\hskip1pt", r"\begin{matrix}x\end{matrix}"] {
+            let source =
+                format!(r"\begin{{array}}{{l}}a\\\multicolumn{{1}}{{r}}{{{body}}}\end{{array}}");
+            let config = crate::Config::default();
+            let mut compact = LatexReader::parse_compact(&source, &config).unwrap().expr;
+            let mut heap = compact.to_math_expr();
+            normalize_compact_expr(&mut compact).unwrap();
+            normalize_expr(&mut heap);
+            assert_eq!(compact.to_math_expr(), heap);
+            let MathNode::Array { rows, .. } = &heap.nodes[0] else {
+                panic!("expected array")
+            };
+            let [
+                MathNode::AlignedCell {
+                    alignment: ColumnAlign::Right,
+                    content,
+                },
+            ] = rows[1][0].as_slice()
+            else {
+                panic!("expected aligned cell")
+            };
+            assert!(matches!(
+                content.as_ref(),
+                MathNode::ExplicitSpace {
+                    basis: crate::ast::SpaceBasis::Physical,
+                    ..
+                } | MathNode::Matrix { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn alignment_only_applies_to_a_whole_cell() {
+        use crate::writer::{latex::LatexWriter, mathml::MathmlWriter};
+
+        let aligned = MathNode::AlignedCell {
+            alignment: ColumnAlign::Right,
+            content: Box::new(MathNode::Identifier("a".into())),
+        };
+        let expr = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Left],
+            rows: vec![vec![vec![
+                aligned.clone(),
+                MathNode::Identifier("b".into()),
+            ]]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let config = crate::Config::default();
+        let xml = MathmlWriter::write(&expr, &config).unwrap();
+        assert!(xml.contains(r#"<mtd columnalign="left">"#));
+        assert_eq!(xml, MathmlWriter::write_compact(&compact, &config).unwrap());
+        assert!(
+            !LatexWriter::write_compact(&compact, &config)
+                .unwrap()
+                .contains(r"\multicolumn")
+        );
+        assert_eq!(compact.to_math_expr(), expr);
+        assert_eq!(
+            LatexWriter::write(&MathExpr::inline(vec![aligned]), &config).unwrap(),
+            "a"
         );
     }
 

@@ -11,11 +11,8 @@ use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 
 /// The contents of a table cell after an environment-provided style marker.
-fn cell_after_style(arena: &AstArena, cell: NodeId, marker: u8) -> Option<&[NodeId]> {
-    let CompactNode::Row(span) = *arena.node(cell) else {
-        return None;
-    };
-    let nodes = arena.children(span);
+fn cell_after_style<'a>(arena: &'a AstArena, cell: &'a NodeId, marker: u8) -> Option<&'a [NodeId]> {
+    let (_, nodes) = arena.table_cell_parts(cell);
     match nodes.split_first() {
         None => Some(nodes),
         Some((&first, rest)) if matches!(*arena.node(first), CompactNode::StyleSwitch(value) if value == marker) => {

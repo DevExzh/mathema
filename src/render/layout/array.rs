@@ -88,7 +88,7 @@ pub(super) fn layout_array(
     for row in rows {
         let mut row_layouts = Vec::new();
         for cell in row {
-            row_layouts.push(layout_row(cell, &cell_ctx));
+            row_layouts.push(layout_row(crate::ast::table_cell_parts(cell).1, &cell_ctx));
         }
         cell_layouts.push(row_layouts);
     }
@@ -135,21 +135,12 @@ pub(super) fn layout_array(
     for (i, row) in cell_layouts.into_iter().enumerate() {
         cursor_y += row_heights[i];
         let mut cursor_x = outer_pad;
-        let row_alignments: Vec<Option<ColumnAlign>> = rows[i]
-            .iter()
-            .map(|cell| match cell.first() {
-                Some(MathNode::AlignedCell { alignment, .. }) => Some(*alignment),
-                _ => None,
-            })
-            .collect();
         let mut row_iter = row.into_iter();
 
         for (j, &col_w) in col_widths.iter().enumerate() {
             if let Some(cell) = row_iter.next() {
-                let align = row_alignments
-                    .get(j)
-                    .copied()
-                    .flatten()
+                let align = crate::ast::table_cell_parts(&rows[i][j])
+                    .0
                     .or_else(|| columns.get(j).copied())
                     .unwrap_or(ColumnAlign::Center);
                 let dx = match align {
@@ -322,10 +313,7 @@ pub(super) fn layout_array_arena(
                 let cell_w = arena.get(cell_layout_ids[idx]).width;
                 let align = match *ast.node(cell_ids_ast[idx]) {
                     CompactNode::AlignedCell { alignment, .. } => alignment,
-                    _ => ast
-                        .cell_alignment(cell_ids_ast[idx])
-                        .or_else(|| columns.get(j).copied())
-                        .unwrap_or(ColumnAlign::Center),
+                    _ => columns.get(j).copied().unwrap_or(ColumnAlign::Center),
                 };
                 let dx = match align {
                     ColumnAlign::Left => 0.0,

@@ -1324,11 +1324,7 @@ impl<'a> MathmlCompactParser<'a> {
         let num_cols = stride as u16;
 
         let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-        for _ in 0..ncols {
-            let align = columns
-                .get(align_ids.len())
-                .copied()
-                .unwrap_or(ColumnAlign::Center);
+        for &align in &columns {
             align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
         }
         let col_aligns = self.arena.push_children_deferred(&align_ids);
@@ -1336,16 +1332,19 @@ impl<'a> MathmlCompactParser<'a> {
         let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
         for (row_index, row) in rows.iter().enumerate() {
             for (cell_index, cell_children) in row.iter().enumerate() {
-                let span = self.arena.push_children_deferred(cell_children);
-                let cell_id = self.arena.push_node(CompactNode::Row(span));
-                if let Some(alignment) = row_alignments
+                let cell_id = if let Some(alignment) = row_alignments
                     .get(row_index)
                     .and_then(|row| row.get(cell_index))
                     .copied()
                     .filter(|alignment| columns.get(cell_index) != Some(alignment))
                 {
-                    self.arena.mark_cell_alignment(cell_id, alignment);
-                }
+                    let content = self.flatten_ids(cell_children);
+                    self.arena
+                        .push_node(CompactNode::AlignedCell { alignment, content })
+                } else {
+                    let span = self.arena.push_children_deferred(cell_children);
+                    self.arena.push_node(CompactNode::Row(span))
+                };
                 cell_ids.push(cell_id);
             }
             // Pad short rows
@@ -3457,9 +3456,8 @@ mod tests {
             panic!("expected an authored table")
         };
         // The table list supplies the first row, the row list overrides the
-        // second row, and an mtd value wins over both. Compact AST stores one
-        // alignment per column, so the first row's explicit cell values are
-        // the representable global result.
+        // second row, and an mtd value wins over both. Each column takes its
+        // initial alignment from the first row occupying it.
         assert_eq!(
             columns,
             &[ColumnAlign::Left, ColumnAlign::Center, ColumnAlign::Right]
@@ -3500,6 +3498,19 @@ mod tests {
         assert!(
             converted.contains(r#"<mtd columnalign="right"><mi mathvariant="normal">LONG</mi>"#)
         );
+    }
+
+    #[test]
+    fn aligned_text_uses_the_normal_text_escapes() {
+        let xml = r#"<math><mtable><mtr><mi>x</mi></mtr><mtr><mtd columnalign="right"><mtext>A#--B\c</mtext></mtd></mtr></mtable></math>"#;
+        let parsed = crate::from_mathml(xml).unwrap();
+        let latex = parsed.to_latex().unwrap();
+        assert!(
+            latex.contains(r"\text{A\#-{}-B\textbackslash{}c}"),
+            "{latex}"
+        );
+        let recovered = crate::from_latex(&latex).unwrap().to_mathml().unwrap();
+        assert!(recovered.contains(r"<mtext>A#--B\c</mtext>"), "{recovered}");
     }
 
     #[test]

@@ -1279,17 +1279,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
         },
 
-        CompactNode::AlignedCell { alignment, content } => {
-            buf.push_str(r"\multicolumn{1}{");
-            buf.push(match alignment {
-                ColumnAlign::Left => 'l',
-                ColumnAlign::Center => 'c',
-                ColumnAlign::Right => 'r',
-            });
-            buf.push_str("}{");
-            write_wrapped_content(buf, arena, content);
-            buf.push('}');
-        },
+        CompactNode::AlignedCell { content, .. } => write_node(buf, arena, content),
         CompactNode::Array {
             col_aligns,
             cells,
@@ -1310,7 +1300,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 && !cell_ids.is_empty()
                 && cell_ids
                     .iter()
-                    .all(|&cell| super::cell_after_style(arena, cell, 0).is_some());
+                    .all(|cell| super::cell_after_style(arena, cell, 0).is_some());
             // Public arena callers can edit a parsed table. Trust its source
             // environment only while the current columns and spacing fit it.
             let matrix = arena
@@ -1364,7 +1354,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 buf.push('{');
                 let aligned_cells = cell_ids
                     .iter()
-                    .any(|&cell| arena.cell_alignment(cell).is_some());
+                    .any(|&cell| matches!(arena.node(cell), CompactNode::AlignedCell { .. }));
                 if aligned_cells {
                     buf.push_str("@{}");
                 }
@@ -1393,8 +1383,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         if col_idx > 0 {
                             buf.push_str(" & ");
                         }
-                        let cell_id = cell_ids[row_idx * nc + col_idx];
-                        if let Some(alignment) = arena.cell_alignment(cell_id) {
+                        let cell_id = &cell_ids[row_idx * nc + col_idx];
+                        let (alignment, nodes) = arena.table_cell_parts(cell_id);
+                        if let Some(alignment) = alignment {
                             buf.push_str(r"\multicolumn{1}{@{}");
                             buf.push(match alignment {
                                 ColumnAlign::Left => 'l',
@@ -1402,22 +1393,20 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                                 ColumnAlign::Right => 'r',
                             });
                             buf.push_str(r"@{}}{");
-                            write_aligned_cell_content(buf, arena, cell_id);
-                            buf.push('}');
-                            continue;
                         }
-                        // Each cell is a Row node wrapping cell contents
-                        if let Some(marker) = match env {
+                        let marker = match env {
                             "smallmatrix" | "smallmatrix*" => Some(2),
                             "aligned" | "gathered" => Some(0),
                             _ => None,
-                        } && let Some(content) = super::cell_after_style(arena, cell_id, marker)
-                        {
-                            write_node_slice(buf, arena, content, false);
-                        } else if let CompactNode::Row(span) = *arena.node(cell_id) {
-                            write_nodes(buf, arena, span);
+                        };
+                        let nodes = marker
+                            .and_then(|value| super::cell_after_style(arena, cell_id, value))
+                            .unwrap_or(nodes);
+                        if alignment.is_some() {
+                            write_aligned_cell_content(buf, arena, nodes);
+                            buf.push('}');
                         } else {
-                            write_node(buf, arena, cell_id);
+                            write_node_slice(buf, arena, nodes, false);
                         }
                     }
                 }
@@ -1712,21 +1701,15 @@ fn write_identifier(buf: &mut LatexBuffer, arena: &AstArena, sid: compact::StrId
     write_identifier_text(buf, s);
 }
 
-fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
-    let id = match *arena.node(id) {
-        CompactNode::Row(span) if arena.children(span).len() == 1 => arena.children(span)[0],
-        _ => id,
-    };
-    match *arena.node(id) {
-        CompactNode::Identifier(sid) | CompactNode::Text(TextStyle::Normal, sid)
-            if arena.str_val(sid).chars().count() > 1 =>
-        {
-            buf.push_str(r"\text{");
-            write_identifier_text(buf, arena.str_val(sid));
-            buf.push('}');
-        },
-        CompactNode::Row(span) => write_nodes(buf, arena, span),
-        _ => write_node(buf, arena, id),
+fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[NodeId]) {
+    if let [id] = nodes
+        && let CompactNode::Identifier(sid) = *arena.node(*id)
+        && arena.str_val(sid).chars().nth(1).is_some()
+    {
+        // MathML identifiers containing multiple characters are upright.
+        write_styled_text(buf, TextStyle::Normal, arena.str_val(sid));
+    } else {
+        write_node_slice(buf, arena, nodes, false);
     }
 }
 

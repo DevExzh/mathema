@@ -691,7 +691,7 @@ fn write_node_in(
             };
             let promoted = inherited_table_marker(display_style, add_jot, |marker| {
                 rows.iter().flatten().all(|cell| {
-                    cell.first().is_none_or(
+                    table_cell_parts(cell).1.first().is_none_or(
                         |node| matches!(node, MathNode::StyleSwitch(value) if *value == marker),
                     )
                 })
@@ -726,13 +726,9 @@ fn write_node_in(
                 w.write_event(Event::Start(BytesStart::new("mtr")))
                     .map_err(to_err)?;
                 for i in 0..num_cols {
-                    let empty_cell: &[MathNode] = &[];
-                    let cell = row.get(i).map(Vec::as_slice).unwrap_or(empty_cell);
+                    let (cell_override, cell) =
+                        table_cell_parts(row.get(i).map(Vec::as_slice).unwrap_or_default());
                     let mut td = BytesStart::new("mtd");
-                    let cell_override = cell.first().and_then(|node| match node {
-                        MathNode::AlignedCell { alignment, .. } => Some(*alignment),
-                        _ => None,
-                    });
                     if let Some(align) = cell_override.or_else(|| columns.get(i).copied()) {
                         let val = match align {
                             ColumnAlign::Left => "left",
@@ -742,12 +738,6 @@ fn write_node_in(
                         td.push_attribute(("columnalign", val));
                     }
                     w.write_event(Event::Start(td)).map_err(to_err)?;
-                    if let [MathNode::AlignedCell { content, .. }] = cell {
-                        write_node(w, content, cell_style)?;
-                        w.write_event(Event::End(BytesEnd::new("mtd")))
-                            .map_err(to_err)?;
-                        continue;
-                    }
                     let cell = if promoted.is_some() && !cell.is_empty() {
                         &cell[1..]
                     } else {
@@ -1688,7 +1678,7 @@ fn write_node_fast_in(
             let promoted = inherited_table_marker(display_style, add_jot, |marker| {
                 cell_ids
                     .iter()
-                    .all(|&cell| super::cell_after_style(arena, cell, marker).is_some())
+                    .all(|cell| super::cell_after_style(arena, cell, marker).is_some())
             });
             let reset_to_text = display_style.size_class() > 0 && promoted.is_none();
             let cell_style = promoted.map_or(MathStyle::Text, MathStyle::branch_from_switch);
@@ -1716,16 +1706,9 @@ fn write_node_fast_in(
             buf.push('>');
             for row_chunk in cell_ids.chunks(nc.max(1)) {
                 buf.push_str("<mtr>");
-                for (i, &cell_id) in row_chunk.iter().enumerate() {
-                    // Get alignment
+                for (i, cell_id) in row_chunk.iter().enumerate() {
                     let align_nodes = arena.children(col_aligns);
-                    let cell_override =
-                        arena
-                            .cell_alignment(cell_id)
-                            .or_else(|| match *arena.node(cell_id) {
-                                CompactNode::AlignedCell { alignment, .. } => Some(alignment),
-                                _ => None,
-                            });
+                    let (cell_override, mut nodes) = arena.table_cell_parts(cell_id);
                     if let Some(a) = cell_override.or_else(|| {
                         align_nodes
                             .get(i)
@@ -1745,48 +1728,20 @@ fn write_node_fast_in(
                     } else {
                         buf.push_str("<mtd>");
                     }
-                    /* if let Some(&align_id) = align_nodes.get(i) {
-                        if let CompactNode::ColAlign(a) = *arena.node(align_id) {
-                            let val = match a {
-                                ColumnAlign::Left => "left",
-                                ColumnAlign::Center => "center",
-                                ColumnAlign::Right => "right",
-                            };
-                            buf.push_str("<mtd columnalign=\"");
-                            buf.push_str(val);
-                            buf.push_str("\">");
-                        } else {
-                            buf.push_str("<mtd>");
-                        }
+                    if promoted.is_some() && !nodes.is_empty() {
+                        nodes = &nodes[1..];
+                    }
+                    if promoted.is_none()
+                        && environment == Some(MatrixKind::SmallMatrix)
+                        && nodes
+                            .first()
+                            .is_some_and(|&n| !matches!(arena.node(n), CompactNode::StyleSwitch(_)))
+                    {
+                        start_math_style_fast(buf, MathStyle::Script);
+                        write_nodes_fast(buf, arena, nodes, MathStyle::Script, false);
+                        close_tag(buf, "mstyle");
                     } else {
-                        buf.push_str("<mtd>");
-                    } */
-                    // Write cell contents
-                    match *arena.node(cell_id) {
-                        CompactNode::AlignedCell { content, .. } => {
-                            write_node_fast(buf, arena, content, cell_style);
-                        },
-                        CompactNode::Row(span) => {
-                            let mut nodes = arena.children(span);
-                            if promoted.is_some() && !nodes.is_empty() {
-                                nodes = &nodes[1..];
-                            }
-                            if promoted.is_none()
-                                && environment == Some(MatrixKind::SmallMatrix)
-                                && nodes.first().is_some_and(|&n| {
-                                    !matches!(arena.node(n), CompactNode::StyleSwitch(_))
-                                })
-                            {
-                                start_math_style_fast(buf, MathStyle::Script);
-                                write_nodes_fast(buf, arena, nodes, MathStyle::Script, false);
-                                close_tag(buf, "mstyle");
-                            } else {
-                                write_nodes_fast(buf, arena, nodes, cell_style, false);
-                            }
-                        },
-                        _ => {
-                            write_node_fast(buf, arena, cell_id, cell_style);
-                        },
+                        write_nodes_fast(buf, arena, nodes, cell_style, false);
                     }
                     buf.push_str("</mtd>");
                 }

@@ -2365,20 +2365,15 @@ impl LatexCompactParser {
                 if self.check_node_limit() {
                     break;
                 }
-                let (alignment, nodes) = match cell.as_slice() {
-                    [node] => match *self.arena.node(*node) {
-                        CompactNode::AlignedCell { alignment, content } => {
-                            (Some(alignment), smallvec::smallvec![content])
-                        },
-                        _ => (None, cell.clone()),
+                let id = match cell.as_slice() {
+                    [node] if matches!(self.arena.node(*node), CompactNode::AlignedCell { .. }) => {
+                        *node
                     },
-                    _ => (None, cell.clone()),
+                    _ => {
+                        let span = self.arena.push_children_deferred(cell);
+                        self.arena.push_node(CompactNode::Row(span))
+                    },
                 };
-                let span = self.arena.push_children_deferred(&nodes);
-                let id = self.arena.push_node(CompactNode::Row(span));
-                if let Some(alignment) = alignment {
-                    self.arena.mark_cell_alignment(id, alignment);
-                }
                 cell_ids.push(id);
             }
             // Pad short rows to num_cols

@@ -73,6 +73,20 @@ pub(crate) fn matrix_column_count(rows: &[Vec<Vec<MathNode>>]) -> usize {
     rows.iter().map(Vec::len).max().unwrap_or(0).max(1)
 }
 
+/// Only a wrapper occupying the whole cell supplies its alignment.
+pub(crate) fn table_cell_parts(cell: &[MathNode]) -> (Option<ColumnAlign>, &[MathNode]) {
+    match cell {
+        [MathNode::AlignedCell { alignment, content }] => {
+            let nodes = match content.as_ref() {
+                MathNode::Row(nodes) => nodes.as_slice(),
+                node => std::slice::from_ref(node),
+            };
+            (Some(*alignment), nodes)
+        },
+        _ => (None, cell),
+    }
+}
+
 /// A node in the shared mathematical expression tree.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -360,9 +374,9 @@ pub enum MathNode {
         /// Source form and effective limit placement.
         form: OperatorNameForm,
     },
-    /// A table cell whose authored MathML alignment overrides its column.
-    /// The wrapper is transparent to mathematical content and layout except
-    /// for horizontal alignment inside its containing table.
+    /// Horizontal alignment of a whole array or matrix cell. Place this
+    /// wrapper as the cell’s sole node. In other positions, its content is
+    /// typeset with the surrounding expression.
     AlignedCell {
         /// Authored cell alignment.
         alignment: ColumnAlign,

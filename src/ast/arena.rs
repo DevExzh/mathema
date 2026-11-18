@@ -8,7 +8,6 @@ enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(MatrixKind),
     MatrixPadding,
-    CellAlignment(ColumnAlign),
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -310,10 +309,7 @@ impl AstArena {
         }
         if let Some(provenance) = self.provenance.get(source) {
             self.provenance.insert(destination, provenance);
-        } else if !matches!(
-            self.provenance.get(destination),
-            Some(Provenance::CellAlignment(_))
-        ) {
+        } else {
             self.provenance.remove(destination);
         }
     }
@@ -412,20 +408,20 @@ impl AstArena {
             && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
-    #[inline]
-    pub(crate) fn mark_cell_alignment(&mut self, id: NodeId, alignment: ColumnAlign) {
-        if !self.size_overflow {
-            self.provenance
-                .insert(id, Provenance::CellAlignment(alignment));
-        }
-    }
-
-    #[inline]
-    pub(crate) fn cell_alignment(&self, id: NodeId) -> Option<ColumnAlign> {
-        match self.provenance.get(id) {
-            Some(Provenance::CellAlignment(alignment)) => Some(alignment),
-            _ => None,
-        }
+    /// Resolve the cell's alignment and the math list to typeset in it.
+    pub(crate) fn table_cell_parts<'a>(
+        &'a self,
+        cell: &'a NodeId,
+    ) -> (Option<ColumnAlign>, &'a [NodeId]) {
+        let (alignment, content) = match self.node(*cell) {
+            CompactNode::AlignedCell { alignment, content } => (Some(*alignment), content),
+            _ => (None, cell),
+        };
+        let nodes = match *self.node(*content) {
+            CompactNode::Row(span) => self.children(span),
+            _ => std::slice::from_ref(content),
+        };
+        (alignment, nodes)
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.
