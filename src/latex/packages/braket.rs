@@ -150,4 +150,16 @@ mod tests {
             assert!(!first.to_mathml().unwrap().is_empty());
         }
     }
+
+    #[test]
+    fn fixed_set_matches_its_package_expansion() {
+        let source = crate::from_latex(r"\set{\dfrac{a}{b}|y}").unwrap();
+        let expansion = crate::from_latex(r"\{\,\dfrac{a}{b}\mid y\,\}").unwrap();
+        let source_mathml = source.to_mathml().unwrap();
+        let expansion_mathml = expansion.to_mathml().unwrap();
+        assert!(source_mathml.contains('∣') && expansion_mathml.contains('∣'));
+        assert_eq!(source.to_svg().unwrap(), expansion.to_svg().unwrap());
+        let canonical = source.to_latex().unwrap();
+        assert_eq!(canonical, source.to_latex().unwrap());
+    }
 }

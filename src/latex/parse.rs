@@ -132,6 +132,10 @@ fn expand_braket_separators(
         None
     }
 
+    fn nested_braket_command(name: &str) -> bool {
+        matches!(name, "Braket" | "Set" | "set" | "braket")
+    }
+
     let mut output = String::with_capacity(source.len() + 16);
     let mut index = 0;
     let mut protect_delimiter = false;
@@ -197,6 +201,23 @@ fn expand_braket_separators(
                 index = end;
                 if name == "left" || name == "right" {
                     protect_delimiter = true;
+                } else if nested_braket_command(name) {
+                    // Each braket helper opens its own temporary separator
+                    // scope. Leave its argument untouched so an outer helper
+                    // cannot consume the inner helper's first bar.
+                    let whitespace_start = index;
+                    while source[index..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_whitespace())
+                    {
+                        index += source[index..].chars().next().unwrap().len_utf8();
+                    }
+                    output.push_str(&source[whitespace_start..index]);
+                    if let Some(group_end) = braced_end(source, index) {
+                        output.push_str(&source[index..group_end]);
+                        index = group_end;
+                    }
                 } else if text_command(name) {
                     let whitespace_start = index;
                     while source[index..]
@@ -4377,15 +4398,12 @@ impl LatexCompactParser {
                 None
             },
             "set" => {
-                // The existing public AST represents the package's fixed set
-                // pair as a fenced sequence. Use the ordinary left/right
-                // syntax so reimport retains that delimiter shape.
-                expanded.push_str(r"\left\{ {\,");
+                expanded.push_str(r"\{\,");
                 // A control word needs a source-space terminator before the
                 // first letter of the following argument token.
                 let value = expand_braket_separators(raw, true, r"\mid ", None);
                 expanded.push_str(&value);
-                expanded.push_str(r"\,} \right\}");
+                expanded.push_str(r"\,\}");
                 None
             },
             _ => Some(raw),
