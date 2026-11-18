@@ -114,6 +114,16 @@ fn write_node_slice(
                 // the preceding output (e.g. `p{p}^{\prime}`).
                 write_script_base(buf, arena, id);
                 write_empty_base_script_markers(buf, arena, script_id, next);
+            } else if is_empty_body_nary(arena, id) {
+                // The empty body is an explicit TeX group. Keep a following
+                // empty-base script inside a second group so the next parser
+                // pass does not consume that script as the n-ary body. This
+                // represents the same structure as `\int{}_{x}` while giving
+                // the script an unambiguous empty base.
+                write_node(buf, arena, id);
+                buf.push_str(" {{}");
+                write_standalone_empty_base_script_markers(buf, arena, script_id);
+                buf.push('}');
             } else {
                 // Complex or merge-prone base: keep the script as a separate
                 // atom so the output shape is preserved.
@@ -3318,6 +3328,35 @@ mod tests {
         let out2 = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
         assert_eq!(out1, "{}^{2}");
         assert_eq!(out1, out2);
+    }
+
+    #[test]
+    fn empty_nary_body_with_following_empty_base_script_is_stable() {
+        let config = Config::default();
+        let valid = crate::from_latex(r"\int{}_{=}^{\prime}").unwrap();
+        let valid_latex = valid.to_latex().unwrap();
+        assert_eq!(
+            valid.to_mathml().unwrap(),
+            crate::from_latex(&valid_latex)
+                .unwrap()
+                .to_mathml()
+                .unwrap()
+        );
+        for input in [
+            r"\int$$_p_'?",
+            "'\n=\r\\intop\r\n\r\r\r\n\n$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$'_\n=\r\\intop\r\n\r\r\r\r\n\r\r\r\n\n\r\n\n\n\r_'?",
+        ] {
+            let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+            crate::ast::normalize::normalize_compact_expr(&mut parsed.expr).unwrap();
+            let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+            let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+            crate::ast::normalize::normalize_compact_expr(&mut reparsed.expr).unwrap();
+            let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+            assert_eq!(
+                first, second,
+                "unstable n-ary empty-body output for {input:?}"
+            );
+        }
     }
 
     #[test]
