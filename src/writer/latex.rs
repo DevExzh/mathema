@@ -115,11 +115,8 @@ fn write_node_slice(
                 write_script_base(buf, arena, id);
                 write_empty_base_script_markers(buf, arena, script_id, next);
             } else if is_empty_body_nary(arena, id) {
-                // The empty body is an explicit TeX group. Keep a following
-                // empty-base script inside a second group so the next parser
-                // pass does not consume that script as the n-ary body. This
-                // represents the same structure as `\int{}_{x}` while giving
-                // the script an unambiguous empty base.
+                // The parser reads a following scripted empty group as the
+                // integral's body. Group that whole body on the first write.
                 write_node(buf, arena, id);
                 buf.push_str(" {{}");
                 write_standalone_empty_base_script_markers(buf, arena, script_id);

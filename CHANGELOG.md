@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- LaTeX math style declarations are scoped to their group. MathML, SVG, OMML,
+  MTEF, and UnicodeMath select the active `\mathchoice` branch in scripts,
+  fractions, roots, and table cells. LaTeX export retains all four branches.
+- `\dbinom` and `\tbinom` keep their barless fraction and locally force display
+  or text style. UnicodeMath indexed radicals now round-trip their index and
+  radicand through `√(index&radicand)`.
 - The legacy LaTeX declarations `\rm`, `\sf`, `\tt`, `\bf`, `\it`, and
   `\cal` apply to the remainder of their group or table cell. Infix fractions
   keep their numerator and denominator in scope, and a nested matrix lets each
