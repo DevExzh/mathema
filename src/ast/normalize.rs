@@ -164,8 +164,9 @@ fn number_decimal_points(text: &str) -> Option<usize> {
 fn is_effectively_empty_math(node: &MathNode) -> bool {
     match node {
         MathNode::Row(children) => children.iter().all(is_effectively_empty_math),
-        // Styled wrappers are the heap representation for transparent
-        // compact wrappers such as an empty color argument.
+        // Empty styled and color wrappers are transparent when they occur as
+        // script arguments. Explicit writable color bases are handled by the
+        // separate empty-base predicate below.
         MathNode::Styled(_, children) => children.iter().all(is_effectively_empty_math),
         MathNode::Color { content, .. } => is_effectively_empty_math(content),
         MathNode::Scaled { content, .. } => is_effectively_empty_math(content),

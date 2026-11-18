@@ -3233,6 +3233,37 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
 }
 
 #[test]
+fn color_script_empty_arguments_match_heap_and_compact_normalization() {
+    let config = Config::default();
+    for input in [
+        r"A\teal^\teal^2",
+        r"a^{\textcolor{red}{}}",
+        r"a^{\textcolor{red_blue}{}}",
+        r"a{\textcolor{red}{}}^2",
+        r"a{\textcolor{red_blue}{}}^2",
+    ] {
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let compact_latex = LatexWriter::write_compact(&compact, &config).unwrap();
+
+        let mut heap = LatexReader::parse(input, &config).unwrap().expr;
+        normalize_expr(&mut heap);
+        let heap_latex = LatexWriter::write(&heap, &config).unwrap();
+        assert_eq!(compact_latex, heap_latex, "{input}");
+
+        let mut reparsed = LatexReader::parse_compact(&compact_latex, &config)
+            .unwrap()
+            .expr;
+        normalize_compact_expr(&mut reparsed).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed, &config).unwrap(),
+            compact_latex,
+            "{input} compact reimport"
+        );
+    }
+}
+
+#[test]
 fn empty_base_prime_after_middle_stays_stable_in_nested_fraction() {
     let input = "''>_-'\\ip\\over'_- '\\i\\ip\\r'enew^iJ";
     let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
