@@ -4378,7 +4378,9 @@ impl LatexCompactParser {
             },
             "set" => {
                 expanded.push_str(r"\{\,");
-                let value = expand_braket_separators(raw, true, r"\mid", None);
+                // A control word needs a source-space terminator before the
+                // first letter of the following argument token.
+                let value = expand_braket_separators(raw, true, r"\mid ", None);
                 expanded.push_str(&value);
                 expanded.push_str(r"\,\}");
                 None
