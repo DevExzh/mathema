@@ -1234,7 +1234,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             col_aligns,
             cells,
             num_cols,
+            arraystretch_pct,
             add_jot,
+            array_style,
+            col_seps,
+            row_seps,
             ..
         } => {
             let columns = arena.children(col_aligns);
@@ -1266,6 +1270,25 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 })
             {
                 "aligned"
+            } else if !array_style
+                && !add_jot
+                && col_seps == 0
+                && row_seps == 0
+                && arraystretch_pct == 50
+            {
+                // `smallmatrix` is the only compact-table form with a
+                // half-height strut. Preserve it explicitly so a reparse
+                // does not turn its script-sized rows into a normal matrix.
+                "smallmatrix"
+            } else if !array_style
+                && !add_jot
+                && col_seps == 0
+                && row_seps == 0
+                && arraystretch_pct == 100
+            {
+                // Matrix-style tables have no outer array-column padding.
+                // The compact metadata records that distinction directly.
+                "matrix"
             } else {
                 "array"
             };
@@ -1299,7 +1322,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         let cell_id = cell_ids[row_idx * nc + col_idx];
                         // Each cell is a Row node wrapping cell contents
                         if env != "array"
-                            && let Some(content) = super::cell_after_style(arena, cell_id, 0)
+                            && let Some(content) = super::cell_after_style(
+                                arena,
+                                cell_id,
+                                if env == "smallmatrix" { 2 } else { 0 },
+                            )
                         {
                             write_node_slice(buf, arena, content, false);
                         } else if let CompactNode::Row(span) = *arena.node(cell_id) {
