@@ -1066,9 +1066,8 @@ impl<'a> Decoder<'a> {
             num_cols: u16::try_from(num_cols).unwrap_or(u16::MAX),
             arraystretch_pct: 100,
             add_jot: false,
-            // A MATRIX partition line is the MTEF representation of a native
-            // array preamble rule. Such a table retains the padded array
-            // geometry when projected through the public heap AST.
+            // MATRIX partition lines record the rules. Import a ruled matrix
+            // with standard array padding on its outer edges.
             array_style: col_seps != 0 || row_seps != 0,
             col_seps,
             row_seps,

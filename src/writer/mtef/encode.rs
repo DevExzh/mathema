@@ -2018,7 +2018,7 @@ impl<'a> Encoder<'a> {
         let (exported, h_just) = self.column_align(col_aligns);
         if (col_seps != 0 || row_seps != 0) && !array_style {
             self.lose(
-                "MTEF partition lines imply padded native array geometry; array_style=false was normalized",
+                "Mathema restores outer padding when it reads this ruled MTEF matrix, so its trimmed edges will change",
             );
         }
         self.need(size);
@@ -2053,7 +2053,7 @@ impl<'a> Encoder<'a> {
         };
         if alignment != exported {
             self.lose(&format!(
-                "MTEF exports one matrix alignment ({exported:?}); the authored {alignment:?} cell alignment was dropped"
+                "MTEF exports one matrix alignment ({exported:?}). This cell requested {alignment:?}"
             ));
         }
     }

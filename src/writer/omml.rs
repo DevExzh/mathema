@@ -1317,7 +1317,7 @@ impl<'a> Emitter<'a> {
         };
         if alignment != column {
             self.loss(format!(
-                "OMML has column alignment only; the authored {alignment:?} cell alignment differs from the exported {column:?} column"
+                "OMML uses the {column:?} column alignment for a cell that requested {alignment:?} cell alignment"
             ));
         }
     }

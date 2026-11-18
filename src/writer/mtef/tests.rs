@@ -48,7 +48,7 @@ fn write_reports_native_rule_padding_normalization() {
         let (_, diagnostics) =
             MtefWriter::write_compact_with_diagnostics(&compact, &Config::default()).unwrap();
         assert!(diagnostics.iter().any(|d| {
-            d.kind == DiagnosticKind::Warning && d.message.contains("padded native array geometry")
+            d.kind == DiagnosticKind::Warning && d.message.contains("restores outer padding")
         }));
     }
 }
