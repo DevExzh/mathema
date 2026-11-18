@@ -348,9 +348,7 @@ fn write_node_in(
         MathNode::Number(s) => write_simple_element(w, "mn", s),
         MathNode::Identifier(s) => write_mi(w, s),
         MathNode::Operator(attr) => write_named_operator(w, &attr.name, attr.limit_style, false),
-        MathNode::Symbol(kind, s) => {
-            return write_symbol_node(w, *kind, s, None);
-        },
+        MathNode::Symbol(kind, s) => write_symbol_node(w, *kind, s),
         MathNode::Text(style, s) => write_text(w, *style, s),
         MathNode::Space(r) => write_mspace(w, *r),
         MathNode::ExplicitSpace { width, basis } => write_mspace(
@@ -839,10 +837,10 @@ fn write_node_in(
             if let Some(class) = annotated_atom_class(*atom_type) {
                 write_atom_group(w, content, class, false, display_style)
             } else if *atom_type == MathAtomType::Ord
-                && let MathNode::Symbol(kind, s) = content.as_ref()
+                && let MathNode::Symbol(_, s) = content.as_ref()
                 && matches!(s.as_str(), "-" | "−")
             {
-                write_symbol_node(w, *kind, s, Some("ordinary"))
+                write_symbol_node(w, SymbolKind::Ordinary, s)
             } else {
                 write_node_in(w, content, single_argument, display_style)
             }
@@ -850,12 +848,7 @@ fn write_node_in(
     }
 }
 
-fn write_symbol_node(
-    w: &mut XmlWriter,
-    kind: SymbolKind,
-    text: &str,
-    forced_kind: Option<&str>,
-) -> Result<()> {
+fn write_symbol_node(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<()> {
     let mut elem = BytesStart::new("mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(text, "|" | "‖");
     match kind {
@@ -877,25 +870,16 @@ fn write_symbol_node(
             }
         }
     }
-    if let Some(marker) = forced_kind.or_else(|| symbol_kind_marker(kind, text)) {
-        elem.push_attribute(("data-mathema-symbol-kind", marker));
+    if kind == SymbolKind::Ordinary && matches!(text, "-" | "−") {
+        elem.push_attribute(("data-mjx-texclass", "ORD"));
+        elem.push_attribute(("lspace", "0em"));
+        elem.push_attribute(("rspace", "0em"));
     }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
     w.write_event(Event::Text(BytesText::new(text)))
         .map_err(to_err)?;
     w.write_event(Event::End(BytesEnd::new("mo")))
         .map_err(to_err)
-}
-
-fn symbol_kind_marker(kind: SymbolKind, text: &str) -> Option<&'static str> {
-    if !matches!(text, "-" | "−") {
-        return None;
-    }
-    match kind {
-        SymbolKind::BinaryOp => Some("binary"),
-        SymbolKind::Ordinary => Some("ordinary"),
-        _ => None,
-    }
 }
 
 fn write_box_child(
@@ -1298,7 +1282,7 @@ fn write_node_fast_in(
         },
         CompactNode::Symbol(kind, sid) => {
             let s = arena.str_val(sid);
-            write_mo_symbol_fast(buf, kind, s, None);
+            write_mo_symbol_fast(buf, kind, s);
         },
         CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
@@ -1738,10 +1722,10 @@ fn write_node_fast_in(
             if let Some(class) = annotated_atom_class(atom_type) {
                 write_atom_group_fast(buf, arena, content, class, false, display_style);
             } else if atom_type == MathAtomType::Ord
-                && let CompactNode::Symbol(kind, sid) = *arena.node(content)
+                && let CompactNode::Symbol(_, sid) = *arena.node(content)
                 && matches!(arena.str_val(sid), "-" | "−")
             {
-                write_mo_symbol_fast(buf, kind, arena.str_val(sid), Some("ordinary"));
+                write_mo_symbol_fast(buf, SymbolKind::Ordinary, arena.str_val(sid));
             } else {
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
@@ -2222,7 +2206,7 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
     crate::unicode::operators::closing_fence(open) != Some(close)
 }
 
-fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str, forced_kind: Option<&str>) {
+fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
     buf.push_str("<mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
     match kind {
@@ -2245,10 +2229,8 @@ fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str, forced_kind
             }
         }
     }
-    if let Some(marker) = forced_kind.or_else(|| symbol_kind_marker(kind, s)) {
-        buf.push_str(" data-mathema-symbol-kind=\"");
-        buf.push_str(marker);
-        buf.push('"');
+    if kind == SymbolKind::Ordinary && matches!(s, "-" | "−") {
+        buf.push_str(r#" data-mjx-texclass="ORD" lspace="0em" rspace="0em""#);
     }
     buf.push('>');
     xml_escape_into(buf, s);
@@ -2291,7 +2273,11 @@ mod tests {
             let parsed = crate::from_latex(source).unwrap();
             let mathml = parsed.to_mathml().unwrap();
             assert!(
-                mathml.contains(&format!("data-mathema-symbol-kind=\"{expected_class}\"")),
+                mathml.contains(if expected_class == "ordinary" {
+                    r#"data-mjx-texclass="ORD" lspace="0em" rspace="0em""#
+                } else {
+                    "<mo>−</mo>"
+                }),
                 "{source}: {mathml}"
             );
             let roundtrip = crate::from_mathml(&mathml).unwrap();
@@ -2307,7 +2293,7 @@ mod tests {
         let unmarked =
             crate::from_mathml(r#"<math><mi>x</mi><mo>−</mo><mi>y</mi></math>"#).unwrap();
         let marked = unmarked.to_mathml().unwrap();
-        assert!(marked.contains(r#"data-mathema-symbol-kind="binary""#));
+        assert!(marked.contains("<mo>−</mo>"));
         assert_eq!(
             marked,
             crate::from_latex("x-y").unwrap().to_mathml().unwrap()

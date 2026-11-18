@@ -699,7 +699,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mark_fences = self.fence_depth == Some(self.depth);
         let vertical_line = matches!(name, "|" | "‖");
         let attrs = operator_attributes(start, mark_fences || vertical_line);
-        if let Some(marked_kind) = attrs.symbol_kind {
+        if let Some(marked_kind) = attrs.symbol_kind.filter(|_| matches!(name, "-" | "−")) {
             kind = marked_kind;
         }
         if vertical_line
@@ -1904,13 +1904,11 @@ fn operator_attributes(
                 result.named_operator = unescape_attr(&attr.value) == "name";
             },
             "data-mjx-texclass" => {
-                result.texclass_op = unescape_attr(&attr.value) == "OP";
-            },
-            "data-mathema-symbol-kind" => {
-                result.symbol_kind = match unescape_attr(&attr.value).as_str() {
-                    "binary" => Some(SymbolKind::BinaryOp),
-                    "ordinary" => Some(SymbolKind::Ordinary),
-                    "relation" => Some(SymbolKind::Relation),
+                let class = unescape_attr(&attr.value);
+                result.texclass_op = class == "OP";
+                result.symbol_kind = match class.as_str() {
+                    "ORD" => Some(SymbolKind::Ordinary),
+                    "BIN" => Some(SymbolKind::BinaryOp),
                     _ => None,
                 };
             },
