@@ -430,6 +430,20 @@ fn mtef5_compound_operator_limits_use_native_bigop_slots() {
         assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), bytes, "{input}");
     }
 
+    for operator in ["A", r"\alpha", "+"] {
+        for modifier in [r"\limits", r"\nolimits"] {
+            let input = format!(r"\mathop{{{operator}}}{modifier}_i^j");
+            let original = from_latex(&input).unwrap();
+            let bytes = original.to_mtef_bytes(&options).unwrap();
+            let decoded = from_mtef_bytes(&bytes).unwrap();
+            assert_eq!(
+                decoded.to_latex().unwrap(),
+                original.to_latex().unwrap(),
+                "{input}"
+            );
+            assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), bytes, "{input}");
+        }
+    }
     // A typed bracket accent remains the tmHBRACK decoration template and
     // never becomes a general operator-limit template.
     let bracket = from_latex(r"\overbracket{\mathop{a+b}}").unwrap();

@@ -619,7 +619,11 @@ impl Decoder<'_> {
                     None
                 };
                 let op = op
-                    .or_else(|| op_slot.and_then(|id| self.single_char(id)))
+                    .or_else(|| {
+                        op_slot
+                            .and_then(|id| self.single_char(id))
+                            .filter(|ch| crate::unicode::symbols::nary_op_to_latex(*ch).is_some())
+                    })
                     .or_else(|| {
                         if op_slot.is_none() {
                             glyphs.first().map(|g| g.ch)
@@ -636,8 +640,8 @@ impl Decoder<'_> {
                         limits,
                     })?),
                     (None, Some(base)) => {
-                        // An operator made of more than one character: keep it
-                        // as an operator atom in its limits. The fourth slot of
+                        // A custom operator slot may contain even a single
+                        // identifier. Keep its atom class and complete contents. The fourth slot of
                         // tmINTOP/tmSUMOP is semantically the operator itself,
                         // even though its contents are a line rather than a
                         // single glyph.
