@@ -383,10 +383,12 @@ impl<'a> MathmlCompactParser<'a> {
                     Some("false") => Some(false),
                     _ => None,
                 };
-                let first = name.chars().next();
+                let mut chars = name.chars();
                 let named = kind == SymbolKind::Ordinary
-                    && first.is_some_and(|ch| {
-                        ch.is_alphabetic() && (name.len() > ch.len_utf8() || movable.is_some())
+                    && chars.next().is_some_and(|first| {
+                        first.is_alphabetic()
+                            && (movable.is_some()
+                                || !chars.as_str().is_empty() && chars.all(char::is_alphabetic))
                             || get_attr(start, "data-mjx-texclass").as_deref() == Some("OP")
                     });
                 let sid = self.arena.push_str(if named { name } else { &text });
