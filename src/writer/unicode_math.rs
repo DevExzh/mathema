@@ -394,7 +394,9 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             let branch = style.choose(display, text, script, script_script);
             write_node(out, branch, style);
         },
-        MathNode::MathAtom { content, .. } => write_node(out, content, style),
+        MathNode::MathAtom { content, .. } | MathNode::AlignedCell { content, .. } => {
+            write_node(out, content, style)
+        },
         MathNode::Reflect { content, .. } => write_node(out, content, style),
     }
 }
@@ -557,9 +559,9 @@ fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
         | MathNode::Underscript { .. }
         | MathNode::Overscript { .. }
         | MathNode::UnderOver { .. } => true,
-        MathNode::Color { content, .. } | MathNode::MathAtom { content, .. } => {
-            needs_operator_terminator(content, style)
-        },
+        MathNode::Color { content, .. }
+        | MathNode::MathAtom { content, .. }
+        | MathNode::AlignedCell { content, .. } => needs_operator_terminator(content, style),
         _ => false,
     }
 }
@@ -668,6 +670,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Row(span) => write_nodes_c_with_style(out, arena, span, style),
+        CompactNode::AlignedCell { content, .. } => write_node_c(out, arena, content, style),
 
         CompactNode::Fenced {
             open,

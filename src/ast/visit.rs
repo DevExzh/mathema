@@ -129,6 +129,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
                 }
             }
         },
+        MathNode::AlignedCell { content, .. } => v.visit_node(content),
 
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
@@ -291,6 +292,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
                 }
             }
         },
+        MathNode::AlignedCell { content, .. } => v.visit_node_mut(content),
 
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
@@ -452,6 +454,7 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
                 v.visit_node(arena, cell_id);
             }
         },
+        CompactNode::AlignedCell { content, .. } => v.visit_node(arena, content),
 
         CompactNode::Phantom(inner, _)
         | CompactNode::Boxed { content: inner, .. }
@@ -606,6 +609,7 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
                 v.visit_node_mut(arena, cell_id);
             }
         },
+        CompactNode::AlignedCell { content, .. } => v.visit_node_mut(arena, content),
 
         CompactNode::Phantom(inner, _)
         | CompactNode::Boxed { content: inner, .. }

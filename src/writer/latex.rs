@@ -1251,6 +1251,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             }
         },
 
+        CompactNode::AlignedCell { content, .. } => write_node(buf, arena, content),
         CompactNode::Array {
             col_aligns,
             cells,

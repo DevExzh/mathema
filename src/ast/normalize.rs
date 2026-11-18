@@ -520,6 +520,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
                 }
             }
         },
+        MathNode::AlignedCell { content, .. } => normalize_node_depth(content, d),
 
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
@@ -1007,6 +1008,7 @@ fn normalize_compact_node(
                 *c = new_cells_span;
             }
         },
+        CompactNode::AlignedCell { content, .. } => normalize_compact_node(arena, content, d)?,
 
         CompactNode::Phantom(inner, _)
         | CompactNode::Boxed { content: inner, .. }

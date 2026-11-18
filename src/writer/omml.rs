@@ -670,6 +670,7 @@ impl<'a> Emitter<'a> {
     fn cell_content(&mut self, id: NodeId, fmt: Fmt) {
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.children(span, fmt),
+            CompactNode::AlignedCell { content, .. } => self.node(content, fmt),
             _ => self.node(id, fmt),
         }
     }
@@ -712,6 +713,7 @@ impl<'a> Emitter<'a> {
                 self.space(width);
             },
             CompactNode::Row(span) => self.children(span, fmt),
+            CompactNode::AlignedCell { content, .. } => self.node(content, fmt),
             CompactNode::Fenced {
                 open,
                 close,
