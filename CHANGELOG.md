@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Compound named limits such as `\limsup`, `\liminf`, `\injlim`, `\projlim`,
+  and `\plim` retain operator semantics, thin-space spelling, and limit
+  placement through public format conversions.
+
 - Named LaTeX operators and compound `\mathop` expressions retain their
   side, movable, or fixed limits in MathML and canonical LaTeX. In inline
   output and nested script arguments, movable compound bounds use side scripts.

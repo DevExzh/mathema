@@ -819,4 +819,20 @@ mod tests {
         assert_eq!(latex_to_unicode("dots"), latex_to_unicode("ldots"));
         assert_eq!(latex_to_unicode("to"), latex_to_unicode("rightarrow"));
     }
+
+    #[test]
+    fn compound_limit_aliases_are_named_limit_operators() {
+        for name in ["limsup", "liminf", "injlim", "projlim", "plim"] {
+            assert!(is_operator_command(name), "{name}");
+            assert!(operator_has_limits(name), "{name}");
+        }
+        for name in [
+            "lim\u{2009}sup",
+            "lim\u{2009}inf",
+            "inj\u{2009}lim",
+            "proj\u{2009}lim",
+        ] {
+            assert!(operator_has_limits(name), "{name}");
+        }
+    }
 }
