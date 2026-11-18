@@ -25,6 +25,23 @@ fn write_nodes(buf: &mut String, arena: &AstArena, span: NodeSpan) {
     write_node_slice(buf, arena, arena.children(span), false);
 }
 
+/// The default style of an array cell is text style, so the parser records a
+/// leading `\textstyle` marker for rendering and MathML.  LaTeX's array
+/// environment already supplies that default. Omit this synthetic marker when
+/// serializing a cell while preserving explicit switches that follow it.
+fn write_array_cell(buf: &mut String, arena: &AstArena, span: NodeSpan) {
+    let children = arena.children(span);
+    let children = if children
+        .first()
+        .is_some_and(|&id| matches!(*arena.node(id), CompactNode::StyleSwitch(1)))
+    {
+        &children[1..]
+    } else {
+        children
+    };
+    write_node_slice(buf, arena, children, false);
+}
+
 /// Write a sequence of sibling nodes (see `write_nodes`).
 fn write_node_slice(
     buf: &mut String,
@@ -1201,7 +1218,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         let cell_id = cell_ids[row_idx * nc + col_idx];
                         // Each cell is a Row node wrapping cell contents
                         if let CompactNode::Row(span) = *arena.node(cell_id) {
-                            write_nodes(buf, arena, span);
+                            write_array_cell(buf, arena, span);
                         } else {
                             write_node(buf, arena, cell_id);
                         }

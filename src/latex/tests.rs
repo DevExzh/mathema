@@ -175,6 +175,58 @@ fn style_switch_normalization_matches_heap_and_compact_scopes() {
 }
 
 #[test]
+fn table_cells_select_their_environment_math_style() {
+    for (environment, expected) in [
+        ("array", "T"),
+        ("matrix", "T"),
+        ("smallmatrix", "S"),
+        ("aligned", "D"),
+        ("gathered", "D"),
+    ] {
+        let source = if environment == "array" {
+            r"\begin{array}{c}\mathchoice{D}{T}{S}{Q}\end{array}".to_string()
+        } else {
+            format!(r"\begin{{{environment}}}\mathchoice{{D}}{{T}}{{S}}{{Q}}\end{{{environment}}}")
+        };
+        let result = crate::from_latex(&source).unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert!(
+            mathml.contains(&format!("<mi>{expected}</mi>")),
+            "{source}: {mathml}"
+        );
+        for branch in ["D", "T", "S", "Q"] {
+            if branch != expected {
+                assert!(
+                    !mathml.contains(&format!("<mi>{branch}</mi>")),
+                    "{source}: {mathml}"
+                );
+            }
+        }
+
+        let compact = LatexReader::parse_compact(&source, &Config::default())
+            .unwrap()
+            .expr;
+        let compact_mathml =
+            crate::writer::mathml::MathmlWriter::write_compact(&compact, &Config::default())
+                .unwrap();
+        assert_eq!(mathml, compact_mathml, "heap/compact mismatch for {source}");
+    }
+
+    let nested = crate::from_latex(r"x^{\begin{matrix}\mathchoice{D}{T}{S}{Q}\end{matrix}}")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        nested.contains("<mi>T</mi>"),
+        "nested matrix style: {nested}"
+    );
+    assert!(
+        !nested.contains("<mi>S</mi>"),
+        "nested matrix style: {nested}"
+    );
+}
+
+#[test]
 fn empty_style_groups_do_not_leak_into_siblings_or_choice() {
     let config = Config::default();
     for source in [r"{\scriptstyle}x", r"{\scriptstyle}\mathchoice{D}{T}{S}{Q}"] {

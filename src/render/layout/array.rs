@@ -51,10 +51,11 @@ pub(super) fn layout_array(
 
     // Layout all cells
     let mut cell_layouts: Vec<Vec<LayoutBox>> = Vec::new();
+    let cell_ctx = ctx.with_style(MathStyle::Text);
     for row in rows {
         let mut row_layouts = Vec::new();
         for cell in row {
-            row_layouts.push(layout_row(cell, ctx));
+            row_layouts.push(layout_row(cell, &cell_ctx));
         }
         cell_layouts.push(row_layouts);
     }
@@ -180,13 +181,14 @@ pub(super) fn layout_array_arena(
 
     // Layout each cell and store the layout box IDs
     let mut cell_layout_ids: Vec<LayoutBoxId> = Vec::with_capacity(cell_ids_ast.len());
+    let cell_ctx = ctx.with_style(MathStyle::Text);
     for &cell_id in cell_ids_ast {
         match *ast.node(cell_id) {
             CompactNode::Row(span) => {
-                cell_layout_ids.push(layout_row_arena(ast, span, arena, ctx));
+                cell_layout_ids.push(layout_row_arena(ast, span, arena, &cell_ctx));
             },
             _ => {
-                cell_layout_ids.push(layout_node_arena(ast, cell_id, arena, ctx));
+                cell_layout_ids.push(layout_node_arena(ast, cell_id, arena, &cell_ctx));
             },
         }
     }

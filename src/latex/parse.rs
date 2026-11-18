@@ -2172,6 +2172,22 @@ impl LatexCompactParser {
         self.build_array_with_spacing(columns, rows, 100, false, col_seps, row_seps, array_style)
     }
 
+    /// Record the math style established by a table environment in every cell.
+    ///
+    /// TeX table environments form a fresh math list for each cell.  The
+    /// declaration is therefore local to the cell and must be represented in
+    /// the AST, instead of being inferred later from row spacing or alignment
+    /// metadata.  A leading `StyleSwitch` also lets an explicit declaration in
+    /// the cell override the environment default in the usual style-run logic.
+    fn apply_table_cell_style(&mut self, rows: &mut [Vec<SmallVec<[NodeId; 8]>>], style: u8) {
+        let marker = self.arena.push_node(CompactNode::StyleSwitch(style));
+        for row in rows {
+            for cell in row {
+                cell.insert(0, marker);
+            }
+        }
+    }
+
     /// Build an Array node with explicit spacing parameters.
     #[allow(clippy::too_many_arguments)]
     fn build_array_with_spacing(
@@ -5092,6 +5108,8 @@ impl LatexCompactParser {
 
         let table_rows: Vec<Vec<SmallVec<[NodeId; 8]>>> =
             cells.into_iter().map(|cell| vec![cell]).collect();
+        let mut table_rows = table_rows;
+        self.apply_table_cell_style(&mut table_rows, 2);
         Ok((
             input,
             self.build_array_with_spacing(
@@ -6191,6 +6209,7 @@ impl LatexCompactParser {
 
         // Apply `\rowcolors` alternating rows and `\columncolor` backgrounds.
         self.apply_table_colors(&mut rows, &col_bg);
+        self.apply_table_cell_style(&mut rows, 1);
 
         Ok((
             input,
@@ -6242,6 +6261,8 @@ impl LatexCompactParser {
             SmallVec::new()
         };
 
+        let mut rows = rows;
+        self.apply_table_cell_style(&mut rows, 1);
         let array_id = self.build_array(&columns, rows);
 
         if open_s.is_empty() {
@@ -6314,6 +6335,8 @@ impl LatexCompactParser {
 
         let columns: SmallVec<[ColumnAlign; 4]> =
             smallvec::smallvec![ColumnAlign::Center; num_cols];
+        let mut rows = rows;
+        self.apply_table_cell_style(&mut rows, 1);
         let array = self.build_array_with_spacing(&columns, rows, 150, false, 0, 0, false);
         Ok((rest, array))
     }
@@ -6926,6 +6949,7 @@ impl LatexCompactParser {
         }
         let columns: SmallVec<[ColumnAlign; 4]> =
             smallvec::smallvec![ColumnAlign::Center; num_cols];
+        self.apply_table_cell_style(&mut rows, 1);
         let node = self.build_array_with_spacing(&columns, rows, 130, false, 0, 0, false);
         if let Some(error) = self.take_resource_error() {
             return Err(error);
@@ -7057,13 +7081,14 @@ impl LatexCompactParser {
     }
 
     fn parse_cases_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
-        let (input, rows) = self.parse_table_body(input)?;
+        let (input, mut rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
+        self.apply_table_cell_style(&mut rows, 1);
 
         let array_id = self.build_array_with_spacing(
             &[ColumnAlign::Left, ColumnAlign::Left],
@@ -7088,13 +7113,14 @@ impl LatexCompactParser {
     }
 
     fn parse_rcases_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {
-        let (input, rows) = self.parse_table_body(input)?;
+        let (input, mut rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
+        self.apply_table_cell_style(&mut rows, 1);
 
         let array_id = self.build_array_with_spacing(
             &[ColumnAlign::Left, ColumnAlign::Left],
@@ -7167,6 +7193,7 @@ impl LatexCompactParser {
             row.push(cell);
             numbered_rows.push(row);
         }
+        self.apply_table_cell_style(&mut numbered_rows, 1);
 
         // value | condition | (number) — number right-aligned far from cases.
         let array_id = self.build_array_with_spacing(
@@ -7321,20 +7348,20 @@ impl LatexCompactParser {
         input: &'a str,
         env_name: &str,
     ) -> IResult<&'a str, NodeId> {
-        let (input, rows) = self.parse_table_body(input)?;
+        let (input, mut rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
-
         let columns: SmallVec<[ColumnAlign; 4]> = if let Some(first_row) = rows.first() {
             smallvec::smallvec![ColumnAlign::Center; first_row.len()]
         } else {
             SmallVec::new()
         };
 
+        self.apply_table_cell_style(&mut rows, 2);
         Ok((
             input,
             self.build_array_with_spacing(&columns, rows, 50, false, 0, 0, false),
@@ -7361,6 +7388,8 @@ impl LatexCompactParser {
             .take(max_row_len.max(base_pattern.len()))
             .collect();
 
+        let mut rows = rows;
+        self.apply_table_cell_style(&mut rows, 0);
         Ok((
             input,
             self.build_array_with_spacing(&columns, rows, 100, true, 0, 0, false),
@@ -7399,6 +7428,8 @@ impl LatexCompactParser {
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
 
+        let mut rows = rows;
+        self.apply_table_cell_style(&mut rows, 0);
         Ok((
             input,
             self.build_array_with_spacing(&[ColumnAlign::Center], rows, 100, true, 0, 0, false),
@@ -7440,13 +7471,14 @@ impl LatexCompactParser {
         input: &'a str,
         env_name: &str,
     ) -> IResult<&'a str, NodeId> {
-        let (input, rows) = self.parse_table_body(input)?;
+        let (input, mut rows) = self.parse_table_body(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('{')(input)?;
         let (input, _) = tag(env_name)(input)?;
         let (input, _) = char('}')(input)?;
+        self.apply_table_cell_style(&mut rows, 0);
 
         let num_rows = rows.len();
         let columns: SmallVec<[ColumnAlign; 4]> = if num_rows <= 1 {
