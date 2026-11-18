@@ -741,8 +741,16 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             alignment,
             rows,
         } => {
+            let width = rows
+                .iter()
+                .map(|row| super::table_row_width(row))
+                .max()
+                .unwrap_or(0);
+            let Some(stride) = arena.array_stride_deferred(rows.len(), width) else {
+                return arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+            };
             let columns: SmallVec<[ColumnAlign; 4]> =
-                smallvec::smallvec![*alignment; super::matrix_column_count(rows)];
+                smallvec::smallvec![*alignment; usize::from(stride)];
             push_array_node(arena, &columns, rows, None, false, Some(*kind))
         },
         MathNode::AlignedCell { alignment, content } => {
@@ -924,14 +932,7 @@ fn push_array_node_with_geometry(
 ) -> NodeId {
     let widest = rows
         .iter()
-        .map(|row| {
-            row.iter()
-                .map(|cell| match cell.as_slice() {
-                    [MathNode::SpannedCell { span, .. }] => (*span).max(1) as usize,
-                    _ => 1,
-                })
-                .sum()
-        })
+        .map(|row| super::table_row_width(row))
         .max()
         .unwrap_or(0);
     let Some(num_cols) = arena.array_stride_deferred(rows.len(), columns.len().max(widest)) else {
@@ -948,10 +949,7 @@ fn push_array_node_with_geometry(
     for row in rows {
         let mut used = 0usize;
         for cell in row {
-            let width = match cell.as_slice() {
-                [MathNode::SpannedCell { span, .. }] => (*span).max(1) as usize,
-                _ => 1,
-            };
+            let width = super::table_cell_span(cell);
             let id = if let [node @ (MathNode::AlignedCell { .. } | MathNode::SpannedCell { .. })] =
                 cell.as_slice()
             {
@@ -1173,9 +1171,12 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             // Reconstruct rows from flat cells
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
-            let has_aligned_cell = cell_ids
-                .iter()
-                .any(|&cell| matches!(*arena.node(cell), CompactNode::AlignedCell { .. }));
+            let has_aligned_cell = cell_ids.iter().any(|&cell| {
+                matches!(
+                    *arena.node(cell),
+                    CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+                )
+            });
             let mut rows = Vec::new();
             for chunk in cell_ids.chunks(nc.max(1)) {
                 let mut row = Vec::with_capacity(chunk.len());

@@ -681,7 +681,7 @@ fn write_node_in(
                     alignment,
                     rows,
                 } => (
-                    Cow::Owned(vec![*alignment; crate::ast::matrix_column_count(rows)]),
+                    Cow::Owned(vec![*alignment; table_width(rows, 1)?]),
                     rows,
                     None,
                     false,
@@ -732,40 +732,33 @@ fn write_node_in(
                 table.push_attribute(("displaystyle", "true"));
             }
             w.write_event(Event::Start(table)).map_err(to_err)?;
-            let num_cols = columns
-                .len()
-                .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+            let num_cols = if kind.is_some() {
+                columns.len()
+            } else {
+                table_width(rows, columns.len())?
+            };
             for row in rows {
                 w.write_event(Event::Start(BytesStart::new("mtr")))
                     .map_err(to_err)?;
+                let mut authored = row.iter();
                 let mut i = 0;
                 while i < num_cols {
-                    let cell_span = row
-                        .get(i)
-                        .and_then(|cell| match cell.first() {
-                            Some(MathNode::SpannedCell { span, .. }) => {
-                                Some((*span).max(1) as usize)
-                            },
-                            _ => None,
-                        })
-                        .unwrap_or(1);
-                    let (cell_override, cell) =
-                        table_cell_parts(row.get(i).map(Vec::as_slice).unwrap_or_default());
-                    let mut td = BytesStart::new("mtd");
-                    let (left_rule, right_rule, left_padding, right_padding) = row
-                        .get(i)
-                        .and_then(|cell| cell.first())
-                        .and_then(|node| match node {
+                    let cell = authored.next().map(Vec::as_slice).unwrap_or_default();
+                    let cell_span = table_cell_span(cell);
+                    let (left_rule, right_rule, left_padding, right_padding) = match cell {
+                        [
                             MathNode::SpannedCell {
                                 left_rule,
                                 right_rule,
                                 left_padding,
                                 right_padding,
                                 ..
-                            } => Some((*left_rule, *right_rule, *left_padding, *right_padding)),
-                            _ => None,
-                        })
-                        .unwrap_or((false, false, false, false));
+                            },
+                        ] => (*left_rule, *right_rule, *left_padding, *right_padding),
+                        _ => (false, false, false, false),
+                    };
+                    let (cell_override, cell) = table_cell_parts(cell);
+                    let mut td = BytesStart::new("mtd");
                     if let Some(align) = cell_override.or_else(|| columns.get(i).copied()) {
                         let val = match align {
                             ColumnAlign::Left => "left",
@@ -774,9 +767,8 @@ fn write_node_in(
                         };
                         td.push_attribute(("columnalign", val));
                     }
-                    let span_attr = cell_span.to_string();
                     if cell_span > 1 {
-                        td.push_attribute(("columnspan", span_attr.as_str()));
+                        td.push_attribute(("columnspan", cell_span.to_string().as_str()));
                     }
                     if left_rule {
                         td.push_attribute(("data-mathema-left-rule", "true"));
@@ -2638,6 +2630,97 @@ mod tests {
     fn identifier() {
         let output = write(MathNode::Identifier("x".into()));
         assert!(output.contains("<mi>x</mi>"));
+    }
+
+    #[test]
+    fn a_spanning_cell_keeps_the_following_authored_cell() {
+        let xml = r#"<math><mtable><mtr><mtd columnspan="2"><mn>8</mn></mtd><mtd columnalign="right"><mn>9</mn></mtd></mtr><mtr><mn>1</mn><mn>2</mn><mn>3</mn></mtr></mtable></math>"#;
+        let parsed = crate::from_mathml(xml).unwrap();
+        let heap = parsed.expr();
+        let compact = CompactExpr::from_math_expr(&heap).unwrap();
+        let cfg = Config::default();
+        let result = MathmlWriter::write(&heap, &cfg).unwrap();
+        assert!(
+            result.contains(r#"<mtd columnalign="right"><mn>9</mn></mtd>"#),
+            "{result}"
+        );
+        assert_eq!(result, MathmlWriter::write_compact(&compact, &cfg).unwrap());
+        assert_eq!(result, parsed.to_mathml().unwrap());
+    }
+
+    #[test]
+    fn mixed_span_wrappers_do_not_change_table_shape() {
+        let span = MathNode::SpannedCell {
+            span: 6,
+            alignment: ColumnAlign::Right,
+            left_rule: true,
+            right_rule: true,
+            left_padding: true,
+            right_padding: true,
+            content: Box::new(MathNode::Number("1".into())),
+        };
+        let expr = MathExpr::inline(vec![MathNode::Matrix {
+            kind: MatrixKind::Matrix,
+            alignment: ColumnAlign::Left,
+            rows: vec![vec![
+                vec![span, MathNode::Number("2".into())],
+                vec![MathNode::Number("3".into())],
+            ]],
+        }]);
+        let config = Config::default();
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let xml = MathmlWriter::write(&expr, &config).unwrap();
+        assert_eq!(xml.matches("<mtd ").count(), 2);
+        assert!(!xml.contains("columnspan"));
+        assert!(!xml.contains("data-mathema-left-rule"));
+        assert_eq!(xml, MathmlWriter::write_compact(&compact, &config).unwrap());
+        #[cfg(feature = "render")]
+        {
+            let opts = crate::render::RenderOptions::default();
+            assert_eq!(
+                crate::render::render_to_svg(&expr, &opts).unwrap(),
+                crate::render::render_to_svg_compact(&compact, &opts).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn expansive_heap_spans_respect_the_compact_grid_limit() {
+        let cell = MathNode::SpannedCell {
+            span: 32768,
+            alignment: ColumnAlign::Left,
+            left_rule: false,
+            right_rule: false,
+            left_padding: false,
+            right_padding: false,
+            content: Box::new(MathNode::Number("1".into())),
+        };
+        let rows = vec![vec![vec![cell]]; 2];
+        let expr = MathExpr::inline(vec![MathNode::Matrix {
+            kind: MatrixKind::Matrix,
+            alignment: ColumnAlign::Left,
+            rows,
+        }]);
+        let is_grid_error = |err: crate::Error| {
+            matches!(
+                err,
+                crate::Error::LimitExceeded {
+                    kind: crate::error::LimitKind::ListLength,
+                    limit: AstArena::MAX_CHILDREN
+                }
+            )
+        };
+        assert!(is_grid_error(
+            CompactExpr::from_math_expr(&expr).unwrap_err()
+        ));
+        assert!(is_grid_error(
+            MathmlWriter::write(&expr, &Config::default()).unwrap_err()
+        ));
+        #[cfg(feature = "render")]
+        assert!(is_grid_error(
+            crate::render::render_to_svg(&expr, &crate::render::RenderOptions::default())
+                .unwrap_err()
+        ));
     }
 
     #[test]

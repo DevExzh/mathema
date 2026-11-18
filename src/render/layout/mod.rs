@@ -672,21 +672,26 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             kind,
             alignment,
             rows,
-        } => layout_array(
-            matches!(kind, crate::ast::MatrixKind::SmallMatrix),
-            &vec![*alignment; crate::ast::matrix_column_count(rows)],
-            rows,
-            Some(if matches!(kind, crate::ast::MatrixKind::SmallMatrix) {
-                0.5
-            } else {
-                1.0
-            }),
-            false,
-            false,
-            0,
-            0,
-            ctx,
-        ),
+        } => {
+            let Ok(width) = crate::ast::table_width(rows, 1) else {
+                return LayoutBox::kern(0.0);
+            };
+            layout_array(
+                matches!(kind, crate::ast::MatrixKind::SmallMatrix),
+                &vec![*alignment; width],
+                rows,
+                Some(if matches!(kind, crate::ast::MatrixKind::SmallMatrix) {
+                    0.5
+                } else {
+                    1.0
+                }),
+                false,
+                false,
+                0,
+                0,
+                ctx,
+            )
+        },
         MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
             layout_node(content, ctx)
         },

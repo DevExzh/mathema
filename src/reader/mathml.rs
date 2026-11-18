@@ -90,6 +90,7 @@ struct MathmlTable {
     cells: Vec<NodeId>,
     row_lengths: Vec<usize>,
     columns: Vec<ColumnAlign>,
+    span_padding: Option<NodeId>,
 }
 
 #[derive(Clone, Copy)]
@@ -1331,6 +1332,7 @@ impl<'a> MathmlCompactParser<'a> {
             cells: table_cells,
             row_lengths,
             columns,
+            ..
         } = table;
         let stride = columns.len().max(1);
         let total = row_lengths.len() * stride;
@@ -1462,6 +1464,8 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Start(e) | Event::Empty(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
+                        let span =
+                            parse_column_span(get_attr(&e, "columnspan"), max_columns - index)?;
                         let children = if empty {
                             SmallVec::new()
                         } else {
@@ -1470,7 +1474,7 @@ impl<'a> MathmlCompactParser<'a> {
                         (
                             children,
                             get_attr(&e, "columnalign"),
-                            parse_column_span(get_attr(&e, "columnspan")),
+                            span,
                             get_attr(&e, "data-mathema-left-rule")
                                 .is_some_and(|value| value == "true"),
                             get_attr(&e, "data-mathema-right-rule")
@@ -1536,9 +1540,6 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 _ => continue,
             };
-            if cell_span == 0 || index.saturating_add(cell_span) > max_columns {
-                return Err(table_length_error());
-            }
             let alignment = cell_alignment(inherited, index, own_alignment);
             while table.columns.len() < index + cell_span {
                 table.columns.push(alignment);
@@ -1570,10 +1571,15 @@ impl<'a> MathmlCompactParser<'a> {
                 })
             };
             table.cells.push(id);
-            for _ in 1..cell_span {
-                let padding = self.empty_row();
-                self.arena.mark_span_padding(padding);
-                table.cells.push(padding);
+            if cell_span > 1 {
+                let padding = *table.span_padding.get_or_insert_with(|| {
+                    let id = self.empty_row();
+                    self.arena.mark_span_padding(id);
+                    id
+                });
+                table
+                    .cells
+                    .resize(table.cells.len() + cell_span - 1, padding);
             }
         }
         Ok(table.cells.len() - start)
@@ -2271,13 +2277,14 @@ fn parse_column_aligns(value: Option<String>) -> SmallVec<[ColumnAlign; 4]> {
         .collect()
 }
 
-fn parse_column_span(value: Option<String>) -> usize {
-    value
-        .as_deref()
-        .and_then(|text| text.trim().parse::<usize>().ok())
-        .filter(|&span| span > 0)
-        .map(|span| span.min(AstArena::MAX_CHILDREN))
-        .unwrap_or(1)
+fn parse_column_span(value: Option<String>, remaining: usize) -> Result<usize> {
+    let Some(value) = value else { return Ok(1) };
+    match value.trim().parse::<usize>() {
+        Ok(span) if span > remaining => Err(table_length_error()),
+        Ok(span) => Ok(span.max(1)),
+        Err(e) if *e.kind() == std::num::IntErrorKind::PosOverflow => Err(table_length_error()),
+        Err(_) => Ok(1),
+    }
 }
 
 fn table_length_error() -> Error {
@@ -3545,6 +3552,28 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn columnspan_checks_the_remaining_width_before_reading_the_cell() {
+        for span in ["2", "65536", "99999999999999999999999999999999999999"] {
+            let xml = format!(r#"<mtr><mtd columnspan="{span}"><mi>unused</mi></mtd></mtr>"#);
+            let mut parser = MathmlCompactParser::new(&xml, DisplayStyle::Inline).unwrap();
+            assert!(matches!(parser.reader.read_event(), Ok(Event::Start(_))));
+            let mut table = MathmlTable::default();
+            assert!(matches!(
+                parser.parse_table_row("mtr", &[], 1, &mut table),
+                Err(crate::Error::LimitExceeded {
+                    kind: crate::error::LimitKind::ListLength,
+                    ..
+                })
+            ));
+            assert_eq!(parser.arena.string_count(), 0);
+        }
+        assert_eq!(
+            parse_column_span(Some("65535".into()), AstArena::MAX_CHILDREN).unwrap(),
+            65535
+        );
     }
 
     #[test]

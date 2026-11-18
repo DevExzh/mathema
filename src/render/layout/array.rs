@@ -129,6 +129,9 @@ pub(super) fn layout_array(
     let (arstrut_height, arstrut_depth) = array_strut(smallmatrix, size, arraystretch);
     let jot = 0.3 * size;
 
+    let Ok(n_cols) = crate::ast::table_width(rows, columns.len()) else {
+        return LayoutBox::kern(0.0);
+    };
     // Layout all cells
     let mut cell_layouts: Vec<Vec<LayoutBox>> = Vec::new();
     let cell_ctx = if smallmatrix {
@@ -144,19 +147,6 @@ pub(super) fn layout_array(
         cell_layouts.push(row_layouts);
     }
 
-    let n_cols = columns.len().max(
-        rows.iter()
-            .map(|row| {
-                row.iter()
-                    .map(|cell| match cell.first() {
-                        Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
-                        _ => 1,
-                    })
-                    .sum()
-            })
-            .max()
-            .unwrap_or(0),
-    );
     let n_rows = cell_layouts.len();
 
     // Compute column widths and row heights/depths with strut minimums
@@ -167,11 +157,8 @@ pub(super) fn layout_array(
     for (i, row) in cell_layouts.iter().enumerate() {
         let mut j = 0;
         for (cell_index, cell) in row.iter().enumerate() {
-            let span = match rows[i][cell_index].first() {
-                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
-                _ => 1,
-            }
-            .min(n_cols.saturating_sub(j).max(1));
+            let span = crate::ast::table_cell_span(&rows[i][cell_index])
+                .min(n_cols.saturating_sub(j).max(1));
             if span == 1 {
                 col_widths[j] = col_widths[j].max(cell.width);
             }
@@ -213,11 +200,8 @@ pub(super) fn layout_array(
     for (i, row) in cell_layouts.iter().enumerate() {
         let mut j = 0;
         for (cell_index, cell) in row.iter().enumerate() {
-            let span = match rows[i][cell_index].first() {
-                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
-                _ => 1,
-            }
-            .min(n_cols.saturating_sub(j).max(1));
+            let span = crate::ast::table_cell_span(&rows[i][cell_index])
+                .min(n_cols.saturating_sub(j).max(1));
             if span > 1 {
                 let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
                     + (j..j.saturating_add(span).saturating_sub(1))
@@ -249,11 +233,8 @@ pub(super) fn layout_array(
                 continue;
             };
             let cell_index = row_len.saturating_sub(row_iter.len()).saturating_sub(1);
-            let span = match rows[i][cell_index].first() {
-                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
-                _ => 1,
-            }
-            .min(n_cols.saturating_sub(j).max(1));
+            let span = crate::ast::table_cell_span(&rows[i][cell_index])
+                .min(n_cols.saturating_sub(j).max(1));
             let merged_width = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
                 + (j..j.saturating_add(span).saturating_sub(1))
                     .map(&gap_after)
@@ -268,11 +249,13 @@ pub(super) fn layout_array(
                     ColumnAlign::Center => (merged_width - cell.width) / 2.0,
                     ColumnAlign::Right => merged_width - cell.width,
                 };
-                if let Some(MathNode::SpannedCell {
-                    left_rule,
-                    right_rule,
-                    ..
-                }) = rows[i][cell_index].first()
+                if let [
+                    MathNode::SpannedCell {
+                        left_rule,
+                        right_rule,
+                        ..
+                    },
+                ] = rows[i][cell_index].as_slice()
                 {
                     if *left_rule {
                         cell_rules.push(cursor_x);

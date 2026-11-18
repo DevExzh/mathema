@@ -67,10 +67,39 @@ pub enum MatrixKind {
     SmallMatrix,
 }
 
-/// Compact tables have at least one column slot, even when no row has cells.
-/// Keeping that slot retains the alignment of an empty starred matrix.
-pub(crate) fn matrix_column_count(rows: &[Vec<Vec<MathNode>>]) -> usize {
-    rows.iter().map(Vec::len).max().unwrap_or(0).max(1)
+/// A span belongs to a whole cell. Wrappers among sibling nodes contribute
+/// their content without changing the number of occupied columns.
+pub(crate) fn table_cell_span(cell: &[MathNode]) -> usize {
+    match cell {
+        [MathNode::SpannedCell { span, .. }] => usize::from((*span).max(1)),
+        _ => 1,
+    }
+}
+
+pub(crate) fn table_row_width(row: &[Vec<MathNode>]) -> usize {
+    row.iter().fold(0usize, |width, cell| {
+        width.saturating_add(table_cell_span(cell))
+    })
+}
+
+/// Preserve the existing heap representation for ordinary tables. When a
+/// span expands the logical grid, apply the same size limit as the readers
+/// before allocating column widths or emitting rectangular padding.
+pub(crate) fn table_width(rows: &[Vec<Vec<MathNode>>], declared: usize) -> crate::Result<usize> {
+    let mut width = declared;
+    let mut expanded = false;
+    for row in rows {
+        let occupied = table_row_width(row);
+        expanded |= occupied > row.len();
+        width = width.max(occupied);
+    }
+    if expanded && width.saturating_mul(rows.len()) > arena::AstArena::MAX_CHILDREN {
+        return Err(crate::Error::LimitExceeded {
+            kind: crate::error::LimitKind::ListLength,
+            limit: arena::AstArena::MAX_CHILDREN,
+        });
+    }
+    Ok(width)
 }
 
 /// Only a wrapper occupying the whole cell supplies its alignment.
@@ -746,7 +775,7 @@ impl MathExpr {
 /// Maximum allowed AST nesting depth for safe recursive traversal.
 pub const MAX_AST_DEPTH: usize = 128;
 
-/// Validate that AST nesting does not exceed the maximum depth.
+/// Validate the nesting depth and the logical grid size of spanning tables.
 /// Call before any recursive AST traversal (writing, rendering, normalization)
 /// to prevent stack overflow on maliciously deep or programmatically-constructed trees.
 pub fn validate_ast_depth(expr: &MathExpr) -> crate::error::Result<()> {
@@ -965,6 +994,13 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         MathNode::Array { rows, .. }
         | MathNode::Matrix { rows, .. }
         | MathNode::NativeArray { rows, .. } => {
+            let declared = match node {
+                MathNode::Array { columns, .. } | MathNode::NativeArray { columns, .. } => {
+                    columns.len()
+                },
+                _ => 1,
+            };
+            table_width(rows, declared)?;
             for row in rows {
                 for cell in row {
                     for n in cell {
