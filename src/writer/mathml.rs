@@ -874,8 +874,6 @@ fn write_mo_fence(w: &mut XmlWriter, text: &str, form: Option<&str>) -> Result<(
     elem.push_attribute(("fence", "true"));
     if let Some(form) = form {
         elem.push_attribute(("form", form));
-    }
-    if text.is_empty() {
         elem.push_attribute(("stretchy", "true"));
         elem.push_attribute(("symmetric", "true"));
     }
@@ -1913,8 +1911,6 @@ fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>) {
         buf.push_str(" form=\"");
         buf.push_str(form);
         buf.push('"');
-    }
-    if text.is_empty() {
         buf.push_str(" stretchy=\"true\" symmetric=\"true\"");
     }
     buf.push('>');
@@ -2040,6 +2036,29 @@ mod tests {
         let output = MathmlWriter::write(&expr, &Config::default()).unwrap();
         assert!(output.contains("<mtext mathvariant=\"bold\">hello</mtext>"));
         assert!(!output.contains("xml:space"));
+    }
+
+    #[test]
+    fn middle_and_slash_delimiters_request_symmetric_stretching() {
+        for (source, operator) in [
+            (
+                r"\left(\frac{1}{x}\middle|y\right)",
+                r#"form="infix" stretchy="true" symmetric="true">|</mo>"#,
+            ),
+            (
+                r"\left\backslash\frac{1}{x}\right/",
+                r#"form="prefix" stretchy="true" symmetric="true">\</mo>"#,
+            ),
+        ] {
+            let result = crate::from_latex(source).unwrap();
+            let xml = result.to_mathml().unwrap();
+            assert_eq!(
+                MathmlWriter::write(&result.expr(), &Config::default()).unwrap(),
+                xml
+            );
+            assert!(xml.contains(operator), "{source}: {xml}");
+            assert_eq!(crate::from_mathml(&xml).unwrap().to_mathml().unwrap(), xml);
+        }
     }
 
     #[test]

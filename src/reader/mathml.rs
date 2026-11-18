@@ -682,8 +682,7 @@ impl<'a> MathmlCompactParser<'a> {
         let name = text.trim();
         // Multi-letter operator tokens and explicitly named operators
         // are distinct from ordinary identifiers in <mi>.
-        let attrs =
-            operator_attributes(start, self.fence_depth == Some(self.depth), text.is_empty());
+        let attrs = operator_attributes(start, self.fence_depth == Some(self.depth));
         let movable = attrs.movable_limits;
         let mut chars = name.chars();
         let named = attrs.named_operator
@@ -1761,7 +1760,6 @@ fn fence_attr_value(raw: &str) -> std::borrow::Cow<'_, str> {
 fn operator_attributes(
     start: &quick_xml::events::BytesStart<'_>,
     inspect_fences: bool,
-    empty: bool,
 ) -> OperatorAttributes {
     let mut result = OperatorAttributes::default();
     for attr in start.attributes().flatten() {
@@ -1771,7 +1769,7 @@ fn operator_attributes(
                     .trim()
                     .eq_ignore_ascii_case("true");
             },
-            "stretchy" if inspect_fences => {
+            "stretchy" | "symmetric" if inspect_fences => {
                 result.constrained |= !fence_attr_value(&attr.value)
                     .trim()
                     .eq_ignore_ascii_case("true");
@@ -1784,13 +1782,6 @@ fn operator_attributes(
                     s if s.eq_ignore_ascii_case("postfix") => FenceRole::Postfix,
                     _ => FenceRole::Constrained,
                 };
-            },
-            "symmetric" if inspect_fences => {
-                // An empty delimiter has no glyph to stretch about the axis.
-                result.constrained |= !empty
-                    || !fence_attr_value(&attr.value)
-                        .trim()
-                        .eq_ignore_ascii_case("true");
             },
             "minsize" | "maxsize" | "lspace" | "rspace" | "style" | "mathsize" | "mathvariant"
             | "mathcolor" | "mathbackground" | "class" | "displaystyle" | "scriptlevel"
