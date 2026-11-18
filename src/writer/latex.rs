@@ -323,6 +323,26 @@ fn write_script_node_with_next(
 fn write_postscript_base(buf: &mut String, arena: &AstArena, base: NodeId) {
     match *arena.node(base) {
         CompactNode::Operator { .. } => write_node(buf, arena, base),
+        CompactNode::Color { color, content }
+            if latex_color(arena.str_val(color)).is_none()
+                && matches!(
+                    *arena.node(content),
+                    CompactNode::Operator { .. }
+                        | CompactNode::MathAtom {
+                            atom_type: MathAtomType::Op,
+                            ..
+                        }
+                ) =>
+        {
+            // An invalid color wrapper is transparent in the LaTeX writer.
+            // Keep the resulting operator an explicit ordinary atom, with the
+            // outer group that write_script_base uses for this node shape.
+            // This prevents the next parser pass from inferring a new
+            // MathAtom::Ord boundary around a grouped operator.
+            buf.push_str("{\\mathord{");
+            write_node(buf, arena, content);
+            buf.push_str("}}");
+        },
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
