@@ -1481,6 +1481,8 @@ pub(crate) struct LatexCompactParser {
     /// behavior while nested group parsers continue to treat newlines as
     /// ordinary whitespace.
     font_scope_preserve_breaks: bool,
+    /// A middle delimiter can remain nested in a fraction within this fence.
+    in_left_right: bool,
     /// Used to identify the rare font argument that opened an alignment.
     arrays_built: usize,
 }
@@ -1508,6 +1510,7 @@ impl LatexCompactParser {
             infix_marker_seen: false,
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
+            in_left_right: false,
             arrays_built: 0,
         }
     }
@@ -3423,23 +3426,9 @@ impl LatexCompactParser {
                 }
                 let (input, sid) = self.parse_delimiter_into(input)?;
                 let ch = self.arena.str_val(sid).chars().next().unwrap_or('\0');
-                if self.depth > 1 && ch != '~' {
-                    // A serialized Middle can be grouped when it is followed
-                    // by an implicit empty-base script. Keep the helper node
-                    // through that group so the writer does not downgrade it
-                    // to an ordinary fence on the next pass.
-                    return Ok((input, self.arena.push_node(CompactNode::Middle(sid))));
-                }
-                // Preserve an internal Middle node when the writer emits it
-                // beside an implicit empty-base script. A bare `\middle|`
-                // remains unsupported outside a fence, but this marker form
-                // is a stable serialization of the already parsed node.
-                if ch == '|'
-                    && input
-                        .chars()
-                        .next()
-                        .is_some_and(|next| matches!(next, '^' | '_' | '\''))
-                {
+                // Braces may disappear during normalization. Only an enclosing
+                // left/right pair gives this delimiter a stable fence context.
+                if self.in_left_right {
                     return Ok((input, self.arena.push_node(CompactNode::Middle(sid))));
                 }
                 // The active-character `~` is a non-breaking space in LaTeX, not a
@@ -4391,7 +4380,10 @@ impl LatexCompactParser {
             )));
         }
         self.depth += 1;
+        let enclosing_fence = self.in_left_right;
+        self.in_left_right = true;
         let result = self.parse_left_right_inner(input);
+        self.in_left_right = enclosing_fence;
         self.depth -= 1;
         result
     }

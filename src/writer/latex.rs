@@ -2511,24 +2511,39 @@ mod tests {
         assert_eq!(text_first, roundtrip(&text_first));
     }
 
+    fn normalized_latex(input: &str) -> String {
+        let config = Config::default();
+        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        crate::ast::normalize::normalize_compact_expr(&mut parsed.expr).unwrap();
+        LatexWriter::write_compact(&parsed.expr, &config).unwrap()
+    }
+
     #[test]
     fn ordinary_middle_delimiter_keeps_compact_roundtrip_spacing() {
-        let input = r" ' \middle \mid\midfle' oe'";
-        let config = Config::default();
-
-        let mut first_expr = LatexReader::parse_compact(input, &config).unwrap();
-        crate::ast::normalize::normalize_compact_expr(&mut first_expr.expr).unwrap();
-        let first = LatexWriter::write_compact(&first_expr.expr, &config).unwrap();
-
-        let mut second_expr = LatexReader::parse_compact(&first, &config).unwrap();
-        crate::ast::normalize::normalize_compact_expr(&mut second_expr.expr).unwrap();
-        let second = LatexWriter::write_compact(&second_expr.expr, &config).unwrap();
-
-        assert_eq!(first, second);
+        let first = normalized_latex(r" ' \middle \mid\midfle' oe'");
+        assert_eq!(first, normalized_latex(&first));
         assert_eq!(
             first,
             r"{{}^{\prime}\mathord{\mid}}{midfle}^{\prime}o{e}^{\prime}"
         );
+    }
+
+    #[test]
+    fn middle_delimiters_follow_the_enclosing_fence_across_normalization() {
+        for (input, fence_count) in [
+            (r"{uw//suA\middle|3}1", 0),
+            (r"{a\middle|b}c", 0),
+            (r"\left( a\middle|b \right){c\middle|d}", 1),
+            (r"\left(\frac{a\middle|b}{c}\right)", 1),
+            (
+                r"\left[\left(x\middle|y\right)\frac{a\middle|b}{c}\right]",
+                2,
+            ),
+        ] {
+            let first = normalized_latex(input);
+            assert_eq!(first.matches(r"\middle").count(), fence_count, "{input}");
+            assert_eq!(first, normalized_latex(&first), "{input}");
+        }
     }
 
     #[test]
