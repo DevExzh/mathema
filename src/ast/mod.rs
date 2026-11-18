@@ -67,6 +67,71 @@ pub enum MatrixKind {
     SmallMatrix,
 }
 
+/// One ordered directive on the edge of a spanning table cell.
+///
+/// The sequence stored on each side is significant. Repeated directives stay
+/// distinct so native LaTeX forms such as `@{}|r`, `|@{}r`, and `||r` retain
+/// their source geometry through compact and heap conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SpanBoundary {
+    /// Suppress the ordinary intercolumn glue at this boundary (`@{}`).
+    SuppressGlue,
+    /// Draw one native vertical rule at this boundary (`|`).
+    Rule,
+}
+
+/// Maximum number of ordered directives retained on one side of a spanning
+/// cell in the compact representation. Readers reject longer authored lists.
+pub const MAX_SPAN_BOUNDARIES: usize = 15;
+
+#[inline]
+pub(crate) fn pack_span_boundaries(boundaries: &[SpanBoundary]) -> u32 {
+    boundaries
+        .iter()
+        .take(MAX_SPAN_BOUNDARIES)
+        .enumerate()
+        .fold(0, |bits, (index, boundary)| {
+            let value = match boundary {
+                SpanBoundary::SuppressGlue => 1,
+                SpanBoundary::Rule => 2,
+            };
+            bits | (value << (index * 2))
+        })
+}
+
+#[inline]
+pub(crate) fn span_boundary_at(bits: u32, index: usize) -> Option<SpanBoundary> {
+    if index >= MAX_SPAN_BOUNDARIES {
+        return None;
+    }
+    match (bits >> (index * 2)) & 0x3 {
+        1 => Some(SpanBoundary::SuppressGlue),
+        2 => Some(SpanBoundary::Rule),
+        _ => None,
+    }
+}
+
+#[inline]
+pub(crate) fn unpack_span_boundaries(bits: u32) -> Vec<SpanBoundary> {
+    (0..MAX_SPAN_BOUNDARIES)
+        .map_while(|index| span_boundary_at(bits, index))
+        .collect()
+}
+
+#[inline]
+pub(crate) fn span_boundary_has(bits: u32, boundary: SpanBoundary) -> bool {
+    (0..MAX_SPAN_BOUNDARIES).any(|index| span_boundary_at(bits, index) == Some(boundary))
+}
+
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn span_boundary_count(bits: u32, boundary: SpanBoundary) -> usize {
+    (0..MAX_SPAN_BOUNDARIES)
+        .filter(|&index| span_boundary_at(bits, index) == Some(boundary))
+        .count()
+}
+
 /// A span belongs to a whole cell. Wrappers among sibling nodes contribute
 /// their content without changing the number of occupied columns.
 pub(crate) fn table_cell_span(cell: &[MathNode]) -> usize {
@@ -446,14 +511,10 @@ pub enum MathNode {
         alignment: ColumnAlign,
         /// Number of logical columns occupied by this cell.
         span: u16,
-        /// Whether the native preamble draws a left edge rule.
-        left_rule: bool,
-        /// Whether the native preamble draws a right edge rule.
-        right_rule: bool,
-        /// Whether the native preamble suppresses the left intercolumn glue.
-        left_padding: bool,
-        /// Whether the native preamble suppresses the right intercolumn glue.
-        right_padding: bool,
+        /// Ordered native preamble directives on the left edge.
+        left_boundaries: Vec<SpanBoundary>,
+        /// Ordered native preamble directives on the right edge.
+        right_boundaries: Vec<SpanBoundary>,
         /// Cell content.
         content: Box<MathNode>,
     },

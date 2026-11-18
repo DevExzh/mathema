@@ -45,6 +45,16 @@ fn write_nodes(buf: &mut LatexBuffer, arena: &AstArena, span: NodeSpan) {
     write_node_slice(buf, arena, arena.children(span), false);
 }
 
+fn write_packed_boundaries(buf: &mut LatexBuffer, boundaries: u32) {
+    for index in 0..MAX_SPAN_BOUNDARIES {
+        match span_boundary_at(boundaries, index) {
+            Some(SpanBoundary::SuppressGlue) => buf.push_str("@{}"),
+            Some(SpanBoundary::Rule) => buf.push('|'),
+            None => break,
+        }
+    }
+}
+
 /// Write a sequence of sibling nodes (see `write_nodes`).
 fn write_node_slice(
     buf: &mut LatexBuffer,
@@ -1430,44 +1440,32 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         }
                         emitted = true;
                         let (alignment, nodes) = arena.table_cell_parts(cell_id);
-                        let (cell_span, left_rule, right_rule, left_padding, right_padding) =
+                        let (cell_span, left_boundaries, right_boundaries) =
                             match *arena.node(*cell_id) {
                                 CompactNode::SpannedCell {
                                     span,
-                                    left_rule,
-                                    right_rule,
-                                    left_padding,
-                                    right_padding,
+                                    left_boundaries,
+                                    right_boundaries,
                                     ..
-                                } => (
-                                    span.max(1) as usize,
-                                    left_rule,
-                                    right_rule,
-                                    left_padding,
-                                    right_padding,
-                                ),
-                                _ => (1, false, false, false, false),
+                                } => (span.max(1) as usize, left_boundaries, right_boundaries),
+                                _ => (1, 0, 0),
                             };
                         if let Some(alignment) = alignment {
                             buf.push_str(r"\multicolumn{");
                             buf.push_str(&cell_span.to_string());
                             buf.push_str("}{");
-                            if left_padding || (trim_edges && col_idx == 0) {
+                            write_packed_boundaries(buf, left_boundaries);
+                            if trim_edges && col_idx == 0 && left_boundaries == 0 {
                                 buf.push_str("@{}");
-                            }
-                            if left_rule {
-                                buf.push('|');
                             }
                             buf.push(match alignment {
                                 ColumnAlign::Left => 'l',
                                 ColumnAlign::Center => 'c',
                                 ColumnAlign::Right => 'r',
                             });
-                            if right_padding || (trim_edges && col_idx + cell_span == nc) {
+                            write_packed_boundaries(buf, right_boundaries);
+                            if trim_edges && col_idx + cell_span == nc && right_boundaries == 0 {
                                 buf.push_str("@{}");
-                            }
-                            if right_rule {
-                                buf.push('|');
                             }
                             buf.push_str("}{");
                         }
@@ -4088,6 +4086,78 @@ mod tests {
             .and_then(|(value, _)| value.trim_end_matches("px").parse::<f64>().ok())
             .unwrap();
         assert!(width > 30.0, "{width}");
+    }
+
+    #[test]
+    fn multicolumn_boundary_order_and_multiplicity_survive_latex_roundtrip() {
+        let config = Config::default();
+        for (source, expected_spec, expected_left, expected_right) in [
+            (
+                r"\begin{array}{l}\multicolumn{1}{@{}|l}{x}\end{array}",
+                r"\multicolumn{1}{@{}|l}",
+                vec![SpanBoundary::SuppressGlue, SpanBoundary::Rule],
+                Vec::new(),
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{|@{}l}{x}\end{array}",
+                r"\multicolumn{1}{|@{}l}",
+                vec![SpanBoundary::Rule, SpanBoundary::SuppressGlue],
+                Vec::new(),
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{||l}{x}\end{array}",
+                r"\multicolumn{1}{||l}",
+                vec![SpanBoundary::Rule, SpanBoundary::Rule],
+                Vec::new(),
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{l|@{}}{x}\end{array}",
+                r"\multicolumn{1}{l|@{}}",
+                Vec::new(),
+                vec![SpanBoundary::Rule, SpanBoundary::SuppressGlue],
+            ),
+        ] {
+            let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            let root = compact.arena.children(compact.roots)[0];
+            let CompactNode::Array { cells, .. } = *compact.arena.node(root) else {
+                panic!("expected array");
+            };
+            let cell = compact.arena.children(cells)[0];
+            let CompactNode::SpannedCell {
+                left_boundaries,
+                right_boundaries,
+                ..
+            } = *compact.arena.node(cell)
+            else {
+                panic!("expected spanned cell");
+            };
+            assert_eq!(
+                unpack_span_boundaries(left_boundaries),
+                expected_left,
+                "left boundary order changed for {source}"
+            );
+            assert_eq!(
+                unpack_span_boundaries(right_boundaries),
+                expected_right,
+                "right boundary order changed for {source}"
+            );
+            let first = LatexWriter::write_compact(&compact, &config).unwrap();
+            assert_eq!(
+                first,
+                LatexWriter::write_compact(
+                    &LatexReader::parse_compact(&first, &config).unwrap().expr,
+                    &config,
+                )
+                .unwrap()
+            );
+            assert!(first.contains(expected_spec), "{first}");
+        }
+        let over_limit = format!(
+            r"\begin{{array}}{{l}}\multicolumn{{1}}{{{}{}}}{{x}}\end{{array}}",
+            "@{}".repeat(MAX_SPAN_BOUNDARIES + 1),
+            "l"
+        );
+        assert!(LatexReader::parse_compact(&over_limit, &config).is_err());
     }
 
     #[test]

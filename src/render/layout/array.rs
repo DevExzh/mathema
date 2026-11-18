@@ -37,20 +37,16 @@ pub(super) fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
 struct CellTemplate {
     span: usize,
     alignment: Option<ColumnAlign>,
-    omit_left: bool,
-    omit_right: bool,
-    left_rule: bool,
-    right_rule: bool,
+    left_boundaries: u32,
+    right_boundaries: u32,
 }
 
 impl CellTemplate {
     const ORDINARY: Self = Self {
         span: 1,
         alignment: None,
-        omit_left: false,
-        omit_right: false,
-        left_rule: false,
-        right_rule: false,
+        left_boundaries: 0,
+        right_boundaries: 0,
     };
 
     fn heap(nodes: &[MathNode]) -> Self {
@@ -59,19 +55,15 @@ impl CellTemplate {
                 MathNode::SpannedCell {
                     alignment,
                     span,
-                    left_padding,
-                    right_padding,
-                    left_rule,
-                    right_rule,
+                    left_boundaries,
+                    right_boundaries,
                     ..
                 },
             ] => Self {
                 span: usize::from((*span).max(1)),
                 alignment: Some(*alignment),
-                omit_left: *left_padding,
-                omit_right: *right_padding,
-                left_rule: *left_rule,
-                right_rule: *right_rule,
+                left_boundaries: pack_span_boundaries(left_boundaries),
+                right_boundaries: pack_span_boundaries(right_boundaries),
             },
             [MathNode::AlignedCell { alignment, .. }] => Self {
                 alignment: Some(*alignment),
@@ -86,18 +78,14 @@ impl CellTemplate {
             CompactNode::SpannedCell {
                 alignment,
                 span,
-                left_padding,
-                right_padding,
-                left_rule,
-                right_rule,
+                left_boundaries,
+                right_boundaries,
                 ..
             } => Self {
                 span: usize::from(span.max(1)).min(remaining),
                 alignment: Some(alignment),
-                omit_left: left_padding,
-                omit_right: right_padding,
-                left_rule,
-                right_rule,
+                left_boundaries,
+                right_boundaries,
             },
             CompactNode::AlignedCell { alignment, .. } => Self {
                 alignment: Some(alignment),
@@ -105,6 +93,26 @@ impl CellTemplate {
             },
             _ => Self::ORDINARY,
         }
+    }
+
+    fn left_omits_glue(self) -> bool {
+        let count = (0..MAX_SPAN_BOUNDARIES)
+            .take_while(|&index| span_boundary_at(self.left_boundaries, index).is_some())
+            .count();
+        count > 0
+            && span_boundary_at(self.left_boundaries, count - 1) == Some(SpanBoundary::SuppressGlue)
+    }
+
+    fn right_omits_glue(self) -> bool {
+        span_boundary_at(self.right_boundaries, 0) == Some(SpanBoundary::SuppressGlue)
+    }
+
+    fn left_rule_count(self) -> usize {
+        span_boundary_count(self.left_boundaries, SpanBoundary::Rule)
+    }
+
+    fn right_rule_count(self) -> usize {
+        span_boundary_count(self.right_boundaries, SpanBoundary::Rule)
     }
 }
 
@@ -152,20 +160,28 @@ impl ColumnLayout {
     }
 
     fn padding(&self, col: usize, cell: CellTemplate) -> (f64, f64) {
+        let (left_glue, right_glue) = self.glue_padding(col, cell);
+        (
+            left_glue + self.rule_extent(cell.left_rule_count()),
+            right_glue + self.rule_extent(cell.right_rule_count()),
+        )
+    }
+
+    fn glue_padding(&self, col: usize, cell: CellTemplate) -> (f64, f64) {
         let half_gap = |before| {
             self.gap
                 .unwrap_or_else(|| col_gap_after(before, self.aligned, self.size))
                 * 0.5
         };
         let end = col + cell.span;
-        let left = if cell.omit_left {
+        let left = if cell.left_omits_glue() {
             0.0
         } else if col == 0 {
             self.edge
         } else {
             half_gap(col - 1)
         };
-        let right = if cell.omit_right {
+        let right = if cell.right_omits_glue() {
             0.0
         } else if end == self.widths.len() {
             self.edge
@@ -173,6 +189,12 @@ impl ColumnLayout {
             half_gap(end - 1)
         };
         (left, right)
+    }
+
+    fn rule_extent(&self, count: usize) -> f64 {
+        let rule = 0.04 * self.size;
+        let separation = 0.2 * self.size;
+        count as f64 * rule + count.saturating_sub(1) as f64 * separation
     }
 
     fn measure(&mut self, col: usize, cell: CellTemplate, width: f64) {
@@ -379,11 +401,24 @@ pub(super) fn layout_array(
         for (cell, source) in row.into_iter().zip(&rows[i]) {
             let template = CellTemplate::heap(source);
             let (width, dx) = grid.place(col, template, cell.width, columns);
-            if template.left_rule {
-                cell_rules.push((cursor_x, i, cursor_y));
+            let (left_glue, right_glue) = grid.glue_padding(col, template);
+            let rule_w = 0.04 * size;
+            let rule_sep = 0.2 * size;
+            for index in 0..template.left_rule_count() {
+                cell_rules.push((
+                    cursor_x + left_glue + index as f64 * (rule_w + rule_sep),
+                    i,
+                    cursor_y,
+                ));
             }
-            if template.right_rule {
-                cell_rules.push((cursor_x + width, i, cursor_y));
+            let right_rules = template.right_rule_count();
+            let right_start = cursor_x + width - right_glue - grid.rule_extent(right_rules);
+            for index in 0..right_rules {
+                cell_rules.push((
+                    right_start + index as f64 * (rule_w + rule_sep),
+                    i,
+                    cursor_y,
+                ));
             }
             children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
             cursor_x += width;
@@ -597,11 +632,24 @@ pub(super) fn layout_array_arena(
             let template = CellTemplate::compact(ast.node(cell_ids_ast[idx]), nc - j);
             let cell = cell_layout_ids[idx];
             let (width, dx) = grid.place(j, template, arena.get(cell).width, &columns);
-            if template.left_rule {
-                cell_rules.push((cursor_x, i, cursor_y));
+            let (left_glue, right_glue) = grid.glue_padding(j, template);
+            let rule_w = 0.04 * size;
+            let rule_sep = 0.2 * size;
+            for index in 0..template.left_rule_count() {
+                cell_rules.push((
+                    cursor_x + left_glue + index as f64 * (rule_w + rule_sep),
+                    i,
+                    cursor_y,
+                ));
             }
-            if template.right_rule {
-                cell_rules.push((cursor_x + width, i, cursor_y));
+            let right_rules = template.right_rule_count();
+            let right_start = cursor_x + width - right_glue - grid.rule_extent(right_rules);
+            for index in 0..right_rules {
+                cell_rules.push((
+                    right_start + index as f64 * (rule_w + rule_sep),
+                    i,
+                    cursor_y,
+                ));
             }
             arena.push_child(ArenaPositionedBox {
                 dx: cursor_x + dx,
@@ -708,12 +756,12 @@ mod span_tests {
         }
         let left = CellTemplate {
             span: 2,
-            omit_left: true,
+            left_boundaries: pack_span_boundaries(&[SpanBoundary::SuppressGlue]),
             ..usual
         };
         let right = CellTemplate {
             span: 2,
-            omit_right: true,
+            right_boundaries: pack_span_boundaries(&[SpanBoundary::SuppressGlue]),
             ..usual
         };
         grid.measure(1, left, 0.5);

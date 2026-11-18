@@ -57,7 +57,15 @@ export type MathNode =
       };
     }
   | { AlignedCell: { alignment: ColumnAlign; content: MathNode } }
-  | { SpannedCell: { alignment: ColumnAlign; span: number; left_rule: boolean; right_rule: boolean; content: MathNode } }
+  | {
+      SpannedCell: {
+        alignment: ColumnAlign;
+        span: number;
+        left_boundaries: SpanBoundary[];
+        right_boundaries: SpanBoundary[];
+        content: MathNode;
+      };
+    }
   | {
       NativeArray: {
         columns: ColumnAlign[];
@@ -124,6 +132,7 @@ export type TextStyle =
 
 export type FractionKind = "Normal" | "Display" | "Inline" | "NoBar" | "Skewed";
 export type ColumnAlign = "Left" | "Center" | "Right";
+export type SpanBoundary = "SuppressGlue" | "Rule";
 export type AccentPosition = "Above" | "Below";
 export type StrokeKind = "Forward" | "Backward" | "Cross" | "Horizontal" | "Vertical";
 export type PhantomKind = "Full" | "Vertical" | "Horizontal" | "SmashBoth" | "SmashBottom" | "SmashTop";
