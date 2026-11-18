@@ -450,7 +450,7 @@ impl<'a> MathmlCompactParser<'a> {
             "mrow" => {
                 let attrs = mrow_attributes(start);
                 let reflected = match attrs.style.as_deref() {
-                    Some(style) => has_horizontal_reflection(&style),
+                    Some(style) => has_horizontal_reflection(style),
                     None => matches!(attrs.reflect.as_deref(), Some("text" | "math")),
                 };
                 let (children, sized) = self.read_children(name, reflected)?;
