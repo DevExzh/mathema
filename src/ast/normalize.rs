@@ -668,6 +668,7 @@ fn normalize_compact_span(
         if let Some(&next_id) = coalesced.last()
             && let Some((sub, sup)) = empty_base_scripts(arena, id)
             && can_take_prescripts(*arena.node(next_id))
+            && !contains_style_switch(arena, next_id)
             && !is_empty_base_script(arena, next_id)
         {
             coalesced.pop();
@@ -698,6 +699,20 @@ fn normalize_compact_span(
     }
 
     arena.push_children(&coalesced)
+}
+
+/// A declaration-bearing group is an explicit scope boundary. A preceding
+/// empty-base script must remain its own atom instead of being folded into the
+/// group, because doing so changes the brace shape on the next LaTeX parse.
+fn contains_style_switch(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::StyleSwitch(_) => true,
+        CompactNode::Row(span) => arena
+            .children(span)
+            .iter()
+            .any(|&child| contains_style_switch(arena, child)),
+        _ => false,
+    }
 }
 
 /// The node kinds whose adjacent runs normalization merges.

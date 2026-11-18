@@ -327,6 +327,23 @@ fn empty_style_groups_do_not_leak_into_siblings_or_choice() {
 }
 
 #[test]
+fn empty_style_group_after_a_leading_script_is_idempotent() {
+    let input = "^\rr'^\r\rr{\\scriptstyle}\\mathchoice{D}{T}{S}'^\rr'\r\n{Q};";
+    let config = Config::default();
+    let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+    normalize_compact_expr(&mut parsed.expr).unwrap();
+    let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+    assert!(first.contains(r"{\scriptstyle }") && first.contains(r"\mathchoice"));
+    let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+    normalize_compact_expr(&mut reparsed.expr).unwrap();
+    let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+    assert_eq!(
+        first, second,
+        "unstable scoped leading script for {input:?}"
+    );
+}
+
+#[test]
 fn legacy_font_declarations_scope_like_grouped_fonts() {
     for (source, expected) in [
         (r"\rm xyz", r"\mathrm{xyz}"),
