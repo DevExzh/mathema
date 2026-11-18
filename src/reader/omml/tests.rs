@@ -98,6 +98,22 @@ fn compound_limit_operator_runs_remain_one_named_operator() {
 }
 
 #[test]
+fn compound_limit_objects_decode_side_and_stacked_bounds() {
+    let side = omath(
+        r#"<m:sSub><m:e><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>lim sup</m:t></m:r></m:e><m:sub><m:r><m:t>n</m:t></m:r></m:sub></m:sSub>"#,
+    );
+    assert!(matches!(parse_one(&side), MathNode::Subscript { .. }));
+
+    let stacked = omath(
+        r#"<m:limLow><m:e><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>lim sup</m:t></m:r></m:e><m:lim><m:r><m:t>n</m:t></m:r></m:lim></m:limLow>"#,
+    );
+    assert!(matches!(parse_one(&stacked), MathNode::Underscript { .. }));
+    let output = crate::from_omml(&stacked).unwrap().to_mathml().unwrap();
+    assert!(output.contains("lim sup"), "{output}");
+    assert!(output.contains("<munder>"), "{output}");
+}
+
+#[test]
 fn fraction() {
     let node = parse_one(&omath(
         "<m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f>",

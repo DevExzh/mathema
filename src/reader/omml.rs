@@ -2342,6 +2342,17 @@ impl<'i> Parser<'i> {
             }
         }
         let base = self.or_empty(base);
+        // `m:sSub`/`m:sSup` explicitly request side scripts. Preserve that
+        // effective placement when the base is a naturally movable named
+        // operator. Stacked limits arrive through `m:limLow`/`m:limUpp` and
+        // are decoded separately below.
+        let base = match *self.arena.node(base) {
+            CompactNode::Operator { name, .. } => self.arena.push_node(CompactNode::Operator {
+                name,
+                limits: LimitStyle::SubSup,
+            }),
+            _ => base,
+        };
         let sub = self.or_empty(sub);
         let sup = self.or_empty(sup);
         Ok(self.arena.push_node(match (has_sub, has_sup) {

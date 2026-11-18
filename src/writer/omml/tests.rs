@@ -49,6 +49,30 @@ fn mathchoice_uses_the_applicable_omml_style_branch() {
 }
 
 #[test]
+fn named_limit_operators_use_effective_omml_placement() {
+    let display = write_latex_choice(r"\limsup_i x", DisplayStyle::Block);
+    assert!(display.contains("<m:limLow>"), "{display}");
+    assert!(!display.contains("<m:sSub>"), "{display}");
+
+    let inline = write_latex_choice(r"\limsup_i x", DisplayStyle::Inline);
+    assert!(inline.contains("<m:sSub>"), "{inline}");
+    assert!(!inline.contains("<m:limLow>"), "{inline}");
+
+    let forced_side = write_latex_choice(r"\limsup\nolimits_i x", DisplayStyle::Block);
+    assert!(forced_side.contains("<m:sSub>"), "{forced_side}");
+    assert!(!forced_side.contains("<m:limLow>"), "{forced_side}");
+
+    let forced_stack = write_latex_choice(r"\limsup\limits_i x", DisplayStyle::Inline);
+    assert!(forced_stack.contains("<m:limLow>"), "{forced_stack}");
+    assert!(!forced_stack.contains("<m:sSub>"), "{forced_stack}");
+
+    for omml in [display, inline, forced_side, forced_stack] {
+        let back = OmmlReader::parse(&omml, &Config::default()).unwrap();
+        assert!(back.expr.nodes.len() >= 2, "{omml}");
+    }
+}
+
+#[test]
 fn mathchoice_uses_script_and_fraction_transitions_in_omml() {
     let superscript = write_latex_choice(r"x^{\mathchoice{D}{T}{S}{Q}}", DisplayStyle::Block);
     assert!(superscript.contains("<m:t>S</m:t>"), "{superscript}");
