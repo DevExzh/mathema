@@ -1249,26 +1249,32 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 && cell_ids
                     .iter()
                     .all(|&cell| super::cell_after_style(arena, cell, 0).is_some());
-            let env = if ams
-                && nc == 1
-                && matches!(columns, [id] if matches!(*arena.node(*id), CompactNode::ColAlign(ColumnAlign::Center)))
-            {
-                "gathered"
-            } else if ams
-                && nc >= 2
-                && columns.len() == nc
-                && columns.iter().enumerate().all(|(i, &id)| {
-                    let expected = if i % 2 == 0 {
-                        ColumnAlign::Right
+            let env = match arena.array_environment(id) {
+                Some(crate::ast::arena::ArrayEnvironment::Matrix) => "matrix",
+                Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) => "smallmatrix",
+                None => {
+                    if ams
+                        && nc == 1
+                        && matches!(columns, [id] if matches!(*arena.node(*id), CompactNode::ColAlign(ColumnAlign::Center)))
+                    {
+                        "gathered"
+                    } else if ams
+                        && nc >= 2
+                        && columns.len() == nc
+                        && columns.iter().enumerate().all(|(i, &id)| {
+                            let expected = if i % 2 == 0 {
+                                ColumnAlign::Right
+                            } else {
+                                ColumnAlign::Left
+                            };
+                            matches!(*arena.node(id), CompactNode::ColAlign(col) if col == expected)
+                        })
+                    {
+                        "aligned"
                     } else {
-                        ColumnAlign::Left
-                    };
-                    matches!(*arena.node(id), CompactNode::ColAlign(col) if col == expected)
-                })
-            {
-                "aligned"
-            } else {
-                "array"
+                        "array"
+                    }
+                },
             };
             buf.push_str(r"\begin{");
             buf.push_str(env);
@@ -1299,8 +1305,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         }
                         let cell_id = cell_ids[row_idx * nc + col_idx];
                         // Each cell is a Row node wrapping cell contents
-                        if env != "array"
-                            && let Some(content) = super::cell_after_style(arena, cell_id, 0)
+                        if let Some(marker) = match env {
+                            "smallmatrix" => Some(2),
+                            "aligned" | "gathered" => Some(0),
+                            _ => None,
+                        } && let Some(content) = super::cell_after_style(arena, cell_id, marker)
                         {
                             write_node_slice(buf, arena, content, false);
                         } else if let CompactNode::Row(span) = *arena.node(cell_id) {

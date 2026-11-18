@@ -604,8 +604,55 @@ fn legacy_font_declarations_scope_like_grouped_fonts() {
     .unwrap();
     assert_eq!(
         matrix,
-        r"\begin{array}{cc} \mathrm{x} & y \\ z & \mathsf{q} \end{array}"
+        r"\begin{matrix} \mathrm{x} & y \\ z & \mathsf{q} \end{matrix}"
     );
+}
+
+#[test]
+#[cfg(feature = "render")]
+fn matrix_canonicalization_and_smallmatrix_roundtrip_preserve_geometry() {
+    let latex =
+        |source: &str| crate::convert(source, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let svg = |source: &str| crate::from_latex(source).unwrap().to_svg().unwrap();
+
+    for source in [
+        r"\begin{matrix}x\end{matrix}",
+        r"\begin{matrix}a&b\\c&d\end{matrix}",
+        r"\begin{pmatrix}x\\y\end{pmatrix}",
+    ] {
+        let first = latex(source);
+        assert!(first.contains(r"\begin{matrix}"), "{source}: {first}");
+        assert_eq!(first, latex(&first), "{source}");
+        assert_eq!(svg(source), svg(&first), "{source}");
+    }
+
+    for source in [
+        r"\begin{smallmatrix}x\end{smallmatrix}",
+        r"\begin{smallmatrix}a&b\\c&d\end{smallmatrix}",
+    ] {
+        let first = latex(source);
+        assert!(first.contains(r"\begin{smallmatrix}"), "{source}: {first}");
+        assert_eq!(first, latex(&first), "{source}");
+        assert_eq!(svg(source), svg(&first), "{source}");
+    }
+
+    let config = Config::default();
+    for source in [
+        r"\begin{matrix}x\end{matrix}",
+        r"\begin{smallmatrix}x\end{smallmatrix}",
+    ] {
+        let heap = LatexReader::parse(source, &config).unwrap().expr;
+        let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+        let heap_latex = LatexWriter::write(&heap, &config).unwrap();
+        let compact_latex = LatexWriter::write_compact(&compact, &config).unwrap();
+        let expected = if source.contains("smallmatrix") {
+            r"\begin{smallmatrix}"
+        } else {
+            r"\begin{matrix}"
+        };
+        assert!(compact_latex.contains(expected), "{compact_latex}");
+        assert!(heap_latex.contains(r"\begin{array}"), "{heap_latex}");
+    }
 }
 
 #[test]
@@ -744,19 +791,19 @@ fn legacy_font_scope_resets_matrix_cells_but_keeps_siblings() {
     for (input, expected) in [
         (
             r"\bf x\begin{matrix}y&z\end{matrix}t",
-            r"\mathbf{x}\begin{array}{cc} y & z \end{array}\mathbf{t}",
+            r"\mathbf{x}\begin{matrix} y & z \end{matrix}\mathbf{t}",
         ),
         (
             r"\bf x\frac{a}{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\frac{\mathbf{a}}{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"\mathbf{x}\frac{\mathbf{a}}{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
         (
             r"\bf x\begin{matrix}\it y&\bf z\end{matrix}t",
-            r"\mathbf{x}\begin{array}{cc} \mathit{y} & \mathbf{z} \end{array}\mathbf{t}",
+            r"\mathbf{x}\begin{matrix} \mathit{y} & \mathbf{z} \end{matrix}\mathbf{t}",
         ),
         (
             r"x\begin{matrix}y&z\end{matrix}t",
-            r"x\begin{array}{cc} y & z \end{array}t",
+            r"x\begin{matrix} y & z \end{matrix}t",
         ),
     ] {
         let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
@@ -783,19 +830,19 @@ fn legacy_font_scope_preserves_tables_in_compounds() {
     for (input, expected) in [
         (
             r"\bf x\sqrt{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\sqrt{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"\mathbf{x}\sqrt{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
         (
             r"\bf x^{\begin{matrix}u&v\end{matrix}}t",
-            r"{\mathbf{x}}^{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"{\mathbf{x}}^{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
         (
             r"\bf x\sum_{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\sum_{\begin{array}{cc} u & v \end{array}} {\mathbf{t}}",
+            r"\mathbf{x}\sum_{\begin{matrix} u & v \end{matrix}} {\mathbf{t}}",
         ),
         (
             r"\bf x\hat{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\hat{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"\mathbf{x}\hat{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
     ] {
         let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();

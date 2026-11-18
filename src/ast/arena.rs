@@ -3,6 +3,28 @@ use std::collections::HashMap;
 use super::SpaceBasis;
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArrayEnvironment {
+    Matrix,
+    SmallMatrix,
+}
+
+impl From<ArrayEnvironment> for Provenance {
+    fn from(environment: ArrayEnvironment) -> Self {
+        match environment {
+            ArrayEnvironment::Matrix => Self::Matrix,
+            ArrayEnvironment::SmallMatrix => Self::SmallMatrix,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provenance {
+    SpaceBasis(SpaceBasis),
+    Matrix,
+    SmallMatrix,
+}
+
 /// Arena-based storage for compact AST nodes.
 ///
 /// Nodes, child references, and UTF-8 text each occupy a contiguous buffer.
@@ -16,8 +38,8 @@ use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 #[derive(Debug, Clone)]
 pub struct AstArena {
     nodes: Vec<CompactNode>,
-    /// Sparse provenance for explicitly typed spacing nodes.
-    space_bases: HashMap<NodeId, SpaceBasis>,
+    /// Sparse provenance for explicitly typed spaces and parsed table forms.
+    provenance: HashMap<NodeId, Provenance>,
     children: Vec<NodeId>,
     strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
@@ -40,7 +62,7 @@ impl AstArena {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
-            space_bases: HashMap::new(),
+            provenance: HashMap::new(),
             children: Vec::new(),
             strings: String::new(),
             str_starts: vec![0],
@@ -58,7 +80,7 @@ impl AstArena {
         str_starts.push(0);
         Self {
             nodes: Vec::with_capacity(nodes),
-            space_bases: HashMap::new(),
+            provenance: HashMap::new(),
             children: Vec::with_capacity(children),
             strings: String::with_capacity(strings),
             str_starts,
@@ -96,7 +118,7 @@ impl AstArena {
         let before = self.nodes.len();
         let id = self.push_node(CompactNode::Space(width));
         if self.nodes.len() != before {
-            self.space_bases.insert(id, basis);
+            self.provenance.insert(id, Provenance::SpaceBasis(basis));
         }
         id
     }
@@ -220,23 +242,36 @@ impl AstArena {
             return;
         }
         self.nodes[destination.index()] = self.nodes[source.index()];
-        if self.space_bases.is_empty() {
-            return;
-        }
-        if let Some(basis) = self.space_basis(source) {
-            self.space_bases.insert(destination, basis);
+        if let Some(provenance) = self.provenance.get(&source).copied() {
+            self.provenance.insert(destination, provenance);
         } else {
-            self.space_bases.remove(&destination);
+            self.provenance.remove(&destination);
         }
     }
 
     /// Return the explicit unit basis for a spacing node, if one was parsed.
     #[inline]
     pub fn space_basis(&self, id: NodeId) -> Option<SpaceBasis> {
-        self.space_bases
-            .get(&id)
-            .copied()
-            .filter(|_| matches!(self.node(id), CompactNode::Space(_)))
+        match (self.provenance.get(&id).copied(), self.node(id)) {
+            (Some(Provenance::SpaceBasis(basis)), CompactNode::Space(_)) => Some(basis),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn mark_array_environment(&mut self, id: NodeId, environment: ArrayEnvironment) {
+        self.provenance.insert(id, environment.into());
+    }
+
+    #[inline]
+    pub(crate) fn array_environment(&self, id: NodeId) -> Option<ArrayEnvironment> {
+        match (self.provenance.get(&id).copied(), self.node(id)) {
+            (Some(Provenance::Matrix), CompactNode::Array { .. }) => Some(ArrayEnvironment::Matrix),
+            (Some(Provenance::SmallMatrix), CompactNode::Array { .. }) => {
+                Some(ArrayEnvironment::SmallMatrix)
+            },
+            _ => None,
+        }
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.
@@ -318,7 +353,7 @@ impl AstArena {
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<CompactNode>()
-            + self.space_bases.capacity() * size_of::<(NodeId, SpaceBasis)>()
+            + self.provenance.capacity() * size_of::<(NodeId, Provenance)>()
             + self.children.capacity() * size_of::<NodeId>()
             + self.strings.capacity()
             + self.str_starts.capacity() * size_of::<u32>()
