@@ -658,6 +658,7 @@ fn write_node_in(
         MathNode::Array {
             columns,
             rows,
+            arraystretch,
             add_jot,
             ..
         } => {
@@ -674,6 +675,10 @@ fn write_node_in(
                 start_math_style(w, MathStyle::Text)?;
             }
             let mut table = BytesStart::new("mtable");
+            add_arraystretch_attributes(
+                &mut table,
+                arraystretch.map(|value| (value * 100.0).round() as u8),
+            );
             if promoted.is_some_and(|marker| MathStyle::branch_from_switch(marker).is_display()) {
                 table.push_attribute(("displaystyle", "true"));
             }
@@ -1458,10 +1463,13 @@ fn write_node_fast_in(
             col_aligns,
             cells,
             num_cols,
+            arraystretch_pct,
             add_jot,
             ..
         } => {
             let nc = num_cols as usize;
+            let environment = arena.array_environment(id);
+            let authored_arraystretch = arena.arraystretch_was_authored(id);
             let cell_ids = arena.children(cells);
             let promoted = inherited_table_marker(display_style, add_jot, |marker| {
                 cell_ids
@@ -1476,9 +1484,29 @@ fn write_node_fast_in(
             }
 
             if promoted.is_some_and(|marker| MathStyle::branch_from_switch(marker).is_display()) {
-                buf.push_str("<mtable displaystyle=\"true\">");
+                buf.push_str("<mtable");
+                append_array_environment_attributes(buf, environment);
+                if authored_arraystretch
+                    || matches!(
+                        environment,
+                        Some(crate::ast::arena::ArrayEnvironment::SmallMatrix)
+                    )
+                {
+                    append_arraystretch_attributes(buf, arraystretch_pct);
+                }
+                buf.push_str(" displaystyle=\"true\">");
             } else {
-                buf.push_str("<mtable>");
+                buf.push_str("<mtable");
+                append_array_environment_attributes(buf, environment);
+                if authored_arraystretch
+                    || matches!(
+                        environment,
+                        Some(crate::ast::arena::ArrayEnvironment::SmallMatrix)
+                    )
+                {
+                    append_arraystretch_attributes(buf, arraystretch_pct);
+                }
+                buf.push('>');
             }
             for row_chunk in cell_ids.chunks(nc.max(1)) {
                 buf.push_str("<mtr>");
@@ -1651,6 +1679,42 @@ fn write_node_fast_in(
             write_node_fast_in(buf, arena, content, single_argument, display_style);
         },
     }
+}
+
+/// Keep the row-height multiplier used by TeX table layouts when MathML is
+/// imported back into this crate. MathML's `rowspacing` carries the closest
+/// standard meaning for the compact small-matrix case, while the private
+/// marker preserves the exact `arraystretch` value for arbitrary table scales.
+fn add_arraystretch_attributes(table: &mut BytesStart<'_>, arraystretch_pct: Option<u8>) {
+    let Some(pct) = arraystretch_pct else {
+        return;
+    };
+    if pct != 100 {
+        let value = format!("{}%", pct);
+        table.push_attribute(("data-mathema-arraystretch", value.as_str()));
+    }
+}
+
+fn append_arraystretch_attributes(buf: &mut String, arraystretch_pct: u8) {
+    if arraystretch_pct != 100 {
+        buf.push_str(" data-mathema-arraystretch=\"");
+        buf.push_str(&arraystretch_pct.to_string());
+        buf.push('%');
+        buf.push('"');
+    }
+}
+
+fn append_array_environment_attributes(
+    buf: &mut String,
+    environment: Option<crate::ast::arena::ArrayEnvironment>,
+) {
+    let Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) = environment else {
+        return;
+    };
+    buf.push_str(" data-mathema-array-environment=\"");
+    buf.push_str("smallmatrix");
+    buf.push('"');
+    buf.push_str(" rowspacing=\"0.1em\" columnspacing=\"0.2778em\"");
 }
 
 // A named <mo> is a MathML core operator and can carry movablelimits.
