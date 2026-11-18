@@ -1297,6 +1297,23 @@ impl<'i> Parser<'i> {
     /// spaces. Mathematical alphanumeric characters (U+1D400 block, as
     /// written by PowerPoint) are decoded into a base letter plus a style.
     fn tokenize(&mut self, text: &str, style: Option<TextStyle>, out: &mut Ids) -> Result<()> {
+        // The OMML writer keeps compound limit names such as `lim\u{2009}sup`
+        // in one math run.  The thin space is otherwise tokenized as an
+        // ordinary `Space`, which splits the operator on reimport and loses
+        // its movable-limit metadata.  Recognize only the canonical named
+        // limit spellings here so an authored arbitrary identifier remains a
+        // normal run.
+        if matches!(style, None | Some(TextStyle::Normal))
+            && text.contains('\u{2009}')
+            && crate::unicode::symbols::operator_has_limits(text)
+        {
+            let sid = self.arena.push_str(text);
+            out.push(self.arena.push_node(CompactNode::Operator {
+                name: sid,
+                limits: LimitStyle::Default,
+            }));
+            return Ok(());
+        }
         let chars: Vec<(char, char, Option<TextStyle>)> = text
             .chars()
             .map(

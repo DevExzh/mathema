@@ -58,6 +58,46 @@ fn simple_run_identifier() {
 }
 
 #[test]
+fn compound_limit_operator_runs_remain_one_named_operator() {
+    for name in [
+        "lim\u{2009}sup",
+        "lim\u{2009}inf",
+        "inj\u{2009}lim",
+        "proj\u{2009}lim",
+    ] {
+        let input = omath(&format!(
+            r#"<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>{name}</m:t></m:r>"#
+        ));
+        assert!(matches!(parse_one(&input), MathNode::Operator(attr) if attr.name == name));
+
+        let result = crate::from_omml(&input).unwrap();
+        let mathml = result.to_mathml().unwrap();
+        assert!(mathml.contains(name), "{name}: {mathml}");
+        let reparsed = crate::from_mathml(&mathml).unwrap();
+        assert_eq!(reparsed.to_mathml().unwrap(), mathml, "{name}");
+
+        let bounded = omath(&format!(
+            r#"<m:sSub><m:e><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t>{name}</m:t></m:r></m:e><m:sub><m:r><m:t>n</m:t></m:r></m:sub></m:sSub>"#
+        ));
+        assert!(matches!(parse_one(&bounded), MathNode::Subscript { .. }));
+        let bounded_mathml = crate::from_omml(&bounded).unwrap().to_mathml().unwrap();
+        assert!(bounded_mathml.contains(name), "{name}: {bounded_mathml}");
+        assert!(
+            bounded_mathml.contains("<msub>") || bounded_mathml.contains("<munder>"),
+            "{name}: {bounded_mathml}"
+        );
+    }
+
+    // An arbitrary thin-spaced run remains a sequence of identifiers and a
+    // space. Only the canonical named-limit spellings above get operator
+    // treatment.
+    assert!(matches!(
+        parse_one(&omath(&run("foo\u{2009}bar"))),
+        MathNode::Row(_)
+    ));
+}
+
+#[test]
 fn fraction() {
     let node = parse_one(&omath(
         "<m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f>",
