@@ -986,19 +986,47 @@ impl Processor {
             return Ok(false);
         };
         let env_name = token_text(&group).trim().to_owned();
-        let Some(cell_scoped) = parser_environment_kind(&env_name) else {
+        let fences = packages::smallmatrix_fences(&env_name);
+        let Some(cell_scoped) = fences
+            .map(|_| true)
+            .or_else(|| parser_environment_kind(&env_name))
+        else {
             txn.rollback();
             return Ok(false);
         };
         txn.commit();
         drop(txn);
 
-        self.append(out, Token::ControlWord(name.to_owned()))?;
-        self.append(out, Token::BeginGroup)?;
-        for token in group {
-            self.append(out, token)?;
+        if let Some((open, close)) = fences.filter(|_| {
+            name == "begin"
+                || self
+                    .parser_environments
+                    .last()
+                    .is_some_and(|env| env.name == env_name)
+        }) {
+            // mathtools gives these fences independent opening and closing
+            // atom classes. A bare left/right pair adds space beside a variable.
+            let inner = if env_name.ends_with('*') {
+                "smallmatrix*"
+            } else {
+                "smallmatrix"
+            };
+            let expansion = if name == "begin" {
+                format!(r"\mathopen{{}}\mathclose{{\left{open}\begin{{{inner}}}")
+            } else {
+                format!(r"\end{{{inner}}}\right{close}}}")
+            };
+            for token in tokenize(&expansion) {
+                self.append(out, token)?;
+            }
+        } else {
+            self.append(out, Token::ControlWord(name.to_owned()))?;
+            self.append(out, Token::BeginGroup)?;
+            for token in group {
+                self.append(out, token)?;
+            }
+            self.append(out, Token::EndGroup)?;
         }
-        self.append(out, Token::EndGroup)?;
         if name == "begin" {
             self.push_scope()?;
             if cell_scoped {
@@ -1742,8 +1770,9 @@ fn parser_environment_kind(name: &str) -> Option<bool> {
     // are split into independently scoped cells by `&` and `\\`.
     match name {
         "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "smallmatrix"
-        | "array" | "cases" | "dcases" | "dcases*" | "rcases" | "rcases*" | "numcases"
-        | "subnumcases" => Some(true),
+        | "smallmatrix*" | "matrix*" | "pmatrix*" | "bmatrix*" | "Bmatrix*" | "vmatrix*"
+        | "Vmatrix*" | "array" | "cases" | "dcases" | "dcases*" | "rcases" | "rcases*"
+        | "numcases" | "subnumcases" => Some(true),
         "aligned" | "alignedat" | "gathered" | "split" | "multlined" | "gather" | "gather*"
         | "align" | "align*" | "equation" | "equation*" | "multline" | "multline*" | "flalign"
         | "flalign*" | "CD" | "prooftree" | "xymatrix" => Some(false),

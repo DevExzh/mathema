@@ -681,6 +681,73 @@ fn starred_matrix_alignment_extends_through_later_rows() {
 }
 
 #[test]
+fn mathtools_smallmatrices_preserve_fence_spacing_and_cell_alignment() {
+    for (prefix, left, right) in [
+        ("p", "(", ")"),
+        ("b", "[", "]"),
+        ("B", r"\lbrace", r"\rbrace"),
+        ("v", r"\lvert", r"\rvert"),
+        ("V", r"\lVert", r"\rVert"),
+    ] {
+        for (star, option) in [
+            ("", ""),
+            ("*", ""),
+            ("*", "[c]"),
+            ("*", "[l]"),
+            ("*", "[r]"),
+        ] {
+            let compact =
+                format!(r"\begin{{smallmatrix{star}}}{option}a\\b&xyz\end{{smallmatrix{star}}}");
+            let env = format!("{prefix}smallmatrix{star}");
+            let source = format!(r"x\begin{{{env}}}{option}a\\b&xyz\end{{{env}}}_i y");
+            let explicit =
+                format!(r"x\mathopen{{}}\mathclose{{\left{left}{compact}\right{right}}}_i y");
+            let a = crate::from_latex(&source).unwrap();
+            let b = crate::from_latex(&explicit).unwrap();
+            assert_eq!(a.to_mathml().unwrap(), b.to_mathml().unwrap(), "{source}");
+            let canonical = a.to_latex().unwrap();
+            let again = crate::from_latex(&canonical).unwrap();
+            assert_eq!(again.to_latex().unwrap(), canonical);
+            assert_eq!(again.to_mathml().unwrap(), b.to_mathml().unwrap());
+            #[cfg(feature = "render")]
+            assert_eq!(again.to_svg().unwrap(), b.to_svg().unwrap());
+        }
+    }
+}
+
+#[test]
+fn smallmatrix_macros_keep_their_environment_and_cell_scopes() {
+    let with_comment = "\\begin% space before the name\n{psmallmatrix}a\\end{psmallmatrix}";
+    let plain = r"\begin{psmallmatrix}a\end{psmallmatrix}";
+    assert_eq!(
+        crate::from_latex(with_comment).unwrap().to_latex().unwrap(),
+        crate::from_latex(plain).unwrap().to_latex().unwrap()
+    );
+    let shadow = r"\newenvironment{psmallmatrix}{x}{y}\begin{psmallmatrix}z\end{psmallmatrix}";
+    assert_eq!(
+        crate::from_latex(shadow).unwrap().to_latex().unwrap(),
+        "xzy"
+    );
+    let scoped = r"\def\K{a}\begin{psmallmatrix*}[r]\def\K{b}\K&\K\\\K&c\end{psmallmatrix*}\K";
+    let expected = r"\begin{psmallmatrix*}[r]b&a\\a&c\end{psmallmatrix*}a";
+    assert_eq!(
+        crate::from_latex(scoped).unwrap().to_latex().unwrap(),
+        crate::from_latex(expected).unwrap().to_latex().unwrap()
+    );
+    let strict = Config::default().with_strictness(Strictness::Strict);
+    for invalid in [
+        r"\begin{psmallmatrix}x\end{bsmallmatrix}",
+        r"\begin{smallmatrix*}[",
+        r"\begin{Vsmallmatrix*}[左",
+    ] {
+        assert!(
+            crate::from_latex_with(invalid, &strict).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
 #[cfg(feature = "render")]
 fn matrix_cell_display_choice_survives_raw_and_normalized_export() {
     use crate::{Format, convert, from_latex};

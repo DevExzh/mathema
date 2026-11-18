@@ -240,8 +240,9 @@ fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool
                         | "@ifnextchar"
                         | "TextOrMath"
                         | "newenvironment"
-                ) || (!(direct_leading_plim && start == 0 && name == "plim")
-                    && packages::is_builtin_macro_name(name));
+                ) || (name == "begin" && starts_fenced_smallmatrix(rest))
+                    || (!(direct_leading_plim && start == 0 && name == "plim")
+                        && packages::is_builtin_macro_name(name));
             }
             offset = input.len() - rest.len();
         } else {
@@ -256,6 +257,32 @@ fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool
         None => Cow::Borrowed(input),
     };
     (source, needs_expansion)
+}
+
+/// Inspect only the environment name. Comments may separate the command
+/// from its opening brace before the ordered stream strips them.
+fn starts_fenced_smallmatrix(mut rest: &str) -> bool {
+    loop {
+        rest = rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
+        if !rest.starts_with('%') {
+            break;
+        }
+        let Some(end) = rest.find(['\r', '\n']) else {
+            return false;
+        };
+        rest = &rest[end..];
+    }
+    let Some(name) = rest.strip_prefix('{') else {
+        return false;
+    };
+    let Some(end) = name
+        .bytes()
+        .take("psmallmatrix*}".len())
+        .position(|b| b == b'}')
+    else {
+        return false;
+    };
+    packages::smallmatrix_fences(&name[..end]).is_some()
 }
 
 /// If `input[start..]` begins `\verb` or `\verb*` followed by a delimiter,

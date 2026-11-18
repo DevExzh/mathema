@@ -25,6 +25,18 @@
 
 use super::SymbolClass;
 
+/// Delimiters used by the mathtools fenced small-matrix environments.
+pub(crate) fn smallmatrix_fences(name: &str) -> Option<(&'static str, &'static str)> {
+    match name.strip_suffix('*').unwrap_or(name) {
+        "psmallmatrix" => Some(("(", ")")),
+        "bsmallmatrix" => Some(("[", "]")),
+        "Bsmallmatrix" => Some((r"\lbrace", r"\rbrace")),
+        "vsmallmatrix" => Some((r"\lvert", r"\rvert")),
+        "Vsmallmatrix" => Some((r"\lVert", r"\rVert")),
+        _ => None,
+    }
+}
+
 /// Builtin macros contributed by this package: `(name, param_count, body)`.
 ///
 /// Empty: the paired-delimiter shorthands (`\abs`, `\norm`, `\ceil`, `\floor`)

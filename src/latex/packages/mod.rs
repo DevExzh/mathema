@@ -66,6 +66,7 @@ pub mod dsfont;
 pub mod extpfeil;
 pub mod gensymb;
 pub mod mathtools;
+pub(crate) use mathtools::smallmatrix_fences;
 pub mod physics;
 pub mod textcomp;
 pub mod units;

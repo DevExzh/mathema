@@ -1280,6 +1280,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                     (ArrayEnvironment::SmallMatrix, 50, ColumnAlign::Center) => {
                         Some(("smallmatrix", ""))
                     },
+                    (ArrayEnvironment::SmallMatrix, 50, ColumnAlign::Left) => {
+                        Some(("smallmatrix*", "[l]"))
+                    },
+                    (ArrayEnvironment::SmallMatrix, 50, ColumnAlign::Right) => {
+                        Some(("smallmatrix*", "[r]"))
+                    },
                     _ => None,
                 }
             });
@@ -1337,7 +1343,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         let cell_id = cell_ids[row_idx * nc + col_idx];
                         // Each cell is a Row node wrapping cell contents
                         if let Some(marker) = match env {
-                            "smallmatrix" => Some(2),
+                            "smallmatrix" | "smallmatrix*" => Some(2),
                             "aligned" | "gathered" => Some(0),
                             _ => None,
                         } && let Some(content) = super::cell_after_style(arena, cell_id, marker)
