@@ -1830,6 +1830,12 @@ impl<'i> Parser<'i> {
         }
         let name = self.or_empty(name);
         let arg = self.or_empty(arg);
+        if self.is_empty_row(arg) {
+            return Ok(self.arena.push_node(CompactNode::StructuredOperator {
+                content: name,
+                form: OperatorNameForm::Starred(LimitStyle::Default),
+            }));
+        }
         let apply = self.symbol(SymbolKind::Ordinary, FUNCTION_APPLICATION);
         let span = checked_span(&mut self.arena, &[name, apply, arg])?;
         Ok(self.arena.push_node(CompactNode::Row(span)))
@@ -1952,9 +1958,9 @@ impl<'i> Parser<'i> {
                     CompactNode::Subscript { base, sub: lim }
                 }));
             },
-            _ if self.is_compound_operator_base(base) => {
+            CompactNode::StructuredOperator { content, .. } => {
                 let base = self.arena.push_node(CompactNode::StructuredOperator {
-                    content: base,
+                    content,
                     form: OperatorNameForm::Starred(LimitStyle::AboveBelow),
                 });
                 return Ok(self.arena.push_node(if upper {
@@ -1992,30 +1998,6 @@ impl<'i> Parser<'i> {
                 movable_limits: true,
             }
         }))
-    }
-
-    fn is_compound_operator_base(&self, id: NodeId) -> bool {
-        match *self.arena.node(id) {
-            CompactNode::Accent { base, .. }
-            | CompactNode::Overscript { base, .. }
-            | CompactNode::Underscript { base, .. }
-            | CompactNode::UnderOver { base, .. } => {
-                // OMML uses the same limit objects for a decorated operator
-                // and for a generic over/under expression. Once a decorated
-                // base is inside m:limLow/m:limUpp, retaining it as a
-                // structured operator preserves TeX operator spacing and
-                // effective placement on reimport.
-                let _ = base;
-                true
-            },
-            CompactNode::Row(span) => {
-                let children = self.arena.children(span);
-                children
-                    .iter()
-                    .any(|&child| self.is_compound_operator_base(child))
-            },
-            _ => false,
-        }
     }
 
     /// `m:m` (§22.1.2.60): `mPr{..., mcs}`, `mr+` of `e+`.
@@ -2441,6 +2423,14 @@ impl<'i> Parser<'i> {
                 name,
                 limits: LimitStyle::SubSup,
             }),
+            CompactNode::StructuredOperator { content, form } => {
+                let form = match form {
+                    OperatorNameForm::Unstarred => OperatorNameForm::Unstarred,
+                    OperatorNameForm::Starred(_) => OperatorNameForm::Starred(LimitStyle::SubSup),
+                };
+                self.arena
+                    .push_node(CompactNode::StructuredOperator { content, form })
+            },
             _ => base,
         };
         let sub = self.or_empty(sub);
