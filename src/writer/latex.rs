@@ -1360,7 +1360,10 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 if trim_edges {
                     buf.push_str("@{}");
                 }
-                for &id in columns {
+                for (index, &id) in columns.iter().enumerate() {
+                    if index < 32 && (col_seps & (1 << index)) != 0 {
+                        buf.push('|');
+                    }
                     if let CompactNode::ColAlign(col) = *arena.node(id) {
                         buf.push(match col {
                             ColumnAlign::Left => 'l',
@@ -1368,6 +1371,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             ColumnAlign::Right => 'r',
                         });
                     }
+                }
+                if columns.len() < 32 && (col_seps & (1 << columns.len())) != 0 {
+                    buf.push('|');
                 }
                 if trim_edges {
                     buf.push_str("@{}");
@@ -1378,8 +1384,15 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if nc > 0 {
                 let num_rows = cell_ids.len() / nc.max(1);
                 for row_idx in 0..num_rows {
-                    if row_idx > 0 {
+                    if row_idx == 0 {
+                        if row_seps & 1 != 0 {
+                            buf.push_str(r"\hline ");
+                        }
+                    } else {
                         buf.push_str(" \\\\ ");
+                        if row_idx < 32 && (row_seps & (1 << row_idx)) != 0 {
+                            buf.push_str(r"\hline ");
+                        }
                     }
                     for col_idx in 0..nc {
                         if col_idx > 0 {
@@ -1417,6 +1430,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             write_node_slice(buf, arena, nodes, false);
                         }
                     }
+                }
+                if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {
+                    buf.push_str(r" \\ \hline");
                 }
             }
             buf.push_str(r" \end{");

@@ -104,4 +104,24 @@ mod tests {
         let legacy = r#"{"nodes":[{"Array":{"columns":["Center"],"rows":[[[{"Identifier":"x"}]]],"arraystretch":null,"add_jot":false}}],"display":"Inline"}"#;
         assert!(serde_json::from_str::<MathExpr>(legacy).is_ok());
     }
+
+    #[test]
+    fn native_array_variant_is_additive_and_roundtrips_geometry_via_json() {
+        let expr = MathExpr::new(
+            vec![MathNode::NativeArray {
+                columns: vec![ColumnAlign::Left],
+                rows: vec![vec![vec![MathNode::Identifier("x".into())]]],
+                arraystretch: None,
+                add_jot: false,
+                array_style: true,
+                col_seps: 1,
+                row_seps: 1,
+            }],
+            DisplayStyle::Inline,
+        );
+        let json = serde_json::to_string(&expr).unwrap();
+        assert!(json.contains("\"NativeArray\""));
+        assert!(json.contains("\"array_style\":true"));
+        assert_eq!(serde_json::from_str::<MathExpr>(&json).unwrap(), expr);
+    }
 }
