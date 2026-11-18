@@ -558,6 +558,20 @@ pub(super) fn accent_skew(base: &MathNode, size: f64) -> f64 {
     0.0
 }
 
+/// Bracket primitives scale the path to the operand and use large-operator
+/// spacing. Line-segment accents use the ordinary accent path.
+fn wide_bracket(
+    accent: char,
+    position: AccentPosition,
+    wide: bool,
+) -> Option<(&'static str, usize)> {
+    match (wide, accent, position) {
+        (true, '⎴', AccentPosition::Above) => Some(("⎴", 2)),
+        (true, '⎵', AccentPosition::Below) => Some(("⎵", 4)),
+        _ => None,
+    }
+}
+
 pub(super) fn layout_accent(
     base: &MathNode,
     accent: char,
@@ -567,6 +581,16 @@ pub(super) fn layout_accent(
 ) -> LayoutBox {
     let base_box = layout_node(base, ctx);
     let base_width = base_box.width;
+    if let Some((symbol, spacing)) = wide_bracket(accent, position, wide) {
+        let size = ctx.size();
+        let bracket = make_stretchy_overunder_box(symbol, base_width.max(0.5 * size), size);
+        return stack_single_script(
+            base_box,
+            bracket,
+            position,
+            ctx.params.big_op_spacing[spacing] * size,
+        );
+    }
 
     // For stretchy accents, generate an SVG path scaled to the base width
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
@@ -896,6 +920,25 @@ pub(super) fn layout_accent_arena(
     let base_id = layout_node_arena(ast, base, arena, ctx);
 
     let base_w = arena.get(base_id).width;
+    if let Some((symbol, spacing)) = wide_bracket(accent, position, wide) {
+        let size = ctx.size();
+        let width = base_w.max(0.5 * size);
+        let height = stretchy_overunder_deco_h(symbol, size);
+        let bracket = arena.alloc(ArenaLayoutBox {
+            width,
+            height,
+            depth: 0.0,
+            kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(symbol, width, height)),
+        });
+        return stack_single_script_arena(
+            base_id,
+            bracket,
+            position,
+            ctx.params.big_op_spacing[spacing] * size,
+            arena,
+        );
+    }
+
     let base_h = arena.get(base_id).height;
     let base_d = arena.get(base_id).depth;
 

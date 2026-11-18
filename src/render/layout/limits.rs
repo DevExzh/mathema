@@ -714,25 +714,7 @@ pub(super) fn layout_overscript(base: &MathNode, over: &MathNode, ctx: &LayoutCt
     } else {
         p.big_op_spacing[2] * size
     };
-    let max_w = base_box.width.max(over_box.width);
-    let base_dx = (max_w - base_box.width) / 2.0;
-    let over_dx = (max_w - over_box.width) / 2.0;
-    let over_dy = base_box.height + gap + over_box.depth;
-
-    // Capture dimensions before moving into children
-    let over_h = over_box.height;
-    let base_d = base_box.depth;
-    let children = vec![
-        PositionedBox::new(base_dx, 0.0, base_box),
-        PositionedBox::new(over_dx, over_dy, over_box),
-    ];
-
-    LayoutBox {
-        width: max_w,
-        height: over_dy + over_h,
-        depth: base_d,
-        kind: BoxKind::VBox { children },
-    }
+    stack_single_script(base_box, over_box, AccentPosition::Above, gap)
 }
 
 pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
@@ -781,23 +763,32 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
     };
 
     let gap = p.big_op_spacing[4] * size;
-    let max_w = base_box.width.max(under_box.width);
-    let base_dx = (max_w - base_box.width) / 2.0;
-    let under_dx = (max_w - under_box.width) / 2.0;
-    let under_dy = base_box.depth + gap + under_box.height;
+    stack_single_script(base_box, under_box, AccentPosition::Below, gap)
+}
 
-    // Capture dimensions before moving into children
-    let base_h = base_box.height;
-    let under_d = under_box.depth;
+pub(super) fn stack_single_script(
+    base: LayoutBox,
+    script: LayoutBox,
+    position: AccentPosition,
+    gap: f64,
+) -> LayoutBox {
+    let width = base.width.max(script.width);
+    let y = match position {
+        AccentPosition::Above => base.height + gap + script.depth,
+        AccentPosition::Below => -(base.depth + gap + script.height),
+    };
+    let (height, depth) = match position {
+        AccentPosition::Above => (y + script.height, base.depth),
+        AccentPosition::Below => (base.height, script.depth - y),
+    };
     let children = vec![
-        PositionedBox::new(base_dx, 0.0, base_box),
-        PositionedBox::new(under_dx, -under_dy, under_box),
+        PositionedBox::new((width - base.width) / 2.0, 0.0, base),
+        PositionedBox::new((width - script.width) / 2.0, y, script),
     ];
-
     LayoutBox {
-        width: max_w,
-        height: base_h,
-        depth: under_dy + under_d,
+        width,
+        height,
+        depth,
         kind: BoxKind::VBox { children },
     }
 }
@@ -1570,8 +1561,6 @@ pub(super) fn layout_overscript_arena(
     let base_id = layout_node_arena(ast, base, arena, ctx);
 
     let base_w = arena.get(base_id).width;
-    let base_h = arena.get(base_id).height;
-    let base_d = arena.get(base_id).depth;
 
     // Check if the over node is a stretchy decoration symbol
     let (over_id, is_line_accent) = if let Some(sym) = get_stretchy_overunder_sym_c(ast, over) {
@@ -1591,40 +1580,12 @@ pub(super) fn layout_overscript_arena(
         (layout_node_arena(ast, over, arena, &over_ctx), false)
     };
 
-    let over_w = arena.get(over_id).width;
-    let over_h = arena.get(over_id).height;
-    let over_d = arena.get(over_id).depth;
-
-    // KaTeX Rule 9: overline uses 3 × defaultRuleThickness gap
     let gap = if is_line_accent {
         3.0 * p.rule_thickness * size
     } else {
         p.big_op_spacing[2] * size
     };
-    let max_w = base_w.max(over_w);
-    let base_dx = (max_w - base_w) / 2.0;
-    let over_dx = (max_w - over_w) / 2.0;
-    let over_dy = base_h + gap + over_d;
-
-    let children_start = arena.begin_children();
-    arena.push_child(ArenaPositionedBox {
-        dx: base_dx,
-        dy: 0.0,
-        id: base_id,
-    });
-    arena.push_child(ArenaPositionedBox {
-        dx: over_dx,
-        dy: over_dy,
-        id: over_id,
-    });
-    let children = arena.finish_children(children_start);
-
-    arena.alloc(ArenaLayoutBox {
-        width: max_w,
-        height: over_dy + over_h,
-        depth: base_d,
-        kind: ArenaBoxKind::VBox { children },
-    })
+    stack_single_script_arena(base_id, over_id, AccentPosition::Above, gap, arena)
 }
 
 pub(super) fn layout_underscript_arena(
@@ -1686,8 +1647,6 @@ pub(super) fn layout_underscript_arena(
     let base_id = layout_node_arena(ast, base, arena, ctx);
 
     let base_w = arena.get(base_id).width;
-    let base_h = arena.get(base_id).height;
-    let base_d = arena.get(base_id).depth;
 
     let under_id = if let Some(sym) = get_stretchy_overunder_sym_c(ast, under) {
         let deco_w = base_w.max(0.5 * size);
@@ -1703,33 +1662,46 @@ pub(super) fn layout_underscript_arena(
         layout_node_arena(ast, under, arena, &under_ctx)
     };
 
-    let under_w = arena.get(under_id).width;
-    let under_h = arena.get(under_id).height;
-    let under_d = arena.get(under_id).depth;
-
     let gap = p.big_op_spacing[4] * size;
-    let max_w = base_w.max(under_w);
-    let base_dx = (max_w - base_w) / 2.0;
-    let under_dx = (max_w - under_w) / 2.0;
-    let under_dy = base_d + gap + under_h;
+    stack_single_script_arena(base_id, under_id, AccentPosition::Below, gap, arena)
+}
 
-    let children_start = arena.begin_children();
+pub(super) fn stack_single_script_arena(
+    base: LayoutBoxId,
+    script: LayoutBoxId,
+    position: AccentPosition,
+    gap: f64,
+    arena: &mut LayoutArena,
+) -> LayoutBoxId {
+    let b = arena.get(base);
+    let s = arena.get(script);
+    let width = b.width.max(s.width);
+    let y = match position {
+        AccentPosition::Above => b.height + gap + s.depth,
+        AccentPosition::Below => -(b.depth + gap + s.height),
+    };
+    let (height, depth) = match position {
+        AccentPosition::Above => (y + s.height, b.depth),
+        AccentPosition::Below => (b.height, s.depth - y),
+    };
+    let base_x = (width - b.width) / 2.0;
+    let script_x = (width - s.width) / 2.0;
+    let start = arena.begin_children();
     arena.push_child(ArenaPositionedBox {
-        dx: base_dx,
+        dx: base_x,
         dy: 0.0,
-        id: base_id,
+        id: base,
     });
     arena.push_child(ArenaPositionedBox {
-        dx: under_dx,
-        dy: -under_dy,
-        id: under_id,
+        dx: script_x,
+        dy: y,
+        id: script,
     });
-    let children = arena.finish_children(children_start);
-
+    let children = arena.finish_children(start);
     arena.alloc(ArenaLayoutBox {
-        width: max_w,
-        height: base_h,
-        depth: under_dy + under_d,
+        width,
+        height,
+        depth,
         kind: ArenaBoxKind::VBox { children },
     })
 }
