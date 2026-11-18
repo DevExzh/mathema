@@ -7629,10 +7629,17 @@ impl LatexCompactParser {
                         nom::Err::Error(inner) | nom::Err::Failure(inner) => inner.input,
                         nom::Err::Incomplete(_) => input,
                     };
-                    if error_input.len() < input.len() && input.ends_with(error_input) {
+                    if let Some(consumed) = input.strip_suffix(error_input)
+                        && !consumed.is_empty()
+                    {
+                        let sid = self.arena.push_str(consumed);
+                        ids.push(
+                            self.arena
+                                .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                        );
                         diagnostics.push(Diagnostic {
                             kind: DiagnosticKind::Warning,
-                            message: "skipped malformed scoped input during recovery".into(),
+                            message: "treated malformed scoped input as literal text".into(),
                             span: None,
                         });
                         input = error_input;
