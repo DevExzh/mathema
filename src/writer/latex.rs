@@ -1031,7 +1031,23 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // let `\int` take `{}` as its body, or join the base with the node
             // after. The base follows the scripts directly, so a script is
             // always braced: `{}^{6}6`, not `{}^66`.
-            buf.push_str("{{}");
+            let bare_space_base = match *arena.node(base) {
+                CompactNode::Space(width) => width.num != 0,
+                CompactNode::Symbol(_, sid) => arena
+                    .str_val(sid)
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| crate::unicode::math_space_width(ch).is_some()),
+                _ => false,
+            };
+            if bare_space_base {
+                // A nonzero math space cannot absorb a script or adjacent
+                // token. Avoid an unnecessary outer group, which disappears
+                // on reparse and makes the first LaTeX write non-canonical.
+                buf.push_str("{}");
+            } else {
+                buf.push_str("{{}");
+            }
             let mut scalar_last = false;
             for (mark, script, visible) in
                 [('_', pre_sub, sub_visible), ('^', pre_sup, sup_visible)]
@@ -1055,7 +1071,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 CompactNode::Row(span) => write_nodes(buf, arena, span),
                 _ => write_node_slice(buf, arena, &[base], false),
             }
-            buf.push('}');
+            if !bare_space_base {
+                buf.push('}');
+            }
         },
 
         CompactNode::Overscript {

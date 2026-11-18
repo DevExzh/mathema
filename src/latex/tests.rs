@@ -2575,6 +2575,27 @@ fn ordinary_character_codes_remain_ordinary_through_repeated_latex_export() {
 }
 
 #[test]
+fn thin_space_prescripts_are_canonical_and_idempotent() {
+    let config = Config::default();
+    for input in [
+        "'\\char8201|' ",
+        "'\\char\"2009|' ",
+        "'\\,|' ",
+        "'\\thinspace|' ",
+        "'\u{2009}|' ",
+    ] {
+        let mut first = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut first.expr).unwrap();
+        let out1 = LatexWriter::write_compact(&first.expr, &config).unwrap();
+        assert_eq!(out1, r"{}^{\prime}\,|^{\prime}", "{input}");
+        let mut second = LatexReader::parse_compact(&out1, &config).unwrap();
+        normalize_compact_expr(&mut second.expr).unwrap();
+        let out2 = LatexWriter::write_compact(&second.expr, &config).unwrap();
+        assert_eq!(out1, out2, "{input}");
+    }
+}
+
+#[test]
 fn operator_name_punctuation_is_local_to_its_math_list() {
     let src = r"x'+\operatorname{A'-*\overline{x}\kern-2pt}_i+y'";
     let parsed = crate::from_latex(src).unwrap();
