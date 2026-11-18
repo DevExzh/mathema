@@ -199,8 +199,16 @@ pub(super) fn layout_array_arena(
 
     // Compute column widths and row heights/depths with strut minimums
     let mut col_widths = vec![0.0_f64; n_cols];
-    let mut row_heights = vec![arstrut_height; n_rows];
-    let mut row_depths = vec![arstrut_depth; n_rows];
+    let mut row_heights = if smallmatrix {
+        vec![0.0; n_rows]
+    } else {
+        vec![arstrut_height; n_rows]
+    };
+    let mut row_depths = if smallmatrix {
+        vec![0.0; n_rows]
+    } else {
+        vec![arstrut_depth; n_rows]
+    };
 
     for i in 0..n_rows {
         for j in 0..nc.min(n_cols) {
@@ -211,6 +219,20 @@ pub(super) fn layout_array_arena(
                 row_heights[i] = row_heights[i].max(b.height);
                 row_depths[i] = row_depths[i].max(b.depth);
             }
+        }
+    }
+
+    if smallmatrix {
+        // TeX smallmatrix uses baselineskip=6ex@ and lineskip=1.5ex@,
+        // with lineskiplimit equal to lineskip. The surrounding text em is
+        // represented by the unscaled layout unit, including nested styles.
+        let base_size = size / ctx.style.size_multiplier();
+        let baseline_skip = 0.6 * base_size;
+        let line_skip = 0.15 * base_size;
+        for row in 0..n_rows.saturating_sub(1) {
+            let next_height = row_heights[row + 1];
+            let glue = (baseline_skip - row_depths[row] - next_height).max(line_skip);
+            row_depths[row] += glue;
         }
     }
 
@@ -227,6 +249,7 @@ pub(super) fn layout_array_arena(
     let axis = ctx.params.axis_height * size;
     let half = total_extent / 2.0;
     let box_height = half + axis;
+    let box_depth = (half - axis).max(0.0);
 
     // Position cells
     let children_start = arena.begin_children();
@@ -391,7 +414,7 @@ pub(super) fn layout_array_arena(
     arena.alloc(ArenaLayoutBox {
         width: total_width,
         height: box_height,
-        depth: half - axis,
+        depth: box_depth,
         kind: ArenaBoxKind::VBox { children },
     })
 }
