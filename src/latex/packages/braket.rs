@@ -26,10 +26,6 @@ use super::SymbolClass;
 /// Note: this parser does not recognise `\vert`, so the literal `|` delimiter
 /// (which is parser-supported and renders as the same glyph) is used instead.
 pub const MACROS: &[(&str, u8, &str)] = &[
-    // The fixed lower-case form is a regular macro in braket.sty. Keeping it
-    // in the ordered expansion stream lets the normal parser handle its
-    // grouping and inner-atom semantics.
-    ("braket", 1, r"\mathinner{\langle{#1}\rangle}"),
     // \ketbra{x}{y} → |x⟩⟨y|
     ("ketbra", 2, r"|{#1}\rangle\langle{#2}|"),
     // \Bra{x} → auto-scaling ⟨x| via \left\langle … \right|
@@ -162,5 +158,24 @@ mod tests {
         assert_eq!(source.to_svg().unwrap(), expansion.to_svg().unwrap());
         let canonical = source.to_latex().unwrap();
         assert_eq!(canonical, source.to_latex().unwrap());
+    }
+
+    #[test]
+    fn dynamic_braket_forms_accept_single_tex_tokens() {
+        for (unbraced, braced) in [
+            (r"\Set12", r"\Set{1}2"),
+            (r"\Set\alpha+x", r"\Set{\alpha}+x"),
+            (r"\set12", r"\set{1}2"),
+            (r"\Braket x", r"\Braket{x}"),
+        ] {
+            let unbraced = crate::from_latex(unbraced).unwrap();
+            let braced = crate::from_latex(braced).unwrap();
+            assert_eq!(unbraced.to_mathml().unwrap(), braced.to_mathml().unwrap());
+            let latex = unbraced.to_latex().unwrap();
+            assert_eq!(
+                latex,
+                crate::from_latex(&latex).unwrap().to_latex().unwrap()
+            );
+        }
     }
 }
