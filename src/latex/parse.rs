@@ -5933,6 +5933,9 @@ impl LatexCompactParser {
     }
 
     fn font_scope_contains_array(&self, id: NodeId) -> bool {
+        if id == NodeId::NONE {
+            return false;
+        }
         match *self.arena.node(id) {
             CompactNode::Array { .. } => true,
             CompactNode::Row(span)
@@ -5946,16 +5949,78 @@ impl LatexCompactParser {
             CompactNode::Fraction { num, den, .. } => {
                 self.font_scope_contains_array(num) || self.font_scope_contains_array(den)
             },
+            CompactNode::Subscript { base, sub } | CompactNode::Superscript { base, sup: sub } => {
+                self.font_scope_contains_array(base) || self.font_scope_contains_array(sub)
+            },
+            CompactNode::SubSup { base, sub, sup } => {
+                self.font_scope_contains_array(base)
+                    || self.font_scope_contains_array(sub)
+                    || self.font_scope_contains_array(sup)
+            },
+            CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            } => {
+                self.font_scope_contains_array(base)
+                    || self.font_scope_contains_array(pre_sub)
+                    || self.font_scope_contains_array(pre_sup)
+            },
+            CompactNode::Overscript { base, over, .. }
+            | CompactNode::Underscript {
+                base, under: over, ..
+            } => self.font_scope_contains_array(base) || self.font_scope_contains_array(over),
+            CompactNode::UnderOver {
+                base, under, over, ..
+            } => {
+                self.font_scope_contains_array(base)
+                    || self.font_scope_contains_array(under)
+                    || self.font_scope_contains_array(over)
+            },
+            CompactNode::Sqrt(inner) | CompactNode::Phantom(inner, _) => {
+                self.font_scope_contains_array(inner)
+            },
+            CompactNode::Root { index, radicand } => {
+                self.font_scope_contains_array(index) || self.font_scope_contains_array(radicand)
+            },
+            CompactNode::Nary { sub, sup, body, .. } => {
+                self.font_scope_contains_array(sub)
+                    || self.font_scope_contains_array(sup)
+                    || self.font_scope_contains_array(body)
+            },
+            CompactNode::Accent { base, .. } => self.font_scope_contains_array(base),
+            CompactNode::Reflect { content, .. }
+            | CompactNode::Boxed { content, .. }
+            | CompactNode::Actuarial { content, .. }
+            | CompactNode::Cancel { content, .. }
+            | CompactNode::Scaled { content, .. }
+            | CompactNode::RaiseBox { content, .. }
+            | CompactNode::MathAtom { content, .. } => self.font_scope_contains_array(content),
+            CompactNode::MathChoice {
+                display,
+                text,
+                script,
+                script_script,
+            } => {
+                self.font_scope_contains_array(display)
+                    || self.font_scope_contains_array(text)
+                    || self.font_scope_contains_array(script)
+                    || self.font_scope_contains_array(script_script)
+            },
+            CompactNode::Color { content, .. } => self.font_scope_contains_array(content),
             _ => false,
         }
     }
 
     fn style_font_node(&mut self, style: TextStyle, id: NodeId) -> NodeId {
+        if id == NodeId::NONE {
+            return id;
+        }
         match *self.arena.node(id) {
             CompactNode::Array { .. } => id,
             CompactNode::Row(span) => {
-                let children: Vec<NodeId> = self.arena.children(span).to_vec();
-                let children: Vec<NodeId> = children
+                let children = self.arena.children(span).to_vec();
+                let children: Vec<_> = children
                     .into_iter()
                     .map(|child| self.style_font_node(style, child))
                     .collect();
@@ -5967,8 +6032,8 @@ impl LatexCompactParser {
                 close,
                 content,
             } => {
-                let children: Vec<NodeId> = self.arena.children(content).to_vec();
-                let children: Vec<NodeId> = children
+                let children = self.arena.children(content).to_vec();
+                let children: Vec<_> = children
                     .into_iter()
                     .map(|child| self.style_font_node(style, child))
                     .collect();
@@ -5985,14 +6050,205 @@ impl LatexCompactParser {
                 self.arena
                     .push_node(CompactNode::Fraction { kind, num, den })
             },
+            CompactNode::Subscript { base, sub } => {
+                let base = self.style_font_node(style, base);
+                let sub = self.style_font_node(style, sub);
+                self.arena.push_node(CompactNode::Subscript { base, sub })
+            },
+            CompactNode::Superscript { base, sup } => {
+                let base = self.style_font_node(style, base);
+                let sup = self.style_font_node(style, sup);
+                self.arena.push_node(CompactNode::Superscript { base, sup })
+            },
+            CompactNode::SubSup { base, sub, sup } => {
+                let base = self.style_font_node(style, base);
+                let sub = self.style_font_node(style, sub);
+                let sup = self.style_font_node(style, sup);
+                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
+            },
+            CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            } => {
+                let base = self.style_font_node(style, base);
+                let pre_sub = self.style_font_node(style, pre_sub);
+                let pre_sup = self.style_font_node(style, pre_sup);
+                self.arena.push_node(CompactNode::PreScripts {
+                    base,
+                    pre_sub,
+                    pre_sup,
+                })
+            },
+            CompactNode::Overscript {
+                base,
+                over,
+                movable_limits,
+            } => {
+                let base = self.style_font_node(style, base);
+                let over = self.style_font_node(style, over);
+                self.arena.push_node(CompactNode::Overscript {
+                    base,
+                    over,
+                    movable_limits,
+                })
+            },
+            CompactNode::Underscript {
+                base,
+                under,
+                movable_limits,
+            } => {
+                let base = self.style_font_node(style, base);
+                let under = self.style_font_node(style, under);
+                self.arena.push_node(CompactNode::Underscript {
+                    base,
+                    under,
+                    movable_limits,
+                })
+            },
+            CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits,
+            } => {
+                let base = self.style_font_node(style, base);
+                let under = self.style_font_node(style, under);
+                let over = self.style_font_node(style, over);
+                self.arena.push_node(CompactNode::UnderOver {
+                    base,
+                    under,
+                    over,
+                    movable_limits,
+                })
+            },
+            CompactNode::Sqrt(inner) => {
+                let inner = self.style_font_node(style, inner);
+                self.arena.push_node(CompactNode::Sqrt(inner))
+            },
+            CompactNode::Root { index, radicand } => {
+                let index = self.style_font_node(style, index);
+                let radicand = self.style_font_node(style, radicand);
+                self.arena.push_node(CompactNode::Root { index, radicand })
+            },
+            CompactNode::Nary {
+                op,
+                sub,
+                sup,
+                body,
+                limits,
+            } => {
+                let sub = self.style_font_node(style, sub);
+                let sup = self.style_font_node(style, sup);
+                let body = self.style_font_node(style, body);
+                self.arena.push_node(CompactNode::Nary {
+                    op,
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                })
+            },
+            CompactNode::Accent {
+                base,
+                accent,
+                position,
+                wide,
+            } => {
+                let base = self.style_font_node(style, base);
+                self.arena.push_node(CompactNode::Accent {
+                    base,
+                    accent,
+                    position,
+                    wide,
+                })
+            },
+            CompactNode::Phantom(inner, kind) => {
+                let inner = self.style_font_node(style, inner);
+                self.arena.push_node(CompactNode::Phantom(inner, kind))
+            },
+            CompactNode::Reflect { content, text_mode } => {
+                let content = self.style_font_node(style, content);
+                self.arena
+                    .push_node(CompactNode::Reflect { content, text_mode })
+            },
+            CompactNode::Boxed {
+                content,
+                bg_color,
+                border_color,
+            } => {
+                let content = self.style_font_node(style, content);
+                self.arena.push_node(CompactNode::Boxed {
+                    content,
+                    bg_color,
+                    border_color,
+                })
+            },
+            CompactNode::Actuarial { content, text_mode } => {
+                let content = self.style_font_node(style, content);
+                self.arena
+                    .push_node(CompactNode::Actuarial { content, text_mode })
+            },
+            CompactNode::Cancel { stroke, content } => {
+                let content = self.style_font_node(style, content);
+                self.arena
+                    .push_node(CompactNode::Cancel { stroke, content })
+            },
+            CompactNode::Scaled { factor, content } => {
+                let content = self.style_font_node(style, content);
+                self.arena
+                    .push_node(CompactNode::Scaled { factor, content })
+            },
+            CompactNode::RaiseBox {
+                shift,
+                height,
+                depth,
+                extents,
+                content,
+            } => {
+                let content = self.style_font_node(style, content);
+                self.arena.push_node(CompactNode::RaiseBox {
+                    shift,
+                    height,
+                    depth,
+                    extents,
+                    content,
+                })
+            },
             CompactNode::Styled(existing, span) => {
-                let children: Vec<NodeId> = self.arena.children(span).to_vec();
-                let children: Vec<NodeId> = children
+                let children = self.arena.children(span).to_vec();
+                let children: Vec<_> = children
                     .into_iter()
                     .map(|child| self.style_font_node(style, child))
                     .collect();
                 let span = self.arena.push_children_deferred(&children);
                 self.arena.push_node(CompactNode::Styled(existing, span))
+            },
+            CompactNode::MathChoice {
+                display,
+                text,
+                script,
+                script_script,
+            } => {
+                let display = self.style_font_node(style, display);
+                let text = self.style_font_node(style, text);
+                let script = self.style_font_node(style, script);
+                let script_script = self.style_font_node(style, script_script);
+                self.arena.push_node(CompactNode::MathChoice {
+                    display,
+                    text,
+                    script,
+                    script_script,
+                })
+            },
+            CompactNode::Color { color, content } => {
+                let content = self.style_font_node(style, content);
+                self.arena.push_node(CompactNode::Color { color, content })
+            },
+            CompactNode::MathAtom { atom_type, content } => {
+                let content = self.style_font_node(style, content);
+                self.arena
+                    .push_node(CompactNode::MathAtom { atom_type, content })
             },
             CompactNode::Middle(_) => id,
             _ => {

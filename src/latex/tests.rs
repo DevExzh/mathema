@@ -228,6 +228,42 @@ fn legacy_font_scope_resets_matrix_cells_but_keeps_siblings() {
 }
 
 #[test]
+fn legacy_font_scope_preserves_tables_in_compounds() {
+    for (input, expected) in [
+        (
+            r"\bf x\sqrt{\begin{matrix}u&v\end{matrix}}t",
+            r"\mathbf{x}\sqrt{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+        ),
+        (
+            r"\bf x^{\begin{matrix}u&v\end{matrix}}t",
+            r"{\mathbf{x}}^{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+        ),
+        (
+            r"\bf x\sum_{\begin{matrix}u&v\end{matrix}}t",
+            r"\mathbf{x}\sum_{\begin{array}{cc} u & v \end{array}} {\mathbf{t}}",
+        ),
+        (
+            r"\bf x\hat{\begin{matrix}u&v\end{matrix}}t",
+            r"\mathbf{x}\hat{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+        ),
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, expected, "{input}");
+        assert_eq!(
+            first,
+            crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+            "unstable compound font scope: {input}"
+        );
+        let mathml = crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert!(mathml.contains("<mtable>"), "matrix disappeared: {mathml}");
+        assert!(
+            !mathml.contains("<mstyle mathvariant=\"bold\"><mtable>"),
+            "table inherited outer style: {mathml}"
+        );
+    }
+}
+
+#[test]
 fn canonical_tex_attaches_bounds_to_the_operator_itself() {
     for (source, canonical) in [
         (r"\lim_i^j", r"\lim_i^j"),

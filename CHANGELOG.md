@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- Legacy font scope traversal now protects tables nested in fractions, roots,
+  scripts, operators, accents, and other compound nodes.
 - Legacy font scopes stop at table cells while continuing through surrounding
   fractions, fences, and siblings.
 - Legacy font declarations now remain visible to plain-TeX infix fraction
