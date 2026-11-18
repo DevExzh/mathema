@@ -1,6 +1,5 @@
 mod dimension;
 mod hbox;
-mod unicode_scripts;
 
 use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
@@ -15,6 +14,7 @@ use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Span,
     Strictness,
 };
+use crate::unicode::decode_script_scalar;
 use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
     is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
@@ -184,7 +184,7 @@ impl ScriptMarker {
             b'^' => Some(Self::Sup),
             b'\'' => Some(Self::Primes),
             byte if !byte.is_ascii() => {
-                let (sub, _) = unicode_scripts::decode(input.chars().next()?)?;
+                let (sub, _) = decode_script_scalar(input.chars().next()?)?;
                 Some(if sub {
                     Self::UnicodeSub
                 } else {
@@ -2576,7 +2576,7 @@ impl LatexCompactParser {
         let mut glyphs = input
             .char_indices()
             .map_while(|(offset, scalar)| {
-                let (sub, glyph) = unicode_scripts::decode(scalar)?;
+                let (sub, glyph) = decode_script_scalar(scalar)?;
                 (sub == is_sub).then_some((offset + scalar.len_utf8(), glyph))
             })
             .fuse()
@@ -2942,7 +2942,7 @@ impl LatexCompactParser {
                     let rest = &input[len..];
                     ScriptMarker::at(&rest[self.skip_script_ws(rest.as_bytes())..]).is_some()
                 };
-                if unicode_scripts::decode(ch).is_some() || scripted_nbsp {
+                if decode_script_scalar(ch).is_some() || scripted_nbsp {
                     let sid = self.push_char_str(ch);
                     return Ok((
                         &input[len..],

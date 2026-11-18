@@ -1,10 +1,12 @@
 pub mod entities;
 pub mod fonts;
 pub mod operators;
+mod scripts;
 pub mod symbols;
 
 pub use entities::MATHML_ENTITIES;
 pub use fonts::*;
+pub(crate) use scripts::decode_script_scalar;
 pub use symbols::*;
 
 /// Width in em of a fixed-width Unicode math space.

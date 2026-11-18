@@ -1,7 +1,7 @@
 /// Map the Unicode compatibility superscript/subscript characters accepted by
 /// KaTeX into the base scalar represented in a TeX script argument. The first
 /// tuple field is `true` for a subscript and `false` for a superscript.
-pub(super) fn decode(ch: char) -> Option<(bool, char)> {
+pub(crate) fn decode_script_scalar(ch: char) -> Option<(bool, char)> {
     Some(match ch {
         '⁰' => (false, '0'),
         '¹' => (false, '1'),

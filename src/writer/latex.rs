@@ -1547,7 +1547,7 @@ fn write_identifier(buf: &mut String, arena: &AstArena, sid: compact::StrId) {
 fn write_identifier_text(buf: &mut String, s: &str) {
     if !s.chars().any(|ch| unicode_to_latex(ch).is_some()) {
         for ch in s.chars() {
-            if ascii_math_identifier_needs_char(ch) {
+            if math_identifier_needs_char(ch) {
                 write_math_char(buf, ch);
             } else {
                 buf.push(ch);
@@ -1562,7 +1562,7 @@ fn write_identifier_text(buf: &mut String, s: &str) {
     // terminates a preceding command naturally.
     let mut previous_was_command = false;
     for ch in s.chars() {
-        if ascii_math_identifier_needs_char(ch) {
+        if math_identifier_needs_char(ch) {
             write_math_char(buf, ch);
             previous_was_command = false;
         } else if let Some(cmd) = unicode_to_latex(ch) {
@@ -1584,8 +1584,8 @@ fn write_identifier_text(buf: &mut String, s: &str) {
 /// ordinary symbols, and add the four LaTeX parameter/comment characters that
 /// cannot appear literally in a math input stream.
 #[inline]
-fn ascii_math_identifier_needs_char(ch: char) -> bool {
-    ascii_math_literal_needs_char(ch) || matches!(ch, '#' | '$' | '%' | '&')
+fn math_identifier_needs_char(ch: char) -> bool {
+    math_literal_needs_char(ch) || matches!(ch, '#' | '$' | '%' | '&')
 }
 
 #[inline]
@@ -1765,7 +1765,7 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
     // form to emit the glyph without changing the public node shape.  Restrict
     // this to ordinary symbols: real binary and relation tokens must continue
     // using their canonical operators and spacing.
-    if kind == SymbolKind::Ordinary && s.chars().count() == 1 && ascii_math_literal_needs_char(ch) {
+    if kind == SymbolKind::Ordinary && s.chars().count() == 1 && math_literal_needs_char(ch) {
         write_math_char(buf, ch);
         return;
     }
@@ -1855,15 +1855,16 @@ fn write_symbol_text(buf: &mut String, kind: SymbolKind, s: &str) {
 /// Whether a literal ASCII glyph would be reinterpreted by the math parser or
 /// by the TeX/KaTeX atom-class table if written directly.
 #[inline]
-fn ascii_math_literal_needs_char(ch: char) -> bool {
-    ch.is_control()
+fn math_literal_needs_char(ch: char) -> bool {
+    (!ch.is_ascii() && crate::unicode::decode_script_scalar(ch).is_some())
+        || ch.is_control()
         || matches!(
             ch,
             '\'' | '<' | '>' | '\\' | '^' | '_' | '|' | '~' | '{' | '}'
         )
 }
 
-/// Emit one ordinary ASCII glyph with TeX's character-token primitive.  TeX
+/// Emit one ordinary glyph with TeX's character-token primitive.  TeX
 /// control characters and comment characters are escaped inside the backtick
 /// token; the emitted form remains a single ordinary symbol to the reader.
 fn write_math_char(buf: &mut String, ch: char) {
@@ -2291,13 +2292,11 @@ fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Identifier(_) => script_base_char(arena, id).is_some_and(|ch| {
             (!ch.is_ascii() && !ch.is_alphabetic())
-                || (ch.is_ascii() && ascii_math_literal_needs_char(ch))
+                || (ch.is_ascii() && math_literal_needs_char(ch))
         }),
         CompactNode::Symbol(kind, _) => script_base_char(arena, id).is_some_and(|ch| {
             (!ch.is_ascii() && !ch.is_alphabetic())
-                || (kind == SymbolKind::Ordinary
-                    && ch.is_ascii()
-                    && ascii_math_literal_needs_char(ch))
+                || (kind == SymbolKind::Ordinary && ch.is_ascii() && math_literal_needs_char(ch))
         }),
         CompactNode::Scaled { content, .. } => script_base_needs_braces(arena, content),
         _ => false,
@@ -2731,6 +2730,43 @@ mod tests {
             first,
             r"{{}^{\prime}\mathord{\mid}}{midfle}^{\prime}o{e}^{\prime}"
         );
+    }
+
+    #[test]
+    fn literal_unicode_script_glyphs_keep_their_ordinary_atom() {
+        for glyph in ['³', '₂', '⁺', 'ᵃ', 'ᵦ'] {
+            for (prefix, suffix) in [("", "f"), ("x", "7"), ("", "^2")] {
+                let literal = format!(r"{prefix}\char`{glyph}{suffix}");
+                let middle = format!(r"{prefix}\middle{glyph}{suffix}");
+                let canonical = normalized_latex(&middle);
+                assert_eq!(canonical, normalized_latex(&literal), "{middle}");
+                assert!(
+                    canonical.contains(&format!(r"\char`{glyph}")),
+                    "{canonical}"
+                );
+                assert_eq!(canonical, normalized_latex(&canonical));
+                let xml = |s: &str| crate::from_latex(s).unwrap().to_mathml().unwrap();
+                assert_eq!(xml(&middle), xml(&canonical), "{middle}");
+            }
+        }
+        let xml = r"<math><mi>x</mi><mo>³</mo><mi>f</mi></math>";
+        let ordinary = crate::from_mathml(xml).unwrap();
+        let tex = ordinary.to_latex().unwrap();
+        assert_eq!(
+            ordinary.to_mathml().unwrap(),
+            crate::from_latex(&tex).unwrap().to_mathml().unwrap()
+        );
+        let id = crate::from_mathml("<math><mi>x₂</mi></math>")
+            .unwrap()
+            .to_latex()
+            .unwrap();
+        assert_eq!(normalized_latex(&id), id);
+
+        assert_eq!(normalized_latex("x³"), normalized_latex("x^3"));
+        let fenced = r"\left(x\middle³f\right)";
+        let canonical = normalized_latex(fenced);
+        assert!(canonical.contains(r"\middle³"), "{canonical}");
+        assert_eq!(canonical, normalized_latex(&canonical));
     }
 
     #[test]
