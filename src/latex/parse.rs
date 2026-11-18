@@ -4377,12 +4377,15 @@ impl LatexCompactParser {
                 None
             },
             "set" => {
-                expanded.push_str(r"\{\,");
+                // The existing public AST represents the package's fixed set
+                // pair as a fenced sequence. Use the ordinary left/right
+                // syntax so reimport retains that delimiter shape.
+                expanded.push_str(r"\left\{\,");
                 // A control word needs a source-space terminator before the
                 // first letter of the following argument token.
                 let value = expand_braket_separators(raw, true, r"\mid ", None);
                 expanded.push_str(&value);
-                expanded.push_str(r"\,\}");
+                expanded.push_str(r"\,\right\}");
                 None
             },
             _ => Some(raw),
