@@ -375,13 +375,39 @@ impl<'a> MathmlCompactParser<'a> {
             "mo" => {
                 let text = self.read_text_content(name)?;
                 let kind = classify_mo(&text);
-                let sid = self.arena.push_str(&text);
-                let id = self.arena.push_node(CompactNode::Symbol(kind, sid));
-                if kind == SymbolKind::LargeOp
-                    && let Some(value) = get_attr(start, "movablelimits")
-                    && matches!(value.as_str(), "true" | "false")
+                let name = text.trim();
+                // Multi-letter operator tokens and explicitly named operators
+                // are distinct from ordinary identifiers in <mi>.
+                let movable = match get_attr(start, "movablelimits").as_deref() {
+                    Some("true") => Some(true),
+                    Some("false") => Some(false),
+                    _ => None,
+                };
+                let first = name.chars().next();
+                let named = kind == SymbolKind::Ordinary
+                    && first.is_some_and(|ch| {
+                        ch.is_alphabetic() && (name.len() > ch.len_utf8() || movable.is_some())
+                            || get_attr(start, "data-mjx-texclass").as_deref() == Some("OP")
+                    });
+                let sid = self.arena.push_str(if named { name } else { &text });
+                let id = if named {
+                    let limits = match movable {
+                        Some(true) => LimitStyle::Default,
+                        Some(false) => LimitStyle::AboveBelow,
+                        None if crate::unicode::symbols::operator_has_limits(name) => {
+                            LimitStyle::Default
+                        },
+                        None => LimitStyle::SubSup,
+                    };
+                    self.arena
+                        .push_node(CompactNode::Operator { name: sid, limits })
+                } else {
+                    self.arena.push_node(CompactNode::Symbol(kind, sid))
+                };
+                if (named || kind == SymbolKind::LargeOp)
+                    && let Some(value) = movable
                 {
-                    self.movable_limit_operators.insert(id, value == "true");
+                    self.movable_limit_operators.insert(id, value);
                 }
                 Ok(id)
             },
@@ -433,6 +459,12 @@ impl<'a> MathmlCompactParser<'a> {
                     Ok(self
                         .arena
                         .push_node(CompactNode::Reflect { content, text_mode }))
+                } else if get_attr(start, "data-mjx-texclass").as_deref() == Some("OP") {
+                    let content = self.flatten_ids(&children);
+                    Ok(self.arena.push_node(CompactNode::MathAtom {
+                        atom_type: MathAtomType::Op,
+                        content,
+                    }))
                 } else {
                     let span = self.arena.push_children_deferred(&children);
                     Ok(self.arena.push_node(CompactNode::Row(span)))
@@ -462,24 +494,24 @@ impl<'a> MathmlCompactParser<'a> {
             "msub" => {
                 let children = self.parse_children(name)?;
                 let (base, sub) = self.two_child_ids(children);
-                if let Some((op, _)) = self.limit_operator(base) {
-                    return Ok(self.make_nary(op, sub, NodeId::NONE, LimitStyle::SubSup));
+                if let Some(node) = self.scripted_operator(base, sub, NodeId::NONE, false) {
+                    return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::Subscript { base, sub }))
             },
             "msup" => {
                 let children = self.parse_children(name)?;
                 let (base, sup) = self.two_child_ids(children);
-                if let Some((op, _)) = self.limit_operator(base) {
-                    return Ok(self.make_nary(op, NodeId::NONE, sup, LimitStyle::SubSup));
+                if let Some(node) = self.scripted_operator(base, NodeId::NONE, sup, false) {
+                    return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::Superscript { base, sup }))
             },
             "msubsup" => {
                 let children = self.parse_children(name)?;
                 let (base, sub, sup) = self.three_child_ids(children);
-                if let Some((op, _)) = self.limit_operator(base) {
-                    return Ok(self.make_nary(op, sub, sup, LimitStyle::SubSup));
+                if let Some(node) = self.scripted_operator(base, sub, sup, false) {
+                    return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::SubSup { base, sub, sup }))
             },
@@ -501,7 +533,9 @@ impl<'a> MathmlCompactParser<'a> {
                         }));
                     }
                 }
-                if movable && let Some(node) = self.stacked_nary(base, NodeId::NONE, over) {
+                if movable
+                    && let Some(node) = self.scripted_operator(base, NodeId::NONE, over, true)
+                {
                     return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::Overscript {
@@ -525,7 +559,9 @@ impl<'a> MathmlCompactParser<'a> {
                         wide: false,
                     }));
                 }
-                if !is_accent && let Some(node) = self.stacked_nary(base, under, NodeId::NONE) {
+                if !is_accent
+                    && let Some(node) = self.scripted_operator(base, under, NodeId::NONE, true)
+                {
                     return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::Underscript {
@@ -556,7 +592,7 @@ impl<'a> MathmlCompactParser<'a> {
                         movable_limits: !accent,
                     }));
                 }
-                if let Some(node) = self.stacked_nary(base, under, over) {
+                if let Some(node) = self.scripted_operator(base, under, over, true) {
                     return Ok(node);
                 }
                 Ok(self.arena.push_node(CompactNode::UnderOver {
@@ -846,47 +882,61 @@ impl<'a> MathmlCompactParser<'a> {
         matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
-    fn limit_operator(&self, id: NodeId) -> Option<(char, bool)> {
-        match *self.arena.node(id) {
+    /// Script elements place their bounds at the side. Under/over elements
+    /// use the core <mo>'s movablelimits value, including through a singleton
+    /// row. Named <mo> tokens default to fixed stacking in native MathML.
+    fn scripted_operator(
+        &mut self,
+        mut base: NodeId,
+        sub: NodeId,
+        sup: NodeId,
+        stacked: bool,
+    ) -> Option<NodeId> {
+        while let CompactNode::Row(span) = *self.arena.node(base) {
+            let &[core] = self.arena.children(span) else {
+                return None;
+            };
+            base = core;
+        }
+        match *self.arena.node(base) {
+            CompactNode::Operator { name, .. } => {
+                let limits = if !stacked {
+                    LimitStyle::SubSup
+                } else if self.movable_limit_operators.get(&base) == Some(&true) {
+                    LimitStyle::Default
+                } else {
+                    LimitStyle::AboveBelow
+                };
+                *self.arena.node_mut(base) = CompactNode::Operator { name, limits };
+                Some(self.make_script_pair(base, sub, sup))
+            },
             CompactNode::Symbol(SymbolKind::LargeOp, sid) => {
                 let text = self.arena.str_val(sid).trim();
                 let op = text.chars().next()?;
                 if text.len() != op.len_utf8() {
                     return None;
                 }
+                let integral = crate::unicode::symbols::is_integral_operator(op);
                 let movable = self
                     .movable_limit_operators
-                    .get(&id)
+                    .get(&base)
                     .copied()
-                    .unwrap_or_else(|| !crate::unicode::symbols::is_integral_operator(op));
-                Some((op, movable))
-            },
-            CompactNode::Row(span) => {
-                let children = self.arena.children(span);
-                if children.len() == 1 {
-                    self.limit_operator(children[0])
+                    .unwrap_or(!integral);
+                let limits = if !stacked {
+                    LimitStyle::SubSup
+                } else if !movable {
+                    LimitStyle::AboveBelow
+                } else if integral {
+                    // The generic MathML under/over node can express an
+                    // explicitly movable integral, unlike a default TeX n-ary.
+                    return None;
                 } else {
-                    None
-                }
+                    LimitStyle::Default
+                };
+                Some(self.make_nary(op, sub, sup, limits))
             },
             _ => None,
         }
-    }
-
-    /// Fixed under/over scripts and movable sum-like operators have TeX n-ary
-    /// equivalents. An integral with movable limits needs the generic MathML
-    /// under/over representation to retain its placement in compact style.
-    fn stacked_nary(&mut self, base: NodeId, sub: NodeId, sup: NodeId) -> Option<NodeId> {
-        let (op, movable) = self.limit_operator(base)?;
-        if movable && crate::unicode::symbols::is_integral_operator(op) {
-            return None;
-        }
-        let style = if movable {
-            LimitStyle::Default
-        } else {
-            LimitStyle::AboveBelow
-        };
-        Some(self.make_nary(op, sub, sup, style))
     }
 
     fn make_nary(&mut self, op: char, sub: NodeId, sup: NodeId, limits: LimitStyle) -> NodeId {
@@ -909,6 +959,10 @@ impl<'a> MathmlCompactParser<'a> {
     fn apply_script_pair(&mut self, base: NodeId, pair: &[NodeId]) -> NodeId {
         let sub = self.optional_script_id(pair.first());
         let sup = self.optional_script_id(pair.get(1));
+        self.make_script_pair(base, sub, sup)
+    }
+
+    fn make_script_pair(&mut self, base: NodeId, sub: NodeId, sup: NodeId) -> NodeId {
         match (sub == NodeId::NONE, sup == NodeId::NONE) {
             (false, false) => self.arena.push_node(CompactNode::SubSup { base, sub, sup }),
             (false, true) => self.arena.push_node(CompactNode::Subscript { base, sub }),
@@ -1337,6 +1391,69 @@ mod tests {
     fn subsup() {
         let node = parse_one("<math><msubsup><mi>x</mi><mi>i</mi><mn>2</mn></msubsup></math>");
         assert!(matches!(node, MathNode::SubSup { .. }));
+    }
+
+    #[test]
+    fn named_operator_scripts_preserve_authored_placement_and_both_labels() {
+        for (tag, token, expected) in [
+            (
+                "msubsup",
+                r#"<mo movablelimits="true">lim</mo>"#,
+                LimitStyle::SubSup,
+            ),
+            ("munderover", "<mo>lim</mo>", LimitStyle::AboveBelow),
+            (
+                "munderover",
+                r#"<mo movablelimits="false">lim</mo>"#,
+                LimitStyle::AboveBelow,
+            ),
+            (
+                "munderover",
+                r#"<mrow><mo movablelimits="true"> lim </mo></mrow>"#,
+                LimitStyle::Default,
+            ),
+        ] {
+            let xml = format!("<math><{tag}>{token}<mi>a</mi><mi>b</mi></{tag}></math>");
+            let node = parse_one(&xml);
+            let MathNode::SubSup { base, sub, sup } = node else {
+                panic!("{xml}: {node:?}")
+            };
+            assert_eq!(
+                *base,
+                MathNode::Operator(OperatorAttr {
+                    name: "lim".into(),
+                    limit_style: expected
+                })
+            );
+            assert_eq!(*sub, MathNode::Identifier("a".into()));
+            assert_eq!(*sup, MathNode::Identifier("b".into()));
+        }
+        assert_eq!(
+            parse_one("<math><mi>lim</mi></math>"),
+            MathNode::Identifier("lim".into())
+        );
+    }
+
+    #[test]
+    fn mathjax_operator_rows_preserve_compound_bases() {
+        let node = parse_one(
+            r#"<math><mrow data-mjx-texclass="OP"><mi>a</mi><mo>+</mo><mi>b</mi></mrow></math>"#,
+        );
+        let MathNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            content,
+        } = node
+        else {
+            panic!("{node:?}")
+        };
+        assert_eq!(
+            *content,
+            MathNode::Row(vec![
+                MathNode::Identifier("a".into()),
+                MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
+                MathNode::Identifier("b".into())
+            ])
+        );
     }
 
     #[test]
