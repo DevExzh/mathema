@@ -2887,19 +2887,7 @@ impl LatexCompactParser {
             )));
         }
         let inner = &input[1..]; // skip '['
-        let mut depth = 0u32;
-        let mut end = None;
-        for (i, c) in inner.char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' if depth > 0 => depth -= 1,
-                ']' if depth == 0 => {
-                    end = Some(i);
-                    break;
-                },
-                _ => {},
-            }
-        }
+        let end = super::optional_argument_end(inner);
         let end = end.ok_or_else(|| {
             nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
         })?;

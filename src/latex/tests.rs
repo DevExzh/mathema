@@ -504,6 +504,32 @@ fn actuarial_angle_maps_to_mathml_and_omml_enclosures() {
 }
 
 #[test]
+fn radical_indices_retain_grouped_brackets_and_nested_roots() {
+    for tex in [
+        r"\sqrt[{a]b}]{z}",
+        r"\sqrt[{a[b]c}]{z}",
+        r"\sqrt[{]}]{z}",
+        r"\sqrt[{\sqrt[2]{x}}]{y}",
+        r"\sqrt[\{]{x}",
+        r"\sqrt[\}]{x}",
+        r"\sqrt[\text{a]b}]{z}",
+    ] {
+        let original = crate::from_latex(tex).unwrap();
+        let written = original.to_latex().unwrap();
+        let again = crate::from_latex(&written).unwrap();
+        assert_eq!(
+            original.to_mathml().unwrap(),
+            again.to_mathml().unwrap(),
+            "{tex} -> {written}"
+        );
+        assert_eq!(written, again.to_latex().unwrap(), "{tex}");
+    }
+    for tex in [r"\sqrt[2]{x}", r"\sqrt[\alpha]{t}"] {
+        assert_eq!(crate::from_latex(tex).unwrap().to_latex().unwrap(), tex);
+    }
+}
+
+#[test]
 fn text_control_symbols_keep_following_spaces() {
     for (input, expected) in [
         (r"\text{a\} b}", "a} b"),

@@ -985,7 +985,17 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
 
         CompactNode::Root { index, radicand } => {
             buf.push_str("\\sqrt[");
+            let start = buf.len();
             write_wrapped_content(buf, arena, index);
+            let argument = &buf[start..];
+            if argument.as_bytes().contains(&b']')
+                && crate::latex::optional_argument_end(argument).is_some()
+            {
+                // Preserve a literal closing bracket or a nested root's index:
+                // at this level TeX would otherwise finish the outer index.
+                buf.insert(start, '{');
+                buf.push('}');
+            }
             buf.push_str("]{");
             write_wrapped_content(buf, arena, radicand);
             buf.push('}');

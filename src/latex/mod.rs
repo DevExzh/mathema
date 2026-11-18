@@ -7,6 +7,36 @@ pub mod physics;
 pub mod preprocess;
 pub mod siunitx;
 
+/// Find the first closing square bracket outside TeX groups. The caller
+/// supplies the contents after the optional argument's opening bracket.
+/// Literal control symbols and verbatim tokens do not change group depth.
+pub(crate) fn optional_argument_end(input: &str) -> Option<usize> {
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => {
+                if let Some(end) = preprocess::find_verb_end(input, i) {
+                    i = end;
+                } else {
+                    i += 1;
+                    if let Some(ch) = input[i..].chars().next() {
+                        i += ch.len_utf8();
+                    }
+                }
+                continue;
+            },
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b']' if depth == 0 => return Some(i),
+            _ => {},
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Length of a control word after the backslash. Recognize KaTeX's
 /// leading-`@` internal names while keeping the ordinary math character in
 /// expressions such as `\alpha@x` outside the control word.
