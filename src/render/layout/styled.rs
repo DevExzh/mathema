@@ -233,9 +233,55 @@ pub(super) fn layout_rule(
     }
 }
 
-pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
+fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     use crate::unicode::fonts::styled_char;
 
+    match node {
+        MathNode::Identifier(s) => {
+            if let Some(font) = fonts_registry::text_font_for_style(style) {
+                if s.chars().count() == 1 {
+                    let ch = s.chars().next().expect("non-empty checked");
+                    LayoutBox::glyph_font(ch, ctx.size(), false, font)
+                } else {
+                    layout_text_run(s, ctx, false, Some(style))
+                }
+            } else {
+                let mapped: String = s
+                    .chars()
+                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .collect();
+                layout_node(&MathNode::Identifier(mapped), ctx)
+            }
+        },
+        MathNode::Number(s) => {
+            if fonts_registry::text_font_for_style(style).is_some() {
+                layout_text_run(s, ctx, false, Some(style))
+            } else {
+                let mapped: String = s
+                    .chars()
+                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .collect();
+                layout_node(&MathNode::Number(mapped), ctx)
+            }
+        },
+        MathNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => layout_styled_node(
+            style,
+            ctx.style.choose(display, text, script, script_script),
+            ctx,
+        ),
+        MathNode::Row(children) => layout_styled(style, children, ctx),
+        MathNode::Styled(inner_style, children) => layout_styled(*inner_style, children, ctx),
+        MathNode::StyleSwitch(_) => LayoutBox::kern(0.0),
+        other => layout_node(other, ctx),
+    }
+}
+
+pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     if children.is_empty() {
         return LayoutBox::kern(0.0);
     }
@@ -248,54 +294,26 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
+    let mut current_ctx = ctx.clone();
 
     for node in children {
-        let raw_atom = spacing::classify_node(node);
+        if let MathNode::StyleSwitch(value) = node {
+            current_ctx = current_ctx.with_style(MathStyle::from_switch(*value));
+            continue;
+        }
+
+        let raw_atom = spacing::classify_node_in(node, current_ctx.style);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.expect("passed Some");
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+            let space =
+                spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
             if space > 0.0 {
-                cursor_x += space * ctx.size();
+                cursor_x += space * current_ctx.size();
             }
         }
 
-        let lm_font = fonts_registry::text_font_for_style(style);
-        let layout = match node {
-            MathNode::Identifier(s) => {
-                if let Some(font) = lm_font {
-                    // Mappable style: draw the base codepoints from the matching
-                    // Latin Modern text face (slant/weight baked into the face).
-                    if s.chars().count() == 1 {
-                        let ch = s.chars().next().expect("non-empty checked");
-                        LayoutBox::glyph_font(ch, ctx.size(), false, font)
-                    } else {
-                        layout_text_run(s, ctx, false, Some(style))
-                    }
-                } else {
-                    // Non-mappable style (italic letters, double-struck, script,
-                    // fraktur): keep the Math-font Unicode-remap path.
-                    let mapped: String = s
-                        .chars()
-                        .map(|c| styled_char(c, style).unwrap_or(c))
-                        .collect();
-                    layout_node(&MathNode::Identifier(mapped), ctx)
-                }
-            },
-            MathNode::Number(s) => {
-                if let Some(font) = lm_font {
-                    let _ = font;
-                    layout_text_run(s, ctx, false, Some(style))
-                } else {
-                    let mapped: String = s
-                        .chars()
-                        .map(|c| styled_char(c, style).unwrap_or(c))
-                        .collect();
-                    layout_node(&MathNode::Number(mapped), ctx)
-                }
-            },
-            other => layout_node(other, ctx),
-        };
+        let layout = layout_styled_node(style, node, &current_ctx);
         max_height = max_height.max(layout.height);
         max_depth = max_depth.max(layout.depth);
         let w = layout.width;
@@ -581,6 +599,71 @@ pub(super) fn layout_reflect_arena(
     })
 }
 
+fn layout_styled_node_arena(
+    style: TextStyle,
+    ast: &AstArena,
+    id: NodeId,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    use crate::unicode::fonts::styled_char;
+
+    match *ast.node(id) {
+        CompactNode::Identifier(sid) => {
+            let s = ast.str_val(sid);
+            if let Some(font) = fonts_registry::text_font_for_style(style) {
+                if s.chars().count() == 1 {
+                    let ch = s.chars().next().expect("non-empty checked");
+                    alloc_glyph_font(arena, ch, ctx.size(), false, font)
+                } else {
+                    layout_text_run_arena(s, arena, ctx, false, Some(style))
+                }
+            } else {
+                let mapped: String = s
+                    .chars()
+                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .collect();
+                if mapped.chars().count() == 1 {
+                    let ch = mapped.chars().next().expect("non-empty checked");
+                    alloc_glyph(arena, ch, ctx.size(), is_math_italic_char(ch))
+                } else {
+                    layout_text_run_arena(&mapped, arena, ctx, false, None)
+                }
+            }
+        },
+        CompactNode::Number(sid) => {
+            let s = ast.str_val(sid);
+            if fonts_registry::text_font_for_style(style).is_some() {
+                layout_text_run_arena(s, arena, ctx, false, Some(style))
+            } else {
+                let mapped: String = s
+                    .chars()
+                    .map(|c| styled_char(c, style).unwrap_or(c))
+                    .collect();
+                layout_text_run_arena(&mapped, arena, ctx, false, None)
+            }
+        },
+        CompactNode::MathChoice {
+            display,
+            text,
+            script,
+            script_script,
+        } => layout_styled_node_arena(
+            style,
+            ast,
+            ctx.style.choose(display, text, script, script_script),
+            arena,
+            ctx,
+        ),
+        CompactNode::Row(span) => layout_styled_arena(ast, style, span, arena, ctx),
+        CompactNode::Styled(inner_style, span) => {
+            layout_styled_arena(ast, inner_style, span, arena, ctx)
+        },
+        CompactNode::StyleSwitch(_) => arena.alloc(ArenaLayoutBox::kern(0.0)),
+        _ => layout_node_arena(ast, id, arena, ctx),
+    }
+}
+
 pub(super) fn layout_styled_arena(
     ast: &AstArena,
     style: TextStyle,
@@ -588,8 +671,6 @@ pub(super) fn layout_styled_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    use crate::unicode::fonts::styled_char;
-
     let ids = ast.children(span);
     if ids.is_empty() {
         return arena.alloc(ArenaLayoutBox::kern(0.0));
@@ -607,64 +688,28 @@ pub(super) fn layout_styled_arena(
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
     let mut prev_atom: Option<AtomType> = None;
+    let mut current_ctx = ctx.clone();
 
     for &id in ids {
+        if let CompactNode::StyleSwitch(value) = *ast.node(id) {
+            current_ctx = current_ctx.with_style(MathStyle::from_switch(value));
+            continue;
+        }
+
         // Inter-atom spacing (e.g. medium space around a binary `+`), matching
         // the legacy styled-row layout and the normal arena row builder.
-        let raw_atom = spacing::classify_node_c(ast, id);
+        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.style);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.expect("passed Some");
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+            let space =
+                spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
             if space > 0.0 {
-                cursor_x += space * ctx.size();
+                cursor_x += space * current_ctx.size();
             }
         }
 
-        let lm_font = fonts_registry::text_font_for_style(style);
-        let layout_id = match *ast.node(id) {
-            CompactNode::Identifier(sid) => {
-                let s = ast.str_val(sid);
-                if let Some(font) = lm_font {
-                    if s.chars().count() == 1 {
-                        let ch = s.chars().next().expect("non-empty checked");
-                        alloc_glyph_font(arena, ch, ctx.size(), false, font)
-                    } else {
-                        layout_text_run_arena(s, arena, ctx, false, Some(style))
-                    }
-                } else {
-                    let mapped: String = s
-                        .chars()
-                        .map(|c| styled_char(c, style).unwrap_or(c))
-                        .collect();
-                    // The style is already baked into the remapped Unicode
-                    // codepoint (e.g. `\mathit{x}` → U+1D465 𝑥), so decide
-                    // faux-italic exactly as a bare identifier would rather than
-                    // forcing it on — otherwise an already-italic glyph would be
-                    // double-italicized (a spurious `font-style="italic"`). This
-                    // mirrors the normal identifier path and the legacy engine.
-                    if mapped.chars().count() == 1 {
-                        let ch = mapped.chars().next().expect("non-empty checked");
-                        alloc_glyph(arena, ch, ctx.size(), is_math_italic_char(ch))
-                    } else {
-                        layout_text_run_arena(&mapped, arena, ctx, false, None)
-                    }
-                }
-            },
-            CompactNode::Number(sid) => {
-                let s = ast.str_val(sid);
-                if lm_font.is_some() {
-                    layout_text_run_arena(s, arena, ctx, false, Some(style))
-                } else {
-                    let mapped: String = s
-                        .chars()
-                        .map(|c| styled_char(c, style).unwrap_or(c))
-                        .collect();
-                    layout_text_run_arena(&mapped, arena, ctx, false, None)
-                }
-            },
-            _ => layout_node_arena(ast, id, arena, ctx),
-        };
+        let layout_id = layout_styled_node_arena(style, ast, id, arena, &current_ctx);
         let b = arena.get(layout_id);
         max_height = max_height.max(b.height);
         max_depth = max_depth.max(b.depth);

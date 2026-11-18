@@ -1912,6 +1912,41 @@ fn svg_matrix_multiple_rows() {
 }
 
 #[test]
+fn svg_styled_mathchoice_keeps_the_active_branch_and_font() {
+    let choice = r"\mathchoice{D}{T}{S}{Q}";
+    let nested = r"\mathchoice{\mathchoice{A}{B}{C}{D}}{\mathchoice{A}{B}{C}{D}}{\mathchoice{A}{B}{C}{D}}{\mathchoice{A}{B}{C}{D}}";
+    for (source, expected) in [
+        (
+            format!(r"\mathbf{{\scriptstyle{choice}}}"),
+            r"\mathbf{\scriptstyle S}".to_owned(),
+        ),
+        (
+            format!(r"\mathbf{{\scriptstyle{{{choice}}}}}"),
+            r"\mathbf{\scriptstyle S}".to_owned(),
+        ),
+        (
+            format!(r"\mathbf{{\scriptstyle{nested}}}"),
+            r"\mathbf{\scriptstyle C}".to_owned(),
+        ),
+        (
+            format!(r"\mathbf{{\scriptstyle x+{choice}}}"),
+            r"\mathbf{\scriptstyle x+S}".to_owned(),
+        ),
+    ] {
+        assert_eq!(
+            latex_to_svg(&source),
+            latex_to_svg(&expected),
+            "compact SVG changed the styled choice: {source}"
+        );
+        assert_eq!(
+            render_latex(&source),
+            render_latex(&expected),
+            "heap SVG changed the styled choice: {source}"
+        );
+    }
+}
+
+#[test]
 fn svg_array_row_separator_after_integral_stacks_rows() {
     let single = latex_to_svg(r"\begin{array}{l}\int x\end{array}");
     let multiline = latex_to_svg(r"\begin{array}{l}\int\\x\end{array}");
