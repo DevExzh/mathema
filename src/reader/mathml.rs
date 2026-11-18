@@ -1450,7 +1450,15 @@ impl<'a> MathmlCompactParser<'a> {
                 }
             }
             let empty = matches!(event, Ok(Event::Empty(_)));
-            let (children, own_alignment, cell_span, left_rule, right_rule) = match event {
+            let (
+                children,
+                own_alignment,
+                cell_span,
+                left_rule,
+                right_rule,
+                left_padding,
+                right_padding,
+            ) = match event {
                 Ok(Event::Start(e) | Event::Empty(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
@@ -1467,6 +1475,10 @@ impl<'a> MathmlCompactParser<'a> {
                                 .is_some_and(|value| value == "true"),
                             get_attr(&e, "data-mathema-right-rule")
                                 .is_some_and(|value| value == "true"),
+                            get_attr(&e, "data-mathema-left-padding")
+                                .is_some_and(|value| value == "true"),
+                            get_attr(&e, "data-mathema-right-padding")
+                                .is_some_and(|value| value == "true"),
                         )
                     } else {
                         let child = if empty {
@@ -1474,7 +1486,15 @@ impl<'a> MathmlCompactParser<'a> {
                         } else {
                             self.parse_element_by_name(&name, &e)?
                         };
-                        (smallvec::smallvec![child], None, 1, false, false)
+                        (
+                            smallvec::smallvec![child],
+                            None,
+                            1,
+                            false,
+                            false,
+                            false,
+                            false,
+                        )
                     }
                 },
                 Ok(Event::Text(e)) => {
@@ -1488,6 +1508,8 @@ impl<'a> MathmlCompactParser<'a> {
                         1,
                         false,
                         false,
+                        false,
+                        false,
                     )
                 },
                 Ok(Event::GeneralRef(r)) => {
@@ -1499,6 +1521,8 @@ impl<'a> MathmlCompactParser<'a> {
                         smallvec::smallvec![self.classify_text_compact(&text)],
                         None,
                         1,
+                        false,
+                        false,
                         false,
                         false,
                     )
@@ -1519,25 +1543,32 @@ impl<'a> MathmlCompactParser<'a> {
             while table.columns.len() < index + cell_span {
                 table.columns.push(alignment);
             }
-            let id =
-                if cell_span == 1 && !left_rule && !right_rule && table.columns[index] == alignment
-                {
-                    let span = self.arena.push_children(&children)?;
-                    self.arena.push_node(CompactNode::Row(span))
-                } else if cell_span == 1 && !left_rule && !right_rule {
-                    let content = self.flatten_ids(&children);
-                    self.arena
-                        .push_node(CompactNode::AlignedCell { alignment, content })
-                } else {
-                    let content = self.flatten_ids(&children);
-                    self.arena.push_node(CompactNode::SpannedCell {
-                        alignment,
-                        span: cell_span as u16,
-                        left_rule,
-                        right_rule,
-                        content,
-                    })
-                };
+            let id = if cell_span == 1
+                && !left_rule
+                && !right_rule
+                && !left_padding
+                && !right_padding
+                && table.columns[index] == alignment
+            {
+                let span = self.arena.push_children(&children)?;
+                self.arena.push_node(CompactNode::Row(span))
+            } else if cell_span == 1 && !left_rule && !right_rule && !left_padding && !right_padding
+            {
+                let content = self.flatten_ids(&children);
+                self.arena
+                    .push_node(CompactNode::AlignedCell { alignment, content })
+            } else {
+                let content = self.flatten_ids(&children);
+                self.arena.push_node(CompactNode::SpannedCell {
+                    alignment,
+                    span: cell_span as u16,
+                    left_rule,
+                    right_rule,
+                    left_padding,
+                    right_padding,
+                    content,
+                })
+            };
             table.cells.push(id);
             for _ in 1..cell_span {
                 let padding = self.empty_row();

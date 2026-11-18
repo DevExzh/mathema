@@ -307,6 +307,10 @@ pub enum CompactNode {
         left_rule: bool,
         /// Whether the native preamble draws a right edge rule.
         right_rule: bool,
+        /// Whether the native preamble suppresses the left intercolumn glue.
+        left_padding: bool,
+        /// Whether the native preamble suppresses the right intercolumn glue.
+        right_padding: bool,
         /// Cell content node.
         content: NodeId,
     },
@@ -753,6 +757,8 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             span,
             left_rule,
             right_rule,
+            left_padding,
+            right_padding,
             content,
         } => {
             let content = push_math_node(arena, content);
@@ -761,6 +767,8 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 span: (*span).max(1),
                 left_rule: *left_rule,
                 right_rule: *right_rule,
+                left_padding: *left_padding,
+                right_padding: *right_padding,
                 content,
             })
         },
@@ -1326,12 +1334,16 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             span,
             left_rule,
             right_rule,
+            left_padding,
+            right_padding,
             content,
         } => MathNode::SpannedCell {
             alignment,
             span,
             left_rule,
             right_rule,
+            left_padding,
+            right_padding,
             content: Box::new(reconstruct_node(arena, content)),
         },
 

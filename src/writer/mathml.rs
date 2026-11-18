@@ -752,18 +752,20 @@ fn write_node_in(
                     let (cell_override, cell) =
                         table_cell_parts(row.get(i).map(Vec::as_slice).unwrap_or_default());
                     let mut td = BytesStart::new("mtd");
-                    let (left_rule, right_rule) = row
+                    let (left_rule, right_rule, left_padding, right_padding) = row
                         .get(i)
                         .and_then(|cell| cell.first())
                         .and_then(|node| match node {
                             MathNode::SpannedCell {
                                 left_rule,
                                 right_rule,
+                                left_padding,
+                                right_padding,
                                 ..
-                            } => Some((*left_rule, *right_rule)),
+                            } => Some((*left_rule, *right_rule, *left_padding, *right_padding)),
                             _ => None,
                         })
-                        .unwrap_or((false, false));
+                        .unwrap_or((false, false, false, false));
                     if let Some(align) = cell_override.or_else(|| columns.get(i).copied()) {
                         let val = match align {
                             ColumnAlign::Left => "left",
@@ -781,6 +783,12 @@ fn write_node_in(
                     }
                     if right_rule {
                         td.push_attribute(("data-mathema-right-rule", "true"));
+                    }
+                    if left_padding {
+                        td.push_attribute(("data-mathema-left-padding", "true"));
+                    }
+                    if right_padding {
+                        td.push_attribute(("data-mathema-right-padding", "true"));
                     }
                     w.write_event(Event::Start(td)).map_err(to_err)?;
                     let cell = if promoted.is_some() && !cell.is_empty() {
@@ -1761,15 +1769,24 @@ fn write_node_fast_in(
                     }
                     let align_nodes = arena.children(col_aligns);
                     let (cell_override, mut nodes) = arena.table_cell_parts(&cell_id);
-                    let (cell_span, left_rule, right_rule) = match *arena.node(cell_id) {
-                        CompactNode::SpannedCell {
-                            span,
-                            left_rule,
-                            right_rule,
-                            ..
-                        } => (span.max(1) as usize, left_rule, right_rule),
-                        _ => (1, false, false),
-                    };
+                    let (cell_span, left_rule, right_rule, left_padding, right_padding) =
+                        match *arena.node(cell_id) {
+                            CompactNode::SpannedCell {
+                                span,
+                                left_rule,
+                                right_rule,
+                                left_padding,
+                                right_padding,
+                                ..
+                            } => (
+                                span.max(1) as usize,
+                                left_rule,
+                                right_rule,
+                                left_padding,
+                                right_padding,
+                            ),
+                            _ => (1, false, false, false, false),
+                        };
                     buf.push_str("<mtd");
                     if let Some(a) = cell_override.or_else(|| {
                         align_nodes
@@ -1798,6 +1815,12 @@ fn write_node_fast_in(
                     }
                     if right_rule {
                         buf.push_str(" data-mathema-right-rule=\"true\"");
+                    }
+                    if left_padding {
+                        buf.push_str(" data-mathema-left-padding=\"true\"");
+                    }
+                    if right_padding {
+                        buf.push_str(" data-mathema-right-padding=\"true\"");
                     }
                     buf.push('>');
                     if promoted.is_some() && !nodes.is_empty() {

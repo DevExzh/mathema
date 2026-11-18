@@ -421,6 +421,10 @@ pub enum MathNode {
         left_rule: bool,
         /// Whether the native preamble draws a right edge rule.
         right_rule: bool,
+        /// Whether the native preamble suppresses the left intercolumn glue.
+        left_padding: bool,
+        /// Whether the native preamble suppresses the right intercolumn glue.
+        right_padding: bool,
         /// Cell content.
         content: Box<MathNode>,
     },

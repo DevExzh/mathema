@@ -4957,10 +4957,11 @@ impl LatexCompactParser {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn parse_multicolumn<'a>(
         &mut self,
         input: &'a str,
-    ) -> IResult<&'a str, (u16, ColumnAlign, bool, bool, NodeId)> {
+    ) -> IResult<&'a str, (u16, ColumnAlign, bool, bool, bool, bool, NodeId)> {
         let (input, _) = ws(input)?;
         let Some((input, span_count)) = super::mhchem::capture_braced(input) else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -4987,10 +4988,33 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Char,
             )));
         };
-        let spec = spec.trim().replace("@{}", "");
-        let left_rule = spec.starts_with('|');
-        let right_rule = spec.ends_with('|');
-        let spec = spec.trim_matches('|').trim();
+        let mut spec = spec.trim();
+        let mut left_rule = false;
+        let mut right_rule = false;
+        let mut left_padding = false;
+        let mut right_padding = false;
+        loop {
+            if let Some(rest) = spec.strip_prefix("@{}") {
+                left_padding = true;
+                spec = rest.trim_start();
+            } else if let Some(rest) = spec.strip_prefix('|') {
+                left_rule = true;
+                spec = rest.trim_start();
+            } else {
+                break;
+            }
+        }
+        loop {
+            if let Some(rest) = spec.strip_suffix("@{}") {
+                right_padding = true;
+                spec = rest.trim_end();
+            } else if let Some(rest) = spec.strip_suffix('|') {
+                right_rule = true;
+                spec = rest.trim_end();
+            } else {
+                break;
+            }
+        }
         if spec.contains('|') {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -5009,7 +5033,18 @@ impl LatexCompactParser {
             },
         };
         let (input, content) = self.parse_required_group(input)?;
-        Ok((input, (span, alignment, left_rule, right_rule, content)))
+        Ok((
+            input,
+            (
+                span,
+                alignment,
+                left_rule,
+                right_rule,
+                left_padding,
+                right_padding,
+                content,
+            ),
+        ))
     }
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -7911,24 +7946,27 @@ impl LatexCompactParser {
             // An alignment override belongs to a cell template. Recognizing
             // it here keeps it out of unrelated math lists and nested groups.
             self.ensure_node_budget(rest)?;
-            let (after, (span, alignment, left_rule, right_rule, content)) =
-                self.parse_multicolumn(after)?;
+            let (
+                after,
+                (span, alignment, left_rule, right_rule, left_padding, right_padding, content),
+            ) = self.parse_multicolumn(after)?;
             let (rest, mut trailing) = self.parse_table_cell(after)?;
             if trailing.is_empty() {
-                trailing.push(
-                    self.arena
-                        .push_node(if span == 1 && !left_rule && !right_rule {
-                            CompactNode::AlignedCell { alignment, content }
-                        } else {
-                            CompactNode::SpannedCell {
-                                alignment,
-                                span,
-                                left_rule,
-                                right_rule,
-                                content,
-                            }
-                        }),
-                );
+                trailing.push(self.arena.push_node(
+                    if span == 1 && !left_rule && !right_rule && !left_padding && !right_padding {
+                        CompactNode::AlignedCell { alignment, content }
+                    } else {
+                        CompactNode::SpannedCell {
+                            alignment,
+                            span,
+                            left_rule,
+                            right_rule,
+                            left_padding,
+                            right_padding,
+                            content,
+                        }
+                    },
+                ));
             } else {
                 trailing.insert(0, content);
             }

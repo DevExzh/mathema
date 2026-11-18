@@ -1412,31 +1412,40 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         }
                         emitted = true;
                         let (alignment, nodes) = arena.table_cell_parts(cell_id);
-                        let (cell_span, left_rule, right_rule) = match *arena.node(*cell_id) {
-                            CompactNode::SpannedCell {
-                                span,
-                                left_rule,
-                                right_rule,
-                                ..
-                            } => (span.max(1) as usize, left_rule, right_rule),
-                            _ => (1, false, false),
-                        };
+                        let (cell_span, left_rule, right_rule, left_padding, right_padding) =
+                            match *arena.node(*cell_id) {
+                                CompactNode::SpannedCell {
+                                    span,
+                                    left_rule,
+                                    right_rule,
+                                    left_padding,
+                                    right_padding,
+                                    ..
+                                } => (
+                                    span.max(1) as usize,
+                                    left_rule,
+                                    right_rule,
+                                    left_padding,
+                                    right_padding,
+                                ),
+                                _ => (1, false, false, false, false),
+                            };
                         if let Some(alignment) = alignment {
                             buf.push_str(r"\multicolumn{");
                             buf.push_str(&cell_span.to_string());
                             buf.push_str("}{");
+                            if left_padding || (trim_edges && col_idx == 0) {
+                                buf.push_str("@{}");
+                            }
                             if left_rule {
                                 buf.push('|');
-                            }
-                            if trim_edges && col_idx == 0 {
-                                buf.push_str("@{}");
                             }
                             buf.push(match alignment {
                                 ColumnAlign::Left => 'l',
                                 ColumnAlign::Center => 'c',
                                 ColumnAlign::Right => 'r',
                             });
-                            if trim_edges && col_idx + 1 == nc {
+                            if right_padding || (trim_edges && col_idx + cell_span == nc) {
                                 buf.push_str("@{}");
                             }
                             if right_rule {
