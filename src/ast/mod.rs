@@ -52,6 +52,21 @@ pub enum SpaceBasis {
     Physical,
 }
 
+/// Source environment for a matrix-like heap node.
+///
+/// This metadata is separate from [`MathNode::Array`] so existing array
+/// constructors and serialized records retain their historical meaning. The
+/// compact arena can recover this value for LaTeX matrix environments while
+/// generic arrays continue to materialize as `Array`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MatrixKind {
+    /// A full-size `matrix` environment.
+    Matrix,
+    /// A script-sized `smallmatrix` environment.
+    SmallMatrix,
+}
+
 /// A node in the shared mathematical expression tree.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -222,7 +237,6 @@ pub enum MathNode {
         /// Whether to add `\jot` extra vertical spacing between rows.
         add_jot: bool,
     },
-
     // === Decorators ===
     /// Invisible but occupies space (kind controls which dimensions to keep)
     Phantom(Box<MathNode>, PhantomKind),
@@ -317,6 +331,23 @@ pub enum MathNode {
         color: String,
         /// Colored content.
         content: Box<MathNode>,
+    },
+    /// Matrix-like table retaining its source environment and full heap
+    /// representation. This variant is appended after all historical variants
+    /// so ordinal serializers retain every released discriminant. Existing
+    /// `Array` values remain the representation for generic arrays and legacy
+    /// callers.
+    Matrix {
+        /// Matrix source environment.
+        kind: MatrixKind,
+        /// Per-column horizontal alignments.
+        columns: Vec<ColumnAlign>,
+        /// Rows of cells, where each cell is a sequence of nodes.
+        rows: Vec<Vec<Vec<MathNode>>>,
+        /// Optional `\arraystretch` row-height multiplier.
+        arraystretch: Option<f64>,
+        /// Whether to add `\jot` extra vertical spacing between rows.
+        add_jot: bool,
     },
 }
 
@@ -822,7 +853,7 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             check_node_depth(body, d)
         },
         MathNode::Accent { base, .. } => check_node_depth(base, d),
-        MathNode::Array { rows, .. } => {
+        MathNode::Array { rows, .. } | MathNode::Matrix { rows, .. } => {
             for row in rows {
                 for cell in row {
                     for n in cell {

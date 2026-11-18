@@ -120,7 +120,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
             v.visit_node(base);
         },
 
-        MathNode::Array { rows, .. } => {
+        MathNode::Array { rows, .. } | MathNode::Matrix { rows, .. } => {
             for row in rows {
                 for cell in row {
                     for node in cell {
@@ -282,7 +282,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
             v.visit_node_mut(base);
         },
 
-        MathNode::Array { rows, .. } => {
+        MathNode::Array { rows, .. } | MathNode::Matrix { rows, .. } => {
             for row in rows {
                 for cell in row {
                     for node in cell {

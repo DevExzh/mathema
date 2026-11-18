@@ -72,7 +72,7 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         | MathNode::Underscript { base, .. }
         | MathNode::UnderOver { base, .. } => classify_node_depth(base, style, depth + 1),
         MathNode::Accent { base, .. } => classify_node_depth(base, style, depth + 1),
-        MathNode::Array { .. } => AtomType::Inner,
+        MathNode::Array { .. } | MathNode::Matrix { .. } => AtomType::Inner,
         MathNode::Phantom(_, _) => AtomType::Ord,
         MathNode::Reflect { .. } => AtomType::Ord,
         MathNode::Boxed { .. } | MathNode::Actuarial { .. } => AtomType::Inner,

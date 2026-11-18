@@ -49,6 +49,15 @@ export type MathNode =
         add_jot: boolean;
       };
     }
+  | {
+      Matrix: {
+        kind: MatrixKind;
+        columns: ColumnAlign[];
+        rows: MathNode[][][];
+        arraystretch: number | undefined;
+        add_jot: boolean;
+      };
+    }
   | { Phantom: [MathNode, PhantomKind] }
   | { Reflect: { content: MathNode; text_mode: boolean } }
   | { Rule: { width: Rational; height: Rational; lift: Rational } }
@@ -93,6 +102,8 @@ export interface Rational {
 export type SymbolKind =
   | "Ordinary" | "LargeOp" | "BinaryOp" | "Relation"
   | "Open" | "Close" | "Punctuation" | "Fence" | "Alphabetic";
+
+export type MatrixKind = "Matrix" | "SmallMatrix";
 
 export type TextStyle =
   | "Normal" | "Bold" | "Italic" | "BoldItalic" | "Monospace"

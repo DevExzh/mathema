@@ -39,7 +39,7 @@ pub fn from_js_value<T: ::serde::de::DeserializeOwned>(value: JsValue) -> Result
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{DisplayStyle, MathExpr, MathNode};
+    use crate::ast::{ColumnAlign, DisplayStyle, MathExpr, MathNode, MatrixKind};
 
     #[test]
     fn serialize_simple_expr() {
@@ -85,5 +85,25 @@ mod tests {
         let json = serde_json::to_string(&expr).unwrap();
         assert!(json.contains("Color"));
         assert_eq!(serde_json::from_str::<MathExpr>(&json).unwrap(), expr);
+    }
+
+    #[test]
+    fn matrix_variant_is_additive_and_roundtrips_via_json() {
+        let expr = MathExpr::new(
+            vec![MathNode::Matrix {
+                kind: MatrixKind::SmallMatrix,
+                columns: vec![ColumnAlign::Center],
+                rows: vec![vec![vec![MathNode::Identifier("x".into())]]],
+                arraystretch: Some(0.5),
+                add_jot: false,
+            }],
+            DisplayStyle::Inline,
+        );
+        let json = serde_json::to_string(&expr).unwrap();
+        assert!(json.contains("\"Matrix\""));
+        assert!(json.contains("SmallMatrix"));
+        assert_eq!(serde_json::from_str::<MathExpr>(&json).unwrap(), expr);
+        let legacy = r#"{"nodes":[{"Array":{"columns":["Center"],"rows":[[[{"Identifier":"x"}]]],"arraystretch":null,"add_jot":false}}],"display":"Inline"}"#;
+        assert!(serde_json::from_str::<MathExpr>(legacy).is_ok());
     }
 }

@@ -614,7 +614,21 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             rows,
             arraystretch,
             add_jot,
-        } => layout_array(columns, rows, *arraystretch, *add_jot, ctx),
+        } => layout_array(false, columns, rows, *arraystretch, *add_jot, ctx),
+        MathNode::Matrix {
+            kind,
+            columns,
+            rows,
+            arraystretch,
+            add_jot,
+        } => layout_array(
+            matches!(kind, crate::ast::MatrixKind::SmallMatrix),
+            columns,
+            rows,
+            *arraystretch,
+            *add_jot,
+            ctx,
+        ),
         MathNode::Phantom(content, kind) => layout_phantom(content, *kind, ctx),
         MathNode::Reflect { content, text_mode } => layout_reflect(content, *text_mode, ctx),
         MathNode::Boxed {

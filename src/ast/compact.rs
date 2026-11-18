@@ -3,7 +3,8 @@ use smallvec::SmallVec;
 use super::arena::AstArena;
 use super::{
     AccentPosition, ColumnAlign, DisplayStyle, FencedItem, FractionKind, LimitStyle, MathAtomType,
-    MathExpr, MathNode, OperatorAttr, PhantomKind, Rational, StrokeKind, SymbolKind, TextStyle,
+    MathExpr, MathNode, MatrixKind, OperatorAttr, PhantomKind, Rational, StrokeKind, SymbolKind,
+    TextStyle,
 };
 
 // ── Index types ────────────────────────────────────────────────────────
@@ -680,49 +681,24 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             rows,
             arraystretch,
             add_jot,
-        } => {
-            // Push column alignments as ColAlign nodes
-            let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-            for col in columns {
-                align_ids.push(arena.push_node(CompactNode::ColAlign(*col)));
-            }
-            let col_aligns = arena.push_children_deferred(&align_ids);
-
-            // Rows may be wider than the column list; size by the widest so
-            // the row-major cell layout keeps every row intact.
-            let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
-            let num_cols = columns.len().max(widest).max(1) as u16;
-
-            // Push cells flat (row-major). Each cell Vec<MathNode> becomes a Row node.
-            let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-            for row in rows {
-                for cell in row {
-                    let span = push_children(arena, cell);
-                    cell_ids.push(arena.push_node(CompactNode::Row(span)));
-                }
-                // Pad short rows to num_cols
-                for _ in row.len()..(num_cols as usize) {
-                    cell_ids.push(arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
-                }
-            }
-            let cells = arena.push_children_deferred(&cell_ids);
-
-            let arraystretch_pct = match arraystretch {
-                Some(v) => (v * 100.0).round() as u8,
-                None => 100,
-            };
-
-            arena.push_node(CompactNode::Array {
-                col_aligns,
-                cells,
-                num_cols,
-                arraystretch_pct,
-                add_jot: *add_jot,
-                array_style: false,
-                col_seps: 0,
-                row_seps: 0,
-            })
-        },
+        } => push_array_node(arena, columns, rows, *arraystretch, *add_jot, None),
+        MathNode::Matrix {
+            kind,
+            columns,
+            rows,
+            arraystretch,
+            add_jot,
+        } => push_array_node(
+            arena,
+            columns,
+            rows,
+            *arraystretch,
+            *add_jot,
+            Some(match kind {
+                MatrixKind::Matrix => crate::ast::arena::ArrayEnvironment::Matrix,
+                MatrixKind::SmallMatrix => crate::ast::arena::ArrayEnvironment::SmallMatrix,
+            }),
+        ),
 
         MathNode::Phantom(inner, kind) => {
             let inner_id = push_math_node(arena, inner);
@@ -829,6 +805,51 @@ fn push_children(arena: &mut AstArena, nodes: &[MathNode]) -> NodeSpan {
         ids.push(push_math_node(arena, node));
     }
     arena.push_children_deferred(&ids)
+}
+
+fn push_array_node(
+    arena: &mut AstArena,
+    columns: &[ColumnAlign],
+    rows: &[Vec<Vec<MathNode>>],
+    arraystretch: Option<f64>,
+    add_jot: bool,
+    environment: Option<crate::ast::arena::ArrayEnvironment>,
+) -> NodeId {
+    let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
+    for col in columns {
+        align_ids.push(arena.push_node(CompactNode::ColAlign(*col)));
+    }
+    let col_aligns = arena.push_children_deferred(&align_ids);
+    let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let num_cols = columns.len().max(widest).max(1) as u16;
+    let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+    for row in rows {
+        for cell in row {
+            let span = push_children(arena, cell);
+            cell_ids.push(arena.push_node(CompactNode::Row(span)));
+        }
+        for _ in row.len()..(num_cols as usize) {
+            cell_ids.push(arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
+        }
+    }
+    let cells = arena.push_children_deferred(&cell_ids);
+    let arraystretch_pct = arraystretch
+        .map(|value| (value * 100.0).round() as u8)
+        .unwrap_or(100);
+    let id = arena.push_node(CompactNode::Array {
+        col_aligns,
+        cells,
+        num_cols,
+        arraystretch_pct,
+        add_jot,
+        array_style: false,
+        col_seps: 0,
+        row_seps: 0,
+    });
+    if let Some(environment) = environment {
+        arena.mark_array_environment(id, environment);
+    }
+    id
 }
 
 /// Push an optional node, returning `NodeId::NONE` for `None`.
@@ -1017,11 +1038,27 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 Some(arraystretch_pct as f64 / 100.0)
             };
 
-            MathNode::Array {
-                columns,
-                rows,
-                arraystretch,
-                add_jot,
+            match arena.array_environment(id) {
+                Some(crate::ast::arena::ArrayEnvironment::Matrix) => MathNode::Matrix {
+                    kind: MatrixKind::Matrix,
+                    columns,
+                    rows,
+                    arraystretch,
+                    add_jot,
+                },
+                Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) => MathNode::Matrix {
+                    kind: MatrixKind::SmallMatrix,
+                    columns,
+                    rows,
+                    arraystretch,
+                    add_jot,
+                },
+                None => MathNode::Array {
+                    columns,
+                    rows,
+                    arraystretch,
+                    add_jot,
+                },
             }
         },
 

@@ -322,7 +322,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             out.push(*accent);
         },
 
-        MathNode::Array { rows, .. } => {
+        MathNode::Array { rows, .. } | MathNode::Matrix { rows, .. } => {
             out.push('\u{25A0}'); // ■
             out.push('(');
             for (i, row) in rows.iter().enumerate() {

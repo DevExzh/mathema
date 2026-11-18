@@ -663,6 +663,12 @@ fn write_node_in(
             rows,
             add_jot,
             ..
+        }
+        | MathNode::Matrix {
+            columns,
+            rows,
+            add_jot,
+            ..
         } => {
             let promoted = inherited_table_marker(display_style, *add_jot, |marker| {
                 rows.iter().flatten().all(|cell| {

@@ -651,7 +651,7 @@ fn matrix_canonicalization_and_smallmatrix_roundtrip_preserve_geometry() {
             r"\begin{matrix}"
         };
         assert!(compact_latex.contains(expected), "{compact_latex}");
-        assert!(heap_latex.contains(r"\begin{array}"), "{heap_latex}");
+        assert!(heap_latex.contains(expected), "{heap_latex}");
     }
 }
 

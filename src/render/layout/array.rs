@@ -32,6 +32,7 @@ pub(super) fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
 }
 
 pub(super) fn layout_array(
+    smallmatrix: bool,
     columns: &[ColumnAlign],
     rows: &[Vec<Vec<MathNode>>],
     arraystretch_opt: Option<f64>,
@@ -51,7 +52,11 @@ pub(super) fn layout_array(
 
     // Layout all cells
     let mut cell_layouts: Vec<Vec<LayoutBox>> = Vec::new();
-    let cell_ctx = ctx.with_style(MathStyle::Text);
+    let cell_ctx = if smallmatrix {
+        ctx.with_style(MathStyle::Script)
+    } else {
+        ctx.with_style(MathStyle::Text)
+    };
     for row in rows {
         let mut row_layouts = Vec::new();
         for cell in row {
@@ -88,11 +93,24 @@ pub(super) fn layout_array(
     // Position cells — consume cell_layouts by ownership to avoid cloning
     let mut children = Vec::new();
     let mut cursor_y = 0.0;
+    let outer_pad = if smallmatrix {
+        (3.0 / 18.0) * size
+    } else {
+        0.0
+    };
+    let gap_after = |j: usize| {
+        if smallmatrix {
+            let _ = j;
+            (5.0 / 18.0) * size
+        } else {
+            col_gap_after(j, aligned, size)
+        }
+    };
 
     // Start from top
     for (i, row) in cell_layouts.into_iter().enumerate() {
         cursor_y += row_heights[i];
-        let mut cursor_x = 0.0;
+        let mut cursor_x = outer_pad;
         let mut row_iter = row.into_iter();
 
         for (j, &col_w) in col_widths.iter().enumerate() {
@@ -107,17 +125,15 @@ pub(super) fn layout_array(
             }
             cursor_x += col_w;
             if j < n_cols - 1 {
-                cursor_x += col_gap_after(j, aligned, size);
+                cursor_x += gap_after(j);
             }
         }
 
         cursor_y += row_depths[i];
     }
 
-    let total_gap: f64 = (0..n_cols.saturating_sub(1))
-        .map(|j| col_gap_after(j, aligned, size))
-        .sum();
-    let total_width: f64 = col_widths.iter().sum::<f64>() + total_gap;
+    let total_gap: f64 = (0..n_cols.saturating_sub(1)).map(gap_after).sum();
+    let total_width: f64 = outer_pad * 2.0 + col_widths.iter().sum::<f64>() + total_gap;
     let total_extent = cursor_y;
     // Center vertically around the axis
     let axis = ctx.params.axis_height * size;

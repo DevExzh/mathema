@@ -21,6 +21,8 @@ mod tests {
     use crate::ast::compact::CompactNode;
     use crate::ast::*;
     use crate::error::Config;
+    use crate::writer::Writer;
+    use crate::writer::latex::LatexWriter;
 
     fn parse(input: &str) -> Vec<MathNode> {
         let config = Config::default();
@@ -275,6 +277,58 @@ mod tests {
     fn matrix_pmatrix() {
         let node = parse_one("\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}");
         assert!(matches!(node, MathNode::Fenced { .. }));
+    }
+
+    #[test]
+    fn heap_matrix_retains_environment_and_compact_geometry() {
+        for (source, kind, arraystretch) in [
+            (
+                r"\begin{matrix}a&b\\c&d\end{matrix}",
+                MatrixKind::Matrix,
+                None,
+            ),
+            (
+                r"\begin{smallmatrix}a&b\\c&d\end{smallmatrix}",
+                MatrixKind::SmallMatrix,
+                Some(0.5),
+            ),
+        ] {
+            let config = Config::default();
+            let heap = LatexReader::parse(source, &config).unwrap().expr;
+            assert!(matches!(
+                heap.nodes.as_slice(),
+                [MathNode::Matrix {
+                    kind: actual,
+                    arraystretch: actual_stretch,
+                    ..
+                }] if *actual == kind && *actual_stretch == arraystretch
+            ));
+            let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            assert_eq!(heap, compact.to_math_expr());
+            assert_eq!(
+                LatexWriter::write(&heap, &config).unwrap(),
+                LatexWriter::write_compact(&compact, &config).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn heap_starred_matrix_retains_alignment_on_write() {
+        for source in [
+            r"\begin{matrix*}[l]a&b\\c&d\end{matrix*}",
+            r"\begin{matrix*}[r]a&b\\c&d\end{matrix*}",
+        ] {
+            let config = Config::default();
+            let heap = LatexReader::parse(source, &config).unwrap().expr;
+            let written = LatexWriter::write(&heap, &config).unwrap();
+            assert!(written.contains(r"\begin{matrix*}"), "{written}");
+            assert!(written.contains(if source.contains("[l]") { "[l]" } else { "[r]" }));
+            let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            assert_eq!(
+                LatexWriter::write_compact(&compact, &config).unwrap(),
+                written
+            );
+        }
     }
 
     #[test]
