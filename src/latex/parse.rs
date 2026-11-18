@@ -4942,7 +4942,12 @@ impl LatexCompactParser {
             }
             rest = tail;
         }
-        Ok((rest, self.arena.push_node(CompactNode::Space(parsed.width))))
+        let basis = if parsed.unit == Some("mu") {
+            SpaceBasis::MathMu
+        } else {
+            SpaceBasis::TextEm
+        };
+        Ok((rest, self.arena.push_space(parsed.width, basis)))
     }
 
     fn warn_kern_unit(&mut self, is_mu: bool, unit: &str) {

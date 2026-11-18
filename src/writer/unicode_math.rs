@@ -55,6 +55,16 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
 
 pub struct UnicodeMathWriter;
 
+fn write_unicode_space(out: &mut String, em: f64) {
+    if em >= 1.0 {
+        out.push('\u{2003}');
+    } else if em >= 0.5 {
+        out.push('\u{2002}');
+    } else {
+        out.push('\u{2009}');
+    }
+}
+
 impl MathWriter for UnicodeMathWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
         let mut out = String::with_capacity(256);
@@ -92,14 +102,13 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
         MathNode::StyleSwitch(_) => {},
         MathNode::Space(r) => {
-            let em = r.as_f64();
-            if em >= 1.0 {
-                out.push('\u{2003}'); // em space
-            } else if em >= 0.5 {
-                out.push('\u{2002}'); // en space
-            } else {
-                out.push('\u{2009}'); // thin space
-            }
+            write_unicode_space(out, r.as_f64());
+        },
+        MathNode::ExplicitSpace { width, basis } => {
+            write_unicode_space(
+                out,
+                crate::ast::style::space_width_in_em(*width, *basis, style),
+            );
         },
         MathNode::Rule { .. } => {},
 
@@ -494,14 +503,8 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             out.push('"');
         },
         CompactNode::Space(r) => {
-            let em = r.as_f64();
-            if em >= 1.0 {
-                out.push('\u{2003}');
-            } else if em >= 0.5 {
-                out.push('\u{2002}');
-            } else {
-                out.push('\u{2009}');
-            }
+            let basis = arena.space_basis(id).unwrap_or(SpaceBasis::Current);
+            write_unicode_space(out, crate::ast::style::space_width_in_em(r, basis, style));
         },
 
         CompactNode::Row(span) => write_nodes_c_with_style(out, arena, span, style),

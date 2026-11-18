@@ -56,7 +56,9 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
             SymbolKind::Fence => AtomType::Ord,
         },
         MathNode::Text(..) | MathNode::StyleSwitch(_) => AtomType::Ord,
-        MathNode::Space(_) | MathNode::Rule { .. } => AtomType::Ord,
+        MathNode::Space(_) | MathNode::ExplicitSpace { .. } | MathNode::Rule { .. } => {
+            AtomType::Ord
+        },
         MathNode::Row(_) => AtomType::Inner,
         MathNode::Fenced { .. } => AtomType::Inner,
         MathNode::Fraction { .. } => AtomType::Inner,

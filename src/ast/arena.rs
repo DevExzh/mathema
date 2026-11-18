@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use super::SpaceBasis;
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 
 /// Arena-based storage for compact AST nodes.
@@ -13,6 +16,8 @@ use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 #[derive(Debug, Clone)]
 pub struct AstArena {
     nodes: Vec<CompactNode>,
+    /// Sparse provenance for explicitly typed spacing nodes.
+    space_bases: HashMap<NodeId, SpaceBasis>,
     children: Vec<NodeId>,
     strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
@@ -35,6 +40,7 @@ impl AstArena {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
+            space_bases: HashMap::new(),
             children: Vec::new(),
             strings: String::new(),
             str_starts: vec![0],
@@ -52,6 +58,7 @@ impl AstArena {
         str_starts.push(0);
         Self {
             nodes: Vec::with_capacity(nodes),
+            space_bases: HashMap::new(),
             children: Vec::with_capacity(children),
             strings: String::with_capacity(strings),
             str_starts,
@@ -81,6 +88,16 @@ impl AstArena {
         }
         self.nodes.push(node);
         NodeId::new(id as u32)
+    }
+
+    /// Push a spacing node while retaining its source unit basis.
+    #[inline]
+    pub fn push_space(&mut self, width: crate::ast::Rational, basis: SpaceBasis) -> NodeId {
+        let id = self.push_node(CompactNode::Space(width));
+        if basis != SpaceBasis::Current {
+            self.space_bases.insert(id, basis);
+        }
+        id
     }
 
     /// Intern a string and return its `StrId`.
@@ -195,6 +212,12 @@ impl AstArena {
         &mut self.nodes[id.index()]
     }
 
+    /// Return the explicit unit basis for a spacing node, if one was parsed.
+    #[inline]
+    pub fn space_basis(&self, id: NodeId) -> Option<SpaceBasis> {
+        self.space_bases.get(&id).copied()
+    }
+
     /// Return the slice of child `NodeId`s covered by `span`.
     #[inline]
     pub fn children(&self, span: NodeSpan) -> &[NodeId] {
@@ -274,6 +297,7 @@ impl AstArena {
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<CompactNode>()
+            + self.space_bases.capacity() * size_of::<(NodeId, SpaceBasis)>()
             + self.children.capacity() * size_of::<NodeId>()
             + self.strings.capacity()
             + self.str_starts.capacity() * size_of::<u32>()

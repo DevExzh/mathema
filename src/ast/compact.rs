@@ -3,7 +3,8 @@ use smallvec::SmallVec;
 use super::arena::AstArena;
 use super::{
     AccentPosition, ColumnAlign, DisplayStyle, FencedItem, FractionKind, LimitStyle, MathAtomType,
-    MathExpr, MathNode, OperatorAttr, PhantomKind, Rational, StrokeKind, SymbolKind, TextStyle,
+    MathExpr, MathNode, OperatorAttr, PhantomKind, Rational, SpaceBasis, StrokeKind, SymbolKind,
+    TextStyle,
 };
 
 // ── Index types ────────────────────────────────────────────────────────
@@ -495,6 +496,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             arena.push_node(CompactNode::Text(*style, sid))
         },
         MathNode::Space(r) => arena.push_node(CompactNode::Space(*r)),
+        MathNode::ExplicitSpace { width, basis } => arena.push_space(*width, *basis),
         MathNode::Rule {
             width,
             height,
@@ -845,7 +847,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         }),
         CompactNode::Symbol(kind, sid) => MathNode::Symbol(kind, arena.str_val(sid).to_owned()),
         CompactNode::Text(style, sid) => MathNode::Text(style, arena.str_val(sid).to_owned()),
-        CompactNode::Space(r) => MathNode::Space(r),
+        CompactNode::Space(r) => match arena.space_basis(id).unwrap_or(SpaceBasis::Current) {
+            SpaceBasis::Current => MathNode::Space(r),
+            basis => MathNode::ExplicitSpace { width: r, basis },
+        },
 
         CompactNode::Row(span) => MathNode::Row(reconstruct_children(arena, span)),
         CompactNode::Fenced {

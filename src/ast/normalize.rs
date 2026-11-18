@@ -113,7 +113,7 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
     coalesced.reverse();
     let content_end = coalesced
         .iter()
-        .rposition(|node| !matches!(node, MathNode::Space(_)))
+        .rposition(|node| !matches!(node, MathNode::Space(_) | MathNode::ExplicitSpace { .. }))
         .map_or(0, |i| i + 1);
     if content_end >= 2
         && is_empty_base_script_math(&coalesced[content_end - 1])
@@ -133,7 +133,7 @@ fn is_effectively_empty_math(node: &MathNode) -> bool {
         // compact wrappers such as an empty color argument.
         MathNode::Styled(_, children) => children.iter().all(is_effectively_empty_math),
         MathNode::Scaled { content, .. } => is_effectively_empty_math(content),
-        MathNode::Space(width) => width.num == 0,
+        MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
         MathNode::Subscript { base, sub } => {
             is_effectively_empty_math(base) && is_effectively_empty_math(sub)
         },
@@ -297,7 +297,10 @@ fn takes_limits_math(node: &MathNode) -> bool {
 /// `can_take_prescripts` for compact nodes.
 fn can_take_prescripts_math(node: &MathNode) -> bool {
     match node {
-        MathNode::PreScripts { .. } | MathNode::Space(_) | MathNode::StyleSwitch(_) => false,
+        MathNode::PreScripts { .. }
+        | MathNode::Space(_)
+        | MathNode::ExplicitSpace { .. }
+        | MathNode::StyleSwitch(_) => false,
         MathNode::Row(children) => !children
             .iter()
             .any(|n| matches!(n, MathNode::StyleSwitch(_))),
@@ -500,6 +503,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
+        | MathNode::ExplicitSpace { .. }
         | MathNode::Rule { .. }
         | MathNode::StyleSwitch(_) => {},
     }

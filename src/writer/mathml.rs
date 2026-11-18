@@ -375,6 +375,16 @@ fn write_node_in(
             w.write_event(Event::Empty(elem)).map_err(to_err)?;
             Ok(())
         },
+        MathNode::ExplicitSpace { width, basis } => {
+            let mut elem = BytesStart::new("mspace");
+            let width = format!(
+                "{}em",
+                crate::ast::style::space_width_in_local_em(*width, *basis, display_style)
+            );
+            elem.push_attribute(("width", width.as_str()));
+            w.write_event(Event::Empty(elem)).map_err(to_err)?;
+            Ok(())
+        },
         MathNode::Rule {
             width,
             height,
@@ -1133,7 +1143,9 @@ fn write_node_fast_in(
         CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
             use std::fmt::Write;
-            let _ = write!(buf, "<mspace width=\"{}em\"/>", r.as_f64());
+            let basis = arena.space_basis(id).unwrap_or(SpaceBasis::Current);
+            let width = crate::ast::style::space_width_in_local_em(r, basis, display_style);
+            let _ = write!(buf, "<mspace width=\"{}em\"/>", width);
         },
 
         CompactNode::Row(span) => {

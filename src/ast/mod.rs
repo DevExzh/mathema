@@ -40,6 +40,18 @@ pub enum DisplayStyle {
     Inline,
 }
 
+/// Unit basis for an explicitly sized horizontal math space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SpaceBasis {
+    /// Scale the width with the current math style. This is the historical basis.
+    Current,
+    /// Keep the width relative to text-style em size, as `\kern` and `\hskip` do.
+    TextEm,
+    /// Scale the width as math units in the current style, as `\mkern` and `\mskip` do.
+    MathMu,
+}
+
 /// The core math AST node. 32 variants covering the union of all target formats.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -58,6 +70,17 @@ pub enum MathNode {
     Text(TextStyle, String),
     /// Explicit space (width in em as rational number)
     Space(Rational),
+    /// Explicit space with its TeX unit basis preserved.
+    ///
+    /// This additive variant is used for parsed `\kern`, `\hskip`, `\mkern`,
+    /// and `\mskip` nodes. Existing callers constructing [`MathNode::Space`]
+    /// retain their historical current-em behavior.
+    ExplicitSpace {
+        /// Width expressed in the selected basis.
+        width: Rational,
+        /// Unit basis used to lay out and serialize this space.
+        basis: SpaceBasis,
+    },
 
     // === Grouping / delimiters ===
     /// Group acting as a unit (`{...}` in TeX, `<mrow>` in MathML)
@@ -710,6 +733,7 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
+        | MathNode::ExplicitSpace { .. }
         | MathNode::Rule { .. }
         | MathNode::StyleSwitch(_) => Ok(()),
 

@@ -201,6 +201,41 @@ impl MathStyle {
     }
 }
 
+/// Convert an explicit spacing width into current-style em units.
+#[must_use]
+#[inline]
+pub(crate) fn space_width_in_em(
+    width: crate::ast::Rational,
+    basis: crate::ast::SpaceBasis,
+    style: MathStyle,
+) -> f64 {
+    let value = width.as_f64();
+    match basis {
+        crate::ast::SpaceBasis::Current => value * style.size_multiplier(),
+        crate::ast::SpaceBasis::TextEm => value,
+        crate::ast::SpaceBasis::MathMu => {
+            let mu_quad = match style.size_class() {
+                0 => 1.0,
+                1 => 1.171,
+                _ => 1.472,
+            };
+            value * style.size_multiplier() * mu_quad
+        },
+    }
+}
+
+/// Convert an explicit spacing width to the local em unit used by MathML and
+/// other format writers at this style.
+#[must_use]
+#[inline]
+pub(crate) fn space_width_in_local_em(
+    width: crate::ast::Rational,
+    basis: crate::ast::SpaceBasis,
+    style: MathStyle,
+) -> f64 {
+    space_width_in_em(width, basis, style) / style.size_multiplier()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -697,7 +697,9 @@ mod tests {
     fn kern_with_pt() {
         let nodes = parse("a\\kern5pt b");
         assert!(
-            nodes.iter().any(|n| matches!(n, MathNode::Space(_))),
+            nodes
+                .iter()
+                .any(|n| matches!(n, MathNode::Space(_) | MathNode::ExplicitSpace { .. })),
             "\\kern should produce a Space node: {nodes:?}"
         );
     }
@@ -706,9 +708,9 @@ mod tests {
     fn kern_with_em() {
         let nodes = parse("a\\kern1em b");
         assert!(
-            nodes
-                .iter()
-                .any(|n| matches!(n, MathNode::Space(r) if r.as_f64() > 0.0)),
+            nodes.iter().any(|n| {
+                matches!(n, MathNode::ExplicitSpace { width, .. } if width.as_f64() > 0.0)
+            }),
             "\\kern 1em should produce positive space"
         );
     }
@@ -717,7 +719,15 @@ mod tests {
     fn mkern_with_mu() {
         let nodes = parse("a\\mkern18mu b");
         assert!(
-            nodes.iter().any(|n| matches!(n, MathNode::Space(_))),
+            nodes.iter().any(|n| {
+                matches!(
+                    n,
+                    MathNode::ExplicitSpace {
+                        basis: SpaceBasis::MathMu,
+                        ..
+                    }
+                )
+            }),
             "\\mkern should produce a Space node"
         );
     }
@@ -737,6 +747,43 @@ mod tests {
             mskip, mkern,
             "mskip and mkern should have the same fixed spacing"
         );
+    }
+
+    #[test]
+    fn explicit_spacing_preserves_text_em_and_math_mu_bases() {
+        let text = LatexReader::parse_compact(r"\hskip1em", &Config::default()).unwrap();
+        let math = LatexReader::parse_compact(r"\mskip18mu", &Config::default()).unwrap();
+        let text_id = text.expr.arena.children(text.expr.roots)[0];
+        let math_id = math.expr.arena.children(math.expr.roots)[0];
+        assert_eq!(
+            text.expr.arena.space_basis(text_id),
+            Some(SpaceBasis::TextEm)
+        );
+        assert_eq!(
+            math.expr.arena.space_basis(math_id),
+            Some(SpaceBasis::MathMu)
+        );
+        assert!(matches!(
+            text.expr.to_math_expr().nodes.as_slice(),
+            [MathNode::ExplicitSpace { width, basis: SpaceBasis::TextEm }]
+                if *width == Rational::one()
+        ));
+        assert!(matches!(
+            math.expr.to_math_expr().nodes.as_slice(),
+            [MathNode::ExplicitSpace { width, basis: SpaceBasis::MathMu }]
+                if *width == Rational::one()
+        ));
+
+        let text_mathml = crate::from_latex(r"x^{a\hskip1em b}")
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        let mu_mathml = crate::from_latex(r"x^{a\mskip18mu b}")
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(text_mathml.contains(r#"width="1.428"#), "{text_mathml}");
+        assert!(mu_mathml.contains(r#"width="1.171"#), "{mu_mathml}");
     }
 
     #[test]
@@ -778,11 +825,10 @@ mod tests {
                 .iter()
                 .any(|node| matches!(node, MathNode::Identifier(text) if text == "b"))
         );
-        assert!(
-            expr.nodes
-                .iter()
-                .any(|node| matches!(node, MathNode::Space(width) if width.as_f64() > 0.09))
-        );
+        assert!(expr.nodes.iter().any(
+            |node| matches!(node, MathNode::Space(width) if width.as_f64() > 0.09)
+                || matches!(node, MathNode::ExplicitSpace { width, .. } if width.as_f64() > 0.09)
+        ));
 
         let parsed =
             LatexReader::parse_compact(r"a\hskip 1em plus 1fill minus 2pt b", &Config::default())
@@ -842,14 +888,18 @@ mod tests {
             let glue_space = glue
                 .iter()
                 .find_map(|node| match node {
-                    MathNode::Space(value) => Some(value.as_f64()),
+                    MathNode::Space(value) | MathNode::ExplicitSpace { width: value, .. } => {
+                        Some(value.as_f64())
+                    },
                     _ => None,
                 })
                 .expect("glue should retain a fixed space");
             let kern_space = kern
                 .iter()
                 .find_map(|node| match node {
-                    MathNode::Space(value) => Some(value.as_f64()),
+                    MathNode::Space(value) | MathNode::ExplicitSpace { width: value, .. } => {
+                        Some(value.as_f64())
+                    },
                     _ => None,
                 })
                 .expect("kern should retain a fixed space");

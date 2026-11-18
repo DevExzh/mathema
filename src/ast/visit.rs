@@ -34,6 +34,7 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
+        | MathNode::ExplicitSpace { .. }
         | MathNode::Rule { .. }
         | MathNode::StyleSwitch(_) => {},
 
@@ -194,6 +195,7 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
+        | MathNode::ExplicitSpace { .. }
         | MathNode::Rule { .. }
         | MathNode::StyleSwitch(_) => {},
 

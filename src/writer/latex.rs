@@ -772,7 +772,9 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             }
         },
 
-        CompactNode::Space(r) => write_space(buf, r),
+        CompactNode::Space(r) => {
+            write_space_with_basis(buf, r, arena.space_basis(id).unwrap_or(SpaceBasis::Current))
+        },
 
         CompactNode::Row(span) => {
             let children = arena.children(span);
@@ -1886,9 +1888,9 @@ fn write_space(buf: &mut String, r: Rational) {
         r if r == Rational::new(2, 1) => buf.push_str(r"\qquad "),
         r if r == Rational::zero() => {},
         r => {
-            buf.push_str(r"\kern");
+            buf.push_str(r"\hspace{");
             write_rational_dimension(buf, r);
-            buf.push(' ');
+            buf.push('}');
         },
     }
 }
@@ -1896,6 +1898,23 @@ fn write_space(buf: &mut String, r: Rational) {
 fn write_rational_dimension(buf: &mut String, value: Rational) {
     use std::fmt::Write;
     let _ = write!(buf, "{}em", value.as_f64());
+}
+
+fn write_space_with_basis(buf: &mut String, width: Rational, basis: SpaceBasis) {
+    use std::fmt::Write;
+    if width.num == 0 {
+        return;
+    }
+    match basis {
+        SpaceBasis::Current => write_space(buf, width),
+        SpaceBasis::TextEm => {
+            let _ = write!(buf, "\\kern{}em ", width.as_f64());
+        },
+        SpaceBasis::MathMu => {
+            let mu = f64::from(width.num) * 18.0 / f64::from(width.den);
+            let _ = write!(buf, "\\mkern{mu}mu ");
+        },
+    }
 }
 
 fn write_delim(buf: &mut String, delim: &str) {
@@ -2589,12 +2608,9 @@ mod tests {
             let src = format!(r"a\hskip{unit} b");
             let parsed = crate::from_latex(&src).unwrap();
             let space = |expr: MathExpr| {
-                expr.nodes.into_iter().find_map(|n| {
-                    if let MathNode::Space(r) = n {
-                        Some(r)
-                    } else {
-                        None
-                    }
+                expr.nodes.into_iter().find_map(|n| match n {
+                    MathNode::Space(r) | MathNode::ExplicitSpace { width: r, .. } => Some(r),
+                    _ => None,
                 })
             };
             assert_eq!(space(parsed.expr()), Some(expected), "{src}");
@@ -3054,9 +3070,12 @@ mod tests {
             assert_eq!(first, format!("{command}-"), "space: {space:?}");
 
             let parsed = LatexReader::parse(&first, &config).unwrap();
-            assert_eq!(
-                parsed.expr.nodes.first(),
-                Some(&MathNode::Space(width)),
+            assert!(
+                parsed.expr.nodes.first().is_some_and(|node| match node {
+                    MathNode::Space(value) | MathNode::ExplicitSpace { width: value, .. } =>
+                        *value == width,
+                    _ => false,
+                }),
                 "space width changed: {space:?}"
             );
             assert_eq!(roundtrip(&first), first, "space: {space:?}");
@@ -3065,9 +3084,12 @@ mod tests {
             // only the first pass.
             let parsed = LatexReader::parse(&format!("-{space}"), &config).unwrap();
             assert_eq!(parsed.expr.nodes.len(), 2, "{:?}", parsed.expr.nodes);
-            assert_eq!(
-                parsed.expr.nodes.last(),
-                Some(&MathNode::Space(width)),
+            assert!(
+                parsed.expr.nodes.last().is_some_and(|node| match node {
+                    MathNode::Space(value) | MathNode::ExplicitSpace { width: value, .. } =>
+                        *value == width,
+                    _ => false,
+                }),
                 "literal space was not classified: {space:?}"
             );
             let trailing = roundtrip(&format!("-{space}"));
