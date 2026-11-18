@@ -635,6 +635,10 @@ fn layout_text_run(
     let mut max_depth: f64 = 0.0;
 
     for ch in text.chars() {
+        if let Some(width) = crate::unicode::math_space_width(ch) {
+            total_width += width.as_f64() * size;
+            continue;
+        }
         // Use upright metrics for non-italic text (operator names, numbers, \text{}).
         // Italic and upright fonts have significantly different character widths
         // (e.g. 'i' is 0.278em upright vs 0.345em italic — 24% wider in italic).
@@ -1087,6 +1091,10 @@ fn layout_text_run_arena(
     let mut max_depth: f64 = 0.0;
 
     for ch in text.chars() {
+        if let Some(width) = crate::unicode::math_space_width(ch) {
+            total_width += width.as_f64() * size;
+            continue;
+        }
         let m = fonts_registry::text_metrics(ch, italic, font);
         let h = m.height * size;
         let d = m.depth * size;

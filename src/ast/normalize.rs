@@ -254,6 +254,8 @@ pub(crate) fn is_limit_function(name: &str) -> bool {
             | "Pr"
             | "argmax"
             | "argmin"
+            | "arg\u{2009}max"
+            | "arg\u{2009}min"
             | "arg max"
             | "arg min"
             | "inj lim"

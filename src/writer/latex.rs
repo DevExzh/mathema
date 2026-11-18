@@ -585,7 +585,7 @@ enum MathLeafKind {
 fn write_leaf_with_math_spaces(buf: &mut String, s: &str, kind: MathLeafKind) -> bool {
     let Some((first_space, _)) = s
         .char_indices()
-        .find(|&(_, ch)| crate::latex::parse::math_space_width(ch).is_some())
+        .find(|&(_, ch)| crate::unicode::math_space_width(ch).is_some())
     else {
         return false;
     };
@@ -598,7 +598,7 @@ fn write_leaf_with_math_spaces(buf: &mut String, s: &str, kind: MathLeafKind) ->
         .char_indices()
         .skip_while(|&(index, _)| index < first_space)
     {
-        let Some(width) = crate::latex::parse::math_space_width(ch) else {
+        let Some(width) = crate::unicode::math_space_width(ch) else {
             continue;
         };
         if segment_start < index {
@@ -1498,6 +1498,11 @@ fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
 fn write_operator_name_content(buf: &mut String, name: &str) {
     for ch in name.chars() {
         match ch {
+            '\u{2009}' => buf.push_str("\\,"),
+            '\u{205F}' => buf.push_str("\\:"),
+            '\u{2002}' => buf.push_str("\\enspace "),
+            '\u{2001}' => buf.push_str("\\quad "),
+            '\u{00A0}' => buf.push_str("\\ "),
             '%' => buf.push_str("\\%"),
             '#' => buf.push_str("\\#"),
             '$' => buf.push_str("\\$"),
@@ -2669,7 +2674,7 @@ mod tests {
     #[test]
     fn unicode_four_per_em_space_has_literal_quarter_em_width() {
         assert_eq!(
-            crate::latex::parse::math_space_width('\u{2005}'),
+            crate::unicode::math_space_width('\u{2005}'),
             Some(Rational::new(1, 4))
         );
         assert_eq!(roundtrip("\u{2005}"), r"\ ");

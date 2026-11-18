@@ -358,7 +358,8 @@ fn latex_function_names_use_real_commands() {
     for (latex, expected) in [
         (r"\lcm(a,b)", r"\operatorname{lcm}"),
         (r"\sgn x", r"\operatorname{sgn}"),
-        (r"\argmax_x f", r"\operatorname*{argmax}"),
+        // The native alias canonicalizes to KaTeX's spaced operator label.
+        (r"\argmax_x f", r"\operatorname*{arg\,max}"),
         (r"\sin x", r"\sin"),
     ] {
         let written = convert(latex, Format::LaTeX, Format::LaTeX).unwrap();

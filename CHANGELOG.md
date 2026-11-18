@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- `\\argmin` and `\\argmax` retain the thin mathematical space used by
+  their canonical `\\operatorname*{arg\\,min/max}` forms through LaTeX,
+  MathML, and rendering.
 - Normalization treats empty styled or colored script arguments as transparent,
   so later scripts attach to the surviving base consistently across AST paths.
 - LaTeX serialization drops invisible prescript markers while preserving

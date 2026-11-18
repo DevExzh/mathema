@@ -425,6 +425,10 @@ fn emit_box_embedded(
             let font = fonts_registry::font_for_text_run(*text_style);
             let mut cx = x;
             for ch in text.chars() {
+                if let Some(width) = crate::unicode::math_space_width(ch) {
+                    cx += width.as_f64() * *size * em;
+                    continue;
+                }
                 emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic, font);
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
@@ -814,6 +818,10 @@ fn emit_box_arena_embedded(
             let font = fonts_registry::font_for_text_run(*text_style);
             let mut cx = x;
             for ch in text.chars() {
+                if let Some(width) = crate::unicode::math_space_width(ch) {
+                    cx += width.as_f64() * *size * em;
+                    continue;
+                }
                 emit_glyph(svg, ch, *size, cx, y, em, options, glyphs, *italic, font);
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.

@@ -814,6 +814,59 @@ fn named_operator_limit_modifiers_round_trip() {
             "unstable named operator output for {input:?}"
         );
     }
+
+    let comma_mathml = crate::convert(
+        r"\operatorname*{arg,min}",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+    )
+    .unwrap();
+    assert!(
+        comma_mathml.contains("arg,min"),
+        "ordinary comma changed: {comma_mathml}"
+    );
+    assert!(
+        !comma_mathml.contains("arg\u{2009}min"),
+        "ordinary comma became a thin space: {comma_mathml}"
+    );
+}
+
+#[test]
+fn argmin_aliases_canonicalize_to_spaced_operator_names() {
+    for (alias, spaced) in [
+        (r"\argmin", r"\operatorname*{arg\,min}"),
+        (r"\argmax", r"\operatorname*{arg\,max}"),
+    ] {
+        let alias_latex =
+            crate::convert(alias, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(alias_latex, spaced, "wrong alias spelling for {alias}");
+        let alias_mathml =
+            crate::convert(alias, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        let spaced_mathml =
+            crate::convert(spaced, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert_eq!(
+            alias_mathml, spaced_mathml,
+            "alias structure changed for {alias}"
+        );
+        assert!(
+            alias_mathml.contains("arg\u{2009}"),
+            "thin space missing: {alias_mathml}"
+        );
+    }
+
+    for (input, expected) in [
+        (r"\operatorname*{argmin}", r"\operatorname*{argmin}"),
+        (r"\operatorname*{argmax}", r"\operatorname*{argmax}"),
+        (r"\operatorname*{arg,min}", r"\operatorname*{arg,min}"),
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, expected, "custom operator changed: {input}");
+        assert_eq!(
+            first,
+            crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+            "custom operator was unstable: {input}"
+        );
+    }
 }
 
 #[test]

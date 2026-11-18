@@ -70,21 +70,6 @@ fn trim_latex_input(input: &str) -> &str {
     &trimmed_start[..end]
 }
 
-/// Width in em of a fixed-width Unicode math space.
-pub(crate) fn math_space_width(ch: char) -> Option<Rational> {
-    let (num, den) = match ch {
-        '\u{00A0}' | '\u{2005}' => (1, 4),
-        '\u{2000}' | '\u{2002}' => (1, 2),
-        '\u{2001}' | '\u{2003}' | '\u{3000}' => (1, 1),
-        '\u{2004}' => (1, 3),
-        '\u{2006}' | '\u{2009}' | '\u{202F}' => (1, 6),
-        '\u{200A}' => (1, 18),
-        '\u{205F}' => (2, 9),
-        _ => return None,
-    };
-    Some(Rational::new(num, den))
-}
-
 /// Byte table of ASCII characters that are recognized as symbol tokens.
 const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@()[]";
 
@@ -373,10 +358,23 @@ fn decode_operator_name(raw: &str) -> String {
                     {
                         out.push_str(unicode);
                     } else {
-                        out.push_str(&command);
+                        match command.as_str() {
+                            "thinspace" => out.push('\u{2009}'),
+                            "medspace" => out.push('\u{205F}'),
+                            "enspace" | "enskip" => out.push('\u{2002}'),
+                            "quad" => out.push('\u{2001}'),
+                            "qquad" => out.push_str("\u{2001}\u{2001}"),
+                            _ => out.push_str(&command),
+                        }
                     }
                 } else {
-                    out.push(chars.next().unwrap_or(next));
+                    let escaped = chars.next().unwrap_or(next);
+                    out.push(match escaped {
+                        ',' => '\u{2009}',
+                        ':' | '>' => '\u{205F}',
+                        ' ' => '\u{00A0}',
+                        _ => escaped,
+                    });
                 }
             },
             _ => out.push(ch),
@@ -2828,7 +2826,7 @@ impl LatexCompactParser {
             Some(&b) if b > 127 => {
                 let ch = input.chars().next().unwrap();
                 let len = ch.len_utf8();
-                if let Some(width) = math_space_width(ch) {
+                if let Some(width) = crate::unicode::math_space_width(ch) {
                     return Ok((
                         &input[len..],
                         self.arena.push_node(CompactNode::Space(width)),
@@ -3804,7 +3802,15 @@ impl LatexCompactParser {
                     } else {
                         LimitStyle::SubSup
                     };
-                    let sid = self.arena.push_str(name);
+                    // amsmath's aliases carry an internal thin mathematical
+                    // space. Keep it in the operator name so MathML and the
+                    // layout engine see the same spacing as `arg\,min`.
+                    let canonical_name = match name {
+                        "argmin" => "arg\u{2009}min",
+                        "argmax" => "arg\u{2009}max",
+                        _ => name,
+                    };
+                    let sid = self.arena.push_str(canonical_name);
                     Ok((
                         input,
                         self.arena.push_node(CompactNode::Operator {

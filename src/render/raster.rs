@@ -422,6 +422,10 @@ fn emit_raster_box(
             for ch in text.chars() {
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
+                if let Some(width) = crate::unicode::math_space_width(ch) {
+                    cx += width.as_f64() * size * em;
+                    continue;
+                }
                 let m = fonts_registry::text_metrics(ch, *italic, font);
                 draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font, xform);
                 cx += m.width * size * em;
@@ -736,6 +740,10 @@ fn emit_raster_box_arena(
             for ch in text.chars() {
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
+                if let Some(width) = crate::unicode::math_space_width(ch) {
+                    cx += width.as_f64() * size * em;
+                    continue;
+                }
                 let m = fonts_registry::text_metrics(ch, *italic, font);
                 draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font, xform);
                 cx += m.width * size * em;

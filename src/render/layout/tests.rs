@@ -685,6 +685,25 @@ fn layout_text_upright() {
 }
 
 #[test]
+fn layout_named_operator_thin_space_uses_math_width() {
+    let spaced = MathExpr::inline(vec![MathNode::Operator(OperatorAttr {
+        name: "arg\u{2009}min".into(),
+        limit_style: LimitStyle::Default,
+    })]);
+    let plain = MathExpr::inline(vec![MathNode::Operator(OperatorAttr {
+        name: "argmin".into(),
+        limit_style: LimitStyle::Default,
+    })]);
+    let spaced_width = layout_expr(&spaced, MathStyle::Text, &default_options()).width;
+    let plain_width = layout_expr(&plain, MathStyle::Text, &default_options()).width;
+    assert!(spaced_width > plain_width, "thin operator space was lost");
+    assert!(
+        (spaced_width - plain_width - 1.0 / 6.0).abs() < 0.02,
+        "unexpected thin-space width: spaced={spaced_width}, plain={plain_width}"
+    );
+}
+
+#[test]
 fn layout_space_kern() {
     let expr = MathExpr::inline(vec![MathNode::Space(Rational::new(1, 2))]);
     let root = layout_expr(&expr, MathStyle::Text, &default_options());
