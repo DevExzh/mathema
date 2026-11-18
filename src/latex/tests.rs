@@ -656,6 +656,30 @@ fn matrix_canonicalization_and_smallmatrix_roundtrip_preserve_geometry() {
 }
 
 #[test]
+#[cfg(feature = "render")]
+fn matrix_cell_display_choice_survives_raw_and_normalized_export() {
+    use crate::{Format, convert, from_latex};
+
+    for source in [
+        r"\begin{matrix}p&{\displaystyle \mathchoice{D}{T}{S}{Q}\\b}\\q&r\end{matrix}",
+        r"\begin{matrix}p&{\displaystyle \mathchoice{D}{T}{S}{Q}\\b}  \\q&r\end{matrix}",
+    ] {
+        let raw = from_latex(source).unwrap();
+        let raw_latex = raw.to_latex().unwrap();
+        let reparsed = from_latex(&raw_latex).unwrap();
+        assert!(raw_latex.contains(r"\displaystyle"));
+        assert_eq!(raw.to_svg().unwrap(), reparsed.to_svg().unwrap());
+
+        let canonical = convert(source, Format::LaTeX, Format::LaTeX).unwrap();
+        assert!(canonical.contains(r"\displaystyle"));
+        assert_eq!(
+            convert(source, Format::LaTeX, Format::Svg).unwrap(),
+            convert(&canonical, Format::LaTeX, Format::Svg).unwrap(),
+        );
+    }
+}
+
+#[test]
 fn legacy_font_scopes_cross_infix_fractions_without_hiding_markers() {
     for (input, expected, numerator, denominator) in [
         (
