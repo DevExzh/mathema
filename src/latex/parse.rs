@@ -5009,10 +5009,23 @@ impl LatexCompactParser {
         // authored style, and add one synthetic outer normal scope for all
         // other structured content. Nested `\mathbf`/`\mathit`/color scopes
         // continue to override this inherited face.
-        !matches!(
-            *self.arena.node(id),
-            CompactNode::Styled(TextStyle::Normal, _)
-        )
+        match *self.arena.node(id) {
+            CompactNode::Styled(TextStyle::Normal, _) | CompactNode::Operator { .. } => false,
+            CompactNode::Row(span) => self.arena.children(span).iter().any(|&child| {
+                matches!(
+                    *self.arena.node(child),
+                    CompactNode::Identifier(_)
+                        | CompactNode::Number(_)
+                        | CompactNode::Color { .. }
+                        | CompactNode::Styled(_, _)
+                )
+            }),
+            CompactNode::Overscript { base, .. }
+            | CompactNode::Underscript { base, .. }
+            | CompactNode::UnderOver { base, .. }
+            | CompactNode::Accent { base, .. } => self.structured_content_needs_normal_style(base),
+            _ => true,
+        }
     }
 
     /// A parsed decoration around `lim` initially contains a row of identifier
