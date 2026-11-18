@@ -620,9 +620,28 @@ static OPERATOR_COMMANDS: phf::Set<&'static str> = phf_set! {
     "argmax", "argmin",
 };
 
+/// Compound limit commands whose typeset names contain a thin space.
+const COMPOUND_LIMIT_NAMES: &[(&str, &str)] = &[
+    ("limsup", "lim\u{2009}sup"),
+    ("liminf", "lim\u{2009}inf"),
+    ("injlim", "inj\u{2009}lim"),
+    ("projlim", "proj\u{2009}lim"),
+];
+
+pub(crate) fn compound_limit_name(command: &str) -> Option<&'static str> {
+    COMPOUND_LIMIT_NAMES
+        .iter()
+        .find_map(|&(cmd, name)| (cmd == command).then_some(name))
+}
+
+pub(crate) fn compound_limit_command(name: &str) -> Option<&'static str> {
+    COMPOUND_LIMIT_NAMES
+        .iter()
+        .find_map(|&(cmd, text)| (text == name).then_some(cmd))
+}
+
 static LIMIT_OPERATORS: phf::Set<&'static str> = phf_set! {
     "lim", "liminf", "limsup", "injlim", "projlim",
-    "lim\u{2009}sup", "lim\u{2009}inf", "inj\u{2009}lim", "proj\u{2009}lim",
     "sup", "inf", "min", "max", "det", "gcd", "Pr", "argmax", "argmin",
 };
 
@@ -706,7 +725,7 @@ pub fn is_operator_command(command: &str) -> bool {
 /// Whether a named operator uses limit-style placement by default.
 #[inline]
 pub fn operator_has_limits(name: &str) -> bool {
-    LIMIT_OPERATORS.contains(name)
+    LIMIT_OPERATORS.contains(name) || compound_limit_command(name).is_some()
 }
 
 #[cfg(test)]

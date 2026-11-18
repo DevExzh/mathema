@@ -887,6 +887,22 @@ fn named_operator_limit_styles_reach_mathml() {
 }
 
 #[test]
+fn explicit_joined_names_do_not_acquire_a_native_thin_space() {
+    for name in ["limsup", "liminf", "injlim", "projlim"] {
+        for star in ["", "*"] {
+            let source = format!(r"\operatorname{star}{{{name}}}_i x");
+            let parsed = crate::from_latex(&source).unwrap();
+            let latex = parsed.to_latex().unwrap();
+            assert!(latex.contains(&format!("{{{name}}}")), "{latex}");
+            assert_eq!(
+                parsed.to_mathml().unwrap(),
+                crate::from_latex(&latex).unwrap().to_mathml().unwrap()
+            );
+        }
+    }
+}
+
+#[test]
 fn compound_named_limits_are_operators_with_canonical_spacing() {
     for (source, expected_name) in [
         (r"\limsup", "lim\u{2009}sup"),
@@ -906,18 +922,43 @@ fn compound_named_limits_are_operators_with_canonical_spacing() {
             crate::from_latex(&latex).unwrap().to_mathml().unwrap(),
             mathml
         );
-        assert!(latex.contains(r"\operatorname*{"), "{source}: {latex}");
+        assert_eq!(latex, source);
     }
 
     let result = crate::from_latex(r"\plim").unwrap();
+    let explicit = crate::from_latex(r"\mathop{\operatorname{plim}}\limits").unwrap();
     let mathml = result.to_mathml().unwrap();
-    assert!(mathml.contains("plim"), "{mathml}");
-    assert!(mathml.contains(r#"data-mjx-texclass="OP""#), "{mathml}");
-    let latex = result.to_latex().unwrap();
     assert!(
-        latex.contains(r"\mathop{\operatorname{plim}}\limits"),
-        "{latex}"
+        mathml.contains(r#"<mo movablelimits="false">plim</mo>"#),
+        "{mathml}"
     );
+    assert_eq!(mathml, explicit.to_mathml().unwrap());
+    let latex = result.to_latex().unwrap();
+    assert_eq!(latex, r"\operatorname*{plim}\limits");
+    let scripted = format!("{latex}_i x");
+    assert_eq!(
+        crate::from_latex(r"\plim_i x")
+            .unwrap()
+            .to_mathml()
+            .unwrap(),
+        crate::from_latex(&scripted).unwrap().to_mathml().unwrap()
+    );
+}
+
+#[test]
+fn bare_side_script_names_keep_their_placement_through_mathml() {
+    for name in ["lim", "limsup", "injlim", r"lim\,sup"] {
+        let source = format!(r"\operatorname{{{name}}}");
+        let result = crate::from_latex(&source).unwrap();
+        let xml = result.to_mathml().unwrap();
+        let imported = crate::from_mathml(&xml).unwrap();
+        assert_eq!(imported.to_mathml().unwrap(), xml, "{source}");
+        assert_eq!(
+            imported.to_latex().unwrap(),
+            result.to_latex().unwrap(),
+            "{source}"
+        );
+    }
 }
 
 #[test]

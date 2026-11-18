@@ -3411,6 +3411,19 @@ impl LatexCompactParser {
                     "mathinner" => MathAtomType::Inner,
                     _ => MathAtomType::Ord,
                 };
+                // A single named operator can carry the outer placement
+                // directly, including an explicit modifier before any bound.
+                if atom_type == MathAtomType::Op
+                    && let CompactNode::Operator { name, .. } = *self.arena.node(arg_id)
+                {
+                    return Ok((
+                        input,
+                        self.arena.push_node(CompactNode::Operator {
+                            name,
+                            limits: LimitStyle::Default,
+                        }),
+                    ));
+                }
                 Ok((
                     input,
                     self.arena.push_node(CompactNode::MathAtom {
@@ -3910,11 +3923,7 @@ impl LatexCompactParser {
                     let canonical_name = match name {
                         "argmin" => "arg\u{2009}min",
                         "argmax" => "arg\u{2009}max",
-                        "limsup" => "lim\u{2009}sup",
-                        "liminf" => "lim\u{2009}inf",
-                        "injlim" => "inj\u{2009}lim",
-                        "projlim" => "proj\u{2009}lim",
-                        _ => name,
+                        _ => crate::unicode::symbols::compound_limit_name(name).unwrap_or(name),
                     };
                     let sid = self.arena.push_str(canonical_name);
                     Ok((

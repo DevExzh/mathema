@@ -721,7 +721,11 @@ impl<'a> MathmlCompactParser<'a> {
             let limits = match movable {
                 Some(true) => LimitStyle::Default,
                 Some(false) => LimitStyle::AboveBelow,
-                None if crate::unicode::symbols::operator_has_limits(name) => LimitStyle::Default,
+                None if !attrs.named_operator
+                    && crate::unicode::symbols::operator_has_limits(name) =>
+                {
+                    LimitStyle::Default
+                },
                 None => LimitStyle::SubSup,
             };
             self.arena
