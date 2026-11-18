@@ -2080,6 +2080,48 @@ fn nested_script_arguments_keep_only_their_visible_base_and_markers() {
 }
 
 #[test]
+fn elided_prescripts_keep_operator_spacing_and_valid_markers() {
+    let write = |input: &str| -> String {
+        crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap()
+    };
+    for (input, expected, structure) in [
+        (
+            r"{}^{\textcolor{bad_name}{}}+b",
+            "+ b",
+            "<mo>+</mo><mi>b</mi>",
+        ),
+        (
+            r"{}_{i}^{\textcolor{bad_name}{}}+b",
+            r"{{}_{i}+} b",
+            "<mmultiscripts><mo>+</mo><mprescripts/><mi>i</mi><none/></mmultiscripts><mi>b</mi>",
+        ),
+        (
+            r"\alpha{}^{\textcolor{bad_name}{}}x",
+            r"\alpha x",
+            "<mi>α</mi><mi>x</mi>",
+        ),
+        (
+            r"{}^{\textcolor{bad_name}{}}\left(x\right)y",
+            r"\left( x \right)y",
+            "<mrow><mo fence=\"true\">(</mo><mi>x</mi><mo fence=\"true\">)</mo></mrow><mi>y</mi>",
+        ),
+        (
+            r"{}^{\textcolor{bad_name}{}}\frac{a}{b}x",
+            r"\frac{a}{b}x",
+            "<mfrac><mi>a</mi><mi>b</mi></mfrac><mi>x</mi>",
+        ),
+    ] {
+        let first = write(input);
+        assert_eq!(first, expected, "{input}");
+        let second = write(&first);
+        assert_eq!(first, second, "{input} changed on the second write");
+        let mathml = crate::convert(&first, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert!(mathml.contains(structure), "{input} -> {first} -> {mathml}");
+        assert!(!mathml.contains("mathcolor=\"bad_name\""), "{mathml}");
+    }
+}
+
+#[test]
 fn trailing_empty_implicit_scripts_do_not_regroup_the_preceding_base() {
     for input in [
         r"mathrm\mathrm\teal^\teal^\teal",

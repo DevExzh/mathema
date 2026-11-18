@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- LaTeX serialization drops invisible prescript markers while preserving
+  any remaining valid prescript and the operator's surrounding spacing.
 - LaTeX output writes ordinary control characters through bounded numeric
   `\\char` tokens, preserving C0, C1, and DEL symbols when the result is
   parsed and written again.

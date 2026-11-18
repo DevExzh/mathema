@@ -140,8 +140,7 @@ fn write_node_slice(
             // spacing does not depend on how the node before is classified
             // (a minus read back as a binary operator gets one anyway).
             let space = needs_space(arena, children.get(i - 1).copied(), id)
-                || (matches!(*arena.node(id), CompactNode::PreScripts { .. })
-                    && !buf.ends_with(' '))
+                || (has_visible_prescripts(arena, id) && !buf.ends_with(' '))
                 || (ends_with_command && node_starts_with_ascii_letter(arena, id));
             if space {
                 buf.push(' ');
@@ -395,6 +394,7 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
         // A sizing wrapper around a relation/binary-op atom behaves like the
         // wrapped atom for spacing decisions (e.g. \Big\ggg-).
         CompactNode::Scaled { content, .. } => needs_space(arena, Some(content), curr),
+        CompactNode::PreScripts { base, .. } => needs_space(arena, Some(base), curr),
         CompactNode::Operator { .. }
         | CompactNode::Symbol(SymbolKind::BinaryOp, _)
         | CompactNode::Symbol(SymbolKind::Relation, _) => true,
@@ -460,6 +460,11 @@ fn node_starts_with_ascii_letter(arena: &AstArena, id: NodeId) -> bool {
             .as_bytes()
             .first()
             .is_some_and(|&b| b.is_ascii_alphabetic()),
+        // An elided prescript writes only its base. Preserve the control-word
+        // separator when that base begins with an ASCII letter.
+        CompactNode::PreScripts { base, .. } if !has_visible_prescripts(arena, id) => {
+            node_starts_with_ascii_letter(arena, base)
+        },
         // Script nodes: first thing written is write_braced(base).
         // write_braced skips braces only for simple tokens (not Row or other compound).
         CompactNode::Subscript { base, .. }
@@ -796,6 +801,15 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             pre_sub,
             pre_sup,
         } => {
+            let sub_visible = pre_sub.is_some() && !is_effectively_empty_arg(arena, pre_sub);
+            let sup_visible = pre_sup.is_some() && !is_effectively_empty_arg(arena, pre_sup);
+            if !sub_visible && !sup_visible {
+                match *arena.node(base) {
+                    CompactNode::Row(span) => write_nodes(buf, arena, span),
+                    _ => write_node_slice(buf, arena, &[base], false),
+                }
+                return;
+            }
             // A leading script is written as a group with its base,
             // `{{}^{14}_{6}C}`, so that reading it back cannot attach the
             // scripts to the node before (a function name, a big operator),
@@ -803,8 +817,10 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             // after. The base follows the scripts directly, so a script is
             // always braced: `{}^{6}6`, not `{}^66`.
             buf.push_str("{{}");
-            for (mark, script) in [('_', pre_sub), ('^', pre_sup)] {
-                if script.is_some() {
+            for (mark, script, visible) in
+                [('_', pre_sub, sub_visible), ('^', pre_sup, sup_visible)]
+            {
+                if visible {
                     buf.push(mark);
                     buf.push('{');
                     write_wrapped_content(buf, arena, script);
@@ -2026,6 +2042,17 @@ fn is_empty_body(arena: &AstArena, id: NodeId) -> bool {
     is_empty_script_base(arena, id)
 }
 
+fn has_visible_prescripts(arena: &AstArena, id: NodeId) -> bool {
+    let CompactNode::PreScripts {
+        pre_sub, pre_sup, ..
+    } = *arena.node(id)
+    else {
+        return false;
+    };
+    (pre_sub.is_some() && !is_effectively_empty_arg(arena, pre_sub))
+        || (pre_sup.is_some() && !is_effectively_empty_arg(arena, pre_sup))
+}
+
 /// True for a missing node or an empty Row (an absent/effectively-empty script
 /// argument).
 fn is_effectively_empty_arg(arena: &AstArena, id: NodeId) -> bool {
@@ -2033,12 +2060,18 @@ fn is_effectively_empty_arg(arena: &AstArena, id: NodeId) -> bool {
         return true;
     }
     match *arena.node(id) {
-        CompactNode::Row(span) => arena.children(span).is_empty(),
+        CompactNode::Row(span) => arena
+            .children(span)
+            .iter()
+            .all(|&child| is_effectively_empty_arg(arena, child)),
         // A color declaration with no following content is a transparent
         // wrapper around an empty row. Unwrap only this transparent wrapper;
-        // zero-width atoms and explicit spaces carry grouping/spacing meaning
-        // and must remain script arguments.
+        // nonzero spaces and zero-width atoms carry grouping/spacing meaning
+        // and must remain script arguments. Zero-width spaces are elided
+        // by normalization and are safe to treat as empty here.
         CompactNode::Color { content, .. } => is_effectively_empty_arg(arena, content),
+        CompactNode::Scaled { content, .. } => is_effectively_empty_arg(arena, content),
+        CompactNode::Space(width) => width.num == 0,
         // A nested script whose markers disappear writes just its base.
         CompactNode::Subscript { base, .. }
         | CompactNode::Superscript { base, .. }
