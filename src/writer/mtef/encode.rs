@@ -1942,26 +1942,27 @@ impl<'a> Encoder<'a> {
         )
     }
 
-    fn column_align(&mut self, col_aligns: NodeSpan) -> u8 {
-        let aligns: SmallVec<[ColumnAlign; 8]> = self
-            .arena
-            .children(col_aligns)
-            .iter()
-            .filter_map(|&id| match *self.arena.node(id) {
-                CompactNode::ColAlign(align) => Some(align),
-                _ => None,
-            })
-            .collect();
-        if aligns.windows(2).any(|w| w[0] != w[1]) {
+    fn column_align(&mut self, col_aligns: NodeSpan) -> (ColumnAlign, u8) {
+        let mut aligns =
+            self.arena
+                .children(col_aligns)
+                .iter()
+                .filter_map(|&id| match *self.arena.node(id) {
+                    CompactNode::ColAlign(align) => Some(align),
+                    _ => None,
+                });
+        let first = aligns.next().unwrap_or(ColumnAlign::Center);
+        if aligns.any(|alignment| alignment != first) {
             self.lose(
                 "an MTEF matrix has one alignment for all columns; the first column's was used",
             );
         }
-        match aligns.first() {
-            Some(ColumnAlign::Left) => 1,
-            Some(ColumnAlign::Right) => 3,
-            _ => 2,
-        }
+        let code = match first {
+            ColumnAlign::Left => 1,
+            ColumnAlign::Center => 2,
+            ColumnAlign::Right => 3,
+        };
+        (first, code)
     }
 
     /// PILE: halign, valign (baseline of the centre line), one line per row.
@@ -1972,17 +1973,12 @@ impl<'a> Encoder<'a> {
         else {
             return Ok(());
         };
-        let halign = self.column_align(col_aligns);
+        let (exported, halign) = self.column_align(col_aligns);
         self.need(size);
         self.tag(PILE, 0);
         self.out.push(halign);
         self.out.push(1);
         let rows: SmallVec<[NodeId; 8]> = self.arena.children(cells).into();
-        let exported = match halign {
-            1 => ColumnAlign::Left,
-            3 => ColumnAlign::Right,
-            _ => ColumnAlign::Center,
-        };
         for row in rows {
             self.note_cell_alignment(row, exported);
             self.with_math_style(MathStyle::Text, |this| this.slot(size, Some(row)))?;
@@ -2018,7 +2014,7 @@ impl<'a> Encoder<'a> {
                 "an MTEF matrix has at most 255 rows and 255 columns; this array has {rows} rows and {cols} columns"
             )));
         };
-        let h_just = self.column_align(col_aligns);
+        let (exported, h_just) = self.column_align(col_aligns);
         self.need(size);
         self.tag(MATRIX, 0);
         self.out.push(1);
@@ -2028,11 +2024,6 @@ impl<'a> Encoder<'a> {
         self.out.push(cols_u8);
         self.partition_lines(row_seps, rows + 1);
         self.partition_lines(col_seps, cols + 1);
-        let exported = match h_just {
-            1 => ColumnAlign::Left,
-            3 => ColumnAlign::Right,
-            _ => ColumnAlign::Center,
-        };
         for index in 0..rows * cols {
             match cells.get(index) {
                 Some(&cell) => {
