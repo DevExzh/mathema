@@ -2217,6 +2217,14 @@ impl LatexCompactParser {
         self.build_array_with_spacing(columns, rows, 100, false, 0, 0, false)
     }
 
+    fn mark_array_environment(
+        &mut self,
+        id: NodeId,
+        environment: crate::ast::arena::ArrayEnvironment,
+    ) {
+        self.arena.mark_array_environment(id, environment);
+    }
+
     fn build_array_with_seps_rows(
         &mut self,
         columns: &[ColumnAlign],
@@ -6240,6 +6248,7 @@ impl LatexCompactParser {
         };
 
         let array_id = self.build_array(&columns, rows);
+        self.mark_array_environment(array_id, crate::ast::arena::ArrayEnvironment::Matrix);
 
         if open_s.is_empty() {
             Ok((input, array_id))
@@ -7332,10 +7341,9 @@ impl LatexCompactParser {
         };
 
         self.apply_table_cell_style(&mut rows, 2);
-        Ok((
-            input,
-            self.build_array_with_spacing(&columns, rows, 50, false, 0, 0, false),
-        ))
+        let array = self.build_array_with_spacing(&columns, rows, 50, false, 0, 0, false);
+        self.mark_array_environment(array, crate::ast::arena::ArrayEnvironment::SmallMatrix);
+        Ok((input, array))
     }
 
     fn parse_align_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {

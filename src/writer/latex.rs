@@ -1234,11 +1234,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             col_aligns,
             cells,
             num_cols,
-            arraystretch_pct,
             add_jot,
-            array_style,
-            col_seps,
-            row_seps,
             ..
         } => {
             let columns = arena.children(col_aligns);
@@ -1252,36 +1248,32 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 && cell_ids
                     .iter()
                     .all(|&cell| super::cell_after_style(arena, cell, 0).is_some());
-            let env = if ams
-                && nc == 1
-                && matches!(columns, [id] if matches!(*arena.node(*id), CompactNode::ColAlign(ColumnAlign::Center)))
-            {
-                "gathered"
-            } else if ams
-                && nc >= 2
-                && columns.len() == nc
-                && columns.iter().enumerate().all(|(i, &id)| {
-                    let expected = if i % 2 == 0 {
-                        ColumnAlign::Right
+            let env = match arena.array_environment(id) {
+                Some(crate::ast::arena::ArrayEnvironment::Matrix) => "matrix",
+                Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) => "smallmatrix",
+                None => {
+                    if ams
+                        && nc == 1
+                        && matches!(columns, [id] if matches!(*arena.node(*id), CompactNode::ColAlign(ColumnAlign::Center)))
+                    {
+                        "gathered"
+                    } else if ams
+                        && nc >= 2
+                        && columns.len() == nc
+                        && columns.iter().enumerate().all(|(i, &id)| {
+                            let expected = if i % 2 == 0 {
+                                ColumnAlign::Right
+                            } else {
+                                ColumnAlign::Left
+                            };
+                            matches!(*arena.node(id), CompactNode::ColAlign(col) if col == expected)
+                        })
+                    {
+                        "aligned"
                     } else {
-                        ColumnAlign::Left
-                    };
-                    matches!(*arena.node(id), CompactNode::ColAlign(col) if col == expected)
-                })
-            {
-                "aligned"
-            } else if !array_style
-                && !add_jot
-                && col_seps == 0
-                && row_seps == 0
-                && arraystretch_pct == 50
-            {
-                // The half-height strut is unambiguous compact metadata for
-                // `smallmatrix`, whose rows would otherwise become normal
-                // array rows after a reparse.
-                "smallmatrix"
-            } else {
-                "array"
+                        "array"
+                    }
+                },
             };
             buf.push_str(r"\begin{");
             buf.push_str(env);

@@ -3,6 +3,12 @@ use std::collections::HashMap;
 use super::SpaceBasis;
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArrayEnvironment {
+    Matrix,
+    SmallMatrix,
+}
+
 /// Arena-based storage for compact AST nodes.
 ///
 /// Nodes, child references, and UTF-8 text each occupy a contiguous buffer.
@@ -18,6 +24,7 @@ pub struct AstArena {
     nodes: Vec<CompactNode>,
     /// Sparse provenance for explicitly typed spacing nodes.
     space_bases: HashMap<NodeId, SpaceBasis>,
+    array_environments: HashMap<NodeId, ArrayEnvironment>,
     children: Vec<NodeId>,
     strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
@@ -41,6 +48,7 @@ impl AstArena {
         Self {
             nodes: Vec::new(),
             space_bases: HashMap::new(),
+            array_environments: HashMap::new(),
             children: Vec::new(),
             strings: String::new(),
             str_starts: vec![0],
@@ -59,6 +67,7 @@ impl AstArena {
         Self {
             nodes: Vec::with_capacity(nodes),
             space_bases: HashMap::new(),
+            array_environments: HashMap::new(),
             children: Vec::with_capacity(children),
             strings: String::with_capacity(strings),
             str_starts,
@@ -220,6 +229,11 @@ impl AstArena {
             return;
         }
         self.nodes[destination.index()] = self.nodes[source.index()];
+        if let Some(environment) = self.array_environments.get(&source).copied() {
+            self.array_environments.insert(destination, environment);
+        } else {
+            self.array_environments.remove(&destination);
+        }
         if self.space_bases.is_empty() {
             return;
         }
@@ -237,6 +251,16 @@ impl AstArena {
             .get(&id)
             .copied()
             .filter(|_| matches!(self.node(id), CompactNode::Space(_)))
+    }
+
+    #[inline]
+    pub(crate) fn mark_array_environment(&mut self, id: NodeId, environment: ArrayEnvironment) {
+        self.array_environments.insert(id, environment);
+    }
+
+    #[inline]
+    pub(crate) fn array_environment(&self, id: NodeId) -> Option<ArrayEnvironment> {
+        self.array_environments.get(&id).copied()
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.
@@ -319,6 +343,7 @@ impl AstArena {
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<CompactNode>()
             + self.space_bases.capacity() * size_of::<(NodeId, SpaceBasis)>()
+            + self.array_environments.capacity() * size_of::<(NodeId, ArrayEnvironment)>()
             + self.children.capacity() * size_of::<NodeId>()
             + self.strings.capacity()
             + self.str_starts.capacity() * size_of::<u32>()

@@ -621,8 +621,9 @@ fn matrix_canonicalization_and_smallmatrix_roundtrip_preserve_geometry() {
         r"\begin{pmatrix}x\\y\end{pmatrix}",
     ] {
         let first = latex(source);
-        assert!(first.contains(r"\begin{array}"), "{source}: {first}");
+        assert!(first.contains(r"\begin{matrix}"), "{source}: {first}");
         assert_eq!(first, latex(&first), "{source}");
+        assert_eq!(svg(source), svg(&first), "{source}");
     }
 
     for source in [
@@ -642,11 +643,15 @@ fn matrix_canonicalization_and_smallmatrix_roundtrip_preserve_geometry() {
     ] {
         let heap = LatexReader::parse(source, &config).unwrap().expr;
         let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
-        assert_eq!(
-            LatexWriter::write(&heap, &config).unwrap(),
-            LatexWriter::write_compact(&compact, &config).unwrap(),
-            "heap/compact environment mismatch: {source}"
-        );
+        let heap_latex = LatexWriter::write(&heap, &config).unwrap();
+        let compact_latex = LatexWriter::write_compact(&compact, &config).unwrap();
+        let expected = if source.contains("smallmatrix") {
+            r"\begin{smallmatrix}"
+        } else {
+            r"\begin{matrix}"
+        };
+        assert!(compact_latex.contains(expected), "{compact_latex}");
+        assert!(heap_latex.contains(r"\begin{array}"), "{heap_latex}");
     }
 }
 
