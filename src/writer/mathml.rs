@@ -725,7 +725,18 @@ fn write_node_in(
                     } else {
                         cell.as_slice()
                     };
-                    write_nodes(w, cell, cell_style, false)?;
+                    let small = kind == Some(MatrixKind::SmallMatrix)
+                        && cell
+                            .first()
+                            .is_some_and(|n| !matches!(n, MathNode::StyleSwitch(_)));
+                    if small {
+                        start_math_style(w, MathStyle::Script)?;
+                        write_nodes(w, cell, MathStyle::Script, false)?;
+                        w.write_event(Event::End(BytesEnd::new("mstyle")))
+                            .map_err(to_err)?;
+                    } else {
+                        write_nodes(w, cell, cell_style, false)?;
+                    }
                     w.write_event(Event::End(BytesEnd::new("mtd")))
                         .map_err(to_err)?;
                 }
@@ -1560,7 +1571,17 @@ fn write_node_fast_in(
                             if promoted.is_some() && !nodes.is_empty() {
                                 nodes = &nodes[1..];
                             }
-                            write_nodes_fast(buf, arena, nodes, cell_style, false);
+                            if environment == Some(MatrixKind::SmallMatrix)
+                                && nodes.first().is_some_and(|&n| {
+                                    !matches!(arena.node(n), CompactNode::StyleSwitch(_))
+                                })
+                            {
+                                start_math_style_fast(buf, MathStyle::Script);
+                                write_nodes_fast(buf, arena, nodes, MathStyle::Script, false);
+                                close_tag(buf, "mstyle");
+                            } else {
+                                write_nodes_fast(buf, arena, nodes, cell_style, false);
+                            }
                         },
                         _ => {
                             write_node_fast(buf, arena, cell_id, cell_style);
@@ -2929,6 +2950,33 @@ mod tests {
                 crate::from_latex(source).unwrap().to_svg().unwrap()
             );
         }
+    }
+
+    #[test]
+    fn constructed_smallmatrix_selects_scriptstyle_without_an_explicit_switch() {
+        let leaf = |name: &str| Box::new(MathNode::Identifier(name.into()));
+        let cell = MathNode::MathChoice {
+            display: leaf("D"),
+            text: leaf("T"),
+            script: leaf("S"),
+            script_script: leaf("Q"),
+        };
+        let expr = MathExpr::inline(vec![MathNode::Matrix {
+            kind: MatrixKind::SmallMatrix,
+            columns: vec![ColumnAlign::Right],
+            rows: vec![vec![vec![cell]]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let cfg = Config::default();
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let xml = MathmlWriter::write(&expr, &cfg).unwrap();
+        assert!(
+            xml.contains(r#"<mstyle displaystyle="false" scriptlevel="1"><mi>S</mi></mstyle>"#),
+            "{xml}"
+        );
+        assert_eq!(MathmlWriter::write_compact(&compact, &cfg).unwrap(), xml);
+        assert_eq!(crate::from_mathml(&xml).unwrap().to_mathml().unwrap(), xml);
     }
 
     #[test]

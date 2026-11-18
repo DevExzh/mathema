@@ -419,9 +419,9 @@ fn matrix_2x2() {
     let input = "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}";
     let config = Config::default();
     let parsed = LatexReader::parse(input, &config).unwrap();
-    // Should produce a Fenced node containing an Array
+    // A pmatrix is a fenced matrix with centered columns.
     let mathml = MathmlWriter::write(&parsed.expr, &config).unwrap();
-    assert!(mathml.contains("<mtable>"));
+    assert!(mathml.contains(r#"<mtable data-mathema-array-environment="matrix">"#));
 }
 
 // =========================================================================
