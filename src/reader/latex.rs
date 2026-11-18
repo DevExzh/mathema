@@ -281,16 +281,11 @@ mod tests {
 
     #[test]
     fn heap_matrix_retains_environment_and_compact_geometry() {
-        for (source, kind, arraystretch) in [
-            (
-                r"\begin{matrix}a&b\\c&d\end{matrix}",
-                MatrixKind::Matrix,
-                None,
-            ),
+        for (source, kind) in [
+            (r"\begin{matrix}a&b\\c&d\end{matrix}", MatrixKind::Matrix),
             (
                 r"\begin{smallmatrix}a&b\\c&d\end{smallmatrix}",
                 MatrixKind::SmallMatrix,
-                Some(0.5),
             ),
         ] {
             let config = Config::default();
@@ -299,9 +294,8 @@ mod tests {
                 heap.nodes.as_slice(),
                 [MathNode::Matrix {
                     kind: actual,
-                    arraystretch: actual_stretch,
                     ..
-                }] if *actual == kind && *actual_stretch == arraystretch
+                }] if *actual == kind
             ));
             let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
             assert_eq!(heap, compact.to_math_expr());
@@ -329,6 +323,29 @@ mod tests {
                 written
             );
         }
+    }
+
+    #[test]
+    fn contradictory_compact_matrix_metadata_falls_back_to_array_writing() {
+        let config = Config::default();
+        let mut compact =
+            LatexReader::parse_compact(r"\begin{matrix}a&b\\c&d\end{matrix}", &config)
+                .unwrap()
+                .expr;
+        let root = compact.arena.children(compact.roots)[0];
+        if let CompactNode::Array {
+            arraystretch_pct, ..
+        } = compact.arena.node_mut(root)
+        {
+            *arraystretch_pct = 80;
+        } else {
+            panic!("expected matrix array node");
+        }
+        assert!(
+            LatexWriter::write_compact(&compact, &config)
+                .unwrap()
+                .contains(r"\begin{array}")
+        );
     }
 
     #[test]

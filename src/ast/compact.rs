@@ -684,11 +684,13 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
         } => push_array_node(arena, columns, rows, *arraystretch, *add_jot, None),
         MathNode::Matrix {
             kind,
-            columns,
+            alignment,
             rows,
-            arraystretch,
-            add_jot,
-        } => push_array_node(arena, columns, rows, *arraystretch, *add_jot, Some(*kind)),
+        } => {
+            let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+            let columns = vec![*alignment; width];
+            push_array_node(arena, &columns, rows, None, false, Some(*kind))
+        },
 
         MathNode::Phantom(inner, kind) => {
             let inner_id = push_math_node(arena, inner);
@@ -813,13 +815,21 @@ fn push_array_node(
     let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
     let num_cols = columns.len().max(widest).max(1) as u16;
     let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+    let mut synthetic_padding = None;
     for row in rows {
         for cell in row {
             let span = push_children(arena, cell);
             cell_ids.push(arena.push_node(CompactNode::Row(span)));
         }
         for _ in row.len()..(num_cols as usize) {
-            cell_ids.push(arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
+            let padding = *synthetic_padding.get_or_insert_with(|| {
+                let id = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                if environment.is_some() {
+                    arena.mark_matrix_padding(id);
+                }
+                id
+            });
+            cell_ids.push(padding);
         }
     }
     let cells = arena.push_children_deferred(&cell_ids);
@@ -991,9 +1001,9 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             num_cols,
             arraystretch_pct,
             add_jot,
-            array_style: _,
-            col_seps: _,
-            row_seps: _,
+            array_style,
+            col_seps,
+            row_seps,
         } => {
             // Reconstruct column alignments
             let columns: Vec<ColumnAlign> = arena
@@ -1013,6 +1023,9 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 let mut row = Vec::with_capacity(chunk.len());
                 for &cell_id in chunk {
                     // Each cell is a Row node wrapping the cell contents
+                    if arena.is_matrix_padding(cell_id) {
+                        continue;
+                    }
                     match *arena.node(cell_id) {
                         CompactNode::Row(span) => {
                             row.push(reconstruct_children(arena, span));
@@ -1032,13 +1045,31 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                 Some(arraystretch_pct as f64 / 100.0)
             };
 
-            match arena.array_environment(id) {
+            let matrix_kind = arena.array_environment(id).filter(|kind| {
+                let expected_pitch = if *kind == MatrixKind::SmallMatrix {
+                    50
+                } else {
+                    100
+                };
+                if array_style
+                    || add_jot
+                    || col_seps != 0
+                    || row_seps != 0
+                    || arraystretch_pct != expected_pitch
+                    || (!cell_ids.is_empty() && columns.len() != nc)
+                {
+                    return false;
+                }
+                columns
+                    .iter()
+                    .all(|alignment| *alignment == columns.first().copied().unwrap_or(*alignment))
+            });
+
+            match matrix_kind {
                 Some(kind) => MathNode::Matrix {
                     kind,
-                    columns,
+                    alignment: columns.first().copied().unwrap_or(ColumnAlign::Center),
                     rows,
-                    arraystretch,
-                    add_jot,
                 },
                 None => MathNode::Array {
                     columns,
@@ -1179,6 +1210,51 @@ fn reconstruct_opt(arena: &AstArena, id: NodeId) -> Option<Box<MathNode>> {
 mod tests {
     use super::*;
     use crate::ast::{FencedItem, MathExpr, MathNode, OperatorAttr};
+
+    #[test]
+    fn hand_built_matrix_shape_and_default_pitch_survive_compact_boundary() {
+        let expr = MathExpr::inline(vec![MathNode::Matrix {
+            kind: MatrixKind::SmallMatrix,
+            alignment: ColumnAlign::Right,
+            rows: vec![
+                vec![],
+                vec![
+                    vec![MathNode::Identifier("a".into())],
+                    vec![MathNode::Row(Vec::new())],
+                ],
+            ],
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        assert_eq!(compact.to_math_expr(), expr);
+        assert_eq!(
+            compact
+                .arena
+                .array_environment(compact.arena.children(compact.roots)[0]),
+            Some(MatrixKind::SmallMatrix)
+        );
+    }
+
+    #[test]
+    fn contradictory_matrix_metadata_falls_back_to_legacy_array() {
+        let expr = MathExpr::inline(vec![MathNode::Matrix {
+            kind: MatrixKind::Matrix,
+            alignment: ColumnAlign::Right,
+            rows: vec![vec![vec![MathNode::Identifier("x".into())]]],
+        }]);
+        let mut compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let root = compact.arena.children(compact.roots)[0];
+        let CompactNode::Array {
+            arraystretch_pct, ..
+        } = compact.arena.node_mut(root)
+        else {
+            panic!("matrix did not compact to an array node")
+        };
+        *arraystretch_pct = 80;
+        assert!(matches!(
+            compact.to_math_expr().nodes.as_slice(),
+            [MathNode::Array { .. }]
+        ));
+    }
 
     #[test]
     fn compact_node_is_copy() {
