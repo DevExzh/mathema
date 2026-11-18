@@ -407,21 +407,33 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     let mut prev_atom: Option<AtomType> = None;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
+    let mut current_ctx = ctx.clone();
 
     for node in nodes {
+        if let MathNode::StyleSwitch(style) = node {
+            current_ctx = current_ctx.with_style(match style {
+                0 => MathStyle::Display,
+                1 => MathStyle::Text,
+                2 => MathStyle::Script,
+                _ => MathStyle::ScriptScript,
+            });
+            continue;
+        }
+
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
         let raw_atom = spacing::classify_node(node);
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
-            let space = spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
+            let space =
+                spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
             if space > 0.0 {
-                let kern_width = space * ctx.size();
+                let kern_width = space * current_ctx.size();
                 cursor_x += kern_width;
             }
         }
 
-        let layout = layout_node(node, ctx);
+        let layout = layout_node(node, &current_ctx);
         max_height = max_height.max(layout.height);
         max_depth = max_depth.max(layout.depth);
 

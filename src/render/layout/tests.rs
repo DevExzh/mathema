@@ -1565,9 +1565,7 @@ fn equivalence_fenced_fraction() {
 #[test]
 fn displaystyle_propagation_in_text_mode() {
     // \displaystyle inside text mode should make \sum render at display size.
-    // This is a compact-path feature: the legacy MathExpr engine cannot
-    // represent inline \displaystyle switches (CompactExpr::to_math_expr drops
-    // StyleSwitch nodes), so we exercise the production arena engine here.
+    // Both layout paths consume the declaration as a scoped row style.
     use crate::reader::Reader;
     use crate::render::arena::LayoutArena;
     let config = crate::error::Config::default();
@@ -1579,6 +1577,8 @@ fn displaystyle_propagation_in_text_mode() {
         .expect("parse text sum");
     let text_id = LayoutBuilder::new(MathStyle::Text, &opts).layout(&mut arena, &text_result.expr);
     let text_height = arena.get(text_id).height;
+    let heap_text_height =
+        layout_expr(&text_result.expr.to_math_expr(), MathStyle::Text, &opts).height;
 
     // Text-mode with \displaystyle forcing display-size sum
     let display_result =
@@ -1588,6 +1588,8 @@ fn displaystyle_propagation_in_text_mode() {
     let display_id =
         LayoutBuilder::new(MathStyle::Text, &opts).layout(&mut arena, &display_result.expr);
     let display_height = arena.get(display_id).height;
+    let heap_display_height =
+        layout_expr(&display_result.expr.to_math_expr(), MathStyle::Text, &opts).height;
 
     // The \displaystyle version should be taller (display-size operator)
     assert!(
@@ -1596,15 +1598,13 @@ fn displaystyle_propagation_in_text_mode() {
         display_height,
         text_height
     );
+    assert!(heap_display_height > heap_text_height);
 }
 
 #[test]
 fn equivalence_displaystyle() {
-    // The legacy MathExpr engine drops inline \displaystyle switches
-    // (CompactExpr::to_math_expr reconstructs StyleSwitch as an empty row),
-    // so a heap-vs-arena byte-equality guard is not possible for this input.
-    // Instead verify the production arena engine honors \displaystyle: the
-    // display-styled sum must render taller than its text-mode counterpart.
+    // The heap and arena paths must agree when a row contains a declaration.
+    assert_arena_heap_equivalent("{\\displaystyle \\sum_{i=0}^n} a_i", MathStyle::Text);
     use crate::reader::Reader;
     use crate::render::arena::LayoutArena;
     let config = crate::error::Config::default();
@@ -1631,6 +1631,116 @@ fn equivalence_displaystyle() {
         styled_extent,
         plain_extent
     );
+}
+
+#[test]
+fn style_switches_match_heap_and_compact_layouts_in_nested_contexts() {
+    use crate::render::arena::LayoutArena;
+
+    fn assert_dimensions_match(expr: &MathExpr, style: MathStyle) {
+        let options = default_options();
+        let heap = layout_expr(expr, style, &options);
+        let compact = CompactExpr::from_math_expr(expr).unwrap();
+        let mut arena = LayoutArena::new();
+        let id = LayoutBuilder::new(style, &options).layout(&mut arena, &compact);
+        let compact = arena.get(id);
+        assert!((heap.width - compact.width).abs() < 1e-9);
+        assert!((heap.height - compact.height).abs() < 1e-9);
+        assert!((heap.depth - compact.depth).abs() < 1e-9);
+    }
+
+    let fraction = || MathNode::Fraction {
+        kind: FractionKind::Normal,
+        num: Box::new(MathNode::Identifier("a".into())),
+        den: Box::new(MathNode::Identifier("b".into())),
+    };
+    for (style, marker) in [
+        (MathStyle::Display, 0),
+        (MathStyle::Text, 1),
+        (MathStyle::Script, 2),
+        (MathStyle::ScriptScript, 3),
+    ] {
+        assert_dimensions_match(
+            &MathExpr::inline(vec![MathNode::StyleSwitch(marker), fraction()]),
+            MathStyle::Text,
+        );
+        assert_dimensions_match(
+            &MathExpr::inline(vec![MathNode::Superscript {
+                base: Box::new(MathNode::Identifier("x".into())),
+                sup: Box::new(MathNode::Row(vec![
+                    MathNode::StyleSwitch(marker),
+                    fraction(),
+                ])),
+            }]),
+            style,
+        );
+    }
+
+    let scoped = MathExpr::inline(vec![
+        MathNode::Row(vec![MathNode::StyleSwitch(0), fraction()]),
+        fraction(),
+    ]);
+    let root = layout_expr(&scoped, MathStyle::Text, &default_options());
+    let BoxKind::HBox { children } = root.kind else {
+        panic!("row layout should be horizontal");
+    };
+    assert_eq!(children.len(), 2);
+    assert!(children[0].layout.height > children[1].layout.height);
+    assert_dimensions_match(&scoped, MathStyle::Text);
+
+    let array = MathNode::Array {
+        columns: vec![ColumnAlign::Center, ColumnAlign::Center],
+        rows: vec![vec![
+            vec![MathNode::StyleSwitch(0), fraction()],
+            vec![fraction()],
+        ]],
+        arraystretch: None,
+        add_jot: false,
+    };
+    assert_dimensions_match(&MathExpr::inline(vec![array]), MathStyle::Text);
+}
+
+#[test]
+fn mathchoice_selects_each_active_style_on_heap_and_compact_paths() {
+    use crate::render::arena::LayoutArena;
+
+    let branches = [
+        MathNode::Fraction {
+            kind: FractionKind::Normal,
+            num: Box::new(MathNode::Number("1".into())),
+            den: Box::new(MathNode::Number("2".into())),
+        },
+        MathNode::Identifier("t".into()),
+        MathNode::Number("s".into()),
+        MathNode::Identifier("q".into()),
+    ];
+    let choice = || MathNode::MathChoice {
+        display: Box::new(branches[0].clone()),
+        text: Box::new(branches[1].clone()),
+        script: Box::new(branches[2].clone()),
+        script_script: Box::new(branches[3].clone()),
+    };
+    for (style, expected) in [
+        (MathStyle::Display, &branches[0]),
+        (MathStyle::Text, &branches[1]),
+        (MathStyle::Script, &branches[2]),
+        (MathStyle::ScriptScript, &branches[3]),
+    ] {
+        let options = default_options();
+        let selected = layout_expr(&MathExpr::inline(vec![choice()]), style, &options);
+        let expected = layout_expr(&MathExpr::inline(vec![expected.clone()]), style, &options);
+        assert_eq!(selected.width, expected.width);
+        assert_eq!(selected.height, expected.height);
+        assert_eq!(selected.depth, expected.depth);
+
+        let compact = CompactExpr::from_math_expr(&MathExpr::inline(vec![choice()])).unwrap();
+        let mut arena = LayoutArena::new();
+        let id = LayoutBuilder::new(style, &options).layout(&mut arena, &compact);
+        let compact = arena.get(id);
+        assert_eq!(selected.width, compact.width);
+        assert_eq!(selected.height, compact.height);
+        assert_eq!(selected.depth, compact.depth);
+    }
 }
 
 #[test]
