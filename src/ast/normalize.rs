@@ -1160,9 +1160,8 @@ fn is_empty_base_script(arena: &AstArena, id: NodeId) -> bool {
     }
 }
 
-/// True for an implicit empty script base. An explicit color wrapper remains
-/// an atom even when its body is empty, so a grouped color base keeps its
-/// braces and does not disappear on the next parse.
+/// True for an implicit empty script base. An expressible color remains
+/// an explicit atom even when its body is empty.
 fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
     if !id.is_some() {
         return true;
@@ -1174,7 +1173,9 @@ fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
             .all(|&child| is_empty_script_base(arena, child)),
         CompactNode::Scaled { content, .. } => is_empty_script_base(arena, content),
         CompactNode::Space(r) => r == Rational::zero(),
-        CompactNode::Color { .. } => false,
+        CompactNode::Color { color, content } => {
+            is_unwritable_color(arena.str_val(color)) && is_empty_script_base(arena, content)
+        },
         _ => false,
     }
 }

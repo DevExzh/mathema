@@ -3396,6 +3396,24 @@ fn trailing_empty_implicit_scripts_do_not_regroup_the_preceding_base() {
 }
 
 #[test]
+fn omitted_color_on_a_prime_keeps_its_following_base() {
+    let config = Config::default();
+    let write = |input: &str| {
+        let mut expr = LatexReader::parse_compact(input, &config).unwrap().expr;
+        normalize_compact_expr(&mut expr).unwrap();
+        LatexWriter::write_compact(&expr, &config).unwrap()
+    };
+    for source in [r"a^'{\color{red_blue}{}'}Ze", r"a^'{\color{red\blue}{}'}Ze"] {
+        let first = write(source);
+        assert_eq!(first, write(&first), "{source}");
+        assert_eq!(first, write(r"a^'{}'Ze"));
+    }
+    let visible_color = write(r"a^'{\color{blue}{}'}Ze");
+    assert!(visible_color.contains(r"\textcolor{blue}{}"));
+    assert_eq!(visible_color, write(&visible_color));
+}
+
+#[test]
 fn empty_colored_prescripts_normalize_before_following_scripts() {
     let write = |input: &str| -> String {
         crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap()
