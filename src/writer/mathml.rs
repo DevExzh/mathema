@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
@@ -416,7 +416,15 @@ fn write_node_in(
             // ambiguous or one side is null. Ordinary matching delimiters
             // retain their compact historical MathML spelling.
             let endpoint_roles = needs_explicit_endpoint_roles(open, close);
-            write_mo_fence(w, open, endpoint_roles.then_some("prefix"))?;
+            let stretch_endpoints = endpoint_roles
+                || needs_stretchy_endpoints(open, close)
+                || fenced_content_needs_stretch(content);
+            write_mo_fence(
+                w,
+                open,
+                endpoint_roles.then_some("prefix"),
+                stretch_endpoints,
+            )?;
 
             // Content
             for segment in content.split_inclusive(|item| matches!(item, FencedItem::Middle(_))) {
@@ -449,7 +457,12 @@ fn write_node_in(
             }
 
             // Closing delimiter
-            write_mo_fence(w, close, endpoint_roles.then_some("postfix"))?;
+            write_mo_fence(
+                w,
+                close,
+                endpoint_roles.then_some("postfix"),
+                stretch_endpoints,
+            )?;
 
             w.write_event(Event::End(BytesEnd::new("mrow")))
                 .map_err(to_err)?;
@@ -885,14 +898,16 @@ fn write_mi(w: &mut XmlWriter, s: &str) -> Result<()> {
 /// Write an endpoint of a `Fenced` node with its standard MathML operator
 /// form. Empty endpoints are null delimiters, represented by an empty fenced
 /// operator so one-sided `\left.` / `\right.` structures survive reimport.
-fn write_mo_fence(w: &mut XmlWriter, text: &str, form: Option<&str>) -> Result<()> {
+fn write_mo_fence(w: &mut XmlWriter, text: &str, form: Option<&str>, stretchy: bool) -> Result<()> {
     let mut elem = BytesStart::new("mo");
     elem.push_attribute(("fence", "true"));
     if let Some(form) = form {
         elem.push_attribute(("form", form));
     }
-    elem.push_attribute(("stretchy", "true"));
-    elem.push_attribute(("symmetric", "true"));
+    if stretchy {
+        elem.push_attribute(("stretchy", "true"));
+        elem.push_attribute(("symmetric", "true"));
+    }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
     w.write_event(Event::Text(BytesText::new(text)))
         .map_err(to_err)?;
@@ -923,6 +938,20 @@ fn write_literal_fence(w: &mut XmlWriter, text: &str) -> Result<()> {
     w.write_event(Event::End(BytesEnd::new("mo")))
         .map_err(to_err)?;
     Ok(())
+}
+
+fn needs_stretchy_endpoints(open: &str, close: &str) -> bool {
+    matches!((open, close), ("\\", "/") | ("/", "\\"))
+}
+
+fn fenced_content_needs_stretch(content: &[FencedItem]) -> bool {
+    content.iter().any(|item| {
+        matches!(
+            item,
+            FencedItem::Element(MathNode::Symbol(SymbolKind::Fence, text))
+                if is_literal_fence_glyph(text)
+        )
+    })
 }
 
 fn write_mo_char(w: &mut XmlWriter, ch: char, movable: Option<bool>) -> Result<()> {
@@ -1190,7 +1219,15 @@ fn write_node_fast_in(
             let open_s = arena.str_val(open);
             let close_s = arena.str_val(close);
             let endpoint_roles = needs_explicit_endpoint_roles(open_s, close_s);
-            write_mo_fence_fast(buf, open_s, endpoint_roles.then_some("prefix"));
+            let stretch_endpoints = endpoint_roles
+                || needs_stretchy_endpoints(open_s, close_s)
+                || compact_fenced_content_needs_stretch(arena, content);
+            write_mo_fence_fast(
+                buf,
+                open_s,
+                endpoint_roles.then_some("prefix"),
+                stretch_endpoints,
+            );
 
             for segment in arena
                 .children(content)
@@ -1206,7 +1243,12 @@ fn write_node_fast_in(
                 }
             }
 
-            write_mo_fence_fast(buf, close_s, endpoint_roles.then_some("postfix"));
+            write_mo_fence_fast(
+                buf,
+                close_s,
+                endpoint_roles.then_some("postfix"),
+                stretch_endpoints,
+            );
 
             buf.push_str("</mrow>");
         },
@@ -1525,7 +1567,7 @@ fn write_node_fast_in(
         },
 
         // Helper nodes
-        CompactNode::Middle(sid) => write_mo_fence_fast(buf, arena.str_val(sid), Some("infix")),
+        CompactNode::Middle(sid) => write_mo_middle_fast(buf, arena.str_val(sid)),
         CompactNode::ColAlign(_) => {},
         CompactNode::Rule {
             width,
@@ -1945,14 +1987,16 @@ fn write_box_child_fast(
     }
 }
 
-fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>) {
+fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>, stretchy: bool) {
     buf.push_str("<mo fence=\"true\"");
     if let Some(form) = form {
         buf.push_str(" form=\"");
         buf.push_str(form);
         buf.push('"');
     }
-    buf.push_str(" stretchy=\"true\" symmetric=\"true\"");
+    if stretchy {
+        buf.push_str(" stretchy=\"true\" symmetric=\"true\"");
+    }
     buf.push('>');
     xml_escape_into(buf, text);
     buf.push_str("</mo>");
@@ -1997,6 +2041,16 @@ fn write_nodes_fenced_fast(
             write_node_fast(buf, arena, id, style);
         },
     );
+}
+
+fn compact_fenced_content_needs_stretch(arena: &AstArena, content: NodeSpan) -> bool {
+    arena.children(content).iter().any(|&id| {
+        matches!(
+            *arena.node(id),
+            CompactNode::Symbol(SymbolKind::Fence, sid)
+                if is_literal_fence_glyph(arena.str_val(sid))
+        )
+    })
 }
 
 fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
