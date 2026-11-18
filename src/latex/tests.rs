@@ -321,6 +321,42 @@ fn unicode_script_scalars_in_explicit_script_arguments_are_literal_content() {
 }
 
 #[test]
+fn compatibility_script_characters_are_literal_in_atom_positions() {
+    for source in ["x^²", "x^{²}", r"\frac²2", r"\sqrt²", r"\phaseᴶ", r"\D^²"] {
+        let parsed = crate::from_latex(source).unwrap();
+        let first = parsed.to_latex().unwrap();
+        let again = crate::from_latex(&first).unwrap();
+        assert_eq!(first, again.to_latex().unwrap(), "{source}");
+        assert_eq!(
+            parsed.to_mathml().unwrap(),
+            again.to_mathml().unwrap(),
+            "{source}"
+        );
+    }
+    let xml = crate::from_latex("¹²C").unwrap().to_mathml().unwrap();
+    assert!(
+        xml.contains("<msup><mtext>¹</mtext><mn>2</mn></msup>"),
+        "{xml}"
+    );
+    assert!(crate::from_latex("x²^2").is_err());
+    assert!(crate::from_latex("x₁_2").is_err());
+    for (source, explicit) in [
+        ("x^3²", "x^2"),
+        ("x_i²", "x_i^2"),
+        ("x'₂", "x'_2"),
+        ("x²_i", "x^2_i"),
+        (r"\sumₙ² x", r"\sum_{n}^{2}x"),
+        (r"{\lim}ₙ", r"{\lim}_n"),
+    ] {
+        assert_eq!(
+            crate::from_latex(source).unwrap().to_mathml().unwrap(),
+            crate::from_latex(explicit).unwrap().to_mathml().unwrap(),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn style_switch_normalization_matches_heap_and_compact_scopes() {
     let config = Config::default();
     for source in [

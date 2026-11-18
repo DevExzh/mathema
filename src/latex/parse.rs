@@ -1,4 +1,5 @@
 mod hbox;
+mod unicode_scripts;
 
 use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
@@ -153,6 +154,41 @@ fn is_table_boundary(input: &str) -> bool {
         || strip_control_word(input, "end").is_some()
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScriptMarker {
+    Sub,
+    Sup,
+    Primes,
+    UnicodeSub,
+    UnicodeSup,
+}
+
+impl ScriptMarker {
+    fn at(input: &str) -> Option<Self> {
+        match *input.as_bytes().first()? {
+            b'_' => Some(Self::Sub),
+            b'^' => Some(Self::Sup),
+            b'\'' => Some(Self::Primes),
+            byte if !byte.is_ascii() => {
+                let (sub, _) = unicode_scripts::decode(input.chars().next()?)?;
+                Some(if sub {
+                    Self::UnicodeSub
+                } else {
+                    Self::UnicodeSup
+                })
+            },
+            _ => None,
+        }
+    }
+
+    fn is_subscript(self) -> bool {
+        matches!(self, Self::Sub | Self::UnicodeSub)
+    }
+    fn is_unicode(self) -> bool {
+        matches!(self, Self::UnicodeSub | Self::UnicodeSup)
+    }
+}
+
 /// True when an n-ary operator has reached a grammar boundary where an empty
 /// body is valid. Other input must be parsed as a real element so malformed
 /// bodies propagate their original parser error.
@@ -178,118 +214,6 @@ fn classify_char(c: char) -> SymbolKind {
         // All callers guard with SYMBOL_BYTES, so this arm is unreachable.
         _ => unreachable!("classify_char called with non-symbol byte: {c:?}"),
     }
-}
-
-/// Map the Unicode compatibility superscript/subscript characters accepted by
-/// KaTeX into the base scalar represented in a TeX script argument. The first
-/// tuple field is `true` for a subscript and `false` for a superscript.
-fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
-    Some(match ch? {
-        '⁰' => (false, '0'),
-        '¹' => (false, '1'),
-        '²' => (false, '2'),
-        '³' => (false, '3'),
-        '⁴' => (false, '4'),
-        '⁵' => (false, '5'),
-        '⁶' => (false, '6'),
-        '⁷' => (false, '7'),
-        '⁸' => (false, '8'),
-        '⁹' => (false, '9'),
-        '⁺' => (false, '+'),
-        '⁻' => (false, '−'),
-        '⁼' => (false, '='),
-        '⁽' => (false, '('),
-        '⁾' => (false, ')'),
-        'ⁱ' => (false, 'i'),
-        'ⁿ' => (false, 'n'),
-        'ᴬ' => (false, 'A'),
-        'ᴮ' => (false, 'B'),
-        'ᴰ' => (false, 'D'),
-        'ᴱ' => (false, 'E'),
-        'ᴳ' => (false, 'G'),
-        'ᴴ' => (false, 'H'),
-        'ᴵ' => (false, 'I'),
-        'ᴶ' => (false, 'J'),
-        'ᴷ' => (false, 'K'),
-        'ᴸ' => (false, 'L'),
-        'ᴹ' => (false, 'M'),
-        'ᴺ' => (false, 'N'),
-        'ᴼ' => (false, 'O'),
-        'ᴾ' => (false, 'P'),
-        'ᴿ' => (false, 'R'),
-        'ᵀ' => (false, 'T'),
-        'ᵁ' => (false, 'U'),
-        'ⱽ' => (false, 'V'),
-        'ᵂ' => (false, 'W'),
-        'ᵃ' => (false, 'a'),
-        'ᵇ' => (false, 'b'),
-        'ᶜ' => (false, 'c'),
-        'ᵈ' => (false, 'd'),
-        'ᵉ' => (false, 'e'),
-        'ᶠ' => (false, 'f'),
-        'ᵍ' => (false, 'g'),
-        'ʰ' => (false, 'h'),
-        'ᶦ' => (false, 'i'),
-        'ʲ' => (false, 'j'),
-        'ᵏ' => (false, 'k'),
-        'ˡ' => (false, 'l'),
-        'ᵐ' => (false, 'm'),
-        'ᵒ' => (false, 'o'),
-        'ᵖ' => (false, 'p'),
-        'ʳ' => (false, 'r'),
-        'ˢ' => (false, 's'),
-        'ᵗ' => (false, 't'),
-        'ᵘ' => (false, 'u'),
-        'ᵛ' => (false, 'v'),
-        'ʷ' => (false, 'w'),
-        'ˣ' => (false, 'x'),
-        'ʸ' => (false, 'y'),
-        'ᶻ' => (false, 'z'),
-        'ᵝ' => (false, 'β'),
-        'ᵞ' => (false, 'γ'),
-        'ᵟ' => (false, 'δ'),
-        'ᵠ' => (false, 'ϕ'),
-        'ᵡ' => (false, 'χ'),
-        'ᶿ' => (false, 'θ'),
-        '₀' => (true, '0'),
-        '₁' => (true, '1'),
-        '₂' => (true, '2'),
-        '₃' => (true, '3'),
-        '₄' => (true, '4'),
-        '₅' => (true, '5'),
-        '₆' => (true, '6'),
-        '₇' => (true, '7'),
-        '₈' => (true, '8'),
-        '₉' => (true, '9'),
-        '₊' => (true, '+'),
-        '₋' => (true, '−'),
-        '₌' => (true, '='),
-        '₍' => (true, '('),
-        '₎' => (true, ')'),
-        'ₐ' => (true, 'a'),
-        'ₑ' => (true, 'e'),
-        'ₕ' => (true, 'h'),
-        'ᵢ' => (true, 'i'),
-        'ⱼ' => (true, 'j'),
-        'ₖ' => (true, 'k'),
-        'ₗ' => (true, 'l'),
-        'ₘ' => (true, 'm'),
-        'ₙ' => (true, 'n'),
-        'ₒ' => (true, 'o'),
-        'ₚ' => (true, 'p'),
-        'ᵣ' => (true, 'r'),
-        'ₛ' => (true, 's'),
-        'ₜ' => (true, 't'),
-        'ᵤ' => (true, 'u'),
-        'ᵥ' => (true, 'v'),
-        'ₓ' => (true, 'x'),
-        'ᵦ' => (true, 'β'),
-        'ᵧ' => (true, 'γ'),
-        'ᵨ' => (true, 'ρ'),
-        'ᵩ' => (true, 'ϕ'),
-        'ᵪ' => (true, 'χ'),
-        _ => return None,
-    })
 }
 
 fn negate_char(ch: char) -> Option<char> {
@@ -2517,61 +2441,17 @@ impl LatexCompactParser {
             );
         if implicit
             && let Some(&prev) = ids.last()
-            && (crate::ast::normalize::can_carry_script(*self.arena.node(prev))
-                || self.can_merge_implicit_script(prev, id))
+            && crate::ast::normalize::can_carry_script(*self.arena.node(prev))
         {
             ids.pop();
-            ids.push(self.merge_implicit_script(prev, id));
+            ids.push(crate::ast::normalize::make_script_with_base(
+                &mut self.arena,
+                prev,
+                id,
+            ));
             return;
         }
         ids.push(id);
-    }
-
-    /// Attach an implicit Unicode script to an existing ASCII script when the
-    /// two occupy complementary slots on the same base. TeX and KaTeX expose
-    /// `x_i²` and `x'₂` as one `msubsup`, while the generic prescript helper
-    /// would otherwise wrap the existing script as a new base.
-    fn merge_implicit_script(&mut self, base: NodeId, script: NodeId) -> NodeId {
-        match (*self.arena.node(base), *self.arena.node(script)) {
-            (CompactNode::Subscript { base, sub }, CompactNode::Superscript { sup, .. }) => {
-                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
-            },
-            (CompactNode::Superscript { base, sup }, CompactNode::Subscript { sub, .. }) => {
-                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
-            },
-            (CompactNode::SubSup { base, sup, .. }, CompactNode::Subscript { sub, .. }) => {
-                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
-            },
-            (CompactNode::SubSup { base, sub, .. }, CompactNode::Superscript { sup, .. }) => {
-                self.arena.push_node(CompactNode::SubSup { base, sub, sup })
-            },
-            (CompactNode::Subscript { base, .. }, CompactNode::Subscript { sub, .. }) => {
-                self.arena.push_node(CompactNode::Subscript { base, sub })
-            },
-            (CompactNode::Superscript { base, .. }, CompactNode::Superscript { sup, .. }) => {
-                self.arena.push_node(CompactNode::Superscript { base, sup })
-            },
-            _ => crate::ast::normalize::make_script_with_base(&mut self.arena, base, script),
-        }
-    }
-
-    fn can_merge_implicit_script(&self, base: NodeId, script: NodeId) -> bool {
-        matches!(
-            (*self.arena.node(base), *self.arena.node(script)),
-            (
-                CompactNode::Subscript { .. },
-                CompactNode::Superscript { .. }
-            ) | (
-                CompactNode::Superscript { .. },
-                CompactNode::Subscript { .. }
-            ) | (CompactNode::SubSup { .. }, CompactNode::Subscript { .. })
-                | (CompactNode::SubSup { .. }, CompactNode::Superscript { .. })
-                | (CompactNode::Subscript { .. }, CompactNode::Subscript { .. })
-                | (
-                    CompactNode::Superscript { .. },
-                    CompactNode::Superscript { .. }
-                )
-        )
     }
 
     /// Parse one element: an atom optionally followed by scripts.
@@ -2583,23 +2463,8 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::TooLarge,
             )));
         }
-        // Handle leading ^/_ /' with implicit empty base (e.g., {^3+1}).
-        // Unicode superscript and subscript scalars use the same implicit-base
-        // rule. This lets a run such as `B²⁺³` become one superscript row while
-        // still attaching `¹²` to the preceding atom in `+¹²C`.
-        if input.starts_with('^')
-            || input.starts_with('_')
-            || input.starts_with('\'')
-            || unicode_script_kind(input.chars().next()).is_some()
-        {
-            if unicode_script_kind(input.chars().next()).is_some() {
-                let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-                let result = self.parse_unicode_script_run(input, base);
-                if let Ok((_, id)) = result {
-                    self.implicit_base_script = Some(id);
-                }
-                return result;
-            }
+        // Handle leading ^/_ /' with implicit empty base (e.g., {^3+1})
+        if input.starts_with('^') || input.starts_with('_') || input.starts_with('\'') {
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             let result = self.parse_scripts(input, base);
             if let Ok((_, id)) = result {
@@ -2618,10 +2483,7 @@ impl LatexCompactParser {
                         ..
                     }
             )
-            && matches!(
-                input.as_bytes().get(self.skip_script_ws(input.as_bytes())),
-                Some(b'^' | b'_' | b'\'')
-            )
+            && ScriptMarker::at(&input[self.skip_script_ws(input.as_bytes())..]).is_some()
         {
             // Braces make a TeX ordinary atom. Preserve that boundary when
             // flattening a singleton operator group would move its scripts.
@@ -2658,35 +2520,6 @@ impl LatexCompactParser {
         self.parse_scripts(input, base)
     }
 
-    /// Parse a contiguous run of Unicode superscript/subscript characters.
-    /// The run is represented as a normal script row so later normalization and
-    /// writers use the same paths as ASCII `^` and `_` scripts.
-    fn parse_unicode_script_run<'a>(
-        &mut self,
-        input: &'a str,
-        base: NodeId,
-    ) -> IResult<&'a str, NodeId> {
-        let (rest, Some((is_sub, first_arg))) = self.parse_unicode_script_arg_run(input, None)?
-        else {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Verify,
-            )));
-        };
-        let id = if is_sub {
-            self.arena.push_node(CompactNode::Subscript {
-                base,
-                sub: first_arg,
-            })
-        } else {
-            self.arena.push_node(CompactNode::Superscript {
-                base,
-                sup: first_arg,
-            })
-        };
-        Ok((rest, id))
-    }
-
     /// Parse one KaTeX-compatible Unicode script run. KaTeX stops a run when
     /// the subscript/superscript kind changes, then lets the normal script
     /// loop consume the complementary kind. This keeps `x₂³₄` from silently
@@ -2694,18 +2527,12 @@ impl LatexCompactParser {
     fn parse_unicode_script_arg_run<'a>(
         &mut self,
         input: &'a str,
-        expected_sub: Option<bool>,
-    ) -> IResult<&'a str, Option<(bool, NodeId)>> {
-        let Some((is_sub, _)) = unicode_script_kind(input.chars().next()) else {
-            return Ok((input, None));
-        };
-        if expected_sub.is_some_and(|expected| expected != is_sub) {
-            return Ok((input, None));
-        }
+        is_sub: bool,
+    ) -> IResult<&'a str, NodeId> {
         let mut glyphs = input
             .char_indices()
             .map_while(|(offset, scalar)| {
-                let (sub, glyph) = unicode_script_kind(Some(scalar))?;
+                let (sub, glyph) = unicode_scripts::decode(scalar)?;
                 (sub == is_sub).then_some((offset + scalar.len_utf8(), glyph))
             })
             .fuse()
@@ -2730,33 +2557,12 @@ impl LatexCompactParser {
                 let sid = self.push_char_str(glyph);
                 self.arena.push_node(CompactNode::Identifier(sid))
             } else {
-                self.push_ascii_math_symbol(if glyph == '−' { '-' } else { glyph })
+                self.push_ascii_math_symbol(glyph)
             };
             ids.push(id);
             self.ensure_node_budget(&input[consumed..])?;
         }
-        Ok((
-            &input[consumed..],
-            Some((is_sub, self.flatten_single(&ids))),
-        ))
-    }
-
-    /// Inside an explicit `^`/`_` argument a Unicode superscript or subscript
-    /// scalar is literal argument content. Demote it to its mapped base glyph
-    /// so `D^²` canonicalizes to `D^{2}` instead of becoming a nested empty-base
-    /// script on the next parse.
-    fn parse_unicode_script_scalar_argument<'a>(
-        &mut self,
-        input: &'a str,
-    ) -> Option<IResult<&'a str, NodeId>> {
-        unicode_script_kind(input.chars().next())?;
-        let scalar = input.chars().next()?;
-        let width = scalar.len_utf8();
-        let sid = self.arena.push_str(&scalar.to_string());
-        let id = self
-            .arena
-            .push_node(CompactNode::Text(TextStyle::Normal, sid));
-        Some(Ok((&input[width..], id)))
+        Ok((&input[consumed..], self.flatten_single(&ids)))
     }
 
     fn operator_limit_style(&self, id: NodeId) -> Option<LimitStyle> {
@@ -2815,265 +2621,90 @@ impl LatexCompactParser {
         matches!(*self.arena.node(id), CompactNode::Row(span) if self.arena.children(span).is_empty())
     }
 
-    /// Attach optional sub/super scripts to a base node.
-    ///
-    /// Handles `'` (prime) as LaTeX shorthand for `^{\prime}`.  Multiple
-    /// consecutive primes are gathered into a single superscript containing a
-    /// row of U+2032 PRIME symbols.  A trailing `_` after primes produces a
-    /// `SubSup` node.
+    /// Attach the current math atom's scripts. Braces or a new atom start
+    /// another list of postfix fields.
     #[inline]
-    fn parse_scripts<'a>(&mut self, input: &'a str, mut base: NodeId) -> IResult<&'a str, NodeId> {
-        // Skip whitespace, then check for ^, _, or ' via byte inspection
-        let skip = self.skip_script_ws(input.as_bytes());
-        // If the base is a stray infix marker and it is about to carry scripts,
-        // normalize it to an empty Row so the marker string never leaks into output.
-        if self.is_infix_marker_id(base)
-            && input
-                .as_bytes()
-                .get(skip)
-                .is_some_and(|&b| matches!(b, b'^' | b'_' | b'\''))
-        {
-            base = self.resolve_stray_infix_marker(base);
-        }
-        let input = &input[skip..];
-
-        // --- Prime (') handling -------------------------------------------
-        if input.as_bytes().first() == Some(&b'\'') {
-            // Count consecutive prime characters
-            let prime_count = input.bytes().take_while(|&b| b == b'\'').count();
-            let input = &input[prime_count..];
-
-            // Build prime symbol nodes (one U+2032 per ')
-            let mut prime_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-            for _ in 0..prime_count {
-                self.ensure_node_budget(input)?;
-                let sid = self.arena.push_str("\u{2032}");
-                prime_ids.push(
-                    self.arena
-                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
-                );
-            }
-
-            // If an explicit `^` follows the primes, merge its argument into
-            // the superscript group so that e.g. `f'^2` becomes `f^{\prime 2}`
-            // instead of two separate superscript nodes.
-            let skip_caret = self.skip_script_ws(input.as_bytes());
-            let input = if input.as_bytes().get(skip_caret) == Some(&b'^') {
-                let after_caret = &input[skip_caret + 1..];
-                let (rest, extra_sup) = self.parse_script_arg(after_caret)?;
-                prime_ids.push(extra_sup);
-                rest
-            } else {
-                input
-            };
-
-            let sup_node = self.flatten_single(&prime_ids);
-
-            // Check for a following subscript (_)
-            let skip2 = self.skip_script_ws(input.as_bytes());
-            let input2 = &input[skip2..];
-            if input2.as_bytes().first() == Some(&b'_') {
-                let input2 = &input2[1..];
-                let (input2, sub_arg) = self.parse_script_arg(input2)?;
-                if !self.is_empty_row(sub_arg) {
-                    return Ok((
-                        input2,
-                        self.arena.push_node(CompactNode::SubSup {
-                            base,
-                            sub: sub_arg,
-                            sup: sup_node,
-                        }),
-                    ));
-                }
-                // Ignore an empty subscript argument and emit a plain superscript.
-                return Ok((
-                    input2,
-                    self.arena.push_node(CompactNode::Superscript {
-                        base,
-                        sup: sup_node,
-                    }),
-                ));
-            }
-
-            return Ok((
-                input,
-                self.arena.push_node(CompactNode::Superscript {
-                    base,
-                    sup: sup_node,
-                }),
-            ));
-        }
-
-        // Unicode script scalars follow the same complementary-script rules
-        // as ASCII `^` and `_`. A run only consumes one kind, matching KaTeX's
-        // parser, so `x₂³` becomes one SubSup while a later `₄` remains a new
-        // script token subject to the normal duplicate-script diagnostics.
-        if let Some((first_sub, _)) = unicode_script_kind(input.chars().next()) {
-            let (rest, Some((_, first_arg))) =
-                self.parse_unicode_script_arg_run(input, Some(first_sub))?
-            else {
-                unreachable!("Unicode script kind was checked above")
-            };
-            let skip = self.skip_script_ws(rest.as_bytes());
-            let after_ws = &rest[skip..];
-            if let Some((second_sub, _)) = unicode_script_kind(after_ws.chars().next())
-                && second_sub != first_sub
-            {
-                let (after_second, Some((_, second_arg))) =
-                    self.parse_unicode_script_arg_run(after_ws, Some(second_sub))?
-                else {
-                    unreachable!("Unicode complementary script kind was checked above")
-                };
-                return Ok((
-                    after_second,
-                    self.arena.push_node(CompactNode::SubSup {
-                        base,
-                        sub: if first_sub { first_arg } else { second_arg },
-                        sup: if first_sub { second_arg } else { first_arg },
-                    }),
-                ));
-            }
-
-            if first_sub && after_ws.as_bytes().first() == Some(&b'\'') {
-                let prime_count = after_ws.bytes().take_while(|&b| b == b'\'').count();
-                let after_primes = &after_ws[prime_count..];
-                let mut primes = SmallVec::<[NodeId; 4]>::new();
-                for _ in 0..prime_count {
-                    self.ensure_node_budget(after_primes)?;
-                    let sid = self.arena.push_str("\u{2032}");
-                    primes.push(
-                        self.arena
-                            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
-                    );
-                }
-                let sup = self.flatten_single(&primes);
-                return Ok((
-                    after_primes,
-                    self.arena.push_node(CompactNode::SubSup {
-                        base,
-                        sub: first_arg,
-                        sup,
-                    }),
-                ));
-            }
-
-            let ascii_complement = if first_sub { b'^' } else { b'_' };
-            if after_ws.as_bytes().first() == Some(&ascii_complement) {
-                let (after_ascii, ascii_arg) = self.parse_script_arg(&after_ws[1..])?;
-                return Ok((
-                    after_ascii,
-                    self.arena.push_node(CompactNode::SubSup {
-                        base,
-                        sub: if first_sub { first_arg } else { ascii_arg },
-                        sup: if first_sub { ascii_arg } else { first_arg },
-                    }),
-                ));
-            }
-
-            return Ok((
-                rest,
-                if first_sub {
-                    self.arena.push_node(CompactNode::Subscript {
-                        base,
-                        sub: first_arg,
-                    })
-                } else {
-                    self.arena.push_node(CompactNode::Superscript {
-                        base,
-                        sup: first_arg,
-                    })
-                },
-            ));
-        }
-
-        // --- Normal ^/_ handling ------------------------------------------
-        let first = match input.as_bytes().first() {
-            Some(b'^') => '^',
-            Some(b'_') => '_',
-            _ => return Ok((input, base)),
+    fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
+        let start = &input[self.skip_script_ws(input.as_bytes())..];
+        let Some(first) = ScriptMarker::at(start) else {
+            return Ok((start, base));
         };
-        let input = &input[1..];
+        let base = self.resolve_stray_infix_marker(base);
+        let (rest, (sub, sup)) = self.script_fields(start, first, false)?;
+        let node = match (sub.is_some(), sup.is_some()) {
+            (true, true) => CompactNode::SubSup { base, sub, sup },
+            (true, false) => CompactNode::Subscript { base, sub },
+            (false, true) => CompactNode::Superscript { base, sup },
+            (false, false) => return Ok((rest, base)),
+        };
+        Ok((rest, self.arena.push_node(node)))
+    }
 
-        let (input, first_arg) = self.parse_script_arg(input)?;
-        if self.is_empty_row(first_arg) {
-            // Ignore an empty script argument (e.g. `^$` or `^{}`) and keep
-            // looking for further scripts on the same base.
-            return self.parse_scripts(input, base);
-        }
-
-        // Check for the complementary script
-        let skip2 = self.skip_script_ws(input.as_bytes());
-        let input2 = &input[skip2..];
-        let second_ch = if first == '^' { b'_' } else { b'^' };
-        let has_second = input2.as_bytes().first() == Some(&second_ch);
-
-        if !has_second {
-            // When the first script was `_` and there is no `^`, also check
-            // for `'` as a complementary superscript so that `f_0'` produces
-            // a single SubSup node instead of separate Subscript + Superscript.
-            if first == '_' && input2.as_bytes().first() == Some(&b'\'') {
-                let prime_count = input2.bytes().take_while(|&b| b == b'\'').count();
-                let input2 = &input2[prime_count..];
-                let mut prime_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-                for _ in 0..prime_count {
-                    self.ensure_node_budget(input2)?;
-                    let sid = self.arena.push_str("\u{2032}");
-                    prime_ids.push(
-                        self.arena
-                            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
-                    );
+    fn script_fields<'a>(
+        &mut self,
+        mut input: &'a str,
+        mut marker: ScriptMarker,
+        keep_empty_limits: bool,
+    ) -> IResult<&'a str, (NodeId, NodeId)> {
+        let (mut sub, mut sup) = (NodeId::NONE, NodeId::NONE);
+        let mut saw_unicode = false;
+        loop {
+            let is_sub = marker.is_subscript();
+            let slot = if is_sub { &mut sub } else { &mut sup };
+            if slot.is_some() && !marker.is_unicode() {
+                if saw_unicode {
+                    return Err(nom::Err::Error(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::Verify,
+                    )));
                 }
-                let sup_node = self.flatten_single(&prime_ids);
-                return Ok((
-                    input2,
-                    self.arena.push_node(CompactNode::SubSup {
-                        base,
-                        sub: first_arg,
-                        sup: sup_node,
-                    }),
-                ));
+                break;
             }
-            return if first == '^' {
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Superscript {
-                        base,
-                        sup: first_arg,
-                    }),
-                ))
-            } else {
-                Ok((
-                    input,
-                    self.arena.push_node(CompactNode::Subscript {
-                        base,
-                        sub: first_arg,
-                    }),
-                ))
+            let (rest, arg) = match marker {
+                ScriptMarker::UnicodeSub | ScriptMarker::UnicodeSup => {
+                    saw_unicode = true;
+                    self.parse_unicode_script_arg_run(input, is_sub)?
+                },
+                ScriptMarker::Sub | ScriptMarker::Sup => self.parse_script_arg(&input[1..])?,
+                ScriptMarker::Primes => self.parse_prime_argument(input)?,
             };
+            // A Unicode run replaces the previous field of its kind. An
+            // explicit duplicate after a Unicode run was rejected above.
+            // N-ary templates also retain their explicitly empty limit slots.
+            if keep_empty_limits || !self.is_empty_row(arg) {
+                *slot = arg;
+            }
+            let next = &rest[self.skip_script_ws(rest.as_bytes())..];
+            let Some(next_marker) = ScriptMarker::at(next) else {
+                return Ok((rest, (sub, sup)));
+            };
+            input = next;
+            marker = next_marker;
         }
+        Ok((input, (sub, sup)))
+    }
 
-        let input = &input2[1..]; // consume second script char
-        let (input, second_arg) = self.parse_script_arg(input)?;
-
-        if first == '^' {
-            Ok((
-                input,
-                self.arena.push_node(CompactNode::SubSup {
-                    base,
-                    sub: second_arg,
-                    sup: first_arg,
-                }),
-            ))
+    fn parse_prime_argument<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let count = input.bytes().take_while(|&b| b == b'\'').count();
+        let rest = &input[count..];
+        let mut ids = SmallVec::<[NodeId; 4]>::new();
+        for _ in 0..count {
+            self.ensure_node_budget(rest)?;
+            let sid = self.arena.push_str("\u{2032}");
+            ids.push(
+                self.arena
+                    .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+            );
+        }
+        let next = &rest[self.skip_script_ws(rest.as_bytes())..];
+        let rest = if let Some(arg) = next.strip_prefix('^') {
+            let (rest, extra) = self.parse_script_arg(arg)?;
+            ids.push(extra);
+            rest
         } else {
-            Ok((
-                input,
-                self.arena.push_node(CompactNode::SubSup {
-                    base,
-                    sub: first_arg,
-                    sup: second_arg,
-                }),
-            ))
-        }
+            rest
+        };
+        Ok((rest, self.flatten_single(&ids)))
     }
 
     #[inline]
@@ -3129,62 +2760,9 @@ impl LatexCompactParser {
     /// Parse optional _{...} and ^{...} in any order, returning (sub, sup).
     /// Uses `NodeId::NONE` for absent limits.
     fn parse_optional_limits<'a>(&mut self, input: &'a str) -> IResult<&'a str, (NodeId, NodeId)> {
-        if let Some((first_sub, _)) = unicode_script_kind(input.chars().next()) {
-            let (rest, Some((_, first_arg))) =
-                self.parse_unicode_script_arg_run(input, Some(first_sub))?
-            else {
-                unreachable!("Unicode script kind was checked above")
-            };
-            let skip = self.skip_script_ws(rest.as_bytes());
-            let after_ws = &rest[skip..];
-            if let Some((second_sub, _)) = unicode_script_kind(after_ws.chars().next())
-                && second_sub != first_sub
-            {
-                let (after_second, Some((_, second_arg))) =
-                    self.parse_unicode_script_arg_run(after_ws, Some(second_sub))?
-                else {
-                    unreachable!("Unicode complementary script kind was checked above")
-                };
-                return Ok((
-                    after_second,
-                    if first_sub {
-                        (first_arg, second_arg)
-                    } else {
-                        (second_arg, first_arg)
-                    },
-                ));
-            }
-            return Ok((
-                rest,
-                if first_sub {
-                    (first_arg, NodeId::NONE)
-                } else {
-                    (NodeId::NONE, first_arg)
-                },
-            ));
-        }
-        let first_ch = match input.as_bytes().first() {
-            Some(b'_') => '_',
-            Some(b'^') => '^',
-            _ => return Ok((input, (NodeId::NONE, NodeId::NONE))),
-        };
-        let input = &input[1..];
-        let (input, first_arg) = self.parse_script_arg(input)?;
-        let skip = self.skip_script_ws(input.as_bytes());
-        let input_ws = &input[skip..];
-        let second_byte = if first_ch == '_' { b'^' } else { b'_' };
-        if input_ws.as_bytes().first() == Some(&second_byte) {
-            let input = &input_ws[1..];
-            let (input, second_arg) = self.parse_script_arg(input)?;
-            if first_ch == '_' {
-                Ok((input, (first_arg, second_arg)))
-            } else {
-                Ok((input, (second_arg, first_arg)))
-            }
-        } else if first_ch == '_' {
-            Ok((input, (first_arg, NodeId::NONE)))
-        } else {
-            Ok((input, (NodeId::NONE, first_arg)))
+        match ScriptMarker::at(input) {
+            None => Ok((input, (NodeId::NONE, NodeId::NONE))),
+            Some(first) => self.script_fields(input, first, true),
         }
     }
 
@@ -3209,9 +2787,6 @@ impl LatexCompactParser {
                 input,
                 nom::error::ErrorKind::Tag,
             )));
-        }
-        if let Some(result) = self.parse_unicode_script_scalar_argument(input) {
-            return result;
         }
         let argument_start = input;
         let (input, arg) = self.parse_atom(input)?;
@@ -3284,6 +2859,14 @@ impl LatexCompactParser {
             Some(&b) if b > 127 => {
                 let ch = input.chars().next().unwrap();
                 let len = ch.len_utf8();
+                if unicode_scripts::decode(ch).is_some() {
+                    let sid = self.push_char_str(ch);
+                    return Ok((
+                        &input[len..],
+                        self.arena
+                            .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                    ));
+                }
                 if let Some(width) = crate::unicode::math_space_width(ch) {
                     return Ok((
                         &input[len..],
