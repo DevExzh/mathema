@@ -212,6 +212,25 @@ fn math_style_declarations_in_scripts_require_a_group() {
 }
 
 #[test]
+fn unicode_script_runs_match_their_ascii_latex_structure() {
+    let unicode = r"A² + B²⁺³ + ¹²C + E₂³ + F₂₊₃";
+    let ascii = r"A^2+B^{2+3}+^{12}C+E_2^3+F_{2+3}";
+    let unicode_result = crate::from_latex(unicode).unwrap();
+    let ascii_result = crate::from_latex(ascii).unwrap();
+    assert_eq!(
+        unicode_result.to_mathml().unwrap(),
+        ascii_result.to_mathml().unwrap(),
+        "Unicode script scalars should form the same AST as ASCII scripts"
+    );
+    let canonical = unicode_result.to_latex().unwrap();
+    assert_eq!(
+        crate::from_latex(&canonical).unwrap().to_latex().unwrap(),
+        canonical,
+        "Unicode script conversion must remain idempotent"
+    );
+}
+
+#[test]
 fn style_switch_normalization_matches_heap_and_compact_scopes() {
     let config = Config::default();
     for source in [

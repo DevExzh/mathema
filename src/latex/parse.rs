@@ -180,6 +180,74 @@ fn classify_char(c: char) -> SymbolKind {
     }
 }
 
+/// Map the Unicode compatibility superscript/subscript characters accepted by
+/// KaTeX into the base scalar represented in a TeX script argument. The first
+/// tuple field is `true` for a subscript and `false` for a superscript.
+fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
+    Some(match ch? {
+        '⁰' => (false, '0'),
+        '¹' => (false, '1'),
+        '²' => (false, '2'),
+        '³' => (false, '3'),
+        '⁴' => (false, '4'),
+        '⁵' => (false, '5'),
+        '⁶' => (false, '6'),
+        '⁷' => (false, '7'),
+        '⁸' => (false, '8'),
+        '⁹' => (false, '9'),
+        '⁺' => (false, '+'),
+        '⁻' => (false, '−'),
+        '⁼' => (false, '='),
+        '⁽' => (false, '('),
+        '⁾' => (false, ')'),
+        'ⁱ' => (false, 'i'),
+        'ⁿ' => (false, 'n'),
+        '₀' => (true, '0'),
+        '₁' => (true, '1'),
+        '₂' => (true, '2'),
+        '₃' => (true, '3'),
+        '₄' => (true, '4'),
+        '₅' => (true, '5'),
+        '₆' => (true, '6'),
+        '₇' => (true, '7'),
+        '₈' => (true, '8'),
+        '₉' => (true, '9'),
+        '₊' => (true, '+'),
+        '₋' => (true, '−'),
+        '₌' => (true, '='),
+        '₍' => (true, '('),
+        '₎' => (true, ')'),
+        'ₐ' => (true, 'a'),
+        'ₑ' => (true, 'e'),
+        'ₕ' => (true, 'h'),
+        'ᵢ' => (true, 'i'),
+        'ⱼ' => (true, 'j'),
+        'ₖ' => (true, 'k'),
+        'ₗ' => (true, 'l'),
+        'ₘ' => (true, 'm'),
+        'ₙ' => (true, 'n'),
+        'ₒ' => (true, 'o'),
+        'ₚ' => (true, 'p'),
+        'ᵣ' => (true, 'r'),
+        'ₛ' => (true, 's'),
+        'ₜ' => (true, 't'),
+        'ᵤ' => (true, 'u'),
+        'ᵥ' => (true, 'v'),
+        'ₓ' => (true, 'x'),
+        _ => return None,
+    })
+}
+
+fn unicode_script_symbol_kind(ch: char) -> SymbolKind {
+    match ch {
+        '+' | '−' => SymbolKind::BinaryOp,
+        '=' => SymbolKind::Relation,
+        '(' => SymbolKind::Open,
+        ')' => SymbolKind::Close,
+        _ => SymbolKind::Ordinary,
+    }
+}
+
 fn negate_char(ch: char) -> Option<char> {
     match ch {
         '=' => Some('\u{2260}'),
@@ -2427,8 +2495,23 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::TooLarge,
             )));
         }
-        // Handle leading ^/_ /' with implicit empty base (e.g., {^3+1})
-        if input.starts_with('^') || input.starts_with('_') || input.starts_with('\'') {
+        // Handle leading ^/_ /' with implicit empty base (e.g., {^3+1}).
+        // Unicode superscript and subscript scalars use the same implicit-base
+        // rule. This lets a run such as `B²⁺³` become one superscript row while
+        // still attaching `¹²` to the preceding atom in `+¹²C`.
+        if input.starts_with('^')
+            || input.starts_with('_')
+            || input.starts_with('\'')
+            || unicode_script_kind(input.chars().next()).is_some()
+        {
+            if unicode_script_kind(input.chars().next()).is_some() {
+                let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                let result = self.parse_unicode_script_run(input, base);
+                if let Ok((_, id)) = result {
+                    self.implicit_base_script = Some(id);
+                }
+                return result;
+            }
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             let result = self.parse_scripts(input, base);
             if let Ok((_, id)) = result {
@@ -2485,6 +2568,87 @@ impl LatexCompactParser {
         }
 
         self.parse_scripts(input, base)
+    }
+
+    /// Parse a contiguous run of Unicode superscript/subscript characters.
+    /// The run is represented as a normal script row so later normalization and
+    /// writers use the same paths as ASCII `^` and `_` scripts.
+    fn parse_unicode_script_run<'a>(
+        &mut self,
+        input: &'a str,
+        base: NodeId,
+    ) -> IResult<&'a str, NodeId> {
+        let mut rest = input;
+        let mut sub = SmallVec::<[NodeId; 4]>::new();
+        let mut sup = SmallVec::<[NodeId; 4]>::new();
+        while let Some((is_sub, glyph)) = unicode_script_kind(rest.chars().next()) {
+            let width = rest.chars().next().expect("script kind checked").len_utf8();
+            let sid = self.arena.push_str(&glyph.to_string());
+            let id = if glyph.is_ascii_digit() {
+                self.arena.push_node(CompactNode::Number(sid))
+            } else if glyph.is_ascii_alphabetic() {
+                self.arena.push_node(CompactNode::Identifier(sid))
+            } else {
+                self.arena
+                    .push_node(CompactNode::Symbol(unicode_script_symbol_kind(glyph), sid))
+            };
+            if is_sub {
+                sub.push(id);
+            } else {
+                sup.push(id);
+            }
+            rest = &rest[width..];
+            self.ensure_node_budget(rest)?;
+        }
+        self.merge_unicode_script_numbers(&mut sub);
+        self.merge_unicode_script_numbers(&mut sup);
+        let sub = if sub.is_empty() {
+            NodeId::NONE
+        } else {
+            self.flatten_single(&sub)
+        };
+        let sup = if sup.is_empty() {
+            NodeId::NONE
+        } else {
+            self.flatten_single(&sup)
+        };
+        let id = match (sub != NodeId::NONE, sup != NodeId::NONE) {
+            (true, true) => self.arena.push_node(CompactNode::SubSup { base, sub, sup }),
+            (true, false) => self.arena.push_node(CompactNode::Subscript { base, sub }),
+            (false, true) => self.arena.push_node(CompactNode::Superscript { base, sup }),
+            (false, false) => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            },
+        };
+        Ok((rest, id))
+    }
+
+    fn merge_unicode_script_numbers(&mut self, ids: &mut SmallVec<[NodeId; 4]>) {
+        let mut i = 0;
+        while i < ids.len() {
+            let CompactNode::Number(first_sid) = *self.arena.node(ids[i]) else {
+                i += 1;
+                continue;
+            };
+            let mut end = i + 1;
+            let mut combined = self.arena.str_val(first_sid).to_owned();
+            while end < ids.len() {
+                let CompactNode::Number(sid) = *self.arena.node(ids[end]) else {
+                    break;
+                };
+                combined.push_str(self.arena.str_val(sid));
+                end += 1;
+            }
+            if end > i + 1 {
+                let sid = self.arena.push_str(&combined);
+                *self.arena.node_mut(ids[i]) = CompactNode::Number(sid);
+                ids.drain(i + 1..end);
+            }
+            i += 1;
+        }
     }
 
     fn operator_limit_style(&self, id: NodeId) -> Option<LimitStyle> {
