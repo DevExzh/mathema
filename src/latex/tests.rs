@@ -604,7 +604,7 @@ fn legacy_font_declarations_scope_like_grouped_fonts() {
     .unwrap();
     assert_eq!(
         matrix,
-        r"\begin{array}{cc} \mathrm{x} & y \\ z & \mathsf{q} \end{array}"
+        r"\begin{matrix} \mathrm{x} & y \\ z & \mathsf{q} \end{matrix}"
     );
 }
 
@@ -791,19 +791,19 @@ fn legacy_font_scope_resets_matrix_cells_but_keeps_siblings() {
     for (input, expected) in [
         (
             r"\bf x\begin{matrix}y&z\end{matrix}t",
-            r"\mathbf{x}\begin{array}{cc} y & z \end{array}\mathbf{t}",
+            r"\mathbf{x}\begin{matrix} y & z \end{matrix}\mathbf{t}",
         ),
         (
             r"\bf x\frac{a}{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\frac{\mathbf{a}}{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"\mathbf{x}\frac{\mathbf{a}}{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
         (
             r"\bf x\begin{matrix}\it y&\bf z\end{matrix}t",
-            r"\mathbf{x}\begin{array}{cc} \mathit{y} & \mathbf{z} \end{array}\mathbf{t}",
+            r"\mathbf{x}\begin{matrix} \mathit{y} & \mathbf{z} \end{matrix}\mathbf{t}",
         ),
         (
             r"x\begin{matrix}y&z\end{matrix}t",
-            r"x\begin{array}{cc} y & z \end{array}t",
+            r"x\begin{matrix} y & z \end{matrix}t",
         ),
     ] {
         let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
@@ -830,19 +830,19 @@ fn legacy_font_scope_preserves_tables_in_compounds() {
     for (input, expected) in [
         (
             r"\bf x\sqrt{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\sqrt{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"\mathbf{x}\sqrt{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
         (
             r"\bf x^{\begin{matrix}u&v\end{matrix}}t",
-            r"{\mathbf{x}}^{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"{\mathbf{x}}^{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
         (
             r"\bf x\sum_{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\sum_{\begin{array}{cc} u & v \end{array}} {\mathbf{t}}",
+            r"\mathbf{x}\sum_{\begin{matrix} u & v \end{matrix}} {\mathbf{t}}",
         ),
         (
             r"\bf x\hat{\begin{matrix}u&v\end{matrix}}t",
-            r"\mathbf{x}\hat{\begin{array}{cc} u & v \end{array}}\mathbf{t}",
+            r"\mathbf{x}\hat{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
     ] {
         let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
