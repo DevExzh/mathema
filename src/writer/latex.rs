@@ -893,9 +893,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         } => {
             if write_compound_limits(buf, arena, base, NodeId::NONE, over, movable_limits) {
                 return;
-            }
-            if is_line_symbol(arena, over) {
+            } else if is_line_symbol(arena, over) {
                 buf.push_str("\\overline{");
+                write_wrapped_content(buf, arena, base);
+                buf.push('}');
+            } else if is_overlinesegment(arena, over) {
+                buf.push_str("\\overlinesegment{");
                 write_wrapped_content(buf, arena, base);
                 buf.push('}');
             } else if is_overbrace(arena, over) {
@@ -918,9 +921,12 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
         } => {
             if write_compound_limits(buf, arena, base, under, NodeId::NONE, movable_limits) {
                 return;
-            }
-            if is_line_symbol(arena, under) {
+            } else if is_line_symbol(arena, under) {
                 buf.push_str("\\underline{");
+                write_wrapped_content(buf, arena, base);
+                buf.push('}');
+            } else if is_underlinesegment(arena, under) {
+                buf.push_str("\\underlinesegment{");
                 write_wrapped_content(buf, arena, base);
                 buf.push('}');
             } else if is_underbrace(arena, under) {
@@ -1052,7 +1058,8 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                     ('\u{21BC}', _) => Some("overleftharpoon"),
                     ('\u{21D2}', _) => Some("Overrightarrow"),
                     ('\u{23DC}', _) => Some("overgroup"),
-                    ('\u{23B4}', _) => Some("overlinesegment"),
+                    ('\u{23B4}', true) => Some("overbracket"),
+                    ('\u{23B4}', false) => Some("overlinesegment"),
                     _ => None,
                 },
                 AccentPosition::Below => match accent {
@@ -1061,6 +1068,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                     '\u{2194}' => Some("underleftrightarrow"),
                     '\u{0330}' => Some("utilde"),
                     '\u{23DD}' => Some("undergroup"),
+                    '\u{23B5}' if wide => Some("underbracket"),
                     '\u{23B5}' => Some("underlinesegment"),
                     _ => None,
                 },
@@ -1824,6 +1832,10 @@ fn is_natural_accent_node(arena: &AstArena, id: NodeId) -> bool {
 /// LaTeX.  This also avoids redundant `\lim\limits` in canonical accents.
 fn write_accent_base_content(buf: &mut String, arena: &AstArena, content: NodeId) {
     match *arena.node(content) {
+        // Compact-to-heap reconstruction represents an explicit row break as
+        // a zero-width space. Keep that operand visible inside an accent
+        // argument so `\underbracket\\` does not collapse to `{}`.
+        CompactNode::Space(width) if width.num == 0 => buf.push_str("\\\\ "),
         CompactNode::Operator {
             name,
             limits: LimitStyle::AboveBelow,
@@ -2267,6 +2279,14 @@ fn node_produces_only_digits(arena: &AstArena, id: NodeId) -> bool {
 
 fn is_line_symbol(arena: &AstArena, id: NodeId) -> bool {
     matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{203E}")
+}
+
+fn is_overlinesegment(arena: &AstArena, id: NodeId) -> bool {
+    matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{23B4}")
+}
+
+fn is_underlinesegment(arena: &AstArena, id: NodeId) -> bool {
+    matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == "\u{23B5}")
 }
 
 fn is_overbrace(arena: &AstArena, id: NodeId) -> bool {
@@ -3031,6 +3051,30 @@ mod tests {
         assert_eq!(roundtrip("\\dddot{x}"), "\\dddot{x}");
         assert_eq!(roundtrip("\\ddddot{x}"), "\\ddddot{x}");
         assert_eq!(roundtrip("\\mathring{x}"), "\\mathring{x}");
+    }
+
+    #[test]
+    fn brackets_remain_brackets_and_limits_remain_limits() {
+        for (input, expected) in [
+            (r"\overbracket{x}", r"\overbracket{x}"),
+            (r"\underbracket{x}", r"\underbracket{x}"),
+            (
+                r"\overbracket{\mathop{f+g}}",
+                r"\overbracket{\mathop{f+ g}}",
+            ),
+            (r"\overlinesegment{x}", r"\overlinesegment{x}"),
+            (r"\underlinesegment{x}", r"\underlinesegment{x}"),
+            (r"\overbracket{x}^2", r"{\overbracket{x}}^{2}"),
+            (r"\underbracket{x}_2", r"{\underbracket{x}}_{2}"),
+        ] {
+            assert_eq!(roundtrip(input), expected, "{input}");
+            assert_eq!(roundtrip(expected), expected, "{input}");
+        }
+        assert_eq!(roundtrip(r"\underbracket\\"), r"\underbracket{\\ }");
+
+        let limit = roundtrip(r"\mathop{a+b}\limits^⎴");
+        assert!(limit.contains(r"\mathop{a+ b}\limits^{⎴}"), "{limit}");
+        assert!(!limit.contains("overbracket"), "{limit}");
     }
 
     #[test]

@@ -4315,35 +4315,11 @@ impl LatexCompactParser {
     }
 
     fn parse_overbracket<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, base_id) = self.parse_required_group(input)?;
-        let sid = self.arena.push_str("\u{23B4}");
-        let over_id = self
-            .arena
-            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
-        Ok((
-            input,
-            self.arena.push_node(CompactNode::Overscript {
-                base: base_id,
-                over: over_id,
-                movable_limits: false,
-            }),
-        ))
+        self.parse_accent_wide(input, '\u{23B4}', AccentPosition::Above, true)
     }
 
     fn parse_underbracket<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (input, base_id) = self.parse_required_group(input)?;
-        let sid = self.arena.push_str("\u{23B5}");
-        let under_id = self
-            .arena
-            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
-        Ok((
-            input,
-            self.arena.push_node(CompactNode::Underscript {
-                base: base_id,
-                under: under_id,
-                movable_limits: false,
-            }),
-        ))
+        self.parse_accent_wide(input, '\u{23B5}', AccentPosition::Below, true)
     }
 
     /// Parse \left delim ... \right delim — zero-allocation delimiter interning.
