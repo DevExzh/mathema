@@ -1,26 +1,17 @@
 //! `amsmath` package support.
 //!
-//! Currently provides the variable-limit operators (`\varlimsup`, `\varliminf`,
-//! `\varinjlim`, `\varprojlim`). These expand to a named limit operator (`\lim`)
-//! decorated with an over/under line or arrow, matching amsmath's definitions:
-//!
-//! ```text
-//! \varlimsup → \mathop{\overline{\lim}}        \varliminf → \mathop{\underline{\lim}}
-//! \varinjlim → \mathop{\underrightarrow{\lim}} \varprojlim → \mathop{\underleftarrow{\lim}}
-//! ```
-//!
-//! Scripts attached to these (e.g. `\varlimsup_{n\to\infty}`) are placed
-//! above/below the decorated stack in display style and at the side in inline
-//! style, because the expansion uses a movable compound operator.
+//! The four variable-limit commands expand to starred operator names with
+//! a line or an arrow decorating the word `lim`. Their outer bounds move
+//! above and below in display style and to the side in inline style.
 
 use super::SymbolClass;
 
 /// Builtin macros contributed by `amsmath`: `(name, param_count, body)`.
 pub const MACROS: &[(&str, u8, &str)] = &[
-    ("varlimsup", 0, r"\mathop{\overline{\lim}}"),
-    ("varliminf", 0, r"\mathop{\underline{\lim}}"),
-    ("varinjlim", 0, r"\mathop{\underrightarrow{\lim}}"),
-    ("varprojlim", 0, r"\mathop{\underleftarrow{\lim}}"),
+    ("varlimsup", 0, r"\operatorname*{\overline{lim}}"),
+    ("varliminf", 0, r"\operatorname*{\underline{lim}}"),
+    ("varinjlim", 0, r"\operatorname*{\underrightarrow{lim}}"),
+    ("varprojlim", 0, r"\operatorname*{\underleftarrow{lim}}"),
     ("plim", 0, r"\mathop{\operatorname{plim}}\limits"),
 ];
 
@@ -90,10 +81,16 @@ mod tests {
     /// round-trip to `\hat{\lim}`.
     #[test]
     fn varlim_family_roundtrips() {
-        assert_eq!(roundtrip(r"\varlimsup"), r"\overline{\lim}");
-        assert_eq!(roundtrip(r"\varliminf"), r"\underline{\lim}");
-        assert_eq!(roundtrip(r"\varinjlim"), r"\underrightarrow{\lim}");
-        assert_eq!(roundtrip(r"\varprojlim"), r"\underleftarrow{\lim}");
+        assert_eq!(roundtrip(r"\varlimsup"), r"\operatorname*{\overline{lim}}");
+        assert_eq!(roundtrip(r"\varliminf"), r"\operatorname*{\underline{lim}}");
+        assert_eq!(
+            roundtrip(r"\varinjlim"),
+            r"\operatorname*{\underrightarrow{lim}}"
+        );
+        assert_eq!(
+            roundtrip(r"\varprojlim"),
+            r"\operatorname*{\underleftarrow{lim}}"
+        );
         for cmd in [r"\varinjlim", r"\varprojlim"] {
             assert!(!roundtrip(cmd).contains("hat"), "{cmd} regressed to \\hat");
         }

@@ -786,7 +786,8 @@ impl<'a> MathmlCompactParser<'a> {
                 let sid = self.arena.push_str(&text);
                 if let Some(variant) = mathvariant
                     && let Some(style) = mathvariant_to_style(&variant)
-                    && style != TextStyle::Italic
+                    && self.mathvariant_style != Some(style)
+                    && (style != TextStyle::Italic || self.mathvariant_style.is_some())
                     && !(style == TextStyle::Normal
                         && text.chars().count() > 1
                         && self
@@ -849,7 +850,14 @@ impl<'a> MathmlCompactParser<'a> {
                     .next()
                     .is_none()
                     .then_some(self.depth + 1);
-                let (mut children, sized) = self.read_children(name, reflected)?;
+                let previous_variant = self.mathvariant_style;
+                if attrs.atom_type == Some(MathAtomType::Op) && attrs.structured_operator.is_some()
+                {
+                    self.mathvariant_style = Some(TextStyle::Normal);
+                }
+                let result = self.read_children(name, reflected);
+                self.mathvariant_style = previous_variant;
+                let (mut children, sized) = result?;
                 self.fence_depth = enclosing;
                 let fenced = self.recover_fenced_row(&mut children, mark_start);
                 self.fence_marks.truncate(mark_start);

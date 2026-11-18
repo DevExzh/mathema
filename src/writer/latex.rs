@@ -3546,8 +3546,14 @@ mod tests {
     #[test]
     fn varinjlim_varprojlim_roundtrip() {
         // amsmath \varinjlim / \varprojlim expand to under-arrow accents over \lim.
-        assert_eq!(roundtrip("\\varinjlim"), "\\underrightarrow{\\lim}");
-        assert_eq!(roundtrip("\\varprojlim"), "\\underleftarrow{\\lim}");
+        assert_eq!(
+            roundtrip(r"\varinjlim"),
+            r"\operatorname*{\underrightarrow{lim}}"
+        );
+        assert_eq!(
+            roundtrip(r"\varprojlim"),
+            r"\operatorname*{\underleftarrow{lim}}"
+        );
     }
 
     #[test]

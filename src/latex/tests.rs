@@ -2287,26 +2287,7 @@ fn structured_operatorname_decorations_preserve_operator_semantics() {
                 source_mathml,
                 "MathML was not stable for {source}"
             );
-            let strip_marker = |xml: String| {
-                [
-                    "starred-default",
-                    "starred-limits",
-                    "starred-nolimits",
-                    "unstarred",
-                ]
-                .into_iter()
-                .fold(xml, |xml, value| {
-                    xml.replace(
-                        &format!(" data-mathema-structured-operator=\"{value}\""),
-                        "",
-                    )
-                })
-            };
-            assert_eq!(
-                strip_marker(source_mathml),
-                strip_marker(expected_mathml),
-                "{source} vs {expected}"
-            );
+            assert_eq!(source_mathml, expected_mathml, "{source} vs {expected}");
         }
     }
 
@@ -2375,8 +2356,14 @@ fn structured_operatorname_decorations_preserve_operator_semantics() {
     let spaced_result = crate::from_latex(r"\operatorname{\overline{lim\,sup}}_n x").unwrap();
     let spaced_side = spaced_result.to_mathml().unwrap();
     assert!(spaced_side.contains("<msub>"), "{spaced_side}");
-    assert!(spaced_side.contains("<mi>l</mi>"), "{spaced_side}");
-    assert!(spaced_side.contains("<mi>s</mi>"), "{spaced_side}");
+    assert!(
+        spaced_side.contains(r#"<mi mathvariant="normal">l</mi>"#),
+        "{spaced_side}"
+    );
+    assert!(
+        spaced_side.contains(r#"<mi mathvariant="normal">s</mi>"#),
+        "{spaced_side}"
+    );
     assert!(spaced_side.contains("mspace"), "{spaced_side}");
     assert_eq!(
         spaced_side,
@@ -2505,13 +2492,13 @@ fn structured_operatorname_body_uses_upright_face_without_flattening_styles() {
     let upright = crate::from_latex(r"\operatorname{\underline{x}}").unwrap();
     let upright_mathml = upright.to_mathml().unwrap();
     assert!(
-        upright_mathml.contains(r#"<mstyle mathvariant="normal"><munder"#),
+        upright_mathml.contains(r#"<mi mathvariant="normal">x</mi>"#),
         "{upright_mathml}"
     );
 
     let mixed = crate::from_latex(r"\operatorname{\mathbf{Re}\overline{x}}").unwrap();
     let mixed_mathml = mixed.to_mathml().unwrap();
-    assert!(mixed_mathml.contains(r#"<mstyle mathvariant="normal">"#));
+    assert!(mixed_mathml.contains(r#"<mi mathvariant="normal">x</mi>"#));
     assert!(mixed_mathml.contains(r#"<mstyle mathvariant="bold">"#));
     assert!(mixed.to_latex().unwrap().contains(r"\mathbf{Re}"));
 
@@ -2539,7 +2526,13 @@ fn structured_operatorname_reaches_all_public_format_writers() {
     ] {
         let result = crate::from_latex(source).unwrap();
         let mathml = result.to_mathml().unwrap();
-        assert!(mathml.contains("lim") || mathml.contains("end"));
+        assert!(mathml.contains("data-mathema-structured-operator"));
+        let normalized =
+            crate::convert(source, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert!(
+            normalized.contains(">lim<") || normalized.contains(">end<"),
+            "{normalized}"
+        );
         assert!(crate::from_mathml(&mathml).unwrap().to_mathml().is_ok());
 
         let omml = result.to_omml().unwrap();

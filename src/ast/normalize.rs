@@ -548,7 +548,7 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
             normalize_node_depth(script, d);
             normalize_node_depth(script_script, d);
         },
-        MathNode::MathAtom { content, .. } => {
+        MathNode::MathAtom { content, .. } | MathNode::StructuredOperator { content, .. } => {
             normalize_node_depth(content, d);
         },
 
@@ -556,7 +556,6 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         MathNode::Number(_)
         | MathNode::Identifier(_)
         | MathNode::Operator(_)
-        | MathNode::StructuredOperator { .. }
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
@@ -1055,7 +1054,7 @@ fn normalize_compact_node(
             normalize_compact_node(arena, script, d)?;
             normalize_compact_node(arena, script_script, d)?;
         },
-        CompactNode::MathAtom { content, .. } => {
+        CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
             normalize_compact_node(arena, content, d)?;
         },
 
@@ -1063,7 +1062,6 @@ fn normalize_compact_node(
         CompactNode::Number(_)
         | CompactNode::Identifier(_)
         | CompactNode::Operator { .. }
-        | CompactNode::StructuredOperator { .. }
         | CompactNode::Symbol(_, _)
         | CompactNode::Text(_, _)
         | CompactNode::Space(_)

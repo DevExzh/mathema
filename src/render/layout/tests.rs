@@ -1810,14 +1810,17 @@ fn variable_limit_compounds_move_only_in_display() {
             .to_math_expr();
         let display = layout_expr(&expr, MathStyle::Display, &opts);
         let inline = layout_expr(&expr, MathStyle::Text, &opts);
+        let bare = crate::from_latex(source.strip_suffix("_i").unwrap())
+            .unwrap()
+            .expr();
+        let bare_display = layout_expr(&bare, MathStyle::Display, &opts);
+        let bare_inline = layout_expr(&bare, MathStyle::Text, &opts);
         assert!(
-            matches!(child_kind(&display), BoxKind::VBox { .. }),
+            (display.width - bare_display.width).abs() < 1e-8,
             "{source}"
         );
-        assert!(
-            matches!(child_kind(&inline), BoxKind::HBox { .. }),
-            "{source}"
-        );
+        assert!(display.depth > bare_display.depth, "{source}");
+        assert!(inline.width > bare_inline.width, "{source}");
     }
 
     let literal = LatexReader::parse_compact(r"\underrightarrow{\lim}_i", &config)

@@ -42,7 +42,7 @@ pub struct MathmlWriter;
 
 impl MathWriter for MathmlWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
-        let mut writer = Writer::new(Cursor::new(Vec::with_capacity(512)));
+        let mut writer = MathOutput::new(Writer::new(Cursor::new(Vec::with_capacity(512))));
 
         let mut math = BytesStart::new("math");
         math.push_attribute(("xmlns", "http://www.w3.org/1998/Math/MathML"));
@@ -62,7 +62,7 @@ impl MathWriter for MathmlWriter {
             .write_event(Event::End(BytesEnd::new("math")))
             .map_err(to_err)?;
 
-        let buf = writer.into_inner().into_inner();
+        let buf = writer.target.into_inner().into_inner();
         String::from_utf8(buf).map_err(|e| {
             crate::error::Error::Unsupported(format!("MathML output contained invalid UTF-8: {e}"))
         })
@@ -79,7 +79,7 @@ impl MathWriter for MathmlWriter {
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
         let arena = &expr.arena;
-        let mut buf = String::with_capacity(512);
+        let mut buf = MathOutput::new(String::with_capacity(512));
 
         if expr.display == DisplayStyle::Block {
             buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">");
@@ -96,11 +96,51 @@ impl MathWriter for MathmlWriter {
         );
 
         buf.push_str("</math>");
-        Ok(buf)
+        Ok(buf.target)
     }
 }
 
-type XmlWriter = Writer<Cursor<Vec<u8>>>;
+/// MathML Core needs the upright variant on individual identifiers. Keep
+/// the operator-name font in scope through fractions, accents and scripts.
+struct MathOutput<T> {
+    target: T,
+    operator_font: Option<TextStyle>,
+}
+
+impl<T> MathOutput<T> {
+    fn new(target: T) -> Self {
+        Self {
+            target,
+            operator_font: None,
+        }
+    }
+    fn with_operator_font<R>(
+        &mut self,
+        font: Option<TextStyle>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = std::mem::replace(&mut self.operator_font, font);
+        let result = f(self);
+        self.operator_font = previous;
+        result
+    }
+}
+
+impl<T> std::ops::Deref for MathOutput<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.target
+    }
+}
+
+impl<T> std::ops::DerefMut for MathOutput<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.target
+    }
+}
+
+type XmlWriter = MathOutput<Writer<Cursor<Vec<u8>>>>;
+type XmlBuffer = MathOutput<String>;
 
 fn to_err(e: std::io::Error) -> crate::error::Error {
     crate::error::Error::Io(e)
@@ -127,11 +167,11 @@ fn open_math_style(w: &mut XmlWriter, (display, depth): (&str, &str)) -> Result<
     Ok(())
 }
 
-fn start_math_style_fast(buf: &mut String, style: MathStyle) {
+fn start_math_style_fast(buf: &mut XmlBuffer, style: MathStyle) {
     open_math_style_fast(buf, math_style_attrs(style));
 }
 
-fn open_math_style_fast(buf: &mut String, (display, depth): (&str, &str)) {
+fn open_math_style_fast(buf: &mut XmlBuffer, (display, depth): (&str, &str)) {
     buf.push_str("<mstyle displaystyle=\"");
     buf.push_str(display);
     buf.push_str("\" scriptlevel=\"");
@@ -156,7 +196,7 @@ fn start_math_style_marker(w: &mut XmlWriter, marker: u8) -> Result<MathStyle> {
     Ok(MathStyle::branch_from_switch(marker))
 }
 
-fn start_math_style_marker_fast(buf: &mut String, marker: u8) -> MathStyle {
+fn start_math_style_marker_fast(buf: &mut XmlBuffer, marker: u8) -> MathStyle {
     open_math_style_fast(buf, marker_attrs(marker));
     MathStyle::branch_from_switch(marker)
 }
@@ -282,7 +322,7 @@ fn write_nodes(
 }
 
 fn write_nodes_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     nodes: &[NodeId],
     inherited: MathStyle,
@@ -292,12 +332,12 @@ fn write_nodes_fast(
 }
 
 fn write_style_sequence_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     nodes: &[NodeId],
     inherited: MathStyle,
     explicit_row: bool,
-    emit: impl Fn(&mut String, &AstArena, NodeId, MathStyle),
+    emit: impl Fn(&mut XmlBuffer, &AstArena, NodeId, MathStyle),
 ) {
     let switch = |&id: &NodeId| {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
@@ -817,7 +857,8 @@ fn write_node_in(
             let mut elem = BytesStart::new("mstyle");
             elem.push_attribute(("mathvariant", variant));
             w.write_event(Event::Start(elem)).map_err(to_err)?;
-            write_nodes(w, children, display_style, false)?;
+            let font = w.operator_font.map(|_| *style);
+            w.with_operator_font(font, |w| write_nodes(w, children, display_style, false))?;
             w.write_event(Event::End(BytesEnd::new("mstyle")))
                 .map_err(to_err)?;
             Ok(())
@@ -978,12 +1019,15 @@ fn write_mspace(w: &mut XmlWriter, width: Rational) -> Result<()> {
     w.write_event(Event::Empty(tag)).map_err(to_err)
 }
 
+fn identifier_variant(s: &str, font: Option<TextStyle>) -> Option<&'static str> {
+    font.map(style_to_mathvariant)
+        .or_else(|| (s.len() > 1 && s.bytes().all(|b| b.is_ascii_alphabetic())).then_some("normal"))
+}
+
 fn write_mi(w: &mut XmlWriter, s: &str) -> Result<()> {
     let mut elem = BytesStart::new("mi");
-    // Single-letter identifiers are italic by default in MathML;
-    // multi-letter identifiers should be normal
-    if s.chars().count() > 1 && s.chars().all(|c| c.is_ascii_alphabetic()) {
-        elem.push_attribute(("mathvariant", "normal"));
+    if let Some(variant) = identifier_variant(s, w.operator_font) {
+        elem.push_attribute(("mathvariant", variant));
     }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
     w.write_event(Event::Text(BytesText::new(s)))
@@ -1182,11 +1226,10 @@ fn write_structured_operator_group(
         group.push_attribute(("data-mathema-limits", "movable"));
     }
     w.write_event(Event::Start(group)).map_err(to_err)?;
-    if let MathNode::Row(children) = content {
-        write_nodes(w, children, display_style, false)?;
-    } else {
-        write_node(w, content, display_style)?;
-    }
+    w.with_operator_font(Some(TextStyle::Normal), |w| match content {
+        MathNode::Row(children) => write_nodes(w, children, display_style, false),
+        _ => write_node(w, content, display_style),
+    })?;
     w.write_event(Event::End(BytesEnd::new("mrow")))
         .map_err(to_err)
 }
@@ -1241,7 +1284,7 @@ fn style_to_mathvariant(style: TextStyle) -> &'static str {
 /// Escape XML special characters in text content.
 /// Math content rarely contains these, so we fast-path the common case.
 #[inline]
-fn xml_escape_into(buf: &mut String, s: &str) {
+fn xml_escape_into(buf: &mut XmlBuffer, s: &str) {
     // Fast path: if no special chars, push the whole string at once
     if !s
         .bytes()
@@ -1263,28 +1306,28 @@ fn xml_escape_into(buf: &mut String, s: &str) {
 }
 
 #[inline]
-fn open_tag(buf: &mut String, tag: &str) {
+fn open_tag(buf: &mut XmlBuffer, tag: &str) {
     buf.push('<');
     buf.push_str(tag);
     buf.push('>');
 }
 
 #[inline]
-fn close_tag(buf: &mut String, tag: &str) {
+fn close_tag(buf: &mut XmlBuffer, tag: &str) {
     buf.push_str("</");
     buf.push_str(tag);
     buf.push('>');
 }
 
 #[inline]
-fn simple_element(buf: &mut String, tag: &str, text: &str) {
+fn simple_element(buf: &mut XmlBuffer, tag: &str, text: &str) {
     open_tag(buf, tag);
     xml_escape_into(buf, text);
     close_tag(buf, tag);
 }
 
 #[inline]
-fn write_text_fast(buf: &mut String, style: TextStyle, text: &str) {
+fn write_text_fast(buf: &mut XmlBuffer, style: TextStyle, text: &str) {
     let text = canonical_mathml_text(text);
     buf.push_str("<mtext");
     if style != TextStyle::Normal {
@@ -1341,16 +1384,21 @@ fn canonical_mathml_text(text: &str) -> Cow<'_, str> {
 }
 
 #[inline]
-fn write_node_fast(buf: &mut String, arena: &AstArena, id: NodeId, display_style: MathStyle) {
+fn write_node_fast(buf: &mut XmlBuffer, arena: &AstArena, id: NodeId, display_style: MathStyle) {
     write_node_fast_in(buf, arena, id, false, display_style);
 }
 
-fn write_argument_fast(buf: &mut String, arena: &AstArena, id: NodeId, display_style: MathStyle) {
+fn write_argument_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    display_style: MathStyle,
+) {
     write_node_fast_in(buf, arena, id, true, display_style);
 }
 
 fn write_node_fast_in(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     id: NodeId,
     single_argument: bool,
@@ -1767,7 +1815,10 @@ fn write_node_fast_in(
             buf.push_str("<mstyle mathvariant=\"");
             buf.push_str(variant);
             buf.push_str("\">");
-            write_nodes_fast(buf, arena, arena.children(span), display_style, false);
+            let font = buf.operator_font.map(|_| style);
+            buf.with_operator_font(font, |buf| {
+                write_nodes_fast(buf, arena, arena.children(span), display_style, false)
+            });
             buf.push_str("</mstyle>");
         },
 
@@ -2078,7 +2129,7 @@ fn write_scripts(
 }
 
 fn write_scripts_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     base: NodeId,
     lower: NodeId,
@@ -2171,9 +2222,11 @@ fn is_empty_compact_node(arena: &AstArena, id: NodeId) -> bool {
 }
 
 #[inline]
-fn write_mi_fast(buf: &mut String, s: &str) {
-    if s.chars().count() > 1 && s.chars().all(|c| c.is_ascii_alphabetic()) {
-        buf.push_str("<mi mathvariant=\"normal\">");
+fn write_mi_fast(buf: &mut XmlBuffer, s: &str) {
+    if let Some(variant) = identifier_variant(s, buf.operator_font) {
+        buf.push_str(r#"<mi mathvariant=""#);
+        buf.push_str(variant);
+        buf.push_str(r#"">"#);
     } else {
         buf.push_str("<mi>");
     }
@@ -2182,7 +2235,7 @@ fn write_mi_fast(buf: &mut String, s: &str) {
 }
 
 #[inline]
-fn write_mo_char_fast(buf: &mut String, ch: char, movable: Option<bool>) {
+fn write_mo_char_fast(buf: &mut XmlBuffer, ch: char, movable: Option<bool>) {
     buf.push_str(match movable {
         Some(true) => "<mo movablelimits=\"true\">",
         Some(false) => "<mo movablelimits=\"false\">",
@@ -2194,7 +2247,7 @@ fn write_mo_char_fast(buf: &mut String, ch: char, movable: Option<bool>) {
 }
 
 fn write_limit_base_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     id: NodeId,
     movable: bool,
@@ -2245,7 +2298,7 @@ fn write_limit_base_fast(
 }
 
 fn write_atom_group_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     content: NodeId,
     class: &str,
@@ -2268,7 +2321,7 @@ fn write_atom_group_fast(
 }
 
 fn write_structured_operator_group_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     content: NodeId,
     limits: LimitStyle,
@@ -2284,15 +2337,16 @@ fn write_structured_operator_group_fast(
         buf.push_str(r#" data-mathema-limits="movable""#);
     }
     buf.push('>');
-    if let CompactNode::Row(span) = *arena.node(content) {
-        write_nodes_fast(buf, arena, arena.children(span), display_style, false);
-    } else {
-        write_node_fast(buf, arena, content, display_style);
-    }
+    buf.with_operator_font(Some(TextStyle::Normal), |buf| match *arena.node(content) {
+        CompactNode::Row(span) => {
+            write_nodes_fast(buf, arena, arena.children(span), display_style, false)
+        },
+        _ => write_node_fast(buf, arena, content, display_style),
+    });
     close_tag(buf, "mrow");
 }
 
-fn write_named_operator_fast(buf: &mut String, name: &str, limits: LimitStyle, scripted: bool) {
+fn write_named_operator_fast(buf: &mut XmlBuffer, name: &str, limits: LimitStyle, scripted: bool) {
     buf.push_str("<mo");
     if let Some(value) = named_movable_attr(limits) {
         buf.push_str(" movablelimits=\"");
@@ -2309,7 +2363,7 @@ fn write_named_operator_fast(buf: &mut String, name: &str, limits: LimitStyle, s
 
 #[inline]
 fn write_box_child_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     child: NodeId,
     text_size: bool,
@@ -2333,7 +2387,7 @@ fn write_box_child_fast(
     }
 }
 
-fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>, stretchy: bool) {
+fn write_mo_fence_fast(buf: &mut XmlBuffer, text: &str, form: Option<&str>, stretchy: bool) {
     buf.push_str("<mo fence=\"true\"");
     if let Some(form) = form {
         buf.push_str(" form=\"");
@@ -2348,11 +2402,11 @@ fn write_mo_fence_fast(buf: &mut String, text: &str, form: Option<&str>, stretch
     buf.push_str("</mo>");
 }
 
-fn write_mo_middle_fast(buf: &mut String, text: &str) {
+fn write_mo_middle_fast(buf: &mut XmlBuffer, text: &str) {
     write_mo_fence_fast(buf, text, middle_form(text), true);
 }
 
-fn write_literal_fence_fast(buf: &mut String, text: &str) {
+fn write_literal_fence_fast(buf: &mut XmlBuffer, text: &str) {
     buf.push_str("<mo stretchy=\"false\">");
     xml_escape_into(buf, text);
     buf.push_str("</mo>");
@@ -2363,7 +2417,7 @@ fn is_literal_fence_glyph(text: &str) -> bool {
 }
 
 fn write_nodes_fenced_fast(
-    buf: &mut String,
+    buf: &mut XmlBuffer,
     arena: &AstArena,
     nodes: &[NodeId],
     display_style: MathStyle,
@@ -2401,7 +2455,7 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
     crate::unicode::operators::closing_fence(open) != Some(close)
 }
 
-fn write_mo_symbol_fast(buf: &mut String, kind: SymbolKind, s: &str) {
+fn write_mo_symbol_fast(buf: &mut XmlBuffer, kind: SymbolKind, s: &str) {
     buf.push_str("<mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
     match kind {
