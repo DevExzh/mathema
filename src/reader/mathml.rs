@@ -102,17 +102,20 @@ struct MathmlCompactParser<'a> {
     /// levels. Keep the full non-negative level while reading nested
     /// `mstyle` attributes and clamp only when lowering to a StyleSwitch.
     style_level: i64,
-    /// Presentation attributes on `<mo>` tokens. Keeping these beside the
-    /// compact node lets an enclosing `<mrow>` distinguish the writer's
-    /// structural fence delimiters from an ordinary fence-shaped operator.
-    fence_attributes: HashMap<NodeId, FenceAttributes>,
+    /// Only direct, explicitly fenced operators of a potential fenced row
+    /// need to survive until its closing tag. Nested rows use their own slice.
+    fence_depth: Option<u32>,
+    fence_marks: SmallVec<[(NodeId, FenceRole); 4]>,
 }
 
-#[derive(Clone, Default)]
-struct FenceAttributes {
-    fence: Option<bool>,
-    stretchy: Option<bool>,
-    form: Option<String>,
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum FenceRole {
+    #[default]
+    Inferred,
+    Prefix,
+    Infix,
+    Postfix,
+    Constrained,
 }
 
 impl<'a> MathmlCompactParser<'a> {
@@ -133,7 +136,8 @@ impl<'a> MathmlCompactParser<'a> {
             movable_limit_operators: HashMap::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
-            fence_attributes: HashMap::new(),
+            fence_depth: None,
+            fence_marks: SmallVec::new(),
         })
     }
 
@@ -222,75 +226,86 @@ impl<'a> MathmlCompactParser<'a> {
             .map(|(children, _)| children)
     }
 
-    /// Recover the structural fence represented by this crate's MathML
-    /// writer. A plain mrow is intentionally left alone unless its first and
-    /// last operators are explicitly fenced, form a known matching pair, and
-    /// every interior fenced operator is an unadorned middle delimiter. The
-    /// latter condition keeps an ordinary `|` operator in `(x|y)` from being
-    /// reclassified as a `\\middle` separator. External MathML that supplies
-    /// only the ambiguous `fence=true stretchy=true form=prefix` spelling is
-    /// likewise retained as an ordinary row.
-    fn recover_fenced_row(&mut self, children: &[NodeId]) -> Option<NodeId> {
-        if children.len() < 2 {
+    /// Recover explicitly marked delimiters of a single MathML row. Interior
+    /// brackets may belong to separate pairs; a prefix or postfix vertical
+    /// bar inside parentheses is an ordinary child rather than a middle.
+    fn recover_fenced_row(&mut self, children: &mut [NodeId], start: usize) -> Option<NodeId> {
+        let [(first, open_role), interior @ .., (last, close_role)] = &self.fence_marks[start..]
+        else {
+            return None;
+        };
+        if children.first() != Some(first)
+            || children.last() != Some(last)
+            || !matches!(open_role, FenceRole::Inferred | FenceRole::Prefix)
+            || !matches!(close_role, FenceRole::Inferred | FenceRole::Postfix)
+        {
             return None;
         }
-        let open = self.fence_delimiter(children[0])?;
-        let close = self.fence_delimiter(*children.last()?)?;
-        let open_attrs = self.fence_attributes.get(&children[0])?;
-        let close_attrs = self.fence_attributes.get(children.last()?)?;
-        if open_attrs.fence != Some(true)
-            || close_attrs.fence != Some(true)
-            || open_attrs.stretchy == Some(false)
-            || close_attrs.stretchy == Some(false)
-            || open_attrs
-                .form
-                .as_deref()
-                .is_some_and(|form| form != "prefix")
-            || close_attrs
-                .form
-                .as_deref()
-                .is_some_and(|form| form != "postfix")
-            || (!matching_fence(self.arena.str_val(open), self.arena.str_val(close))
-                && !matches!(
-                    (self.arena.str_val(open), self.arena.str_val(close)),
-                    ("|", "|") | ("‖", "‖")
-                ))
-        {
+        let open = self.fence_delimiter(*first)?;
+        let close = self.fence_delimiter(*last)?;
+        let pair = (self.arena.str_val(open), self.arena.str_val(close));
+        let bars = matches!(pair, ("|", "|") | ("‖", "‖"));
+        if !bars && !matching_fence(pair.0, pair.1) {
             return None;
         }
 
-        let mut content = SmallVec::<[NodeId; 8]>::new();
-        let mut has_middle = false;
-        for &id in &children[1..children.len() - 1] {
-            if let Some(attributes) = self.fence_attributes.get(&id) {
-                if attributes.fence != Some(true) || attributes.stretchy == Some(false) {
-                    return None;
+        let mut marks = interior.iter().copied().peekable();
+        let mut middles = SmallVec::<[(usize, StrId); 2]>::new();
+        let mut inner_pairs = 0usize;
+        let end = children.len() - 1;
+        let content = &mut children[1..end];
+        for (i, &id) in content.iter().enumerate() {
+            let Some((_, role)) = marks.next_if(|(mark, _)| *mark == id) else {
+                // A literal closing delimiter can finish the first of two
+                // adjacent pairs even when only the outermost operators have
+                // attributes. Do not join those pairs into one fence.
+                if let Some(sid) = self.fence_delimiter(id) {
+                    let glyph = self.arena.str_val(sid);
+                    if glyph == pair.0 {
+                        if bars {
+                            return None;
+                        }
+                        inner_pairs += 1;
+                    } else if glyph == pair.1 {
+                        inner_pairs = inner_pairs.checked_sub(1)?;
+                    }
                 }
-                let sid = self.fence_delimiter(id)?;
-                // An interior parenthesis or bracket with inferred form may
-                // close one pair and start another. Only a neutral separator
-                // or an explicitly infix fence makes a middle unambiguous.
-                if !is_unambiguous_middle(attributes, self.arena.str_val(sid)) {
-                    return None;
-                }
-                has_middle = true;
-                content.push(self.arena.push_node(CompactNode::Middle(sid)));
-            } else {
-                content.push(id);
+                continue;
+            };
+            let sid = self.fence_delimiter(id)?;
+            let glyph = self.arena.str_val(sid);
+            if role == FenceRole::Infix
+                || (role == FenceRole::Inferred
+                    && matches!(glyph, "" | "|" | "‖" | "∣" | "∥" | "/"))
+            {
+                middles.push((i, sid));
+            } else if bars
+                || !matches!(role, FenceRole::Prefix | FenceRole::Postfix)
+                || !matches!(glyph, "|" | "‖" | "∣" | "∥")
+            {
+                return None;
             }
         }
-        if matches!(
-            (self.arena.str_val(open), self.arena.str_val(close)),
-            ("|", "|") | ("‖", "‖")
-        ) && !has_middle
+        if inner_pairs != 0 {
+            return None;
+        }
+        if bars
+            && middles.is_empty()
+            && !matches!(
+                (open_role, close_role),
+                (FenceRole::Prefix, FenceRole::Postfix)
+            )
         {
             return None;
         }
-        let span = self.arena.push_children_deferred(&content);
+        for (i, sid) in middles {
+            content[i] = self.arena.push_node(CompactNode::Middle(sid));
+        }
+        let content = self.arena.push_children_deferred(content);
         Some(self.arena.push_node(CompactNode::Fenced {
             open,
             close,
-            content: span,
+            content,
         }))
     }
 
@@ -660,6 +675,48 @@ impl<'a> MathmlCompactParser<'a> {
         }
     }
 
+    fn operator_token(&mut self, text: &str, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
+        let kind = classify_mo(text);
+        let name = text.trim();
+        // Multi-letter operator tokens and explicitly named operators
+        // are distinct from ordinary identifiers in <mi>.
+        let attrs = operator_attributes(start, self.fence_depth == Some(self.depth));
+        let movable = attrs.movable_limits;
+        let mut chars = name.chars();
+        let named = attrs.named_operator
+            || kind == SymbolKind::Ordinary
+                && chars.next().is_some_and(|first| {
+                    first.is_alphabetic()
+                        && (movable.is_some()
+                            || !chars.as_str().is_empty() && chars.all(char::is_alphabetic))
+                        || attrs.texclass_op
+                });
+        let sid = self.arena.push_str(if named { name } else { text });
+        let id = if named {
+            let limits = match movable {
+                Some(true) => LimitStyle::Default,
+                Some(false) => LimitStyle::AboveBelow,
+                None if crate::unicode::symbols::operator_has_limits(name) => LimitStyle::Default,
+                None => LimitStyle::SubSup,
+            };
+            self.arena
+                .push_node(CompactNode::Operator { name: sid, limits })
+        } else {
+            self.arena.push_node(CompactNode::Symbol(kind, sid))
+        };
+        if attrs.fenced {
+            self.fence_marks.push((id, attrs.fence_role()));
+        }
+        if kind == SymbolKind::LargeOp {
+            if let Some(value) = movable {
+                self.movable_limit_operators.insert(id, value);
+            }
+        } else if named && movable == Some(true) {
+            self.movable_limit_operators.insert(id, true);
+        }
+        id
+    }
+
     fn parse_element_by_name(
         &mut self,
         name: &str,
@@ -687,47 +744,7 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "mo" => {
                 let text = self.read_text_content(name)?;
-                let kind = classify_mo(&text);
-                let name = text.trim();
-                // Multi-letter operator tokens and explicitly named operators
-                // are distinct from ordinary identifiers in <mi>.
-                let attrs = operator_attributes(start);
-                let movable = attrs.movable_limits;
-                let mut chars = name.chars();
-                let named = attrs.named_operator
-                    || kind == SymbolKind::Ordinary
-                        && chars.next().is_some_and(|first| {
-                            first.is_alphabetic()
-                                && (movable.is_some()
-                                    || !chars.as_str().is_empty() && chars.all(char::is_alphabetic))
-                                || attrs.texclass_op
-                        });
-                let sid = self.arena.push_str(if named { name } else { &text });
-                let id = if named {
-                    let limits = match movable {
-                        Some(true) => LimitStyle::Default,
-                        Some(false) => LimitStyle::AboveBelow,
-                        None if crate::unicode::symbols::operator_has_limits(name) => {
-                            LimitStyle::Default
-                        },
-                        None => LimitStyle::SubSup,
-                    };
-                    self.arena
-                        .push_node(CompactNode::Operator { name: sid, limits })
-                } else {
-                    self.arena.push_node(CompactNode::Symbol(kind, sid))
-                };
-                if let Some(attributes) = attrs.fence {
-                    self.fence_attributes.insert(id, attributes);
-                }
-                if kind == SymbolKind::LargeOp {
-                    if let Some(value) = movable {
-                        self.movable_limit_operators.insert(id, value);
-                    }
-                } else if named && movable == Some(true) {
-                    self.movable_limit_operators.insert(id, true);
-                }
-                Ok(id)
+                Ok(self.operator_token(&text, start))
             },
             "mtext" => {
                 let mathvariant = get_attr(start, "mathvariant")
@@ -769,10 +786,18 @@ impl<'a> MathmlCompactParser<'a> {
                     Some(style) => has_horizontal_reflection(style),
                     None => matches!(attrs.reflect.as_deref(), Some("text" | "math")),
                 };
-                let (children, sized) = self.read_children(name, reflected)?;
-                if start.attributes().next().is_none()
-                    && let Some(fenced) = self.recover_fenced_row(&children)
-                {
+                let mark_start = self.fence_marks.len();
+                let enclosing = self.fence_depth;
+                self.fence_depth = start
+                    .attributes()
+                    .next()
+                    .is_none()
+                    .then_some(self.depth + 1);
+                let (mut children, sized) = self.read_children(name, reflected)?;
+                self.fence_depth = enclosing;
+                let fenced = self.recover_fenced_row(&mut children, mark_start);
+                self.fence_marks.truncate(mark_start);
+                if let Some(fenced) = fenced {
                     return Ok(fenced);
                 }
                 if reflected {
@@ -1090,6 +1115,7 @@ impl<'a> MathmlCompactParser<'a> {
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
         match name {
+            "mo" => Ok(self.operator_token("", start)),
             "mspace" => {
                 let width = get_attr(start, "width").unwrap_or_default();
                 let r = parse_em_width(&width);
@@ -1677,7 +1703,19 @@ struct OperatorAttributes {
     movable_limits: Option<bool>,
     named_operator: bool,
     texclass_op: bool,
-    fence: Option<FenceAttributes>,
+    fenced: bool,
+    form: FenceRole,
+    constrained: bool,
+}
+
+impl OperatorAttributes {
+    fn fence_role(&self) -> FenceRole {
+        if self.constrained {
+            FenceRole::Constrained
+        } else {
+            self.form
+        }
+    }
 }
 
 fn matching_fence(open: &str, close: &str) -> bool {
@@ -1704,37 +1742,47 @@ fn matching_fence(open: &str, close: &str) -> bool {
     )
 }
 
-#[inline]
-fn is_unambiguous_middle(attributes: &FenceAttributes, delim: &str) -> bool {
-    (attributes.stretchy.is_none()
-        && attributes.form.is_none()
-        && matches!(delim, "|" | "‖" | "∣" | "∥" | "/"))
-        || attributes.form.as_deref() == Some("infix")
+fn fence_attr_value(raw: &str) -> std::borrow::Cow<'_, str> {
+    if raw.contains('&') {
+        unescape_attr(raw).into()
+    } else {
+        raw.into()
+    }
 }
 
 /// Read the small attribute subset used by an operator in one pass. Attribute
 /// values still use the same entity resolver as the general path.
-fn operator_attributes(start: &quick_xml::events::BytesStart<'_>) -> OperatorAttributes {
+fn operator_attributes(
+    start: &quick_xml::events::BytesStart<'_>,
+    inspect_fences: bool,
+) -> OperatorAttributes {
     let mut result = OperatorAttributes::default();
     for attr in start.attributes().flatten() {
         match attr.key.as_ref() {
-            key @ ("fence" | "stretchy") => {
-                let value = unescape_attr(&attr.value);
-                let value = match value.trim() {
-                    v if v.eq_ignore_ascii_case("true") => Some(true),
-                    v if v.eq_ignore_ascii_case("false") => Some(false),
-                    _ => None,
-                };
-                let attrs = result.fence.get_or_insert_with(FenceAttributes::default);
-                if key == "fence" {
-                    attrs.fence = value;
-                } else {
-                    attrs.stretchy = value;
-                }
+            "fence" if inspect_fences => {
+                result.fenced = fence_attr_value(&attr.value)
+                    .trim()
+                    .eq_ignore_ascii_case("true");
             },
-            "form" => {
-                let attrs = result.fence.get_or_insert_with(FenceAttributes::default);
-                attrs.form = Some(unescape_attr(&attr.value).trim().to_ascii_lowercase());
+            "stretchy" if inspect_fences => {
+                result.constrained |= !fence_attr_value(&attr.value)
+                    .trim()
+                    .eq_ignore_ascii_case("true");
+            },
+            "form" if inspect_fences => {
+                let value = fence_attr_value(&attr.value);
+                result.form = match value.trim() {
+                    s if s.eq_ignore_ascii_case("prefix") => FenceRole::Prefix,
+                    s if s.eq_ignore_ascii_case("infix") => FenceRole::Infix,
+                    s if s.eq_ignore_ascii_case("postfix") => FenceRole::Postfix,
+                    _ => FenceRole::Constrained,
+                };
+            },
+            "minsize" | "maxsize" | "symmetric" | "lspace" | "rspace" | "style" | "mathsize"
+            | "displaystyle" | "scriptlevel"
+                if inspect_fences =>
+            {
+                result.constrained = true;
             },
             "movablelimits" => {
                 if result.movable_limits.is_none() {
@@ -2658,8 +2706,56 @@ mod tests {
     }
 
     #[test]
+    fn literal_and_invisible_middle_delimiters_round_trip_in_their_outer_fence() {
+        for source in [
+            r"\left(x|y\right)",
+            r"\left[x\middle. y\right]",
+            r"\left(\left[x|y\right]\middle|z\right)",
+        ] {
+            let original = crate::from_latex(source).unwrap();
+            let mathml = original.to_mathml().unwrap();
+            let imported = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(imported.expr(), original.expr(), "{mathml}");
+            assert_eq!(imported.to_mathml().unwrap(), mathml);
+            assert_eq!(imported.to_latex().unwrap(), original.to_latex().unwrap());
+            #[cfg(feature = "render")]
+            assert_eq!(
+                imported.to_svg_text().unwrap(),
+                original.to_svg_text().unwrap()
+            );
+        }
+        let empty = r#"<math><mrow><mo fence="true">(</mo><mo fence="true"/><mi>x</mi><mo fence="true">)</mo></mrow></math>"#;
+        assert!(matches!(parse_one(empty), MathNode::Fenced { content, .. }
+            if matches!(&content[..], [FencedItem::Middle(s), FencedItem::Element(_)] if s.is_empty())));
+    }
+
+    #[test]
+    fn operator_attributes_are_local_to_each_direct_child() {
+        let plus = r#"<math><mrow><mo fence="true">(</mo><mi>a</mi><mo form="infix">+</mo><mi>b</mi><mo fence="true">)</mo></mrow></math>"#;
+        assert!(
+            matches!(parse_one(plus), MathNode::Fenced { content, .. } if matches!(&content[1], FencedItem::Element(MathNode::Symbol(_, s)) if s == "+"))
+        );
+        let bars = r#"<math><mrow><mo fence="true" form="prefix">|</mo><mi>x</mi><mo fence="true" form="postfix">|</mo></mrow></math>"#;
+        assert!(matches!(parse_one(bars), MathNode::Fenced { content, .. } if content.len() == 1));
+        for constraint in [
+            r#"maxsize="1em""#,
+            r#"minsize="3em""#,
+            r#"lspace="0.4em""#,
+            r#"symmetric="false""#,
+            r#"style="font-size: 10px""#,
+        ] {
+            let xml = format!(
+                r#"<math><mrow><mo fence="true" {constraint}>(</mo><mi>x</mi><mo fence="true">)</mo></mrow></math>"#
+            );
+            assert!(matches!(parse_one(&xml), MathNode::Row(_)), "{xml}");
+        }
+    }
+
+    #[test]
     fn adjacent_fence_pairs_and_explicit_endpoint_roles_are_preserved() {
         for inputs in [
+            r#"<mo fence="true">(</mo><mi>a</mi><mo>)</mo><mo>(</mo><mi>b</mi><mo fence="true">)</mo>"#,
+            r#"<mo fence="true" form="prefix">|</mo><mi>a</mi><mo>|</mo><mo>|</mo><mi>b</mi><mo fence="true" form="postfix">|</mo>"#,
             r#"<mo fence="true">(</mo><mi>a</mi><mo fence="true">)</mo><mo fence="true">(</mo><mi>b</mi><mo fence="true">)</mo>"#,
             r#"<mo fence="true" form="postfix">(</mo><mi>a</mi><mo fence="true">)</mo>"#,
             r#"<mo fence="true">(</mo><mi>a</mi><mo fence="true" form="infix">)</mo>"#,
@@ -2679,7 +2775,10 @@ mod tests {
         ));
 
         let literal = r#"<math><mrow><mo fence="true">(</mo><mi>x</mi><mo fence="true" stretchy="true" form="prefix">|</mo><mi>y</mi><mo fence="true">)</mo></mrow></math>"#;
-        assert!(matches!(parse_one(literal), MathNode::Row(_)));
+        assert!(
+            matches!(parse_one(literal), MathNode::Fenced { content, .. }
+            if content.iter().all(|item| matches!(item, FencedItem::Element(_))))
+        );
 
         let fixed = r#"<math><mrow><mo fence="true" stretchy="false">(</mo><mi>x</mi><mo fence="true" stretchy="false">)</mo></mrow></math>"#;
         assert!(matches!(parse_one(fixed), MathNode::Row(_)));

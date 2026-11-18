@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- MathML import recovers matching structural fences and middle delimiters from
+  explicitly fenced operator rows. Reimporting a fraction between delimiters
+  preserves scalable brackets, literal interior bars, and invisible middles.
 - LaTeX math style declarations are scoped to their group. MathML, SVG, OMML,
   MTEF, and UnicodeMath select the active `\mathchoice` branch in scripts,
   fractions, roots, and table cells. LaTeX export retains all four branches.
