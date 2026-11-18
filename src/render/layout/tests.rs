@@ -246,6 +246,62 @@ fn accent_skew_zero_for_non_identifier() {
 }
 
 #[test]
+fn bracket_paths_span_the_operand_and_keep_their_vertical_gap() {
+    fn bracket_path(root: &LayoutBox) -> (&str, f64, f64) {
+        let BoxKind::HBox { children } = &root.kind else {
+            panic!("missing expression row")
+        };
+        let BoxKind::VBox { children } = &children[0].layout.kind else {
+            panic!("missing bracket stack")
+        };
+        let bracket = &children[1];
+        let BoxKind::SvgPath(path) = &bracket.layout.kind else {
+            panic!("expected a scalable bracket path")
+        };
+        assert!(bracket.layout.width >= children[0].layout.width);
+        (path, bracket.layout.width, bracket.dy)
+    }
+    for (command, mark, above) in [("overbracket", "⎴", true), ("underbracket", "⎵", false)] {
+        let mut widths = Vec::new();
+        for content in ["x", "abcdefg"] {
+            let latex = format!(r"\{command}{{{content}}}");
+            let expr = crate::from_latex(&latex).unwrap().expr();
+            let [
+                MathNode::Accent {
+                    base, wide: true, ..
+                },
+            ] = &expr.nodes[..]
+            else {
+                panic!("expected a wide bracket: {latex}");
+            };
+            let base = base.clone();
+            let symbol = Box::new(MathNode::Symbol(SymbolKind::Ordinary, mark.into()));
+            let original = if above {
+                MathNode::Overscript {
+                    base,
+                    over: symbol,
+                    movable_limits: false,
+                }
+            } else {
+                MathNode::Underscript {
+                    base,
+                    under: symbol,
+                    movable_limits: false,
+                }
+            };
+            let options = default_options();
+            let actual = layout_expr(&expr, MathStyle::Text, &options);
+            let expected =
+                layout_expr(&MathExpr::inline(vec![original]), MathStyle::Text, &options);
+            assert_eq!(bracket_path(&actual), bracket_path(&expected), "{latex}");
+            widths.push(bracket_path(&actual).1);
+            assert_arena_heap_equivalent(&latex, MathStyle::Text);
+        }
+        assert!(widths[1] > widths[0]);
+    }
+}
+
+#[test]
 fn layout_overscript() {
     let expr = MathExpr::inline(vec![MathNode::Overscript {
         base: Box::new(MathNode::Identifier("x".into())),
