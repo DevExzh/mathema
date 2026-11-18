@@ -528,12 +528,23 @@ fn contour_integral_names_and_literals_keep_the_same_script_atom() {
         );
         assert_eq!(again.to_latex().unwrap(), output);
     }
-    let source = r"t_\oiint_a^b x";
-    let canonical = crate::from_latex(source).unwrap().to_latex().unwrap();
-    assert_eq!(
-        crate::from_latex(&canonical).unwrap().to_latex().unwrap(),
-        canonical
-    );
+    for source in [
+        r"t_\oiint_a^b x",
+        r"\frac{t_\oiint}{b}",
+        r"\int_\oiint x",
+        r"{}_\oiint x",
+        r"{}_{\oiint}x",
+    ] {
+        let original = crate::from_latex(source).unwrap();
+        let canonical = original.to_latex().unwrap();
+        let again = crate::from_latex(&canonical).unwrap();
+        assert_eq!(again.to_latex().unwrap(), canonical, "{source}");
+        assert_eq!(
+            original.to_mathml().unwrap(),
+            again.to_mathml().unwrap(),
+            "{source}: {canonical}"
+        );
+    }
 }
 
 #[test]
