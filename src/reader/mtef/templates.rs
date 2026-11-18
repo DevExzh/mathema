@@ -663,20 +663,33 @@ impl Decoder<'_> {
             Desc::HBrace { top, glyph } => {
                 let main = self.take_or_empty(&mut slots, 0)?;
                 let label = Self::take(&mut slots, 1);
-                let brace =
-                    self.char_node(glyph, |s| CompactNode::Symbol(SymbolKind::Ordinary, s))?;
-                let id = if top {
-                    let inner = self.over_under(main, Some(brace), None)?;
-                    match label {
-                        Some(sup) => self.node(CompactNode::Superscript { base: inner, sup })?,
-                        None => inner,
-                    }
+                let inner = if matches!(glyph, '⎴' | '⎵') {
+                    // MTEF 5 tmHBRACK stretches across the main slot.
+                    self.node(CompactNode::Accent {
+                        base: main,
+                        accent: glyph,
+                        wide: true,
+                        position: if top {
+                            AccentPosition::Above
+                        } else {
+                            AccentPosition::Below
+                        },
+                    })?
                 } else {
-                    let inner = self.over_under(main, None, Some(brace))?;
-                    match label {
-                        Some(sub) => self.node(CompactNode::Subscript { base: inner, sub })?,
-                        None => inner,
+                    let brace =
+                        self.char_node(glyph, |s| CompactNode::Symbol(SymbolKind::Ordinary, s))?;
+                    if top {
+                        self.over_under(main, Some(brace), None)?
+                    } else {
+                        self.over_under(main, None, Some(brace))?
                     }
+                };
+                let id = match (top, label) {
+                    (true, Some(sup)) => {
+                        self.node(CompactNode::Superscript { base: inner, sup })?
+                    },
+                    (false, Some(sub)) => self.node(CompactNode::Subscript { base: inner, sub })?,
+                    (_, None) => inner,
                 };
                 Item::Node(id)
             },

@@ -643,6 +643,19 @@ impl<'a> Encoder<'a> {
                 base,
                 accent,
                 position,
+                wide: true,
+            } if self.v5 && is_bracket_accent(accent, position) => self.horizontal_brace(
+                size,
+                base,
+                None,
+                position == AccentPosition::Above,
+                true,
+                accent,
+            ),
+            CompactNode::Accent {
+                base,
+                accent,
+                position,
                 ..
             } => self.accent(size, base, accent, position),
             CompactNode::Array { .. } => {
@@ -1009,6 +1022,21 @@ impl<'a> Encoder<'a> {
             && chars::is_limit_function(self.arena.str_val(name))
         {
             return self.limit(size, base, sub, sup);
+        }
+        if self.v5
+            && let CompactNode::Accent {
+                base: inner,
+                accent,
+                position,
+                wide: true,
+            } = *self.arena.node(base)
+            && is_bracket_accent(accent, position)
+        {
+            let top = position == AccentPosition::Above;
+            let (label, other) = if top { (sup, sub) } else { (sub, sup) };
+            if other.is_none() {
+                return self.horizontal_brace(size, inner, label, top, true, accent);
+            }
         }
         // The label of a horizontal brace.
         match (*self.arena.node(base), sub, sup) {
@@ -1898,4 +1926,12 @@ impl<'a> Encoder<'a> {
             _ => None,
         }
     }
+}
+
+/// MTEF 5 has one horizontal bracket template with a top/bottom variation.
+fn is_bracket_accent(glyph: char, position: AccentPosition) -> bool {
+    matches!(
+        (glyph, position),
+        ('⎴', AccentPosition::Above) | ('⎵', AccentPosition::Below)
+    )
 }

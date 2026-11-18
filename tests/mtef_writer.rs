@@ -376,3 +376,24 @@ fn read_back_check_ignores_the_input_size_limit() {
         }
     }
 }
+
+#[test]
+fn mtef5_horizontal_bracket_templates_keep_their_operand_and_label() {
+    let options = MtefWriteOptions::new(MtefVersion::V5);
+    for input in [
+        r"\overbracket{a+b}",
+        r"\underbracket{x}",
+        r"\overbracket{a+b}^n",
+        r"\underbracket{x}_b",
+    ] {
+        let original = from_latex(input).unwrap();
+        let bytes = original.to_mtef_bytes(&options).unwrap();
+        let decoded = from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(
+            original.to_latex().unwrap(),
+            decoded.to_latex().unwrap(),
+            "{input}"
+        );
+        assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), bytes, "{input}");
+    }
+}
