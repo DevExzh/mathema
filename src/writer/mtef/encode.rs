@@ -1088,11 +1088,13 @@ impl<'a> Encoder<'a> {
         {
             return self.compound_operator_template(size, content, sub, sup, false, false);
         }
-        // Only the name decides: MTEF does not record an operator's limit
-        // placement, so the reader could not tell `\operatorname*{foo}`
-        // from `\operatorname{foo}` and the output would change on rewrite.
-        if let CompactNode::Operator { name, .. } = *self.arena.node(base)
+        // Native limit operators use the limit template by default. An
+        // explicit side-script operator (`\nolimits` or unstarred
+        // `\operatorname`) must use the ordinary script template so MTEF does
+        // not turn a requested side placement into an under/over placement.
+        if let CompactNode::Operator { name, limits } = *self.arena.node(base)
             && chars::is_limit_function(self.arena.str_val(name))
+            && limits != LimitStyle::SubSup
         {
             return self.limit(size, base, sub, sup);
         }

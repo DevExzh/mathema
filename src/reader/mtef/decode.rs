@@ -94,6 +94,7 @@ pub(super) struct ScriptSlots {
 }
 
 /// One entry of a decoded object list.
+#[derive(Clone)]
 pub(super) enum Item {
     /// A character, not yet turned into a node.
     Glyph(Glyph),
@@ -126,6 +127,7 @@ impl Item {
 enum Class {
     Text,
     Function,
+    FunctionSpace,
     Number,
     Ident,
     Styled(TextStyle),
@@ -691,59 +693,9 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         }
         let items = self.parse_list()?;
-        let mut ids = self.assemble_line(items)?;
-        self.coalesce_compound_limit_names(&mut ids)?;
+        let ids = self.assemble_line(items)?;
         let span = self.children(&ids)?;
         Ok(Some(self.node(CompactNode::Row(span))?))
-    }
-
-    /// MTEF stores the thin separator between a compound limit name as a
-    /// separate space record. Reassemble the four native compound names so a
-    /// round trip retains one movable operator and its limit template.
-    fn coalesce_compound_limit_names(&mut self, ids: &mut SmallVec<[NodeId; 8]>) -> Result<()> {
-        let mut index = 0;
-        while index + 2 < ids.len() {
-            let (left, width, right) = match (
-                *self.arena.node(ids[index]),
-                *self.arena.node(ids[index + 1]),
-                *self.arena.node(ids[index + 2]),
-            ) {
-                (
-                    CompactNode::Operator { name: left, .. },
-                    CompactNode::Space(width),
-                    CompactNode::Operator { name: right, .. },
-                ) => (left, (width.num, width.den), right),
-                _ => {
-                    index += 1;
-                    continue;
-                },
-            };
-            if width != (1, 4) && width != (3, 18) {
-                index += 1;
-                continue;
-            }
-            let left_text = self.arena.str_val(left);
-            let right_text = self.arena.str_val(right);
-            let Some(combined) = (match (left_text, right_text) {
-                ("lim", "sup") => Some("lim\u{2009}sup"),
-                ("lim", "inf") => Some("lim\u{2009}inf"),
-                ("inj", "lim") => Some("inj\u{2009}lim"),
-                ("proj", "lim") => Some("proj\u{2009}lim"),
-                _ => None,
-            }) else {
-                index += 1;
-                continue;
-            };
-            let sid = self.arena.push_str(combined);
-            let operator = self.node(CompactNode::Operator {
-                name: sid,
-                limits: LimitStyle::Default,
-            })?;
-            ids[index] = operator;
-            ids.remove(index + 2);
-            ids.remove(index + 1);
-        }
-        Ok(())
     }
 
     /// A RULER record (with its tag) following a LINE or PILE.
@@ -1328,13 +1280,42 @@ impl<'a> Decoder<'a> {
                         Class::Function => {
                             let mut name = String::new();
                             name.push(glyph.ch);
-                            while let Some(Item::Glyph(next)) = items.peek()
-                                && next.embells.is_empty()
-                                && classify(next) == Class::Function
-                                && !next.func_start
+                            while let Some((next_ch, next_class, next_empty, next_func_start)) =
+                                items.peek().and_then(|item| match item {
+                                    Item::Glyph(next) => Some((
+                                        next.ch,
+                                        classify(next),
+                                        next.embells.is_empty(),
+                                        next.func_start,
+                                    )),
+                                    _ => None,
+                                })
                             {
-                                name.push(next.ch);
-                                items.next();
+                                if next_empty && next_class == Class::Function && !next_func_start {
+                                    name.push(next_ch);
+                                    items.next();
+                                    continue;
+                                }
+                                if next_empty && next_class == Class::FunctionSpace {
+                                    let mut lookahead = items.clone();
+                                    lookahead.next();
+                                    let Some(Item::Glyph(after)) = lookahead.next() else {
+                                        break;
+                                    };
+                                    if after.embells.is_empty()
+                                        && classify(&after) == Class::Function
+                                        && !after.func_start
+                                        && matches!(
+                                            (name.as_str(), after.ch),
+                                            ("lim", 's' | 'i') | ("inj", 'l') | ("proj", 'l')
+                                        )
+                                    {
+                                        name.push(next_ch);
+                                        items.next();
+                                        continue;
+                                    }
+                                }
+                                break;
                             }
                             self.str_node(&name, |s| CompactNode::Operator {
                                 name: s,
@@ -1376,6 +1357,9 @@ impl<'a> Decoder<'a> {
                             }
                             let span = self.children(&run)?;
                             self.node(CompactNode::Styled(style, span))?
+                        },
+                        Class::FunctionSpace => {
+                            self.node(CompactNode::Space(Rational::new(1, 6)))?
                         },
                         _ => self.glyph_node(&glyph, class)?,
                     };
@@ -1485,6 +1469,7 @@ impl<'a> Decoder<'a> {
             },
             Class::Symbol(kind) => self.char_node(ch, |s| CompactNode::Symbol(kind, s)),
             Class::Space(width) => self.node(CompactNode::Space(width)),
+            Class::FunctionSpace => self.node(CompactNode::Space(Rational::new(1, 6))),
             Class::Marker => self.empty_row(),
         }
     }
@@ -1611,6 +1596,9 @@ fn classify(glyph: &Glyph) -> Class {
     if chars::is_marker(code) {
         return Class::Marker;
     }
+    if glyph.typeface == chars::FN_FUNCTION && ch == '\u{2009}' {
+        return Class::FunctionSpace;
+    }
     if let Some(width) = (code >= 0xE000).then(|| chars::space_width(code)).flatten() {
         return Class::Space(width);
     }
@@ -1632,6 +1620,7 @@ fn classify(glyph: &Glyph) -> Class {
         return Class::Symbol(chars::symbol_kind(ch));
     }
     match glyph.typeface {
+        chars::FN_FUNCTION if ch == '\u{2009}' => Class::FunctionSpace,
         chars::FN_FUNCTION if ch.is_alphabetic() => Class::Function,
         chars::FN_VECTOR if ch.is_alphanumeric() => Class::Styled(TextStyle::Bold),
         chars::FN_NUMBER if ch.is_ascii_digit() || ch == '.' => Class::Number,

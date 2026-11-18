@@ -248,6 +248,8 @@ const BOTH: &[&str] = &[
     r"\operatorname*{lim\,sup}",
     r"\operatorname*{lim\,inf}_{n} a_n",
     r"\lim\,\sup_{n} a_n",
+    r"\operatorname{lim\,sup}_{n} a_n",
+    r"\lim\nolimits_{n} a_n",
     r"\lim \sup",
     r"\begin{matrix} a & b \\ c & d \end{matrix}",
     r"\begin{pmatrix} 1 & 0 \\ 0 & 1 \end{pmatrix}",
