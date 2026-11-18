@@ -401,7 +401,7 @@ fn write_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, _next: Opti
     if write_scalar_operator_arg(buf, arena, arg) {
         return;
     }
-    if is_digit_sequence_script_arg(arena, arg) {
+    if is_numeric_argument(arena, arg) {
         buf.push('{');
         write_node(buf, arena, arg);
         buf.push('}');
@@ -414,14 +414,16 @@ fn write_script_arg(buf: &mut String, arena: &AstArena, arg: NodeId, _next: Opti
     }
 }
 
-/// True for script arguments that are a single Number or a Row containing only
-/// digit characters.  Such arguments must be braced when written after `_`/`^`
-/// to avoid being merged with a following `.` or changing shape depending on
-/// whether the script is trailing.
-fn is_digit_sequence_script_arg(arena: &AstArena, id: NodeId) -> bool {
+/// A numeric script or large-operator argument needs an explicit token
+/// boundary so the next sibling cannot extend its decimal literal.
+fn is_numeric_argument(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Number(_) => true,
-        CompactNode::Row(span) => row_produces_only_digits(arena, span),
+        CompactNode::Row(span) => match arena.children(span) {
+            &[single] => is_numeric_argument(arena, single),
+            _ => row_produces_only_digits(arena, span),
+        },
+        CompactNode::Scaled { content, .. } => is_numeric_argument(arena, content),
         _ => false,
     }
 }
@@ -868,7 +870,14 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                         // (e.g. an inner \right\rangle) would merge with a
                         // following plain letter. Insert a separator when needed.
                         let output_start = buf.len();
-                        if ends_with_command && node_starts_with_ascii_letter(arena, child_id) {
+                        if (ends_with_command && node_starts_with_ascii_letter(arena, child_id))
+                            || (index > 0
+                                && adjacent_number_nodes_need_separator(
+                                    arena,
+                                    content_ids[index - 1],
+                                    child_id,
+                                ))
+                        {
                             buf.push(' ');
                         }
                         write_node(buf, arena, child_id);
@@ -1144,7 +1153,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             // Only write the body if it's non-empty — avoids \prod vs \prod {} divergence
             if !is_empty_body(arena, body) {
                 buf.push(' ');
-                write_braced(buf, arena, body);
+                if is_numeric_argument(arena, body) {
+                    write_always_braced(buf, arena, body);
+                } else {
+                    write_braced(buf, arena, body);
+                }
             }
         },
 

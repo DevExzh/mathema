@@ -1289,6 +1289,25 @@ fn contour_integral_names_and_literals_keep_the_same_script_atom() {
 }
 
 #[test]
+fn numerical_operator_bodies_and_fenced_decimals_keep_separate_operands() {
+    let canonical =
+        |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let xml = |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+    for source in [
+        r"∭ 888 8.8 8.788",
+        r"\sum{12}3.4 5.6",
+        r"\left(\int{1}2.3 4.5\right)",
+        r"\sum1 2",
+        r"\frac{\sum{12}3.4}{x}",
+        r"\left(1.2 3.4\middle|2.5 6.7\right)",
+    ] {
+        let first = canonical(source);
+        assert_eq!(first, canonical(&first), "{source}");
+        assert_eq!(xml(source), xml(&first), "{source}");
+    }
+}
+
+#[test]
 fn empty_operator_body_keeps_the_following_fence_content() {
     for source in [
         r"\Set{x∲{}|P}",
