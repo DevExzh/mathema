@@ -325,15 +325,43 @@ fn v3_matrix_with_partition_lines() {
             col_seps,
             row_seps,
             cells,
+            array_style,
             ..
         } => {
             assert_eq!(num_cols, 2);
             assert_eq!(col_seps, 0b010);
             assert_eq!(row_seps, 0);
+            assert!(array_style);
             assert_eq!(expr.arena.children(cells).len(), 4);
         },
         ref other => panic!("expected Array, got {other:?}"),
     }
+}
+
+#[test]
+fn v3_matrix_with_horizontal_partition_line_keeps_native_padding() {
+    let cells = cat(&[
+        &line3(&c3(1, 3, 'a')),
+        &line3(&c3(1, 3, 'b')),
+        &line3(&c3(1, 3, 'c')),
+        &line3(&c3(1, 3, 'd')),
+    ]);
+    // 2 x 2, one solid horizontal partition between the rows, no vertical
+    // partitions. MTEF has no separate edge-padding bit, so a partitioned
+    // matrix projects to the padded native-array geometry.
+    let matrix = cat(&[&[0x05, 1, 2, 1, 2, 2, 0x04, 0x00], &cells, &[0]]);
+    let result = crate::from_mtef_bytes(&eq3(&matrix)).unwrap();
+    let expr = result.compact_expr();
+    let root = expr.arena.children(expr.roots)[0];
+    assert!(matches!(
+        *expr.arena.node(root),
+        CompactNode::Array {
+            array_style: true,
+            col_seps: 0,
+            row_seps: 0b010,
+            ..
+        }
+    ));
 }
 
 #[test]

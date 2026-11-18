@@ -1997,6 +1997,7 @@ impl<'a> Encoder<'a> {
             num_cols,
             col_seps,
             row_seps,
+            array_style,
             ..
         } = *self.arena.node(id)
         else {
@@ -2015,6 +2016,11 @@ impl<'a> Encoder<'a> {
             )));
         };
         let (exported, h_just) = self.column_align(col_aligns);
+        if (col_seps != 0 || row_seps != 0) && !array_style {
+            self.lose(
+                "MTEF partition lines imply padded native array geometry; array_style=false was normalized",
+            );
+        }
         self.need(size);
         self.tag(MATRIX, 0);
         self.out.push(1);
