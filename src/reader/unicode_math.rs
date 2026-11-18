@@ -466,6 +466,51 @@ impl CompactParser {
     }
 
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
+        // UTN #28 uses ┬ (U+252C) and ┴ (U+2534) for explicitly forced
+        // below/above placement. These markers differ from _/^ because they
+        // remain stacked in inline math.
+        if let Some(rest) = input.strip_prefix(['┬', '┴']) {
+            let marker = input.chars().next().unwrap();
+            let (mut rest, first) = self.parse_script_arg(rest)?;
+            let mut under = None;
+            let mut over = None;
+            if marker == '┬' {
+                under = Some(first);
+            } else {
+                over = Some(first);
+            }
+            if let Some(next) = rest.strip_prefix(['┬', '┴']) {
+                let second_marker = rest.chars().next().unwrap();
+                let (tail, second) = self.parse_script_arg(next)?;
+                rest = tail;
+                if second_marker == '┬' {
+                    under = Some(second);
+                } else {
+                    over = Some(second);
+                }
+            }
+            let id = match (under, over) {
+                (Some(under), Some(over)) => self.push_node(CompactNode::UnderOver {
+                    base,
+                    under,
+                    over,
+                    movable_limits: false,
+                }),
+                (Some(under), None) => self.push_node(CompactNode::Underscript {
+                    base,
+                    under,
+                    movable_limits: false,
+                }),
+                (None, Some(over)) => self.push_node(CompactNode::Overscript {
+                    base,
+                    over,
+                    movable_limits: false,
+                }),
+                (None, None) => base,
+            };
+            return self.parse_scripts(rest, id);
+        }
+
         // Try subscript
         let (input, sub) = if let Some(rest) = input.strip_prefix('_') {
             match self.parse_script_arg(rest) {
@@ -1156,6 +1201,10 @@ impl CompactParser {
         // writes the thin space inside a compound limit name, so `lim sup`
         // must become one operator rather than `lim` followed by `sup`.
         let ops = [
+            "lim\u{00a0}sup",
+            "lim\u{00a0}inf",
+            "inj\u{00a0}lim",
+            "proj\u{00a0}lim",
             "lim\u{2009}sup",
             "lim\u{2009}inf",
             "inj\u{2009}lim",
@@ -1210,12 +1259,16 @@ impl CompactParser {
                     *op,
                     "limsup"
                         | "lim\u{2009}sup"
+                        | "lim\u{00a0}sup"
                         | "liminf"
                         | "lim\u{2009}inf"
+                        | "lim\u{00a0}inf"
                         | "injlim"
                         | "inj\u{2009}lim"
+                        | "inj\u{00a0}lim"
                         | "projlim"
                         | "proj\u{2009}lim"
+                        | "proj\u{00a0}lim"
                 );
                 let has_limits = matches!(
                     *op,
@@ -1223,11 +1276,15 @@ impl CompactParser {
                         | "liminf"
                         | "limsup"
                         | "lim\u{2009}sup"
+                        | "lim\u{00a0}sup"
                         | "lim\u{2009}inf"
+                        | "lim\u{00a0}inf"
                         | "injlim"
                         | "inj\u{2009}lim"
+                        | "inj\u{00a0}lim"
                         | "projlim"
                         | "proj\u{2009}lim"
+                        | "proj\u{00a0}lim"
                         | "plim"
                         | "sup"
                         | "inf"
@@ -1625,9 +1682,13 @@ mod tests {
     fn compound_limit_words_are_single_operators() {
         for source in [
             "lim\u{2009}sup x",
+            "lim\u{00a0}sup x",
             "lim\u{2009}inf x",
+            "lim\u{00a0}inf x",
             "inj\u{2009}lim x",
+            "inj\u{00a0}lim x",
             "proj\u{2009}lim x",
+            "proj\u{00a0}lim x",
             "limsup x",
             "liminf x",
             "injlim x",
@@ -1643,6 +1704,16 @@ mod tests {
                 matches!(&nodes[1], MathNode::Identifier(value) if value == "x"),
                 "{source}: {nodes:?}"
             );
+            if source.contains('\u{00a0}') {
+                assert_eq!(
+                    crate::from_unicode_math(source)
+                        .unwrap()
+                        .to_unicode_math()
+                        .unwrap(),
+                    source,
+                    "no-break name spacing changed: {source:?}"
+                );
+            }
         }
 
         let prefix = parse("limsupremo");
@@ -1658,6 +1729,15 @@ mod tests {
                 .to_unicode_math()
                 .unwrap(),
             "limsupremo"
+        );
+        let ascii_space = parse("lim sup");
+        assert!(
+            ascii_space
+                .iter()
+                .filter(|node| matches!(node, MathNode::Operator(_)))
+                .count()
+                >= 2,
+            "ASCII space keeps the two ordinary words separate: {ascii_space:?}"
         );
     }
 
@@ -1688,6 +1768,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn forced_stack_markers_bind_to_named_limits() {
+        let below = parse("lim\u{252C}(n→∞) a_n");
+        assert!(
+            matches!(
+                &below[0],
+                MathNode::Underscript {
+                    movable_limits: false,
+                    ..
+                }
+            ),
+            "{below:?}"
+        );
+        let both = parse("lim\u{252C}(n)\u{2534}(m) x");
+        assert!(
+            matches!(
+                &both[0],
+                MathNode::UnderOver {
+                    movable_limits: false,
+                    ..
+                }
+            ),
+            "{both:?}"
+        );
+
+        let source = crate::from_latex_with(
+            r"\lim\limits_{n}^{m} x",
+            &Config::default().with_display(DisplayStyle::Inline),
+        )
+        .unwrap();
+        let unicode = source.to_unicode_math().unwrap();
+        assert!(
+            unicode.contains('\u{252C}') && unicode.contains('\u{2534}'),
+            "{unicode}"
+        );
+        let reparsed = crate::from_unicode_math(&unicode).unwrap();
+        assert_eq!(reparsed.to_unicode_math().unwrap(), unicode);
     }
 
     #[test]
