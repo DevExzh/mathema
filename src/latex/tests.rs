@@ -748,6 +748,46 @@ fn smallmatrix_macros_keep_their_environment_and_cell_scopes() {
 }
 
 #[test]
+fn environment_names_expand_before_fence_and_cell_scope_selection() {
+    for (source, explicit) in [
+        (
+            r"\def\E{psmallmatrix}\begin{\E}a&b\\c&d\end{\E}",
+            r"\begin{psmallmatrix}a&b\\c&d\end{psmallmatrix}",
+        ),
+        (
+            r"\def\E{psmallmatrix*}\begin{\E}[r]a&b\\c&LONG\end{\E}",
+            r"\begin{psmallmatrix*}[r]a&b\\c&LONG\end{psmallmatrix*}",
+        ),
+        (
+            r"\def\F{Vsmallmatrix}\let\E=\F\def\K{a}\begin{\E*}[l]\def\K{z}\K&\K\end{\E*}\K",
+            r"\begin{Vsmallmatrix*}[l]z&a\end{Vsmallmatrix*}a",
+        ),
+        (
+            r"\def\E{psmallmatrix}\newenvironment{psmallmatrix}{P}{Q}\begin{\E}x\end{\E}",
+            "PxQ",
+        ),
+        (
+            r"\def\P{small}\def\E#1{#1\P matrix}\begin{\E{b}}a\end{\E{b}}",
+            r"\begin{bsmallmatrix}a\end{bsmallmatrix}",
+        ),
+    ] {
+        let result = crate::from_latex(source).unwrap();
+        let expected = crate::from_latex(explicit).unwrap();
+        assert_eq!(
+            result.to_latex().unwrap(),
+            expected.to_latex().unwrap(),
+            "{source}"
+        );
+        assert_eq!(
+            result.to_mathml().unwrap(),
+            expected.to_mathml().unwrap(),
+            "{source}"
+        );
+    }
+    assert!(crate::from_latex(r"\def\E{\E}\begin{\E}x\end{\E}").is_err());
+}
+
+#[test]
 #[cfg(feature = "render")]
 fn matrix_cell_display_choice_survives_raw_and_normalized_export() {
     use crate::{Format, convert, from_latex};

@@ -439,10 +439,7 @@ impl Processor {
                     if self.definition_command(&name, queue)? {
                         continue;
                     }
-                    if self.environment_command(&name, depth, queue)? {
-                        continue;
-                    }
-                    if self.parser_environment_command(&name, queue, out)? {
+                    if self.environment_command(&name, depth, queue, out)? {
                         continue;
                     }
                     if name == "noexpand" {
@@ -926,54 +923,6 @@ impl Processor {
         name: &str,
         depth: usize,
         queue: &mut VecDeque<Queued>,
-    ) -> ExpansionResult<bool> {
-        if name != "begin" && name != "end" {
-            return Ok(false);
-        }
-        let mut txn = QueueTxn::new(queue, self.budget.clone());
-        txn.skip_whitespace();
-        let Some(group) = txn.pop_group() else {
-            txn.rollback();
-            return Ok(false);
-        };
-        let env_name = token_text(&group).trim().to_owned();
-        let Some(env) = self.lookup_environment(&env_name) else {
-            txn.rollback();
-            return Ok(false);
-        };
-        txn.commit();
-        drop(txn);
-        if name == "begin" {
-            let args = consume_args(queue, &env.begin, self.budget.clone())
-                .ok_or_else(|| malformed("begin", SyntaxKind::MissingArguments))?;
-            let replacement = substitute(&env.begin, &args, self.cap)?;
-            self.push_scope()?;
-            self.environment_scopes += 1;
-            self.prepend(queue, replacement, depth + 1)?;
-        } else {
-            if self.environment_scopes > 0 {
-                // The end body must run before the environment scope is
-                // restored; place a private marker after it.
-                self.charge_work(1)?;
-                queue.push_front(Queued {
-                    token: Token::EndEnvironment,
-                    depth,
-                });
-            }
-            self.prepend(queue, env.end.to_vec(), depth + 1)?;
-        }
-        Ok(true)
-    }
-
-    /// Parser-owned environments are not macro definitions, but TeX still
-    /// opens a group for them.  Array-like environments additionally group
-    /// each cell, so a local definition in one cell cannot leak through `&` or
-    /// `\\` into the next cell.  The parser will consume the emitted begin/end
-    /// commands normally; this method only tracks their definition scope.
-    fn parser_environment_command(
-        &mut self,
-        name: &str,
-        queue: &mut VecDeque<Queued>,
         out: &mut Vec<Token>,
     ) -> ExpansionResult<bool> {
         if name != "begin" && name != "end" {
@@ -985,7 +934,23 @@ impl Processor {
             txn.rollback();
             return Ok(false);
         };
+        // LaTeX expands the environment name when looking up its definition.
+        // Keep literal names on the cheap path; aliases use the same bounded,
+        // non-executing expansion used for the body of an expanded definition.
+        let group = if group.iter().any(|token| !matches!(token, Token::Char(_))) {
+            self.expand_edef_body(group)?
+        } else {
+            group
+        };
         let env_name = token_text(&group).trim().to_owned();
+        if let Some(env) = self.lookup_environment(&env_name) {
+            txn.commit();
+            drop(txn);
+            self.expand_defined_environment(name, &env, depth, queue)?;
+            return Ok(true);
+        }
+        // Parser-owned arrays open one scope per cell in addition to the
+        // environment group, so a definition cannot leak across a separator.
         let fences = packages::smallmatrix_fences(&env_name);
         let Some(cell_scoped) = fences
             .map(|_| true)
@@ -1049,6 +1014,35 @@ impl Processor {
             self.parser_environments.pop();
         }
         Ok(true)
+    }
+
+    fn expand_defined_environment(
+        &mut self,
+        name: &str,
+        env: &EnvDef,
+        depth: usize,
+        queue: &mut VecDeque<Queued>,
+    ) -> ExpansionResult<()> {
+        if name == "begin" {
+            let args = consume_args(queue, &env.begin, self.budget.clone())
+                .ok_or_else(|| malformed("begin", SyntaxKind::MissingArguments))?;
+            let replacement = substitute(&env.begin, &args, self.cap)?;
+            self.push_scope()?;
+            self.environment_scopes += 1;
+            self.prepend(queue, replacement, depth + 1)?;
+        } else {
+            if self.environment_scopes > 0 {
+                // The end body must run before the environment scope is
+                // restored; place a private marker after it.
+                self.charge_work(1)?;
+                queue.push_front(Queued {
+                    token: Token::EndEnvironment,
+                    depth,
+                });
+            }
+            self.prepend(queue, env.end.to_vec(), depth + 1)?;
+        }
+        Ok(())
     }
 
     fn noexpand(
