@@ -102,6 +102,11 @@ struct MathmlCompactParser<'a> {
     /// levels. Keep the full non-negative level while reading nested
     /// `mstyle` attributes and clamp only when lowering to a StyleSwitch.
     style_level: i64,
+    /// The active font variant inherited from an `mstyle`, when one is
+    /// present. A multi-letter normal identifier is already upright under
+    /// MathML's default rules, so it needs an AST style wrapper only when it
+    /// overrides a different inherited variant.
+    mathvariant_style: Option<TextStyle>,
     /// Only direct, explicitly fenced operators of a potential fenced row
     /// need to survive until its closing tag. Nested rows use their own slice.
     fence_depth: Option<u32>,
@@ -137,6 +142,7 @@ impl<'a> MathmlCompactParser<'a> {
             movable_limit_operators: HashMap::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
+            mathvariant_style: None,
             fence_depth: None,
             fence_marks: SmallVec::new(),
         })
@@ -598,6 +604,12 @@ impl<'a> MathmlCompactParser<'a> {
         omit_text_marker: bool,
     ) -> Result<NodeId> {
         let previous = (self.style_display, self.style_level);
+        let previous_variant = self.mathvariant_style;
+        if let Some(variant) =
+            get_attr(start, "mathvariant").and_then(|value| mathvariant_to_style(&value))
+        {
+            self.mathvariant_style = Some(variant);
+        }
         let scoped = self.scoped_style(start);
         if let Some((display, level)) = scoped {
             self.style_display = display;
@@ -606,6 +618,7 @@ impl<'a> MathmlCompactParser<'a> {
         let children = self.parse_children("mstyle")?;
         self.style_display = previous.0;
         self.style_level = previous.1;
+        self.mathvariant_style = previous_variant;
 
         // An empty style element has no descendant to which its attributes
         // can apply. Emitting a leading StyleSwitch here would incorrectly
@@ -771,6 +784,11 @@ impl<'a> MathmlCompactParser<'a> {
                 if let Some(variant) = mathvariant
                     && let Some(style) = mathvariant_to_style(&variant)
                     && style != TextStyle::Italic
+                    && !(style == TextStyle::Normal
+                        && text.chars().count() > 1
+                        && self
+                            .mathvariant_style
+                            .is_none_or(|inherited| inherited == TextStyle::Normal))
                 {
                     let inner = self.arena.push_node(CompactNode::Identifier(sid));
                     let span = self.arena.push_children_deferred(&[inner]);
