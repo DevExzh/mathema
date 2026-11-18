@@ -14,8 +14,12 @@ pub(super) fn layout_fraction(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let num_style = ctx.style.fracnum();
-    let den_style = ctx.style.fracden();
+    let num_style = if ctx.display_choice {
+        ctx.style
+    } else {
+        ctx.style.fracnum()
+    };
+    let den_style = num_style.cramped();
     // Fraction content should always preserve at least text-level inter-atom
     // spacing (medium and thick spaces).  Without this floor, inline fractions
     // (Text→Script) suppress binary-operator spacing, producing visually
@@ -34,7 +38,7 @@ pub(super) fn layout_fraction(
     };
 
     // Shifts from axis (num3 used for no-bar fractions in non-display styles)
-    let (num_shift, den_shift) = if ctx.style.is_display() {
+    let (num_shift, den_shift) = if ctx.branch_style().is_display() {
         (p.num1 * size, p.denom1 * size)
     } else if bar_thickness == 0.0 {
         (p.num3 * size, p.denom2 * size)
@@ -49,7 +53,7 @@ pub(super) fn layout_fraction(
 
     if bar_thickness > 0.0 {
         // Clearance from bar: at least 3*bar_thickness in display, 1*bar_thickness otherwise
-        let min_clearance = if ctx.style.is_display() {
+        let min_clearance = if ctx.branch_style().is_display() {
             3.0 * bar_thickness
         } else {
             bar_thickness
@@ -66,7 +70,7 @@ pub(super) fn layout_fraction(
         }
     } else {
         // No bar: ensure gap between num bottom and den top
-        let min_gap = if ctx.style.is_display() {
+        let min_gap = if ctx.branch_style().is_display() {
             7.0 * p.rule_thickness * size
         } else {
             3.0 * p.rule_thickness * size
@@ -125,8 +129,12 @@ pub(super) fn layout_fraction_arena(
     let p = &ctx.params;
     let size = ctx.size();
 
-    let num_style = ctx.style.fracnum();
-    let den_style = ctx.style.fracden();
+    let num_style = if ctx.display_choice {
+        ctx.style
+    } else {
+        ctx.style.fracnum()
+    };
+    let den_style = num_style.cramped();
     // Preserve at least text-level spacing in fraction content (see heap path).
     let mut num_ctx = ctx.with_style(num_style);
     num_ctx.spacing_style = Some(num_ctx.effective_spacing_style().min_text_level());
@@ -148,7 +156,7 @@ pub(super) fn layout_fraction_arena(
         _ => p.rule_thickness * size,
     };
 
-    let (num_shift, den_shift) = if ctx.style.is_display() {
+    let (num_shift, den_shift) = if ctx.branch_style().is_display() {
         (p.num1 * size, p.denom1 * size)
     } else if bar_thickness == 0.0 {
         (p.num3 * size, p.denom2 * size)
@@ -161,7 +169,7 @@ pub(super) fn layout_fraction_arena(
     let mut den_down = den_shift;
 
     if bar_thickness > 0.0 {
-        let min_clearance = if ctx.style.is_display() {
+        let min_clearance = if ctx.branch_style().is_display() {
             3.0 * bar_thickness
         } else {
             bar_thickness
@@ -177,7 +185,7 @@ pub(super) fn layout_fraction_arena(
             den_down += min_clearance - den_clearance;
         }
     } else {
-        let min_gap = if ctx.style.is_display() {
+        let min_gap = if ctx.branch_style().is_display() {
             7.0 * p.rule_thickness * size
         } else {
             3.0 * p.rule_thickness * size

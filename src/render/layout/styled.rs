@@ -271,7 +271,8 @@ fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &LayoutCtx) -> Lay
             script_script,
         } => layout_styled_node(
             style,
-            ctx.style.choose(display, text, script, script_script),
+            ctx.branch_style()
+                .choose(display, text, script, script_script),
             ctx,
         ),
         MathNode::Row(children) => layout_styled(style, children, ctx),
@@ -302,7 +303,7 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
             continue;
         }
 
-        let raw_atom = spacing::classify_node_in(node, current_ctx.style);
+        let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.expect("passed Some");
         if let Some(prev) = adj_prev {
@@ -651,7 +652,8 @@ fn layout_styled_node_arena(
         } => layout_styled_node_arena(
             style,
             ast,
-            ctx.style.choose(display, text, script, script_script),
+            ctx.branch_style()
+                .choose(display, text, script, script_script),
             arena,
             ctx,
         ),
@@ -698,7 +700,7 @@ pub(super) fn layout_styled_arena(
 
         // Inter-atom spacing (e.g. medium space around a binary `+`), matching
         // the legacy styled-row layout and the normal arena row builder.
-        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.style);
+        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.expect("passed Some");
         if let Some(prev) = adj_prev {

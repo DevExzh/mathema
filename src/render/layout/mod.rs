@@ -357,7 +357,7 @@ impl<'a> LayoutCtx<'a> {
 
     /// Style to use for inter-atom spacing calculations.
     fn effective_spacing_style(&self) -> MathStyle {
-        self.spacing_style.unwrap_or(self.style)
+        self.spacing_style.unwrap_or_else(|| self.branch_style())
     }
 
     fn with_style(&self, style: MathStyle) -> LayoutCtx<'a> {
@@ -370,6 +370,20 @@ impl<'a> LayoutCtx<'a> {
             spacing_style: self.spacing_style,
             display_choice: false,
         }
+    }
+
+    fn branch_style(&self) -> MathStyle {
+        if self.display_choice {
+            MathStyle::Display
+        } else {
+            self.style
+        }
+    }
+
+    fn cramped(&self) -> Self {
+        let mut next = self.with_style(self.style.cramped());
+        next.display_choice = self.display_choice;
+        next
     }
 
     fn with_switch(&self, marker: u8) -> LayoutCtx<'a> {
@@ -427,7 +441,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         }
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
-        let raw_atom = spacing::classify_node_in(node, current_ctx.style);
+        let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
@@ -479,7 +493,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         MathNode::Operator(op) => layout_operator(op, ctx),
         MathNode::Symbol(kind, s) => {
             if let Some(ch) = s.chars().next() {
-                if *kind == SymbolKind::LargeOp && ctx.style.is_display() {
+                if *kind == SymbolKind::LargeOp && ctx.branch_style().is_display() {
                     let size = ctx.size() * metrics::display_op_scale(ch);
                     let m = metrics::glyph_metrics_display(ch);
                     LayoutBox::glyph_with_metrics(ch, m, size, false)
@@ -626,11 +640,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             script,
             script_script,
         } => {
-            let chosen = if ctx.display_choice {
-                display
-            } else {
-                ctx.style.choose(display, text, script, script_script)
-            };
+            let chosen = ctx
+                .branch_style()
+                .choose(display, text, script, script_script);
             layout_node(chosen, ctx)
         },
         MathNode::MathAtom { content, .. } => layout_node(content, ctx),
@@ -967,7 +979,7 @@ impl<'a> ArenaLayoutCtx<'a> {
 
     /// Style to use for inter-atom spacing calculations.
     fn effective_spacing_style(&self) -> MathStyle {
-        self.spacing_style.unwrap_or(self.style)
+        self.spacing_style.unwrap_or_else(|| self.branch_style())
     }
 
     fn with_style(&self, style: MathStyle) -> ArenaLayoutCtx<'a> {
@@ -980,6 +992,20 @@ impl<'a> ArenaLayoutCtx<'a> {
             spacing_style: self.spacing_style,
             display_choice: false,
         }
+    }
+
+    fn branch_style(&self) -> MathStyle {
+        if self.display_choice {
+            MathStyle::Display
+        } else {
+            self.style
+        }
+    }
+
+    fn cramped(&self) -> Self {
+        let mut next = self.with_style(self.style.cramped());
+        next.display_choice = self.display_choice;
+        next
     }
 
     fn with_switch(&self, marker: u8) -> ArenaLayoutCtx<'a> {
@@ -1263,7 +1289,7 @@ fn layout_row_segment_arena(
         }
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
-        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.style);
+        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
         let cur_atom = adj_cur.unwrap(); // safe: we passed Some
         if let Some(prev) = adj_prev {
@@ -1333,7 +1359,7 @@ fn layout_node_arena(
         CompactNode::Symbol(kind, sid) => {
             let s = ast.str_val(sid);
             if let Some(ch) = s.chars().next() {
-                if kind == SymbolKind::LargeOp && ctx.style.is_display() {
+                if kind == SymbolKind::LargeOp && ctx.branch_style().is_display() {
                     let size = ctx.size() * metrics::display_op_scale(ch);
                     let m = metrics::glyph_metrics_display(ch);
                     alloc_glyph_with_metrics(arena, ch, m, size, false)
@@ -1542,11 +1568,9 @@ fn layout_node_arena(
             script,
             script_script,
         } => {
-            let chosen = if ctx.display_choice {
-                display
-            } else {
-                ctx.style.choose(display, text, script, script_script)
-            };
+            let chosen = ctx
+                .branch_style()
+                .choose(display, text, script, script_script);
             layout_node_arena(ast, chosen, arena, ctx)
         },
         CompactNode::MathAtom { content, .. } => layout_node_arena(ast, content, arena, ctx),

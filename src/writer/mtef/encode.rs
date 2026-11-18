@@ -788,7 +788,7 @@ impl<'a> Encoder<'a> {
             },
             CompactNode::StyleSwitch(style) => {
                 self.lose("MTEF style switches are not written; their math style was applied to following content");
-                self.math_style = MathStyle::from_switch(style);
+                self.math_style = MathStyle::branch_from_switch(style);
                 Ok(())
             },
             CompactNode::SizeScale(_) => {

@@ -262,7 +262,7 @@ pub(super) fn layout_sqrt(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
-    let cramped_ctx = ctx.with_style(ctx.style.cramped());
+    let cramped_ctx = ctx.cramped();
     let inner = layout_node(radicand, &cramped_ctx);
 
     let g = radical_geometry(
@@ -271,7 +271,7 @@ pub(super) fn layout_sqrt(
         size,
         ctx.params.rule_thickness,
         ctx.params.x_height,
-        ctx.style.is_display(),
+        ctx.branch_style().is_display(),
     );
     let radical_thickness = g.thickness;
     let radical_width = g.surd_width;
@@ -378,7 +378,7 @@ pub(super) fn layout_sqrt_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let size = ctx.size();
-    let cramped_ctx = ctx.with_style(ctx.style.cramped());
+    let cramped_ctx = ctx.cramped();
     let inner_id = layout_node_arena(ast, radicand, arena, &cramped_ctx);
 
     let inner_w = arena.get(inner_id).width;
@@ -391,7 +391,7 @@ pub(super) fn layout_sqrt_arena(
         size,
         ctx.params.rule_thickness,
         ctx.params.x_height,
-        ctx.style.is_display(),
+        ctx.branch_style().is_display(),
     );
     let radical_thickness = g.thickness;
     let radical_width = g.surd_width;

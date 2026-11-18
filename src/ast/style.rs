@@ -68,6 +68,16 @@ impl MathStyle {
         )
     }
 
+    /// Math layout and branch choice use display style for mixed MathML
+    /// markers. Their optical size is carried separately by the renderer.
+    pub(crate) fn branch_from_switch(marker: u8) -> Self {
+        if Self::marker_is_display(marker) {
+            Self::Display
+        } else {
+            Self::from_switch(marker)
+        }
+    }
+
     /// Select a TeX mathchoice branch. Cramped styles select the same branch
     /// as their uncramped counterparts.
     pub(crate) fn choose<T>(self, display: T, text: T, script: T, scriptscript: T) -> T {

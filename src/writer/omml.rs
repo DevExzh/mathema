@@ -616,7 +616,7 @@ impl<'a> Emitter<'a> {
         let mut i = 0;
         while i < ids.len() {
             if let CompactNode::StyleSwitch(value) = *self.arena.node(ids[i]) {
-                self.style = MathStyle::from_switch(value);
+                self.style = MathStyle::branch_from_switch(value);
                 self.loss("OMML output does not preserve math style or size switches");
                 i += 1;
                 continue;
@@ -1008,7 +1008,7 @@ impl<'a> Emitter<'a> {
                 self.loss("OMML output does not preserve line breaks inside an equation")
             },
             CompactNode::StyleSwitch(value) => {
-                self.style = MathStyle::from_switch(value);
+                self.style = MathStyle::branch_from_switch(value);
                 self.loss("OMML output does not preserve math style or size switches");
             },
             CompactNode::SizeScale(_) => {

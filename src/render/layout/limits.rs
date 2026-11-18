@@ -448,7 +448,7 @@ pub(super) fn layout_nary(
     let size = ctx.size();
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
-    let (op_size, m) = if ctx.style.is_display() {
+    let (op_size, m) = if ctx.branch_style().is_display() {
         (
             size * metrics::display_op_scale(op),
             metrics::glyph_metrics_display(op),
@@ -460,7 +460,7 @@ pub(super) fn layout_nary(
 
     // TeX: center the large operator on the math axis.
     // delta = axis_height - (height - depth) / 2
-    let axis_delta = if ctx.style.is_display() {
+    let axis_delta = if ctx.branch_style().is_display() {
         p.axis_height * size - (op_box.height - op_box.depth) / 2.0
     } else {
         0.0
@@ -479,7 +479,7 @@ pub(super) fn layout_nary(
         LimitStyle::AboveBelow => true,
         LimitStyle::SubSup => false,
         // Integrals default to side-limits (nolimits); sums/products to above/below in display.
-        LimitStyle::Default => ctx.style.is_display() && !is_integral_operator(op),
+        LimitStyle::Default => ctx.branch_style().is_display() && !is_integral_operator(op),
     };
 
     if use_limits {
@@ -1291,7 +1291,7 @@ pub(super) fn layout_nary_arena(
     let size = ctx.size();
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
-    let (op_size, m) = if ctx.style.is_display() {
+    let (op_size, m) = if ctx.branch_style().is_display() {
         (
             size * metrics::display_op_scale(op),
             metrics::glyph_metrics_display(op),
@@ -1304,7 +1304,7 @@ pub(super) fn layout_nary_arena(
     // TeX: center the large operator on the math axis.
     let op_h_raw = arena.get(op_id).height;
     let op_d_raw = arena.get(op_id).depth;
-    let axis_delta = if ctx.style.is_display() {
+    let axis_delta = if ctx.branch_style().is_display() {
         p.axis_height * size - (op_h_raw - op_d_raw) / 2.0
     } else {
         0.0
@@ -1322,7 +1322,7 @@ pub(super) fn layout_nary_arena(
         LimitStyle::AboveBelow => true,
         LimitStyle::SubSup => false,
         // Integrals default to side-limits (nolimits); sums/products to above/below in display.
-        LimitStyle::Default => ctx.style.is_display() && !is_integral_operator(op),
+        LimitStyle::Default => ctx.branch_style().is_display() && !is_integral_operator(op),
     };
 
     if use_limits {

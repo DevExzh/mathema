@@ -1856,6 +1856,29 @@ fn svg_math_operators_spacing() {
 }
 
 #[test]
+fn display_fractions_at_script_size_keep_that_size_in_their_operands() {
+    let frac = "<mfrac><mn>1</mn><mn>2</mn></mfrac>";
+    for source in [
+        format!(r#"<math><mstyle displaystyle="true" scriptlevel="1">{frac}</mstyle></math>"#),
+        format!(
+            r#"<math><msup><mi>x</mi><mtable displaystyle="true"><mtr><mtd>{frac}</mtd></mtr></mtable></msup></math>"#
+        ),
+    ] {
+        let parsed = mathema::from_mathml(&source).unwrap();
+        for svg in [
+            parsed.to_svg_text().unwrap(),
+            render_to_svg(&parsed.expr(), &RenderOptions::default()).unwrap(),
+        ] {
+            assert_eq!(
+                svg.matches(r#"font-size="11.2"#).count(),
+                2,
+                "{source}: {svg}"
+            );
+        }
+    }
+}
+
+#[test]
 fn svg_mathchoice_spacing_uses_the_selected_atom_class() {
     let choice = r"\mathchoice{x}{=}{+}{,}";
     for (source, expected) in [

@@ -492,7 +492,7 @@ pub(super) fn layout_fenced(
                 max_d = max_d.max(child.depth);
                 laid_out.push(FencePart::Element {
                     layout: child,
-                    atom: spacing::classify_node_in(n, current_ctx.style),
+                    atom: spacing::classify_node_in(n, current_ctx.branch_style()),
                     style: current_ctx.effective_spacing_style(),
                     size: current_ctx.size(),
                 });
@@ -519,7 +519,7 @@ pub(super) fn layout_fenced(
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
         // TeX Rule 15e: fixed minimum delimiter height for fractions
-        let delim_min = if ctx.style.is_display() {
+        let delim_min = if ctx.branch_style().is_display() {
             ctx.params.delim1 * ctx.size()
         } else {
             ctx.params.delim2 * ctx.size()
@@ -705,7 +705,7 @@ pub(super) fn layout_fenced_arena(
                 max_d = max_d.max(b.depth);
                 laid_out.push(FencePart::Element {
                     layout: laid,
-                    atom: spacing::classify_node_c_in(ast, child_id, current_ctx.style),
+                    atom: spacing::classify_node_c_in(ast, child_id, current_ctx.branch_style()),
                     style: current_ctx.effective_spacing_style(),
                     size: current_ctx.size(),
                 });
@@ -727,7 +727,7 @@ pub(super) fn layout_fenced_arena(
 
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
-        let delim_min = if ctx.style.is_display() {
+        let delim_min = if ctx.branch_style().is_display() {
             ctx.params.delim1 * ctx.size()
         } else {
             ctx.params.delim2 * ctx.size()

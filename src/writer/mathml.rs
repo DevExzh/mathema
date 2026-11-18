@@ -113,7 +113,10 @@ fn math_style_attrs(style: MathStyle) -> (&'static str, &'static str) {
 }
 
 fn start_math_style(w: &mut XmlWriter, style: MathStyle) -> Result<()> {
-    let (display, depth) = math_style_attrs(style);
+    open_math_style(w, math_style_attrs(style))
+}
+
+fn open_math_style(w: &mut XmlWriter, (display, depth): (&str, &str)) -> Result<()> {
     let mut tag = BytesStart::new("mstyle");
     tag.push_attribute(("displaystyle", display));
     tag.push_attribute(("scriptlevel", depth));
@@ -122,7 +125,10 @@ fn start_math_style(w: &mut XmlWriter, style: MathStyle) -> Result<()> {
 }
 
 fn start_math_style_fast(buf: &mut String, style: MathStyle) {
-    let (display, depth) = math_style_attrs(style);
+    open_math_style_fast(buf, math_style_attrs(style));
+}
+
+fn open_math_style_fast(buf: &mut String, (display, depth): (&str, &str)) {
     buf.push_str("<mstyle displaystyle=\"");
     buf.push_str(display);
     buf.push_str("\" scriptlevel=\"");
@@ -130,46 +136,26 @@ fn start_math_style_fast(buf: &mut String, style: MathStyle) {
     buf.push_str("\">");
 }
 
+fn marker_attrs(marker: u8) -> (&'static str, &'static str) {
+    let (display, level) = math_style_attrs(MathStyle::from_switch(marker));
+    (
+        if MathStyle::marker_is_display(marker) {
+            "true"
+        } else {
+            display
+        },
+        level,
+    )
+}
+
 fn start_math_style_marker(w: &mut XmlWriter, marker: u8) -> Result<MathStyle> {
-    if MathStyle::marker_is_display(marker) {
-        let mut tag = BytesStart::new("mstyle");
-        tag.push_attribute(("displaystyle", "true"));
-        tag.push_attribute((
-            "scriptlevel",
-            if marker == MathStyle::DISPLAY_AT_SCRIPT {
-                "1"
-            } else {
-                "2"
-            },
-        ));
-        w.write_event(Event::Start(tag)).map_err(to_err)?;
-    } else {
-        start_math_style(w, MathStyle::from_switch(marker))?;
-    }
-    Ok(if MathStyle::marker_is_display(marker) {
-        MathStyle::Display
-    } else {
-        MathStyle::from_switch(marker)
-    })
+    open_math_style(w, marker_attrs(marker))?;
+    Ok(MathStyle::branch_from_switch(marker))
 }
 
 fn start_math_style_marker_fast(buf: &mut String, marker: u8) -> MathStyle {
-    if MathStyle::marker_is_display(marker) {
-        buf.push_str("<mstyle displaystyle=\"true\" scriptlevel=\"");
-        buf.push_str(if marker == MathStyle::DISPLAY_AT_SCRIPT {
-            "1"
-        } else {
-            "2"
-        });
-        buf.push_str("\">");
-    } else {
-        start_math_style_fast(buf, MathStyle::from_switch(marker));
-    }
-    if MathStyle::marker_is_display(marker) {
-        MathStyle::Display
-    } else {
-        MathStyle::from_switch(marker)
-    }
+    open_math_style_fast(buf, marker_attrs(marker));
+    MathStyle::branch_from_switch(marker)
 }
 
 /// If every cell starts in the same style, a nested table can keep its
@@ -186,33 +172,16 @@ fn inherited_table_marker(
     if add_jot && all_start_with(0) {
         return Some(0);
     }
-    let marker = if style.is_display() {
-        match depth {
-            1 => 4,
-            _ => 5,
-        }
+    let display_marker = if depth == 1 {
+        MathStyle::DISPLAY_AT_SCRIPT
     } else {
-        (depth + 1) as u8
+        MathStyle::DISPLAY_AT_SCRIPTSCRIPT
     };
-    if depth > 0 {
-        let display_marker = if depth == 1 {
-            MathStyle::DISPLAY_AT_SCRIPT
-        } else {
-            MathStyle::DISPLAY_AT_SCRIPTSCRIPT
-        };
-        if all_start_with(display_marker) {
-            return Some(display_marker);
-        }
+    if all_start_with(display_marker) {
+        return Some(display_marker);
     }
+    let marker = (depth + 1) as u8;
     all_start_with(marker).then_some(marker)
-}
-
-fn table_style_from_marker(marker: u8) -> MathStyle {
-    if MathStyle::marker_is_display(marker) {
-        MathStyle::Display
-    } else {
-        MathStyle::from_switch(marker)
-    }
 }
 
 /// Consecutive declarations replace one another and a trailing declaration
@@ -220,13 +189,13 @@ fn table_style_from_marker(marker: u8) -> MathStyle {
 fn style_runs<T>(
     mut nodes: &[T],
     switch: impl Fn(&T) -> Option<u8>,
-) -> impl Iterator<Item = (Option<(u8, MathStyle)>, &[T])> {
+) -> impl Iterator<Item = (Option<u8>, &[T])> {
     let mut style = None;
     std::iter::from_fn(move || {
         while let Some((node, rest)) = nodes.split_first()
             && let Some(value) = switch(node)
         {
-            style = Some((value, MathStyle::from_switch(value)));
+            style = Some(value);
             nodes = rest;
         }
         let (_, tail) = nodes.split_first()?;
@@ -267,7 +236,7 @@ fn write_sequence<T>(
             .map_err(to_err)?;
     }
     for (style, run) in style_runs(nodes, switch) {
-        let active_style = if let Some((marker, _)) = style {
+        let active_style = if let Some(marker) = style {
             start_math_style_marker(w, marker)?
         } else {
             inherited
@@ -328,7 +297,7 @@ fn write_nodes_fast(
         open_tag(buf, "mrow");
     }
     for (style, run) in style_runs(nodes, switch) {
-        let active_style = if let Some((marker, _)) = style {
+        let active_style = if let Some(marker) = style {
             start_math_style_marker_fast(buf, marker)
         } else {
             inherited
@@ -667,12 +636,12 @@ fn write_node_in(
                 })
             });
             let reset_to_text = display_style.size_class() > 0 && promoted.is_none();
-            let cell_style = promoted.map_or(MathStyle::Text, table_style_from_marker);
+            let cell_style = promoted.map_or(MathStyle::Text, MathStyle::branch_from_switch);
             if reset_to_text {
                 start_math_style(w, MathStyle::Text)?;
             }
             let mut table = BytesStart::new("mtable");
-            if promoted.is_some_and(|marker| marker == 0 || marker >= 4) {
+            if promoted.is_some_and(|marker| MathStyle::branch_from_switch(marker).is_display()) {
                 table.push_attribute(("displaystyle", "true"));
             }
             w.write_event(Event::Start(table)).map_err(to_err)?;
@@ -1382,13 +1351,13 @@ fn write_node_fast_in(
                     .all(|&cell| super::cell_after_style(arena, cell, marker).is_some())
             });
             let reset_to_text = display_style.size_class() > 0 && promoted.is_none();
-            let cell_style = promoted.map_or(MathStyle::Text, table_style_from_marker);
+            let cell_style = promoted.map_or(MathStyle::Text, MathStyle::branch_from_switch);
 
             if reset_to_text {
                 start_math_style_fast(buf, MathStyle::Text);
             }
 
-            if promoted.is_some_and(|marker| marker == 0 || marker >= 4) {
+            if promoted.is_some_and(|marker| MathStyle::branch_from_switch(marker).is_display()) {
                 buf.push_str("<mtable displaystyle=\"true\">");
             } else {
                 buf.push_str("<mtable>");

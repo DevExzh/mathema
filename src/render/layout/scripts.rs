@@ -26,7 +26,7 @@ pub(super) fn is_prime_sup_c(arena: &AstArena, id: NodeId) -> bool {
 /// When the base is a large operator in display mode, place the superscript above as a limit.
 pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     // Large operator or named operator with limits: place superscript above
-    if wants_limits_above_below(base, ctx.style) {
+    if wants_limits_above_below(base, ctx.branch_style()) {
         if is_large_op(base) {
             return layout_big_op_limits_heap(base, None, Some(sup), ctx);
         }
@@ -57,7 +57,7 @@ pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCt
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
     // Superscript shift: max of sup1/sup2/sup3, base.height - sup_drop, x_height/4 + sup.depth
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size
@@ -103,7 +103,7 @@ pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCt
 /// When the base is a large operator in display mode, place the subscript below as a limit.
 pub(super) fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     // Large operator or named operator with limits: place subscript below
-    if wants_limits_above_below(base, ctx.style) {
+    if wants_limits_above_below(base, ctx.branch_style()) {
         if is_large_op(base) {
             return layout_big_op_limits_heap(base, Some(sub), None, ctx);
         }
@@ -173,7 +173,7 @@ pub(super) fn layout_subsup(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     // Large operator or named operator with limits: place above/below
-    if wants_limits_above_below(base, ctx.style) {
+    if wants_limits_above_below(base, ctx.branch_style()) {
         if is_large_op(base) {
             return layout_big_op_limits_heap(base, Some(sub), Some(sup), ctx);
         }
@@ -200,7 +200,7 @@ pub(super) fn layout_subsup(
     let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
 
     // Superscript shift
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size
@@ -283,7 +283,7 @@ pub(super) fn layout_superscript_from_box_heap(
     let sup_params = TexParams::for_size_class(sup_style.size_class());
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size
@@ -390,7 +390,7 @@ pub(super) fn layout_subsup_from_box_heap(
     // Bug 2 fix: only apply height/depth-based drop terms when base is not a single character
     let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
 
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size
@@ -551,7 +551,7 @@ pub(super) fn layout_superscript_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     // Large operator or named operator with limits: place superscript above
-    if wants_limits_above_below_c(ast, base, ctx.style) {
+    if wants_limits_above_below_c(ast, base, ctx.branch_style()) {
         if is_large_op_c(ast, base) {
             return layout_big_op_limits_arena(ast, base, None, Some(sup), arena, ctx);
         }
@@ -598,7 +598,7 @@ pub(super) fn layout_superscript_arena(
     let sup_params = TexParams::for_size_class(sup_style.size_class());
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size
@@ -643,7 +643,7 @@ pub(super) fn layout_subscript_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     // Large operator or named operator with limits: place subscript below
-    if wants_limits_above_below_c(ast, base, ctx.style) {
+    if wants_limits_above_below_c(ast, base, ctx.branch_style()) {
         if is_large_op_c(ast, base) {
             return layout_big_op_limits_arena(ast, base, Some(sub), None, arena, ctx);
         }
@@ -726,7 +726,7 @@ pub(super) fn layout_subsup_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     // Large operator or named operator with limits: place above/below
-    if wants_limits_above_below_c(ast, base, ctx.style) {
+    if wants_limits_above_below_c(ast, base, ctx.branch_style()) {
         if is_large_op_c(ast, base) {
             return layout_big_op_limits_arena(ast, base, Some(sub), Some(sup), arena, ctx);
         }
@@ -769,7 +769,7 @@ pub(super) fn layout_subsup_arena(
     let sub_params = TexParams::for_size_class(sub_style.size_class());
     let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size
@@ -872,7 +872,7 @@ pub(super) fn layout_superscript_from_box_arena(
     let sup_params = TexParams::for_size_class(sup_style.size_class());
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size
@@ -1017,7 +1017,7 @@ pub(super) fn layout_subsup_from_box_arena(
     let sub_params = TexParams::for_size_class(sub_style.size_class());
     let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.style.is_display() {
+    let mut shift_up = if ctx.branch_style().is_display() {
         p.sup1 * size
     } else if ctx.style.is_cramped() {
         p.sup3 * size

@@ -118,7 +118,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                 }
                 match item {
                     FencedItem::Element(MathNode::StyleSwitch(value)) => {
-                        current_style = MathStyle::from_switch(*value);
+                        current_style = MathStyle::branch_from_switch(*value);
                     },
                     FencedItem::Element(node) => write_node(out, node, current_style),
                     FencedItem::Middle(delim) => {
@@ -297,7 +297,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             let mut current_style = style;
             for child in children {
                 if let MathNode::StyleSwitch(value) = child {
-                    current_style = MathStyle::from_switch(*value);
+                    current_style = MathStyle::branch_from_switch(*value);
                     continue;
                 }
                 match child {
@@ -417,7 +417,7 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
     let mut wrote_node = false;
     for node in nodes {
         if let MathNode::StyleSwitch(value) = node {
-            current_style = MathStyle::from_switch(*value);
+            current_style = MathStyle::branch_from_switch(*value);
             continue;
         }
         if wrote_node && needs_space_before_with_style(node, current_style) {
@@ -435,7 +435,7 @@ fn needs_space_before_with_style(node: &MathNode, style: MathStyle) -> bool {
             let mut current_style = style;
             for child in children {
                 if let MathNode::StyleSwitch(value) = child {
-                    current_style = MathStyle::from_switch(*value);
+                    current_style = MathStyle::branch_from_switch(*value);
                     continue;
                 }
                 return needs_space_before_with_style(child, current_style);
@@ -446,7 +446,7 @@ fn needs_space_before_with_style(node: &MathNode, style: MathStyle) -> bool {
             let mut current_style = style;
             for child in children {
                 if let MathNode::StyleSwitch(value) = child {
-                    current_style = MathStyle::from_switch(*value);
+                    current_style = MathStyle::branch_from_switch(*value);
                     continue;
                 }
                 return needs_space_before_with_style(child, current_style);
@@ -516,7 +516,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             for &cid in arena.children(content) {
                 match *arena.node(cid) {
                     CompactNode::StyleSwitch(value) => {
-                        current_style = MathStyle::from_switch(value);
+                        current_style = MathStyle::branch_from_switch(value);
                     },
                     CompactNode::Middle(sid) => {
                         out.push_str(arena.str_val(sid));
@@ -724,7 +724,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             for &child_id in arena.children(span) {
                 let child = *arena.node(child_id);
                 if let CompactNode::StyleSwitch(value) = child {
-                    current_style = MathStyle::from_switch(value);
+                    current_style = MathStyle::branch_from_switch(value);
                     continue;
                 }
                 match child {
@@ -863,7 +863,7 @@ fn write_nodes_c_with_style(
     let mut wrote_node = false;
     for &id in arena.children(span) {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
-            current_style = MathStyle::from_switch(value);
+            current_style = MathStyle::branch_from_switch(value);
             continue;
         }
         if wrote_node && needs_space_before_c_with_style(arena, id, current_style) {
@@ -881,7 +881,7 @@ fn needs_space_before_c_with_style(arena: &AstArena, id: NodeId, style: MathStyl
             let mut current_style = style;
             for &child in arena.children(span) {
                 if let CompactNode::StyleSwitch(value) = *arena.node(child) {
-                    current_style = MathStyle::from_switch(value);
+                    current_style = MathStyle::branch_from_switch(value);
                     continue;
                 }
                 return needs_space_before_c_with_style(arena, child, current_style);
@@ -892,7 +892,7 @@ fn needs_space_before_c_with_style(arena: &AstArena, id: NodeId, style: MathStyl
             let mut current_style = style;
             for &child in arena.children(span) {
                 if let CompactNode::StyleSwitch(value) = *arena.node(child) {
-                    current_style = MathStyle::from_switch(value);
+                    current_style = MathStyle::branch_from_switch(value);
                     continue;
                 }
                 return needs_space_before_c_with_style(arena, child, current_style);
