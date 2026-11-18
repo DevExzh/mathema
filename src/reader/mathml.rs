@@ -242,6 +242,14 @@ impl<'a> MathmlCompactParser<'a> {
             || close_attrs.fence != Some(true)
             || open_attrs.stretchy == Some(false)
             || close_attrs.stretchy == Some(false)
+            || open_attrs
+                .form
+                .as_deref()
+                .is_some_and(|form| form != "prefix")
+            || close_attrs
+                .form
+                .as_deref()
+                .is_some_and(|form| form != "postfix")
             || (!matching_fence(self.arena.str_val(open), self.arena.str_val(close))
                 && !matches!(
                     (self.arena.str_val(open), self.arena.str_val(close)),
@@ -258,17 +266,15 @@ impl<'a> MathmlCompactParser<'a> {
                 if attributes.fence != Some(true) || attributes.stretchy == Some(false) {
                     return None;
                 }
-                // The writer's `Middle` path emits fence=true without a form
-                // or stretchy attribute. An explicit infix form is equally
-                // unambiguous for authored MathML.
-                if !is_unambiguous_middle(attributes) {
+                let sid = self.fence_delimiter(id)?;
+                // An interior parenthesis or bracket with inferred form may
+                // close one pair and start another. Only a neutral separator
+                // or an explicitly infix fence makes a middle unambiguous.
+                if !is_unambiguous_middle(attributes, self.arena.str_val(sid)) {
                     return None;
                 }
                 has_middle = true;
-                content.push(
-                    self.arena
-                        .push_node(CompactNode::Middle(self.fence_delimiter(id)?)),
-                );
+                content.push(self.arena.push_node(CompactNode::Middle(sid)));
             } else {
                 content.push(id);
             }
@@ -1729,8 +1735,10 @@ fn matching_fence(open: &str, close: &str) -> bool {
 }
 
 #[inline]
-fn is_unambiguous_middle(attributes: &FenceAttributes) -> bool {
-    (attributes.stretchy.is_none() && attributes.form.is_none())
+fn is_unambiguous_middle(attributes: &FenceAttributes, delim: &str) -> bool {
+    (attributes.stretchy.is_none()
+        && attributes.form.is_none()
+        && matches!(delim, "|" | "‖" | "∣" | "∥" | "/"))
         || attributes.form.as_deref() == Some("infix")
 }
 
@@ -2658,6 +2666,18 @@ mod tests {
                 [MathNode::Fenced { content, .. }]
                     if content.iter().any(|item| matches!(item, FencedItem::Middle(_)))
             ));
+        }
+    }
+
+    #[test]
+    fn adjacent_fence_pairs_and_explicit_endpoint_roles_are_preserved() {
+        for inputs in [
+            r#"<mo fence="true">(</mo><mi>a</mi><mo fence="true">)</mo><mo fence="true">(</mo><mi>b</mi><mo fence="true">)</mo>"#,
+            r#"<mo fence="true" form="postfix">(</mo><mi>a</mi><mo fence="true">)</mo>"#,
+            r#"<mo fence="true">(</mo><mi>a</mi><mo fence="true" form="infix">)</mo>"#,
+        ] {
+            let xml = format!("<math><mrow>{inputs}</mrow></math>");
+            assert!(matches!(parse_one(&xml), MathNode::Row(_)), "{xml}");
         }
     }
 
