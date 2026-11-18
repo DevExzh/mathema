@@ -478,6 +478,33 @@ impl Decoder<'_> {
         }
     }
 
+    fn fixed_limit_scripts(
+        &mut self,
+        base: NodeId,
+        lower: Option<NodeId>,
+        upper: Option<NodeId>,
+    ) -> Result<NodeId> {
+        match (lower, upper) {
+            (Some(under), Some(over)) => self.node(CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits: false,
+            }),
+            (Some(under), None) => self.node(CompactNode::Underscript {
+                base,
+                under,
+                movable_limits: false,
+            }),
+            (None, Some(over)) => self.node(CompactNode::Overscript {
+                base,
+                over,
+                movable_limits: false,
+            }),
+            (None, None) => Ok(base),
+        }
+    }
+
     /// Whether `id` is (a row holding only) a named operator such as `lim`.
     fn is_operator(&self, id: NodeId) -> bool {
         let children = self.children_of(id);
@@ -610,9 +637,16 @@ impl Decoder<'_> {
                     })?),
                     (None, Some(base)) => {
                         // An operator made of more than one character: keep it
-                        // as the base of its limits, followed by the body.
+                        // as an operator atom in its limits. The fourth slot of
+                        // tmINTOP/tmSUMOP is semantically the operator itself,
+                        // even though its contents are a line rather than a
+                        // single glyph.
+                        let base = self.node(CompactNode::MathAtom {
+                            atom_type: crate::ast::MathAtomType::Op,
+                            content: base,
+                        })?;
                         let id = if limits == LimitStyle::AboveBelow {
-                            self.over_under(base, sup, sub)?
+                            self.fixed_limit_scripts(base, sub, sup)?
                         } else {
                             let slots = ScriptSlots { sub, sup };
                             self.scripts(base, slots)?

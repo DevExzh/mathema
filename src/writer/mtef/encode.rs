@@ -602,6 +602,17 @@ impl<'a> Encoder<'a> {
                 over,
                 movable_limits,
             } => {
+                if self.v5
+                    && self.compound_operator_limits(
+                        size,
+                        base,
+                        None,
+                        Some(over),
+                        movable_limits,
+                    )?
+                {
+                    return Ok(());
+                }
                 self.note_movable(movable_limits);
                 self.over_under(size, base, Some(over), None)
             },
@@ -610,6 +621,17 @@ impl<'a> Encoder<'a> {
                 under,
                 movable_limits,
             } => {
+                if self.v5
+                    && self.compound_operator_limits(
+                        size,
+                        base,
+                        Some(under),
+                        None,
+                        movable_limits,
+                    )?
+                {
+                    return Ok(());
+                }
                 self.note_movable(movable_limits);
                 self.over_under(size, base, None, Some(under))
             },
@@ -619,6 +641,17 @@ impl<'a> Encoder<'a> {
                 over,
                 movable_limits,
             } => {
+                if self.v5
+                    && self.compound_operator_limits(
+                        size,
+                        base,
+                        Some(under),
+                        Some(over),
+                        movable_limits,
+                    )?
+                {
+                    return Ok(());
+                }
                 self.note_movable(movable_limits);
                 self.over_under(size, base, Some(over), Some(under))
             },
@@ -1015,6 +1048,14 @@ impl<'a> Encoder<'a> {
         // gives a script the single item before it as base, so a row holding
         // one node is that node.
         let base = self.unwrap_row(base);
+        if self.v5
+            && let CompactNode::MathAtom {
+                atom_type: crate::ast::MathAtomType::Op,
+                content,
+            } = *self.arena.node(base)
+        {
+            return self.compound_operator_template(size, content, sub, sup, false, false);
+        }
         // Only the name decides: MTEF does not record an operator's limit
         // placement, so the reader could not tell `\operatorname*{foo}`
         // from `\operatorname{foo}` and the output would change on rewrite.
@@ -1091,6 +1132,55 @@ impl<'a> Encoder<'a> {
         }
         self.script_template(size, sub, sup, true)?;
         self.space_code(size, chars::SPACE_ZERO)
+    }
+
+    fn compound_operator_limits(
+        &mut self,
+        size: Size,
+        base: NodeId,
+        lower: Option<NodeId>,
+        upper: Option<NodeId>,
+        movable: bool,
+    ) -> Result<bool> {
+        let CompactNode::MathAtom {
+            atom_type: crate::ast::MathAtomType::Op,
+            content,
+        } = *self.arena.node(base)
+        else {
+            return Ok(false);
+        };
+        self.compound_operator_template(size, content, lower, upper, true, movable)?;
+        Ok(true)
+    }
+
+    /// MTEF 5 `tmINTOP`/`tmSUMOP`: the main slot is empty, the lower and
+    /// upper limit slots carry scripts, and the fourth slot carries the
+    /// compound operator itself. The selector and variation retain fixed
+    /// side versus fixed above/below placement without encoding the operator
+    /// as a decorative bracket.
+    fn compound_operator_template(
+        &mut self,
+        size: Size,
+        content: NodeId,
+        lower: Option<NodeId>,
+        upper: Option<NodeId>,
+        above_below: bool,
+        movable: bool,
+    ) -> Result<()> {
+        if movable {
+            self.note_movable(true);
+        }
+        let variation = lower.map_or(0, |_| TV_LOWER)
+            | upper.map_or(0, |_| TV_UPPER)
+            | if above_below { TV_SUM } else { 0 };
+        self.template(size, if above_below { 22 } else { 21 }, variation);
+        self.null_line(size);
+        let script = size.script();
+        self.slot(script, lower)?;
+        self.slot(script, upper)?;
+        self.slot(size, Some(content))?;
+        self.end();
+        Ok(())
     }
 
     /// `tmSUB` / `tmSUP` / `tmSUBSUP` (MTEF 5) or `tmSCRIPT` / `tmLSCRIPT`

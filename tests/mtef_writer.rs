@@ -397,3 +397,55 @@ fn mtef5_horizontal_bracket_templates_keep_their_operand_and_label() {
         assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), bytes, "{input}");
     }
 }
+
+#[test]
+fn mtef5_compound_operator_limits_use_native_bigop_slots() {
+    let options = MtefWriteOptions::new(MtefVersion::V5);
+    for (input, selector, expected_marker) in [
+        (r"\mathop{a+b}\limits^⎴", 22u8, r"\mathop{a+ b}\limits^{⎴}"),
+        (
+            r"\mathop{a+b}\nolimits^⎴",
+            21u8,
+            r"\mathop{a+ b}\nolimits^{⎴}",
+        ),
+        (
+            r"\mathop{a+b}\limits_⎵^⎴",
+            22u8,
+            r"\mathop{a+ b}\limits_{⎵}^{⎴}",
+        ),
+    ] {
+        let original = from_latex(input).unwrap();
+        let bytes = original.to_mtef_bytes(&options).unwrap();
+        assert!(
+            bytes
+                .windows(4)
+                .any(|window| window == [0x03, 0x00, selector, 0x60]
+                    || window == [0x03, 0x00, selector, 0x20]
+                    || window == [0x03, 0x00, selector, 0x70]),
+            "{input} did not use tmINTOP/tmSUMOP selector {selector}: {:02x?}",
+            bytes
+        );
+        let decoded = from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(decoded.to_latex().unwrap(), expected_marker, "{input}");
+        assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), bytes, "{input}");
+    }
+
+    // A typed bracket accent remains the tmHBRACK decoration template and
+    // never becomes a general operator-limit template.
+    let bracket = from_latex(r"\overbracket{\mathop{a+b}}").unwrap();
+    let bytes = bracket.to_mtef_bytes(&options).unwrap();
+    assert!(
+        bytes
+            .windows(4)
+            .any(|window| window == [0x03, 0x00, 25, 0x01])
+    );
+    assert!(
+        !bytes
+            .windows(4)
+            .any(|window| window == [0x03, 0x00, 21, 0x20])
+    );
+    assert_eq!(
+        from_mtef_bytes(&bytes).unwrap().to_latex().unwrap(),
+        r"\overbracket{a+ b}"
+    );
+}
