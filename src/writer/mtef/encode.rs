@@ -587,7 +587,12 @@ impl<'a> Encoder<'a> {
             CompactNode::Number(s) => self.leaf(size, Leaf::Number, s),
             CompactNode::Identifier(s) => self.leaf(size, Leaf::Identifier, s),
             CompactNode::Operator { name, .. } => self.leaf(size, Leaf::Operator, name),
-            CompactNode::StructuredOperator { content, .. } => self.node(content, size),
+            CompactNode::StructuredOperator { content, .. } => {
+                self.lose(
+                    "MTEF has no source-level StructuredOperator marker; native function and template records were used",
+                );
+                self.node(content, size)
+            },
             CompactNode::Symbol(_, s) => self.leaf(size, Leaf::Symbol, s),
             CompactNode::Text(style, s) => {
                 if style != TextStyle::Normal {
@@ -1099,6 +1104,9 @@ impl<'a> Encoder<'a> {
             }
         }
         if let CompactNode::StructuredOperator { content, form } = *self.arena.node(base) {
+            self.lose(
+                "MTEF has no source-level StructuredOperator marker; native function and template records were used",
+            );
             let limits = form.limit_style();
             match limits {
                 LimitStyle::Default => {

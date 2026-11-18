@@ -89,6 +89,17 @@ fn mtef_reports_phantom_loss() {
 }
 
 #[test]
+fn mtef_reports_structured_operator_source_loss() {
+    let expr = compact(r"\operatorname*{\overline{lim}}_n x");
+    let (_, diagnostics) =
+        MtefWriter::write_compact_with_diagnostics(&expr, &Config::default()).unwrap();
+    assert!(
+        has_warning(&diagnostics, "structuredoperator"),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn lossless_input_has_no_writer_diagnostics() {
     let expr = compact("x + y = z");
     for (name, diags) in [
