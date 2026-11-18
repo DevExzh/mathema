@@ -1289,13 +1289,21 @@ fn contour_integral_names_and_literals_keep_the_same_script_atom() {
 }
 
 #[test]
-fn empty_contour_integral_body_stays_stable_inside_fence() {
-    let source =
-        "$5$$2$52\\Set{ x $$$5∲$| x<\\frafrac ` 2 X\\x|mapsto* o_Xver*S=| \\xmapsto* o}ver*=";
-    let result = crate::from_latex(source).unwrap();
-    let first = result.to_latex().unwrap();
-    let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
-    assert_eq!(first, second);
+fn empty_operator_body_keeps_the_following_fence_content() {
+    for source in [
+        r"\Set{x∲{}|P}",
+        r"\left(\prod{}+b\right)",
+        r"\left(x\varointclockwise{}\;\middle|y\right)",
+        r"\left(\sum_i^n{}a\right)",
+    ] {
+        let canonical =
+            |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let mathml =
+            |s: &str| crate::convert(s, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        let first = canonical(source);
+        assert_eq!(first, canonical(&first), "{source}");
+        assert_eq!(mathml(source), mathml(&first), "{source}");
+    }
 }
 
 #[test]
