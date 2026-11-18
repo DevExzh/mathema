@@ -4965,8 +4965,9 @@ impl LatexCompactParser {
         Ok((rest, Rational::new(num_i, 100)))
     }
 
-    /// `\kern<dimension>` or `\mkern<dimension>` — explicit spacing.
-    /// `is_mu` indicates math units (1mu = 1/18 em).
+    /// Parse one of `\kern`, `\mkern`, `\hskip`, or `\mskip` as fixed
+    /// horizontal spacing. The AST has no glue stretch/shrink fields, so any
+    /// such suffix is retained as source input and reported as a diagnostic.
     fn parse_kern<'a>(&mut self, input: &'a str, _is_mu: bool) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         // If the dimension is braced, handle {dim}
