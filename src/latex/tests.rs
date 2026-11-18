@@ -1,6 +1,6 @@
 use crate::ast::compact::CompactNode;
 use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
-use crate::ast::{DisplayStyle, MathNode};
+use crate::ast::{DisplayStyle, MathNode, OperatorNameForm};
 use crate::error::{Config, Error, LimitKind, Strictness};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
@@ -2445,7 +2445,7 @@ fn structured_operatorname_preserves_mixed_content_and_outer_placement() {
         Some(MathNode::Subscript {
             base,
             ..
-        }) if matches!(**base, MathNode::StructuredOperator { starred: false, .. })
+        }) if matches!(**base, MathNode::StructuredOperator { form: OperatorNameForm::Unstarred, .. })
     ));
 }
 

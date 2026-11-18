@@ -627,7 +627,7 @@ fn is_overunder_line_node(node: &MathNode) -> bool {
 fn has_forced_operator_limits(node: &MathNode) -> bool {
     match node {
         MathNode::Operator(attr) => attr.limit_style == LimitStyle::AboveBelow,
-        MathNode::StructuredOperator { limit_style, .. } => *limit_style == LimitStyle::AboveBelow,
+        MathNode::StructuredOperator { form, .. } => form.limit_style() == LimitStyle::AboveBelow,
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
@@ -640,7 +640,9 @@ fn has_forced_operator_limits(node: &MathNode) -> bool {
 fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Operator { limits, .. } => limits == LimitStyle::AboveBelow,
-        CompactNode::StructuredOperator { limits, .. } => limits == LimitStyle::AboveBelow,
+        CompactNode::StructuredOperator { form, .. } => {
+            form.limit_style() == LimitStyle::AboveBelow
+        },
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,

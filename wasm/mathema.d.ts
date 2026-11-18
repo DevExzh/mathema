@@ -81,7 +81,7 @@ export type MathNode =
     }
   | { StyleSwitch: number }
   | { MathAtom: { atom_type: MathAtomType; content: MathNode } }
-  | { StructuredOperator: { content: MathNode; limit_style: LimitStyle; starred: boolean } }
+  | { StructuredOperator: { content: MathNode; form: OperatorNameForm } }
   | { Color: { color: string; content: MathNode } };
 
 export type FencedItem =
@@ -116,6 +116,10 @@ export type StrokeKind = "Forward" | "Backward" | "Cross" | "Horizontal" | "Vert
 export type PhantomKind = "Full" | "Vertical" | "Horizontal" | "SmashBoth" | "SmashBottom" | "SmashTop";
 export type MathAtomType = "Ord" | "Op" | "Bin" | "Rel" | "Open" | "Close" | "Punct" | "Inner";
 export type LimitStyle = "Default" | "AboveBelow" | "SubSup";
+
+export type OperatorNameForm =
+  | "Unstarred"
+  | { Starred: LimitStyle };
 export type SpaceBasis = "TextEm" | "MathMu" | "Physical";
 
 /** Diagnostic message from lenient parsing */

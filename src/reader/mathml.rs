@@ -870,8 +870,11 @@ impl<'a> MathmlCompactParser<'a> {
                         if let Some((limits, starred)) = attrs.structured_operator {
                             Ok(self.arena.push_node(CompactNode::StructuredOperator {
                                 content,
-                                limits,
-                                starred,
+                                form: if starred {
+                                    OperatorNameForm::Starred(limits)
+                                } else {
+                                    OperatorNameForm::Unstarred
+                                },
                             }))
                         } else {
                             Ok(self.marked_atom(atom_type, content, attrs.movable_limits))
@@ -1226,8 +1229,11 @@ impl<'a> MathmlCompactParser<'a> {
                         if let Some((limits, starred)) = attrs.structured_operator {
                             self.arena.push_node(CompactNode::StructuredOperator {
                                 content: empty,
-                                limits,
-                                starred,
+                                form: if starred {
+                                    OperatorNameForm::Starred(limits)
+                                } else {
+                                    OperatorNameForm::Unstarred
+                                },
                             })
                         } else {
                             self.marked_atom(atom_type, empty, attrs.movable_limits)
@@ -1548,13 +1554,11 @@ impl<'a> MathmlCompactParser<'a> {
                 };
                 Some(self.arena.push_node(node))
             },
-            CompactNode::StructuredOperator {
-                content,
-                limits,
-                starred,
-            } => {
+            CompactNode::StructuredOperator { content, form } => {
+                let starred = form.is_starred();
+                let old_limits = form.limit_style();
                 let limits = if stacked {
-                    if starred && limits == LimitStyle::Default {
+                    if starred && old_limits == LimitStyle::Default {
                         LimitStyle::Default
                     } else {
                         LimitStyle::AboveBelow
@@ -1564,8 +1568,11 @@ impl<'a> MathmlCompactParser<'a> {
                 };
                 *self.arena.node_mut(base) = CompactNode::StructuredOperator {
                     content,
-                    limits,
-                    starred,
+                    form: if starred {
+                        OperatorNameForm::Starred(limits)
+                    } else {
+                        OperatorNameForm::Unstarred
+                    },
                 };
                 Some(self.make_script_pair(base, sub, sup))
             },

@@ -2596,20 +2596,16 @@ impl LatexCompactParser {
             return self.parse_nary_rest(input, base);
         }
 
-        if let CompactNode::StructuredOperator {
-            content,
-            limits,
-            starred,
-        } = *self.arena.node(base)
-        {
+        if let CompactNode::StructuredOperator { content, form } = *self.arena.node(base) {
             let (rest, ((sub, sup), modifier)) =
                 self.parse_script_fields_with_limits(input, false)?;
+            let starred = form.is_starred();
+            let limits = form.limit_style();
             let operator = if starred {
                 if let Some(new_limits) = modifier.filter(|&value| value != limits) {
                     self.arena.push_node(CompactNode::StructuredOperator {
                         content,
-                        limits: new_limits,
-                        starred,
+                        form: OperatorNameForm::Starred(new_limits),
                     })
                 } else {
                     base
@@ -4924,8 +4920,11 @@ impl LatexCompactParser {
         let operator = if let Some(content) = structured {
             self.arena.push_node(CompactNode::StructuredOperator {
                 content,
-                limits,
-                starred,
+                form: if starred {
+                    OperatorNameForm::Starred(limits)
+                } else {
+                    OperatorNameForm::Unstarred
+                },
             })
         } else {
             let sid = self.arena.push_str(name.as_deref().unwrap_or_default());

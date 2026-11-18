@@ -1609,11 +1609,9 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             write_wrapped_content(buf, arena, content);
             buf.push('}');
         },
-        CompactNode::StructuredOperator {
-            content,
-            limits,
-            starred,
-        } => write_structured_operator(buf, arena, content, limits, starred),
+        CompactNode::StructuredOperator { content, form } => {
+            write_structured_operator(buf, arena, content, form)
+        },
     }
 }
 
@@ -1621,9 +1619,10 @@ fn write_structured_operator(
     buf: &mut String,
     arena: &AstArena,
     content: NodeId,
-    limits: LimitStyle,
-    starred: bool,
+    form: OperatorNameForm,
 ) {
+    let limits = form.limit_style();
+    let starred = form.is_starred();
     buf.push_str("\\operatorname");
     if starred || limits == LimitStyle::AboveBelow {
         buf.push('*');
@@ -1634,7 +1633,18 @@ fn write_structured_operator(
     // typography. `\operatorname` already supplies that face in TeX, so omit
     // only this outer Normal wrapper on LaTeX export. Nested explicit styles
     // remain part of the written content.
-    if let CompactNode::Styled(TextStyle::Normal, span) = *arena.node(content)
+    let simple_content = matches!(
+        *arena.node(content),
+        CompactNode::Identifier(_) | CompactNode::Number(_) | CompactNode::Operator { .. }
+    );
+    if simple_content {
+        // Keep a hand-built structured operator structured on reparse. A
+        // plain identifier would otherwise take the legacy string-backed
+        // operator fast path and erase the starred/unstarred form.
+        buf.push_str("\\mathord{");
+        write_wrapped_content(buf, arena, content);
+        buf.push('}');
+    } else if let CompactNode::Styled(TextStyle::Normal, span) = *arena.node(content)
         && synthetic_operator_normal_scope(arena, span)
     {
         write_nodes(buf, arena, span);
@@ -1661,6 +1671,7 @@ fn synthetic_operator_normal_scope(arena: &AstArena, span: NodeSpan) -> bool {
                 | CompactNode::Fraction { .. }
                 | CompactNode::Color { .. }
                 | CompactNode::Styled(_, _)
+                | CompactNode::MathAtom { .. }
                 | CompactNode::Operator { .. }
         )
     })

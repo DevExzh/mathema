@@ -859,15 +859,11 @@ fn write_node_in(
                 write_node_in(w, content, single_argument, display_style)
             }
         },
-        MathNode::StructuredOperator {
-            content,
-            limit_style,
-            starred,
-        } => write_structured_operator_group(
+        MathNode::StructuredOperator { content, form } => write_structured_operator_group(
             w,
             content,
-            *limit_style,
-            *starred,
+            form.limit_style(),
+            form.is_starred(),
             false,
             display_style,
         ),
@@ -1094,15 +1090,11 @@ fn write_limit_base(
             atom_type: MathAtomType::Op,
             content,
         } => write_atom_group(w, content, "OP", movable, display_style),
-        MathNode::StructuredOperator {
-            content,
-            limit_style,
-            starred,
-        } => write_structured_operator_group(
+        MathNode::StructuredOperator { content, form } => write_structured_operator_group(
             w,
             content,
-            *limit_style,
-            *starred,
+            form.limit_style(),
+            form.is_starred(),
             movable,
             display_style,
         ),
@@ -1826,16 +1818,12 @@ fn write_node_fast_in(
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
         },
-        CompactNode::StructuredOperator {
-            content,
-            limits,
-            starred,
-        } => write_structured_operator_group_fast(
+        CompactNode::StructuredOperator { content, form } => write_structured_operator_group_fast(
             buf,
             arena,
             content,
-            limits,
-            starred,
+            form.limit_style(),
+            form.is_starred(),
             false,
             display_style,
         ),
@@ -1879,7 +1867,7 @@ impl ScriptBase {
         }
         match node {
             MathNode::Operator(attr) => Self::Named(attr.limit_style),
-            MathNode::StructuredOperator { limit_style, .. } => Self::Structured(*limit_style),
+            MathNode::StructuredOperator { form, .. } => Self::Structured(form.limit_style()),
             MathNode::MathAtom {
                 atom_type: MathAtomType::Op,
                 ..
@@ -1895,7 +1883,7 @@ impl ScriptBase {
         }
         match *arena.node(id) {
             CompactNode::Operator { limits, .. } => Self::Named(limits),
-            CompactNode::StructuredOperator { limits, .. } => Self::Structured(limits),
+            CompactNode::StructuredOperator { form, .. } => Self::Structured(form.limit_style()),
             CompactNode::MathAtom {
                 atom_type: MathAtomType::Op,
                 ..
@@ -2215,16 +2203,12 @@ fn write_limit_base_fast(
             atom_type: MathAtomType::Op,
             content,
         } => write_atom_group_fast(buf, arena, content, "OP", movable, display_style),
-        CompactNode::StructuredOperator {
-            content,
-            limits,
-            starred,
-        } => write_structured_operator_group_fast(
+        CompactNode::StructuredOperator { content, form } => write_structured_operator_group_fast(
             buf,
             arena,
             content,
-            limits,
-            starred,
+            form.limit_style(),
+            form.is_starred(),
             movable,
             display_style,
         ),
