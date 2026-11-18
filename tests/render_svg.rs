@@ -1856,6 +1856,29 @@ fn svg_math_operators_spacing() {
 }
 
 #[test]
+fn svg_fence_style_applies_until_the_next_middle() {
+    let choice = r"\mathchoice{1}{2}{3}{4}";
+    for (source, expected) in [
+        (
+            format!(r"\left(\scriptstyle{choice}\middle|{choice}\right)"),
+            r"\left({\scriptstyle 3}\middle|1\right)",
+        ),
+        (
+            format!(r"\textstyle\left(\scriptscriptstyle{choice}\middle|{choice}\right)"),
+            r"\textstyle\left({\scriptscriptstyle 4}\middle|2\right)",
+        ),
+        (
+            format!(r"\left(\scriptstyle{choice}+{choice}\right){choice}"),
+            r"\left({\scriptstyle 3+3}\right)1",
+        ),
+    ] {
+        for render in [latex_to_svg, render_latex] {
+            assert_eq!(render(&source), render(expected), "{source}");
+        }
+    }
+}
+
+#[test]
 fn svg_nested_delimiters_scale() {
     let svg = render_latex(r"\left(\frac{\frac{a}{b}}{c}\right)");
     assert_valid_svg(&svg, "nested delimiter scaling");

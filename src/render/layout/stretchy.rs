@@ -438,6 +438,32 @@ fn stretchy_arrow_svg_verbose(ch: char, w: f64, em: f64) -> String {
 // Paths are from KaTeX's svgGeometry.ts (MIT license).
 // ---------------------------------------------------------------------------
 
+/// Fence contents are measured before their delimiters can be sized. Keep
+/// each visible atom's spacing context alongside its measured box.
+enum FencePart<'a, B> {
+    Element {
+        layout: B,
+        atom: AtomType,
+        style: MathStyle,
+        size: f64,
+    },
+    Middle(&'a str),
+}
+
+fn fence_atom_gap(
+    previous: &mut Option<AtomType>,
+    atom: AtomType,
+    style: MathStyle,
+    size: f64,
+) -> f64 {
+    let (left, right) = spacing::adjust_bin_context(*previous, Some(atom));
+    let current = right.unwrap_or(atom);
+    *previous = Some(current);
+    left.map_or(0.0, |left| {
+        spacing::inter_atom_space(left, current, style) * size
+    })
+}
+
 pub(super) fn layout_fenced(
     open: &str,
     close: &str,
@@ -448,7 +474,8 @@ pub(super) fn layout_fenced(
 
     // Pass 1: Layout all Element items, compute max_h/max_d for delimiter sizing.
     // Store laid-out boxes for reuse in pass 2.
-    let mut laid_out: Vec<Option<LayoutBox>> = Vec::with_capacity(content.len());
+    let mut laid_out = Vec::with_capacity(content.len());
+    let mut current_ctx = ctx.clone();
     let mut max_h: f64 = 0.0;
     let mut max_d: f64 = 0.0;
     let mut element_count = 0usize;
@@ -456,11 +483,19 @@ pub(super) fn layout_fenced(
 
     for item in content {
         match item {
+            FencedItem::Element(MathNode::StyleSwitch(value)) => {
+                current_ctx = ctx.with_style(MathStyle::from_switch(*value));
+            },
             FencedItem::Element(n) => {
-                let child = layout_node(n, ctx);
+                let child = layout_node(n, &current_ctx);
                 max_h = max_h.max(child.height);
                 max_d = max_d.max(child.depth);
-                laid_out.push(Some(child));
+                laid_out.push(FencePart::Element {
+                    layout: child,
+                    atom: spacing::classify_node(n),
+                    style: current_ctx.effective_spacing_style(),
+                    size: current_ctx.size(),
+                });
                 element_count += 1;
                 sole_nobar_frac = element_count == 1
                     && matches!(
@@ -471,8 +506,9 @@ pub(super) fn layout_fenced(
                         }
                     );
             },
-            FencedItem::Middle(_) => {
-                laid_out.push(None);
+            FencedItem::Middle(delim) => {
+                laid_out.push(FencePart::Middle(delim.as_str()));
+                current_ctx = ctx.clone();
             },
         }
     }
@@ -526,7 +562,6 @@ pub(super) fn layout_fenced(
     let mut children = Vec::new();
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<spacing::AtomType> = None;
-    let mut laid_iter = laid_out.into_iter();
 
     // Open delimiter
     if !open.is_empty()
@@ -553,32 +588,20 @@ pub(super) fn layout_fenced(
     }
 
     // Content + middle delimiters
-    for item in content {
-        match item {
-            FencedItem::Element(n) => {
-                // Safety: laid_out has one entry per content item
-                let child = laid_iter
-                    .next()
-                    .expect("fenced layout: iterator exhausted")
-                    .expect("fenced layout: element was None");
-                // Inter-atom spacing
-                let raw_atom = spacing::classify_node(n);
-                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-                let cur_atom = adj_cur.unwrap(); // safe: we passed Some
-                if let Some(prev) = adj_prev {
-                    let space =
-                        spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
-                    if space > 0.0 {
-                        cursor_x += space * ctx.size();
-                    }
-                }
+    for part in laid_out {
+        match part {
+            FencePart::Element {
+                layout: child,
+                atom,
+                style,
+                size,
+            } => {
+                cursor_x += fence_atom_gap(&mut prev_atom, atom, style, size);
                 let w = child.width;
                 children.push(PositionedBox::new(cursor_x, 0.0, child));
                 cursor_x += w;
-                prev_atom = Some(cur_atom);
             },
-            FencedItem::Middle(s) => {
-                laid_iter.next(); // consume the None placeholder
+            FencePart::Middle(s) => {
                 if s != "."
                     && let Some(ch) = s.chars().next()
                 {
@@ -659,7 +682,8 @@ pub(super) fn layout_fenced_arena(
 
     // Pass 1: Layout all Element items, compute max_h/max_d for delimiter sizing.
     let content_children = ast.children(content);
-    let mut laid_out: Vec<Option<LayoutBoxId>> = Vec::with_capacity(content_children.len());
+    let mut laid_out = Vec::with_capacity(content_children.len());
+    let mut current_ctx = ctx.clone();
     let mut max_h: f64 = 0.0;
     let mut max_d: f64 = 0.0;
     let mut element_count = 0usize;
@@ -667,15 +691,24 @@ pub(super) fn layout_fenced_arena(
 
     for &child_id in content_children {
         match *ast.node(child_id) {
-            CompactNode::Middle(_) => {
-                laid_out.push(None);
+            CompactNode::StyleSwitch(value) => {
+                current_ctx = ctx.with_style(MathStyle::from_switch(value));
+            },
+            CompactNode::Middle(sid) => {
+                laid_out.push(FencePart::Middle(ast.str_val(sid)));
+                current_ctx = ctx.clone();
             },
             _ => {
-                let laid = layout_node_arena(ast, child_id, arena, ctx);
+                let laid = layout_node_arena(ast, child_id, arena, &current_ctx);
                 let b = arena.get(laid);
                 max_h = max_h.max(b.height);
                 max_d = max_d.max(b.depth);
-                laid_out.push(Some(laid));
+                laid_out.push(FencePart::Element {
+                    layout: laid,
+                    atom: spacing::classify_node_c(ast, child_id),
+                    style: current_ctx.effective_spacing_style(),
+                    size: current_ctx.size(),
+                });
                 element_count += 1;
                 sole_nobar_frac = element_count == 1
                     && matches!(
@@ -717,7 +750,6 @@ pub(super) fn layout_fenced_arena(
     let children_start = arena.begin_children();
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<spacing::AtomType> = None;
-    let mut laid_iter = laid_out.into_iter();
 
     // Open delimiter
     let open_str = ast.str_val(open);
@@ -761,11 +793,9 @@ pub(super) fn layout_fenced_arena(
     }
 
     // Content + middle delimiters
-    for &child_id in content_children {
-        match *ast.node(child_id) {
-            CompactNode::Middle(sid) => {
-                laid_iter.next(); // consume the None placeholder
-                let s = ast.str_val(sid);
+    for part in laid_out {
+        match part {
+            FencePart::Middle(s) => {
                 if s != "."
                     && let Some(ch) = s.chars().next()
                 {
@@ -815,21 +845,13 @@ pub(super) fn layout_fenced_arena(
                     prev_atom = Some(spacing::AtomType::Inner);
                 }
             },
-            _ => {
-                // Safety: laid_iter yields one item per non-delimiter child; unwrap safe because
-                // the iterator was built from the same child list we're iterating
-                let laid = laid_iter.next().unwrap().unwrap();
-                // Inter-atom spacing
-                let raw_atom = spacing::classify_node_c(ast, child_id);
-                let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-                let cur_atom = adj_cur.unwrap(); // safe: we passed Some(raw_atom)
-                if let Some(prev) = adj_prev {
-                    let space =
-                        spacing::inter_atom_space(prev, cur_atom, ctx.effective_spacing_style());
-                    if space > 0.0 {
-                        cursor_x += space * ctx.size();
-                    }
-                }
+            FencePart::Element {
+                layout: laid,
+                atom,
+                style,
+                size,
+            } => {
+                cursor_x += fence_atom_gap(&mut prev_atom, atom, style, size);
                 let w = arena.get(laid).width;
                 arena.push_child(ArenaPositionedBox {
                     dx: cursor_x,
@@ -837,7 +859,6 @@ pub(super) fn layout_fenced_arena(
                     id: laid,
                 });
                 cursor_x += w;
-                prev_atom = Some(cur_atom);
             },
         }
     }
