@@ -33,6 +33,20 @@ fn malformed(command: &str, kind: SyntaxKind) -> ExpansionFailure {
     }
 }
 
+pub(super) fn smallmatrix_environment_replacement(name: &str, begin: bool) -> Option<String> {
+    let (open, close) = packages::smallmatrix_fences(name)?;
+    let inner = if name.ends_with('*') {
+        "smallmatrix*"
+    } else {
+        "smallmatrix"
+    };
+    Some(if begin {
+        format!(r"\mathopen{{}}\mathclose{{\left{open}\begin{{{inner}}}")
+    } else {
+        format!(r"\end{{{inner}}}\right{close}}}")
+    })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Token {
     Char(char),
@@ -962,7 +976,7 @@ impl Processor {
         txn.commit();
         drop(txn);
 
-        if let Some((open, close)) = fences.filter(|_| {
+        if fences.as_ref().is_some_and(|_| {
             name == "begin"
                 || self
                     .parser_environments
@@ -971,16 +985,8 @@ impl Processor {
         }) {
             // mathtools gives these fences independent opening and closing
             // atom classes. A bare left/right pair adds space beside a variable.
-            let inner = if env_name.ends_with('*') {
-                "smallmatrix*"
-            } else {
-                "smallmatrix"
-            };
-            let expansion = if name == "begin" {
-                format!(r"\mathopen{{}}\mathclose{{\left{open}\begin{{{inner}}}")
-            } else {
-                format!(r"\end{{{inner}}}\right{close}}}")
-            };
+            let expansion = smallmatrix_environment_replacement(&env_name, name == "begin")
+                .expect("smallmatrix fences were checked above");
             for token in tokenize(&expansion) {
                 self.append(out, token)?;
             }

@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use smallvec::SmallVec;
+
 use super::packages;
 
 #[path = "ordered_stream.rs"]
@@ -189,11 +191,11 @@ fn expand_source(
     direct_leading_plim: bool,
     direct_parser_environments: bool,
 ) -> Result<Cow<'_, str>, ExpansionFailure> {
-    let (source, needs_expansion) =
+    let (source, needs_expansion, has_literal_fenced_smallmatrix) =
         prepare_source(input, direct_leading_plim, direct_parser_environments);
     if needs_expansion {
         Ok(Cow::Owned(ordered_stream::expand(&source)?))
-    } else if direct_parser_environments {
+    } else if direct_parser_environments && has_literal_fenced_smallmatrix {
         match rewrite_literal_smallmatrix(&source) {
             LiteralRewrite::Unchanged => Ok(source),
             LiteralRewrite::Rewritten(source) => Ok(Cow::Owned(source)),
@@ -210,11 +212,12 @@ fn prepare_source(
     input: &str,
     direct_leading_plim: bool,
     direct_parser_environments: bool,
-) -> (Cow<'_, str>, bool) {
+) -> (Cow<'_, str>, bool, bool) {
     let mut offset = 0;
     let mut copy_from = 0;
     let mut stripped: Option<String> = None;
     let mut needs_expansion = false;
+    let mut has_literal_fenced_smallmatrix = false;
     while let Some(pos) = input[offset..].find(['\\', '%']) {
         let start = offset + pos;
         let tail = &input[start..];
@@ -230,6 +233,14 @@ fn prepare_source(
             offset = end;
         } else if let Some((rest, token)) = super::split_token(tail) {
             let name = &token[1..];
+            let (literal_fence, environment_needs_expansion) = if name == "begin" || name == "end" {
+                inspect_environment_name(rest)
+            } else {
+                (false, false)
+            };
+            if name == "begin" && literal_fence {
+                has_literal_fenced_smallmatrix = true;
+            }
             if !needs_expansion {
                 needs_expansion = matches!(
                     name,
@@ -255,11 +266,8 @@ fn prepare_source(
                         | "@ifnextchar"
                         | "TextOrMath"
                         | "newenvironment"
-                ) || (!direct_parser_environments
-                    && name == "begin"
-                    && starts_fenced_smallmatrix(rest))
-                    || ((name == "begin" || name == "end")
-                        && environment_name_needs_expansion(rest))
+                ) || (!direct_parser_environments && literal_fence)
+                    || environment_needs_expansion
                     || (!(direct_leading_plim && start == 0 && name == "plim")
                         && packages::is_builtin_macro_name(name));
             }
@@ -275,60 +283,38 @@ fn prepare_source(
         },
         None => Cow::Borrowed(input),
     };
-    (source, needs_expansion)
+    (source, needs_expansion, has_literal_fenced_smallmatrix)
 }
 
-/// Inspect only the environment name. Comments may separate the command
-/// from its opening brace before the ordered stream strips them.
-fn starts_fenced_smallmatrix(mut rest: &str) -> bool {
+/// Inspect the environment name once while preparing the source. Comments may
+/// separate the command from its opening brace before the ordered stream
+/// strips them.
+fn inspect_environment_name(mut rest: &str) -> (bool, bool) {
     loop {
         rest = rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
         if !rest.starts_with('%') {
             break;
         }
         let Some(end) = rest.find(['\r', '\n']) else {
-            return false;
+            return (false, true);
         };
         rest = &rest[end..];
     }
     let Some(name) = rest.strip_prefix('{') else {
-        return false;
-    };
-    let Some(end) = name
-        .bytes()
-        .take("psmallmatrix*}".len())
-        .position(|b| b == b'}')
-    else {
-        return false;
-    };
-    packages::smallmatrix_fences(&name[..end]).is_some()
-}
-
-/// Return true when an environment name cannot be consumed as a literal parser
-/// name. Macro-bearing and malformed names stay on the ordered stream so
-/// definitions, aliases, and diagnostics retain their existing semantics.
-fn environment_name_needs_expansion(mut rest: &str) -> bool {
-    loop {
-        rest = rest.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
-        if !rest.starts_with('%') {
-            break;
-        }
-        let Some(end) = rest.find(['\r', '\n']) else {
-            return true;
-        };
-        rest = &rest[end..];
-    }
-    let Some(name) = rest.strip_prefix('{') else {
-        return true;
+        return (false, true);
     };
     let Some(end) = name.find('}') else {
-        return true;
+        return (false, true);
     };
     let name = &name[..end];
-    name.is_empty()
-        || !name
+    let literal = !name.is_empty()
+        && name
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '*')
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '*');
+    (
+        literal && packages::smallmatrix_fences(name).is_some(),
+        !literal,
+    )
 }
 
 /// Rewrite only literal mathtools environment names. This keeps the ordered
@@ -345,10 +331,17 @@ fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
     let mut offset = 0;
     let mut copy_from = 0;
     let mut output: Option<String> = None;
-    let mut stack = Vec::new();
+    let mut stack: SmallVec<[&str; 8]> = SmallVec::new();
     let mut changed = false;
+    let mut work = 0usize;
+    let work_limit = expansion_work_cap(input.len());
+    let output_limit = expansion_cap(input.len());
     while let Some(relative) = input[offset..].find('\\') {
         let start = offset + relative;
+        work = work.saturating_add(relative);
+        if work > work_limit {
+            return LiteralRewrite::Fallback;
+        }
         if let Some(end) = find_verb_end(input, start) {
             offset = end;
             continue;
@@ -356,6 +349,10 @@ fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
         let Some((rest, token)) = super::split_token(&input[start..]) else {
             return LiteralRewrite::Fallback;
         };
+        work = work.saturating_add(token.len());
+        if work > work_limit {
+            return LiteralRewrite::Fallback;
+        }
         let name = &token[1..];
         let after = input.len() - rest.len();
         if name == "begin" || name == "end" {
@@ -363,7 +360,10 @@ fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
                 return LiteralRewrite::Fallback;
             };
             if name == "begin" {
-                stack.push(env_name.to_owned());
+                if stack.len() >= MAX_LITERAL_ENV_DEPTH {
+                    return LiteralRewrite::Fallback;
+                }
+                stack.push(env_name);
             } else {
                 let Some(open_name) = stack.pop() else {
                     return LiteralRewrite::Fallback;
@@ -372,16 +372,11 @@ fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
                     return LiteralRewrite::Fallback;
                 }
             }
-            if let Some((open, close)) = packages::smallmatrix_fences(env_name) {
-                let inner = if env_name.ends_with('*') {
-                    "smallmatrix*"
-                } else {
-                    "smallmatrix"
-                };
-                let replacement = if name == "begin" {
-                    format!(r"\mathopen{{}}\mathclose{{\left{open}\begin{{{inner}}}")
-                } else {
-                    format!(r"\end{{{inner}}}\right{close}}}")
+            if packages::smallmatrix_fences(env_name).is_some() {
+                let Some(replacement) =
+                    ordered_stream::smallmatrix_environment_replacement(env_name, name == "begin")
+                else {
+                    return LiteralRewrite::Fallback;
                 };
                 output
                     .get_or_insert_with(|| String::with_capacity(input.len() + replacement.len()))
@@ -389,6 +384,9 @@ fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
                 let Some(output) = output.as_mut() else {
                     return LiteralRewrite::Fallback;
                 };
+                if output.len().saturating_add(replacement.len()) > output_limit {
+                    return LiteralRewrite::Fallback;
+                }
                 output.push_str(&replacement);
                 copy_from = after + group_end;
                 changed = true;
@@ -404,6 +402,9 @@ fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
     let Some(mut output) = output else {
         return LiteralRewrite::Unchanged;
     };
+    if output.len().saturating_add(input.len() - copy_from) > output_limit {
+        return LiteralRewrite::Fallback;
+    }
     output.push_str(&input[copy_from..]);
     if changed {
         LiteralRewrite::Rewritten(output)
@@ -411,6 +412,8 @@ fn rewrite_literal_smallmatrix(input: &str) -> LiteralRewrite {
         LiteralRewrite::Unchanged
     }
 }
+
+const MAX_LITERAL_ENV_DEPTH: usize = 128;
 
 fn literal_environment_group(input: &str) -> Option<(usize, &str)> {
     let skipped = input
