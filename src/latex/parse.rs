@@ -3421,6 +3421,7 @@ impl LatexCompactParser {
 
             // --- Operatorname ---
             "operatorname" => self.parse_operatorname(input),
+            "multicolumn" => self.parse_multicolumn(input),
 
             // --- Additional binomials ---
             "dbinom" => self.parse_styled_binom(input, 0),
@@ -4782,6 +4783,46 @@ impl LatexCompactParser {
             },
             _ => None,
         }
+    }
+
+    fn parse_multicolumn<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let Some((input, span_count)) = super::mhchem::capture_braced(input) else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        };
+        if span_count.trim() != "1" {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        let (input, _) = ws(input)?;
+        let Some((input, spec)) = super::mhchem::capture_braced(input) else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Char,
+            )));
+        };
+        let alignment = match spec.trim() {
+            "l" => ColumnAlign::Left,
+            "r" => ColumnAlign::Right,
+            "c" => ColumnAlign::Center,
+            _ => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            },
+        };
+        let (input, content) = self.parse_required_group(input)?;
+        Ok((
+            input,
+            self.arena
+                .push_node(CompactNode::AlignedCell { alignment, content }),
+        ))
     }
 
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

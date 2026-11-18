@@ -3303,6 +3303,10 @@ mod tests {
         let reparsed = crate::from_mathml(&compact_xml).unwrap();
         assert_eq!(compact_xml, reparsed.to_mathml().unwrap());
         assert_eq!(parsed.to_svg().unwrap(), reparsed.to_svg().unwrap());
+        let latex = parsed.to_latex().unwrap();
+        assert!(latex.contains(r"\multicolumn{1}{r}"));
+        let latex_reparsed = crate::from_latex(&latex).unwrap();
+        assert_eq!(parsed.to_svg().unwrap(), latex_reparsed.to_svg().unwrap());
         let MathNode::Array { rows, .. } = &parsed.expr().nodes[0] else {
             panic!("expected table array");
         };

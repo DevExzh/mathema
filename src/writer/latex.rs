@@ -1251,7 +1251,17 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             }
         },
 
-        CompactNode::AlignedCell { content, .. } => write_node(buf, arena, content),
+        CompactNode::AlignedCell { alignment, content } => {
+            buf.push_str(r"\multicolumn{1}{");
+            buf.push(match alignment {
+                ColumnAlign::Left => 'l',
+                ColumnAlign::Center => 'c',
+                ColumnAlign::Right => 'r',
+            });
+            buf.push_str("}{");
+            write_wrapped_content(buf, arena, content);
+            buf.push('}');
+        },
         CompactNode::Array {
             col_aligns,
             cells,
@@ -1347,6 +1357,21 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                             buf.push_str(" & ");
                         }
                         let cell_id = cell_ids[row_idx * nc + col_idx];
+                        if let Some(alignment) = arena.cell_alignment(cell_id) {
+                            buf.push_str(r"\multicolumn{1}{");
+                            buf.push(match alignment {
+                                ColumnAlign::Left => 'l',
+                                ColumnAlign::Center => 'c',
+                                ColumnAlign::Right => 'r',
+                            });
+                            buf.push_str("}{");
+                            match *arena.node(cell_id) {
+                                CompactNode::Row(span) => write_nodes(buf, arena, span),
+                                _ => write_node(buf, arena, cell_id),
+                            }
+                            buf.push('}');
+                            continue;
+                        }
                         // Each cell is a Row node wrapping cell contents
                         if let Some(marker) = match env {
                             "smallmatrix" | "smallmatrix*" => Some(2),
