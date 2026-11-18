@@ -1323,6 +1323,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
     }
 }
 
+#[cold]
 #[inline(never)]
 fn write_structured_operator_c(
     out: &mut String,
@@ -1761,65 +1762,56 @@ fn write_nodes_c_with_style(
             current_style = MathStyle::branch_from_switch(value);
             continue;
         }
-        if wrote_node && needs_space_before_c_with_style(arena, id, current_style) {
+        let (needs_space, terminates_operator) = compact_spacing_flags(arena, id, current_style);
+        if wrote_node && needs_space {
             out.push(' ');
         }
         let start = out.len();
         write_node_c(out, arena, id, current_style);
         separate_following_operand(out, start, previous_operator);
-        previous_operator = needs_operator_terminator_c(arena, id, current_style);
+        previous_operator = terminates_operator;
         wrote_node = true;
     }
 }
 
-fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+fn compact_spacing_flags(arena: &AstArena, id: NodeId, style: MathStyle) -> (bool, bool) {
     match *arena.node(select_mathchoice_c(arena, id, style)) {
-        CompactNode::Operator { name, .. } => is_unicode_function(arena.str_val(name)),
+        CompactNode::Operator { name, .. } => (true, is_unicode_function(arena.str_val(name))),
+        CompactNode::Text(_, _) => (true, false),
         CompactNode::Subscript { .. }
         | CompactNode::Superscript { .. }
         | CompactNode::SubSup { .. }
         | CompactNode::Underscript { .. }
         | CompactNode::Overscript { .. }
-        | CompactNode::UnderOver { .. } => true,
+        | CompactNode::UnderOver { .. } => (false, true),
         CompactNode::Color { content, .. }
         | CompactNode::MathAtom { content, .. }
         | CompactNode::StructuredOperator { content, .. } => {
-            needs_operator_terminator_c(arena, content, style)
+            compact_spacing_flags(arena, content, style)
         },
-        _ => false,
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            let mut current_style = style;
+            for &child in arena.children(span) {
+                if let CompactNode::StyleSwitch(value) = *arena.node(child) {
+                    current_style = MathStyle::branch_from_switch(value);
+                    continue;
+                }
+                return (compact_spacing_flags(arena, child, current_style).0, false);
+            }
+            (false, false)
+        },
+        _ => (false, false),
     }
 }
 
+#[inline]
+fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+    compact_spacing_flags(arena, id, style).1
+}
+
+#[inline]
 fn needs_space_before_c_with_style(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
-    match *arena.node(select_mathchoice_c(arena, id, style)) {
-        CompactNode::Operator { .. } | CompactNode::Text(_, _) => true,
-        CompactNode::Row(span) => {
-            let mut current_style = style;
-            for &child in arena.children(span) {
-                if let CompactNode::StyleSwitch(value) = *arena.node(child) {
-                    current_style = MathStyle::branch_from_switch(value);
-                    continue;
-                }
-                return needs_space_before_c_with_style(arena, child, current_style);
-            }
-            false
-        },
-        CompactNode::Styled(_, span) => {
-            let mut current_style = style;
-            for &child in arena.children(span) {
-                if let CompactNode::StyleSwitch(value) = *arena.node(child) {
-                    current_style = MathStyle::branch_from_switch(value);
-                    continue;
-                }
-                return needs_space_before_c_with_style(arena, child, current_style);
-            }
-            false
-        },
-        CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
-            needs_space_before_c_with_style(arena, content, style)
-        },
-        _ => false,
-    }
+    compact_spacing_flags(arena, id, style).0
 }
 
 #[cfg(test)]
