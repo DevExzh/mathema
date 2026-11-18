@@ -203,8 +203,8 @@ fn expand_braket_separators(
                     protect_delimiter = true;
                 } else if nested_braket_command(name) {
                     // Each braket helper opens its own temporary separator
-                    // scope. Leave its argument untouched so an outer helper
-                    // cannot consume the inner helper's first bar.
+                    // scope. Expand a nested helper first so its generated
+                    // middle tokens cannot be consumed by the outer scope.
                     let whitespace_start = index;
                     while source[index..]
                         .chars()
@@ -215,7 +215,15 @@ fn expand_braket_separators(
                     }
                     output.push_str(&source[whitespace_start..index]);
                     if let Some(group_end) = braced_end(source, index) {
-                        output.push_str(&source[index..group_end]);
+                        let raw_start = index + 1;
+                        let raw_end = group_end.saturating_sub(1);
+                        if let Some(expanded) =
+                            expand_braket_command(name, &source[raw_start..raw_end])
+                        {
+                            output.push_str(&expanded);
+                        } else {
+                            output.push_str(&source[index..group_end]);
+                        }
                         index = group_end;
                     }
                 } else if text_command(name) {
@@ -265,6 +273,44 @@ fn expand_braket_separators(
         index += ch.len_utf8();
     }
     output
+}
+
+fn expand_braket_command(name: &str, raw: &str) -> Option<String> {
+    let mut expanded = String::with_capacity(raw.len() + 32);
+    match name {
+        "braket" => {
+            expanded.push_str(r"\mathinner{\langle{");
+            expanded.push_str(raw);
+            expanded.push_str(r"}\rangle}");
+        },
+        "Braket" => {
+            expanded.push_str(r"\left\langle ");
+            expanded.push_str(&expand_braket_separators(
+                raw,
+                false,
+                r"\,\middle\vert\,",
+                Some(r"\,\middle\Vert\,"),
+            ));
+            expanded.push_str(r"\right\rangle");
+        },
+        "Set" => {
+            expanded.push_str(r"\left\{\:");
+            expanded.push_str(&expand_braket_separators(
+                raw,
+                true,
+                r"\;\middle\vert\;",
+                Some(r"\;\middle\Vert\;"),
+            ));
+            expanded.push_str(r"\:\right\}");
+        },
+        "set" => {
+            expanded.push_str(r"\{\,");
+            expanded.push_str(&expand_braket_separators(raw, true, r"\mid ", None));
+            expanded.push_str(r"\,\}");
+        },
+        _ => return None,
+    }
+    Some(expanded)
 }
 
 // ---------------------------------------------------------------------------
@@ -4388,8 +4434,8 @@ impl LatexCompactParser {
     /// existing AST construction paths.
     fn parse_braket_macro<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let Some((rest, raw)) = super::mhchem::capture_braced(input)
-            .or_else(|| super::split_token(input).map(|(rest, token)| (rest, token)))
+        let Some((rest, raw)) =
+            super::mhchem::capture_braced(input).or_else(|| super::split_token(input))
         else {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -4397,47 +4443,7 @@ impl LatexCompactParser {
             )));
         };
 
-        let mut expanded = String::with_capacity(raw.len() + 32);
-        let transformed = match name {
-            "Braket" => {
-                // The source-space terminates the `\langle` control word.
-                expanded.push_str(r"\left\langle ");
-                let value = expand_braket_separators(
-                    raw,
-                    false,
-                    r"\,\middle\vert\,",
-                    Some(r"\,\middle\Vert\,"),
-                );
-                expanded.push_str(&value);
-                expanded.push_str(r"\right\rangle");
-                None
-            },
-            "Set" => {
-                expanded.push_str(r"\left\{\:");
-                let value = expand_braket_separators(
-                    raw,
-                    true,
-                    r"\;\middle\vert\;",
-                    Some(r"\;\middle\Vert\;"),
-                );
-                expanded.push_str(&value);
-                expanded.push_str(r"\:\right\}");
-                None
-            },
-            "set" => {
-                expanded.push_str(r"\{\,");
-                // A control word needs a source-space terminator before the
-                // first letter of the following argument token.
-                let value = expand_braket_separators(raw, true, r"\mid ", None);
-                expanded.push_str(&value);
-                expanded.push_str(r"\,\}");
-                None
-            },
-            _ => Some(raw),
-        };
-        if let Some(raw) = transformed {
-            expanded.push_str(raw);
-        }
+        let expanded = expand_braket_command(name, raw).unwrap_or_else(|| raw.to_owned());
 
         let ids = match self.parse_node_list(&expanded) {
             Ok((leftover, ids)) if leftover.trim().is_empty() => ids,
