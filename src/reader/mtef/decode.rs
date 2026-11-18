@@ -94,7 +94,6 @@ pub(super) struct ScriptSlots {
 }
 
 /// One entry of a decoded object list.
-#[derive(Clone)]
 pub(super) enum Item {
     /// A character, not yet turned into a node.
     Glyph(Glyph),
@@ -127,7 +126,6 @@ impl Item {
 enum Class {
     Text,
     Function,
-    FunctionSpace,
     Number,
     Ident,
     Styled(TextStyle),
@@ -1280,42 +1278,13 @@ impl<'a> Decoder<'a> {
                         Class::Function => {
                             let mut name = String::new();
                             name.push(glyph.ch);
-                            while let Some((next_ch, next_class, next_empty, next_func_start)) =
-                                items.peek().and_then(|item| match item {
-                                    Item::Glyph(next) => Some((
-                                        next.ch,
-                                        classify(next),
-                                        next.embells.is_empty(),
-                                        next.func_start,
-                                    )),
-                                    _ => None,
-                                })
+                            while let Some(Item::Glyph(next)) = items.peek()
+                                && next.embells.is_empty()
+                                && classify(next) == Class::Function
+                                && !next.func_start
                             {
-                                if next_empty && next_class == Class::Function && !next_func_start {
-                                    name.push(next_ch);
-                                    items.next();
-                                    continue;
-                                }
-                                if next_empty && next_class == Class::FunctionSpace {
-                                    let mut lookahead = items.clone();
-                                    lookahead.next();
-                                    let Some(Item::Glyph(after)) = lookahead.next() else {
-                                        break;
-                                    };
-                                    if after.embells.is_empty()
-                                        && classify(&after) == Class::Function
-                                        && !after.func_start
-                                        && matches!(
-                                            (name.as_str(), after.ch),
-                                            ("lim", 's' | 'i') | ("inj", 'l') | ("proj", 'l')
-                                        )
-                                    {
-                                        name.push(next_ch);
-                                        items.next();
-                                        continue;
-                                    }
-                                }
-                                break;
+                                name.push(next.ch);
+                                items.next();
                             }
                             self.str_node(&name, |s| CompactNode::Operator {
                                 name: s,
@@ -1357,9 +1326,6 @@ impl<'a> Decoder<'a> {
                             }
                             let span = self.children(&run)?;
                             self.node(CompactNode::Styled(style, span))?
-                        },
-                        Class::FunctionSpace => {
-                            self.node(CompactNode::Space(Rational::new(1, 6)))?
                         },
                         _ => self.glyph_node(&glyph, class)?,
                     };
@@ -1420,7 +1386,34 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
+    /// A native script or limit template determines the placement of its
+    /// function-face operand, independently of the spelling of that operand.
+    pub(super) fn named_with_limits(
+        &mut self,
+        mut id: NodeId,
+        placement: LimitStyle,
+    ) -> Option<NodeId> {
+        while let CompactNode::Row(span) = *self.arena.node(id) {
+            let &[only] = self.arena.children(span) else {
+                return None;
+            };
+            id = only;
+        }
+        if let CompactNode::Operator { limits, .. } = self.arena.node_mut(id) {
+            *limits = placement;
+            Some(id)
+        } else {
+            None
+        }
+    }
+
     fn script_node(&mut self, base: NodeId, slots: ScriptSlots) -> Result<NodeId> {
+        let base = if slots.sub.is_some() || slots.sup.is_some() {
+            self.named_with_limits(base, LimitStyle::SubSup)
+                .unwrap_or(base)
+        } else {
+            base
+        };
         match (slots.sub, slots.sup) {
             (Some(sub), Some(sup)) => self.node(CompactNode::SubSup { base, sub, sup }),
             (Some(sub), None) => self.node(CompactNode::Subscript { base, sub }),
@@ -1469,7 +1462,6 @@ impl<'a> Decoder<'a> {
             },
             Class::Symbol(kind) => self.char_node(ch, |s| CompactNode::Symbol(kind, s)),
             Class::Space(width) => self.node(CompactNode::Space(width)),
-            Class::FunctionSpace => self.node(CompactNode::Space(Rational::new(1, 6))),
             Class::Marker => self.empty_row(),
         }
     }
@@ -1596,11 +1588,13 @@ fn classify(glyph: &Glyph) -> Class {
     if chars::is_marker(code) {
         return Class::Marker;
     }
-    if glyph.typeface == chars::FN_FUNCTION && ch == '\u{2009}' {
-        return Class::FunctionSpace;
-    }
     if let Some(width) = (code >= 0xE000).then(|| chars::space_width(code)).flatten() {
         return Class::Space(width);
+    }
+    // Within a function-face run, U+2009 is part of the operator name.
+    // Standalone mathematical spacing is encoded by FN_SPACE above.
+    if ch == '\u{2009}' && glyph.typeface == chars::FN_FUNCTION && glyph.explicit.is_none() {
+        return Class::Function;
     }
     if ch.is_whitespace() {
         return Class::Space(Rational::new(1, 4));
@@ -1620,7 +1614,6 @@ fn classify(glyph: &Glyph) -> Class {
         return Class::Symbol(chars::symbol_kind(ch));
     }
     match glyph.typeface {
-        chars::FN_FUNCTION if ch == '\u{2009}' => Class::FunctionSpace,
         chars::FN_FUNCTION if ch.is_alphabetic() => Class::Function,
         chars::FN_VECTOR if ch.is_alphanumeric() => Class::Styled(TextStyle::Bold),
         chars::FN_NUMBER if ch.is_ascii_digit() || ch == '.' => Class::Number,

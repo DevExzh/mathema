@@ -855,7 +855,7 @@ impl<'a> Encoder<'a> {
                 Glyph::new(FN_FUNCTION, ch),
                 // MTEF 5 marks the first letter of each function name; MTEF 3
                 // has no such flag, so adjacent names must be separated.
-                (!self.v5 && ch.is_alphabetic()).then_some(Run::Function),
+                (!self.v5 && (ch.is_alphabetic() || ch == '\u{2009}')).then_some(Run::Function),
             ),
             Leaf::Symbol => (chars::symbol_glyph(ch), None),
             Leaf::Number if ch.is_ascii_digit() || ch == '.' => match self.style {
@@ -1088,15 +1088,14 @@ impl<'a> Encoder<'a> {
         {
             return self.compound_operator_template(size, content, sub, sup, false, false);
         }
-        // Native limit operators use the limit template by default. An
-        // explicit side-script operator (`\nolimits` or unstarred
-        // `\operatorname`) must use the ordinary script template so MTEF does
-        // not turn a requested side placement into an under/over placement.
-        if let CompactNode::Operator { name, limits } = *self.arena.node(base)
-            && chars::is_limit_function(self.arena.str_val(name))
-            && limits != LimitStyle::SubSup
-        {
-            return self.limit(size, base, sub, sup);
+        if let CompactNode::Operator { limits, .. } = *self.arena.node(base) {
+            match limits {
+                LimitStyle::Default => return self.limit(size, base, sub, sup),
+                LimitStyle::AboveBelow => {
+                    return self.compound_operator_template(size, base, sub, sup, true, false);
+                },
+                LimitStyle::SubSup => {},
+            }
         }
         if self.v5
             && let CompactNode::Accent {

@@ -415,6 +415,34 @@ fn mtef5_horizontal_bracket_templates_keep_their_operand_and_label() {
 }
 
 #[test]
+fn named_operator_templates_preserve_bound_placement_and_function_spaces() {
+    use mathema::{Config, ast::DisplayStyle, from_latex_with, from_mtef_bytes_with};
+    for mode in [DisplayStyle::Inline, DisplayStyle::Block] {
+        let cfg = Config::default().with_display(mode);
+        for source in [
+            r"\limsup_i x",
+            r"\limsup\limits_i x",
+            r"\limsup\nolimits_i x",
+            r"\plim_i x",
+            r"\operatorname*{rate\,of}\limits_i x",
+            r"\operatorname{limsup}_i x",
+            r"\lim\,\sup_i x",
+        ] {
+            let parsed = from_latex_with(source, &cfg).unwrap();
+            for v in [MtefVersion::V3, MtefVersion::V5] {
+                let bytes = parsed.to_mtef_bytes(&MtefWriteOptions::new(v)).unwrap();
+                let imported = from_mtef_bytes_with(&bytes, &cfg).unwrap();
+                assert_eq!(
+                    parsed.to_mathml().unwrap(),
+                    imported.to_mathml().unwrap(),
+                    "{mode:?} {source} {v:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn mtef5_compound_operator_limits_use_native_bigop_slots() {
     let options = MtefWriteOptions::new(MtefVersion::V5);
     for (input, selector, expected_marker) in [

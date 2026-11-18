@@ -455,10 +455,6 @@ pub(super) fn horizontal_brace(s: &str) -> Option<(bool, bool, char)> {
 /// The long-division bracket the reader puts before the dividend.
 pub(super) const LONG_DIVISION: &str = "\u{27CC}";
 
-/// Function names whose scripts MathType places with the limit template
-/// (`tmLIM`), under and over the name in display style.
-pub(super) use crate::ast::normalize::is_limit_function;
-
 /// Integral signs, whose limits default to the integral-style placement.
 pub(super) fn is_integral(op: char) -> bool {
     matches!(

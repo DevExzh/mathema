@@ -505,12 +505,6 @@ impl Decoder<'_> {
         }
     }
 
-    /// Whether `id` is (a row holding only) a named operator such as `lim`.
-    fn is_operator(&self, id: NodeId) -> bool {
-        let children = self.children_of(id);
-        matches!(children.as_slice(), [only] if matches!(self.arena.node(*only), CompactNode::Operator { .. }))
-    }
-
     /// Build the AST for a template and push it onto `items`.
     pub(super) fn build_template(
         &mut self,
@@ -640,20 +634,21 @@ impl Decoder<'_> {
                         limits,
                     })?),
                     (None, Some(base)) => {
-                        // A custom operator slot may contain even a single
-                        // identifier. Keep its atom class and complete contents. The fourth slot of
-                        // tmINTOP/tmSUMOP is semantically the operator itself,
-                        // even though its contents are a line rather than a
-                        // single glyph.
-                        let base = self.node(CompactNode::MathAtom {
-                            atom_type: crate::ast::MathAtomType::Op,
-                            content: base,
-                        })?;
-                        let id = if limits == LimitStyle::AboveBelow {
-                            self.fixed_limit_scripts(base, sub, sup)?
+                        let slots = ScriptSlots { sub, sup };
+                        let id = if let Some(name) = self.named_with_limits(base, limits) {
+                            self.scripts(name, slots)?
                         } else {
-                            let slots = ScriptSlots { sub, sup };
-                            self.scripts(base, slots)?
+                            // Preserve the complete operator expression in the
+                            // fourth slot for compound and single-symbol bases.
+                            let base = self.node(CompactNode::MathAtom {
+                                atom_type: crate::ast::MathAtomType::Op,
+                                content: base,
+                            })?;
+                            if limits == LimitStyle::AboveBelow {
+                                self.fixed_limit_scripts(base, sub, sup)?
+                            } else {
+                                self.scripts(base, slots)?
+                            }
                         };
                         let id = if self.is_empty_row(body) {
                             id
@@ -684,7 +679,7 @@ impl Decoder<'_> {
                 // An empty limit line draws nothing.
                 let lower = self.take_filled(&mut slots, 1);
                 let upper = self.take_filled(&mut slots, 2);
-                let id = if self.is_operator(base) {
+                let id = if let Some(base) = self.named_with_limits(base, LimitStyle::Default) {
                     // `lim`, `max`, ...: limits are the operator's scripts.
                     self.scripts(
                         base,
