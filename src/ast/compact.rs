@@ -400,6 +400,17 @@ pub enum CompactNode {
 
     /// Font size scale: 0=tiny..9=Huge. See SIZE_SCALE_TABLE in layout.rs.
     SizeScale(u8),
+
+    /// A structured operatorname/operatorname-star whose content remains an
+    /// expression instead of being flattened into a string.
+    StructuredOperator {
+        /// Parsed operator content, including accents and explicit spaces.
+        content: NodeId,
+        /// Effective placement for scripts attached to this operator.
+        limits: LimitStyle,
+        /// Whether the source used the starred movable-limit form.
+        starred: bool,
+    },
 }
 
 // Compile-time size check: CompactNode must fit in 32 bytes.
@@ -785,6 +796,18 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 content: inner,
             })
         },
+        MathNode::StructuredOperator {
+            content,
+            limit_style,
+            starred,
+        } => {
+            let content = push_math_node(arena, content);
+            arena.push_node(CompactNode::StructuredOperator {
+                content,
+                limits: *limit_style,
+                starred: *starred,
+            })
+        },
     }
 }
 
@@ -1131,6 +1154,15 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         CompactNode::MathAtom { atom_type, content } => MathNode::MathAtom {
             atom_type,
             content: Box::new(reconstruct_node(arena, content)),
+        },
+        CompactNode::StructuredOperator {
+            content,
+            limits,
+            starred,
+        } => MathNode::StructuredOperator {
+            content: Box::new(reconstruct_node(arena, content)),
+            limit_style: limits,
+            starred,
         },
 
         // Helper nodes — should not appear as standalone roots, but handle gracefully

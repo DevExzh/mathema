@@ -162,6 +162,9 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
         MathNode::MathAtom { content, .. } => {
             v.visit_node(content);
         },
+        MathNode::StructuredOperator { content, .. } => {
+            v.visit_node(content);
+        },
     }
 }
 
@@ -324,6 +327,9 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
         MathNode::MathAtom { content, .. } => {
             v.visit_node_mut(content);
         },
+        MathNode::StructuredOperator { content, .. } => {
+            v.visit_node_mut(content);
+        },
     }
 }
 
@@ -481,6 +487,9 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         CompactNode::MathAtom { content, .. } => {
             v.visit_node(arena, content);
         },
+        CompactNode::StructuredOperator { content, .. } => {
+            v.visit_node(arena, content);
+        },
     }
 }
 
@@ -633,6 +642,9 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
             v.visit_node_mut(arena, script_script);
         },
         CompactNode::MathAtom { content, .. } => {
+            v.visit_node_mut(arena, content);
+        },
+        CompactNode::StructuredOperator { content, .. } => {
             v.visit_node_mut(arena, content);
         },
     }

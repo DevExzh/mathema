@@ -1619,6 +1619,33 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             write_wrapped_content(buf, arena, content);
             buf.push('}');
         },
+        CompactNode::StructuredOperator {
+            content,
+            limits,
+            starred,
+        } => write_structured_operator(buf, arena, content, limits, starred),
+    }
+}
+
+fn write_structured_operator(
+    buf: &mut String,
+    arena: &AstArena,
+    content: NodeId,
+    limits: LimitStyle,
+    starred: bool,
+) {
+    buf.push_str("\\operatorname");
+    if starred || limits == LimitStyle::AboveBelow {
+        buf.push('*');
+    }
+    buf.push('{');
+    write_wrapped_content(buf, arena, content);
+    buf.push('}');
+    match (starred, limits) {
+        (true, LimitStyle::AboveBelow) => buf.push_str("\\limits"),
+        (true, LimitStyle::SubSup) => buf.push_str("\\nolimits"),
+        (false, LimitStyle::AboveBelow) => buf.push_str("\\limits"),
+        _ => {},
     }
 }
 

@@ -395,6 +395,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, branch, style);
         },
         MathNode::MathAtom { content, .. } => write_node(out, content, style),
+        MathNode::StructuredOperator { content, .. } => write_node(out, content, style),
         MathNode::Reflect { content, .. } => write_node(out, content, style),
     }
 }
@@ -557,9 +558,9 @@ fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
         | MathNode::Underscript { .. }
         | MathNode::Overscript { .. }
         | MathNode::UnderOver { .. } => true,
-        MathNode::Color { content, .. } | MathNode::MathAtom { content, .. } => {
-            needs_operator_terminator(content, style)
-        },
+        MathNode::Color { content, .. }
+        | MathNode::MathAtom { content, .. }
+        | MathNode::StructuredOperator { content, .. } => needs_operator_terminator(content, style),
         _ => false,
     }
 }
@@ -590,6 +591,7 @@ fn needs_space_before_with_style(node: &MathNode, style: MathStyle) -> bool {
             false
         },
         MathNode::MathAtom { content, .. } => needs_space_before_with_style(content, style),
+        MathNode::StructuredOperator { .. } => true,
         _ => false,
     }
 }
@@ -625,6 +627,7 @@ fn is_overunder_line_node(node: &MathNode) -> bool {
 fn has_forced_operator_limits(node: &MathNode) -> bool {
     match node {
         MathNode::Operator(attr) => attr.limit_style == LimitStyle::AboveBelow,
+        MathNode::StructuredOperator { limit_style, .. } => *limit_style == LimitStyle::AboveBelow,
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
@@ -637,6 +640,7 @@ fn has_forced_operator_limits(node: &MathNode) -> bool {
 fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Operator { limits, .. } => limits == LimitStyle::AboveBelow,
+        CompactNode::StructuredOperator { limits, .. } => limits == LimitStyle::AboveBelow,
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
@@ -947,6 +951,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         CompactNode::MathAtom { content, .. } => {
             write_node_c(out, arena, content, style);
         },
+        CompactNode::StructuredOperator { content, .. } => {
+            write_node_c(out, arena, content, style);
+        },
         CompactNode::Reflect { content, .. } => write_node_c(out, arena, content, style),
 
         CompactNode::Middle(_)
@@ -1097,7 +1104,9 @@ fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -
         | CompactNode::Underscript { .. }
         | CompactNode::Overscript { .. }
         | CompactNode::UnderOver { .. } => true,
-        CompactNode::Color { content, .. } | CompactNode::MathAtom { content, .. } => {
+        CompactNode::Color { content, .. }
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => {
             needs_operator_terminator_c(arena, content, style)
         },
         _ => false,
@@ -1129,7 +1138,7 @@ fn needs_space_before_c_with_style(arena: &AstArena, id: NodeId, style: MathStyl
             }
             false
         },
-        CompactNode::MathAtom { content, .. } => {
+        CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
             needs_space_before_c_with_style(arena, content, style)
         },
         _ => false,
