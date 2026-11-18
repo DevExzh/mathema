@@ -1272,18 +1272,16 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 {
                     return None;
                 }
-                use crate::ast::arena::ArrayEnvironment;
+                use crate::ast::MatrixKind;
                 match (source, arraystretch_pct, align) {
-                    (ArrayEnvironment::Matrix, 100, ColumnAlign::Center) => Some(("matrix", "")),
-                    (ArrayEnvironment::Matrix, 100, ColumnAlign::Left) => Some(("matrix*", "[l]")),
-                    (ArrayEnvironment::Matrix, 100, ColumnAlign::Right) => Some(("matrix*", "[r]")),
-                    (ArrayEnvironment::SmallMatrix, 50, ColumnAlign::Center) => {
-                        Some(("smallmatrix", ""))
-                    },
-                    (ArrayEnvironment::SmallMatrix, 50, ColumnAlign::Left) => {
+                    (MatrixKind::Matrix, 100, ColumnAlign::Center) => Some(("matrix", "")),
+                    (MatrixKind::Matrix, 100, ColumnAlign::Left) => Some(("matrix*", "[l]")),
+                    (MatrixKind::Matrix, 100, ColumnAlign::Right) => Some(("matrix*", "[r]")),
+                    (MatrixKind::SmallMatrix, 50, ColumnAlign::Center) => Some(("smallmatrix", "")),
+                    (MatrixKind::SmallMatrix, 50, ColumnAlign::Left) => {
                         Some(("smallmatrix*", "[l]"))
                     },
-                    (ArrayEnvironment::SmallMatrix, 50, ColumnAlign::Right) => {
+                    (MatrixKind::SmallMatrix, 50, ColumnAlign::Right) => {
                         Some(("smallmatrix*", "[r]"))
                     },
                     _ => None,

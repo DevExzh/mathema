@@ -1514,7 +1514,7 @@ fn layout_node_arena(
             ast,
             matches!(
                 ast.array_environment(id),
-                Some(crate::ast::arena::ArrayEnvironment::SmallMatrix)
+                Some(crate::ast::MatrixKind::SmallMatrix)
             ),
             col_aligns,
             cells,

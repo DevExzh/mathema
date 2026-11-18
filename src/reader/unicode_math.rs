@@ -915,6 +915,8 @@ impl CompactParser {
         let (input, _) = satisfy(|c| c == '(')(input)?;
         let (input, content) = self.parse_matrix_content(input)?;
         let (input, _) = satisfy(|c| c == ')')(input)?;
+        self.arena
+            .mark_array_environment(content, MatrixKind::Matrix);
         Ok((input, content))
     }
 
@@ -1513,7 +1515,7 @@ mod tests {
         let MathNode::Root { index, radicand } = &nodes[0] else {
             panic!("expected nth root, got {nodes:?}");
         };
-        assert!(matches!(&**index, MathNode::Array { .. }));
+        assert!(matches!(&**index, MathNode::Matrix { .. }));
         assert!(matches!(&**radicand, MathNode::Fenced { .. }));
     }
 
@@ -1561,8 +1563,8 @@ mod tests {
     #[test]
     fn matrix() {
         let nodes = parse("\u{25A0}(a&b@c&d)");
-        assert!(matches!(&nodes[0], MathNode::Array { .. }));
-        if let MathNode::Array { rows, .. } = &nodes[0] {
+        assert!(matches!(&nodes[0], MathNode::Matrix { .. }));
+        if let MathNode::Matrix { rows, .. } = &nodes[0] {
             assert_eq!(rows.len(), 2);
         }
     }
@@ -1574,7 +1576,7 @@ mod tests {
             &nodes[0],
             MathNode::Superscript { base, sup }
                 if matches!(base.as_ref(), MathNode::Identifier(value) if value == "x")
-                    && matches!(sup.as_ref(), MathNode::Array { rows, .. } if rows.len() == 2)
+                    && matches!(sup.as_ref(), MathNode::Matrix { rows, .. } if rows.len() == 2)
         ));
 
         let config = Config::default().with_display(DisplayStyle::Inline);
@@ -1926,7 +1928,7 @@ mod tests {
                     .expr
                     .nodes
                     .iter()
-                    .any(|n| matches!(n, MathNode::Array { .. })),
+                    .any(|n| matches!(n, MathNode::Matrix { .. })),
                 "{input}: {:?}",
                 result.expr.nodes
             );
@@ -1936,7 +1938,7 @@ mod tests {
         // Whitespace is not content.
         let nodes = parse("\u{25A0}(a & b @ c & d)");
         assert!(
-            matches!(&nodes[0], MathNode::Array { rows, .. } if rows.len() == 2 && rows[0].len() == 2),
+            matches!(&nodes[0], MathNode::Matrix { rows, .. } if rows.len() == 2 && rows[0].len() == 2),
             "{nodes:?}"
         );
     }
@@ -1944,7 +1946,7 @@ mod tests {
     #[test]
     fn lenient_matrix_reports_its_skipped_runs_once() {
         let result = parse_with("x \u{25A0}(a##b&c#)", Strictness::Lenient).unwrap();
-        assert!(matches!(&result.expr.nodes[1], MathNode::Array { .. }));
+        assert!(matches!(&result.expr.nodes[1], MathNode::Matrix { .. }));
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         let warning = &result.diagnostics[0];
         assert_eq!(warning.kind, DiagnosticKind::Warning);

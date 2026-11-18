@@ -976,9 +976,11 @@ fn legacy_font_scope_resets_matrix_cells_but_keeps_siblings() {
         crate::Format::MathML,
     )
     .unwrap();
-    assert!(mathml.contains("<mstyle mathvariant=\"bold\"><mi>x</mi></mstyle><mtable>"));
+    assert!(mathml.contains("<mstyle mathvariant=\"bold\"><mi>x</mi></mstyle><mtable data-mathema-array-environment=\"matrix\">"));
     assert!(mathml.contains("</mtable><mstyle mathvariant=\"bold\"><mi>t</mi></mstyle>"));
-    assert!(!mathml.contains("<mstyle mathvariant=\"bold\"><mi>x</mi><mtable>"));
+    assert!(!mathml.contains(
+        "<mstyle mathvariant=\"bold\"><mi>x</mi><mtable data-mathema-array-environment=\"matrix\">"
+    ));
 }
 
 #[test]
@@ -1009,9 +1011,14 @@ fn legacy_font_scope_preserves_tables_in_compounds() {
             "unstable compound font scope: {input}"
         );
         let mathml = crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap();
-        assert!(mathml.contains("<mtable>"), "matrix disappeared: {mathml}");
         assert!(
-            !mathml.contains("<mstyle mathvariant=\"bold\"><mtable>"),
+            mathml.contains("<mtable data-mathema-array-environment=\"matrix\">"),
+            "matrix disappeared: {mathml}"
+        );
+        assert!(
+            !mathml.contains(
+                "<mstyle mathvariant=\"bold\"><mtable data-mathema-array-environment=\"matrix\">"
+            ),
             "table inherited outer style: {mathml}"
         );
     }
@@ -2701,7 +2708,7 @@ fn cd_basic_square_parses_to_array() {
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     // Laid out as an <mtable> grid.
     assert!(
-        mathml.contains("<mtable>"),
+        mathml.contains("<mtable data-mathema-arraystretch="),
         "expected mtable, got:\n{mathml}"
     );
     // Object letters present.
@@ -2729,7 +2736,7 @@ fn cd_horizontal_chain_parses() {
     use crate::convert::from_latex;
     let src = r"\begin{CD} X @>>> Y @>>> Z \end{CD}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
-    assert!(mathml.contains("<mtable>"));
+    assert!(mathml.contains("<mtable data-mathema-arraystretch="));
     for obj in ["X", "Y", "Z"] {
         assert!(mathml.contains(obj), "missing object {obj}");
     }
@@ -2761,7 +2768,7 @@ fn cd_equals_and_double_line_parse() {
     use crate::convert::from_latex;
     let src = r"\begin{CD} A @= B \\ @VVV @| \\ C @>>> D \end{CD}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
-    assert!(mathml.contains("<mtable>"));
+    assert!(mathml.contains("<mtable data-mathema-arraystretch="));
     // Horizontal equals (`@=`).
     assert!(mathml.contains(">=<"), "missing = for @= in:\n{mathml}");
     // Vertical double line (`@|`).
@@ -2843,7 +2850,7 @@ fn numcases_builds_braced_grid_with_number_labels() {
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     // Cases rows live in an <mtable> grid wrapped in a big left brace fence.
     assert!(
-        mathml.contains("<mtable>"),
+        mathml.contains("<mtable data-mathema-arraystretch="),
         "expected mtable, got:\n{mathml}"
     );
     assert!(
@@ -2887,7 +2894,7 @@ fn subnumcases_uses_sub_letter_labels() {
     let src = r"\begin{subnumcases}{f} a & p\\ b & q \end{subnumcases}";
     let mathml = from_latex(src).unwrap().to_mathml().unwrap();
     assert!(
-        mathml.contains("<mtable>"),
+        mathml.contains("<mtable data-mathema-arraystretch="),
         "expected mtable, got:\n{mathml}"
     );
     assert!(mathml.contains("(1a)"), "missing (1a) label in:\n{mathml}");
@@ -3269,7 +3276,10 @@ fn xymatrix_grid_with_arrows() {
     let r = from_latex(r"\xymatrix{ A \ar[r]^f & B \ar[d] \\ C & D \ar[l] }").unwrap();
     let ml = r.to_mathml().unwrap();
     // Array grid.
-    assert!(ml.contains("<mtable>"), "not an Array:\n{ml}");
+    assert!(
+        ml.contains("<mtable data-mathema-arraystretch="),
+        "not an Array:\n{ml}"
+    );
     // Objects present.
     for obj in ["A", "B", "C", "D"] {
         assert!(
@@ -3324,7 +3334,10 @@ fn xymatrix_tolerates_ar_modifiers_and_spacing() {
         .unwrap()
         .to_mathml()
         .unwrap();
-    assert!(ml.contains("<mtable>"), "expected grid:\n{ml}");
+    assert!(
+        ml.contains("<mtable data-mathema-arraystretch="),
+        "expected grid:\n{ml}"
+    );
     assert!(
         ml.contains('\u{2192}'),
         "missing → from \\ar@{{->}}[r]:\n{ml}"

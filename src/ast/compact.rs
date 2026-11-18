@@ -688,17 +688,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             rows,
             arraystretch,
             add_jot,
-        } => push_array_node(
-            arena,
-            columns,
-            rows,
-            *arraystretch,
-            *add_jot,
-            Some(match kind {
-                MatrixKind::Matrix => crate::ast::arena::ArrayEnvironment::Matrix,
-                MatrixKind::SmallMatrix => crate::ast::arena::ArrayEnvironment::SmallMatrix,
-            }),
-        ),
+        } => push_array_node(arena, columns, rows, *arraystretch, *add_jot, Some(*kind)),
 
         MathNode::Phantom(inner, kind) => {
             let inner_id = push_math_node(arena, inner);
@@ -813,7 +803,7 @@ fn push_array_node(
     rows: &[Vec<Vec<MathNode>>],
     arraystretch: Option<f64>,
     add_jot: bool,
-    environment: Option<crate::ast::arena::ArrayEnvironment>,
+    environment: Option<MatrixKind>,
 ) -> NodeId {
     let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
     for col in columns {
@@ -835,13 +825,11 @@ fn push_array_node(
     let cells = arena.push_children_deferred(&cell_ids);
     let arraystretch_pct = arraystretch
         .map(|value| (value * 100.0).round() as u8)
-        .unwrap_or(
-            if environment == Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) {
-                50
-            } else {
-                100
-            },
-        );
+        .unwrap_or(if environment == Some(MatrixKind::SmallMatrix) {
+            50
+        } else {
+            100
+        });
     let id = arena.push_node(CompactNode::Array {
         col_aligns,
         cells,
@@ -1045,15 +1033,8 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             };
 
             match arena.array_environment(id) {
-                Some(crate::ast::arena::ArrayEnvironment::Matrix) => MathNode::Matrix {
-                    kind: MatrixKind::Matrix,
-                    columns,
-                    rows,
-                    arraystretch,
-                    add_jot,
-                },
-                Some(crate::ast::arena::ArrayEnvironment::SmallMatrix) => MathNode::Matrix {
-                    kind: MatrixKind::SmallMatrix,
+                Some(kind) => MathNode::Matrix {
+                    kind,
                     columns,
                     rows,
                     arraystretch,

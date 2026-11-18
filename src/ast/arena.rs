@@ -1,19 +1,12 @@
 use std::collections::HashMap;
 
-use super::SpaceBasis;
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ArrayEnvironment {
-    Matrix,
-    SmallMatrix,
-}
+use super::{MatrixKind, SpaceBasis};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Provenance {
     SpaceBasis(SpaceBasis),
-    Array(ArrayEnvironment),
-    ArrayStretch(u8),
+    Array(MatrixKind),
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -321,7 +314,7 @@ impl AstArena {
     }
 
     #[inline]
-    pub(crate) fn mark_array_environment(&mut self, id: NodeId, environment: ArrayEnvironment) {
+    pub(crate) fn mark_array_environment(&mut self, id: NodeId, environment: MatrixKind) {
         // A refused push returns the last existing id. Its metadata belongs to
         // the original node, even while propagating the arena size error.
         if !self.size_overflow {
@@ -330,29 +323,13 @@ impl AstArena {
     }
 
     #[inline]
-    pub(crate) fn array_environment(&self, id: NodeId) -> Option<ArrayEnvironment> {
+    pub(crate) fn array_environment(&self, id: NodeId) -> Option<MatrixKind> {
         match self.provenance.get(id)? {
             Provenance::Array(env) if matches!(self.node(id), CompactNode::Array { .. }) => {
                 Some(env)
             },
             _ => None,
         }
-    }
-
-    #[inline]
-    pub(crate) fn mark_arraystretch(&mut self, id: NodeId, percent: u8) {
-        if !self.size_overflow {
-            self.provenance
-                .insert(id, Provenance::ArrayStretch(percent));
-        }
-    }
-
-    #[inline]
-    pub(crate) fn arraystretch_was_authored(&self, id: NodeId) -> bool {
-        matches!(
-            (self.provenance.get(&id), self.node(id)),
-            (Some(Provenance::ArrayStretch(_)), CompactNode::Array { .. })
-        )
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.
@@ -499,7 +476,7 @@ mod tests {
         let space = arena.push_space(crate::ast::Rational::new(1, 2), SpaceBasis::TextEm);
         let refused = arena.push_node(CompactNode::Newline);
         assert_eq!(refused, space);
-        arena.mark_array_environment(refused, ArrayEnvironment::Matrix);
+        arena.mark_array_environment(refused, MatrixKind::Matrix);
         assert_eq!(arena.space_basis(space), Some(SpaceBasis::TextEm));
     }
 

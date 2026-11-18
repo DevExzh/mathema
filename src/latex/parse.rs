@@ -8,7 +8,7 @@ use nom::character::complete::char;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-use crate::ast::arena::{ArrayEnvironment, AstArena};
+use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
@@ -6135,10 +6135,10 @@ impl LatexCompactParser {
             "array" => self.parse_array_env(input, env_name),
             "matrix" | "pmatrix" | "bmatrix" | "vmatrix" | "Bmatrix" | "Vmatrix" | "matrix*"
             | "pmatrix*" | "bmatrix*" | "vmatrix*" | "Bmatrix*" | "Vmatrix*" => {
-                self.parse_matrix_env(input, env_name, ArrayEnvironment::Matrix)
+                self.parse_matrix_env(input, env_name, MatrixKind::Matrix)
             },
             "smallmatrix" | "smallmatrix*" => {
-                self.parse_matrix_env(input, env_name, ArrayEnvironment::SmallMatrix)
+                self.parse_matrix_env(input, env_name, MatrixKind::SmallMatrix)
             },
             "CD" => self.parse_cd_env(input, env_name),
             "prooftree" => self.parse_prooftree_env(input, env_name),
@@ -6242,7 +6242,7 @@ impl LatexCompactParser {
         &mut self,
         input: &'a str,
         env_name: &str,
-        environment: ArrayEnvironment,
+        environment: MatrixKind,
     ) -> IResult<&'a str, NodeId> {
         let (input, align) = if env_name.ends_with('*') {
             let (input, _) = ws(input)?;
@@ -6284,8 +6284,8 @@ impl LatexCompactParser {
         let width = rows.iter().map(Vec::len).max().unwrap_or(0);
         let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![align; width];
         let array_id = match environment {
-            ArrayEnvironment::Matrix => self.build_array(&columns, rows),
-            ArrayEnvironment::SmallMatrix => {
+            MatrixKind::Matrix => self.build_array(&columns, rows),
+            MatrixKind::SmallMatrix => {
                 self.apply_table_cell_style(&mut rows, 2);
                 self.build_array_with_spacing(&columns, rows, 50, false, 0, 0, false)
             },

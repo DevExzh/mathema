@@ -3,7 +3,7 @@ use quick_xml::events::{BytesText, Event};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-use crate::ast::arena::{ArrayEnvironment, AstArena};
+use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
@@ -1064,8 +1064,6 @@ impl<'a> MathmlCompactParser<'a> {
                 });
                 if let Some(environment) = array_environment(start, arraystretch_pct) {
                     self.arena.mark_array_environment(array, environment);
-                } else if let Some(percent) = arraystretch_percent(start) {
-                    self.arena.mark_arraystretch(array, percent);
                 }
                 Ok(array)
             },
@@ -1737,10 +1735,10 @@ fn arraystretch_percent(start: &quick_xml::events::BytesStart<'_>) -> Option<u8>
 fn array_environment(
     start: &quick_xml::events::BytesStart<'_>,
     arraystretch_pct: u8,
-) -> Option<ArrayEnvironment> {
+) -> Option<MatrixKind> {
     match get_attr(start, "data-mathema-array-environment")?.trim() {
-        "matrix" => Some(ArrayEnvironment::Matrix),
-        "smallmatrix" if arraystretch_pct == 50 => Some(ArrayEnvironment::SmallMatrix),
+        "matrix" if arraystretch_pct == 100 => Some(MatrixKind::Matrix),
+        "smallmatrix" if arraystretch_pct == 50 => Some(MatrixKind::SmallMatrix),
         _ => None,
     }
 }
