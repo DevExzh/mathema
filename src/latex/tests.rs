@@ -175,6 +175,56 @@ fn style_switch_normalization_matches_heap_and_compact_scopes() {
 }
 
 #[test]
+fn empty_style_groups_do_not_leak_into_siblings_or_choice() {
+    let config = Config::default();
+    for source in [r"{\scriptstyle}x", r"{\scriptstyle}\mathchoice{D}{T}{S}{Q}"] {
+        let mut compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let roots = compact.arena.children(compact.roots);
+        assert!(
+            roots.iter().any(|&id| matches!(
+                *compact.arena.node(id),
+                CompactNode::Row(span)
+                    if matches!(compact.arena.children(span).first(), Some(&marker)
+                        if matches!(*compact.arena.node(marker), CompactNode::StyleSwitch(_)))
+            )),
+            "empty style scope was flattened for {source}"
+        );
+        if source.contains("mathchoice") {
+            assert!(matches!(
+                *compact.arena.node(*roots.last().expect("choice root")),
+                CompactNode::MathChoice { .. }
+            ));
+        }
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
+        normalize_compact_expr(&mut reparsed).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed, &config).unwrap(),
+            first,
+            "empty style scope was unstable for {source}"
+        );
+    }
+
+    for source in [r"\frac{{\scriptstyle}}{x}", r"x_{\scriptstyle}"] {
+        let mut compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let root = compact.arena.children(compact.roots)[0];
+        let scoped = match *compact.arena.node(root) {
+            CompactNode::Fraction { num, .. } => num,
+            CompactNode::Subscript { sub, .. } => sub,
+            other => panic!("unexpected root for {source}: {other:?}"),
+        };
+        assert!(matches!(
+            *compact.arena.node(scoped),
+            CompactNode::Row(span)
+                if matches!(compact.arena.children(span).first(), Some(&marker)
+                    if matches!(*compact.arena.node(marker), CompactNode::StyleSwitch(_)))
+        ));
+    }
+}
+
+#[test]
 fn legacy_font_declarations_scope_like_grouped_fonts() {
     for (source, expected) in [
         (r"\rm xyz", r"\mathrm{xyz}"),

@@ -2918,7 +2918,17 @@ impl LatexCompactParser {
         let (input, _) = char('}')(input)?;
 
         let ids = self.resolve_infix_fraction(ids);
-        Ok((input, self.flatten_single(&ids)))
+        let content =
+            if ids.len() == 1 && matches!(*self.arena.node(ids[0]), CompactNode::StyleSwitch(_)) {
+                // Keep an empty declaration group scoped. Flattening
+                // `{"\scriptstyle"}` to a bare marker would make the declaration
+                // affect the following sibling.
+                let span = self.arena.push_children_deferred(&ids);
+                self.arena.push_node(CompactNode::Row(span))
+            } else {
+                self.flatten_single(&ids)
+            };
+        Ok((input, content))
     }
 
     /// Parse a bracket group `[ ... ]` for optional arguments.

@@ -323,8 +323,10 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
     match node {
         MathNode::Row(children) => {
             normalize_nodes_depth(children, d);
-            // Unwrap single-child Row
+            // Unwrap single-child Row, except for an empty declaration group:
+            // `{"\scriptstyle"}` must not leak into the following sibling.
             if children.len() == 1
+                && !matches!(children.first(), Some(MathNode::StyleSwitch(_)))
                 && let Some(child) = children.pop()
             {
                 *node = child;
@@ -764,7 +766,9 @@ fn normalize_compact_node(
         CompactNode::Row(span) => {
             let new_span = normalize_compact_span(arena, span, d)?;
             let children = arena.children(new_span);
-            if children.len() == 1 {
+            if children.len() == 1
+                && !matches!(*arena.node(children[0]), CompactNode::StyleSwitch(_))
+            {
                 // Unwrap single-child Row: replace this node with its child
                 let child_node = *arena.node(children[0]);
                 *arena.node_mut(id) = child_node;
