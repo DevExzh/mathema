@@ -3315,6 +3315,25 @@ mod tests {
     }
 
     #[test]
+    fn nested_empty_color_script_roundtrip_stays_canonical() {
+        let config = Config::default();
+        let input = r"A\teal^\teal^2";
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        crate::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
+        crate::ast::normalize::normalize_compact_expr(&mut reparsed).unwrap();
+        let second = LatexWriter::write_compact(&reparsed, &config).unwrap();
+        assert_eq!(first, r"A{\textcolor{teal}{}}^{2}");
+        assert_eq!(first, second);
+
+        let heap_first = crate::from_latex(input).unwrap().to_latex().unwrap();
+        let heap_second = crate::from_latex(&heap_first).unwrap().to_latex().unwrap();
+        assert_eq!(heap_first, first);
+        assert_eq!(heap_first, heap_second);
+    }
+
+    #[test]
     fn scripts_without_effective_arguments_reuse_the_normal_base_writer() {
         for (input, expected) in [
             (r"\teal^\teal", r"\textcolor{teal}{}"),
