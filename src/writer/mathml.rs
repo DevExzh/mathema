@@ -22,6 +22,9 @@ fn mathml_loss(_arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathAtom { atom_type: MathAtomType::Op, .. } => {
             Some("MathML records the compound operator class as an annotation. Native operator spacing can differ.".into())
         },
+        CompactNode::MathAtom { atom_type: MathAtomType::Open | MathAtomType::Close, .. } => {
+            Some("MathML annotates the TeX fence spacing class. Native operator spacing can differ.".into())
+        },
         CompactNode::MathAtom { .. } => {
             Some("MathML output does not preserve the math atom spacing class".into())
         },
@@ -832,12 +835,12 @@ fn write_node_in(
             }
             Ok(())
         },
-        MathNode::MathAtom {
-            atom_type: MathAtomType::Op,
-            content,
-        } => write_operator_group(w, content, false, display_style),
-        MathNode::MathAtom { content, .. } => {
-            write_node_in(w, content, single_argument, display_style)
+        MathNode::MathAtom { atom_type, content } => {
+            if let Some(class) = annotated_atom_class(*atom_type) {
+                write_atom_group(w, content, class, false, display_style)
+            } else {
+                write_node_in(w, content, single_argument, display_style)
+            }
         },
     }
 }
@@ -1019,7 +1022,7 @@ fn write_limit_base(
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
-        } => write_operator_group(w, content, movable, display_style),
+        } => write_atom_group(w, content, "OP", movable, display_style),
         MathNode::Symbol(SymbolKind::LargeOp, text) if movable => {
             if let Some(ch) = single_operator_char(text) {
                 write_mo_char(w, ch, Some(true))
@@ -1038,14 +1041,24 @@ fn write_limit_base(
     }
 }
 
-fn write_operator_group(
+fn annotated_atom_class(atom: MathAtomType) -> Option<&'static str> {
+    match atom {
+        MathAtomType::Op => Some("OP"),
+        MathAtomType::Open => Some("OPEN"),
+        MathAtomType::Close => Some("CLOSE"),
+        _ => None,
+    }
+}
+
+fn write_atom_group(
     w: &mut XmlWriter,
     content: &MathNode,
+    class: &str,
     movable: bool,
     display_style: MathStyle,
 ) -> Result<()> {
     let mut group = BytesStart::new("mrow");
-    group.push_attribute(("data-mjx-texclass", "OP"));
+    group.push_attribute(("data-mjx-texclass", class));
     if movable {
         group.push_attribute(("data-mathema-limits", "movable"));
     }
@@ -1643,12 +1656,12 @@ fn write_node_fast_in(
             let branch = display_style.choose(display, text, script, script_script);
             write_node_fast_in(buf, arena, branch, single_argument, display_style);
         },
-        CompactNode::MathAtom {
-            atom_type: MathAtomType::Op,
-            content,
-        } => write_operator_group_fast(buf, arena, content, false, display_style),
-        CompactNode::MathAtom { content, .. } => {
-            write_node_fast_in(buf, arena, content, single_argument, display_style);
+        CompactNode::MathAtom { atom_type, content } => {
+            if let Some(class) = annotated_atom_class(atom_type) {
+                write_atom_group_fast(buf, arena, content, class, false, display_style);
+            } else {
+                write_node_fast_in(buf, arena, content, single_argument, display_style);
+            }
         },
     }
 }
@@ -1964,7 +1977,7 @@ fn write_limit_base_fast(
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
-        } => write_operator_group_fast(buf, arena, content, movable, display_style),
+        } => write_atom_group_fast(buf, arena, content, "OP", movable, display_style),
         CompactNode::Symbol(SymbolKind::LargeOp, sid) if movable => {
             if let Some(ch) = single_operator_char(arena.str_val(sid)) {
                 write_mo_char_fast(buf, ch, Some(true));
@@ -1981,18 +1994,21 @@ fn write_limit_base_fast(
     }
 }
 
-fn write_operator_group_fast(
+fn write_atom_group_fast(
     buf: &mut String,
     arena: &AstArena,
     content: NodeId,
+    class: &str,
     movable: bool,
     display_style: MathStyle,
 ) {
-    buf.push_str(if movable {
-        r#"<mrow data-mjx-texclass="OP" data-mathema-limits="movable">"#
+    buf.push_str(r#"<mrow data-mjx-texclass=""#);
+    buf.push_str(class);
+    if movable {
+        buf.push_str(r#"" data-mathema-limits="movable">"#);
     } else {
-        r#"<mrow data-mjx-texclass="OP">"#
-    });
+        buf.push_str(r#"">"#);
+    }
     if let CompactNode::Row(span) = *arena.node(content) {
         write_nodes_fast(buf, arena, arena.children(span), display_style, false);
     } else {
@@ -2829,6 +2845,37 @@ mod tests {
             let packed = CompactExpr::from_math_expr(&expr).unwrap();
             assert_eq!(MathmlWriter::write_compact(&packed, &config).unwrap(), xml);
             assert_eq!(crate::from_mathml(&xml).unwrap().to_mathml().unwrap(), xml);
+        }
+    }
+
+    #[test]
+    fn mathml_retains_open_and_close_spacing_classes_around_a_fence() {
+        use crate::reader::{Reader, latex::LatexReader};
+
+        let source = r"x+\mathopen{}\mathclose{\left(a+b\right)}_i y";
+        let cfg = Config::default();
+        let heap = LatexReader::parse(source, &cfg).unwrap().expr;
+        let compact = LatexReader::parse_compact(source, &cfg).unwrap().expr;
+        let xml = MathmlWriter::write_compact(&compact, &cfg).unwrap();
+        assert_eq!(MathmlWriter::write(&heap, &cfg).unwrap(), xml);
+        assert!(xml.contains(r#"<mrow data-mjx-texclass="OPEN"></mrow>"#));
+        assert!(xml.contains(r#"<mrow data-mjx-texclass="CLOSE">"#));
+        let short = xml.replace(
+            r#"<mrow data-mjx-texclass="OPEN"></mrow>"#,
+            r#"<mrow data-mjx-texclass="OPEN"/>"#,
+        );
+        for input in [&xml, &short] {
+            let again = crate::from_mathml(input).unwrap();
+            assert_eq!(again.to_mathml().unwrap(), xml);
+            assert_eq!(
+                again.to_latex().unwrap(),
+                crate::from_latex(source).unwrap().to_latex().unwrap()
+            );
+            #[cfg(feature = "render")]
+            assert_eq!(
+                again.to_svg().unwrap(),
+                crate::from_latex(source).unwrap().to_svg().unwrap()
+            );
         }
     }
 

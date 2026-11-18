@@ -843,16 +843,9 @@ impl<'a> MathmlCompactParser<'a> {
                     Ok(self
                         .arena
                         .push_node(CompactNode::Reflect { content, text_mode }))
-                } else if attrs.texclass_op {
+                } else if let Some(atom_type) = attrs.atom_type {
                     let content = self.flatten_ids(&children);
-                    let op = self.arena.push_node(CompactNode::MathAtom {
-                        atom_type: MathAtomType::Op,
-                        content,
-                    });
-                    if attrs.movable_limits {
-                        self.movable_limit_operators.insert(op, true);
-                    }
-                    Ok(op)
+                    Ok(self.marked_atom(atom_type, content, attrs.movable_limits))
                 } else {
                     let span = self.arena.push_children_deferred(&children);
                     Ok(self.arena.push_node(CompactNode::Row(span)))
@@ -1144,12 +1137,31 @@ impl<'a> MathmlCompactParser<'a> {
         }
     }
 
+    fn marked_atom(&mut self, atom_type: MathAtomType, content: NodeId, movable: bool) -> NodeId {
+        let id = self
+            .arena
+            .push_node(CompactNode::MathAtom { atom_type, content });
+        if movable && atom_type == MathAtomType::Op {
+            self.movable_limit_operators.insert(id, true);
+        }
+        id
+    }
+
     fn parse_empty_element(
         &mut self,
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
         match name {
+            "mrow" => {
+                let attrs = mrow_attributes(start);
+                let empty = self.empty_row();
+                Ok(if let Some(atom_type) = attrs.atom_type {
+                    self.marked_atom(atom_type, empty, attrs.movable_limits)
+                } else {
+                    empty
+                })
+            },
             "mo" => Ok(self.operator_token("", start)),
             "mspace" => {
                 let r = mspace_width(start);
@@ -1860,7 +1872,7 @@ fn operator_attributes(
 struct MrowAttributes {
     reflect: Option<String>,
     style: Option<String>,
-    texclass_op: bool,
+    atom_type: Option<MathAtomType>,
     movable_limits: bool,
     explicit_text_size: bool,
 }
@@ -1881,7 +1893,12 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
                 result.style = Some(unescape_attr(&attr.value));
             },
             "data-mjx-texclass" => {
-                result.texclass_op = unescape_attr(&attr.value) == "OP";
+                result.atom_type = match unescape_attr(&attr.value).as_str() {
+                    "OPEN" => Some(MathAtomType::Open),
+                    "CLOSE" => Some(MathAtomType::Close),
+                    "OP" => Some(MathAtomType::Op),
+                    _ => None,
+                };
             },
             "data-mathema-limits" => {
                 result.movable_limits = unescape_attr(&attr.value) == "movable";
