@@ -4934,7 +4934,7 @@ impl LatexCompactParser {
                         } else if crate::unicode::symbols::operator_has_limits(&name) {
                             LimitStyle::Default
                         } else {
-                            LimitStyle::SubSup
+                            LimitStyle::Default
                         },
                     })
                 } else {

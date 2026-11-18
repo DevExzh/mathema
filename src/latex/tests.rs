@@ -2074,6 +2074,40 @@ fn structured_operatorname_decorations_preserve_operator_semantics() {
         );
     }
 
+    let custom_star = r"\operatorname*{\overline{rate}}_n x";
+    let inline_custom = crate::convert_with(
+        custom_star,
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Inline),
+    )
+    .unwrap();
+    let block_custom = crate::convert_with(
+        custom_star,
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Block),
+    )
+    .unwrap();
+    assert!(inline_custom.contains("<msub>"), "{inline_custom}");
+    assert!(block_custom.contains("<munder>"), "{block_custom}");
+    let explicit_limits = crate::convert_with(
+        r"\operatorname*{\overline{rate}}\limits_n x",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Inline),
+    )
+    .unwrap();
+    let explicit_nolimits = crate::convert_with(
+        r"\operatorname*{\overline{rate}}\nolimits_n x",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Block),
+    )
+    .unwrap();
+    assert!(explicit_limits.contains("<munder>"), "{explicit_limits}");
+    assert!(explicit_nolimits.contains("<msub>"), "{explicit_nolimits}");
+
     let side = crate::convert(
         r"\operatorname{\overline{lim}}_n x",
         crate::Format::LaTeX,
