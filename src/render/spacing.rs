@@ -51,7 +51,7 @@ fn classify_node_depth(node: &MathNode, depth: usize) -> AtomType {
             SymbolKind::Punctuation => AtomType::Punct,
             SymbolKind::Fence => AtomType::Ord,
         },
-        MathNode::Text(..) => AtomType::Ord,
+        MathNode::Text(..) | MathNode::StyleSwitch(_) => AtomType::Ord,
         MathNode::Space(_) | MathNode::Rule { .. } => AtomType::Ord,
         MathNode::Row(_) => AtomType::Inner,
         MathNode::Fenced { .. } => AtomType::Inner,

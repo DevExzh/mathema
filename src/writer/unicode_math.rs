@@ -99,6 +99,7 @@ fn write_node(out: &mut String, node: &MathNode) {
             out.push_str(s);
             out.push('"');
         },
+        MathNode::StyleSwitch(_) => {},
         MathNode::Space(r) => {
             let em = r.as_f64();
             if em >= 1.0 {

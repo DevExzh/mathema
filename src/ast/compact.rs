@@ -803,6 +803,7 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 script_script: ss_id,
             })
         },
+        MathNode::StyleSwitch(style) => arena.push_node(CompactNode::StyleSwitch(*style)),
         MathNode::MathAtom { atom_type, content } => {
             let inner = push_math_node(arena, content);
             arena.push_node(CompactNode::MathAtom {
@@ -1110,10 +1111,7 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             height,
             lift,
         },
-        CompactNode::StyleSwitch(_) => {
-            // Style switches are layout-only directives; reconstruct as empty row
-            MathNode::Row(Vec::new())
-        },
+        CompactNode::StyleSwitch(style) => MathNode::StyleSwitch(style),
         CompactNode::SizeScale(_) => {
             // Size scale nodes are layout-only directives; reconstruct as empty row
             MathNode::Row(Vec::new())

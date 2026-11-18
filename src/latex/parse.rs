@@ -3905,7 +3905,9 @@ impl LatexCompactParser {
             // Style commands — emit StyleSwitch nodes that the layout engine uses
             // to change the math style for subsequent siblings in the same row.
             "displaystyle" => {
-                self.display_override = true;
+                if self.depth == 1 {
+                    self.display_override = true;
+                }
                 Some(self.arena.push_node(CompactNode::StyleSwitch(0)))
             },
             "textstyle" => Some(self.arena.push_node(CompactNode::StyleSwitch(1))),

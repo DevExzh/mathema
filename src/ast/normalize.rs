@@ -483,7 +483,8 @@ fn normalize_node_depth(node: &mut MathNode, depth: usize) {
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
-        | MathNode::Rule { .. } => {},
+        | MathNode::Rule { .. }
+        | MathNode::StyleSwitch(_) => {},
     }
 }
 
@@ -538,6 +539,12 @@ fn normalize_compact_span(
                 // Remove empty Row
             },
             CompactNode::Row(inner) if is_idotsint_row(arena, inner) => {
+                flattened.push(id);
+            },
+            CompactNode::Row(inner) if contains_style_switch(arena, inner, 0) => {
+                // Explicit groups containing a style declaration must remain
+                // grouped so the declaration cannot leak into following
+                // siblings when LaTeX is written back.
                 flattened.push(id);
             },
             CompactNode::Row(inner) => {
@@ -1047,6 +1054,29 @@ fn is_idotsint_row(arena: &AstArena, span: NodeSpan) -> bool {
         )
     };
     is_int(children[0]) && is_dots(children[1]) && is_int(children[2])
+}
+
+fn contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> bool {
+    if depth > super::MAX_AST_DEPTH {
+        return false;
+    }
+    arena
+        .children(span)
+        .iter()
+        .any(|&id| contains_style_switch_node(arena, id, depth + 1))
+}
+
+fn contains_style_switch_node(arena: &AstArena, id: NodeId, depth: usize) -> bool {
+    if depth > super::MAX_AST_DEPTH {
+        return false;
+    }
+    match *arena.node(id) {
+        CompactNode::StyleSwitch(_) => true,
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+            contains_style_switch(arena, span, depth + 1)
+        },
+        _ => false,
+    }
 }
 
 /// Normalize an array/matrix cell. Trims leading/trailing whitespace and

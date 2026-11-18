@@ -617,6 +617,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             layout_node(chosen, ctx)
         },
         MathNode::MathAtom { content, .. } => layout_node(content, ctx),
+        // Style declarations are consumed by the style-aware compact path;
+        // heap rendering keeps this marker layout-neutral until integration.
+        MathNode::StyleSwitch(_) => LayoutBox::kern(0.0),
     }
 }
 

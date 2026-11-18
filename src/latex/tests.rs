@@ -49,6 +49,99 @@ fn round_trip_simple() {
 }
 
 #[test]
+fn math_style_switches_and_forced_fractions_keep_scope_and_kind() {
+    let config = Config::default().with_display(DisplayStyle::Inline);
+
+    let top = LatexReader::parse_compact(r"\displaystyle x", &config)
+        .unwrap()
+        .expr;
+    assert_eq!(top.display, DisplayStyle::Block);
+    assert!(matches!(
+        *top.arena.node(top.arena.children(top.roots)[0]),
+        CompactNode::StyleSwitch(0)
+    ));
+
+    let scoped = LatexReader::parse_compact(r"{\displaystyle x}y", &config)
+        .unwrap()
+        .expr;
+    assert_eq!(scoped.display, DisplayStyle::Inline);
+    let canonical = LatexWriter::write_compact(&scoped, &config).unwrap();
+    assert_eq!(canonical, r"{\displaystyle x}y");
+
+    let heap = scoped.to_math_expr();
+    assert!(matches!(
+        heap.nodes.first(),
+        Some(crate::ast::MathNode::Row(children))
+            if matches!(children.first(), Some(crate::ast::MathNode::StyleSwitch(0)))
+    ));
+    let rebuilt = crate::ast::compact::CompactExpr::from_math_expr(&heap).unwrap();
+    assert_eq!(
+        LatexWriter::write_compact(&rebuilt, &config).unwrap(),
+        canonical
+    );
+
+    for (command, value) in [
+        (r"\textstyle", 1),
+        (r"\scriptstyle", 2),
+        (r"\scriptscriptstyle", 3),
+    ] {
+        let expr = LatexReader::parse_compact(&format!("{{{command} x}}y"), &config)
+            .unwrap()
+            .expr;
+        assert!(matches!(
+            *expr.arena.node(expr.arena.children(expr.roots)[0]),
+            CompactNode::Row(span)
+                if matches!(expr.arena.children(span).first(), Some(&id)
+                    if matches!(*expr.arena.node(id), CompactNode::StyleSwitch(actual) if actual == value))
+        ));
+    }
+
+    let choice = LatexReader::parse_compact(r"\mathchoice{D}{T}{S}{SS}", &config)
+        .unwrap()
+        .expr;
+    let choice_heap = choice.to_math_expr();
+    assert!(matches!(
+        choice_heap.nodes.first(),
+        Some(crate::ast::MathNode::MathChoice { .. })
+    ));
+    let choice_rebuilt = crate::ast::compact::CompactExpr::from_math_expr(&choice_heap).unwrap();
+    assert_eq!(
+        LatexWriter::write_compact(&choice_rebuilt, &config).unwrap(),
+        r"\mathchoice{D}{T}{S}{SS}"
+    );
+
+    let frac_cases = [
+        (r"x_{\dfrac{a}{b}}", crate::ast::FractionKind::Display),
+        (r"x_{\tfrac{a}{b}}", crate::ast::FractionKind::Inline),
+    ];
+    for (source, kind) in frac_cases {
+        let expr = LatexReader::parse_compact(source, &config).unwrap().expr;
+        let root = expr.arena.children(expr.roots)[0];
+        let CompactNode::Subscript { sub, .. } = *expr.arena.node(root) else {
+            panic!("expected script for {source}");
+        };
+        assert!(matches!(
+            *expr.arena.node(sub),
+            CompactNode::Fraction { kind: actual, .. } if actual == kind
+        ));
+    }
+
+    let explicit = LatexReader::parse_compact(r"x_{\displaystyle\frac{a}{b}}", &config)
+        .unwrap()
+        .expr;
+    let root = explicit.arena.children(explicit.roots)[0];
+    let CompactNode::Subscript { sub, .. } = *explicit.arena.node(root) else {
+        panic!("expected explicit-style script");
+    };
+    assert!(matches!(*explicit.arena.node(sub), CompactNode::Row(_)));
+    assert!(
+        LatexWriter::write_compact(&explicit, &config)
+            .unwrap()
+            .contains(r"\displaystyle")
+    );
+}
+
+#[test]
 fn legacy_font_declarations_scope_like_grouped_fonts() {
     for (source, expected) in [
         (r"\rm xyz", r"\mathrm{xyz}"),

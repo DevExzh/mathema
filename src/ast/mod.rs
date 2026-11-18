@@ -37,7 +37,7 @@ pub enum DisplayStyle {
     Inline,
 }
 
-/// The core math AST node. 31 variants covering the union of all target formats.
+/// The core math AST node. 32 variants covering the union of all target formats.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -270,6 +270,10 @@ pub enum MathNode {
         /// Variant used in script-script style.
         script_script: Box<MathNode>,
     },
+    /// Explicit TeX math-style declaration (`\displaystyle`, `\textstyle`,
+    /// `\scriptstyle`, or `\scriptscriptstyle`). The compact representation
+    /// stores the same value in [`compact::CompactNode::StyleSwitch`].
+    StyleSwitch(u8),
     /// Explicit atom-type override: \mathop, \mathrel, \mathbin, etc.
     MathAtom {
         /// TeX atom type controlling spacing.
@@ -702,7 +706,8 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         | MathNode::Symbol(_, _)
         | MathNode::Text(_, _)
         | MathNode::Space(_)
-        | MathNode::Rule { .. } => Ok(()),
+        | MathNode::Rule { .. }
+        | MathNode::StyleSwitch(_) => Ok(()),
 
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {

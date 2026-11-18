@@ -524,6 +524,7 @@ fn write_node_in(
             // MathML doesn't have mathchoice; output the display branch
             write_node_in(w, display, single_argument, display_style)
         },
+        MathNode::StyleSwitch(_) => Ok(()),
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,

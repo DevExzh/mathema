@@ -766,7 +766,11 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 write_idotsint(buf);
                 return;
             }
-            if children.len() == 1 {
+            if row_contains_style_switch(arena, span, 0) {
+                buf.push('{');
+                write_nodes(buf, arena, span);
+                buf.push('}');
+            } else if children.len() == 1 {
                 // Single-child Row: emit without braces to keep output canonical.
                 // This avoids `{11}` vs `11` round-trip divergence.
                 write_node(buf, arena, children[0]);
@@ -1882,6 +1886,22 @@ fn write_wrapped_content(buf: &mut String, arena: &AstArena, content: NodeId) {
     } else {
         write_node(buf, arena, content);
     }
+}
+
+fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> bool {
+    if depth > crate::ast::MAX_AST_DEPTH {
+        return false;
+    }
+    arena
+        .children(span)
+        .iter()
+        .any(|&id| match *arena.node(id) {
+            CompactNode::StyleSwitch(_) => true,
+            CompactNode::Row(inner) | CompactNode::Styled(_, inner) => {
+                row_contains_style_switch(arena, inner, depth + 1)
+            },
+            _ => false,
+        })
 }
 
 /// Write a compound operator.  An accent is already fixed to its core
