@@ -3,7 +3,7 @@ use quick_xml::events::{BytesText, Event};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{ArrayEnvironment, AstArena};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
@@ -1051,17 +1051,23 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 }
                 let cells = self.arena.push_children_deferred(&cell_ids);
-
-                Ok(self.arena.push_node(CompactNode::Array {
+                let arraystretch_pct = arraystretch_percent(start).unwrap_or(100);
+                let array = self.arena.push_node(CompactNode::Array {
                     col_aligns,
                     cells,
                     num_cols,
-                    arraystretch_pct: 100,
+                    arraystretch_pct,
                     add_jot: false,
                     array_style: false,
                     col_seps: 0,
                     row_seps: 0,
-                }))
+                });
+                if let Some(environment) = array_environment(start, arraystretch_pct) {
+                    self.arena.mark_array_environment(array, environment);
+                } else if let Some(percent) = arraystretch_percent(start) {
+                    self.arena.mark_arraystretch(array, percent);
+                }
+                Ok(array)
             },
             "mphantom" => {
                 let id = self.parse_child_id(name)?;
@@ -1254,6 +1260,21 @@ impl<'a> MathmlCompactParser<'a> {
 
     fn parse_table_cell(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let mut nodes = self.parse_children("mtd")?;
+        // The MathML writer represents a cell's inherited TeX style as a
+        // leading mstyle. Parsing that mstyle naturally creates one wrapper
+        // Row, while LaTeX table cells store the marker directly in their
+        // cell Row. Flatten only this marker-bearing wrapper so compact
+        // reimport can recognize and remove the environment-provided style.
+        if nodes.len() == 1
+            && let CompactNode::Row(span) = *self.arena.node(nodes[0])
+            && let Some(&CompactNode::StyleSwitch(_)) = self
+                .arena
+                .children(span)
+                .first()
+                .map(|&id| self.arena.node(id))
+        {
+            nodes = self.arena.children(span).iter().copied().collect();
+        }
         let marker = self.style_marker_for((self.style_display, self.style_level));
         if marker != 1 && !nodes.is_empty() {
             nodes.insert(0, self.arena.push_node(CompactNode::StyleSwitch(marker)));
@@ -1701,6 +1722,27 @@ fn parse_scriptlevel(value: &str, current: i64) -> Option<i64> {
         -1 => current.saturating_sub(amount).max(0),
         _ => amount,
     })
+}
+
+/// Read the writer's narrowly scoped table multiplier marker. The value is
+/// expressed as a percentage so it remains independent of the current MathML
+/// font size and can be reconstructed without guessing from `scriptlevel`.
+fn arraystretch_percent(start: &quick_xml::events::BytesStart<'_>) -> Option<u8> {
+    let value = get_attr(start, "data-mathema-arraystretch")?;
+    let value = value.trim().strip_suffix('%')?.trim();
+    let value = value.parse::<u16>().ok()?;
+    u8::try_from(value).ok()
+}
+
+fn array_environment(
+    start: &quick_xml::events::BytesStart<'_>,
+    arraystretch_pct: u8,
+) -> Option<ArrayEnvironment> {
+    match get_attr(start, "data-mathema-array-environment")?.trim() {
+        "matrix" => Some(ArrayEnvironment::Matrix),
+        "smallmatrix" if arraystretch_pct == 50 => Some(ArrayEnvironment::SmallMatrix),
+        _ => None,
+    }
 }
 
 fn has_explicit_text_size(start: &quick_xml::events::BytesStart<'_>) -> bool {
@@ -2987,6 +3029,78 @@ mod tests {
 
         let fixed = r#"<math><mrow><mo fence="true" stretchy="false">(</mo><mi>x</mi><mo fence="true" stretchy="false">)</mo></mrow></math>"#;
         assert!(matches!(parse_one(fixed), MathNode::Row(_)));
+    }
+
+    #[test]
+    #[cfg(feature = "render")]
+    fn smallmatrix_arraystretch_survives_mathml_reimport() {
+        for source in [
+            r"\begin{smallmatrix}a\end{smallmatrix}",
+            r"\begin{smallmatrix}a&b\\c&d\end{smallmatrix}",
+            r"x^{\begin{smallmatrix}a&b\\c&d\end{smallmatrix}}",
+        ] {
+            let original = crate::from_latex(source).unwrap();
+            let mathml = original.to_mathml().unwrap();
+            assert!(
+                mathml.contains("data-mathema-arraystretch=\"50%\""),
+                "{mathml}"
+            );
+            assert!(
+                mathml.contains("data-mathema-array-environment=\"smallmatrix\""),
+                "{mathml}"
+            );
+            assert!(mathml.contains("rowspacing=\"0.1em\""), "{mathml}");
+            assert!(mathml.contains("columnspacing=\"0.2778em\""), "{mathml}");
+            let reimported = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(original.to_svg().unwrap(), reimported.to_svg().unwrap());
+            assert_eq!(mathml, reimported.to_mathml().unwrap());
+            assert!(
+                reimported
+                    .to_latex()
+                    .unwrap()
+                    .contains(r"\begin{smallmatrix}")
+            );
+            assert!(!reimported.to_latex().unwrap().contains(r"\scriptstyle"));
+        }
+
+        let authored = crate::from_mathml(
+            r#"<math><mtable rowspacing="0em"><mtr><mtd><mi>a</mi></mtd></mtr></mtable></math>"#,
+        )
+        .unwrap();
+        assert!(
+            !authored
+                .to_mathml()
+                .unwrap()
+                .contains("data-mathema-arraystretch")
+        );
+
+        let contradictory = crate::from_mathml(
+            r#"<math><mtable data-mathema-array-environment="smallmatrix" data-mathema-arraystretch="100%"><mtr><mtd><mi>a</mi></mtd></mtr></mtable></math>"#,
+        )
+        .unwrap();
+        assert!(
+            !contradictory
+                .to_latex()
+                .unwrap()
+                .contains(r"\begin{smallmatrix}")
+        );
+    }
+
+    #[test]
+    fn heap_arraystretch_uses_the_same_mathml_marker_without_environment_provenance() {
+        let heap = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Center],
+            rows: vec![vec![vec![MathNode::Identifier("a".into())]]],
+            arraystretch: Some(0.5),
+            add_jot: false,
+        }]);
+        let mathml = crate::writer::mathml::MathmlWriter::write(&heap, &Config::default()).unwrap();
+        assert!(mathml.contains("data-mathema-arraystretch=\"50%\""));
+        assert!(!mathml.contains("data-mathema-array-environment"));
+        assert_eq!(
+            mathml,
+            crate::from_mathml(&mathml).unwrap().to_mathml().unwrap()
+        );
     }
 
     #[test]

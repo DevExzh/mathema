@@ -13,6 +13,7 @@ pub(crate) enum ArrayEnvironment {
 enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(ArrayEnvironment),
+    ArrayStretch(u8),
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -336,6 +337,22 @@ impl AstArena {
             },
             _ => None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn mark_arraystretch(&mut self, id: NodeId, percent: u8) {
+        if !self.size_overflow {
+            self.provenance
+                .insert(id, Provenance::ArrayStretch(percent));
+        }
+    }
+
+    #[inline]
+    pub(crate) fn arraystretch_was_authored(&self, id: NodeId) -> bool {
+        matches!(
+            (self.provenance.get(&id), self.node(id)),
+            (Some(Provenance::ArrayStretch(_)), CompactNode::Array { .. })
+        )
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.
