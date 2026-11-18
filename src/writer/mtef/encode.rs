@@ -23,8 +23,8 @@ use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::normalize::{can_carry_script, can_take_prescripts, is_blank, takes_limits};
 use crate::ast::style::MathStyle;
 use crate::ast::{
-    AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, SpaceBasis,
-    StrokeKind, TextStyle,
+    AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, StrokeKind,
+    TextStyle,
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 use crate::reader::mtef::chars::negated;
@@ -604,9 +604,9 @@ impl<'a> Encoder<'a> {
                 if width.den == 0 {
                     return self.space(size, width);
                 }
-                let basis = self.arena.space_basis(id).unwrap_or(SpaceBasis::Current);
-                let em = crate::ast::style::space_width_in_local_em(width, basis, self.math_style);
-                self.space(size, Rational::new((em * 1000.0).round() as i32, 1000))
+                let basis = self.arena.space_basis(id);
+                let width = crate::ast::style::local_space_width(width, basis, self.math_style);
+                self.space(size, width)
             },
             CompactNode::Newline => {
                 self.lose("a line break inside a line cannot be written in MTEF; it was dropped");

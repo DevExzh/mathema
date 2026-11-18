@@ -107,7 +107,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::ExplicitSpace { width, basis } => {
             write_unicode_space(
                 out,
-                crate::ast::style::space_width_in_em(*width, *basis, style),
+                crate::ast::style::local_space_width(*width, Some(*basis), style).as_f64(),
             );
         },
         MathNode::Rule { .. } => {},
@@ -503,8 +503,11 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             out.push('"');
         },
         CompactNode::Space(r) => {
-            let basis = arena.space_basis(id).unwrap_or(SpaceBasis::Current);
-            write_unicode_space(out, crate::ast::style::space_width_in_em(r, basis, style));
+            let basis = arena.space_basis(id);
+            write_unicode_space(
+                out,
+                crate::ast::style::local_space_width(r, basis, style).as_f64(),
+            );
         },
 
         CompactNode::Row(span) => write_nodes_c_with_style(out, arena, span, style),

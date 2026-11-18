@@ -2331,6 +2331,7 @@ impl LatexCompactParser {
                 })?;
                 let rest2 = &rest[c2.len_utf8()..];
                 match c2 {
+                    '%' | '$' | '#' | '&' | '_' | '^' | '~' => Ok((rest2, self.push_char_str(c2))),
                     '{' => Ok((rest2, self.arena.push_str("{"))),
                     '}' => Ok((rest2, self.arena.push_str("}"))),
                     '|' => Ok((rest2, self.arena.push_str("\u{2016}"))),
@@ -4946,10 +4947,10 @@ impl LatexCompactParser {
             }
             rest = tail;
         }
-        let basis = if parsed.unit == Some("mu") {
-            SpaceBasis::MathMu
-        } else {
-            SpaceBasis::TextEm
+        let basis = match parsed.unit {
+            Some("mu") => SpaceBasis::MathMu,
+            Some("em" | "ex") => SpaceBasis::TextEm,
+            _ => SpaceBasis::Physical,
         };
         Ok((rest, self.arena.push_space(parsed.width, basis)))
     }

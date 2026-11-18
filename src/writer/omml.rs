@@ -692,9 +692,9 @@ impl<'a> Emitter<'a> {
             CompactNode::Symbol(_, sid) => self.leaf(sid, Leaf::Symbol, fmt),
             CompactNode::Text(style, sid) => self.text_node(style, sid, fmt),
             CompactNode::Space(width) => {
-                let basis = self.arena.space_basis(id).unwrap_or(SpaceBasis::Current);
-                let em = crate::ast::style::space_width_in_local_em(width, basis, self.style);
-                self.space(Rational::new((em * 1000.0).round() as i32, 1000));
+                let basis = self.arena.space_basis(id);
+                let width = crate::ast::style::local_space_width(width, basis, self.style);
+                self.space(width);
             },
             CompactNode::Row(span) => self.children(span, fmt),
             CompactNode::Fenced {

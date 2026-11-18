@@ -7,6 +7,9 @@ impl Rational {
     /// fraction. When that fraction exceeds our integer range, approximate
     /// the value within the numerator and denominator bounds.
     pub(crate) fn from_scaled_decimal(text: &str, unit: Self) -> Option<Self> {
+        if unit.den == 0 {
+            return None;
+        }
         let (magnitude, negative) = match text.as_bytes().first()? {
             b'-' => (&text[1..], true),
             b'+' => (&text[1..], false),
@@ -16,16 +19,9 @@ impl Rational {
         if let Some((n, d)) = decimal_ratio(magnitude)
             && let Some(n) = n.checked_mul(u128::from(unit.num.unsigned_abs()))
             && let Some(d) = d.checked_mul(u128::from(unit.den))
+            && let Some(ratio) = reduced_ratio(n, d, negative)
         {
-            let (mut a, mut b) = (n, d);
-            while b != 0 {
-                (a, b) = (b, a % b);
-            }
-            if let (Ok(n), Ok(d)) = (i64::try_from(n / a), u32::try_from(d / a))
-                && let Ok(n) = i32::try_from(if negative { -n } else { n })
-            {
-                return Some(Self { num: n, den: d });
-            }
+            return Some(ratio);
         }
 
         if !magnitude.starts_with(|c: char| c.is_ascii_digit() || c == '.') {
@@ -37,6 +33,33 @@ impl Rational {
         }
         Some(closest_ratio(value, negative))
     }
+    /// Scale a width for an output font while retaining simple exact fractions.
+    pub(crate) fn scaled_by(self, num: u32, den: u32) -> Self {
+        if self.den == 0 || den == 0 {
+            return self;
+        }
+        let n = u128::from(self.num.unsigned_abs()) * u128::from(num);
+        let d = u128::from(self.den) * u128::from(den);
+        reduced_ratio(n, d, self.num < 0).unwrap_or_else(|| {
+            closest_ratio(
+                self.as_f64().abs() * f64::from(num) / f64::from(den),
+                self.num < 0,
+            )
+        })
+    }
+}
+
+fn reduced_ratio(n: u128, d: u128, negative: bool) -> Option<Rational> {
+    let (mut a, mut b) = (n, d);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let n = i64::try_from(n / a).ok()?;
+    let d = u32::try_from(d / a).ok()?;
+    Some(Rational {
+        num: i32::try_from(if negative { -n } else { n }).ok()?,
+        den: d,
+    })
 }
 
 fn decimal_ratio(s: &str) -> Option<(u128, u128)> {

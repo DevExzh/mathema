@@ -201,39 +201,36 @@ impl MathStyle {
     }
 }
 
-/// Convert an explicit spacing width into current-style em units.
-#[must_use]
-#[inline]
-pub(crate) fn space_width_in_em(
-    width: crate::ast::Rational,
-    basis: crate::ast::SpaceBasis,
+/// CSS ems scale with the local font. A TeX em uses the text font, and
+/// 18mu is the current math symbol font's quad (TeX font dimension 6).
+pub(crate) fn local_space_width(
+    width: super::Rational,
+    basis: Option<super::SpaceBasis>,
     style: MathStyle,
-) -> f64 {
-    let value = width.as_f64();
-    match basis {
-        crate::ast::SpaceBasis::Current => value * style.size_multiplier(),
-        crate::ast::SpaceBasis::TextEm => value,
-        crate::ast::SpaceBasis::MathMu => {
-            let mu_quad = match style.size_class() {
-                0 => 1.0,
-                1 => 1.171,
-                _ => 1.472,
-            };
-            value * style.size_multiplier() * mu_quad
-        },
+) -> super::Rational {
+    use super::SpaceBasis::{MathMu, Physical, TextEm};
+    match (basis, style.size_class()) {
+        (Some(TextEm | Physical), 1) => width.scaled_by(10, 7),
+        (Some(TextEm | Physical), 2) => width.scaled_by(2, 1),
+        (Some(MathMu), 1) => width.scaled_by(1171, 1000),
+        (Some(MathMu), 2) => width.scaled_by(1472, 1000),
+        _ => width,
     }
 }
 
-/// Convert an explicit spacing width to the local em unit used by MathML and
-/// other format writers at this style.
-#[must_use]
-#[inline]
-pub(crate) fn space_width_in_local_em(
-    width: crate::ast::Rational,
-    basis: crate::ast::SpaceBasis,
+/// An absolute TeX length keeps its nominal width through a font-size switch.
+#[cfg(feature = "render")]
+pub(crate) fn space_width_in_em(
+    width: super::Rational,
+    basis: Option<super::SpaceBasis>,
     style: MathStyle,
+    size_scale: f64,
 ) -> f64 {
-    space_width_in_em(width, basis, style) / style.size_multiplier()
+    match basis {
+        Some(super::SpaceBasis::Physical) => width.as_f64(),
+        Some(super::SpaceBasis::TextEm) => width.as_f64() * size_scale,
+        _ => local_space_width(width, basis, style).as_f64() * style.size_multiplier() * size_scale,
+    }
 }
 
 #[cfg(test)]

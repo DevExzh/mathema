@@ -93,8 +93,9 @@ impl AstArena {
     /// Push a spacing node while retaining its source unit basis.
     #[inline]
     pub fn push_space(&mut self, width: crate::ast::Rational, basis: SpaceBasis) -> NodeId {
+        let before = self.nodes.len();
         let id = self.push_node(CompactNode::Space(width));
-        if basis != SpaceBasis::Current {
+        if self.nodes.len() != before {
             self.space_bases.insert(id, basis);
         }
         id
@@ -232,7 +233,10 @@ impl AstArena {
     /// Return the explicit unit basis for a spacing node, if one was parsed.
     #[inline]
     pub fn space_basis(&self, id: NodeId) -> Option<SpaceBasis> {
-        self.space_bases.get(&id).copied()
+        self.space_bases
+            .get(&id)
+            .copied()
+            .filter(|_| matches!(self.node(id), CompactNode::Space(_)))
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.

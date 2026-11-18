@@ -845,7 +845,10 @@ fn normalize_compact_node(
             let sup = (pre_sup.is_some() && !is_effectively_empty_node(arena, pre_sup))
                 .then_some(pre_sup);
             let replacement = match (sub, sup) {
-                (None, None) => *arena.node(base),
+                (None, None) => {
+                    arena.replace_from(id, base);
+                    return Ok(());
+                },
                 _ if !is_effectively_empty_node(arena, base) => CompactNode::PreScripts {
                     base,
                     pre_sub: sub.unwrap_or(NodeId::NONE),
@@ -1273,6 +1276,30 @@ pub(crate) fn make_script_with_base(
 mod tests {
     use super::*;
     use crate::ast::compact::CompactExpr;
+
+    #[test]
+    fn normalization_copies_explicit_space_basis_with_the_node() {
+        let space = MathNode::ExplicitSpace {
+            width: super::super::Rational::new(1, 2),
+            basis: super::super::SpaceBasis::MathMu,
+        };
+        for n in [
+            MathNode::Row(vec![space.clone()]),
+            MathNode::Superscript {
+                base: Box::new(space.clone()),
+                sup: Box::new(MathNode::Row(Vec::new())),
+            },
+            MathNode::PreScripts {
+                base: Box::new(space.clone()),
+                pre_sub: None,
+                pre_sup: None,
+            },
+        ] {
+            let mut compact = CompactExpr::from_math_expr(&MathExpr::inline(vec![n])).unwrap();
+            normalize_compact_expr(&mut compact).unwrap();
+            assert_eq!(compact.to_math_expr().nodes, vec![space.clone()]);
+        }
+    }
 
     #[test]
     fn flatten_nested_rows() {

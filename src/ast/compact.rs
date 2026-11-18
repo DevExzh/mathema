@@ -3,8 +3,7 @@ use smallvec::SmallVec;
 use super::arena::AstArena;
 use super::{
     AccentPosition, ColumnAlign, DisplayStyle, FencedItem, FractionKind, LimitStyle, MathAtomType,
-    MathExpr, MathNode, OperatorAttr, PhantomKind, Rational, SpaceBasis, StrokeKind, SymbolKind,
-    TextStyle,
+    MathExpr, MathNode, OperatorAttr, PhantomKind, Rational, StrokeKind, SymbolKind, TextStyle,
 };
 
 // ── Index types ────────────────────────────────────────────────────────
@@ -847,9 +846,9 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         }),
         CompactNode::Symbol(kind, sid) => MathNode::Symbol(kind, arena.str_val(sid).to_owned()),
         CompactNode::Text(style, sid) => MathNode::Text(style, arena.str_val(sid).to_owned()),
-        CompactNode::Space(r) => match arena.space_basis(id).unwrap_or(SpaceBasis::Current) {
-            SpaceBasis::Current => MathNode::Space(r),
-            basis => MathNode::ExplicitSpace { width: r, basis },
+        CompactNode::Space(r) => match arena.space_basis(id) {
+            None => MathNode::Space(r),
+            Some(basis) => MathNode::ExplicitSpace { width: r, basis },
         },
 
         CompactNode::Row(span) => MathNode::Row(reconstruct_children(arena, span)),

@@ -379,7 +379,7 @@ fn write_node_in(
             let mut elem = BytesStart::new("mspace");
             let width = format!(
                 "{}em",
-                crate::ast::style::space_width_in_local_em(*width, *basis, display_style)
+                crate::ast::style::local_space_width(*width, Some(*basis), display_style).as_f64()
             );
             elem.push_attribute(("width", width.as_str()));
             w.write_event(Event::Empty(elem)).map_err(to_err)?;
@@ -1143,8 +1143,8 @@ fn write_node_fast_in(
         CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
             use std::fmt::Write;
-            let basis = arena.space_basis(id).unwrap_or(SpaceBasis::Current);
-            let width = crate::ast::style::space_width_in_local_em(r, basis, display_style);
+            let basis = arena.space_basis(id);
+            let width = crate::ast::style::local_space_width(r, basis, display_style).as_f64();
             let _ = write!(buf, "<mspace width=\"{}em\"/>", width);
         },
 

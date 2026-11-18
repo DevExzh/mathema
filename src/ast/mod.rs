@@ -44,12 +44,12 @@ pub enum DisplayStyle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SpaceBasis {
-    /// Scale the width with the current math style. This is the historical basis.
-    Current,
-    /// Keep the width relative to text-style em size, as `\kern` and `\hskip` do.
+    /// An em of the text font at the current text size, including inside scripts.
     TextEm,
-    /// Scale the width as math units in the current style, as `\mkern` and `\mskip` do.
+    /// The current math symbol font's quad (18mu).
     MathMu,
+    /// A physical TeX dimension expressed in nominal ten-point ems.
+    Physical,
 }
 
 /// The core math AST node. 32 variants covering the union of all target formats.

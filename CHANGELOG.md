@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- LaTeX spacing primitives preserve their natural widths through LaTeX, MathML,
+  and SVG, including fractional math units and scaled points. In scripts,
+  `\hskip` follows the text font and `\mskip` follows the math symbol font. A
+  complete stretch or shrink component produces a diagnostic when its natural
+  width is used. Explicitly sized input uses the additive `MathNode::ExplicitSpace`
+  variant in the heap AST. Generic `MathNode::Space` values retain local-em semantics.
 - LaTeX math accepts KaTeX’s Unicode superscript and subscript characters.
   Mixed forms such as `X_i²`, `x'₂`, and `\sumₙ²` attach to one base. A script
   character in an argument position stays literal, as in `x^²`. Operator
@@ -516,7 +522,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **UnicodeMath/MathML style round-trips recover all 13 text styles.**
   `unstyled_char` now reverses BoldItalic, Script, BoldScript, Fraktur,
   BoldFraktur, and every SansSerif variant in addition to the original four.
-- `\hskip` and `\mskip` accept fixed dimensions like their `\kern` and
-  `\mkern` counterparts. Native TeX glue suffixes such as `plus .5em`,
-  `minus 2pt`, and `fill` are consumed and reported as dropped stretch or
-  shrink because the public AST stores fixed spacing only.

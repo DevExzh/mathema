@@ -772,9 +772,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             }
         },
 
-        CompactNode::Space(r) => {
-            write_space_with_basis(buf, r, arena.space_basis(id).unwrap_or(SpaceBasis::Current))
-        },
+        CompactNode::Space(r) => write_space_with_basis(buf, r, arena.space_basis(id)),
 
         CompactNode::Row(span) => {
             let children = arena.children(span);
@@ -1900,17 +1898,21 @@ fn write_rational_dimension(buf: &mut String, value: Rational) {
     let _ = write!(buf, "{}em", value.as_f64());
 }
 
-fn write_space_with_basis(buf: &mut String, width: Rational, basis: SpaceBasis) {
+fn write_space_with_basis(buf: &mut String, width: Rational, basis: Option<SpaceBasis>) {
     use std::fmt::Write;
     if width.num == 0 {
         return;
     }
     match basis {
-        SpaceBasis::Current => write_space(buf, width),
-        SpaceBasis::TextEm => {
+        None => write_space(buf, width),
+        Some(SpaceBasis::TextEm) => {
             let _ = write!(buf, "\\kern{}em ", width.as_f64());
         },
-        SpaceBasis::MathMu => {
+        Some(SpaceBasis::Physical) => {
+            let pt = f64::from(width.num) * 10.0 / f64::from(width.den);
+            let _ = write!(buf, "\\kern{pt}pt ");
+        },
+        Some(SpaceBasis::MathMu) => {
             let mu = f64::from(width.num) * 18.0 / f64::from(width.den);
             let _ = write!(buf, "\\mkern{mu}mu ");
         },
@@ -1921,6 +1923,10 @@ fn write_delim(buf: &mut String, delim: &str) {
     match delim {
         "" => buf.push('.'),
         "\\" => buf.push_str("\\backslash"),
+        "%" | "$" | "#" | "&" | "_" | "^" | "~" => {
+            buf.push('\\');
+            buf.push_str(delim);
+        },
         "{" => buf.push_str("\\{"),
         "}" => buf.push_str("\\}"),
         "\u{2016}" => buf.push_str("\\|"),
@@ -2642,6 +2648,22 @@ mod tests {
     }
 
     #[test]
+    fn escaped_punctuation_delimiters_keep_their_glyph_after_export() {
+        for glyph in ["%", "#", "&", "$", "_", "^", "~"] {
+            let input = format!(r"\left. \frac{{a}}{{b}}\right\{glyph}");
+            let formula = crate::from_latex(&input).unwrap();
+            let first = formula.to_latex().unwrap();
+            assert!(
+                first.contains(&format!(r"\right\{glyph}")),
+                "{input}: {first}"
+            );
+            let reparsed = crate::from_latex(&first).unwrap();
+            assert_eq!(reparsed.to_latex().unwrap(), first);
+            assert_eq!(reparsed.to_mathml().unwrap(), formula.to_mathml().unwrap());
+        }
+    }
+
+    #[test]
     fn word_sized_spaces_in_operator_names_round_trip_without_growing() {
         for (input, expected) in [
             (r"\operatorname{a\quad{}b}", r"\operatorname{a\quad{}b}"),
@@ -3316,8 +3338,8 @@ mod tests {
             (r"\text{a\textellipsis b}", r"{\text{a}\ldots\text{b}}"),
             (r"\text{a \textellipsis b}", r"{\text{a }\ldots\text{b}}"),
             (r"\text{a\textellipsis\ b}", r"{\text{a}\ldots\text{ b}}"),
-            (r"\kern2\relax", r"\kern0.2em "),
-            (r"\kern2\relax em", r"\kern0.2em em"),
+            (r"\kern2\relax", r"\kern2pt "),
+            (r"\kern2\relax em", r"\kern2pt em"),
         ] {
             let first = roundtrip(input);
             assert_eq!(first, expected, "unexpected output for {input:?}");
