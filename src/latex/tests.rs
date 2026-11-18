@@ -57,9 +57,14 @@ fn named_operator_limit_styles_reach_mathml() {
                 (r"\lim_{x\to0}f(x)", "<msub>"),
                 (r"\sin_{x\to0}f(x)", "<msub>"),
                 (r"\operatorname{lim}_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname{lim}\limits_{x\to0}f(x)", "<msub>"),
                 (r"\operatorname*{lim}_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname*{lim}\limits_{x\to0}f(x)", "<munder>"),
                 (r"\lim\limits_{x\to0}f(x)", "<munder>"),
                 (r"\lim\nolimits_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname{score}\limits_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname*{score}\limits_{x\to0}f(x)", "<munder>"),
+                (r"\operatorname*{sin}\limits_{x\to0}f(x)", "<munder>"),
                 (r"\mathop{\rm lim}_{x\to0}f(x)", "<msub>"),
                 (r"\mathop{\rm lim}\limits_{x\to0}f(x)", "<munder>"),
                 (r"\mathop{\rm lim}\nolimits_{x\to0}f(x)", "<msub>"),
@@ -71,9 +76,14 @@ fn named_operator_limit_styles_reach_mathml() {
                 (r"\lim_{x\to0}f(x)", "<munder>"),
                 (r"\sin_{x\to0}f(x)", "<msub>"),
                 (r"\operatorname{lim}_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname{lim}\limits_{x\to0}f(x)", "<msub>"),
                 (r"\operatorname*{lim}_{x\to0}f(x)", "<munder>"),
+                (r"\operatorname*{lim}\limits_{x\to0}f(x)", "<munder>"),
                 (r"\lim\limits_{x\to0}f(x)", "<munder>"),
                 (r"\lim\nolimits_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname{score}\limits_{x\to0}f(x)", "<msub>"),
+                (r"\operatorname*{score}\limits_{x\to0}f(x)", "<munder>"),
+                (r"\operatorname*{sin}\limits_{x\to0}f(x)", "<munder>"),
                 (r"\mathop{\rm lim}_{x\to0}f(x)", "<munder>"),
                 (r"\mathop{\rm lim}\limits_{x\to0}f(x)", "<munder>"),
                 (r"\mathop{\rm lim}\nolimits_{x\to0}f(x)", "<msub>"),
@@ -119,6 +129,32 @@ fn named_operator_scripts_preserve_operator_limit_metadata() {
         *expr.arena.node(base),
         CompactNode::Operator {
             limits: crate::ast::LimitStyle::Default,
+            ..
+        }
+    ));
+
+    let expr = parse(r"\operatorname{lim}\limits_{x\to0}f");
+    let root = expr.arena.children(expr.roots)[0];
+    let CompactNode::Subscript { base, .. } = *expr.arena.node(root) else {
+        panic!("unstarred operatorname should retain an ordinary subscript wrapper");
+    };
+    assert!(matches!(
+        *expr.arena.node(base),
+        CompactNode::Operator {
+            limits: crate::ast::LimitStyle::SubSup,
+            ..
+        }
+    ));
+
+    let expr = parse(r"\operatorname*{lim}\limits_{x\to0}f");
+    let root = expr.arena.children(expr.roots)[0];
+    let CompactNode::Subscript { base, .. } = *expr.arena.node(root) else {
+        panic!("starred operatorname should retain an ordinary subscript wrapper");
+    };
+    assert!(matches!(
+        *expr.arena.node(base),
+        CompactNode::Operator {
+            limits: crate::ast::LimitStyle::AboveBelow,
             ..
         }
     ));
@@ -777,7 +813,7 @@ fn operatorname_special_content_round_trips_through_public_apis() {
         },
     )]);
     let direct_latex = LatexWriter::write(&direct, &config).unwrap();
-    assert_eq!(direct_latex, r"\operatorname{rate\%}\limits");
+    assert_eq!(direct_latex, r"\operatorname*{rate\%}\limits");
     assert_eq!(
         crate::convert(&direct_latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
         direct_latex

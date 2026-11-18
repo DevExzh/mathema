@@ -1413,11 +1413,10 @@ fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
     } else {
         match limits {
             LimitStyle::AboveBelow => {
-                // Keep the base unstarred and carry the requested fixed
-                // placement explicitly.  A starred operatorname alone is
-                // still movable in inline style and cannot represent this
-                // AST state faithfully.
-                buf.push_str("\\operatorname{");
+                // Unstarred `\operatorname` ignores placement modifiers in
+                // KaTeX/amsopn. Use the starred form when the AST requests
+                // fixed above/below placement, then make that choice explicit.
+                buf.push_str("\\operatorname*{");
                 write_operator_name_content(buf, name);
                 buf.push_str("}\\limits");
             },
@@ -2246,7 +2245,10 @@ mod tests {
             (r"\operatorname{lim}", r"\lim\nolimits"),
             (r"\operatorname*{rate}", r"\operatorname*{rate}"),
             (r"\operatorname{rate}", r"\operatorname{rate}"),
-            (r"\operatorname{rate}\limits", r"\operatorname{rate}\limits"),
+            (
+                r"\operatorname*{rate}\limits",
+                r"\operatorname*{rate}\limits",
+            ),
         ] {
             assert_eq!(roundtrip(input), expected, "wrong spelling for {input:?}");
         }

@@ -4571,11 +4571,13 @@ impl LatexCompactParser {
     fn parse_operatorname<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         // A starred operatorname uses TeX's context-dependent movable limits;
-        // an unstarred operatorname is an ordinary side-script operator.
-        let (input, limits) = if let Some(rest) = input.strip_prefix('*') {
-            (rest, LimitStyle::Default)
+        // an unstarred operatorname is an ordinary side-script operator. The
+        // distinction matters for following \limits/\nolimits: KaTeX accepts
+        // those tokens after an unstarred name but deliberately ignores them.
+        let (input, starred) = if let Some(rest) = input.strip_prefix('*') {
+            (rest, true)
         } else {
-            (input, LimitStyle::SubSup)
+            (input, false)
         };
         let (input, _) = ws(input)?;
         // Accept both braced {name} and unbraced single letter
@@ -4599,6 +4601,15 @@ impl LatexCompactParser {
                 input,
                 nom::error::ErrorKind::Alpha,
             )));
+        };
+        // Consume placement modifiers at the operatorname site. Unstarred
+        // names always stay side-script operators; starred names honor the
+        // final modifier just like native named operators.
+        let (input, modifier) = consume_limit_modifiers(input);
+        let limits = if starred {
+            modifier.unwrap_or(LimitStyle::Default)
+        } else {
+            LimitStyle::SubSup
         };
         let sid = self.arena.push_str(&name);
         Ok((
