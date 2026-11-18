@@ -2118,6 +2118,142 @@ fn operatorname_special_content_round_trips_through_public_apis() {
 }
 
 #[test]
+fn structured_operatorname_decorations_preserve_operator_semantics() {
+    for (structured, native, marker) in [
+        (r"\operatorname*{\overline{lim}}", r"\varlimsup", "mover"),
+        (r"\operatorname*{\underline{lim}}", r"\varliminf", "munder"),
+        (
+            r"\operatorname*{\underrightarrow{lim}}",
+            r"\varinjlim",
+            "munder",
+        ),
+        (
+            r"\operatorname*{\underleftarrow{lim}}",
+            r"\varprojlim",
+            "munder",
+        ),
+    ] {
+        for suffix in ["", "_n x", r"\limits_n x", r"\nolimits_n x"] {
+            let source = format!("{structured}{suffix}");
+            let expected = format!("{native}{suffix}");
+            let source_mathml =
+                crate::convert(&source, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+            let expected_mathml =
+                crate::convert(&expected, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+            assert!(source_mathml.contains(marker), "{source}: {source_mathml}");
+            assert!(source_mathml.contains("lim"), "{source}: {source_mathml}");
+            assert_eq!(
+                crate::from_mathml(&source_mathml)
+                    .unwrap()
+                    .to_mathml()
+                    .unwrap(),
+                source_mathml,
+                "MathML was not stable for {source}"
+            );
+            assert_eq!(source_mathml, expected_mathml, "{source} vs {expected}");
+        }
+    }
+
+    for source in [
+        r"\operatorname*{\overline{rate}}",
+        r"\operatorname{\underline{rate}}_i x",
+        r"\operatorname*{\overline{\frac{a}{b}}}",
+    ] {
+        let first = crate::convert(source, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{source}");
+        let mathml = crate::convert(source, crate::Format::LaTeX, crate::Format::MathML).unwrap();
+        assert_eq!(
+            mathml,
+            crate::from_mathml(&mathml).unwrap().to_mathml().unwrap(),
+            "MathML was not stable for {source}"
+        );
+    }
+
+    let custom_star = r"\operatorname*{\overline{rate}}_n x";
+    let inline_custom = crate::convert_with(
+        custom_star,
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Inline),
+    )
+    .unwrap();
+    let block_custom = crate::convert_with(
+        custom_star,
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Block),
+    )
+    .unwrap();
+    assert!(inline_custom.contains("<msub>"), "{inline_custom}");
+    assert!(block_custom.contains("<munder>"), "{block_custom}");
+    let explicit_limits = crate::convert_with(
+        r"\operatorname*{\overline{rate}}\limits_n x",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Inline),
+    )
+    .unwrap();
+    let explicit_nolimits = crate::convert_with(
+        r"\operatorname*{\overline{rate}}\nolimits_n x",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+        &Config::default().with_display(DisplayStyle::Block),
+    )
+    .unwrap();
+    assert!(explicit_limits.contains("<munder>"), "{explicit_limits}");
+    assert!(explicit_nolimits.contains("<msub>"), "{explicit_nolimits}");
+
+    let side = crate::convert(
+        r"\operatorname{\overline{lim}}_n x",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+    )
+    .unwrap();
+    assert!(side.contains("<msub>"), "{side}");
+    assert_eq!(
+        side,
+        crate::from_mathml(&side).unwrap().to_mathml().unwrap()
+    );
+
+    let spaced_result = crate::from_latex(r"\operatorname{\overline{lim\,sup}}_n x").unwrap();
+    let spaced_side = spaced_result.to_mathml().unwrap();
+    assert!(spaced_side.contains("<msub>"), "{spaced_side}");
+    assert!(spaced_side.contains("<mi>l</mi>"), "{spaced_side}");
+    assert!(spaced_side.contains("<mi>s</mi>"), "{spaced_side}");
+    assert!(spaced_side.contains("mspace"), "{spaced_side}");
+    assert_eq!(
+        spaced_side,
+        crate::from_mathml(&spaced_side)
+            .unwrap()
+            .to_mathml()
+            .unwrap()
+    );
+    assert!(spaced_result.to_latex().unwrap().contains(r"\,"));
+}
+
+#[test]
+fn structured_operatorname_keeps_resource_failures_visible() {
+    let config = Config::default().with_max_depth(2);
+    let deep = r"\operatorname*{\overline{\overline{\overline{lim}}}}";
+    assert!(
+        crate::from_latex_with(deep, &config).is_err(),
+        "structured operator content bypassed the depth limit"
+    );
+    let limited = Config::default().with_max_nodes(Some(4));
+    let long = r"\operatorname*{\overline{\overline{\overline{\overline{lim}}}}}";
+    assert!(
+        crate::from_latex_with(long, &limited).is_err(),
+        "structured operator content bypassed the node limit"
+    );
+    let long_sequence = format!(r"\operatorname*{{\overline{{{}}}}}", "a".repeat(32));
+    assert!(
+        crate::from_latex_with(&long_sequence, &limited).is_err(),
+        "a long structured name bypassed the node limit"
+    );
+}
+
+#[test]
 fn nary_body_boundaries_allow_missing_bodies_and_propagate_errors() {
     let config = Config::default();
     for input in [

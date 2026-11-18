@@ -2639,8 +2639,31 @@ impl LatexCompactParser {
         match *self.arena.node(id) {
             CompactNode::MathAtom {
                 atom_type: MathAtomType::Op,
-                ..
-            } => Some(LimitStyle::Default),
+                content,
+            } => Some(if self.last_unstarred_operator == Some(id) {
+                LimitStyle::SubSup
+            } else {
+                self.structured_operator_limit_style(content)
+                    .filter(|style| *style == LimitStyle::SubSup)
+                    .unwrap_or(LimitStyle::Default)
+            }),
+            _ => None,
+        }
+    }
+
+    fn structured_operator_limit_style(&self, id: NodeId) -> Option<LimitStyle> {
+        match *self.arena.node(id) {
+            CompactNode::Operator { limits, .. } => Some(limits),
+            CompactNode::Row(span) => {
+                let &[only] = self.arena.children(span) else {
+                    return None;
+                };
+                self.structured_operator_limit_style(only)
+            },
+            CompactNode::Accent { base, .. }
+            | CompactNode::Overscript { base, .. }
+            | CompactNode::Underscript { base, .. }
+            | CompactNode::UnderOver { base, .. } => self.structured_operator_limit_style(base),
             _ => None,
         }
     }
@@ -4792,21 +4815,25 @@ impl LatexCompactParser {
         };
         let (input, _) = ws(input)?;
         // Accept both braced {name} and unbraced single letter
-        let (input, name) = if input.starts_with('{') {
+        let (input, name, structured) = if input.starts_with('{') {
             let Some((input, raw_name)) = super::mhchem::capture_braced(input) else {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
                     nom::error::ErrorKind::Char,
                 )));
             };
-            let name = decode_operator_name(raw_name);
-            (input, name)
+            let structured = match self.parse_structured_operator_name(raw_name, starred) {
+                Ok((_, value)) => value,
+                Err(error) => return Err(error),
+            };
+            let name = structured.is_none().then(|| decode_operator_name(raw_name));
+            (input, name, structured)
         } else if input
             .as_bytes()
             .first()
             .is_some_and(|b| b.is_ascii_alphabetic())
         {
-            (&input[1..], input[..1].to_owned())
+            (&input[1..], Some(input[..1].to_owned()), None)
         } else {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -4816,20 +4843,169 @@ impl LatexCompactParser {
         // Consume placement modifiers at the operatorname site. Unstarred
         // names always stay side-script operators; starred names honor the
         // final modifier just like native named operators.
-        let (input, modifier) = consume_limit_modifiers(input);
+        let (input, modifier) = if structured.is_some() && starred {
+            // Let the ordinary script parser consume a starred modifier so an
+            // explicit `\limits` or `\nolimits` reaches the compound op node.
+            (input, None)
+        } else {
+            // Unstarred operator names deliberately ignore placement controls,
+            // matching the existing `operatorname` contract.
+            consume_limit_modifiers(input)
+        };
         let limits = if starred {
             modifier.unwrap_or(LimitStyle::Default)
         } else {
             LimitStyle::SubSup
         };
-        let sid = self.arena.push_str(&name);
-        let operator = self
-            .arena
-            .push_node(CompactNode::Operator { name: sid, limits });
+        let operator = if let Some(content) = structured {
+            self.arena.push_node(CompactNode::MathAtom {
+                atom_type: MathAtomType::Op,
+                content,
+            })
+        } else {
+            let sid = self.arena.push_str(name.as_deref().unwrap_or_default());
+            self.arena
+                .push_node(CompactNode::Operator { name: sid, limits })
+        };
         if !starred {
             self.last_unstarred_operator = Some(operator);
         }
         Ok((input, operator))
+    }
+
+    /// Preserve a structured decoration inside `\operatorname` instead of
+    /// flattening it into the operator's text. Ordinary names still use the
+    /// compact string representation. Restricting this path to the decoration
+    /// commands used by the KaTeX compound-limit definitions avoids changing
+    /// the established treatment of arbitrary operator text.
+    fn parse_structured_operator_name<'a>(
+        &mut self,
+        raw: &'a str,
+        starred: bool,
+    ) -> IResult<&'a str, Option<NodeId>> {
+        let Some(command) = raw.trim_start().strip_prefix('\\') else {
+            return Ok((raw, None));
+        };
+        let name_len = super::control_word_len(command);
+        let name = &command[..name_len];
+        if !matches!(
+            name,
+            "overline"
+                | "underline"
+                | "underrightarrow"
+                | "underleftarrow"
+                | "overset"
+                | "underset"
+                | "overbrace"
+                | "underbrace"
+                | "overbracket"
+                | "underbracket"
+        ) {
+            return Ok((raw, None));
+        }
+        let (rest, ids) = match self.parse_node_list(raw) {
+            Ok(value) => value,
+            Err(nom::Err::Error(_)) => return Ok((raw, None)),
+            Err(error) => return Err(error),
+        };
+        if !rest.trim().is_empty() || ids.len() != 1 {
+            return Ok((raw, None));
+        }
+        let fixed = matches!(name, "underrightarrow" | "underleftarrow");
+        Ok((
+            rest,
+            Some(self.operatorize_structured_name(ids[0], fixed, starred)),
+        ))
+    }
+
+    /// A parsed decoration around `lim` initially contains a row of identifier
+    /// nodes because its body is ordinary TeX text. Reclassify known operator
+    /// words so the decoration retains the same upright, movable-operator
+    /// semantics as `\varlimsup` and its sibling package macros.
+    fn operatorize_structured_name(&mut self, id: NodeId, fixed: bool, starred: bool) -> NodeId {
+        let node = *self.arena.node(id);
+        match node {
+            CompactNode::Row(span) => {
+                let children = self.arena.children(span);
+                let mut name = String::new();
+                for &child in children {
+                    let CompactNode::Identifier(sid) = *self.arena.node(child) else {
+                        return id;
+                    };
+                    name.push_str(self.arena.str_val(sid));
+                }
+                if crate::unicode::symbols::is_operator_command(&name)
+                    || name.chars().all(|ch| ch.is_ascii_alphabetic())
+                {
+                    let sid = self.arena.push_str(&name);
+                    self.arena.push_node(CompactNode::Operator {
+                        name: sid,
+                        limits: if !starred {
+                            LimitStyle::SubSup
+                        } else if fixed {
+                            LimitStyle::AboveBelow
+                        } else {
+                            LimitStyle::Default
+                        },
+                    })
+                } else {
+                    id
+                }
+            },
+            CompactNode::Overscript {
+                base,
+                over,
+                movable_limits,
+            } => {
+                let base = self.operatorize_structured_name(base, fixed, starred);
+                self.arena.push_node(CompactNode::Overscript {
+                    base,
+                    over,
+                    movable_limits,
+                })
+            },
+            CompactNode::Underscript {
+                base,
+                under,
+                movable_limits,
+            } => {
+                let base = self.operatorize_structured_name(base, fixed, starred);
+                self.arena.push_node(CompactNode::Underscript {
+                    base,
+                    under,
+                    movable_limits,
+                })
+            },
+            CompactNode::UnderOver {
+                base,
+                under,
+                over,
+                movable_limits,
+            } => {
+                let base = self.operatorize_structured_name(base, fixed, starred);
+                self.arena.push_node(CompactNode::UnderOver {
+                    base,
+                    under,
+                    over,
+                    movable_limits,
+                })
+            },
+            CompactNode::Accent {
+                base,
+                accent,
+                position,
+                wide,
+            } => {
+                let base = self.operatorize_structured_name(base, fixed, starred);
+                self.arena.push_node(CompactNode::Accent {
+                    base,
+                    accent,
+                    position,
+                    wide,
+                })
+            },
+            _ => id,
+        }
     }
 
     fn parse_styled_binom<'a>(&mut self, input: &'a str, style: u8) -> IResult<&'a str, NodeId> {
