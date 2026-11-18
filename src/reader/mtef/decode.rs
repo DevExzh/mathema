@@ -1066,7 +1066,7 @@ impl<'a> Decoder<'a> {
             num_cols: u16::try_from(num_cols).unwrap_or(u16::MAX),
             arraystretch_pct: 100,
             add_jot: false,
-            array_style: false,
+            array_style: col_seps != 0 || row_seps != 0,
             col_seps,
             row_seps,
         })
