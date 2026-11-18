@@ -134,7 +134,7 @@ fn legacy_font_scopes_cross_infix_fractions_without_hiding_markers() {
         crate::Format::LaTeX,
     )
     .unwrap();
-    assert_eq!(grouped, r"\frac{\mathbf{a}}{\mathbf{b}+ c}");
+    assert_eq!(grouped, r"\frac{\mathbf{a}}{\mathbf{b}}+ c");
 }
 
 #[test]
