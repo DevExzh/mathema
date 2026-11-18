@@ -81,9 +81,13 @@ fn fixtures_convert_between_versions() {
 fn canonical(node: &mut MathNode) {
     // MTEF stores the table cells and alignments in the same MATRIX record
     // for a TeX matrix, smallmatrix, or array.
-    if let MathNode::Matrix { columns, rows, .. } = node {
+    if let MathNode::Matrix {
+        alignment, rows, ..
+    } = node
+    {
+        let columns = vec![*alignment; rows.iter().map(Vec::len).max().unwrap_or(0)];
         *node = MathNode::Array {
-            columns: std::mem::take(columns),
+            columns,
             rows: std::mem::take(rows),
             arraystretch: None,
             add_jot: false,

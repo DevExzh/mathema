@@ -340,14 +340,10 @@ pub enum MathNode {
     Matrix {
         /// Matrix source environment.
         kind: MatrixKind,
-        /// Per-column horizontal alignments.
-        columns: Vec<ColumnAlign>,
+        /// Uniform alignment applied to every matrix column.
+        alignment: ColumnAlign,
         /// Rows of cells, where each cell is a sequence of nodes.
         rows: Vec<Vec<Vec<MathNode>>>,
-        /// Optional `\arraystretch` row-height multiplier.
-        arraystretch: Option<f64>,
-        /// Whether to add `\jot` extra vertical spacing between rows.
-        add_jot: bool,
     },
 }
 

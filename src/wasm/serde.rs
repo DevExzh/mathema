@@ -92,10 +92,8 @@ mod tests {
         let expr = MathExpr::new(
             vec![MathNode::Matrix {
                 kind: MatrixKind::SmallMatrix,
-                columns: vec![ColumnAlign::Center],
+                alignment: ColumnAlign::Center,
                 rows: vec![vec![vec![MathNode::Identifier("x".into())]]],
-                arraystretch: Some(0.5),
-                add_jot: false,
             }],
             DisplayStyle::Inline,
         );

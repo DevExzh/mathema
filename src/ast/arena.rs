@@ -7,6 +7,7 @@ use super::{MatrixKind, SpaceBasis};
 enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(MatrixKind),
+    MatrixPadding,
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -330,6 +331,19 @@ impl AstArena {
             },
             _ => None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn mark_matrix_padding(&mut self, id: NodeId) {
+        if !self.size_overflow {
+            self.provenance.insert(id, Provenance::MatrixPadding);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_matrix_padding(&self, id: NodeId) -> bool {
+        matches!(self.provenance.get(id), Some(Provenance::MatrixPadding))
+            && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.

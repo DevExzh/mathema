@@ -1288,7 +1288,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 if !columns
                     .iter()
                     .all(|&col| matches!(*arena.node(col), CompactNode::ColAlign(a) if a == align))
-                    || (align != ColumnAlign::Center && columns.len() != nc)
+                    || (!cell_ids.is_empty() && columns.len() != nc)
                 {
                     return None;
                 }
