@@ -1098,10 +1098,8 @@ impl<'a> Encoder<'a> {
                 LimitStyle::SubSup => {},
             }
         }
-        if let CompactNode::StructuredOperator {
-            content, limits, ..
-        } = *self.arena.node(base)
-        {
+        if let CompactNode::StructuredOperator { content, form } = *self.arena.node(base) {
+            let limits = form.limit_style();
             match limits {
                 LimitStyle::Default => {
                     return self.compound_operator_template(

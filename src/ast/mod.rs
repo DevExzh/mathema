@@ -357,9 +357,8 @@ pub enum MathNode {
         /// Parsed operator content.
         content: Box<MathNode>,
         /// Effective placement for scripts attached to this operator.
-        limit_style: LimitStyle,
-        /// Whether the source used the starred form.
-        starred: bool,
+        /// Source form and effective limit placement.
+        form: OperatorNameForm,
     },
 }
 
@@ -546,6 +545,33 @@ pub struct OperatorAttr {
     pub name: String,
     /// How limits attach to this operator.
     pub limit_style: LimitStyle,
+}
+
+/// Source form of a structured operator-name expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum OperatorNameForm {
+    /// An unstarred operator name. Its scripts stay at the side.
+    Unstarred,
+    /// A starred operator name with its effective placement.
+    Starred(LimitStyle),
+}
+
+impl OperatorNameForm {
+    /// Return the effective placement used by renderers and writers.
+    #[inline]
+    pub const fn limit_style(self) -> LimitStyle {
+        match self {
+            Self::Unstarred => LimitStyle::SubSup,
+            Self::Starred(style) => style,
+        }
+    }
+
+    /// Return whether this form came from a starred operator name.
+    #[inline]
+    pub const fn is_starred(self) -> bool {
+        matches!(self, Self::Starred(_))
+    }
 }
 
 /// Exact rational number for spacing (avoids floating-point imprecision).
@@ -1087,8 +1113,7 @@ mod tests {
             },
             MathNode::StructuredOperator {
                 content: Box::new(MathNode::Identifier("f".into())),
-                limit_style: LimitStyle::Default,
-                starred: true,
+                form: OperatorNameForm::Starred(LimitStyle::Default),
             },
         ];
         assert_eq!(nodes.len(), 36);

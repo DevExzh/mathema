@@ -680,8 +680,8 @@ impl<'a> Emitter<'a> {
     /// `\nolimits` always stays a side script.
     fn named_operator_stacks(&self, id: NodeId) -> bool {
         let limits = match *self.arena.node(id) {
-            CompactNode::Operator { limits, .. }
-            | CompactNode::StructuredOperator { limits, .. } => limits,
+            CompactNode::Operator { limits, .. } => limits,
+            CompactNode::StructuredOperator { form, .. } => form.limit_style(),
             _ => return false,
         };
         match limits {

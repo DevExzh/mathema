@@ -3,8 +3,8 @@ use smallvec::SmallVec;
 use super::arena::AstArena;
 use super::{
     AccentPosition, ColumnAlign, DisplayStyle, FencedItem, FractionKind, LimitStyle, MathAtomType,
-    MathExpr, MathNode, MatrixKind, OperatorAttr, PhantomKind, Rational, StrokeKind, SymbolKind,
-    TextStyle,
+    MathExpr, MathNode, MatrixKind, OperatorAttr, OperatorNameForm, PhantomKind, Rational,
+    StrokeKind, SymbolKind, TextStyle,
 };
 
 // ── Index types ────────────────────────────────────────────────────────
@@ -407,9 +407,8 @@ pub enum CompactNode {
         /// Parsed operator content, including accents and explicit spaces.
         content: NodeId,
         /// Effective placement for scripts attached to this operator.
-        limits: LimitStyle,
-        /// Whether the source used the starred movable-limit form.
-        starred: bool,
+        /// Source form and effective limit placement.
+        form: OperatorNameForm,
     },
 }
 
@@ -798,16 +797,11 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 content: inner,
             })
         },
-        MathNode::StructuredOperator {
-            content,
-            limit_style,
-            starred,
-        } => {
+        MathNode::StructuredOperator { content, form } => {
             let content = push_math_node(arena, content);
             arena.push_node(CompactNode::StructuredOperator {
                 content,
-                limits: *limit_style,
-                starred: *starred,
+                form: *form,
             })
         },
     }
@@ -1180,14 +1174,9 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             atom_type,
             content: Box::new(reconstruct_node(arena, content)),
         },
-        CompactNode::StructuredOperator {
-            content,
-            limits,
-            starred,
-        } => MathNode::StructuredOperator {
+        CompactNode::StructuredOperator { content, form } => MathNode::StructuredOperator {
             content: Box::new(reconstruct_node(arena, content)),
-            limit_style: limits,
-            starred,
+            form,
         },
 
         // Helper nodes — should not appear as standalone roots, but handle gracefully
@@ -1720,6 +1709,41 @@ mod tests {
     #[test]
     fn roundtrip_empty_expr() {
         assert_roundtrip(&MathExpr::inline(vec![]));
+    }
+
+    #[test]
+    fn structured_operator_form_roundtrips_without_contradictory_fields() {
+        use crate::error::Config;
+        use crate::writer::Writer;
+        use crate::writer::latex::LatexWriter;
+
+        for form in [
+            OperatorNameForm::Unstarred,
+            OperatorNameForm::Starred(LimitStyle::Default),
+            OperatorNameForm::Starred(LimitStyle::AboveBelow),
+            OperatorNameForm::Starred(LimitStyle::SubSup),
+        ] {
+            let expr = MathExpr::inline(vec![MathNode::StructuredOperator {
+                content: Box::new(MathNode::Identifier("rate".into())),
+                form,
+            }]);
+            let compact = CompactExpr::from_math_expr(&expr).unwrap();
+            assert_eq!(compact.to_math_expr(), expr);
+            let latex = LatexWriter::write(&expr, &Config::default()).unwrap();
+            let reparsed = crate::from_latex(&latex).unwrap();
+            assert_eq!(reparsed.to_latex().unwrap(), latex);
+            assert_eq!(
+                form.is_starred(),
+                matches!(form, OperatorNameForm::Starred(_))
+            );
+            assert_eq!(
+                form.limit_style(),
+                match form {
+                    OperatorNameForm::Unstarred => LimitStyle::SubSup,
+                    OperatorNameForm::Starred(style) => style,
+                }
+            );
+        }
     }
 
     #[test]

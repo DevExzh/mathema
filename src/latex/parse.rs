@@ -449,7 +449,7 @@ fn decode_operator_name(raw: &str) -> String {
 
 /// Keep literal names, spaces, and single-glyph commands on the string path.
 /// A general math command or a script needs the usual parsed math list.
-fn operator_name_needs_math(mut input: &str) -> bool {
+pub(crate) fn operator_name_needs_math(mut input: &str) -> bool {
     while let Some(pos) = input.find(['\\', '_', '^']) {
         let tail = &input[pos..];
         if !tail.starts_with('\\') {
@@ -2588,20 +2588,16 @@ impl LatexCompactParser {
             return self.parse_nary_rest(input, base);
         }
 
-        if let CompactNode::StructuredOperator {
-            content,
-            limits,
-            starred,
-        } = *self.arena.node(base)
-        {
+        if let CompactNode::StructuredOperator { content, form } = *self.arena.node(base) {
             let (rest, ((sub, sup), modifier)) =
                 self.parse_script_fields_with_limits(input, false)?;
+            let starred = form.is_starred();
+            let limits = form.limit_style();
             let operator = if starred {
                 if let Some(new_limits) = modifier.filter(|&value| value != limits) {
                     self.arena.push_node(CompactNode::StructuredOperator {
                         content,
-                        limits: new_limits,
-                        starred,
+                        form: OperatorNameForm::Starred(new_limits),
                     })
                 } else {
                     base
@@ -4888,8 +4884,11 @@ impl LatexCompactParser {
             let content = self.flatten_single(&items);
             self.arena.push_node(CompactNode::StructuredOperator {
                 content,
-                limits,
-                starred,
+                form: if starred {
+                    OperatorNameForm::Starred(limits)
+                } else {
+                    OperatorNameForm::Unstarred
+                },
             })
         } else {
             let name = self.arena.push_str(&decode_operator_name(raw));

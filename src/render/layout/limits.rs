@@ -31,7 +31,7 @@ pub(super) fn inline_limit_base(
                 ..
             })
             | MathNode::StructuredOperator {
-                limit_style: LimitStyle::Default,
+                form: OperatorNameForm::Starred(LimitStyle::Default),
                 ..
             }
             | MathNode::MathAtom {
@@ -65,7 +65,7 @@ pub(super) fn inline_limit_base_c(
                 ..
             }
             | CompactNode::StructuredOperator {
-                limits: LimitStyle::Default,
+                form: OperatorNameForm::Starred(LimitStyle::Default),
                 ..
             }
             | CompactNode::MathAtom {
@@ -84,8 +84,12 @@ pub(super) fn wants_limits_above_below(node: &MathNode, style: MathStyle) -> boo
         MathNode::Symbol(SymbolKind::LargeOp, s) => {
             style.is_display() && !s.chars().next().is_some_and(is_integral_operator)
         },
-        MathNode::Operator(OperatorAttr { limit_style, .. })
-        | MathNode::StructuredOperator { limit_style, .. } => match limit_style {
+        MathNode::Operator(OperatorAttr { limit_style, .. }) => match limit_style {
+            LimitStyle::AboveBelow => true,
+            LimitStyle::Default => style.is_display(),
+            LimitStyle::SubSup => false,
+        },
+        MathNode::StructuredOperator { form, .. } => match form.limit_style() {
             LimitStyle::AboveBelow => true,
             LimitStyle::Default => style.is_display(),
             LimitStyle::SubSup => false,
@@ -130,12 +134,15 @@ pub(super) fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: Ma
                     .next()
                     .is_some_and(is_integral_operator)
         },
-        CompactNode::Operator { limits, .. } | CompactNode::StructuredOperator { limits, .. } => {
-            match limits {
-                LimitStyle::AboveBelow => true,
-                LimitStyle::Default => style.is_display(),
-                LimitStyle::SubSup => false,
-            }
+        CompactNode::Operator { limits, .. } => match limits {
+            LimitStyle::AboveBelow => true,
+            LimitStyle::Default => style.is_display(),
+            LimitStyle::SubSup => false,
+        },
+        CompactNode::StructuredOperator { form, .. } => match form.limit_style() {
+            LimitStyle::AboveBelow => true,
+            LimitStyle::Default => style.is_display(),
+            LimitStyle::SubSup => false,
         },
         // Decorated compounds fall through as ordinary bases; variable-limit
         // macros add an explicit movable MathAtom when outer scripts move.

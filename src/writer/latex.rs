@@ -1609,11 +1609,9 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             write_wrapped_content(buf, arena, content);
             buf.push('}');
         },
-        CompactNode::StructuredOperator {
-            content,
-            limits,
-            starred,
-        } => write_structured_operator(buf, arena, content, limits, starred),
+        CompactNode::StructuredOperator { content, form } => {
+            write_structured_operator(buf, arena, content, form)
+        },
     }
 }
 
@@ -1621,21 +1619,28 @@ fn write_structured_operator(
     buf: &mut String,
     arena: &AstArena,
     content: NodeId,
-    limits: LimitStyle,
-    starred: bool,
+    form: OperatorNameForm,
 ) {
-    buf.push_str("\\operatorname");
-    if starred || limits == LimitStyle::AboveBelow {
-        buf.push('*');
-    }
-    buf.push('{');
+    buf.push_str(if form.is_starred() {
+        r"\operatorname*{"
+    } else {
+        r"\operatorname{"
+    });
+    let start = buf.len();
     write_wrapped_content(buf, arena, content);
+    // A constructed structured name may contain only plain letters. Keep a
+    // TeX atom boundary so another import can recover its form and placement.
+    if !crate::latex::parse::operator_name_needs_math(&buf[start..]) {
+        buf.insert_str(start, r"\mathord{");
+        buf.push('}');
+    }
     buf.push('}');
-    match (starred, limits) {
-        (true, LimitStyle::AboveBelow) => buf.push_str("\\limits"),
-        (true, LimitStyle::SubSup) => buf.push_str("\\nolimits"),
-        (false, LimitStyle::AboveBelow) => buf.push_str("\\limits"),
-        _ => {},
+    if let OperatorNameForm::Starred(style) = form {
+        match style {
+            LimitStyle::AboveBelow => buf.push_str(r"\limits"),
+            LimitStyle::SubSup => buf.push_str(r"\nolimits"),
+            LimitStyle::Default => {},
+        }
     }
 }
 

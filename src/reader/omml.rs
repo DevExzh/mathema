@@ -1935,7 +1935,7 @@ impl<'i> Parser<'i> {
                     limits: LimitStyle::AboveBelow,
                     ..
                 } | CompactNode::StructuredOperator {
-                    limits: LimitStyle::AboveBelow,
+                    form: OperatorNameForm::Starred(LimitStyle::AboveBelow),
                     ..
                 }
             )
@@ -1955,8 +1955,7 @@ impl<'i> Parser<'i> {
             _ if self.is_compound_operator_base(base) => {
                 let base = self.arena.push_node(CompactNode::StructuredOperator {
                     content: base,
-                    limits: LimitStyle::AboveBelow,
-                    starred: true,
+                    form: OperatorNameForm::Starred(LimitStyle::AboveBelow),
                 });
                 return Ok(self.arena.push_node(if upper {
                     CompactNode::Superscript { base, sup: lim }
