@@ -2571,6 +2571,7 @@ impl LatexCompactParser {
             && matches!(
                 *self.arena.node(base),
                 CompactNode::Operator { .. }
+                    | CompactNode::StructuredOperator { .. }
                     | CompactNode::MathAtom {
                         atom_type: MathAtomType::Op,
                         ..
@@ -2720,34 +2721,10 @@ impl LatexCompactParser {
 
     fn operator_limit_style(&self, id: NodeId) -> Option<LimitStyle> {
         match *self.arena.node(id) {
-            CompactNode::StructuredOperator { limits, .. } => Some(limits),
             CompactNode::MathAtom {
                 atom_type: MathAtomType::Op,
-                content,
-            } => Some(if self.last_unstarred_operator == Some(id) {
-                LimitStyle::SubSup
-            } else {
-                self.structured_operator_limit_style(content)
-                    .filter(|style| *style == LimitStyle::SubSup)
-                    .unwrap_or(LimitStyle::Default)
-            }),
-            _ => None,
-        }
-    }
-
-    fn structured_operator_limit_style(&self, id: NodeId) -> Option<LimitStyle> {
-        match *self.arena.node(id) {
-            CompactNode::Operator { limits, .. } => Some(limits),
-            CompactNode::Row(span) => {
-                let &[only] = self.arena.children(span) else {
-                    return None;
-                };
-                self.structured_operator_limit_style(only)
-            },
-            CompactNode::Accent { base, .. }
-            | CompactNode::Overscript { base, .. }
-            | CompactNode::Underscript { base, .. }
-            | CompactNode::UnderOver { base, .. } => self.structured_operator_limit_style(base),
+                ..
+            } => Some(LimitStyle::Default),
             _ => None,
         }
     }

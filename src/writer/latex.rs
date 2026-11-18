@@ -322,12 +322,15 @@ fn write_script_node_with_next(
 /// stays in effect. A side-scripted compound operator needs explicit nolimits.
 fn write_postscript_base(buf: &mut String, arena: &AstArena, base: NodeId) {
     match *arena.node(base) {
-        CompactNode::Operator { .. } => write_node(buf, arena, base),
+        CompactNode::Operator { .. } | CompactNode::StructuredOperator { .. } => {
+            write_node(buf, arena, base)
+        },
         CompactNode::Color { color, content }
             if latex_color(arena.str_val(color)).is_none()
                 && matches!(
                     *arena.node(content),
                     CompactNode::Operator { .. }
+                        | CompactNode::StructuredOperator { .. }
                         | CompactNode::MathAtom {
                             atom_type: MathAtomType::Op,
                             ..

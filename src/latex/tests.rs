@@ -2431,6 +2431,57 @@ fn structured_operatorname_preserves_mixed_content_and_outer_placement() {
 }
 
 #[test]
+#[cfg(feature = "render")]
+fn decorated_operator_bounds_use_the_outer_atom_and_local_display_style() {
+    use crate::render::RenderOptions;
+    use crate::render::arena::LayoutArena;
+    use crate::render::layout::{LayoutBuilder, layout_expr};
+    use crate::render::style::MathStyle;
+
+    let options = RenderOptions::default();
+    for (context, style) in [
+        (DisplayStyle::Inline, MathStyle::Text),
+        (DisplayStyle::Block, MathStyle::Display),
+    ] {
+        let config = Config::default().with_display(context);
+        let width = |source: &str| {
+            let parsed = crate::from_latex_with(source, &config).unwrap();
+            let heap = layout_expr(&parsed.expr(), style, &options);
+            let mut arena = LayoutArena::new();
+            let id = LayoutBuilder::new(style, &options).layout(&mut arena, parsed.compact_expr());
+            assert!((heap.width - arena.get(id).width).abs() < 1e-8, "{source}");
+            heap.width
+        };
+        for (base, stacked) in [
+            (
+                r"\operatorname*{A\overline{z}B}",
+                context == DisplayStyle::Block,
+            ),
+            (r"\operatorname*{A\overline{z}B}\limits", true),
+            (r"\operatorname*{A\overline{z}B}\nolimits", false),
+            (r"\operatorname{A\overline{z}B}", false),
+            (r"{\operatorname*{A\overline{z}B}}", false),
+        ] {
+            let source = format!("{base}_i^j");
+            let delta = width(&source) - width(base);
+            assert_eq!(
+                delta.abs() < 1e-8,
+                stacked,
+                "{source} {context:?} delta={delta}"
+            );
+            let serialized = crate::from_latex_with(&source, &config)
+                .unwrap()
+                .to_latex()
+                .unwrap();
+            assert_eq!(width(&serialized), width(&source), "{serialized}");
+            if base.starts_with('\\') {
+                assert!(serialized.starts_with(r"\operatorname"), "{serialized}");
+            }
+        }
+    }
+}
+
+#[test]
 fn structured_operatorname_reaches_all_public_format_writers() {
     for source in [
         r"\operatorname*{\overline{lim}}_n x",

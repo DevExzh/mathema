@@ -30,6 +30,10 @@ pub(super) fn inline_limit_base(
                 limit_style: LimitStyle::Default,
                 ..
             })
+            | MathNode::StructuredOperator {
+                limit_style: LimitStyle::Default,
+                ..
+            }
             | MathNode::MathAtom {
                 atom_type: MathAtomType::Op,
                 ..
@@ -60,6 +64,10 @@ pub(super) fn inline_limit_base_c(
                 limits: LimitStyle::Default,
                 ..
             }
+            | CompactNode::StructuredOperator {
+                limits: LimitStyle::Default,
+                ..
+            }
             | CompactNode::MathAtom {
                 atom_type: MathAtomType::Op,
                 ..
@@ -76,7 +84,8 @@ pub(super) fn wants_limits_above_below(node: &MathNode, style: MathStyle) -> boo
         MathNode::Symbol(SymbolKind::LargeOp, s) => {
             style.is_display() && !s.chars().next().is_some_and(is_integral_operator)
         },
-        MathNode::Operator(op) => match op.limit_style {
+        MathNode::Operator(OperatorAttr { limit_style, .. })
+        | MathNode::StructuredOperator { limit_style, .. } => match limit_style {
             LimitStyle::AboveBelow => true,
             LimitStyle::Default => style.is_display(),
             LimitStyle::SubSup => false,
@@ -121,10 +130,12 @@ pub(super) fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: Ma
                     .next()
                     .is_some_and(is_integral_operator)
         },
-        CompactNode::Operator { limits, .. } => match limits {
-            LimitStyle::AboveBelow => true,
-            LimitStyle::Default => style.is_display(),
-            LimitStyle::SubSup => false,
+        CompactNode::Operator { limits, .. } | CompactNode::StructuredOperator { limits, .. } => {
+            match limits {
+                LimitStyle::AboveBelow => true,
+                LimitStyle::Default => style.is_display(),
+                LimitStyle::SubSup => false,
+            }
         },
         // Decorated compounds fall through as ordinary bases; variable-limit
         // macros add an explicit movable MathAtom when outer scripts move.
