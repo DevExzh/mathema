@@ -401,7 +401,9 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
         MathNode::MathAtom { content, .. } => write_node(out, content, style),
         MathNode::StructuredOperator { content, .. } => write_node(out, content, style),
-        MathNode::AlignedCell { content, .. } => write_node(out, content, style),
+        MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
+            write_node(out, content, style)
+        },
         MathNode::Reflect { content, .. } => write_node(out, content, style),
     }
 }
@@ -567,7 +569,8 @@ fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
         MathNode::Color { content, .. }
         | MathNode::MathAtom { content, .. }
         | MathNode::StructuredOperator { content, .. }
-        | MathNode::AlignedCell { content, .. } => needs_operator_terminator(content, style),
+        | MathNode::AlignedCell { content, .. }
+        | MathNode::SpannedCell { content, .. } => needs_operator_terminator(content, style),
         _ => false,
     }
 }
@@ -681,7 +684,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Row(span) => write_nodes_c_with_style(out, arena, span, style),
-        CompactNode::AlignedCell { content, .. } => write_node_c(out, arena, content, style),
+        CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
+            write_node_c(out, arena, content, style)
+        },
 
         CompactNode::Fenced {
             open,

@@ -76,7 +76,12 @@ pub(crate) fn matrix_column_count(rows: &[Vec<Vec<MathNode>>]) -> usize {
 /// Only a wrapper occupying the whole cell supplies its alignment.
 pub(crate) fn table_cell_parts(cell: &[MathNode]) -> (Option<ColumnAlign>, &[MathNode]) {
     match cell {
-        [MathNode::AlignedCell { alignment, content }] => {
+        [MathNode::AlignedCell { alignment, content }]
+        | [
+            MathNode::SpannedCell {
+                alignment, content, ..
+            },
+        ] => {
             let nodes = match content.as_ref() {
                 MathNode::Row(nodes) => nodes.as_slice(),
                 node => std::slice::from_ref(node),
@@ -405,6 +410,19 @@ pub enum MathNode {
         col_seps: u32,
         /// Horizontal rule positions from native `\hline` commands.
         row_seps: u32,
+    },
+    /// A native table cell occupying multiple logical columns.
+    SpannedCell {
+        /// Authored alignment of the complete span.
+        alignment: ColumnAlign,
+        /// Number of logical columns occupied by this cell.
+        span: u16,
+        /// Whether the native preamble draws a left edge rule.
+        left_rule: bool,
+        /// Whether the native preamble draws a right edge rule.
+        right_rule: bool,
+        /// Cell content.
+        content: Box<MathNode>,
     },
 }
 
@@ -835,7 +853,8 @@ pub(crate) fn compact_children(
         | CompactNode::Color { content, .. }
         | CompactNode::MathAtom { content, .. }
         | CompactNode::StructuredOperator { content, .. }
-        | CompactNode::AlignedCell { content, .. } => push(content),
+        | CompactNode::AlignedCell { content, .. }
+        | CompactNode::SpannedCell { content, .. } => push(content),
         CompactNode::MathChoice {
             display,
             text,
@@ -951,7 +970,9 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
             }
             Ok(())
         },
-        MathNode::AlignedCell { content, .. } => check_node_depth(content, d),
+        MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
+            check_node_depth(content, d)
+        },
         MathNode::Phantom(inner, _)
         | MathNode::Boxed { content: inner, .. }
         | MathNode::Actuarial { content: inner, .. } => check_node_depth(inner, d),

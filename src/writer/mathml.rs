@@ -738,10 +738,32 @@ fn write_node_in(
             for row in rows {
                 w.write_event(Event::Start(BytesStart::new("mtr")))
                     .map_err(to_err)?;
-                for i in 0..num_cols {
+                let mut i = 0;
+                while i < num_cols {
+                    let cell_span = row
+                        .get(i)
+                        .and_then(|cell| match cell.first() {
+                            Some(MathNode::SpannedCell { span, .. }) => {
+                                Some((*span).max(1) as usize)
+                            },
+                            _ => None,
+                        })
+                        .unwrap_or(1);
                     let (cell_override, cell) =
                         table_cell_parts(row.get(i).map(Vec::as_slice).unwrap_or_default());
                     let mut td = BytesStart::new("mtd");
+                    let (left_rule, right_rule) = row
+                        .get(i)
+                        .and_then(|cell| cell.first())
+                        .and_then(|node| match node {
+                            MathNode::SpannedCell {
+                                left_rule,
+                                right_rule,
+                                ..
+                            } => Some((*left_rule, *right_rule)),
+                            _ => None,
+                        })
+                        .unwrap_or((false, false));
                     if let Some(align) = cell_override.or_else(|| columns.get(i).copied()) {
                         let val = match align {
                             ColumnAlign::Left => "left",
@@ -749,6 +771,16 @@ fn write_node_in(
                             ColumnAlign::Right => "right",
                         };
                         td.push_attribute(("columnalign", val));
+                    }
+                    let span_attr = cell_span.to_string();
+                    if cell_span > 1 {
+                        td.push_attribute(("columnspan", span_attr.as_str()));
+                    }
+                    if left_rule {
+                        td.push_attribute(("data-mathema-left-rule", "true"));
+                    }
+                    if right_rule {
+                        td.push_attribute(("data-mathema-right-rule", "true"));
                     }
                     w.write_event(Event::Start(td)).map_err(to_err)?;
                     let cell = if promoted.is_some() && !cell.is_empty() {
@@ -771,6 +803,7 @@ fn write_node_in(
                     }
                     w.write_event(Event::End(BytesEnd::new("mtd")))
                         .map_err(to_err)?;
+                    i = i.saturating_add(cell_span);
                 }
                 w.write_event(Event::End(BytesEnd::new("mtr")))
                     .map_err(to_err)?;
@@ -784,7 +817,7 @@ fn write_node_in(
             Ok(())
         },
 
-        MathNode::AlignedCell { content, .. } => {
+        MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
             write_node_in(w, content, single_argument, display_style)
         },
         MathNode::Phantom(inner, _) => {
@@ -1660,7 +1693,7 @@ fn write_node_fast_in(
             close_tag(buf, tag);
         },
 
-        CompactNode::AlignedCell { content, .. } => {
+        CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
             write_node_fast(buf, arena, content, display_style)
         },
         CompactNode::Array {
@@ -1719,9 +1752,25 @@ fn write_node_fast_in(
             buf.push('>');
             for row_chunk in cell_ids.chunks(nc.max(1)) {
                 buf.push_str("<mtr>");
-                for (i, cell_id) in row_chunk.iter().enumerate() {
+                let mut i = 0;
+                while i < row_chunk.len() {
+                    let cell_id = row_chunk[i];
+                    if arena.is_span_padding(cell_id) {
+                        i += 1;
+                        continue;
+                    }
                     let align_nodes = arena.children(col_aligns);
-                    let (cell_override, mut nodes) = arena.table_cell_parts(cell_id);
+                    let (cell_override, mut nodes) = arena.table_cell_parts(&cell_id);
+                    let (cell_span, left_rule, right_rule) = match *arena.node(cell_id) {
+                        CompactNode::SpannedCell {
+                            span,
+                            left_rule,
+                            right_rule,
+                            ..
+                        } => (span.max(1) as usize, left_rule, right_rule),
+                        _ => (1, false, false),
+                    };
+                    buf.push_str("<mtd");
                     if let Some(a) = cell_override.or_else(|| {
                         align_nodes
                             .get(i)
@@ -1735,12 +1784,22 @@ fn write_node_fast_in(
                             ColumnAlign::Center => "center",
                             ColumnAlign::Right => "right",
                         };
-                        buf.push_str("<mtd columnalign=\"");
+                        buf.push_str(" columnalign=\"");
                         buf.push_str(val);
-                        buf.push_str("\">");
-                    } else {
-                        buf.push_str("<mtd>");
+                        buf.push('"');
                     }
+                    if cell_span > 1 {
+                        buf.push_str(" columnspan=\"");
+                        buf.push_str(&cell_span.to_string());
+                        buf.push('"');
+                    }
+                    if left_rule {
+                        buf.push_str(" data-mathema-left-rule=\"true\"");
+                    }
+                    if right_rule {
+                        buf.push_str(" data-mathema-right-rule=\"true\"");
+                    }
+                    buf.push('>');
                     if promoted.is_some() && !nodes.is_empty() {
                         nodes = &nodes[1..];
                     }
@@ -1757,6 +1816,7 @@ fn write_node_fast_in(
                         write_nodes_fast(buf, arena, nodes, cell_style, false);
                     }
                     buf.push_str("</mtd>");
+                    i = i.saturating_add(cell_span);
                 }
                 buf.push_str("</mtr>");
             }

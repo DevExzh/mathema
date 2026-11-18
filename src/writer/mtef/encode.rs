@@ -345,7 +345,9 @@ impl<'a> Encoder<'a> {
     fn content(&mut self, id: NodeId, size: Size) -> Result<()> {
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.list(span, size),
-            CompactNode::AlignedCell { content, .. } => self.node(content, size),
+            CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
+                self.node(content, size)
+            },
             _ => self.node(id, size),
         }
     }
@@ -620,7 +622,9 @@ impl<'a> Encoder<'a> {
                 Ok(())
             },
             CompactNode::Row(span) => self.list(span, size),
-            CompactNode::AlignedCell { content, .. } => self.node(content, size),
+            CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
+                self.node(content, size)
+            },
             CompactNode::Fenced {
                 open,
                 close,

@@ -131,6 +131,7 @@ pub(super) fn layout_array(
 
     // Layout all cells
     let mut cell_layouts: Vec<Vec<LayoutBox>> = Vec::new();
+    let mut cell_spans: Vec<Vec<usize>> = Vec::new();
     let cell_ctx = if smallmatrix {
         ctx.with_style(MathStyle::Script)
     } else {
@@ -138,15 +139,25 @@ pub(super) fn layout_array(
     };
     for row in rows {
         let mut row_layouts = Vec::new();
+        let mut row_spans = Vec::new();
         for cell in row {
             row_layouts.push(layout_row(crate::ast::table_cell_parts(cell).1, &cell_ctx));
+            row_spans.push(match cell.first() {
+                Some(MathNode::SpannedCell { span, .. }) => (*span).max(1) as usize,
+                _ => 1,
+            });
         }
         cell_layouts.push(row_layouts);
+        cell_spans.push(row_spans);
     }
 
-    let n_cols = columns
-        .len()
-        .max(cell_layouts.iter().map(|r| r.len()).max().unwrap_or(0));
+    let n_cols = columns.len().max(
+        cell_spans
+            .iter()
+            .map(|row| row.iter().sum())
+            .max()
+            .unwrap_or(0),
+    );
     let n_rows = cell_layouts.len();
 
     // Compute column widths and row heights/depths with strut minimums
@@ -155,10 +166,23 @@ pub(super) fn layout_array(
     let mut row_depths = vec![arstrut_depth; n_rows];
 
     for (i, row) in cell_layouts.iter().enumerate() {
-        for (j, cell) in row.iter().enumerate() {
-            col_widths[j] = col_widths[j].max(cell.width);
+        let mut j = 0;
+        for (cell_index, cell) in row.iter().enumerate() {
+            let span = cell_spans[i][cell_index].min(n_cols.saturating_sub(j).max(1));
+            if span == 1 {
+                col_widths[j] = col_widths[j].max(cell.width);
+            } else {
+                let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
+                    + (j..j.saturating_add(span).saturating_sub(1))
+                        .map(|k| col_gap_after(k, aligned, size))
+                        .sum::<f64>();
+                if cell.width > current {
+                    col_widths[j + span - 1] += cell.width - current;
+                }
+            }
             row_heights[i] = row_heights[i].max(cell.height);
             row_depths[i] = row_depths[i].max(cell.depth);
+            j += span;
         }
     }
 
@@ -191,24 +215,41 @@ pub(super) fn layout_array(
     for (i, row) in cell_layouts.into_iter().enumerate() {
         cursor_y += row_heights[i];
         let mut cursor_x = outer_pad;
+        let row_len = row.len();
         let mut row_iter = row.into_iter();
 
-        for (j, &col_w) in col_widths.iter().enumerate() {
-            if let Some(cell) = row_iter.next() {
-                let align = crate::ast::table_cell_parts(&rows[i][j])
+        let mut j = 0;
+        while j < n_cols {
+            let Some(cell) = row_iter.next() else {
+                cursor_x += col_widths[j];
+                j += 1;
+                if j < n_cols {
+                    cursor_x += gap_after(j - 1);
+                }
+                continue;
+            };
+            let cell_index = row_len.saturating_sub(row_iter.len()).saturating_sub(1);
+            let span = cell_spans[i][cell_index].min(n_cols.saturating_sub(j).max(1));
+            let merged_width = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
+                + (j..j.saturating_add(span).saturating_sub(1))
+                    .map(&gap_after)
+                    .sum::<f64>();
+            {
+                let align = crate::ast::table_cell_parts(&rows[i][cell_index])
                     .0
                     .or_else(|| columns.get(j).copied())
                     .unwrap_or(ColumnAlign::Center);
                 let dx = match align {
                     ColumnAlign::Left => 0.0,
-                    ColumnAlign::Center => (col_w - cell.width) / 2.0,
-                    ColumnAlign::Right => col_w - cell.width,
+                    ColumnAlign::Center => (merged_width - cell.width) / 2.0,
+                    ColumnAlign::Right => merged_width - cell.width,
                 };
                 children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
             }
-            cursor_x += col_w;
-            if j < n_cols - 1 {
-                cursor_x += gap_after(j);
+            cursor_x += merged_width;
+            j += span;
+            if j < n_cols {
+                cursor_x += gap_after(j - 1);
             }
         }
 
@@ -351,7 +392,19 @@ pub(super) fn layout_array_arena(
             let idx = i * nc + j;
             if idx < cell_layout_ids.len() {
                 let b = arena.get(cell_layout_ids[idx]);
-                col_widths[j] = col_widths[j].max(b.width);
+                match *ast.node(cell_ids_ast[idx]) {
+                    CompactNode::SpannedCell { span, .. } => {
+                        let span = (span.max(1) as usize).min(n_cols - j);
+                        let current = (j..j + span).map(|k| col_widths[k]).sum::<f64>()
+                            + (j..j.saturating_add(span).saturating_sub(1))
+                                .map(|k| col_gap_after(k, aligned, size))
+                                .sum::<f64>();
+                        if b.width > current {
+                            col_widths[j + span - 1] += b.width - current;
+                        }
+                    },
+                    _ => col_widths[j] = col_widths[j].max(b.width),
+                }
                 row_heights[i] = row_heights[i].max(b.height);
                 row_depths[i] = row_depths[i].max(b.depth);
             }
@@ -402,31 +455,46 @@ pub(super) fn layout_array_arena(
         cursor_y += row_heights[i];
         let mut cursor_x = edge_pad;
 
-        for j in 0..nc.min(n_cols) {
+        let mut j = 0;
+        while j < nc.min(n_cols) {
             let idx = i * nc + j;
             if idx < cell_layout_ids.len() {
-                let col_w = col_widths[j];
+                if ast.is_span_padding(cell_ids_ast[idx]) {
+                    j += 1;
+                    continue;
+                }
                 let cell_w = arena.get(cell_layout_ids[idx]).width;
+                let cell_span = match *ast.node(cell_ids_ast[idx]) {
+                    CompactNode::SpannedCell { span, .. } => (span.max(1) as usize).min(n_cols - j),
+                    _ => 1,
+                };
+                let merged_width = (j..j + cell_span).map(|k| col_widths[k]).sum::<f64>()
+                    + (j..j.saturating_add(cell_span).saturating_sub(1))
+                        .map(gap_after)
+                        .sum::<f64>();
                 let align = match *ast.node(cell_ids_ast[idx]) {
                     CompactNode::AlignedCell { alignment, .. } => alignment,
+                    CompactNode::SpannedCell { alignment, .. } => alignment,
                     _ => columns.get(j).copied().unwrap_or(ColumnAlign::Center),
                 };
                 let dx = match align {
                     ColumnAlign::Left => 0.0,
-                    ColumnAlign::Center => (col_w - cell_w) / 2.0,
-                    ColumnAlign::Right => col_w - cell_w,
+                    ColumnAlign::Center => (merged_width - cell_w) / 2.0,
+                    ColumnAlign::Right => merged_width - cell_w,
                 };
                 arena.push_child(ArenaPositionedBox {
                     dx: cursor_x + dx,
                     dy: box_height - cursor_y,
                     id: cell_layout_ids[idx],
                 });
-                cursor_x += col_w;
+                cursor_x += merged_width;
+                j = j.saturating_add(cell_span);
             } else {
                 cursor_x += col_widths.get(j).copied().unwrap_or(0.0);
+                j += 1;
             }
-            if j < n_cols - 1 {
-                cursor_x += gap_after(j);
+            if j < n_cols {
+                cursor_x += gap_after(j - 1);
             }
         }
 
