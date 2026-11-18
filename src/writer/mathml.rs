@@ -18,6 +18,9 @@ fn mathml_loss(_arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathChoice { .. } => {
             Some("MathML output keeps only the display-style branch of \\mathchoice".into())
         },
+        CompactNode::MathAtom { atom_type: MathAtomType::Op, .. } => {
+            Some("MathML records the compound operator class as an annotation. Native operator spacing can differ.".into())
+        },
         CompactNode::MathAtom { .. } => {
             Some("MathML output does not preserve the math atom spacing class".into())
         },
