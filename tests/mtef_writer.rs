@@ -272,6 +272,7 @@ const BOTH: &[&str] = &[
     r"f(x)=\begin{cases} 1 & x>0 \\ 0 & \text{otherwise} \end{cases}",
     r"\begin{array}{c} a \\ b \end{array}",
     r"\begin{array}{|c|c|} \hline a & b \\ \hline c & d \\ \hline \end{array}",
+    r"\begin{array}{c} \hline a \\ \hline b \\ \hline \end{array}",
     r"\hat{x}",
     r"\tilde{y}",
     r"\bar{z}",

@@ -29,6 +29,30 @@ fn write_emits_no_warning_for_lossless_input() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 }
 
+#[test]
+fn write_reports_native_rule_padding_normalization() {
+    for (col_seps, row_seps) in [(0b111, 0), (0, 0b11)] {
+        let expr = MathExpr::inline(vec![MathNode::NativeArray {
+            columns: vec![ColumnAlign::Center, ColumnAlign::Center],
+            rows: vec![vec![
+                vec![MathNode::Identifier("a".into())],
+                vec![MathNode::Identifier("b".into())],
+            ]],
+            arraystretch: None,
+            add_jot: false,
+            array_style: false,
+            col_seps,
+            row_seps,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let (_, diagnostics) =
+            MtefWriter::write_compact_with_diagnostics(&compact, &Config::default()).unwrap();
+        assert!(diagnostics.iter().any(|d| {
+            d.kind == DiagnosticKind::Warning && d.message.contains("padded native array geometry")
+        }));
+    }
+}
+
 fn roundtrip(node: MathNode) -> MathExpr {
     let expr = MathExpr::inline(vec![node]);
     let config = Config::default();
