@@ -202,6 +202,11 @@ impl<'a> MathmlCompactParser<'a> {
                         return Ok(nodes);
                     }
                 },
+                Ok(Event::Empty(e)) => {
+                    let name = Self::local_name(&e);
+                    let id = self.parse_empty_element(&name, &e)?;
+                    return Ok(smallvec::smallvec![id]);
+                },
                 Ok(Event::Eof) => return Ok(SmallVec::new()),
                 Ok(_) => continue,
                 Err(e) => {
@@ -1428,24 +1433,14 @@ impl<'a> MathmlCompactParser<'a> {
                             columns.extend_from_slice(&row_columns[columns.len()..]);
                         }
                         row_lengths.push(row_len);
-                        if row_lengths.len() > AstArena::MAX_CHILDREN {
-                            return Err(Error::LimitExceeded {
-                                kind: crate::error::LimitKind::ListLength,
-                                limit: AstArena::MAX_CHILDREN,
-                            });
-                        }
+                        check_table_shape(row_lengths.len(), columns.len())?;
                     }
                 },
                 Ok(Event::Empty(e))
                     if matches!(Self::local_name(&e).as_str(), "mtr" | "mlabeledtr") =>
                 {
                     row_lengths.push(0);
-                    if row_lengths.len() > AstArena::MAX_CHILDREN {
-                        return Err(Error::LimitExceeded {
-                            kind: crate::error::LimitKind::ListLength,
-                            limit: AstArena::MAX_CHILDREN,
-                        });
-                    }
+                    check_table_shape(row_lengths.len(), columns.len())?;
                 },
                 Ok(Event::End(e)) => {
                     if Self::local_name_end(&e) == parent_tag {
@@ -2253,6 +2248,17 @@ fn push_table_cell(
         });
     }
     cells.push(MathmlTableCell { id, alignment });
+    Ok(())
+}
+
+#[inline]
+fn check_table_shape(row_count: usize, column_count: usize) -> Result<()> {
+    if row_count.saturating_mul(column_count.max(1)) > AstArena::MAX_CHILDREN {
+        return Err(Error::LimitExceeded {
+            kind: crate::error::LimitKind::ListLength,
+            limit: AstArena::MAX_CHILDREN,
+        });
+    }
     Ok(())
 }
 
@@ -3595,6 +3601,18 @@ mod tests {
         assert!(
             matches!(&short.expr().nodes[..], [MathNode::Array { rows, .. }] if rows.is_empty())
         );
+        assert_eq!(short.expr(), long.expr());
+        assert_eq!(short.to_mathml().unwrap(), long.to_mathml().unwrap());
+    }
+
+    #[test]
+    fn bare_empty_table_forms_are_equivalent() {
+        let short = crate::from_mathml("<mtable/>").unwrap();
+        let long = crate::from_mathml("<mtable></mtable>").unwrap();
+        assert!(matches!(
+            &short.expr().nodes[..],
+            [MathNode::Array { rows, .. }] if rows.is_empty()
+        ));
         assert_eq!(short.expr(), long.expr());
         assert_eq!(short.to_mathml().unwrap(), long.to_mathml().unwrap());
     }
