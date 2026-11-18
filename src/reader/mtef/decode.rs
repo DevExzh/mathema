@@ -1596,6 +1596,12 @@ fn classify(glyph: &Glyph) -> Class {
     if ch == '\u{2009}' && glyph.typeface == chars::FN_FUNCTION && glyph.explicit.is_none() {
         return Class::Function;
     }
+    // A symbol-face U+2009 is a literal glyph, while FN_SPACE records are
+    // actual MathType glue. Preserve the ordinary atom class for authored
+    // character-code spaces emitted by the MTEF writer.
+    if glyph.typeface == chars::FN_SYMBOL && crate::unicode::math_space_width(ch).is_some() {
+        return Class::Symbol(chars::symbol_kind(ch));
+    }
     if ch.is_whitespace() {
         return Class::Space(Rational::new(1, 4));
     }

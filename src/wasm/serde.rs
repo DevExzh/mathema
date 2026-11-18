@@ -39,7 +39,7 @@ pub fn from_js_value<T: ::serde::de::DeserializeOwned>(value: JsValue) -> Result
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{ColumnAlign, DisplayStyle, MathExpr, MathNode, MatrixKind};
+    use crate::ast::{ColumnAlign, DisplayStyle, MathExpr, MathNode, MatrixKind, SymbolKind};
 
     #[test]
     fn serialize_simple_expr() {
@@ -103,5 +103,25 @@ mod tests {
         assert_eq!(serde_json::from_str::<MathExpr>(&json).unwrap(), expr);
         let legacy = r#"{"nodes":[{"Array":{"columns":["Center"],"rows":[[[{"Identifier":"x"}]]],"arraystretch":null,"add_jot":false}}],"display":"Inline"}"#;
         assert!(serde_json::from_str::<MathExpr>(legacy).is_ok());
+    }
+
+    #[test]
+    fn authored_math_space_atom_is_additive_and_old_ordinals_stay_valid() {
+        let expr = MathExpr::new(
+            vec![MathNode::MathAtom {
+                atom_type: crate::ast::MathAtomType::Ord,
+                content: Box::new(MathNode::Symbol(SymbolKind::Ordinary, "\u{2009}".into())),
+            }],
+            DisplayStyle::Inline,
+        );
+        let json = serde_json::to_string(&expr).unwrap();
+        assert_eq!(serde_json::from_str::<MathExpr>(&json).unwrap(), expr);
+
+        let old = r#"{"nodes":[{"Symbol":["Ordinary","+"]}],"display":"Inline"}"#;
+        let parsed = serde_json::from_str::<MathExpr>(old).unwrap();
+        assert_eq!(
+            parsed.nodes,
+            vec![MathNode::Symbol(SymbolKind::Ordinary, "+".into())]
+        );
     }
 }

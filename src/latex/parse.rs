@@ -4304,6 +4304,25 @@ impl LatexCompactParser {
                 ))
             })?;
             (&digits[count..], value)
+        } else if first == '\'' {
+            let digits = &input[first.len_utf8()..];
+            let count = digits
+                .bytes()
+                .take_while(|byte| (b'0'..=b'7').contains(byte))
+                .count();
+            if count == 0 {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::OctDigit,
+                )));
+            }
+            let value = u32::from_str_radix(&digits[..count], 8).map_err(|_| {
+                nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::OctDigit,
+                ))
+            })?;
+            (&digits[count..], value)
         } else {
             let digits = input.bytes().take_while(u8::is_ascii_digit).count();
             if digits == 0 {
@@ -4325,11 +4344,18 @@ impl LatexCompactParser {
             )));
         };
         let sid = self.push_char_str(ch);
-        Ok((
-            rest,
-            self.arena
-                .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
-        ))
+        let symbol = self
+            .arena
+            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid));
+        let node = if crate::unicode::math_space_width(ch).is_some() {
+            self.arena.push_node(CompactNode::MathAtom {
+                atom_type: MathAtomType::Ord,
+                content: symbol,
+            })
+        } else {
+            symbol
+        };
+        Ok((rest, node))
     }
 
     /// Keep translation buffers and preprocessing errors off the recursive
