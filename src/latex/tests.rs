@@ -2073,6 +2073,28 @@ fn structured_operatorname_decorations_preserve_operator_semantics() {
             "MathML was not stable for {source}"
         );
     }
+
+    let side = crate::convert(
+        r"\operatorname{\overline{lim}}_n x",
+        crate::Format::LaTeX,
+        crate::Format::MathML,
+    )
+    .unwrap();
+    assert!(side.contains("<msub>"), "{side}");
+    assert_eq!(
+        side,
+        crate::from_mathml(&side).unwrap().to_mathml().unwrap()
+    );
+}
+
+#[test]
+fn structured_operatorname_keeps_resource_failures_visible() {
+    let config = Config::default().with_max_depth(2);
+    let deep = r"\operatorname*{\overline{\overline{\overline{lim}}}}";
+    assert!(
+        crate::from_latex_with(deep, &config).is_err(),
+        "structured operator content bypassed the depth limit"
+    );
 }
 
 #[test]
