@@ -1620,6 +1620,49 @@ fn repeated_limit_modifiers_use_the_last_style() {
 }
 
 #[test]
+fn limit_modifiers_can_be_interleaved_with_script_fields() {
+    let config = Config::default();
+    let cases = [
+        (r"\sum_n\limits^2 x", r"\sum\limits_n^2 x"),
+        (r"\sum^2\limits_n x", r"\sum\limits_n^2 x"),
+        (r"\lim_n\nolimits^2 x", r"\lim\nolimits_n^2 x"),
+        (
+            r"\operatorname{f}^2\limits_i",
+            r"\operatorname{f}\limits_i^2",
+        ),
+        (
+            r"\operatorname*{f}^2\limits_i",
+            r"\operatorname*{f}\limits_i^2",
+        ),
+    ];
+    for (input, equivalent) in cases {
+        let first = crate::from_latex_with(input, &config).unwrap();
+        let second = crate::from_latex_with(equivalent, &config).unwrap();
+        assert_eq!(
+            first.to_mathml().unwrap(),
+            second.to_mathml().unwrap(),
+            "interleaved modifier changed style for {input:?}"
+        );
+        let canonical = first.to_latex().unwrap();
+        assert_eq!(
+            canonical,
+            crate::from_latex_with(&canonical, &config)
+                .unwrap()
+                .to_latex()
+                .unwrap(),
+            "interleaved modifier was not idempotent for {input:?}"
+        );
+    }
+
+    for input in [r"x^2\limits_i", r"x_i\nolimits^2"] {
+        assert!(
+            crate::from_latex_with(input, &config).is_err(),
+            "ordinary base incorrectly accepted limit control: {input:?}"
+        );
+    }
+}
+
+#[test]
 fn named_operator_limit_modifiers_round_trip() {
     let config = Config::default();
     for (input, expected) in [

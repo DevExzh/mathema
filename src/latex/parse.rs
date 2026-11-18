@@ -5,7 +5,7 @@ use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::char;
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
@@ -127,6 +127,19 @@ fn consume_limit_modifiers(mut input: &str) -> (&str, Option<LimitStyle>) {
         style = Some(next_style);
         input = rest;
     }
+}
+
+#[inline]
+fn starts_limit_modifier(input: &str) -> bool {
+    let trimmed = &input[skip_ws_bytes(input.as_bytes())..];
+    ["\\limits", "\\nolimits"].into_iter().any(|command| {
+        let Some(rest) = trimmed.strip_prefix(command) else {
+            return false;
+        };
+        rest.chars()
+            .next()
+            .is_none_or(|ch| !ch.is_ascii_alphabetic())
+    })
 }
 
 #[inline]
@@ -1486,6 +1499,10 @@ pub(crate) struct LatexCompactParser {
     /// User paired delimiters declared via `\DeclarePairedDelimiter`, mapping
     /// the command name to its `(open, close)` delimiter glyph strings.
     paired_delims: HashMap<String, (String, String)>,
+    /// Operator nodes originating from unstarred `\operatorname`. Placement
+    /// modifiers after their scripts are accepted by KaTeX but deliberately
+    /// remain side-script metadata.
+    unstarred_operator_names: HashSet<NodeId>,
     /// Set to `true` the first time an infix-fraction marker (`\over`/`\atop`/
     /// `\choose`/`\brace`/`\brack`/`\above`) is produced. The vast majority of
     /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
@@ -1525,6 +1542,7 @@ impl LatexCompactParser {
             diagnostics: Vec::new(),
             rowcolors: None,
             paired_delims: HashMap::new(),
+            unstarred_operator_names: HashSet::new(),
             infix_marker_seen: false,
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
@@ -2501,23 +2519,49 @@ impl LatexCompactParser {
 
         // Named operators retain ordinary script nodes; their Operator.limits
         // field carries the effective modifier for writers/renderers.
-        if let CompactNode::Operator { name, .. } = *self.arena.node(base) {
-            let (rest, limit_style) = consume_limit_modifiers(input);
-            if let Some(limits) = limit_style {
-                let new_id = self.arena.push_node(CompactNode::Operator { name, limits });
-                return self.parse_scripts(rest, new_id);
+        if let CompactNode::Operator { name, limits } = *self.arena.node(base) {
+            let unstarred_operator = self.unstarred_operator_names.contains(&base);
+            let (rest, ((sub, sup), modifier)) =
+                self.parse_script_fields_with_limits(input, false)?;
+            if modifier.is_some() || sub.is_some() || sup.is_some() {
+                // Unstarred `\operatorname` deliberately ignores placement
+                // controls. Native named operators and starred names carry
+                // a non-SubSup default and honor the last modifier.
+                let limits = if unstarred_operator {
+                    limits
+                } else {
+                    modifier.unwrap_or(limits)
+                };
+                let operator = self.arena.push_node(CompactNode::Operator { name, limits });
+                if unstarred_operator {
+                    self.unstarred_operator_names.insert(operator);
+                }
+                return Ok((rest, self.make_script_node(operator, sub, sup)));
             }
         }
 
         // Compound `\mathop` bases need an under/over wrapper because the
         // existing MathAtom node has no limit-style field.
         if let Some(default_style) = self.operator_limit_style(base) {
-            let (rest, limit_style) = consume_limit_modifiers(input);
-            let style = limit_style.unwrap_or(default_style);
-            return self.parse_scripts_with_limit_style(rest, base, style);
+            let (rest, ((sub, sup), modifier)) =
+                self.parse_script_fields_with_limits(input, false)?;
+            let style = modifier.unwrap_or(default_style);
+            let scripted = self.make_script_node(base, sub, sup);
+            return Ok((rest, self.apply_limit_style(scripted, style)));
         }
 
-        self.parse_scripts(input, base)
+        let (rest, scripted) = self.parse_scripts(input, base)?;
+        // Placement controls are only meaningful after an operator. Keep the
+        // permissive empty command for standalone package input, but reject it
+        // when it follows an ordinary scripted atom instead of silently
+        // turning the control into an empty row.
+        if starts_limit_modifier(rest) && consume_limit_modifiers(rest).1.is_some() {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                rest,
+                nom::error::ErrorKind::Tag,
+            )));
+        }
+        Ok((rest, scripted))
     }
 
     /// Parse one KaTeX-compatible Unicode script run. KaTeX stops a run when
@@ -2575,14 +2619,17 @@ impl LatexCompactParser {
         }
     }
 
-    fn parse_scripts_with_limit_style<'a>(
-        &mut self,
-        input: &'a str,
-        base: NodeId,
-        style: LimitStyle,
-    ) -> IResult<&'a str, NodeId> {
-        let (rest, id) = self.parse_scripts(input, base)?;
-        let id = match style {
+    fn make_script_node(&mut self, base: NodeId, sub: NodeId, sup: NodeId) -> NodeId {
+        match (sub.is_some(), sup.is_some()) {
+            (true, true) => self.arena.push_node(CompactNode::SubSup { base, sub, sup }),
+            (true, false) => self.arena.push_node(CompactNode::Subscript { base, sub }),
+            (false, true) => self.arena.push_node(CompactNode::Superscript { base, sup }),
+            (false, false) => base,
+        }
+    }
+
+    fn apply_limit_style(&mut self, id: NodeId, style: LimitStyle) -> NodeId {
+        match style {
             LimitStyle::SubSup => id,
             LimitStyle::AboveBelow | LimitStyle::Default => {
                 let movable_limits = style == LimitStyle::Default;
@@ -2612,8 +2659,7 @@ impl LatexCompactParser {
                     _ => id,
                 }
             },
-        };
-        Ok((rest, id))
+        }
     }
 
     #[inline]
@@ -2638,6 +2684,46 @@ impl LatexCompactParser {
             (false, false) => return Ok((rest, base)),
         };
         Ok((rest, self.arena.push_node(node)))
+    }
+
+    /// Parse a sequence of scripts with `\limits`/`\nolimits` controls that
+    /// may occur before, between, or after the script fields. The last
+    /// placement modifier wins, matching TeX's scanner.
+    fn parse_script_fields_with_limits<'a>(
+        &mut self,
+        mut input: &'a str,
+        keep_empty_limits: bool,
+    ) -> IResult<&'a str, ((NodeId, NodeId), Option<LimitStyle>)> {
+        let mut sub = NodeId::NONE;
+        let mut sup = NodeId::NONE;
+        let mut modifier = None;
+        loop {
+            let (rest, next_modifier) = consume_limit_modifiers(input);
+            if let Some(style) = next_modifier {
+                modifier = Some(style);
+                input = rest;
+                continue;
+            }
+
+            let start = &input[self.skip_script_ws(input.as_bytes())..];
+            let Some(marker) = ScriptMarker::at(start) else {
+                return Ok((input, ((sub, sup), modifier)));
+            };
+            if (marker.is_subscript() && sub.is_some() && !marker.is_unicode())
+                || (!marker.is_subscript() && sup.is_some() && !marker.is_unicode())
+            {
+                return Ok((input, ((sub, sup), modifier)));
+            }
+            let (rest, (next_sub, next_sup)) =
+                self.script_fields(start, marker, keep_empty_limits)?;
+            if next_sub.is_some() {
+                sub = next_sub;
+            }
+            if next_sup.is_some() {
+                sup = next_sup;
+            }
+            input = rest;
+        }
     }
 
     fn script_fields<'a>(
@@ -2723,12 +2809,11 @@ impl LatexCompactParser {
         };
         let op_char = self.arena.str_val(sid).chars().next().unwrap_or('\u{2211}');
 
-        // TeX accepts consecutive placement modifiers. The last one wins.
-        let (input, limit_style) = consume_limit_modifiers(input);
-        let limit_style = limit_style.unwrap_or(LimitStyle::Default);
-
-        let (input, _) = ws(input)?;
-        let (input, (sub_id, sup_id)) = self.parse_optional_limits(input)?;
+        // TeX accepts placement modifiers before, between, and after script
+        // fields. The last modifier wins.
+        let (input, ((sub_id, sup_id), modifier)) =
+            self.parse_script_fields_with_limits(input, true)?;
+        let limit_style = modifier.unwrap_or(LimitStyle::Default);
         let (input, _) = ws(input)?;
 
         // The body is the next element, or an empty row at a grammar boundary.
@@ -4721,11 +4806,13 @@ impl LatexCompactParser {
             LimitStyle::SubSup
         };
         let sid = self.arena.push_str(&name);
-        Ok((
-            input,
-            self.arena
-                .push_node(CompactNode::Operator { name: sid, limits }),
-        ))
+        let operator = self
+            .arena
+            .push_node(CompactNode::Operator { name: sid, limits });
+        if !starred {
+            self.unstarred_operator_names.insert(operator);
+        }
+        Ok((input, operator))
     }
 
     fn parse_styled_binom<'a>(&mut self, input: &'a str, style: u8) -> IResult<&'a str, NodeId> {
