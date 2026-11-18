@@ -540,7 +540,8 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
         // name, e.g. `\operatorname{rank}A`. Native control words retain
         // their usual separator.
         CompactNode::Operator { name, limits } => {
-            is_latex_operator_command(arena.str_val(name)) || limits == LimitStyle::AboveBelow
+            latex_operator_command(arena.str_val(name)).is_some()
+                || limits == LimitStyle::AboveBelow
         },
         CompactNode::Symbol(SymbolKind::BinaryOp, _)
         | CompactNode::Symbol(SymbolKind::Relation, _) => true,
@@ -1611,54 +1612,27 @@ fn math_identifier_needs_char(ch: char) -> bool {
 }
 
 #[inline]
-/// The function names LaTeX and amsmath define as commands.
-fn is_latex_operator_command(name: &str) -> bool {
-    matches!(
-        name,
-        "arccos"
-            | "arcsin"
-            | "arctan"
-            | "arg"
-            | "cos"
-            | "cosh"
-            | "cot"
-            | "coth"
-            | "csc"
-            | "deg"
-            | "det"
-            | "dim"
-            | "exp"
-            | "gcd"
-            | "hom"
-            | "inf"
-            | "ker"
-            | "lg"
-            | "lim"
-            | "liminf"
-            | "limsup"
-            | "ln"
-            | "log"
-            | "max"
-            | "min"
-            | "Pr"
-            | "sec"
-            | "sin"
-            | "sinh"
-            | "sup"
-            | "tan"
-            | "tanh"
-    )
+/// The native command that reproduces this exact operator name.
+fn latex_operator_command(name: &str) -> Option<&str> {
+    match name {
+        "arccos" | "arcsin" | "arctan" | "arg" | "cos" | "cosh" | "cot" | "coth" | "csc"
+        | "deg" | "det" | "dim" | "exp" | "gcd" | "hom" | "inf" | "ker" | "lg" | "lim" | "ln"
+        | "log" | "max" | "min" | "Pr" | "sec" | "sin" | "sinh" | "sup" | "tan" | "tanh" => {
+            Some(name)
+        },
+        _ => crate::unicode::symbols::compound_limit_command(name),
+    }
 }
 
 /// A function name: its LaTeX command when one exists, else
 /// `\operatorname{…}`, or `\operatorname*{…}` for one whose scripts are
 /// limits (`argmax`).
 fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
-    if is_latex_operator_command(name)
+    if let Some(command) = latex_operator_command(name)
         && !(limits == LimitStyle::Default && !crate::unicode::symbols::operator_has_limits(name))
     {
         buf.push('\\');
-        buf.push_str(name);
+        buf.push_str(command);
         match limits {
             LimitStyle::AboveBelow => buf.push_str("\\limits"),
             // A native limit command needs an explicit modifier to force

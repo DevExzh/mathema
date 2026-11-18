@@ -282,33 +282,18 @@ fn make_script_with_base_math(base: MathNode, script: MathNode) -> MathNode {
 /// style (UTN #28 lists det, gcd, inf, lim, lim inf, lim sup, max, min, Pr
 /// and sup).
 pub(crate) fn is_limit_function(name: &str) -> bool {
-    matches!(
-        name,
-        "lim"
-            | "liminf"
-            | "limsup"
-            | "lim inf"
-            | "lim sup"
-            | "max"
-            | "min"
-            | "sup"
-            | "inf"
-            | "det"
-            | "gcd"
-            | "Pr"
-            | "argmax"
-            | "argmin"
-            | "arg\u{2009}max"
-            | "arg\u{2009}min"
-            | "arg max"
-            | "arg min"
-            | "inj lim"
-            | "proj lim"
-            | "lim\u{2009}sup"
-            | "lim\u{2009}inf"
-            | "inj\u{2009}lim"
-            | "proj\u{2009}lim"
-    )
+    crate::unicode::symbols::operator_has_limits(name)
+        || matches!(
+            name,
+            "lim inf"
+                | "lim sup"
+                | "arg\u{2009}max"
+                | "arg\u{2009}min"
+                | "arg max"
+                | "arg min"
+                | "inj lim"
+                | "proj lim"
+        )
 }
 
 /// Whether a function name such as sin or lim is spelled `name`.

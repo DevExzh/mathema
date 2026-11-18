@@ -344,7 +344,7 @@ fn write_node_in(
     match node {
         MathNode::Number(s) => write_simple_element(w, "mn", s),
         MathNode::Identifier(s) => write_mi(w, s),
-        MathNode::Operator(attr) => write_named_operator(w, &attr.name, attr.limit_style),
+        MathNode::Operator(attr) => write_named_operator(w, &attr.name, attr.limit_style, false),
         MathNode::Symbol(kind, s) => {
             let mut elem = BytesStart::new("mo");
             let ordinary_literal_bar =
@@ -1005,6 +1005,7 @@ fn write_limit_base(
             } else {
                 LimitStyle::AboveBelow
             },
+            true,
         ),
         MathNode::MathAtom {
             atom_type: MathAtomType::Op,
@@ -1049,12 +1050,17 @@ fn write_operator_group(
         .map_err(to_err)
 }
 
-fn write_named_operator(w: &mut XmlWriter, name: &str, limits: LimitStyle) -> Result<()> {
+fn write_named_operator(
+    w: &mut XmlWriter,
+    name: &str,
+    limits: LimitStyle,
+    scripted: bool,
+) -> Result<()> {
     let mut token = BytesStart::new("mo");
     if let Some(value) = named_movable_attr(limits) {
         token.push_attribute(("movablelimits", value));
     }
-    if needs_operator_marker(name) {
+    if needs_operator_marker(name, limits, scripted) {
         token.push_attribute(("data-mathema-operator", "name"));
     }
     w.write_event(Event::Start(token)).map_err(to_err)?;
@@ -1213,7 +1219,7 @@ fn write_node_fast_in(
         CompactNode::Number(sid) => simple_element(buf, "mn", arena.str_val(sid)),
         CompactNode::Identifier(sid) => write_mi_fast(buf, arena.str_val(sid)),
         CompactNode::Operator { name, limits } => {
-            write_named_operator_fast(buf, arena.str_val(name), limits)
+            write_named_operator_fast(buf, arena.str_val(name), limits, false)
         },
         CompactNode::Symbol(kind, sid) => {
             let s = arena.str_val(sid);
@@ -1727,7 +1733,15 @@ fn named_movable_attr(style: LimitStyle) -> Option<&'static str> {
 }
 
 /// A single letter or punctuation might otherwise be read as a symbol.
-fn needs_operator_marker(name: &str) -> bool {
+fn needs_operator_marker(name: &str, limits: LimitStyle, scripted: bool) -> bool {
+    // Without a marker, a bare built-in name such as lim defaults to movable
+    // limits on import. Retain an explicit side-script choice as well.
+    if !scripted
+        && limits == LimitStyle::SubSup
+        && crate::unicode::symbols::operator_has_limits(name)
+    {
+        return true;
+    }
     let mut chars = name.chars();
     !chars.next().is_some_and(|first| {
         first.is_alphabetic() && !chars.as_str().is_empty() && chars.all(char::is_alphabetic)
@@ -1796,6 +1810,8 @@ fn write_scripts(
     w.write_event(Event::Start(elem)).map_err(to_err)?;
     if let Some(movable) = place.base_movable {
         write_limit_base(w, base, movable, display)?;
+    } else if let MathNode::Operator(attr) = base {
+        write_named_operator(w, &attr.name, attr.limit_style, true)?;
     } else {
         write_argument(w, base, display)?;
     }
@@ -1844,6 +1860,8 @@ fn write_scripts_fast(
     buf.push('>');
     if let Some(movable) = place.base_movable {
         write_limit_base_fast(buf, arena, base, movable, display);
+    } else if let CompactNode::Operator { name, limits } = *arena.node(base) {
+        write_named_operator_fast(buf, arena.str_val(name), limits, true);
     } else {
         write_argument_fast(buf, arena, base, display);
     }
@@ -1932,6 +1950,7 @@ fn write_limit_base_fast(
             } else {
                 LimitStyle::AboveBelow
             },
+            true,
         ),
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
@@ -1973,14 +1992,14 @@ fn write_operator_group_fast(
     close_tag(buf, "mrow");
 }
 
-fn write_named_operator_fast(buf: &mut String, name: &str, limits: LimitStyle) {
+fn write_named_operator_fast(buf: &mut String, name: &str, limits: LimitStyle, scripted: bool) {
     buf.push_str("<mo");
     if let Some(value) = named_movable_attr(limits) {
         buf.push_str(" movablelimits=\"");
         buf.push_str(value);
         buf.push('"');
     }
-    if needs_operator_marker(name) {
+    if needs_operator_marker(name, limits, scripted) {
         buf.push_str(r#" data-mathema-operator="name""#);
     }
     buf.push('>');
