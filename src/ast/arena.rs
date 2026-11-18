@@ -15,6 +15,88 @@ enum Provenance {
     Array(ArrayEnvironment),
 }
 
+type ProvenanceEntry = (NodeId, Provenance);
+
+/// Keep the overwhelmingly common single metadata entry in the arena itself.
+/// A boxed map is allocated only when an arena needs a second distinct entry.
+#[derive(Debug, Clone, Default)]
+#[allow(clippy::box_collection)]
+enum ProvenanceStore {
+    #[default]
+    Empty,
+    Inline(ProvenanceEntry),
+    Overflow(Box<HashMap<NodeId, Provenance>>),
+}
+
+impl ProvenanceStore {
+    #[inline]
+    fn insert(&mut self, id: NodeId, value: Provenance) {
+        if let Self::Overflow(map) = self {
+            map.insert(id, value);
+            return;
+        }
+        let current = std::mem::take(self);
+        *self = match current {
+            Self::Empty => Self::Inline((id, value)),
+            Self::Inline((existing_id, _existing_value)) if existing_id == id => {
+                Self::Inline((id, value))
+            },
+            Self::Inline((existing_id, existing_value)) => {
+                let mut map = HashMap::with_capacity(2);
+                map.insert(existing_id, existing_value);
+                map.insert(id, value);
+                Self::Overflow(Box::new(map))
+            },
+            Self::Overflow(mut map) => {
+                map.insert(id, value);
+                Self::Overflow(map)
+            },
+        };
+    }
+
+    #[inline]
+    fn get(&self, id: NodeId) -> Option<Provenance> {
+        match self {
+            Self::Empty => None,
+            Self::Inline((entry_id, value)) => (*entry_id == id).then_some(*value),
+            Self::Overflow(map) => map.get(&id).copied(),
+        }
+    }
+
+    #[inline]
+    fn remove(&mut self, id: NodeId) {
+        match self {
+            Self::Empty => {},
+            Self::Inline((entry_id, _)) if *entry_id == id => *self = Self::Empty,
+            Self::Inline(_) => {},
+            Self::Overflow(_) => {
+                let Self::Overflow(mut map) = std::mem::take(self) else {
+                    unreachable!("provenance store variant changed")
+                };
+                map.remove(&id);
+                *self = if map.is_empty() {
+                    Self::Empty
+                } else if map.len() == 1 {
+                    Self::Inline(map.into_iter().next().expect("one provenance entry"))
+                } else {
+                    Self::Overflow(map)
+                };
+            },
+        }
+    }
+
+    #[inline]
+    fn heap_bytes(&self) -> usize {
+        match self {
+            Self::Overflow(map) => {
+                size_of::<HashMap<NodeId, Provenance>>()
+                    + map.capacity() * size_of::<ProvenanceEntry>()
+            },
+            _ => 0,
+        }
+    }
+}
+
 /// Arena-based storage for compact AST nodes.
 ///
 /// Nodes, child references, and UTF-8 text each occupy a contiguous buffer.
@@ -29,7 +111,7 @@ enum Provenance {
 pub struct AstArena {
     nodes: Vec<CompactNode>,
     /// Sparse provenance for explicitly typed spaces and parsed table forms.
-    provenance: HashMap<NodeId, Provenance>,
+    provenance: ProvenanceStore,
     children: Vec<NodeId>,
     strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
@@ -52,7 +134,7 @@ impl AstArena {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
-            provenance: HashMap::new(),
+            provenance: ProvenanceStore::default(),
             children: Vec::new(),
             strings: String::new(),
             str_starts: vec![0],
@@ -70,7 +152,7 @@ impl AstArena {
         str_starts.push(0);
         Self {
             nodes: Vec::with_capacity(nodes),
-            provenance: HashMap::new(),
+            provenance: ProvenanceStore::default(),
             children: Vec::with_capacity(children),
             strings: String::with_capacity(strings),
             str_starts,
@@ -232,17 +314,20 @@ impl AstArena {
             return;
         }
         self.nodes[destination.index()] = self.nodes[source.index()];
-        if let Some(provenance) = self.provenance.get(&source).copied() {
+        if matches!(self.provenance, ProvenanceStore::Empty) {
+            return;
+        }
+        if let Some(provenance) = self.provenance.get(source) {
             self.provenance.insert(destination, provenance);
         } else {
-            self.provenance.remove(&destination);
+            self.provenance.remove(destination);
         }
     }
 
     /// Return the explicit unit basis for a spacing node, if one was parsed.
     #[inline]
     pub fn space_basis(&self, id: NodeId) -> Option<SpaceBasis> {
-        match *self.provenance.get(&id)? {
+        match self.provenance.get(id)? {
             Provenance::SpaceBasis(basis) if matches!(self.node(id), CompactNode::Space(_)) => {
                 Some(basis)
             },
@@ -261,7 +346,7 @@ impl AstArena {
 
     #[inline]
     pub(crate) fn array_environment(&self, id: NodeId) -> Option<ArrayEnvironment> {
-        match *self.provenance.get(&id)? {
+        match self.provenance.get(id)? {
             Provenance::Array(env) if matches!(self.node(id), CompactNode::Array { .. }) => {
                 Some(env)
             },
@@ -348,7 +433,7 @@ impl AstArena {
     #[must_use]
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<CompactNode>()
-            + self.provenance.capacity() * size_of::<(NodeId, Provenance)>()
+            + self.provenance.heap_bytes()
             + self.children.capacity() * size_of::<NodeId>()
             + self.strings.capacity()
             + self.str_starts.capacity() * size_of::<u32>()
@@ -415,6 +500,32 @@ mod tests {
         assert_eq!(refused, space);
         arena.mark_array_environment(refused, ArrayEnvironment::Matrix);
         assert_eq!(arena.space_basis(space), Some(SpaceBasis::TextEm));
+    }
+
+    #[test]
+    fn provenance_store_keeps_one_entry_inline_and_overflows_safely() {
+        let mut one = AstArena::new();
+        let first = one.push_space(crate::ast::Rational::one(), SpaceBasis::TextEm);
+        assert!(matches!(one.provenance, ProvenanceStore::Inline(_)));
+        assert_eq!(one.space_basis(first), Some(SpaceBasis::TextEm));
+
+        let second = one.push_space(crate::ast::Rational::one(), SpaceBasis::MathMu);
+        assert!(matches!(one.provenance, ProvenanceStore::Overflow(_)));
+        assert_eq!(one.space_basis(first), Some(SpaceBasis::TextEm));
+        assert_eq!(one.space_basis(second), Some(SpaceBasis::MathMu));
+
+        let destination = one.push_node(CompactNode::Newline);
+        one.replace_from(destination, first);
+        assert_eq!(one.space_basis(destination), Some(SpaceBasis::TextEm));
+        one.replace_from(destination, second);
+        assert_eq!(one.space_basis(destination), Some(SpaceBasis::MathMu));
+        let empty = one.push_node(CompactNode::Newline);
+        one.replace_from(destination, empty);
+        assert_eq!(one.space_basis(destination), None);
+        one.provenance.remove(first);
+        assert!(matches!(one.provenance, ProvenanceStore::Inline(_)));
+        one.provenance.remove(second);
+        assert!(matches!(one.provenance, ProvenanceStore::Empty));
     }
 
     #[test]
