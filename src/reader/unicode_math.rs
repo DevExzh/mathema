@@ -466,6 +466,16 @@ impl CompactParser {
     }
 
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
+        if let Some((rest, accent, position, wide)) = unicode_accent_suffix(input) {
+            let id = self.push_node(CompactNode::Accent {
+                base,
+                accent,
+                position,
+                wide,
+            });
+            return self.parse_scripts(rest, id);
+        }
+
         // UTN #28 uses ┬ (U+252C) and ┴ (U+2534) for explicitly forced
         // below/above placement. These markers differ from _/^ because they
         // remain stacked in inline math.
@@ -572,6 +582,19 @@ impl CompactParser {
             }
         }
         for (mark, parent) in deferred.into_iter().rev() {
+            if let Some(accent) = self.wide_bound_accent(base) {
+                base = self.push_node(CompactNode::Accent {
+                    base: parent,
+                    accent,
+                    position: if mark == '┬' {
+                        AccentPosition::Below
+                    } else {
+                        AccentPosition::Above
+                    },
+                    wide: true,
+                });
+                continue;
+            }
             base = self.push_node(if mark == '┬' {
                 CompactNode::Underscript {
                     base: parent,
@@ -587,6 +610,16 @@ impl CompactParser {
             });
         }
         base
+    }
+
+    fn wide_bound_accent(&self, id: NodeId) -> Option<char> {
+        let CompactNode::Symbol(_, sid) = *self.arena.node(id) else {
+            return None;
+        };
+        let glyph = self.arena.str_val(sid);
+        (glyph.chars().count() == 1)
+            .then(|| glyph.chars().next().unwrap())
+            .filter(|ch| matches!(ch, '\u{23B4}'..='\u{23B5}' | '\u{23DC}'..='\u{23DF}'))
     }
 
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -613,7 +646,27 @@ impl CompactParser {
         if input.starts_with(['▭', '⟡']) {
             return self.parse_box_phantom(input);
         }
-        try_alt!(self, input, parse_group, parse_single_char_node);
+        match self.parse_group(input) {
+            Ok(result) => return Ok(result),
+            Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+            Err(_) => {},
+        }
+        if let Ok((mut rest, mut id)) = self.parse_single_char_node(input) {
+            // Combining and wide accent suffixes are part of a single
+            // UnicodeMath atom when used as a fraction/script operand. This
+            // keeps a/b̅ and the corresponding structured operator body
+            // from detaching the accent into a later text fallback.
+            while let Some((after, accent, position, wide)) = unicode_accent_suffix(rest) {
+                id = self.push_node(CompactNode::Accent {
+                    base: id,
+                    accent,
+                    position,
+                    wide,
+                });
+                rest = after;
+            }
+            return Ok((rest, id));
+        }
         Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
@@ -669,8 +722,17 @@ impl CompactParser {
         let mut children: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             self.tick(1);
+            // ASCII whitespace separates UnicodeMath atoms, but the
+            // typographic spaces emitted by the writer (thin/en/em) are
+            // meaningful content inside an invisible group.
+            remaining = remaining.trim_start_matches([' ', '\t', '\r', '\n']);
             if remaining.starts_with(close) {
                 break;
+            }
+            if let Some((rest, width)) = unicode_math_space(remaining) {
+                children.push(self.push_node(CompactNode::Space(width)));
+                remaining = rest;
+                continue;
             }
             match self.parse_element(remaining) {
                 Ok((rest, id)) => {
@@ -783,8 +845,10 @@ impl CompactParser {
         if input.starts_with('〖') {
             let (rest, children) = self.parse_delimited(input, '〖', '〗')?;
             let base = self.flatten_single(&children);
-            // A subscript on an explicitly grouped function belongs at the
-            // side, even when its ungrouped name would take display limits.
+            // A subscript on an explicitly grouped named function belongs at
+            // the side, even when its ungrouped name would take display
+            // limits. Preserve this long-standing ordinary UnicodeMath rule;
+            // decorated structured bodies are retained below as Inner atoms.
             if rest.starts_with(['_', '^'])
                 && let CompactNode::Operator { name, .. } = *self.arena.node(base)
             {
@@ -796,7 +860,14 @@ impl CompactParser {
                     }),
                 ));
             }
-            return Ok((rest, base));
+            // Retain explicit UnicodeMath invisible grouping as an inner
+            // atom. This gives a later script a stable base without adding a
+            // private marker or a visible fence.
+            let grouped = self.push_node(CompactNode::MathAtom {
+                atom_type: MathAtomType::Inner,
+                content: base,
+            });
+            return Ok((rest, grouped));
         }
         try_alt!(
             self,
@@ -1304,12 +1375,37 @@ fn is_integral(c: char) -> bool {
     matches!(c, '\u{222B}' | '\u{222C}' | '\u{222D}' | '\u{222E}')
 }
 
+fn unicode_accent_suffix(input: &str) -> Option<(&str, char, AccentPosition, bool)> {
+    let ch = input.chars().next()?;
+    let (position, wide) = match ch {
+        '\u{0332}' => (AccentPosition::Below, false),
+        '\u{0300}'..='\u{036F}' | '\u{20D0}'..='\u{20FF}' => (AccentPosition::Above, false),
+        '\u{23B4}' | '\u{23DE}' => (AccentPosition::Above, true),
+        '\u{23B5}' | '\u{23DF}' => (AccentPosition::Below, true),
+        _ => return None,
+    };
+    Some((&input[ch.len_utf8()..], ch, position, wide))
+}
+
+fn unicode_math_space(input: &str) -> Option<(&str, Rational)> {
+    let ch = input.chars().next()?;
+    let width = match ch {
+        '\u{00A0}' => Rational::new(1, 4),
+        '\u{2002}' => Rational::new(1, 2),
+        '\u{2003}' => Rational::new(1, 1),
+        '\u{2009}' => Rational::new(3, 18),
+        _ => return None,
+    };
+    Some((&input[ch.len_utf8()..], width))
+}
+
 fn is_math_symbol(c: char) -> bool {
     matches!(c,
         '+' | '-' | '=' | '<' | '>' | ',' | ';' | '!' | '?' | ':' | '|' | '\u{2016}' |
         '\u{00B1}' | '\u{00D7}' | '\u{00F7}' | // ±, ×, ÷
         '\u{2200}'..='\u{22FF}' | // Mathematical Operators
         '\u{2190}'..='\u{21FF}' | // Arrows
+        '\u{23B4}'..='\u{23DF}' | // horizontal braces and bracket accents
         '\u{27C0}'..='\u{27EF}' | // Misc Math Symbols-A
         '\u{2980}'..='\u{29FF}' | // Misc Math Symbols-B
         '\u{2A00}'..='\u{2AFF}'   // Supplemental Math Operators
