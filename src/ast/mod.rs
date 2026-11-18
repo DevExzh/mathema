@@ -52,7 +52,7 @@ pub enum SpaceBasis {
     Physical,
 }
 
-/// The core math AST node. 33 variants covering the union of all target formats.
+/// A node in the shared mathematical expression tree.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
@@ -285,16 +285,6 @@ pub enum MathNode {
     },
     /// Applies a text/font style to children
     Styled(TextStyle, Vec<MathNode>),
-    /// Applies a foreground color to its content.
-    ///
-    /// This is additive to the compact arena's color wrapper and preserves
-    /// foreground color when callers materialize the heap AST.
-    Color {
-        /// CSS/TeX color name or value.
-        color: String,
-        /// Colored content.
-        content: Box<MathNode>,
-    },
     /// Style-dependent content: \mathchoice{D}{T}{S}{SS}
     MathChoice {
         /// Variant used in display style.
@@ -316,6 +306,16 @@ pub enum MathNode {
         /// TeX atom type controlling spacing.
         atom_type: MathAtomType,
         /// Expression reclassified with this atom type.
+        content: Box<MathNode>,
+    },
+    /// Applies a foreground color to its content.
+    ///
+    /// This is additive to the compact arena's color wrapper and preserves
+    /// foreground color when callers materialize the heap AST.
+    Color {
+        /// CSS/TeX color name or value.
+        color: String,
+        /// Colored content.
         content: Box<MathNode>,
     },
 }
@@ -906,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn all_31_variants_constructible() {
+    fn math_node_variants_are_constructible() {
         // Verify every variant can be constructed without panic
         let nodes: Vec<MathNode> = vec![
             MathNode::Number("1".into()),
@@ -918,6 +918,19 @@ mod tests {
             MathNode::Symbol(SymbolKind::BinaryOp, "+".into()),
             MathNode::Text(TextStyle::Normal, "hello".into()),
             MathNode::Space(Rational::new(1, 6)),
+            MathNode::ExplicitSpace {
+                width: Rational::one(),
+                basis: SpaceBasis::MathMu,
+            },
+            MathNode::Reflect {
+                content: Box::new(MathNode::Identifier("x".into())),
+                text_mode: false,
+            },
+            MathNode::Actuarial {
+                content: Box::new(MathNode::Identifier("x".into())),
+                text_mode: false,
+            },
+            MathNode::StyleSwitch(1),
             MathNode::Row(vec![]),
             MathNode::Fenced {
                 open: "(".into(),
@@ -1028,6 +1041,11 @@ mod tests {
                 content: Box::new(MathNode::Identifier("f".into())),
             },
         ];
-        assert_eq!(nodes.len(), 31);
+        assert_eq!(nodes.len(), 35);
+        #[cfg(feature = "serde")]
+        for node in nodes {
+            let json = serde_json::to_value(&node).unwrap();
+            assert_eq!(node, serde_json::from_value(json).unwrap());
+        }
     }
 }
