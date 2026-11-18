@@ -83,17 +83,11 @@ impl MathReader for MathmlReader {
 
 const MAX_PARSE_DEPTH: u32 = 128;
 
-/// A parsed table cell is committed to the arena as soon as its closing tag
-/// is read. Keeping the cell node and its authored alignment together avoids
-/// retaining every cell's child list while the table's final column count is
-/// discovered from later ragged rows.
-struct MathmlTableCell {
-    id: NodeId,
-    alignment: ColumnAlign,
-}
-
+/// Cells already have their final compact representation. Row lengths are
+/// retained until the widest row determines the amount of rectangular padding.
+#[derive(Default)]
 struct MathmlTable {
-    cells: Vec<MathmlTableCell>,
+    cells: Vec<NodeId>,
     row_lengths: Vec<usize>,
     columns: Vec<ColumnAlign>,
 }
@@ -177,36 +171,10 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
-        loop {
+        let (element, empty) = loop {
             match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = Self::local_name(&e);
-                    if name == "math" {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == "display" {
-                                self.display = Some(if attr.value.as_ref() == "block" {
-                                    DisplayStyle::Block
-                                } else {
-                                    DisplayStyle::Inline
-                                });
-                            }
-                        }
-                        if let Some(display) = self.display {
-                            self.style_display = display == DisplayStyle::Block;
-                        }
-                        return self.parse_children("math");
-                    } else {
-                        let id = self.parse_element_by_name(&name, &e)?;
-                        let mut nodes: SmallVec<[NodeId; 8]> = smallvec::smallvec![id];
-                        nodes.extend(self.collect_remaining()?);
-                        return Ok(nodes);
-                    }
-                },
-                Ok(Event::Empty(e)) => {
-                    let name = Self::local_name(&e);
-                    let id = self.parse_empty_element(&name, &e)?;
-                    return Ok(smallvec::smallvec![id]);
-                },
+                Ok(Event::Start(e)) => break (e, false),
+                Ok(Event::Empty(e)) => break (e, true),
                 Ok(Event::Eof) => return Ok(SmallVec::new()),
                 Ok(_) => continue,
                 Err(e) => {
@@ -215,7 +183,35 @@ impl<'a> MathmlCompactParser<'a> {
                     });
                 },
             }
+        };
+        let name = Self::local_name(&element);
+        if name == "math" {
+            for attr in element.attributes().flatten() {
+                if attr.key.as_ref() == "display" {
+                    self.display = Some(if attr.value.as_ref() == "block" {
+                        DisplayStyle::Block
+                    } else {
+                        DisplayStyle::Inline
+                    });
+                }
+            }
+            if let Some(display) = self.display {
+                self.style_display = display == DisplayStyle::Block;
+            }
+            return if empty {
+                Ok(SmallVec::new())
+            } else {
+                self.parse_children("math")
+            };
         }
+        let id = if empty {
+            self.parse_empty_element(&name, &element)?
+        } else {
+            self.parse_element_by_name(&name, &element)?
+        };
+        let mut nodes = smallvec::smallvec![id];
+        nodes.extend(self.collect_remaining()?);
+        Ok(nodes)
     }
 
     fn collect_remaining(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
@@ -1196,14 +1192,7 @@ impl<'a> MathmlCompactParser<'a> {
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
         match name {
-            "mtable" => self.finish_table(
-                start,
-                MathmlTable {
-                    cells: Vec::new(),
-                    row_lengths: Vec::new(),
-                    columns: Vec::new(),
-                },
-            ),
+            "mtable" => self.finish_table(start, MathmlTable::default()),
             "mrow" => {
                 let attrs = mrow_attributes(start);
                 let empty = self.empty_row();
@@ -1303,7 +1292,7 @@ impl<'a> MathmlCompactParser<'a> {
         result
     }
 
-    fn parse_table_cell(&mut self) -> Result<NodeId> {
+    fn parse_table_cell(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let mut nodes = self.parse_children("mtd")?;
         // The MathML writer represents a cell's inherited TeX style as a
         // leading mstyle. Parsing that mstyle naturally creates one wrapper
@@ -1328,8 +1317,7 @@ impl<'a> MathmlCompactParser<'a> {
         {
             nodes.insert(0, self.arena.push_node(CompactNode::StyleSwitch(marker)));
         }
-        let span = self.arena.push_children_deferred(&nodes);
-        Ok(self.arena.push_node(CompactNode::Row(span)))
+        Ok(nodes)
     }
 
     fn finish_table(
@@ -1342,51 +1330,28 @@ impl<'a> MathmlCompactParser<'a> {
             row_lengths,
             columns,
         } = table;
-        let ncols = columns.len();
-        let stride = ncols.max(1);
-        if row_lengths.len().saturating_mul(stride) > AstArena::MAX_CHILDREN {
-            return Err(Error::LimitExceeded {
-                kind: crate::error::LimitKind::ListLength,
-                limit: AstArena::MAX_CHILDREN,
-            });
-        }
+        let stride = columns.len().max(1);
+        let total = row_lengths.len() * stride;
         let num_cols = stride as u16;
 
         let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
-        for &align in &columns {
+        for align in columns {
             align_ids.push(self.arena.push_node(CompactNode::ColAlign(align)));
         }
         let col_aligns = self.arena.push_children_deferred(&align_ids);
 
-        let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-        let mut cell_offset = 0;
-        for row_len in row_lengths {
-            for cell_index in 0..row_len {
-                let cell = &table_cells[cell_offset + cell_index];
-                let cell_id = if columns.get(cell_index) != Some(&cell.alignment) {
-                    let content = match *self.arena.node(cell.id) {
-                        CompactNode::Row(span) if self.arena.children(span).len() == 1 => {
-                            self.arena.children(span)[0]
-                        },
-                        CompactNode::Row(_) => cell.id,
-                        _ => cell.id,
-                    };
-                    self.arena.push_node(CompactNode::AlignedCell {
-                        alignment: cell.alignment,
-                        content,
-                    })
-                } else {
-                    cell.id
-                };
-                cell_ids.push(cell_id);
+        let cells = if table_cells.len() == total {
+            self.arena.push_children(&table_cells)?
+        } else {
+            let mut rectangular = Vec::with_capacity(total);
+            let mut offset = 0;
+            for len in row_lengths {
+                rectangular.extend_from_slice(&table_cells[offset..offset + len]);
+                rectangular.extend((len..stride).map(|_| self.empty_row()));
+                offset += len;
             }
-            // Pad short rows
-            for _ in row_len..(num_cols as usize) {
-                cell_ids.push(self.empty_row());
-            }
-            cell_offset += row_len;
-        }
-        let cells = self.arena.push_children_deferred(&cell_ids);
+            self.arena.push_children(&rectangular)?
+        };
         let arraystretch_pct = arraystretch_percent(start).unwrap_or(100);
         let array = self.arena.push_node(CompactNode::Array {
             col_aligns,
@@ -1409,138 +1374,124 @@ impl<'a> MathmlCompactParser<'a> {
         parent_tag: &str,
         table_columns: &[ColumnAlign],
     ) -> Result<MathmlTable> {
-        let mut cells = Vec::new();
-        let mut row_lengths = Vec::new();
-        let mut columns = Vec::new();
+        let mut table = MathmlTable::default();
         loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
+            let event = self.reader.read_event();
+            let empty = matches!(event, Ok(Event::Empty(_)));
+            match event {
+                Ok(Event::Start(e) | Event::Empty(e)) => {
                     let name = Self::local_name(&e);
-                    if name == "mtr" || name == "mlabeledtr" {
-                        let authored_row_alignments =
-                            parse_column_aligns(get_attr(&e, "columnalign"));
-                        let inherited = if authored_row_alignments.is_empty() {
+                    if name != "mtr" && name != "mlabeledtr" {
+                        continue;
+                    }
+                    let row_count = table.row_lengths.len() + 1;
+                    let max_columns = AstArena::MAX_CHILDREN / row_count;
+                    if table.columns.len().max(1) > max_columns {
+                        return Err(table_length_error());
+                    }
+                    let length = if empty {
+                        0
+                    } else {
+                        let row_alignments = parse_column_aligns(get_attr(&e, "columnalign"));
+                        let inherited = if row_alignments.is_empty() {
                             table_columns
                         } else {
-                            &authored_row_alignments
+                            &row_alignments
                         };
-                        let (row_len, row_columns) = self.with_table_style(&e, false, |p| {
-                            p.parse_table_row(&name, inherited, &mut cells)
-                        })?;
-                        // Alignment declarations do not create cells. A later
-                        // row can supply columns absent from earlier ragged rows.
-                        if row_columns.len() > columns.len() {
-                            columns.extend_from_slice(&row_columns[columns.len()..]);
-                        }
-                        row_lengths.push(row_len);
-                        check_table_shape(row_lengths.len(), columns.len())?;
-                    }
+                        self.with_table_style(&e, false, |p| {
+                            p.parse_table_row(&name, inherited, max_columns, &mut table)
+                        })?
+                    };
+                    table.row_lengths.push(length);
                 },
-                Ok(Event::Empty(e))
-                    if matches!(Self::local_name(&e).as_str(), "mtr" | "mlabeledtr") =>
-                {
-                    row_lengths.push(0);
-                    check_table_shape(row_lengths.len(), columns.len())?;
-                },
-                Ok(Event::End(e)) => {
-                    if Self::local_name_end(&e) == parent_tag {
-                        break;
-                    }
-                },
+                Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
                 Ok(Event::Eof) => break,
-                _ => continue,
+                Err(error) => {
+                    return Err(Error::MathmlParse {
+                        message: format!("XML error: {error}"),
+                    });
+                },
+                _ => {},
             }
         }
-        Ok(MathmlTable {
-            cells,
-            row_lengths,
-            columns,
-        })
+        Ok(table)
     }
 
     fn parse_table_row(
         &mut self,
         parent_tag: &str,
         inherited: &[ColumnAlign],
-        cells: &mut Vec<MathmlTableCell>,
-    ) -> Result<(usize, Vec<ColumnAlign>)> {
-        let mut row_len = 0;
-        let mut columns = Vec::new();
+        max_columns: usize,
+        table: &mut MathmlTable,
+    ) -> Result<usize> {
+        let start = table.cells.len();
         loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
-                    let name = Self::local_name(&e);
-                    if name == "mtd" {
-                        columns.push(cell_alignment(
-                            inherited,
-                            row_len,
-                            get_attr(&e, "columnalign"),
-                        ));
-                        let id = self.with_table_style(&e, false, Self::parse_table_cell)?;
-                        push_table_cell(cells, id, columns[row_len])?;
-                        row_len += 1;
-                    } else {
-                        // Inferred cell: a non-<mtd> child is its own cell.
-                        columns.push(cell_alignment(inherited, row_len, None));
-                        let child = self.parse_element_by_name(&name, &e)?;
-                        let span = self.arena.push_children_deferred(&[child]);
-                        let id = self.arena.push_node(CompactNode::Row(span));
-                        push_table_cell(cells, id, columns[row_len])?;
-                        row_len += 1;
+            let index = table.cells.len() - start;
+            let event = self.reader.read_event();
+            let empty = matches!(event, Ok(Event::Empty(_)));
+            let (children, own_alignment) = match event {
+                Ok(Event::Start(e) | Event::Empty(e)) => {
+                    if index >= max_columns {
+                        return Err(table_length_error());
                     }
-                },
-                Ok(Event::Empty(e)) => {
                     let name = Self::local_name(&e);
                     if name == "mtd" {
-                        columns.push(cell_alignment(
-                            inherited,
-                            row_len,
-                            get_attr(&e, "columnalign"),
-                        ));
-                        let id = self.empty_row();
-                        push_table_cell(cells, id, columns[row_len])?;
-                        row_len += 1;
+                        let children = if empty {
+                            SmallVec::new()
+                        } else {
+                            self.with_table_style(&e, false, Self::parse_table_cell)?
+                        };
+                        (children, get_attr(&e, "columnalign"))
                     } else {
-                        columns.push(cell_alignment(inherited, row_len, None));
-                        let child = self.parse_empty_element(&name, &e)?;
-                        let span = self.arena.push_children_deferred(&[child]);
-                        let id = self.arena.push_node(CompactNode::Row(span));
-                        push_table_cell(cells, id, columns[row_len])?;
-                        row_len += 1;
+                        let child = if empty {
+                            self.parse_empty_element(&name, &e)?
+                        } else {
+                            self.parse_element_by_name(&name, &e)?
+                        };
+                        (smallvec::smallvec![child], None)
                     }
                 },
                 Ok(Event::Text(e)) => {
                     let text = unescape_text(&e);
-                    if !text.trim().is_empty() {
-                        let id = self.classify_text_compact(&text);
-                        columns.push(cell_alignment(inherited, row_len, None));
-                        let span = self.arena.push_children_deferred(&[id]);
-                        let id = self.arena.push_node(CompactNode::Row(span));
-                        push_table_cell(cells, id, columns[row_len])?;
-                        row_len += 1;
+                    if text.trim().is_empty() {
+                        continue;
                     }
+                    (smallvec::smallvec![self.classify_text_compact(&text)], None)
                 },
                 Ok(Event::GeneralRef(r)) => {
                     let text = resolve_general_ref(&r);
-                    if !text.trim().is_empty() {
-                        let id = self.classify_text_compact(&text);
-                        columns.push(cell_alignment(inherited, row_len, None));
-                        let span = self.arena.push_children_deferred(&[id]);
-                        let id = self.arena.push_node(CompactNode::Row(span));
-                        push_table_cell(cells, id, columns[row_len])?;
-                        row_len += 1;
+                    if text.trim().is_empty() {
+                        continue;
                     }
+                    (smallvec::smallvec![self.classify_text_compact(&text)], None)
                 },
-                Ok(Event::End(e)) => {
-                    if Self::local_name_end(&e) == parent_tag {
-                        break;
-                    }
-                },
+                Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
                 Ok(Event::Eof) => break,
+                Err(error) => {
+                    return Err(Error::MathmlParse {
+                        message: format!("XML error: {error}"),
+                    });
+                },
                 _ => continue,
+            };
+            if index >= max_columns {
+                return Err(table_length_error());
             }
+            let alignment = cell_alignment(inherited, index, own_alignment);
+            if index == table.columns.len() {
+                table.columns.push(alignment);
+            }
+            let id = if table.columns[index] == alignment {
+                let span = self.arena.push_children(&children)?;
+                self.arena.push_node(CompactNode::Row(span))
+            } else {
+                let content = self.flatten_ids(&children);
+                self.arena
+                    .push_node(CompactNode::AlignedCell { alignment, content })
+            };
+            table.cells.push(id);
         }
-        Ok((row_len, columns))
+        Ok(table.cells.len() - start)
     }
 
     fn is_empty_row_id(&self, id: NodeId) -> bool {
@@ -2235,31 +2186,11 @@ fn parse_column_aligns(value: Option<String>) -> SmallVec<[ColumnAlign; 4]> {
         .collect()
 }
 
-#[inline]
-fn push_table_cell(
-    cells: &mut Vec<MathmlTableCell>,
-    id: NodeId,
-    alignment: ColumnAlign,
-) -> Result<()> {
-    if cells.len() >= AstArena::MAX_CHILDREN {
-        return Err(Error::LimitExceeded {
-            kind: crate::error::LimitKind::ListLength,
-            limit: AstArena::MAX_CHILDREN,
-        });
+fn table_length_error() -> Error {
+    Error::LimitExceeded {
+        kind: crate::error::LimitKind::ListLength,
+        limit: AstArena::MAX_CHILDREN,
     }
-    cells.push(MathmlTableCell { id, alignment });
-    Ok(())
-}
-
-#[inline]
-fn check_table_shape(row_count: usize, column_count: usize) -> Result<()> {
-    if row_count.saturating_mul(column_count.max(1)) > AstArena::MAX_CHILDREN {
-        return Err(Error::LimitExceeded {
-            kind: crate::error::LimitKind::ListLength,
-            limit: AstArena::MAX_CHILDREN,
-        });
-    }
-    Ok(())
 }
 
 fn cell_alignment(inherited: &[ColumnAlign], index: usize, cell: Option<String>) -> ColumnAlign {
@@ -3523,6 +3454,24 @@ mod tests {
     }
 
     #[test]
+    fn rectangular_limit_is_checked_before_parsing_an_excess_cell() {
+        let source = format!(
+            "<math><mtable>{}<mtr>{}<mtd>{}x{}</mtd></mtr></mtable></math>",
+            "<mtr/>".repeat(256),
+            "<mtd/>".repeat(255),
+            "<msqrt>".repeat(150),
+            "</msqrt>".repeat(150)
+        );
+        assert!(matches!(
+            crate::from_mathml(&source),
+            Err(Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn authored_table_row_and_cell_alignment_follow_mathml_precedence() {
         let inherited = r#"<math><mtable columnalign="left"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr></mtable></math>"#;
         let inherited = crate::from_mathml(inherited).unwrap();
@@ -3639,6 +3588,19 @@ mod tests {
         ));
         assert_eq!(short.expr(), long.expr());
         assert_eq!(short.to_mathml().unwrap(), long.to_mathml().unwrap());
+    }
+
+    #[test]
+    fn bare_table_does_not_discard_following_fragment_elements() {
+        for table in ["<mtable/>", "<mtable></mtable>"] {
+            let fragment = crate::from_mathml(&format!("{table}<mi>x</mi>")).unwrap();
+            assert!(
+                matches!(&fragment.expr().nodes[..], [MathNode::Array { .. }, MathNode::Identifier(x)] if x == "x")
+            );
+        }
+        let short = crate::from_mathml(r#"<math display="block"/>"#).unwrap();
+        let long = crate::from_mathml(r#"<math display="block"></math>"#).unwrap();
+        assert_eq!(short.expr(), long.expr());
     }
 
     #[test]
