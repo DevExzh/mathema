@@ -7,6 +7,7 @@ use super::{MatrixKind, SpaceBasis};
 enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(MatrixKind),
+    MatrixPadding,
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -194,6 +195,17 @@ impl AstArena {
     /// The most children one node can hold (a span length is 16 bits).
     pub const MAX_CHILDREN: usize = u16::MAX as usize;
 
+    /// Bound a rectangular cell span before allocating padding for ragged input.
+    pub(crate) fn array_stride_deferred(&mut self, rows: usize, width: usize) -> Option<u16> {
+        let stride = width.max(1);
+        if stride > Self::MAX_CHILDREN || rows > Self::MAX_CHILDREN / stride {
+            self.list_overflow = true;
+            None
+        } else {
+            Some(stride as u16)
+        }
+    }
+
     /// Push a contiguous span of child `NodeId`s and return the `NodeSpan`.
     ///
     /// # Errors
@@ -330,6 +342,70 @@ impl AstArena {
             },
             _ => None,
         }
+    }
+
+    /// Return matrix provenance only when the current compact array still has
+    /// the metadata shape that a matrix environment can represent.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn valid_matrix_environment(
+        &self,
+        id: NodeId,
+        col_aligns: NodeSpan,
+        cells: NodeSpan,
+        num_cols: u16,
+        arraystretch_pct: u8,
+        add_jot: bool,
+        array_style: bool,
+        col_seps: u32,
+        row_seps: u32,
+    ) -> Option<(MatrixKind, super::ColumnAlign)> {
+        let kind = self.array_environment(id)?;
+        let expected_pitch = if kind == MatrixKind::SmallMatrix {
+            50
+        } else {
+            100
+        };
+        if arraystretch_pct != expected_pitch
+            || add_jot
+            || array_style
+            || col_seps != 0
+            || row_seps != 0
+        {
+            return None;
+        }
+        let columns = self.children(col_aligns);
+        let cell_count = self.children(cells).len();
+        if cell_count != 0 && columns.len() != num_cols as usize {
+            return None;
+        }
+        let mut alignment = None;
+        for &column in columns {
+            let CompactNode::ColAlign(value) = *self.node(column) else {
+                return None;
+            };
+            if let Some(previous) = alignment {
+                if previous != value {
+                    return None;
+                }
+            } else {
+                alignment = Some(value);
+            }
+        }
+        Some((kind, alignment.unwrap_or(super::ColumnAlign::Center)))
+    }
+
+    #[inline]
+    pub(crate) fn mark_matrix_padding(&mut self, id: NodeId) {
+        if !self.size_overflow {
+            self.provenance.insert(id, Provenance::MatrixPadding);
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_matrix_padding(&self, id: NodeId) -> bool {
+        matches!(self.provenance.get(id), Some(Provenance::MatrixPadding))
+            && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
     /// Return the slice of child `NodeId`s covered by `span`.
@@ -478,6 +554,22 @@ mod tests {
         assert_eq!(refused, space);
         arena.mark_array_environment(refused, MatrixKind::Matrix);
         assert_eq!(arena.space_basis(space), Some(SpaceBasis::TextEm));
+    }
+
+    #[test]
+    fn ragged_array_stride_respects_the_span_limit_before_padding() {
+        let mut arena = AstArena::new();
+        assert_eq!(arena.array_stride_deferred(255, 257), Some(257));
+        assert!(arena.check_limits().is_ok());
+        assert_eq!(arena.array_stride_deferred(256, 256), None);
+        assert!(matches!(
+            arena.check_limits(),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ListLength,
+                ..
+            })
+        ));
+        assert_eq!(arena.node_count(), 0);
     }
 
     #[test]

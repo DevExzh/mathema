@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use smallvec::SmallVec;
+
 use super::packages;
 
 #[path = "ordered_stream.rs"]
@@ -178,28 +180,39 @@ pub fn preprocess_cow(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
     expand_source(input, false)
 }
 
-/// Only the main math parser can consume a leading `\plim` directly.
-/// Nested occurrences can be arguments to text or other raw-token readers.
+/// Prepare parser input, allowing direct consumption of a leading `\plim`
+/// and a bounded literal rewrite of mathtools fences.
 pub(super) fn prepare_math_input(input: &str) -> Result<Cow<'_, str>, ExpansionFailure> {
     expand_source(input, true)
 }
 
-fn expand_source(input: &str, direct_leading_plim: bool) -> Result<Cow<'_, str>, ExpansionFailure> {
-    let (source, needs_expansion) = prepare_source(input, direct_leading_plim);
-    if needs_expansion {
-        Ok(Cow::Owned(ordered_stream::expand(&source)?))
-    } else {
-        Ok(source)
+fn expand_source(input: &str, for_parser: bool) -> Result<Cow<'_, str>, ExpansionFailure> {
+    let (source, needs_expansion, fenced_matrix) = prepare_source(input, for_parser);
+    if !needs_expansion {
+        if !fenced_matrix {
+            return Ok(source);
+        }
+        // With at least one input byte per potential group, a short literal input
+        // cannot exhaust the ordered stream's group or token budgets. Long or
+        // dynamic bodies retain the full expansion and its resource checks.
+        if for_parser
+            && source.len() <= crate::error::DEFAULT_MAX_DEPTH
+            && let Some(expanded) = rewrite_literal_smallmatrix(&source)
+        {
+            return Ok(Cow::Owned(expanded));
+        }
     }
+    Ok(Cow::Owned(ordered_stream::expand(&source)?))
 }
 
 /// Locate expandable words and strip comments in one traversal. Only allocate
 /// a replacement string if a real comment, outside a verbatim block, is found.
-fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool) {
+fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool, bool) {
     let mut offset = 0;
     let mut copy_from = 0;
     let mut stripped: Option<String> = None;
     let mut needs_expansion = false;
+    let mut fenced_matrix = false;
     while let Some(pos) = input[offset..].find(['\\', '%']) {
         let start = offset + pos;
         let tail = &input[start..];
@@ -216,6 +229,7 @@ fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool
         } else if let Some((rest, token)) = super::split_token(tail) {
             let name = &token[1..];
             if !needs_expansion {
+                fenced_matrix |= name == "begin" && starts_fenced_smallmatrix(rest);
                 needs_expansion = matches!(
                     name,
                     "newcommand"
@@ -240,9 +254,8 @@ fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool
                         | "@ifnextchar"
                         | "TextOrMath"
                         | "newenvironment"
-                ) || (name == "begin" && starts_fenced_smallmatrix(rest))
-                    || (!(direct_leading_plim && start == 0 && name == "plim")
-                        && packages::is_builtin_macro_name(name));
+                ) || (!(direct_leading_plim && start == 0 && name == "plim")
+                    && packages::is_builtin_macro_name(name));
             }
             offset = input.len() - rest.len();
         } else {
@@ -256,7 +269,7 @@ fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool
         },
         None => Cow::Borrowed(input),
     };
-    (source, needs_expansion)
+    (source, needs_expansion, fenced_matrix)
 }
 
 /// Inspect only the environment name. Comments may separate the command
@@ -283,6 +296,66 @@ fn starts_fenced_smallmatrix(mut rest: &str) -> bool {
         return false;
     };
     packages::smallmatrix_fences(&name[..end]).is_some()
+}
+
+/// Apply the same literal replacements as the ordered processor. A mismatched
+/// or nonliteral environment name hands the entire input back to that processor.
+fn rewrite_literal_smallmatrix(input: &str) -> Option<String> {
+    let mut stack: SmallVec<[&str; 4]> = SmallVec::new();
+    let mut output = String::with_capacity(input.len());
+    let mut copy_from = 0;
+    let mut cursor = 0;
+    while let Some(pos) = input[cursor..].find('\\') {
+        let start = cursor + pos;
+        if let Some(end) = find_verb_end(input, start) {
+            cursor = end;
+            continue;
+        }
+        let (rest, token) = super::split_token(&input[start..])?;
+        cursor = input.len() - rest.len();
+        let begin = match token {
+            r"\begin" => true,
+            r"\end" => false,
+            _ => continue,
+        };
+        let (consumed, name) = literal_environment_group(rest)?;
+        cursor += consumed;
+        if begin {
+            stack.push(name);
+        } else if stack.pop() != Some(name) {
+            return None;
+        }
+        if let Some(replacement) = ordered_stream::smallmatrix_environment_replacement(name, begin)
+        {
+            output.push_str(&input[copy_from..start]);
+            output.push_str(&replacement);
+            copy_from = cursor;
+        }
+    }
+    if !stack.is_empty() || copy_from == 0 {
+        return None;
+    }
+    output.push_str(&input[copy_from..]);
+    Some(output)
+}
+
+fn literal_environment_group(input: &str) -> Option<(usize, &str)> {
+    let skipped = input
+        .bytes()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(input.len());
+    let rest = &input[skipped..];
+    let name = rest.strip_prefix('{')?;
+    let end = name.find('}')?;
+    let value = &name[..end];
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '*')
+    {
+        return None;
+    }
+    Some((skipped + end + 2, value))
 }
 
 /// If `input[start..]` begins `\verb` or `\verb*` followed by a delimiter,
@@ -371,6 +444,30 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn public_and_parser_preprocessing_agree_on_literal_package_fences() {
+        let source = r"\begin{psmallmatrix}a&b\\c&d\end{psmallmatrix}";
+        let public = preprocess_cow(source).unwrap();
+        assert!(
+            public.contains(r"\mathopen{}\mathclose{\left("),
+            "public expansion changed: {public}"
+        );
+        assert_eq!(prepare_math_input(source).unwrap(), public.as_ref());
+    }
+
+    #[test]
+    fn dynamic_environment_names_and_shadowing_keep_ordered_expansion() {
+        let alias = r"\def\E{psmallmatrix}\begin{\E}a\end{\E}";
+        assert!(
+            prepare_math_input(alias)
+                .unwrap()
+                .contains(r"\mathopen{}\mathclose{\left(")
+        );
+        let shadow = r"\newenvironment{psmallmatrix}{P}{Q}\begin{psmallmatrix}x\end{psmallmatrix}";
+        assert_eq!(prepare_math_input(shadow).unwrap(), "PxQ");
+        assert!(crate::from_latex(r"\def\E{\E}\begin{\E}x\end{\E}").is_err());
+    }
+
     // --- Active definitions and expansion ---
 
     #[test]
@@ -386,6 +483,39 @@ mod tests {
             expanded(r"\newcommand{\foo}{old}\renewcommand{\foo}{new}\foo"),
             "new"
         );
+    }
+
+    #[test]
+    fn long_literal_fences_keep_ordered_group_limits_even_in_text() {
+        let n = crate::error::DEFAULT_MAX_DEPTH + 8;
+        let source = format!(
+            r"\begin{{psmallmatrix}}\text{{{}x{}}}\end{{psmallmatrix}}",
+            "{".repeat(n),
+            "}".repeat(n)
+        );
+        let public = preprocess_cow(&source);
+        assert!(matches!(public, Err(ExpansionFailure::Depth { .. })));
+        assert_eq!(prepare_math_input(&source), public);
+    }
+
+    #[test]
+    fn every_literal_smallmatrix_fence_uses_the_bounded_rewrite() {
+        for name in [
+            "psmallmatrix",
+            "bsmallmatrix",
+            "Bsmallmatrix",
+            "vsmallmatrix",
+            "Vsmallmatrix",
+            "psmallmatrix*",
+            "bsmallmatrix*",
+            "Bsmallmatrix*",
+            "vsmallmatrix*",
+            "Vsmallmatrix*",
+        ] {
+            let source = format!(r"\begin{{{name}}}a\end{{{name}}}");
+            let public = preprocess_cow(&source).unwrap();
+            assert_eq!(prepare_math_input(&source).unwrap(), public, "{name}");
+        }
     }
 
     #[test]

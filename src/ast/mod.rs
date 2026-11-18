@@ -67,6 +67,12 @@ pub enum MatrixKind {
     SmallMatrix,
 }
 
+/// Compact tables have at least one column slot, even when no row has cells.
+/// Keeping that slot retains the alignment of an empty starred matrix.
+pub(crate) fn matrix_column_count(rows: &[Vec<Vec<MathNode>>]) -> usize {
+    rows.iter().map(Vec::len).max().unwrap_or(0).max(1)
+}
+
 /// A node in the shared mathematical expression tree.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -340,14 +346,10 @@ pub enum MathNode {
     Matrix {
         /// Matrix source environment.
         kind: MatrixKind,
-        /// Per-column horizontal alignments.
-        columns: Vec<ColumnAlign>,
+        /// Uniform alignment applied to every matrix column.
+        alignment: ColumnAlign,
         /// Rows of cells, where each cell is a sequence of nodes.
         rows: Vec<Vec<Vec<MathNode>>>,
-        /// Optional `\arraystretch` row-height multiplier.
-        arraystretch: Option<f64>,
-        /// Whether to add `\jot` extra vertical spacing between rows.
-        add_jot: bool,
     },
     /// A structured operatorname/operatorname-star whose content remains an
     /// expression, preserving decorations, spaces, and limit placement.

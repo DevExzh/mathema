@@ -52,10 +52,8 @@ export type MathNode =
   | {
       Matrix: {
         kind: MatrixKind;
-        columns: ColumnAlign[];
+        alignment: ColumnAlign;
         rows: MathNode[][][];
-        arraystretch: number | undefined;
-        add_jot: boolean;
       };
     }
   | { Phantom: [MathNode, PhantomKind] }

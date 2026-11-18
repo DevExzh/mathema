@@ -1274,39 +1274,26 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                     .all(|&cell| super::cell_after_style(arena, cell, 0).is_some());
             // Public arena callers can edit a parsed table. Trust its source
             // environment only while the current columns and spacing fit it.
-            let matrix = arena.array_environment(id).and_then(|source| {
-                if array_style || add_jot || col_seps != 0 || row_seps != 0 {
-                    return None;
-                }
-                let align =
-                    columns
-                        .first()
-                        .map_or(ColumnAlign::Center, |&col| match *arena.node(col) {
-                            CompactNode::ColAlign(align) => align,
-                            _ => ColumnAlign::Center,
-                        });
-                if !columns
-                    .iter()
-                    .all(|&col| matches!(*arena.node(col), CompactNode::ColAlign(a) if a == align))
-                    || (align != ColumnAlign::Center && columns.len() != nc)
-                {
-                    return None;
-                }
-                use crate::ast::MatrixKind;
-                match (source, arraystretch_pct, align) {
-                    (MatrixKind::Matrix, 100, ColumnAlign::Center) => Some(("matrix", "")),
-                    (MatrixKind::Matrix, 100, ColumnAlign::Left) => Some(("matrix*", "[l]")),
-                    (MatrixKind::Matrix, 100, ColumnAlign::Right) => Some(("matrix*", "[r]")),
-                    (MatrixKind::SmallMatrix, 50, ColumnAlign::Center) => Some(("smallmatrix", "")),
-                    (MatrixKind::SmallMatrix, 50, ColumnAlign::Left) => {
-                        Some(("smallmatrix*", "[l]"))
-                    },
-                    (MatrixKind::SmallMatrix, 50, ColumnAlign::Right) => {
-                        Some(("smallmatrix*", "[r]"))
-                    },
-                    _ => None,
-                }
-            });
+            let matrix = arena
+                .valid_matrix_environment(
+                    id,
+                    col_aligns,
+                    cells,
+                    num_cols,
+                    arraystretch_pct,
+                    add_jot,
+                    array_style,
+                    col_seps,
+                    row_seps,
+                )
+                .map(|(source, align)| match (source, align) {
+                    (MatrixKind::Matrix, ColumnAlign::Center) => ("matrix", ""),
+                    (MatrixKind::Matrix, ColumnAlign::Left) => ("matrix*", "[l]"),
+                    (MatrixKind::Matrix, ColumnAlign::Right) => ("matrix*", "[r]"),
+                    (MatrixKind::SmallMatrix, ColumnAlign::Center) => ("smallmatrix", ""),
+                    (MatrixKind::SmallMatrix, ColumnAlign::Left) => ("smallmatrix*", "[l]"),
+                    (MatrixKind::SmallMatrix, ColumnAlign::Right) => ("smallmatrix*", "[r]"),
+                });
             let (env, option) = if let Some(matrix) = matrix {
                 matrix
             } else if ams

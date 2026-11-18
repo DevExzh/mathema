@@ -617,16 +617,18 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         } => layout_array(false, columns, rows, *arraystretch, *add_jot, ctx),
         MathNode::Matrix {
             kind,
-            columns,
+            alignment,
             rows,
-            arraystretch,
-            add_jot,
         } => layout_array(
             matches!(kind, crate::ast::MatrixKind::SmallMatrix),
-            columns,
+            &vec![*alignment; crate::ast::matrix_column_count(rows)],
             rows,
-            *arraystretch,
-            *add_jot,
+            Some(if matches!(kind, crate::ast::MatrixKind::SmallMatrix) {
+                0.5
+            } else {
+                1.0
+            }),
+            false,
             ctx,
         ),
         MathNode::Phantom(content, kind) => layout_phantom(content, *kind, ctx),
@@ -1515,8 +1517,18 @@ fn layout_node_arena(
         } => layout_array_arena(
             ast,
             matches!(
-                ast.array_environment(id),
-                Some(crate::ast::MatrixKind::SmallMatrix)
+                ast.valid_matrix_environment(
+                    id,
+                    col_aligns,
+                    cells,
+                    num_cols,
+                    arraystretch_pct,
+                    add_jot,
+                    array_style,
+                    col_seps,
+                    row_seps,
+                ),
+                Some((crate::ast::MatrixKind::SmallMatrix, _))
             ),
             col_aligns,
             cells,

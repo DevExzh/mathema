@@ -619,21 +619,34 @@ fn write_node_in(
             Ok(())
         },
 
-        MathNode::Array {
-            columns,
-            rows,
-            arraystretch,
-            add_jot,
-            ..
-        }
-        | MathNode::Matrix {
-            columns,
-            rows,
-            arraystretch,
-            add_jot,
-            ..
-        } => {
-            let promoted = inherited_table_marker(display_style, *add_jot, |marker| {
+        MathNode::Array { .. } | MathNode::Matrix { .. } => {
+            let (columns, rows, arraystretch, add_jot, kind) = match node {
+                MathNode::Array {
+                    columns,
+                    rows,
+                    arraystretch,
+                    add_jot,
+                } => (
+                    Cow::Borrowed(columns.as_slice()),
+                    rows,
+                    *arraystretch,
+                    *add_jot,
+                    None,
+                ),
+                MathNode::Matrix {
+                    kind,
+                    alignment,
+                    rows,
+                } => (
+                    Cow::Owned(vec![*alignment; crate::ast::matrix_column_count(rows)]),
+                    rows,
+                    None,
+                    false,
+                    Some(*kind),
+                ),
+                _ => unreachable!(),
+            };
+            let promoted = inherited_table_marker(display_style, add_jot, |marker| {
                 rows.iter().flatten().all(|cell| {
                     cell.first().is_none_or(
                         |node| matches!(node, MathNode::StyleSwitch(value) if *value == marker),
@@ -646,10 +659,6 @@ fn write_node_in(
                 start_math_style(w, MathStyle::Text)?;
             }
             let mut table = BytesStart::new("mtable");
-            let kind = match node {
-                MathNode::Matrix { kind, .. } => Some(*kind),
-                _ => None,
-            };
             for &(name, value) in matrix_attributes(kind) {
                 table.push_attribute((name, value));
             }
@@ -667,10 +676,15 @@ fn write_node_in(
                 table.push_attribute(("displaystyle", "true"));
             }
             w.write_event(Event::Start(table)).map_err(to_err)?;
+            let num_cols = columns
+                .len()
+                .max(rows.iter().map(Vec::len).max().unwrap_or(0));
             for row in rows {
                 w.write_event(Event::Start(BytesStart::new("mtr")))
                     .map_err(to_err)?;
-                for (i, cell) in row.iter().enumerate() {
+                for i in 0..num_cols {
+                    let empty_cell: &[MathNode] = &[];
+                    let cell = row.get(i).map(Vec::as_slice).unwrap_or(empty_cell);
                     let mut td = BytesStart::new("mtd");
                     if let Some(align) = columns.get(i) {
                         let val = match align {
@@ -684,7 +698,7 @@ fn write_node_in(
                     let cell = if promoted.is_some() && !cell.is_empty() {
                         &cell[1..]
                     } else {
-                        cell.as_slice()
+                        cell
                     };
                     let small = promoted.is_none()
                         && kind == Some(MatrixKind::SmallMatrix)
@@ -1513,10 +1527,24 @@ fn write_node_fast_in(
             num_cols,
             arraystretch_pct,
             add_jot,
-            ..
+            array_style,
+            col_seps,
+            row_seps,
         } => {
             let nc = num_cols as usize;
-            let environment = arena.array_environment(id);
+            let environment = arena
+                .valid_matrix_environment(
+                    id,
+                    col_aligns,
+                    cells,
+                    num_cols,
+                    arraystretch_pct,
+                    add_jot,
+                    array_style,
+                    col_seps,
+                    row_seps,
+                )
+                .map(|(kind, _)| kind);
             let cell_ids = arena.children(cells);
             let promoted = inherited_table_marker(display_style, add_jot, |marker| {
                 cell_ids
@@ -1744,6 +1772,7 @@ fn matrix_attributes(kind: Option<MatrixKind>) -> &'static [(&'static str, &'sta
     match kind {
         Some(MatrixKind::SmallMatrix) => &[
             ("data-mathema-array-environment", "smallmatrix"),
+            ("scriptlevel", "1"),
             ("rowspacing", "0.1em"),
             ("columnspacing", "0.2778em"),
         ],
@@ -3037,10 +3066,8 @@ mod tests {
         };
         let expr = MathExpr::inline(vec![MathNode::Matrix {
             kind: MatrixKind::SmallMatrix,
-            columns: vec![ColumnAlign::Right],
+            alignment: ColumnAlign::Right,
             rows: vec![vec![vec![cell]]],
-            arraystretch: None,
-            add_jot: false,
         }]);
         let cfg = Config::default();
         let compact = CompactExpr::from_math_expr(&expr).unwrap();
