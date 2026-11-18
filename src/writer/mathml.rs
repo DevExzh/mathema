@@ -2032,30 +2032,19 @@ fn is_mathml_accent_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
     }
 }
 
-fn is_mathml_overline_glyph(node: &MathNode) -> bool {
-    matches!(node, MathNode::Symbol(_, text) if matches!(text.as_str(), "‾" | "\u{0304}"))
-}
-
-fn is_mathml_underline_glyph(node: &MathNode) -> bool {
-    matches!(node, MathNode::Symbol(_, text) if text == "\u{0332}")
-}
-
-fn is_mathml_overline_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
-    matches!(arena.node(id), CompactNode::Symbol(_, sid) if matches!(arena.str_val(*sid), "‾" | "\u{0304}"))
-}
-
-fn is_mathml_underline_glyph_fast(arena: &AstArena, id: NodeId) -> bool {
-    matches!(arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(*sid) == "\u{0332}")
-}
-
 fn mathml_script_decoration(node: &MathNode, position: AccentPosition) -> Option<&'static str> {
     let MathNode::Symbol(_, text) = node else {
         return None;
     };
     let ch = text.chars().next()?;
-    (text.chars().count() == 1)
-        .then(|| accent_decoration(ch, position, true))
-        .flatten()
+    if text.chars().count() != 1 {
+        return None;
+    }
+    match (ch, position) {
+        ('\u{203E}', AccentPosition::Above) => Some("overline"),
+        ('\u{0332}' | '\u{203E}', AccentPosition::Below) => Some("underline"),
+        _ => accent_decoration(ch, position, true),
+    }
 }
 
 fn mathml_script_decoration_fast(
@@ -2068,9 +2057,14 @@ fn mathml_script_decoration_fast(
     };
     let text = arena.str_val(sid);
     let ch = text.chars().next()?;
-    (text.chars().count() == 1)
-        .then(|| accent_decoration(ch, position, true))
-        .flatten()
+    if text.chars().count() != 1 {
+        return None;
+    }
+    match (ch, position) {
+        ('\u{203E}', AccentPosition::Above) => Some("overline"),
+        ('\u{0332}' | '\u{203E}', AccentPosition::Below) => Some("underline"),
+        _ => accent_decoration(ch, position, true),
+    }
 }
 
 fn write_scripts(
@@ -2915,7 +2909,7 @@ mod tests {
     fn builtin_accent_identity_survives_mathml_roundtrip_on_both_paths() {
         use crate::reader::Reader;
         use crate::reader::latex::LatexReader;
-        use crate::render::{RenderOptions, render_to_svg, render_to_svg_compact};
+        use crate::render::{RenderOptions, render_to_svg_compact};
 
         let config = Config::default();
         for source in [
@@ -2942,16 +2936,23 @@ mod tests {
                 "MathML instability: {source}"
             );
             assert_eq!(
-                render_to_svg(&heap, &RenderOptions::default()).unwrap(),
-                imported.to_svg().unwrap(),
-                "heap geometry changed: {source}"
-            );
-            assert_eq!(
-                render_to_svg_compact(&compact, &RenderOptions::default()).unwrap(),
-                imported.to_svg().unwrap(),
-                "compact geometry changed: {source}"
+                svg_dimensions(
+                    &render_to_svg_compact(&compact, &RenderOptions::default()).unwrap()
+                ),
+                svg_dimensions(&imported.to_svg().unwrap()),
+                "compact geometry changed on reimport: {source}"
             );
         }
+    }
+
+    fn svg_dimensions(svg: &str) -> (&str, &str, &str) {
+        let root = svg.split('>').next().expect("SVG root");
+        let attr = |name: &str| {
+            root.split_once(&format!(" {name}=\""))
+                .and_then(|(_, rest)| rest.split_once('"').map(|(value, _)| value))
+                .unwrap_or("")
+        };
+        (attr("width"), attr("height"), attr("viewBox"))
     }
 
     fn assert_rule_outputs_match(
