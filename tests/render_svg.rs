@@ -1873,9 +1873,9 @@ fn svg_matrix_multiple_rows() {
 
 #[test]
 fn svg_array_row_separator_after_integral_stacks_rows() {
-    let single = latex_to_svg(r"\int x");
+    let single = latex_to_svg(r"\begin{array}{l}\int x\end{array}");
     let multiline = latex_to_svg(r"\begin{array}{l}\int\\x\end{array}");
-    assert_valid_svg(&single, "single integral");
+    assert_valid_svg(&single, "single-row integral array");
     assert_valid_svg(&multiline, "array integral rows");
 
     let single_h = extract_svg_dimension(&single, "height");
