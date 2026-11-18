@@ -260,6 +260,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut marks = interior.iter().copied().peekable();
         let mut middles = SmallVec::<[(usize, StrId); 2]>::new();
         let mut inner_pairs = SmallVec::<[&'static str; 2]>::new();
+        let mut previous_unmarked_vertical = false;
         let end = children.len() - 1;
         let content = &mut children[1..end];
         for (i, &id) in content.iter().enumerate() {
@@ -275,11 +276,27 @@ impl<'a> MathmlCompactParser<'a> {
                         inner_pairs.pop();
                     } else if (!glyph.is_empty() && glyph == pair.1) || natural_close == Some(glyph)
                     {
+                        // An explicitly role-marked enclosure may contain a
+                        // fixed, unmarked vertical bar as ordinary content.
+                        // The LaTeX writer uses this shape for
+                        // `\bra{phi|psi}`. It must not prevent recovery of
+                        // the surrounding prefix/postfix fence. Other
+                        // unmarked delimiters still conservatively terminate
+                        // recovery so adjacent fence pairs cannot be joined.
+                        if explicit && is_vertical_bar(glyph) {
+                            if previous_unmarked_vertical {
+                                return None;
+                            }
+                            previous_unmarked_vertical = true;
+                            continue;
+                        }
                         return None;
                     }
                 }
+                previous_unmarked_vertical = false;
                 continue;
             };
+            previous_unmarked_vertical = false;
             let sid = self.fence_delimiter(id)?;
             let glyph = self.arena.str_val(sid);
             if (role == FenceRole::Infix && writable_middle(glyph))
@@ -1753,6 +1770,11 @@ fn known_fence_endpoint(text: &str) -> bool {
     })
 }
 
+#[inline]
+fn is_vertical_bar(text: &str) -> bool {
+    matches!(text, "|" | "‖" | "∣" | "∥")
+}
+
 fn fence_attr_value(raw: &str) -> std::borrow::Cow<'_, str> {
     if raw.contains('&') {
         unescape_attr(raw).into()
@@ -2891,6 +2913,24 @@ mod tests {
             let reparsed = crate::from_mathml(&mathml).unwrap();
             assert_eq!(reparsed.to_latex().unwrap(), first.to_latex().unwrap());
             assert_eq!(reparsed.to_mathml().unwrap(), mathml);
+            assert!(matches!(
+                reparsed.expr().nodes.as_slice(),
+                [MathNode::Fenced { .. }]
+            ));
+        }
+    }
+
+    #[test]
+    fn explicit_bra_with_literal_bar_reimports_as_one_fence() {
+        for source in [
+            r"\bra{\phi|\psi}",
+            r"\bra{\phi\|\psi}",
+            r"\left\langle\phi|x\right|",
+        ] {
+            let first = crate::from_latex(source).unwrap();
+            let mathml = first.to_mathml().unwrap();
+            let reparsed = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(reparsed.to_mathml().unwrap(), mathml, "{source}: {mathml}");
             assert!(matches!(
                 reparsed.expr().nodes.as_slice(),
                 [MathNode::Fenced { .. }]
