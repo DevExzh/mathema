@@ -2556,6 +2556,27 @@ fn structured_operatorname_reaches_all_public_format_writers() {
 }
 
 #[test]
+fn operator_name_punctuation_is_local_to_its_math_list() {
+    let src = r"x'+\operatorname{A'-*\overline{x}\kern-2pt}_i+y'";
+    let parsed = crate::from_latex(src).unwrap();
+    let xml = parsed.to_mathml().unwrap();
+    for punct in ["&apos;", "-", "*"] {
+        assert!(xml.contains(&format!("<mtext>{punct}</mtext>")), "{xml}");
+    }
+    let tex = parsed.to_latex().unwrap();
+    assert_eq!(tex.matches(r"\prime").count(), 2, "{tex}");
+    assert!(tex.contains(r"\kern-2pt"), "{tex}");
+    assert_eq!(crate::from_latex(&tex).unwrap().to_mathml().unwrap(), xml);
+
+    let mixed = crate::from_latex(r"\operatorname{Re\plim\sqrt{x_i}}").unwrap();
+    let xml = mixed.to_mathml().unwrap();
+    assert!(
+        xml.contains("plim") && xml.contains("<msqrt>") && xml.contains("<msub>"),
+        "{xml}"
+    );
+}
+
+#[test]
 #[cfg(feature = "render")]
 fn structured_operator_mathml_preserves_spelling_and_script_geometry() {
     fn has_structured(expr: &crate::ast::MathExpr) -> bool {

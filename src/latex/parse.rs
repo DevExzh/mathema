@@ -1567,6 +1567,8 @@ pub(crate) struct LatexCompactParser {
     /// modifiers after their scripts are accepted by KaTeX but deliberately
     /// remain side-script metadata.
     last_unstarred_operator: Option<NodeId>,
+    /// The literal math codes changed by amsmath inside an operator name.
+    in_operator_name: bool,
     /// Set to `true` the first time an infix-fraction marker (`\over`/`\atop`/
     /// `\choose`/`\brace`/`\brack`/`\above`) is produced. The vast majority of
     /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
@@ -1607,6 +1609,7 @@ impl LatexCompactParser {
             rowcolors: None,
             paired_delims: HashMap::new(),
             last_unstarred_operator: None,
+            in_operator_name: false,
             infix_marker_seen: false,
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
@@ -2542,6 +2545,12 @@ impl LatexCompactParser {
         ids.push(id);
     }
 
+    #[inline]
+    fn script_marker_at(&self, input: &str) -> Option<ScriptMarker> {
+        ScriptMarker::at(input)
+            .filter(|marker| *marker != ScriptMarker::Primes || !self.in_operator_name)
+    }
+
     /// Parse one element: an atom optionally followed by scripts.
     #[inline]
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -2552,7 +2561,10 @@ impl LatexCompactParser {
             )));
         }
         // Handle leading ^/_ /' with implicit empty base (e.g., {^3+1})
-        if input.starts_with('^') || input.starts_with('_') || input.starts_with('\'') {
+        if input.starts_with('^')
+            || input.starts_with('_')
+            || (!self.in_operator_name && input.starts_with('\''))
+        {
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             let result = self.parse_scripts(input, base);
             if let Ok((_, id)) = result {
@@ -2572,7 +2584,9 @@ impl LatexCompactParser {
                         ..
                     }
             )
-            && ScriptMarker::at(&input[self.skip_script_ws(input.as_bytes())..]).is_some()
+            && self
+                .script_marker_at(&input[self.skip_script_ws(input.as_bytes())..])
+                .is_some()
         {
             // Braces make a TeX ordinary atom. Preserve that boundary when
             // flattening a singleton operator group would move its scripts.
@@ -2773,7 +2787,7 @@ impl LatexCompactParser {
     #[inline]
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
         let start = &input[self.skip_script_ws(input.as_bytes())..];
-        if ScriptMarker::at(start).is_none() {
+        if self.script_marker_at(start).is_none() {
             return Ok((start, base));
         };
         let base = self.resolve_stray_infix_marker(base);
@@ -2824,7 +2838,7 @@ impl LatexCompactParser {
                     continue;
                 }
             }
-            let Some(marker) = ScriptMarker::at(next) else {
+            let Some(marker) = self.script_marker_at(next) else {
                 break;
             };
             let is_sub = marker.is_subscript();
@@ -3012,6 +3026,16 @@ impl LatexCompactParser {
             Some(b'{') => self.parse_braced_group(input),
             Some(b'\\') => self.parse_command(input),
             Some(b'0'..=b'9') => self.parse_number(input),
+            Some(b'-' | b'*' | b'\'') if self.in_operator_name => {
+                // amsopn assigns these literal character codes in the
+                // operator font; an apostrophe here is not a prime field.
+                let sid = self.arena.push_str(&input[..1]);
+                Ok((
+                    &input[1..],
+                    self.arena
+                        .push_node(CompactNode::Text(TextStyle::Normal, sid)),
+                ))
+            },
             Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
             Some(&b) if b.is_ascii_alphabetic() => self.parse_letter(input),
             // ~ is a non-breaking space in LaTeX
@@ -3041,7 +3065,8 @@ impl LatexCompactParser {
                 let len = ch.len_utf8();
                 let scripted_nbsp = ch == '\u{00a0}' && {
                     let rest = &input[len..];
-                    ScriptMarker::at(&rest[self.skip_script_ws(rest.as_bytes())..]).is_some()
+                    self.script_marker_at(&rest[self.skip_script_ws(rest.as_bytes())..])
+                        .is_some()
                 };
                 if decode_script_scalar(ch).is_some() || scripted_nbsp {
                     let sid = self.push_char_str(ch);
@@ -4874,7 +4899,10 @@ impl LatexCompactParser {
         };
 
         let node = if operator_name_needs_math(raw) {
-            let (rest, items) = self.parse_node_list(raw)?;
+            let outer = std::mem::replace(&mut self.in_operator_name, true);
+            let parsed = self.parse_node_list(raw);
+            self.in_operator_name = outer;
+            let (rest, items) = parsed?;
             if !rest.trim().is_empty() {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     rest,
@@ -7775,7 +7803,10 @@ impl LatexCompactParser {
             )));
         }
         // Handle leading ^/_ /' with implicit empty base in table cells
-        if input.starts_with('^') || input.starts_with('_') || input.starts_with('\'') {
+        if input.starts_with('^')
+            || input.starts_with('_')
+            || (!self.in_operator_name && input.starts_with('\''))
+        {
             self.ensure_node_budget(input)?;
             let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             return self.parse_scripts(input, base);
