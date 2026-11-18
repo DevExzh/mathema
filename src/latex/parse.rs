@@ -196,12 +196,61 @@ fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
         '⁸' => (false, '8'),
         '⁹' => (false, '9'),
         '⁺' => (false, '+'),
-        '⁻' => (false, '−'),
+        '⁻' => (false, '-'),
         '⁼' => (false, '='),
         '⁽' => (false, '('),
         '⁾' => (false, ')'),
         'ⁱ' => (false, 'i'),
         'ⁿ' => (false, 'n'),
+        'ᴬ' => (false, 'A'),
+        'ᴮ' => (false, 'B'),
+        'ᴰ' => (false, 'D'),
+        'ᴱ' => (false, 'E'),
+        'ᴳ' => (false, 'G'),
+        'ᴴ' => (false, 'H'),
+        'ᴵ' => (false, 'I'),
+        'ᴶ' => (false, 'J'),
+        'ᴷ' => (false, 'K'),
+        'ᴸ' => (false, 'L'),
+        'ᴹ' => (false, 'M'),
+        'ᴺ' => (false, 'N'),
+        'ᴼ' => (false, 'O'),
+        'ᴾ' => (false, 'P'),
+        'ᴿ' => (false, 'R'),
+        'ᵀ' => (false, 'T'),
+        'ᵁ' => (false, 'U'),
+        'ⱽ' => (false, 'V'),
+        'ᵂ' => (false, 'W'),
+        'ᵃ' => (false, 'a'),
+        'ᵇ' => (false, 'b'),
+        'ᶜ' => (false, 'c'),
+        'ᵈ' => (false, 'd'),
+        'ᵉ' => (false, 'e'),
+        'ᶠ' => (false, 'f'),
+        'ᵍ' => (false, 'g'),
+        'ʰ' => (false, 'h'),
+        'ᶦ' => (false, 'i'),
+        'ʲ' => (false, 'j'),
+        'ᵏ' => (false, 'k'),
+        'ˡ' => (false, 'l'),
+        'ᵐ' => (false, 'm'),
+        'ᵒ' => (false, 'o'),
+        'ᵖ' => (false, 'p'),
+        'ʳ' => (false, 'r'),
+        'ˢ' => (false, 's'),
+        'ᵗ' => (false, 't'),
+        'ᵘ' => (false, 'u'),
+        'ᵛ' => (false, 'v'),
+        'ʷ' => (false, 'w'),
+        'ˣ' => (false, 'x'),
+        'ʸ' => (false, 'y'),
+        'ᶻ' => (false, 'z'),
+        'ᵝ' => (false, 'β'),
+        'ᵞ' => (false, 'γ'),
+        'ᵟ' => (false, 'δ'),
+        'ᵠ' => (false, 'ϕ'),
+        'ᵡ' => (false, 'χ'),
+        'ᶿ' => (false, 'θ'),
         '₀' => (true, '0'),
         '₁' => (true, '1'),
         '₂' => (true, '2'),
@@ -213,7 +262,7 @@ fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
         '₈' => (true, '8'),
         '₉' => (true, '9'),
         '₊' => (true, '+'),
-        '₋' => (true, '−'),
+        '₋' => (true, '-'),
         '₌' => (true, '='),
         '₍' => (true, '('),
         '₎' => (true, ')'),
@@ -234,6 +283,11 @@ fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
         'ᵤ' => (true, 'u'),
         'ᵥ' => (true, 'v'),
         'ₓ' => (true, 'x'),
+        'ᵦ' => (true, 'β'),
+        'ᵧ' => (true, 'γ'),
+        'ᵨ' => (true, 'ρ'),
+        'ᵩ' => (true, 'ϕ'),
+        'ᵪ' => (true, 'χ'),
         _ => return None,
     })
 }
@@ -2578,52 +2632,63 @@ impl LatexCompactParser {
         input: &'a str,
         base: NodeId,
     ) -> IResult<&'a str, NodeId> {
+        let (rest, Some((is_sub, first_arg))) = self.parse_unicode_script_arg_run(input, None)?
+        else {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        };
+        let id = if is_sub {
+            self.arena.push_node(CompactNode::Subscript {
+                base,
+                sub: first_arg,
+            })
+        } else {
+            self.arena.push_node(CompactNode::Superscript {
+                base,
+                sup: first_arg,
+            })
+        };
+        Ok((rest, id))
+    }
+
+    /// Parse one KaTeX-compatible Unicode script run. KaTeX stops a run when
+    /// the subscript/superscript kind changes, then lets the normal script
+    /// loop consume the complementary kind. This keeps `x₂³₄` from silently
+    /// merging both subscripts into one row.
+    fn parse_unicode_script_arg_run<'a>(
+        &mut self,
+        input: &'a str,
+        expected_sub: Option<bool>,
+    ) -> IResult<&'a str, Option<(bool, NodeId)>> {
         let mut rest = input;
-        let mut sub = SmallVec::<[NodeId; 4]>::new();
-        let mut sup = SmallVec::<[NodeId; 4]>::new();
-        while let Some((is_sub, glyph)) = unicode_script_kind(rest.chars().next()) {
+        let Some((is_sub, _)) = unicode_script_kind(rest.chars().next()) else {
+            return Ok((input, None));
+        };
+        if expected_sub.is_some_and(|expected| expected != is_sub) {
+            return Ok((input, None));
+        }
+        let mut ids = SmallVec::<[NodeId; 4]>::new();
+        while let Some((current_sub, glyph)) = unicode_script_kind(rest.chars().next())
+            && current_sub == is_sub
+        {
             let width = rest.chars().next().expect("script kind checked").len_utf8();
             let sid = self.arena.push_str(&glyph.to_string());
             let id = if glyph.is_ascii_digit() {
                 self.arena.push_node(CompactNode::Number(sid))
-            } else if glyph.is_ascii_alphabetic() {
+            } else if glyph.is_alphabetic() {
                 self.arena.push_node(CompactNode::Identifier(sid))
             } else {
                 self.arena
                     .push_node(CompactNode::Symbol(unicode_script_symbol_kind(glyph), sid))
             };
-            if is_sub {
-                sub.push(id);
-            } else {
-                sup.push(id);
-            }
+            ids.push(id);
             rest = &rest[width..];
             self.ensure_node_budget(rest)?;
         }
-        self.merge_unicode_script_numbers(&mut sub);
-        self.merge_unicode_script_numbers(&mut sup);
-        let sub = if sub.is_empty() {
-            NodeId::NONE
-        } else {
-            self.flatten_single(&sub)
-        };
-        let sup = if sup.is_empty() {
-            NodeId::NONE
-        } else {
-            self.flatten_single(&sup)
-        };
-        let id = match (sub != NodeId::NONE, sup != NodeId::NONE) {
-            (true, true) => self.arena.push_node(CompactNode::SubSup { base, sub, sup }),
-            (true, false) => self.arena.push_node(CompactNode::Subscript { base, sub }),
-            (false, true) => self.arena.push_node(CompactNode::Superscript { base, sup }),
-            (false, false) => {
-                return Err(nom::Err::Error(nom::error::Error::new(
-                    input,
-                    nom::error::ErrorKind::Verify,
-                )));
-            },
-        };
-        Ok((rest, id))
+        self.merge_unicode_script_numbers(&mut ids);
+        Ok((rest, Some((is_sub, self.flatten_single(&ids)))))
     }
 
     fn merge_unicode_script_numbers(&mut self, ids: &mut SmallVec<[NodeId; 4]>) {
@@ -2793,6 +2858,88 @@ impl LatexCompactParser {
                     base,
                     sup: sup_node,
                 }),
+            ));
+        }
+
+        // Unicode script scalars follow the same complementary-script rules
+        // as ASCII `^` and `_`. A run only consumes one kind, matching KaTeX's
+        // parser, so `x₂³` becomes one SubSup while a later `₄` remains a new
+        // script token subject to the normal duplicate-script diagnostics.
+        if let Some((first_sub, _)) = unicode_script_kind(input.chars().next()) {
+            let (rest, Some((_, first_arg))) =
+                self.parse_unicode_script_arg_run(input, Some(first_sub))?
+            else {
+                unreachable!("Unicode script kind was checked above")
+            };
+            let skip = self.skip_script_ws(rest.as_bytes());
+            let after_ws = &rest[skip..];
+            if let Some((second_sub, _)) = unicode_script_kind(after_ws.chars().next())
+                && second_sub != first_sub
+            {
+                let (after_second, Some((_, second_arg))) =
+                    self.parse_unicode_script_arg_run(after_ws, Some(second_sub))?
+                else {
+                    unreachable!("Unicode complementary script kind was checked above")
+                };
+                return Ok((
+                    after_second,
+                    self.arena.push_node(CompactNode::SubSup {
+                        base,
+                        sub: if first_sub { first_arg } else { second_arg },
+                        sup: if first_sub { second_arg } else { first_arg },
+                    }),
+                ));
+            }
+
+            if first_sub && after_ws.as_bytes().first() == Some(&b'\'') {
+                let prime_count = after_ws.bytes().take_while(|&b| b == b'\'').count();
+                let after_primes = &after_ws[prime_count..];
+                let mut primes = SmallVec::<[NodeId; 4]>::new();
+                for _ in 0..prime_count {
+                    self.ensure_node_budget(after_primes)?;
+                    let sid = self.arena.push_str("\u{2032}");
+                    primes.push(
+                        self.arena
+                            .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+                    );
+                }
+                let sup = self.flatten_single(&primes);
+                return Ok((
+                    after_primes,
+                    self.arena.push_node(CompactNode::SubSup {
+                        base,
+                        sub: first_arg,
+                        sup,
+                    }),
+                ));
+            }
+
+            let ascii_complement = if first_sub { b'^' } else { b'_' };
+            if after_ws.as_bytes().first() == Some(&ascii_complement) {
+                let (after_ascii, ascii_arg) = self.parse_script_arg(&after_ws[1..])?;
+                return Ok((
+                    after_ascii,
+                    self.arena.push_node(CompactNode::SubSup {
+                        base,
+                        sub: if first_sub { first_arg } else { ascii_arg },
+                        sup: if first_sub { ascii_arg } else { first_arg },
+                    }),
+                ));
+            }
+
+            return Ok((
+                rest,
+                if first_sub {
+                    self.arena.push_node(CompactNode::Subscript {
+                        base,
+                        sub: first_arg,
+                    })
+                } else {
+                    self.arena.push_node(CompactNode::Superscript {
+                        base,
+                        sup: first_arg,
+                    })
+                },
             ));
         }
 

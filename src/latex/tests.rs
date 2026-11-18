@@ -231,6 +231,43 @@ fn unicode_script_runs_match_their_ascii_latex_structure() {
 }
 
 #[test]
+fn unicode_script_mapping_covers_katex_greek_and_modifier_letters() {
+    let cases = [
+        ("x₂³", r"x_2^3"),
+        ("xₓᵝ", r"x_x^β"),
+        ("xᵦᵧ", r"x_{βγ}"),
+        ("xᵝᵞ", r"x^{βγ}"),
+        ("xᴬᴮ", r"x^{AB}"),
+        ("xᵃᵇ", r"x^{ab}"),
+        ("xⁱⁿ", r"x^{in}"),
+        ("x₂'", r"x_2^{\prime}"),
+    ];
+    for (unicode, ascii) in cases {
+        let unicode_mathml = crate::from_latex(unicode).unwrap().to_mathml().unwrap();
+        let ascii_mathml = crate::from_latex(ascii).unwrap().to_mathml().unwrap();
+        assert_eq!(
+            unicode_mathml, ascii_mathml,
+            "mapping mismatch for {unicode}"
+        );
+
+        let canonical = crate::from_latex(unicode).unwrap().to_latex().unwrap();
+        assert_eq!(
+            crate::from_latex(&canonical).unwrap().to_latex().unwrap(),
+            canonical,
+            "Unicode script spelling was not idempotent for {unicode}"
+        );
+    }
+}
+
+#[test]
+fn unicode_script_runs_stop_when_the_kind_changes() {
+    let result = crate::from_latex("x₂³₄").unwrap();
+    let mathml = result.to_mathml().unwrap();
+    assert!(mathml.contains("<msubsup><mi>x</mi><mn>2</mn><mn>3</mn></msubsup>"));
+    assert!(mathml.contains("<msub><mrow></mrow><mn>4</mn></msub>"));
+}
+
+#[test]
 fn style_switch_normalization_matches_heap_and_compact_scopes() {
     let config = Config::default();
     for source in [
