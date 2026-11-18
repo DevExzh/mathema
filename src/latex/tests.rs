@@ -189,6 +189,33 @@ fn font_fraction_does_not_escape_its_argument_or_cell() {
 }
 
 #[test]
+fn legacy_font_tables_preserve_local_font_overrides() {
+    for (input, expected) in [
+        (
+            r"\bf x\mathit{y}\begin{matrix}a&b\end{matrix}z",
+            r"\mathbf{x\mathit{y}}\begin{matrix}a&b\end{matrix}\mathbf{z}",
+        ),
+        (
+            r"\rm x\sqrt{\mathit{u}+\begin{matrix}a&b\end{matrix}}z",
+            r"\mathrm{x}\sqrt{\mathrm{\mathit{u}+}\begin{matrix}a&b\end{matrix}}\mathrm{z}",
+        ),
+        (
+            r"\mathbf{x\frac{a}{\begin{matrix}y\end{matrix}}z}",
+            r"\mathbf{x}\frac{\mathbf{a}}{\begin{matrix}y\end{matrix}}\mathbf{z}",
+        ),
+    ] {
+        let read = |s| {
+            let mut parsed = LatexReader::parse_compact(s, &Config::default())
+                .unwrap()
+                .expr;
+            normalize_compact_expr(&mut parsed).unwrap();
+            crate::writer::mathml::MathmlWriter::write_compact(&parsed, &Config::default()).unwrap()
+        };
+        assert_eq!(read(input), read(expected), "{input}");
+    }
+}
+
+#[test]
 fn legacy_font_scope_resets_matrix_cells_but_keeps_siblings() {
     for (input, expected) in [
         (

@@ -811,7 +811,7 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
     }
 }
 
-fn check_compact_depth(
+pub(crate) fn check_compact_depth(
     arena: &arena::AstArena,
     id: compact::NodeId,
     depth: usize,
