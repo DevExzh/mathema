@@ -94,7 +94,6 @@ struct MathmlCompactParser<'a> {
     /// levels. Keep the full non-negative level while reading nested
     /// `mstyle` attributes and clamp only when lowering to a StyleSwitch.
     style_level: i64,
-    suppress_text_style_marker: bool,
 }
 
 impl<'a> MathmlCompactParser<'a> {
@@ -115,7 +114,6 @@ impl<'a> MathmlCompactParser<'a> {
             movable_limit_operators: HashMap::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
-            suppress_text_style_marker: false,
         })
     }
 
@@ -225,36 +223,28 @@ impl<'a> MathmlCompactParser<'a> {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
                     let name = Self::local_name(&e);
-                    let suppress_style_marker = inspect_style
+                    let previous = self.enter_script_child_style(parent_tag, nodes.len());
+                    let id = if inspect_style
                         && nodes.is_empty()
                         && name == "mstyle"
-                        && has_explicit_text_size(&e);
-                    if inspect_style && nodes.is_empty() && name == "mstyle" {
-                        body_in_text_style = has_explicit_text_size(&e);
-                    }
-                    let previous_marker_suppression = self.suppress_text_style_marker;
-                    self.suppress_text_style_marker = suppress_style_marker;
-                    let previous = self.enter_script_child_style(parent_tag, nodes.len());
-                    let id = self.parse_element_by_name(&name, &e)?;
+                        && has_explicit_text_size(&e)
+                    {
+                        body_in_text_style = true;
+                        self.parse_mstyle(&e, true)?
+                    } else {
+                        self.parse_element_by_name(&name, &e)?
+                    };
                     self.restore_style(previous);
-                    self.suppress_text_style_marker = previous_marker_suppression;
                     nodes.push(id);
                 },
                 Ok(Event::Empty(e)) => {
                     let name = Self::local_name(&e);
-                    let suppress_style_marker = inspect_style
-                        && nodes.is_empty()
-                        && name == "mstyle"
-                        && has_explicit_text_size(&e);
                     if inspect_style && nodes.is_empty() && name == "mstyle" {
                         body_in_text_style = has_explicit_text_size(&e);
                     }
-                    let previous_marker_suppression = self.suppress_text_style_marker;
-                    self.suppress_text_style_marker = suppress_style_marker;
                     let previous = self.enter_script_child_style(parent_tag, nodes.len());
                     let id = self.parse_empty_element(&name, &e)?;
                     self.restore_style(previous);
-                    self.suppress_text_style_marker = previous_marker_suppression;
                     nodes.push(id);
                 },
                 Ok(Event::Text(e)) => {
@@ -285,6 +275,12 @@ impl<'a> MathmlCompactParser<'a> {
         }
         self.depth -= 1;
         let sized = body_in_text_style && nodes.len() == 1;
+        // A sole text-sized body is represented by the enclosure itself. With
+        // siblings the style belongs only to the first child.
+        if body_in_text_style && !sized && !self.is_empty_style_subtree(nodes[0]) {
+            let marker = self.arena.push_node(CompactNode::StyleSwitch(1));
+            nodes[0] = self.flatten_ids(&[marker, nodes[0]]);
+        }
         Ok((nodes, sized))
     }
 
@@ -419,7 +415,11 @@ impl<'a> MathmlCompactParser<'a> {
         changed.then_some((display, level))
     }
 
-    fn parse_mstyle(&mut self, start: &quick_xml::events::BytesStart<'_>) -> Result<NodeId> {
+    fn parse_mstyle(
+        &mut self,
+        start: &quick_xml::events::BytesStart<'_>,
+        omit_text_marker: bool,
+    ) -> Result<NodeId> {
         let previous = (self.style_display, self.style_level);
         let scoped = self.scoped_style(start);
         if let Some((display, level)) = scoped {
@@ -439,7 +439,7 @@ impl<'a> MathmlCompactParser<'a> {
 
         let mut scoped_children: SmallVec<[NodeId; 8]> = SmallVec::new();
         if let Some(scoped) = scoped
-            && !(self.suppress_text_style_marker && self.style_marker_for(scoped) == 1)
+            && !omit_text_marker
         {
             let marker = self
                 .arena
@@ -455,10 +455,6 @@ impl<'a> MathmlCompactParser<'a> {
             return Ok(self.arena.push_node(CompactNode::Styled(style, span)));
         }
         Ok(content)
-    }
-
-    fn parse_empty_mstyle(&mut self, _start: &quick_xml::events::BytesStart<'_>) -> NodeId {
-        self.empty_row()
     }
 
     fn is_empty_style_subtree(&self, id: NodeId) -> bool {
@@ -857,7 +853,7 @@ impl<'a> MathmlCompactParser<'a> {
                     Ok(id)
                 }
             },
-            "mstyle" => self.parse_mstyle(start),
+            "mstyle" => self.parse_mstyle(start, false),
             "mpadded" => self.parse_child_id(name),
             "mmultiscripts" => self.parse_multiscripts_element(name),
             "semantics" => {
@@ -895,7 +891,7 @@ impl<'a> MathmlCompactParser<'a> {
             },
             "mprescripts" => Ok(self.empty_row()),
             "none" => Ok(self.empty_row()),
-            "mstyle" => Ok(self.parse_empty_mstyle(start)),
+            "mstyle" => Ok(self.empty_row()),
             "mglyph" => {
                 let alt = get_attr(start, "alt").unwrap_or_default();
                 let sid = self.arena.push_str(&alt);
@@ -2129,6 +2125,22 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn enclosure_keeps_the_text_style_of_one_child_among_siblings() {
+        let xml = r#"<math><menclose notation="actuarial"><mstyle displaystyle="false" scriptlevel="0" mathvariant="bold"><mi>x</mi></mstyle><mi>y</mi></menclose></math>"#;
+        let MathNode::Actuarial { content, text_mode } = parse_one(xml) else {
+            panic!("expected actuarial enclosure")
+        };
+        assert!(!text_mode);
+        let MathNode::Row(children) = *content else {
+            panic!("expected two children")
+        };
+        assert!(
+            matches!(&children[..], [MathNode::Row(group), MathNode::Identifier(y)]
+            if y == "y" && matches!(&group[..], [MathNode::StyleSwitch(1), MathNode::Styled(TextStyle::Bold, _)]))
+        );
     }
 
     #[test]
