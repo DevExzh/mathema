@@ -656,7 +656,7 @@ fn write_node_in(
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_argument(w, base, display_style)?;
-            write_mo_char(w, mathml_accent_glyph(*accent), None)?;
+            write_accent_char(w, mathml_accent_glyph(*accent), *wide)?;
             w.write_event(Event::End(BytesEnd::new(tag)))
                 .map_err(to_err)?;
             Ok(())
@@ -1099,6 +1099,17 @@ fn write_mo_char(w: &mut XmlWriter, ch: char, movable: Option<bool>) -> Result<(
     w.write_event(Event::End(BytesEnd::new("mo")))
         .map_err(to_err)?;
     Ok(())
+}
+
+fn write_accent_char(w: &mut XmlWriter, ch: char, wide: bool) -> Result<()> {
+    let mut elem = BytesStart::new("mo");
+    elem.push_attribute(("stretchy", if wide { "true" } else { "false" }));
+    let mut glyph = [0; 4];
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(ch.encode_utf8(&mut glyph))))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mo")))
+        .map_err(to_err)
 }
 
 #[inline]
@@ -1634,7 +1645,12 @@ fn write_node_fast_in(
             }
             buf.push('>');
             write_argument_fast(buf, arena, base, display_style);
-            write_mo_char_fast(buf, mathml_accent_glyph(accent), None);
+            let glyph = mathml_accent_glyph(accent);
+            buf.push_str("<mo stretchy=\"");
+            buf.push_str(if wide { "true" } else { "false" });
+            buf.push_str("\">");
+            xml_escape_into(buf, &glyph.to_string());
+            buf.push_str("</mo>");
             close_tag(buf, tag);
         },
 

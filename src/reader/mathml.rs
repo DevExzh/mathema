@@ -97,6 +97,8 @@ struct MathmlCompactParser<'a> {
     display: Option<DisplayStyle>,
     depth: u32,
     movable_limit_operators: HashMap<NodeId, bool>,
+    /// Standard MathML `stretchy` state for operator tokens used as accent scripts.
+    accent_stretchy: HashMap<NodeId, bool>,
     style_display: bool,
     /// The authored MathML scriptlevel can exceed TeX's three finite size
     /// levels. Keep the full non-negative level while reading nested
@@ -140,6 +142,7 @@ impl<'a> MathmlCompactParser<'a> {
             display: None,
             depth: 0,
             movable_limit_operators: HashMap::new(),
+            accent_stretchy: HashMap::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
             mathvariant_style: None,
@@ -749,6 +752,15 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
+        if let Some(stretchy) = get_attr(start, "stretchy").and_then(|value| {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            }
+        }) {
+            self.accent_stretchy.insert(id, stretchy);
+        }
         if mark_fences && attrs.fenced {
             self.fence_marks.push((id, attrs.fence_role()));
         } else if mark_fences
@@ -942,15 +954,23 @@ impl<'a> MathmlCompactParser<'a> {
                     .map(|(children, _)| children)?;
                 let (base, over) = self.two_child_ids(children);
                 let decoration = get_attr(start, "data-mathema-accent-decoration");
-                if matches!(decoration.as_deref(), Some("accent-overline")) {
+                let valid_decoration = self.valid_accent_decoration(
+                    decoration.as_deref(),
+                    AccentPosition::Above,
+                    over,
+                    is_accent,
+                );
+                if valid_decoration && decoration.as_deref() == Some("accent-overline") {
                     return Ok(self.arena.push_node(CompactNode::Accent {
                         base,
                         accent: '\u{0304}',
                         position: AccentPosition::Above,
-                        wide: false,
+                        wide: self.accent_is_wide(over),
                     }));
                 }
-                if matches!(decoration.as_deref(), Some("overbrace" | "overbracket")) {
+                if valid_decoration
+                    && matches!(decoration.as_deref(), Some("overbrace" | "overbracket"))
+                {
                     return Ok(self.arena.push_node(
                         if decoration.as_deref() == Some("overbrace") {
                             CompactNode::Overscript {
@@ -968,12 +988,7 @@ impl<'a> MathmlCompactParser<'a> {
                         },
                     ));
                 }
-                if decoration.as_deref() == Some("overline") {
-                    if let CompactNode::Operator { limits, .. } = self.arena.node_mut(base)
-                        && *limits == LimitStyle::AboveBelow
-                    {
-                        *limits = LimitStyle::Default;
-                    }
+                if valid_decoration && decoration.as_deref() == Some("overline") {
                     return Ok(self.arena.push_node(CompactNode::Overscript {
                         base,
                         over,
@@ -1012,15 +1027,23 @@ impl<'a> MathmlCompactParser<'a> {
                     .map(|(children, _)| children)?;
                 let (base, under) = self.two_child_ids(children);
                 let decoration = get_attr(start, "data-mathema-accent-decoration");
-                if matches!(decoration.as_deref(), Some("accent-underline")) {
+                let valid_decoration = self.valid_accent_decoration(
+                    decoration.as_deref(),
+                    AccentPosition::Below,
+                    under,
+                    is_accent,
+                );
+                if valid_decoration && decoration.as_deref() == Some("accent-underline") {
                     return Ok(self.arena.push_node(CompactNode::Accent {
                         base,
                         accent: '\u{0332}',
                         position: AccentPosition::Below,
-                        wide: false,
+                        wide: self.accent_is_wide(under),
                     }));
                 }
-                if matches!(decoration.as_deref(), Some("underbrace" | "underbracket")) {
+                if valid_decoration
+                    && matches!(decoration.as_deref(), Some("underbrace" | "underbracket"))
+                {
                     return Ok(self.arena.push_node(
                         if decoration.as_deref() == Some("underbrace") {
                             CompactNode::Underscript {
@@ -1038,7 +1061,7 @@ impl<'a> MathmlCompactParser<'a> {
                         },
                     ));
                 }
-                if decoration.as_deref() == Some("underline") {
+                if valid_decoration && decoration.as_deref() == Some("underline") {
                     return Ok(self.arena.push_node(CompactNode::Underscript {
                         base,
                         under,
@@ -1498,6 +1521,55 @@ impl<'a> MathmlCompactParser<'a> {
         matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
+    fn accent_script_char(&self, id: NodeId) -> Option<char> {
+        let CompactNode::Symbol(_, sid) = *self.arena.node(id) else {
+            return None;
+        };
+        single_accent_char(self.arena.str_val(sid))
+    }
+
+    fn accent_is_wide(&self, id: NodeId) -> bool {
+        self.accent_stretchy.get(&id).copied().unwrap_or(false)
+    }
+
+    fn valid_accent_decoration(
+        &self,
+        marker: Option<&str>,
+        position: AccentPosition,
+        script: NodeId,
+        accent: bool,
+    ) -> bool {
+        if !accent {
+            return false;
+        }
+        let Some(ch) = self.accent_script_char(script) else {
+            return false;
+        };
+        matches!(
+            (marker, position, ch),
+            (
+                Some("accent-overline"),
+                AccentPosition::Above,
+                '\u{203E}' | '\u{0304}'
+            ) | (
+                Some("overline"),
+                AccentPosition::Above,
+                '\u{203E}' | '\u{0304}'
+            ) | (
+                Some("accent-underline"),
+                AccentPosition::Below,
+                '\u{203E}' | '\u{0304}' | '\u{0332}'
+            ) | (
+                Some("underline"),
+                AccentPosition::Below,
+                '\u{203E}' | '\u{0304}' | '\u{0332}'
+            ) | (Some("overbrace"), AccentPosition::Above, '\u{23DE}')
+                | (Some("underbrace"), AccentPosition::Below, '\u{23DF}')
+                | (Some("overbracket"), AccentPosition::Above, '\u{23B4}')
+                | (Some("underbracket"), AccentPosition::Below, '\u{23B5}')
+        )
+    }
+
     fn mathml_accent(
         &mut self,
         base: NodeId,
@@ -1533,7 +1605,7 @@ impl<'a> MathmlCompactParser<'a> {
             base,
             accent: ch,
             position,
-            wide: false,
+            wide: self.accent_is_wide(script),
         }))
     }
 
@@ -2331,6 +2403,38 @@ mod tests {
         } else {
             MathNode::Row(nodes)
         }
+    }
+
+    #[test]
+    fn accent_markers_require_matching_glyph_and_accent_direction() {
+        let invalid_bracket = r#"<math><munder data-mathema-accent-decoration="underbracket" accentunder="true"><mi>x</mi><mo>‾</mo></munder></math>"#;
+        let result = crate::from_mathml(invalid_bracket).unwrap();
+        assert!(result.to_latex().unwrap().contains(r"\underset"));
+        assert!(!result.to_latex().unwrap().contains(r"\underbracket"));
+
+        let contradictory = r#"<math><mover data-mathema-accent-decoration="overline" accent="false"><mi>x</mi><mo>‾</mo></mover></math>"#;
+        let result = crate::from_mathml(contradictory).unwrap();
+        assert!(matches!(
+            result.expr().nodes.first(),
+            Some(MathNode::Overscript {
+                movable_limits: true,
+                ..
+            })
+        ));
+        assert!(result.to_latex().unwrap().contains('x'));
+
+        let marked_limit = r#"<math><mover data-mathema-accent-decoration="overline" accent="true"><mo movablelimits="false">lim</mo><mo>‾</mo></mover></math>"#;
+        let result = crate::from_mathml(marked_limit).unwrap();
+        assert!(result.to_latex().unwrap().contains(r"\limits"));
+    }
+
+    #[test]
+    fn standard_stretchy_accent_glyph_restores_wide_shape() {
+        let source = r#"<math><munder accentunder="true"><mi>x</mi><mo stretchy="true">⎵</mo></munder></math>"#;
+        let result = crate::from_mathml(source).unwrap();
+        let output = result.to_mathml().unwrap();
+        assert!(output.contains(r#"stretchy="true""#));
+        assert_eq!(result.to_latex().unwrap(), r"\underbracket{x}");
     }
 
     #[test]
