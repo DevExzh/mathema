@@ -706,7 +706,19 @@ impl<'a> Emitter<'a> {
             CompactNode::Number(sid) => self.leaf(sid, Leaf::Number, fmt),
             CompactNode::Identifier(sid) => self.leaf(sid, Leaf::Identifier, fmt),
             CompactNode::Operator { name, .. } => self.leaf(name, Leaf::Operator, fmt),
-            CompactNode::StructuredOperator { content, .. } => self.node(content, fmt),
+            CompactNode::StructuredOperator { content, .. } => {
+                // OMML's standard function container accepts rich math in
+                // fName. An empty e makes the container a name-only function,
+                // which keeps decorated names grouped without a private
+                // attribute.
+                self.open("m:func");
+                self.open("m:fName");
+                self.node(content, fmt);
+                self.close("m:fName");
+                self.open("m:e");
+                self.close("m:e");
+                self.close("m:func");
+            },
             CompactNode::Symbol(_, sid) => self.leaf(sid, Leaf::Symbol, fmt),
             CompactNode::Text(style, sid) => self.text_node(style, sid, fmt),
             CompactNode::Space(width) => {

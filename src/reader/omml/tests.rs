@@ -124,6 +124,48 @@ fn compound_limit_objects_decode_side_and_stacked_bounds() {
 }
 
 #[test]
+fn authored_generic_omml_limit_over_an_accent_stays_generic() {
+    let input = omath(
+        r#"<m:limLow>
+          <m:e><m:bar><m:barPr><m:pos m:val="top"/></m:barPr>
+            <m:e><m:r><m:t>x</m:t></m:r></m:e>
+          </m:bar></m:e>
+          <m:lim><m:r><m:t>i</m:t></m:r></m:lim>
+        </m:limLow>"#,
+    );
+    let parsed = crate::from_omml(&input).unwrap();
+    assert!(
+        !parsed.to_latex().unwrap().contains(r"\operatorname"),
+        "generic m:limLow was converted into a named operator"
+    );
+    assert!(
+        matches!(parse_one(&input), MathNode::Underscript { .. }),
+        "generic authored limit changed class"
+    );
+}
+
+#[test]
+fn omml_function_name_keeps_a_real_operand_outside_the_name_container() {
+    let input = omath(
+        r#"<m:func>
+          <m:fName><m:bar><m:barPr><m:pos m:val="top"/></m:barPr>
+            <m:e><m:r><m:t>lim</m:t></m:r></m:e>
+          </m:bar></m:fName>
+          <m:e><m:r><m:t>x</m:t></m:r></m:e>
+        </m:func>"#,
+    );
+    let parsed = crate::from_omml(&input).unwrap();
+    assert!(
+        !parsed.to_latex().unwrap().contains(r"\operatorname"),
+        "an occupied m:e was mistaken for a name-only function"
+    );
+    assert!(
+        matches!(parse_one(&input), MathNode::Row(_)),
+        "the function operand was not retained as an adjacent row"
+    );
+}
+
+#[test]
 fn fraction() {
     let node = parse_one(&omath(
         "<m:f><m:num><m:r><m:t>a</m:t></m:r></m:num><m:den><m:r><m:t>b</m:t></m:r></m:den></m:f>",
