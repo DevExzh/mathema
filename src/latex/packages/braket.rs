@@ -153,7 +153,10 @@ mod tests {
         #[cfg(feature = "render")]
         assert_eq!(source.to_svg().unwrap(), expansion.to_svg().unwrap());
         let canonical = source.to_latex().unwrap();
-        assert_eq!(canonical, source.to_latex().unwrap());
+        assert_eq!(
+            canonical,
+            crate::from_latex(&canonical).unwrap().to_latex().unwrap()
+        );
     }
 
     #[test]

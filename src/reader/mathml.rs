@@ -106,7 +106,6 @@ struct MathmlCompactParser<'a> {
     /// need to survive until its closing tag. Nested rows use their own slice.
     fence_depth: Option<u32>,
     fence_marks: SmallVec<[(NodeId, FenceRole); 4]>,
-    fixed_literal_bars: SmallVec<[NodeId; 4]>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -116,6 +115,7 @@ enum FenceRole {
     Prefix,
     Infix,
     Postfix,
+    FixedLiteral,
     Constrained,
 }
 
@@ -139,7 +139,6 @@ impl<'a> MathmlCompactParser<'a> {
             style_level: 0,
             fence_depth: None,
             fence_marks: SmallVec::new(),
-            fixed_literal_bars: SmallVec::new(),
         })
     }
 
@@ -231,12 +230,7 @@ impl<'a> MathmlCompactParser<'a> {
     /// Recover explicitly marked delimiters of a single MathML row. Interior
     /// brackets may belong to separate pairs; a prefix or postfix vertical
     /// bar inside parentheses is an ordinary child rather than a middle.
-    fn recover_fenced_row(
-        &mut self,
-        children: &mut [NodeId],
-        start: usize,
-        fixed_start: usize,
-    ) -> Option<NodeId> {
+    fn recover_fenced_row(&mut self, children: &mut [NodeId], start: usize) -> Option<NodeId> {
         let [(first, open_role), interior @ .., (last, close_role)] = &self.fence_marks[start..]
         else {
             return None;
@@ -282,24 +276,16 @@ impl<'a> MathmlCompactParser<'a> {
                         inner_pairs.pop();
                     } else if (!glyph.is_empty() && glyph == pair.1) || natural_close == Some(glyph)
                     {
-                        // An explicitly role-marked enclosure may contain a
-                        // fixed, unmarked vertical bar as ordinary content.
-                        // The LaTeX writer uses this shape for
-                        // `\bra{phi|psi}`. It must not prevent recovery of
-                        // the surrounding prefix/postfix fence. Other
-                        // unmarked delimiters still conservatively terminate
-                        // recovery so adjacent fence pairs cannot be joined.
-                        if explicit
-                            && is_vertical_bar(glyph)
-                            && self.fixed_literal_bars[fixed_start..].contains(&id)
-                        {
-                            continue;
-                        }
                         return None;
                     }
                 }
                 continue;
             };
+            // This marked operator is fixed-width content, even when its
+            // glyph is identical to the enclosing closing delimiter.
+            if role == FenceRole::FixedLiteral {
+                continue;
+            }
             let sid = self.fence_delimiter(id)?;
             let glyph = self.arena.str_val(sid);
             if (role == FenceRole::Infix && writable_middle(glyph))
@@ -734,11 +720,14 @@ impl<'a> MathmlCompactParser<'a> {
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
-        if attrs.fixed_literal && !attrs.fenced && !attrs.explicit_form && is_vertical_bar(name) {
-            self.fixed_literal_bars.push(id);
-        }
         if attrs.fenced {
             self.fence_marks.push((id, attrs.fence_role()));
+        } else if attrs.fixed_literal
+            && !attrs.constrained
+            && attrs.form == FenceRole::Inferred
+            && is_vertical_bar(name)
+        {
+            self.fence_marks.push((id, FenceRole::FixedLiteral));
         }
         if kind == SymbolKind::LargeOp {
             if let Some(value) = movable {
@@ -819,7 +808,6 @@ impl<'a> MathmlCompactParser<'a> {
                     None => matches!(attrs.reflect.as_deref(), Some("text" | "math")),
                 };
                 let mark_start = self.fence_marks.len();
-                let fixed_start = self.fixed_literal_bars.len();
                 let enclosing = self.fence_depth;
                 self.fence_depth = start
                     .attributes()
@@ -828,9 +816,8 @@ impl<'a> MathmlCompactParser<'a> {
                     .then_some(self.depth + 1);
                 let (mut children, sized) = self.read_children(name, reflected)?;
                 self.fence_depth = enclosing;
-                let fenced = self.recover_fenced_row(&mut children, mark_start, fixed_start);
+                let fenced = self.recover_fenced_row(&mut children, mark_start);
                 self.fence_marks.truncate(mark_start);
-                self.fixed_literal_bars.truncate(fixed_start);
                 if let Some(fenced) = fenced {
                     return Ok(fenced);
                 }
@@ -1740,12 +1727,11 @@ struct OperatorAttributes {
     form: FenceRole,
     constrained: bool,
     fixed_literal: bool,
-    explicit_form: bool,
 }
 
 impl OperatorAttributes {
     fn fence_role(&self) -> FenceRole {
-        if self.constrained {
+        if self.constrained || self.fixed_literal {
             FenceRole::Constrained
         } else {
             self.form
@@ -1807,14 +1793,11 @@ fn operator_attributes(
                     .trim()
                     .eq_ignore_ascii_case("true");
             },
-            "stretchy" => {
-                let false_value = !fence_attr_value(&attr.value)
-                    .trim()
-                    .eq_ignore_ascii_case("true");
-                result.fixed_literal |= false_value;
-                if inspect_fences {
-                    result.constrained |= false_value;
-                }
+            "stretchy" if inspect_fences => {
+                let value = fence_attr_value(&attr.value);
+                let value = value.trim();
+                result.fixed_literal = value.eq_ignore_ascii_case("false");
+                result.constrained |= !result.fixed_literal && !value.eq_ignore_ascii_case("true");
             },
             "symmetric" if inspect_fences => {
                 result.constrained |= !fence_attr_value(&attr.value)
@@ -1822,7 +1805,6 @@ fn operator_attributes(
                     .eq_ignore_ascii_case("true");
             },
             "form" if inspect_fences => {
-                result.explicit_form = true;
                 let value = fence_attr_value(&attr.value);
                 result.form = match value.trim() {
                     s if s.eq_ignore_ascii_case("prefix") => FenceRole::Prefix,
@@ -2962,6 +2944,14 @@ mod tests {
 
         let authored_fixed = r#"<math><mrow><mo fence="true" form="prefix">⟨</mo><mi>a</mi><mo stretchy="false">|</mo><mo stretchy="false">|</mo><mi>b</mi><mo fence="true" form="postfix" stretchy="true">|</mo></mrow></math>"#;
         assert!(matches!(parse_one(authored_fixed), MathNode::Fenced { .. }));
+        for value in ["true", "unknown"] {
+            let ordinary =
+                authored_fixed.replace(r#"stretchy="false""#, &format!(r#"stretchy="{value}""#));
+            assert!(
+                matches!(parse_one(&ordinary), MathNode::Row(_)),
+                "{ordinary}"
+            );
+        }
 
         let constrained_endpoint = r#"<math><mrow><mo fence="true" form="prefix" stretchy="false">⟨</mo><mi>a</mi><mo stretchy="false">|</mo><mo fence="true" form="postfix" stretchy="false">|</mo></mrow></math>"#;
         assert!(matches!(parse_one(constrained_endpoint), MathNode::Row(_)));
