@@ -866,14 +866,12 @@ impl<'a> Emitter<'a> {
                 add_jot,
                 col_seps,
                 row_seps,
-                array_style,
+                ..
             } => self.array(
                 col_aligns,
                 cells,
                 num_cols,
                 add_jot,
-                arraystretch_pct,
-                array_style,
                 arraystretch_pct != 100 || col_seps != 0 || row_seps != 0,
                 fmt,
             ),
@@ -1151,15 +1149,12 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn array(
         &mut self,
         col_aligns: NodeSpan,
         cells: NodeSpan,
         num_cols: u16,
         add_jot: bool,
-        arraystretch_pct: u8,
-        _array_style: bool,
         spacing_lost: bool,
         fmt: Fmt,
     ) {
@@ -1177,13 +1172,6 @@ impl<'a> Emitter<'a> {
         }
         let cell_ids = arena.children(cells);
         let ncols = usize::from(num_cols.max(1));
-        let cell_style = if add_jot {
-            MathStyle::Display
-        } else if arraystretch_pct == 50 {
-            MathStyle::Script
-        } else {
-            MathStyle::Text
-        };
         let centred = aligns.iter().all(|&a| a == ColumnAlign::Center);
         // Right/left alternating columns are an aligned equation array.
         let aligned = ncols >= 2
@@ -1214,7 +1202,7 @@ impl<'a> Emitter<'a> {
                             "a literal & in an equation array reads back as an alignment point",
                         );
                     }
-                    self.with_style(cell_style, |e| e.cell_content(cell, fmt));
+                    self.with_style(MathStyle::Text, |e| e.cell_content(cell, fmt));
                 }
                 self.close("m:e");
             }
@@ -1251,7 +1239,7 @@ impl<'a> Emitter<'a> {
         for row in cell_ids.chunks(ncols) {
             self.open("m:mr");
             for &cell in row {
-                self.with_style(cell_style, |e| e.cell(cell, fmt));
+                self.with_style(MathStyle::Text, |e| e.cell(cell, fmt));
             }
             self.close("m:mr");
         }

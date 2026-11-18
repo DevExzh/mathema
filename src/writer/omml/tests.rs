@@ -77,6 +77,25 @@ fn mathchoice_uses_script_and_fraction_transitions_in_omml() {
 }
 
 #[test]
+fn omml_table_spacing_does_not_select_a_mathchoice_branch() {
+    let choice = MathNode::MathChoice {
+        display: Box::new(id("D")),
+        text: Box::new(id("T")),
+        script: Box::new(id("S")),
+        script_script: Box::new(id("Q")),
+    };
+    for (arraystretch, add_jot) in [(Some(0.5), false), (None, true)] {
+        let xml = write(MathNode::Array {
+            columns: vec![ColumnAlign::Center],
+            rows: vec![vec![vec![choice.clone()]]],
+            arraystretch,
+            add_jot,
+        });
+        assert!(xml.contains("<m:t>T</m:t>"), "{xml}");
+    }
+}
+
+#[test]
 fn mathchoice_uses_explicit_table_cell_style_in_omml() {
     let matrix = write_latex_choice(
         r"\begin{matrix}\mathchoice{D}{T}{S}{Q}\end{matrix}",
