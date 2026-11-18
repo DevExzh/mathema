@@ -1,5 +1,5 @@
 use nom::IResult;
-use nom::bytes::complete::{tag, take_while1};
+use nom::bytes::complete::take_while1;
 use nom::character::complete::satisfy;
 use smallvec::SmallVec;
 
@@ -547,38 +547,46 @@ impl CompactParser {
     /// pair immediately following a base is the compact spelling for one
     /// UnderOver node. Repeated markers otherwise associate to the right,
     /// matching UTN 28's sub/superscript rule.
-    fn apply_forced_bounds(&mut self, base: NodeId, bounds: &[(char, NodeId)]) -> NodeId {
-        if bounds.is_empty() {
-            return base;
-        }
-        if bounds.len() >= 2 && bounds[0].0 != bounds[1].0 {
-            let (under, over) = if bounds[0].0 == '┬' {
-                (bounds[0].1, bounds[1].1)
+    fn apply_forced_bounds(&mut self, mut base: NodeId, mut bounds: &[(char, NodeId)]) -> NodeId {
+        let mut deferred = SmallVec::<[(char, NodeId); 4]>::new();
+        while let Some((&(mark, arg), rest)) = bounds.split_first() {
+            if let Some((&(other, second), tail)) = rest.split_first()
+                && other != mark
+            {
+                let (under, over) = if mark == '┬' {
+                    (arg, second)
+                } else {
+                    (second, arg)
+                };
+                base = self.push_node(CompactNode::UnderOver {
+                    base,
+                    under,
+                    over,
+                    movable_limits: false,
+                });
+                bounds = tail;
             } else {
-                (bounds[1].1, bounds[0].1)
-            };
-            let paired = self.push_node(CompactNode::UnderOver {
-                base,
-                under,
-                over,
-                movable_limits: false,
+                deferred.push((mark, base));
+                base = arg;
+                bounds = rest;
+            }
+        }
+        for (mark, parent) in deferred.into_iter().rev() {
+            base = self.push_node(if mark == '┬' {
+                CompactNode::Underscript {
+                    base: parent,
+                    under: base,
+                    movable_limits: false,
+                }
+            } else {
+                CompactNode::Overscript {
+                    base: parent,
+                    over: base,
+                    movable_limits: false,
+                }
             });
-            return self.apply_forced_bounds(paired, &bounds[2..]);
         }
-        let nested = self.apply_forced_bounds(bounds[0].1, &bounds[1..]);
-        match bounds[0].0 {
-            '┬' => self.push_node(CompactNode::Underscript {
-                base,
-                under: nested,
-                movable_limits: false,
-            }),
-            '┴' => self.push_node(CompactNode::Overscript {
-                base,
-                over: nested,
-                movable_limits: false,
-            }),
-            _ => base,
-        }
+        base
     }
 
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -772,6 +780,24 @@ impl CompactParser {
     }
 
     fn parse_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        if input.starts_with('〖') {
+            let (rest, children) = self.parse_delimited(input, '〖', '〗')?;
+            let base = self.flatten_single(&children);
+            // A subscript on an explicitly grouped function belongs at the
+            // side, even when its ungrouped name would take display limits.
+            if rest.starts_with(['_', '^'])
+                && let CompactNode::Operator { name, .. } = *self.arena.node(base)
+            {
+                return Ok((
+                    rest,
+                    self.push_node(CompactNode::Operator {
+                        name,
+                        limits: LimitStyle::SubSup,
+                    }),
+                ));
+            }
+            return Ok((rest, base));
+        }
         try_alt!(
             self,
             input,
@@ -1210,118 +1236,11 @@ impl CompactParser {
     }
 
     fn parse_operator_word<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        // Check the compound names before their shorter prefixes. UnicodeMath
-        // writes the thin space inside a compound limit name, so `lim sup`
-        // must become one operator rather than `lim` followed by `sup`.
-        let ops = [
-            "lim\u{00a0}sup",
-            "lim\u{00a0}inf",
-            "inj\u{00a0}lim",
-            "proj\u{00a0}lim",
-            "lim\u{2009}sup",
-            "lim\u{2009}inf",
-            "inj\u{2009}lim",
-            "proj\u{2009}lim",
-            "limsup",
-            "liminf",
-            "injlim",
-            "projlim",
-            "plim",
-            "sin",
-            "cos",
-            "tan",
-            "sec",
-            "csc",
-            "cot",
-            "sinh",
-            "cosh",
-            "tanh",
-            "coth",
-            "arcsin",
-            "arccos",
-            "arctan",
-            "log",
-            "ln",
-            "lg",
-            "exp",
-            "lim",
-            "sup",
-            "inf",
-            "max",
-            "min",
-            "det",
-            "dim",
-            "ker",
-            "hom",
-            "arg",
-            "deg",
-            "gcd",
-            "lcm",
-            "sgn",
-            "Pr",
-            "Var",
-            "Cov",
-            "supp",
-            "mod",
-        ];
-        for op in &ops {
-            if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>(*op)(input)
-                && rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
-            {
-                let compound_limits = matches!(
-                    *op,
-                    "limsup"
-                        | "lim\u{2009}sup"
-                        | "lim\u{00a0}sup"
-                        | "liminf"
-                        | "lim\u{2009}inf"
-                        | "lim\u{00a0}inf"
-                        | "injlim"
-                        | "inj\u{2009}lim"
-                        | "inj\u{00a0}lim"
-                        | "projlim"
-                        | "proj\u{2009}lim"
-                        | "proj\u{00a0}lim"
-                );
-                let has_limits = matches!(
-                    *op,
-                    "lim"
-                        | "liminf"
-                        | "limsup"
-                        | "lim\u{2009}sup"
-                        | "lim\u{00a0}sup"
-                        | "lim\u{2009}inf"
-                        | "lim\u{00a0}inf"
-                        | "injlim"
-                        | "inj\u{2009}lim"
-                        | "inj\u{00a0}lim"
-                        | "projlim"
-                        | "proj\u{2009}lim"
-                        | "proj\u{00a0}lim"
-                        | "plim"
-                        | "sup"
-                        | "inf"
-                        | "max"
-                        | "min"
-                );
-                let name = self.arena.push_str(op);
-                let id = self.push_node(CompactNode::Operator {
-                    name,
-                    limits: if compound_limits {
-                        LimitStyle::Default
-                    } else if has_limits {
-                        LimitStyle::AboveBelow
-                    } else {
-                        LimitStyle::Default
-                    },
-                });
-                return Ok((rest, id));
-            }
-        }
-        Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Tag,
-        )))
+        let (word, limits) = crate::unicode::symbols::unicode_math_operator_prefix(input)
+            .ok_or_else(|| parse_error(input, nom::error::ErrorKind::Tag))?;
+        let name = self.arena.push_str(word);
+        let id = self.push_node(CompactNode::Operator { name, limits });
+        Ok((&input[word.len()..], id))
     }
 
     fn parse_symbol<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

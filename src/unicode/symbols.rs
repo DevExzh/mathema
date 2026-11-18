@@ -1,6 +1,6 @@
 use phf::{phf_map, phf_set};
 
-use crate::ast::SymbolKind;
+use crate::ast::{LimitStyle, SymbolKind};
 use SymbolKind::*;
 
 // ---------------------------------------------------------------------------
@@ -627,6 +627,44 @@ const COMPOUND_LIMIT_NAMES: &[(&str, &str)] = &[
     ("injlim", "inj\u{2009}lim"),
     ("projlim", "proj\u{2009}lim"),
 ];
+
+/// Match a complete UnicodeMath function name without scanning arbitrary
+/// identifier tails. A compound name may contain its TeX thin space or the
+/// no-break space used in UnicodeMath to join the words of one operand.
+pub(crate) fn unicode_math_operator_prefix(input: &str) -> Option<(&str, LimitStyle)> {
+    if !input
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphabetic)
+    {
+        return None;
+    }
+    let boundary = |rest: &str| rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric());
+    for &(_, label) in COMPOUND_LIMIT_NAMES {
+        let (left, right) = label.split_once('\u{2009}')?;
+        if let Some(rest) = input
+            .strip_prefix(left)
+            .and_then(|s| s.strip_prefix(['\u{2009}', '\u{00a0}']))
+            .and_then(|s| s.strip_prefix(right))
+            && boundary(rest)
+        {
+            return Some((&input[..input.len() - rest.len()], LimitStyle::Default));
+        }
+    }
+    let command = OPERATOR_COMMANDS
+        .iter()
+        .copied()
+        .chain(std::iter::once("plim"))
+        .find(|name| input.strip_prefix(name).is_some_and(boundary))?;
+    let limits = if command == "plim" {
+        LimitStyle::AboveBelow
+    } else if operator_has_limits(command) {
+        LimitStyle::Default
+    } else {
+        LimitStyle::SubSup
+    };
+    Some((command, limits))
+}
 
 pub(crate) fn compound_limit_name(command: &str) -> Option<&'static str> {
     COMPOUND_LIMIT_NAMES
