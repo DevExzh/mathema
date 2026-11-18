@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   distinct typed expansion errors, and intermediate token vectors avoid
   reserving their full source-byte length. Ordinary reusable macros retain
   their existing behavior within the bounded budget.
+- LaTeX math accepts KaTeX’s Unicode superscript and subscript characters.
+  Mixed forms such as `X_i²`, `x'₂`, and `\sumₙ²` attach to one base. A script
+  character in an argument position stays literal, as in `x^²`. Operator
+  placement controls can also appear between or after script fields.
 - MathML import recovers matching structural fences and middle delimiters from
   explicitly fenced operator rows. Reimporting a fraction between delimiters
   preserves scalable brackets, literal interior bars, and invisible middles.

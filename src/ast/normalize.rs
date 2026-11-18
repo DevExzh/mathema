@@ -1029,7 +1029,7 @@ fn flatten_empty_script(arena: &mut AstArena, id: NodeId) {
 /// True if `id` refers to a node that produces no output when written.
 /// Currently covers empty Rows and sizing wrappers (\big, \Big, ...) whose
 /// content is itself empty — both render as nothing in the output stream.
-fn is_effectively_empty_node(arena: &AstArena, id: NodeId) -> bool {
+pub(crate) fn is_effectively_empty_node(arena: &AstArena, id: NodeId) -> bool {
     if !id.is_some() {
         return true;
     }

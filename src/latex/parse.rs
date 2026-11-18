@@ -5,7 +5,7 @@ use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::char;
 use smallvec::SmallVec;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
@@ -1499,10 +1499,10 @@ pub(crate) struct LatexCompactParser {
     /// User paired delimiters declared via `\DeclarePairedDelimiter`, mapping
     /// the command name to its `(open, close)` delimiter glyph strings.
     paired_delims: HashMap<String, (String, String)>,
-    /// Operator nodes originating from unstarred `\operatorname`. Placement
+    /// The last atom returned by an unstarred `\operatorname`. Placement
     /// modifiers after their scripts are accepted by KaTeX but deliberately
     /// remain side-script metadata.
-    unstarred_operator_names: HashSet<NodeId>,
+    last_unstarred_operator: Option<NodeId>,
     /// Set to `true` the first time an infix-fraction marker (`\over`/`\atop`/
     /// `\choose`/`\brace`/`\brack`/`\above`) is produced. The vast majority of
     /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
@@ -1542,7 +1542,7 @@ impl LatexCompactParser {
             diagnostics: Vec::new(),
             rowcolors: None,
             paired_delims: HashMap::new(),
-            unstarred_operator_names: HashSet::new(),
+            last_unstarred_operator: None,
             infix_marker_seen: false,
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
@@ -2520,24 +2520,22 @@ impl LatexCompactParser {
         // Named operators retain ordinary script nodes; their Operator.limits
         // field carries the effective modifier for writers/renderers.
         if let CompactNode::Operator { name, limits } = *self.arena.node(base) {
-            let unstarred_operator = self.unstarred_operator_names.contains(&base);
+            let unstarred_operator = self.last_unstarred_operator == Some(base);
             let (rest, ((sub, sup), modifier)) =
                 self.parse_script_fields_with_limits(input, false)?;
-            if modifier.is_some() || sub.is_some() || sup.is_some() {
-                // Unstarred `\operatorname` deliberately ignores placement
-                // controls. Native named operators and starred names carry
-                // a non-SubSup default and honor the last modifier.
-                let limits = if unstarred_operator {
-                    limits
-                } else {
-                    modifier.unwrap_or(limits)
-                };
-                let operator = self.arena.push_node(CompactNode::Operator { name, limits });
-                if unstarred_operator {
-                    self.unstarred_operator_names.insert(operator);
-                }
-                return Ok((rest, self.make_script_node(operator, sub, sup)));
-            }
+            // An unstarred custom name ignores placement controls. Only
+            // allocate another operator when its actual placement changes.
+            let operator = if let Some(new_limits) =
+                modifier.filter(|&v| !unstarred_operator && v != limits)
+            {
+                self.arena.push_node(CompactNode::Operator {
+                    name,
+                    limits: new_limits,
+                })
+            } else {
+                base
+            };
+            return Ok((rest, self.make_script_node(operator, sub, sup)));
         }
 
         // Compound `\mathop` bases need an under/over wrapper because the
@@ -2672,11 +2670,11 @@ impl LatexCompactParser {
     #[inline]
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
         let start = &input[self.skip_script_ws(input.as_bytes())..];
-        let Some(first) = ScriptMarker::at(start) else {
+        if ScriptMarker::at(start).is_none() {
             return Ok((start, base));
         };
         let base = self.resolve_stray_infix_marker(base);
-        let (rest, (sub, sup)) = self.script_fields(start, first, false)?;
+        let (rest, (sub, sup)) = self.script_fields(start, false, self.is_empty_row(base), None)?;
         let node = match (sub.is_some(), sup.is_some()) {
             (true, true) => CompactNode::SubSup { base, sub, sup },
             (true, false) => CompactNode::Subscript { base, sub },
@@ -2691,81 +2689,78 @@ impl LatexCompactParser {
     /// placement modifier wins, matching TeX's scanner.
     fn parse_script_fields_with_limits<'a>(
         &mut self,
-        mut input: &'a str,
+        input: &'a str,
         keep_empty_limits: bool,
     ) -> IResult<&'a str, ((NodeId, NodeId), Option<LimitStyle>)> {
-        let mut sub = NodeId::NONE;
-        let mut sup = NodeId::NONE;
-        let mut modifier = None;
-        loop {
-            let (rest, next_modifier) = consume_limit_modifiers(input);
-            if let Some(style) = next_modifier {
-                modifier = Some(style);
-                input = rest;
-                continue;
-            }
-
-            let start = &input[self.skip_script_ws(input.as_bytes())..];
-            let Some(marker) = ScriptMarker::at(start) else {
-                return Ok((input, ((sub, sup), modifier)));
-            };
-            if (marker.is_subscript() && sub.is_some() && !marker.is_unicode())
-                || (!marker.is_subscript() && sup.is_some() && !marker.is_unicode())
-            {
-                return Ok((input, ((sub, sup), modifier)));
-            }
-            let (rest, (next_sub, next_sup)) =
-                self.script_fields(start, marker, keep_empty_limits)?;
-            if next_sub.is_some() {
-                sub = next_sub;
-            }
-            if next_sup.is_some() {
-                sup = next_sup;
-            }
-            input = rest;
-        }
+        let mut placement = None;
+        let (rest, fields) =
+            self.script_fields(input, keep_empty_limits, false, Some(&mut placement))?;
+        Ok((rest, (fields, placement)))
     }
 
+    /// Collect all postfix fields of one base. Operators additionally accept
+    /// placement controls between fields, with the final control taking effect.
     fn script_fields<'a>(
         &mut self,
         mut input: &'a str,
-        mut marker: ScriptMarker,
         keep_empty_limits: bool,
+        implicit_base: bool,
+        mut placement: Option<&mut Option<LimitStyle>>,
     ) -> IResult<&'a str, (NodeId, NodeId)> {
         let (mut sub, mut sup) = (NodeId::NONE, NodeId::NONE);
         let mut saw_unicode = false;
         loop {
+            let next = &input[self.skip_script_ws(input.as_bytes())..];
+            if next.starts_with('\\')
+                && let Some(current) = placement.as_deref_mut()
+            {
+                let (rest, modifier) = consume_limit_modifiers(next);
+                if let Some(modifier) = modifier {
+                    *current = Some(modifier);
+                    input = rest;
+                    continue;
+                }
+            }
+            let Some(marker) = ScriptMarker::at(next) else {
+                break;
+            };
             let is_sub = marker.is_subscript();
             let slot = if is_sub { &mut sub } else { &mut sup };
             if slot.is_some() && !marker.is_unicode() {
-                if saw_unicode {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::Verify,
-                    )));
+                // Older Mathema expressions use a detached empty-base script
+                // after whitespace, a bare limit operator, or an invisible
+                // formatting atom. Preserve those distinct atoms on reimport.
+                if !saw_unicode
+                    && (implicit_base
+                        || input.len() != next.len()
+                        || marker == ScriptMarker::Primes
+                        || crate::ast::normalize::is_effectively_empty_node(&self.arena, *slot)
+                        || crate::ast::normalize::takes_limits(
+                            &self.arena,
+                            *self.arena.node(*slot),
+                        ))
+                {
+                    break;
                 }
-                break;
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    next,
+                    nom::error::ErrorKind::Verify,
+                )));
             }
+            saw_unicode |= marker.is_unicode();
             let (rest, arg) = match marker {
                 ScriptMarker::UnicodeSub | ScriptMarker::UnicodeSup => {
-                    saw_unicode = true;
-                    self.parse_unicode_script_arg_run(input, is_sub)?
+                    self.parse_unicode_script_arg_run(next, is_sub)?
                 },
-                ScriptMarker::Sub | ScriptMarker::Sup => self.parse_script_arg(&input[1..])?,
-                ScriptMarker::Primes => self.parse_prime_argument(input)?,
+                ScriptMarker::Sub | ScriptMarker::Sup => self.parse_script_arg(&next[1..])?,
+                ScriptMarker::Primes => self.parse_prime_argument(next)?,
             };
-            // A Unicode run replaces the previous field of its kind. An
-            // explicit duplicate after a Unicode run was rejected above.
-            // N-ary templates also retain their explicitly empty limit slots.
+            // KaTeX assigns the newest contiguous Unicode run to its slot.
+            // Operator templates retain explicitly empty script arguments.
             if keep_empty_limits || !self.is_empty_row(arg) {
                 *slot = arg;
             }
-            let next = &rest[self.skip_script_ws(rest.as_bytes())..];
-            let Some(next_marker) = ScriptMarker::at(next) else {
-                return Ok((rest, (sub, sup)));
-            };
-            input = next;
-            marker = next_marker;
+            input = rest;
         }
         Ok((input, (sub, sup)))
     }
@@ -2845,10 +2840,7 @@ impl LatexCompactParser {
     /// Parse optional _{...} and ^{...} in any order, returning (sub, sup).
     /// Uses `NodeId::NONE` for absent limits.
     fn parse_optional_limits<'a>(&mut self, input: &'a str) -> IResult<&'a str, (NodeId, NodeId)> {
-        match ScriptMarker::at(input) {
-            None => Ok((input, (NodeId::NONE, NodeId::NONE))),
-            Some(first) => self.script_fields(input, first, true),
-        }
+        self.script_fields(input, true, true, None)
     }
 
     /// Parse a single script argument: either a single token or a braced group.
@@ -2944,7 +2936,11 @@ impl LatexCompactParser {
             Some(&b) if b > 127 => {
                 let ch = input.chars().next().unwrap();
                 let len = ch.len_utf8();
-                if unicode_scripts::decode(ch).is_some() {
+                let scripted_nbsp = ch == '\u{00a0}' && {
+                    let rest = &input[len..];
+                    ScriptMarker::at(&rest[self.skip_script_ws(rest.as_bytes())..]).is_some()
+                };
+                if unicode_scripts::decode(ch).is_some() || scripted_nbsp {
                     let sid = self.push_char_str(ch);
                     return Ok((
                         &input[len..],
@@ -4810,7 +4806,7 @@ impl LatexCompactParser {
             .arena
             .push_node(CompactNode::Operator { name: sid, limits });
         if !starred {
-            self.unstarred_operator_names.insert(operator);
+            self.last_unstarred_operator = Some(operator);
         }
         Ok((input, operator))
     }

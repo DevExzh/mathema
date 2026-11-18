@@ -357,6 +357,43 @@ fn compatibility_script_characters_are_literal_in_atom_positions() {
 }
 
 #[test]
+fn script_fields_reject_explicit_duplicates_and_keep_independent_bases() {
+    for source in ["x_i_2", "x^2^3", "x²^2", "xₙ_i", r"\sum^1\limits^2 x"] {
+        assert!(crate::from_latex(source).is_err(), "{source}");
+    }
+    for source in ["{x_i}_2", "x^2{}^3", "x_i²", "xₙ²₃"] {
+        let expr = crate::from_latex(source).unwrap();
+        let canonical = expr.to_latex().unwrap();
+        assert_eq!(
+            expr.to_mathml().unwrap(),
+            crate::from_latex(&canonical).unwrap().to_mathml().unwrap(),
+            "{source}: {canonical}"
+        );
+    }
+}
+
+#[test]
+fn nonbreaking_space_as_a_script_base_keeps_its_text_width() {
+    for (source, literal) in [
+        ("x\u{a0}₂+y", "x\\text{~}_2+y"),
+        ("x\u{a0}^3", "x\\text{~}^3"),
+    ] {
+        let parsed = crate::from_latex(source).unwrap();
+        assert_eq!(
+            parsed.to_mathml().unwrap(),
+            crate::from_latex(literal).unwrap().to_mathml().unwrap()
+        );
+        assert_eq!(
+            parsed.to_mathml().unwrap(),
+            crate::from_latex(&parsed.to_latex().unwrap())
+                .unwrap()
+                .to_mathml()
+                .unwrap()
+        );
+    }
+}
+
+#[test]
 fn style_switch_normalization_matches_heap_and_compact_scopes() {
     let config = Config::default();
     for source in [
