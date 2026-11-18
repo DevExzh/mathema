@@ -807,13 +807,15 @@ fn push_array_node(
     add_jot: bool,
     environment: Option<MatrixKind>,
 ) -> NodeId {
+    let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let Some(num_cols) = arena.array_stride_deferred(rows.len(), columns.len().max(widest)) else {
+        return arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+    };
     let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
     for col in columns {
         align_ids.push(arena.push_node(CompactNode::ColAlign(*col)));
     }
     let col_aligns = arena.push_children_deferred(&align_ids);
-    let widest = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let num_cols = columns.len().max(widest).max(1) as u16;
     let mut cell_ids: SmallVec<[NodeId; 8]> = SmallVec::new();
     let mut synthetic_padding = None;
     for row in rows {

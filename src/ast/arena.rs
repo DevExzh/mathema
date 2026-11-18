@@ -195,6 +195,17 @@ impl AstArena {
     /// The most children one node can hold (a span length is 16 bits).
     pub const MAX_CHILDREN: usize = u16::MAX as usize;
 
+    /// Bound a rectangular cell span before allocating padding for ragged input.
+    pub(crate) fn array_stride_deferred(&mut self, rows: usize, width: usize) -> Option<u16> {
+        let stride = width.max(1);
+        if stride > Self::MAX_CHILDREN || rows > Self::MAX_CHILDREN / stride {
+            self.list_overflow = true;
+            None
+        } else {
+            Some(stride as u16)
+        }
+    }
+
     /// Push a contiguous span of child `NodeId`s and return the `NodeSpan`.
     ///
     /// # Errors
@@ -543,6 +554,22 @@ mod tests {
         assert_eq!(refused, space);
         arena.mark_array_environment(refused, MatrixKind::Matrix);
         assert_eq!(arena.space_basis(space), Some(SpaceBasis::TextEm));
+    }
+
+    #[test]
+    fn ragged_array_stride_respects_the_span_limit_before_padding() {
+        let mut arena = AstArena::new();
+        assert_eq!(arena.array_stride_deferred(255, 257), Some(257));
+        assert!(arena.check_limits().is_ok());
+        assert_eq!(arena.array_stride_deferred(256, 256), None);
+        assert!(matches!(
+            arena.check_limits(),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ListLength,
+                ..
+            })
+        ));
+        assert_eq!(arena.node_count(), 0);
     }
 
     #[test]

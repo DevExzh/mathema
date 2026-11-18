@@ -2274,7 +2274,12 @@ impl LatexCompactParser {
         // stride is correct even when rows contain more `&` separators than
         // the column spec declares (e.g. multi-pair `aligned` environments).
         let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(0);
-        let num_cols = columns.len().max(max_row_len).max(1) as u16;
+        let Some(num_cols) = self
+            .arena
+            .array_stride_deferred(rows.len(), columns.len().max(max_row_len))
+        else {
+            return self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+        };
 
         let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
         for &col in columns {
