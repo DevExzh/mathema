@@ -1866,6 +1866,17 @@ mod tests {
             );
         }
 
+        for source in ["lim┬a┬b x", "lim┴a┴b x", "lim┬a┴b x", "lim┴a┬b x"] {
+            let first = crate::from_unicode_math(source).unwrap();
+            let written = first.to_unicode_math().unwrap();
+            let second = crate::from_unicode_math(&written).unwrap();
+            assert_eq!(
+                second.to_unicode_math().unwrap(),
+                written,
+                "{source}: {written}"
+            );
+        }
+
         let config = Config::default().with_max_depth(4);
         let too_deep = format!("lim{}x", "┬a".repeat(8));
         assert!(matches!(
