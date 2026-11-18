@@ -5,8 +5,11 @@
 use std::path::Path;
 
 use mathema::ast::normalize::normalize_compact_expr;
-use mathema::ast::{FencedItem, LimitStyle, MathNode};
-use mathema::{CompactExpr, MathExpr, MtefVersion, MtefWriteOptions, from_latex, from_mtef_bytes};
+use mathema::ast::{DisplayStyle, FencedItem, LimitStyle, MathNode};
+use mathema::{
+    CompactExpr, Config, MathExpr, MtefVersion, MtefWriteOptions, from_latex, from_latex_with,
+    from_mtef_bytes,
+};
 
 fn fixtures() -> Vec<(String, Vec<u8>)> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mtef");
@@ -462,4 +465,37 @@ fn mtef5_compound_operator_limits_use_native_bigop_slots() {
         from_mtef_bytes(&bytes).unwrap().to_latex().unwrap(),
         r"\overbracket{a+ b}"
     );
+}
+
+#[test]
+fn movable_compound_limits_follow_equation_display_style() {
+    let options = MtefWriteOptions::new(MtefVersion::V5);
+    let block = from_latex(r"\mathop{a+b}^i").unwrap();
+    let block_bytes = block.to_mtef_bytes(&options).unwrap();
+    assert!(
+        block_bytes
+            .windows(4)
+            .any(|window| window[0..3] == [3, 0, 22])
+    );
+
+    let inline = from_latex_with(
+        r"\mathop{a+b}^i",
+        &Config::default().with_display(DisplayStyle::Inline),
+    )
+    .unwrap();
+    let inline_bytes = inline.to_mtef_bytes(&options).unwrap();
+    assert!(
+        inline_bytes
+            .windows(4)
+            .any(|window| window[0..3] == [3, 0, 21])
+    );
+    assert!(
+        !inline_bytes
+            .windows(4)
+            .any(|window| window[0..3] == [3, 0, 22])
+    );
+
+    let decoded = from_mtef_bytes(&inline_bytes).unwrap();
+    assert!(decoded.to_latex().unwrap().contains(r"\mathop{a+ b}"));
+    assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), inline_bytes);
 }

@@ -272,7 +272,7 @@ impl MtefWriter {
         options: &MtefWriteOptions,
     ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
         let v5 = options.v5();
-        let mut encoder = Encoder::new(&expr.arena, config, v5);
+        let mut encoder = Encoder::new(&expr.arena, config, v5, expr.display);
         encoder.equation(expr.roots)?;
         let body = std::mem::take(&mut encoder.out);
         let diagnostics = std::mem::take(&mut encoder.diagnostics);

@@ -22,7 +22,8 @@ use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::normalize::{can_carry_script, can_take_prescripts, is_blank, takes_limits};
 use crate::ast::{
-    AccentPosition, ColumnAlign, FractionKind, LimitStyle, Rational, StrokeKind, TextStyle,
+    AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, StrokeKind,
+    TextStyle,
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 use crate::reader::mtef::chars::negated;
@@ -115,6 +116,7 @@ enum Leaf {
 pub(super) struct Encoder<'a> {
     arena: &'a AstArena,
     v5: bool,
+    display: DisplayStyle,
     pub(super) out: Vec<u8>,
     /// The typesize in effect at the end of `out` (`None` before the first).
     size: Option<Size>,
@@ -148,10 +150,16 @@ pub(super) struct Encoder<'a> {
 }
 
 impl<'a> Encoder<'a> {
-    pub(super) fn new(arena: &'a AstArena, config: &Config, v5: bool) -> Self {
+    pub(super) fn new(
+        arena: &'a AstArena,
+        config: &Config,
+        v5: bool,
+        display: DisplayStyle,
+    ) -> Self {
         Self {
             arena,
             v5,
+            display,
             out: Vec::with_capacity(256),
             size: None,
             strict: config.strictness == Strictness::Strict,
@@ -1149,8 +1157,14 @@ impl<'a> Encoder<'a> {
         else {
             return Ok(false);
         };
-        self.compound_operator_template(size, content, lower, upper, true, movable)?;
+        let above_below = !movable || self.movable_compound_is_stacked(size);
+        self.compound_operator_template(size, content, lower, upper, above_below, movable)?;
         Ok(true)
+    }
+
+    #[inline]
+    fn movable_compound_is_stacked(&self, size: Size) -> bool {
+        self.display == DisplayStyle::Block && matches!(size, Size::Full | Size::Sym)
     }
 
     /// MTEF 5 `tmINTOP`/`tmSUMOP`: the main slot is empty, the lower and
