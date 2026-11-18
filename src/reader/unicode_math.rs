@@ -1152,24 +1152,94 @@ impl CompactParser {
     }
 
     fn parse_operator_word<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Check the compound names before their shorter prefixes. UnicodeMath
+        // writes the thin space inside a compound limit name, so `lim sup`
+        // must become one operator rather than `lim` followed by `sup`.
         let ops = [
-            "sin", "cos", "tan", "sec", "csc", "cot", "sinh", "cosh", "tanh", "coth", "arcsin",
-            "arccos", "arctan", "log", "ln", "lg", "exp", "lim", "liminf", "limsup", "sup", "inf",
-            "max", "min", "det", "dim", "ker", "hom", "arg", "deg", "gcd", "lcm", "sgn", "Pr",
-            "Var", "Cov", "supp", "mod",
+            "lim\u{2009}sup",
+            "lim\u{2009}inf",
+            "inj\u{2009}lim",
+            "proj\u{2009}lim",
+            "limsup",
+            "liminf",
+            "injlim",
+            "projlim",
+            "plim",
+            "sin",
+            "cos",
+            "tan",
+            "sec",
+            "csc",
+            "cot",
+            "sinh",
+            "cosh",
+            "tanh",
+            "coth",
+            "arcsin",
+            "arccos",
+            "arctan",
+            "log",
+            "ln",
+            "lg",
+            "exp",
+            "lim",
+            "sup",
+            "inf",
+            "max",
+            "min",
+            "det",
+            "dim",
+            "ker",
+            "hom",
+            "arg",
+            "deg",
+            "gcd",
+            "lcm",
+            "sgn",
+            "Pr",
+            "Var",
+            "Cov",
+            "supp",
+            "mod",
         ];
         for op in &ops {
             if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>(*op)(input)
                 && rest.chars().next().is_none_or(|c| !c.is_alphanumeric())
             {
+                let compound_limits = matches!(
+                    *op,
+                    "limsup"
+                        | "lim\u{2009}sup"
+                        | "liminf"
+                        | "lim\u{2009}inf"
+                        | "injlim"
+                        | "inj\u{2009}lim"
+                        | "projlim"
+                        | "proj\u{2009}lim"
+                );
                 let has_limits = matches!(
                     *op,
-                    "lim" | "liminf" | "limsup" | "sup" | "inf" | "max" | "min"
+                    "lim"
+                        | "liminf"
+                        | "limsup"
+                        | "lim\u{2009}sup"
+                        | "lim\u{2009}inf"
+                        | "injlim"
+                        | "inj\u{2009}lim"
+                        | "projlim"
+                        | "proj\u{2009}lim"
+                        | "plim"
+                        | "sup"
+                        | "inf"
+                        | "max"
+                        | "min"
                 );
                 let name = self.arena.push_str(op);
                 let id = self.push_node(CompactNode::Operator {
                     name,
-                    limits: if has_limits {
+                    limits: if compound_limits {
+                        LimitStyle::Default
+                    } else if has_limits {
                         LimitStyle::AboveBelow
                     } else {
                         LimitStyle::Default
@@ -1549,6 +1619,75 @@ mod tests {
     fn operator() {
         let nodes = parse("sin x");
         assert!(matches!(&nodes[0], MathNode::Operator(_)));
+    }
+
+    #[test]
+    fn compound_limit_words_are_single_operators() {
+        for source in [
+            "lim\u{2009}sup x",
+            "lim\u{2009}inf x",
+            "inj\u{2009}lim x",
+            "proj\u{2009}lim x",
+            "limsup x",
+            "liminf x",
+            "injlim x",
+            "projlim x",
+            "plim x",
+        ] {
+            let nodes = parse(source);
+            assert!(
+                matches!(&nodes[0], MathNode::Operator(_)),
+                "{source}: {nodes:?}"
+            );
+            assert!(
+                matches!(&nodes[1], MathNode::Identifier(value) if value == "x"),
+                "{source}: {nodes:?}"
+            );
+        }
+
+        let prefix = parse("limsupremo");
+        assert!(
+            !prefix
+                .iter()
+                .any(|node| matches!(node, MathNode::Operator(_))),
+            "compound prefix must remain an identifier run: {prefix:?}"
+        );
+        assert_eq!(
+            crate::from_unicode_math("limsupremo")
+                .unwrap()
+                .to_unicode_math()
+                .unwrap(),
+            "limsupremo"
+        );
+    }
+
+    #[test]
+    fn compound_limit_scripts_survive_unicode_math_round_trip() {
+        for latex in [
+            r"\limsup_{n} a_n",
+            r"\liminf_{n} a_n",
+            r"\injlim_{i} f_i",
+            r"\projlim_{i} f_i",
+            r"\plim_{n} X_n",
+        ] {
+            let config = Config::default().with_display(DisplayStyle::Inline);
+            let source = crate::from_latex_with(latex, &config).unwrap();
+            let unicode = source.to_unicode_math().unwrap();
+            let reparsed = crate::from_unicode_math_with(&unicode, &config).unwrap();
+            if latex.starts_with(r"\plim") {
+                assert_eq!(
+                    reparsed.to_unicode_math().unwrap(),
+                    unicode,
+                    "{latex}: {unicode}"
+                );
+            } else {
+                assert_eq!(
+                    reparsed.to_mathml().unwrap(),
+                    source.to_mathml().unwrap(),
+                    "{latex}: {unicode}"
+                );
+            }
+        }
     }
 
     #[test]
