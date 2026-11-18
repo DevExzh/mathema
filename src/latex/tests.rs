@@ -3339,3 +3339,19 @@ fn fence_boundaries_match_complete_control_words() {
         );
     }
 }
+
+#[test]
+fn unicode_number_runs_have_the_same_node_budget_as_ascii_digits() {
+    let config = Config::default().with_max_nodes(Some(8));
+    let digits = "123456789012345678901234567890";
+    let unicode_digits = "¹²³⁴⁵⁶⁷⁸⁹⁰".repeat(3);
+    for input in [format!("x{unicode_digits}"), format!("x^{{{digits}}}")] {
+        let expr = crate::from_latex_with(&input, &config).unwrap();
+        assert!(
+            expr.to_mathml()
+                .unwrap()
+                .contains(&format!("<mn>{digits}</mn>"))
+        );
+    }
+    assert!(crate::from_latex_with("x¹⁺²⁺³⁺⁴⁺⁵⁺⁶", &config).is_err());
+}

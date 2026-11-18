@@ -292,16 +292,6 @@ fn unicode_script_kind(ch: Option<char>) -> Option<(bool, char)> {
     })
 }
 
-fn unicode_script_symbol_kind(ch: char) -> SymbolKind {
-    match ch {
-        '+' | '−' => SymbolKind::BinaryOp,
-        '=' => SymbolKind::Relation,
-        '(' => SymbolKind::Open,
-        ')' => SymbolKind::Close,
-        _ => SymbolKind::Ordinary,
-    }
-}
-
 fn negate_char(ch: char) -> Option<char> {
     match ch {
         '=' => Some('\u{2260}'),
@@ -2706,58 +2696,49 @@ impl LatexCompactParser {
         input: &'a str,
         expected_sub: Option<bool>,
     ) -> IResult<&'a str, Option<(bool, NodeId)>> {
-        let mut rest = input;
-        let Some((is_sub, _)) = unicode_script_kind(rest.chars().next()) else {
+        let Some((is_sub, _)) = unicode_script_kind(input.chars().next()) else {
             return Ok((input, None));
         };
         if expected_sub.is_some_and(|expected| expected != is_sub) {
             return Ok((input, None));
         }
+        let mut glyphs = input
+            .char_indices()
+            .map_while(|(offset, scalar)| {
+                let (sub, glyph) = unicode_script_kind(Some(scalar))?;
+                (sub == is_sub).then_some((offset + scalar.len_utf8(), glyph))
+            })
+            .fuse()
+            .peekable();
         let mut ids = SmallVec::<[NodeId; 4]>::new();
-        while let Some((current_sub, glyph)) = unicode_script_kind(rest.chars().next())
-            && current_sub == is_sub
-        {
-            let width = rest.chars().next().expect("script kind checked").len_utf8();
-            let sid = self.arena.push_str(&glyph.to_string());
+        let mut consumed = 0;
+        while let Some((end, glyph)) = glyphs.next() {
+            consumed = end;
             let id = if glyph.is_ascii_digit() {
+                // Store a contiguous number as one atom, just like ASCII
+                // input. Each digit is already a single decoded ASCII byte.
+                let mut digits = SmallVec::<[u8; 16]>::new();
+                digits.push(glyph as u8);
+                while let Some((end, digit)) = glyphs.next_if(|(_, c)| c.is_ascii_digit()) {
+                    digits.push(digit as u8);
+                    consumed = end;
+                }
+                let text = std::str::from_utf8(&digits).expect("script digits are ASCII");
+                let sid = self.arena.push_str(text);
                 self.arena.push_node(CompactNode::Number(sid))
             } else if glyph.is_alphabetic() {
+                let sid = self.push_char_str(glyph);
                 self.arena.push_node(CompactNode::Identifier(sid))
             } else {
-                self.arena
-                    .push_node(CompactNode::Symbol(unicode_script_symbol_kind(glyph), sid))
+                self.push_ascii_math_symbol(if glyph == '−' { '-' } else { glyph })
             };
             ids.push(id);
-            rest = &rest[width..];
-            self.ensure_node_budget(rest)?;
+            self.ensure_node_budget(&input[consumed..])?;
         }
-        self.merge_unicode_script_numbers(&mut ids);
-        Ok((rest, Some((is_sub, self.flatten_single(&ids)))))
-    }
-
-    fn merge_unicode_script_numbers(&mut self, ids: &mut SmallVec<[NodeId; 4]>) {
-        let mut i = 0;
-        while i < ids.len() {
-            let CompactNode::Number(first_sid) = *self.arena.node(ids[i]) else {
-                i += 1;
-                continue;
-            };
-            let mut end = i + 1;
-            let mut combined = self.arena.str_val(first_sid).to_owned();
-            while end < ids.len() {
-                let CompactNode::Number(sid) = *self.arena.node(ids[end]) else {
-                    break;
-                };
-                combined.push_str(self.arena.str_val(sid));
-                end += 1;
-            }
-            if end > i + 1 {
-                let sid = self.arena.push_str(&combined);
-                *self.arena.node_mut(ids[i]) = CompactNode::Number(sid);
-                ids.drain(i + 1..end);
-            }
-            i += 1;
-        }
+        Ok((
+            &input[consumed..],
+            Some((is_sub, self.flatten_single(&ids))),
+        ))
     }
 
     /// Inside an explicit `^`/`_` argument a Unicode superscript or subscript
