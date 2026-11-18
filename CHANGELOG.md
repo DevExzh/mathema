@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed-size `\braket` and `\set` and scalable `\Braket` and `\Set` now retain
+  the package's separator spacing and nested scopes. An explicitly doubled bar
+  in `\Braket` uses native LaTeX double-bar semantics.
+- MathML reimport preserves foreground colors in `mstyle` scopes and fixed
+  interior bars inside explicitly marked bra and ket delimiters.
+
 - Named LaTeX operators and compound `\mathop` expressions retain their
   side, movable, or fixed limits in MathML and canonical LaTeX. In inline
   output and nested script arguments, movable compound bounds use side scripts.

@@ -2,19 +2,11 @@
 //!
 //! See [`super`] (`packages/mod.rs`) for the per-package file contract.
 //!
-//! Provides Dirac bra-ket notation. The parser (`parse.rs`) already handles the
-//! single-argument `\braket`/`\Braket` (→ `⟨…⟩`) and `\Set`/`\set` (→ `{…}`)
-//! forms, so we deliberately do **not** define macros for those names (a builtin
-//! macro would expand in preprocessing and shadow the existing handler).
-//!
-//! `\bra`/`\ket` are intentionally **not** defined here: the `physics` package
-//! contributes auto-scaling `\bra`/`\ket` (`\left\langle…\right|` /
-//! `\left|…\right\rangle`), and defining them here too would be a silent
-//! cross-package shadow (last-writer-wins in the macro `HashMap`). The
-//! `packages::tests::no_conflicting_builtin_macro_shadows` guard enforces that
-//! no two packages register the same macro name with *different* bodies. We
-//! contribute only the forms `physics` does not: `\ketbra`, and the
-//! auto-scaling `\Bra` / `\Ket`.
+//! The parser implements fixed-size `\braket` and `\set` and scalable `\Braket`
+//! and `\Set`. Each set replaces only its first separator. A scalable braket
+//! replaces every separator and preserves a doubled bar as in native braket.sty.
+//! The physics package supplies the shared `\bra` and `\ket` commands with
+//! automatic delimiter sizing. This table supplies the remaining static forms.
 
 use super::SymbolClass;
 
