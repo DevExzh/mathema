@@ -691,9 +691,59 @@ impl<'a> Decoder<'a> {
             return Ok(None);
         }
         let items = self.parse_list()?;
-        let ids = self.assemble_line(items)?;
+        let mut ids = self.assemble_line(items)?;
+        self.coalesce_compound_limit_names(&mut ids)?;
         let span = self.children(&ids)?;
         Ok(Some(self.node(CompactNode::Row(span))?))
+    }
+
+    /// MTEF stores the thin separator between a compound limit name as a
+    /// separate space record. Reassemble the four native compound names so a
+    /// round trip retains one movable operator and its limit template.
+    fn coalesce_compound_limit_names(&mut self, ids: &mut SmallVec<[NodeId; 8]>) -> Result<()> {
+        let mut index = 0;
+        while index + 2 < ids.len() {
+            let (left, width, right) = match (
+                *self.arena.node(ids[index]),
+                *self.arena.node(ids[index + 1]),
+                *self.arena.node(ids[index + 2]),
+            ) {
+                (
+                    CompactNode::Operator { name: left, .. },
+                    CompactNode::Space(width),
+                    CompactNode::Operator { name: right, .. },
+                ) => (left, (width.num, width.den), right),
+                _ => {
+                    index += 1;
+                    continue;
+                },
+            };
+            if width != (1, 4) && width != (3, 18) {
+                index += 1;
+                continue;
+            }
+            let left_text = self.arena.str_val(left);
+            let right_text = self.arena.str_val(right);
+            let Some(combined) = (match (left_text, right_text) {
+                ("lim", "sup") => Some("lim\u{2009}sup"),
+                ("lim", "inf") => Some("lim\u{2009}inf"),
+                ("inj", "lim") => Some("inj\u{2009}lim"),
+                ("proj", "lim") => Some("proj\u{2009}lim"),
+                _ => None,
+            }) else {
+                index += 1;
+                continue;
+            };
+            let sid = self.arena.push_str(combined);
+            let operator = self.node(CompactNode::Operator {
+                name: sid,
+                limits: LimitStyle::Default,
+            })?;
+            ids[index] = operator;
+            ids.remove(index + 2);
+            ids.remove(index + 1);
+        }
+        Ok(())
     }
 
     /// A RULER record (with its tag) following a LINE or PILE.
