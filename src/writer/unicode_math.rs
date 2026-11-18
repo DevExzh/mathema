@@ -990,6 +990,7 @@ fn has_forced_operator_limits(node: &MathNode, style: MathStyle) -> bool {
     }
 }
 
+#[inline(never)]
 fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
     match *arena.node(id) {
         CompactNode::Operator { limits, .. } => limits == LimitStyle::AboveBelow,
