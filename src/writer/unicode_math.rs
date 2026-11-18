@@ -488,14 +488,6 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
             continue;
         }
         if !identifier_run.is_empty() {
-            if wrote_node
-                && needs_space_before_with_style(
-                    &MathNode::Identifier(identifier_run.clone()),
-                    current_style,
-                )
-            {
-                out.push(' ');
-            }
             write_structured_identifier_run(out, &identifier_run);
             identifier_run.clear();
             wrote_node = true;
@@ -514,27 +506,28 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
         wrote_node = true;
     }
     if !identifier_run.is_empty() {
-        if wrote_node
-            && needs_space_before_with_style(
-                &MathNode::Identifier(identifier_run.clone()),
-                current_style,
-            )
-        {
-            out.push(' ');
-        }
         write_structured_identifier_run(out, &identifier_run);
     }
 }
 
 fn write_structured_identifier_run(out: &mut String, value: &str) {
-    let styled_math = !value.is_ascii()
-        && value
-            .chars()
-            .all(|ch| crate::unicode::fonts::unstyled_char(ch).is_some());
-    if crate::unicode::symbols::unicode_math_operator_prefix(value).is_some()
-        || value.chars().count() == 1
-        || styled_math
-    {
+    // Normalization can turn a row of letters into one Identifier. Both
+    // representations must remain one operand when a decoration follows.
+    if value.is_empty() {
+        return;
+    }
+    let single = value.chars().nth(1).is_none();
+    let function = || {
+        crate::unicode::symbols::unicode_math_operator_prefix(value)
+            .is_some_and(|(word, _)| word == value)
+    };
+    let styled = || {
+        !value.is_ascii()
+            && value
+                .chars()
+                .all(|ch| crate::unicode::fonts::unstyled_char(ch).is_some())
+    };
+    if single || function() || styled() {
         out.push_str(value);
     } else {
         out.push('"');
@@ -614,6 +607,7 @@ fn write_structured_decorated_base(out: &mut String, node: &MathNode, style: Mat
 /// rows remain linear and can be recovered by the UnicodeMath parser.
 fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
+        MathNode::Identifier(value) => write_structured_identifier_run(out, value),
         MathNode::Row(children) => write_structured_nodes_with_style(out, children, style),
         MathNode::Overscript {
             base,
@@ -1420,9 +1414,6 @@ fn write_structured_nodes_c_with_style(
             continue;
         }
         if !identifier_run.is_empty() {
-            if wrote_node && needs_space_before_c_with_style(arena, id, current_style) {
-                out.push(' ');
-            }
             write_structured_identifier_run(out, &identifier_run);
             identifier_run.clear();
             wrote_node = true;
@@ -1515,6 +1506,9 @@ fn write_structured_decorated_base_c(
 
 fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
+        CompactNode::Identifier(value) => {
+            write_structured_identifier_run(out, arena.str_val(value))
+        },
         CompactNode::Row(span) => write_structured_nodes_c_with_style(out, arena, span, style),
         CompactNode::Overscript {
             base,
@@ -2134,6 +2128,29 @@ mod tests {
             text_mode: false,
         });
         assert_eq!(output, "▭(6&x)");
+    }
+
+    #[test]
+    fn normalized_operator_decorations_keep_the_whole_name() {
+        use crate::{Format, convert};
+        for (src, label, mark) in [
+            (r"\operatorname{\overbrace{rate}}_i\sin x", "rate", "⏞"),
+            (r"\operatorname*{\underbracket{end}}\limits_i x", "end", "⎵"),
+        ] {
+            let linear = convert(src, Format::LaTeX, Format::UnicodeMath).unwrap();
+            assert!(linear.contains(&format!("\"{label}\"")), "{linear}");
+            assert_eq!(
+                linear,
+                convert(&linear, Format::UnicodeMath, Format::UnicodeMath).unwrap()
+            );
+            let xml = convert(&linear, Format::UnicodeMath, Format::MathML).unwrap();
+            assert!(xml.contains(&format!("<mtext>{label}</mtext>")), "{xml}");
+            assert!(xml.contains(mark), "{xml}");
+            assert!(
+                xml.contains("<mi>i</mi>") && xml.contains("<mi>x</mi>"),
+                "{xml}"
+            );
+        }
     }
 
     #[test]
