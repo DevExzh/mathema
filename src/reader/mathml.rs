@@ -4,7 +4,7 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
@@ -102,6 +102,17 @@ struct MathmlCompactParser<'a> {
     /// levels. Keep the full non-negative level while reading nested
     /// `mstyle` attributes and clamp only when lowering to a StyleSwitch.
     style_level: i64,
+    /// Presentation attributes on `<mo>` tokens. Keeping these beside the
+    /// compact node lets an enclosing `<mrow>` distinguish the writer's
+    /// structural fence delimiters from an ordinary fence-shaped operator.
+    fence_attributes: HashMap<NodeId, FenceAttributes>,
+}
+
+#[derive(Clone, Default)]
+struct FenceAttributes {
+    fence: Option<bool>,
+    stretchy: Option<bool>,
+    form: Option<String>,
 }
 
 impl<'a> MathmlCompactParser<'a> {
@@ -122,6 +133,7 @@ impl<'a> MathmlCompactParser<'a> {
             movable_limit_operators: HashMap::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
+            fence_attributes: HashMap::new(),
         })
     }
 
@@ -208,6 +220,79 @@ impl<'a> MathmlCompactParser<'a> {
     fn parse_children(&mut self, parent_tag: &str) -> Result<SmallVec<[NodeId; 8]>> {
         self.read_children(parent_tag, false)
             .map(|(children, _)| children)
+    }
+
+    /// Recover the structural fence represented by this crate's MathML
+    /// writer. A plain mrow is intentionally left alone unless its first and
+    /// last operators are explicitly fenced, form a known matching pair, and
+    /// every interior fenced operator is an unadorned middle delimiter. The
+    /// latter condition keeps an ordinary `|` operator in `(x|y)` from being
+    /// reclassified as a `\\middle` separator. External MathML that supplies
+    /// only the ambiguous `fence=true stretchy=true form=prefix` spelling is
+    /// likewise retained as an ordinary row.
+    fn recover_fenced_row(&mut self, children: &[NodeId]) -> Option<NodeId> {
+        if children.len() < 2 {
+            return None;
+        }
+        let open = self.fence_delimiter(children[0])?;
+        let close = self.fence_delimiter(*children.last()?)?;
+        let open_attrs = self.fence_attributes.get(&children[0])?;
+        let close_attrs = self.fence_attributes.get(children.last()?)?;
+        if open_attrs.fence != Some(true)
+            || close_attrs.fence != Some(true)
+            || open_attrs.stretchy == Some(false)
+            || close_attrs.stretchy == Some(false)
+            || (!matching_fence(self.arena.str_val(open), self.arena.str_val(close))
+                && !matches!(
+                    (self.arena.str_val(open), self.arena.str_val(close)),
+                    ("|", "|") | ("‖", "‖")
+                ))
+        {
+            return None;
+        }
+
+        let mut content = SmallVec::<[NodeId; 8]>::new();
+        let mut has_middle = false;
+        for &id in &children[1..children.len() - 1] {
+            if let Some(attributes) = self.fence_attributes.get(&id) {
+                if attributes.fence != Some(true) || attributes.stretchy == Some(false) {
+                    return None;
+                }
+                // The writer's `Middle` path emits fence=true without a form
+                // or stretchy attribute. An explicit infix form is equally
+                // unambiguous for authored MathML.
+                if !is_unambiguous_middle(attributes) {
+                    return None;
+                }
+                has_middle = true;
+                content.push(
+                    self.arena
+                        .push_node(CompactNode::Middle(self.fence_delimiter(id)?)),
+                );
+            } else {
+                content.push(id);
+            }
+        }
+        if matches!(
+            (self.arena.str_val(open), self.arena.str_val(close)),
+            ("|", "|") | ("‖", "‖")
+        ) && !has_middle
+        {
+            return None;
+        }
+        let span = self.arena.push_children_deferred(&content);
+        Some(self.arena.push_node(CompactNode::Fenced {
+            open,
+            close,
+            content: span,
+        }))
+    }
+
+    fn fence_delimiter(&self, id: NodeId) -> Option<StrId> {
+        match *self.arena.node(id) {
+            CompactNode::Symbol(_, sid) => Some(sid),
+            _ => None,
+        }
     }
 
     /// A sole mstyle child can set an enclosure's body to text size. Record its
@@ -626,6 +711,9 @@ impl<'a> MathmlCompactParser<'a> {
                 } else {
                     self.arena.push_node(CompactNode::Symbol(kind, sid))
                 };
+                if let Some(attributes) = fence_attributes(start) {
+                    self.fence_attributes.insert(id, attributes);
+                }
                 if kind == SymbolKind::LargeOp {
                     if let Some(value) = movable {
                         self.movable_limit_operators.insert(id, value);
@@ -676,6 +764,11 @@ impl<'a> MathmlCompactParser<'a> {
                     None => matches!(attrs.reflect.as_deref(), Some("text" | "math")),
                 };
                 let (children, sized) = self.read_children(name, reflected)?;
+                if start.attributes().next().is_none()
+                    && let Some(fenced) = self.recover_fenced_row(&children)
+                {
+                    return Ok(fenced);
+                }
                 if reflected {
                     let content = self.flatten_ids(&children);
                     let text_mode = attrs.reflect.as_deref() == Some("text")
@@ -1578,6 +1671,67 @@ struct OperatorAttributes {
     movable_limits: Option<bool>,
     named_operator: bool,
     texclass_op: bool,
+}
+
+fn fence_attributes(start: &quick_xml::events::BytesStart<'_>) -> Option<FenceAttributes> {
+    let mut result = FenceAttributes::default();
+    let mut found = false;
+    for attr in start.attributes().flatten() {
+        match attr.key.as_ref() {
+            "fence" => {
+                found = true;
+                result.fence = match unescape_attr(&attr.value).trim() {
+                    value if value.eq_ignore_ascii_case("true") => Some(true),
+                    value if value.eq_ignore_ascii_case("false") => Some(false),
+                    _ => None,
+                };
+            },
+            "stretchy" => {
+                found = true;
+                result.stretchy = match unescape_attr(&attr.value).trim() {
+                    value if value.eq_ignore_ascii_case("true") => Some(true),
+                    value if value.eq_ignore_ascii_case("false") => Some(false),
+                    _ => None,
+                };
+            },
+            "form" => {
+                found = true;
+                result.form = Some(unescape_attr(&attr.value));
+            },
+            _ => {},
+        }
+    }
+    found.then_some(result)
+}
+
+fn matching_fence(open: &str, close: &str) -> bool {
+    matches!(
+        (open, close),
+        ("(", ")")
+            | ("[", "]")
+            | ("{", "}")
+            | ("⟨", "⟩")
+            | ("⌈", "⌉")
+            | ("⌊", "⌋")
+            | ("⟦", "⟧")
+            | ("⟮", "⟯")
+            | ("⦃", "⦄")
+            | ("⦇", "⦈")
+            | ("⦉", "⦊")
+            | ("⦋", "⦌")
+            | ("⦍", "⦎")
+            | ("⦏", "⦐")
+            | ("⦑", "⦒")
+            | ("⦓", "⦔")
+            | ("⦕", "⦖")
+            | ("⦗", "⦘")
+    )
+}
+
+#[inline]
+fn is_unambiguous_middle(attributes: &FenceAttributes) -> bool {
+    (attributes.stretchy.is_none() && attributes.form.is_none())
+        || attributes.form.as_deref() == Some("infix")
 }
 
 /// Read the small attribute subset used by an operator in one pass. Attribute
@@ -2487,6 +2641,40 @@ mod tests {
                 content: vec![FencedItem::Element(MathNode::Identifier("x".into()))],
             }
         );
+    }
+
+    #[test]
+    fn writer_fences_reimport_with_middle_delimiters() {
+        for source in [
+            r"\left( x \middle| y \right)",
+            r"\left| x \middle| y \right|",
+        ] {
+            let first = crate::from_latex(source).unwrap();
+            let mathml = first.to_mathml().unwrap();
+            let reparsed = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(reparsed.to_latex().unwrap(), first.to_latex().unwrap());
+            assert!(matches!(
+                reparsed.expr().nodes.as_slice(),
+                [MathNode::Fenced { content, .. }]
+                    if content.iter().any(|item| matches!(item, FencedItem::Middle(_)))
+            ));
+        }
+    }
+
+    #[test]
+    fn ambiguous_or_one_sided_fence_rows_stay_rows() {
+        let one_sided = r#"<math><mrow><mo fence="true">|</mo><mi>x</mi></mrow></math>"#;
+        assert!(matches!(
+            parse_one(one_sided),
+            MathNode::Row(children)
+                if matches!(children.first(), Some(MathNode::Symbol(SymbolKind::Fence, _)))
+        ));
+
+        let literal = r#"<math><mrow><mo fence="true">(</mo><mi>x</mi><mo fence="true" stretchy="true" form="prefix">|</mo><mi>y</mi><mo fence="true">)</mo></mrow></math>"#;
+        assert!(matches!(parse_one(literal), MathNode::Row(_)));
+
+        let fixed = r#"<math><mrow><mo fence="true" stretchy="false">(</mo><mi>x</mi><mo fence="true" stretchy="false">)</mo></mrow></math>"#;
+        assert!(matches!(parse_one(fixed), MathNode::Row(_)));
     }
 
     #[test]
