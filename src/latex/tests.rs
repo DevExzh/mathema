@@ -1303,7 +1303,9 @@ fn horizontal_braces_parse() {
 
     let config = Config::default();
 
-    // Overbrace/underbrace/bracket commands should parse into Overscript/Underscript nodes
+    // Overbrace/underbrace commands remain script nodes. Brackets are typed
+    // accents so they retain their square-bracket identity through LaTeX
+    // serialization and do not become line segments.
     let brace_cases = [
         ("\\overbrace{x+y}", true),     // Overscript
         ("\\underbrace{x+y}", false),   // Underscript
@@ -1324,7 +1326,20 @@ fn horizontal_braces_parse() {
             "brace command produced empty AST: {input}"
         );
         let root_node = expr.arena.node(roots[0]);
-        if *is_over {
+        if input.contains("bracket") {
+            assert!(
+                matches!(
+                    root_node,
+                    CompactNode::Accent {
+                        accent: '\u{23B4}' | '\u{23B5}',
+                        wide: true,
+                        ..
+                    }
+                ),
+                "bracket did not produce a typed wide Accent for {input}, got: {:?}",
+                root_node
+            );
+        } else if *is_over {
             assert!(
                 matches!(root_node, CompactNode::Overscript { .. }),
                 "overbrace/bracket did not produce Overscript for {input}, got: {:?}",
