@@ -651,8 +651,8 @@ fn write_node_in(
                 AccentPosition::Above => elem.push_attribute(("accent", "true")),
                 AccentPosition::Below => elem.push_attribute(("accentunder", "true")),
             }
-            if let Some(name) = accent_decoration(*accent, *position, *wide) {
-                elem.push_attribute(("data-mathema-accent-decoration", name));
+            if *accent == '\u{0304}' {
+                elem.push_attribute(("data-mathema-accent-decoration", "combining-macron"));
             }
             w.write_event(Event::Start(elem)).map_err(to_err)?;
             write_argument(w, base, display_style)?;
@@ -1117,18 +1117,6 @@ fn mathml_accent_glyph(ch: char) -> char {
     match ch {
         '\u{0304}' => '\u{203E}',
         _ => ch,
-    }
-}
-
-fn accent_decoration(ch: char, position: AccentPosition, wide: bool) -> Option<&'static str> {
-    match (ch, position, wide) {
-        ('\u{0304}' | '\u{203E}', AccentPosition::Above, false) => Some("accent-overline"),
-        ('\u{0332}', AccentPosition::Below, false) => Some("accent-underline"),
-        ('\u{23DE}', AccentPosition::Above, _) => Some("overbrace"),
-        ('\u{23DF}', AccentPosition::Below, _) => Some("underbrace"),
-        ('\u{23B4}', AccentPosition::Above, _) => Some("overbracket"),
-        ('\u{23B5}', AccentPosition::Below, _) => Some("underbracket"),
-        _ => None,
     }
 }
 
@@ -1636,12 +1624,8 @@ fn write_node_fast_in(
                 AccentPosition::Above => buf.push_str(" accent=\"true\""),
                 AccentPosition::Below => buf.push_str(" accentunder=\"true\""),
             }
-            if let Some(name) = accent_decoration(accent, position, wide) {
-                // The marker disambiguates wide TeX decorations from a generic
-                // MathML accent with the same glyph.
-                buf.push_str(" data-mathema-accent-decoration=\"");
-                buf.push_str(name);
-                buf.push('"');
+            if accent == '\u{0304}' {
+                buf.push_str(r#" data-mathema-accent-decoration="combining-macron""#);
             }
             buf.push('>');
             write_argument_fast(buf, arena, base, display_style);
@@ -1649,7 +1633,8 @@ fn write_node_fast_in(
             buf.push_str("<mo stretchy=\"");
             buf.push_str(if wide { "true" } else { "false" });
             buf.push_str("\">");
-            xml_escape_into(buf, &glyph.to_string());
+            let mut encoded = [0; 4];
+            xml_escape_into(buf, glyph.encode_utf8(&mut encoded));
             buf.push_str("</mo>");
             close_tag(buf, tag);
         },
@@ -2072,15 +2057,7 @@ fn mathml_script_decoration(node: &MathNode, position: AccentPosition) -> Option
     let MathNode::Symbol(_, text) = node else {
         return None;
     };
-    let ch = text.chars().next()?;
-    if text.chars().count() != 1 {
-        return None;
-    }
-    match (ch, position) {
-        ('\u{203E}', AccentPosition::Above) => Some("overline"),
-        ('\u{0332}' | '\u{203E}', AccentPosition::Below) => Some("underline"),
-        _ => accent_decoration(ch, position, true),
-    }
+    crate::unicode::symbols::fixed_script_decoration(text, position)
 }
 
 fn mathml_script_decoration_fast(
@@ -2091,16 +2068,7 @@ fn mathml_script_decoration_fast(
     let CompactNode::Symbol(_, sid) = *arena.node(id) else {
         return None;
     };
-    let text = arena.str_val(sid);
-    let ch = text.chars().next()?;
-    if text.chars().count() != 1 {
-        return None;
-    }
-    match (ch, position) {
-        ('\u{203E}', AccentPosition::Above) => Some("overline"),
-        ('\u{0332}' | '\u{203E}', AccentPosition::Below) => Some("underline"),
-        _ => accent_decoration(ch, position, true),
-    }
+    crate::unicode::symbols::fixed_script_decoration(arena.str_val(sid), position)
 }
 
 fn write_scripts(
@@ -2122,7 +2090,7 @@ fn write_scripts(
         return write_argument(w, base, display);
     };
     let mut elem = BytesStart::new(tag);
-    if under_over == Some(false) {
+    if under_over == Some(false) && accent_value == "true" && tag != "munderover" {
         if let Some(name) =
             upper.and_then(|node| mathml_script_decoration(node, AccentPosition::Above))
         {
@@ -2180,7 +2148,7 @@ fn write_scripts_fast(
     };
     buf.push('<');
     buf.push_str(tag);
-    if under_over == Some(false) {
+    if under_over == Some(false) && accent_value == "true" && tag != "munderover" {
         if let Some(name) = upper
             .is_some()
             .then(|| mathml_script_decoration_fast(arena, upper, AccentPosition::Above))
@@ -2948,6 +2916,12 @@ mod tests {
             r"\overbrace{rate}",
             r"\underbrace{rate}",
             r"\underleftarrow{lim}",
+            r"\overlinesegment{ab}",
+            r"\underlinesegment{ab}",
+            r"\widehat{AB}",
+            r"\widetilde{AB}",
+            r"\hat{x}",
+            r"\bar{x}",
         ] {
             let heap = LatexReader::parse(source, &config).unwrap().expr;
             let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
@@ -3035,7 +3009,10 @@ mod tests {
         let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let config = Config::default();
         let output = MathmlWriter::write_compact(&compact, &config).unwrap();
-        assert!(output.contains("<mo>&lt;</mo>"), "compact output: {output}");
+        assert!(
+            output.contains(r#"<mo stretchy="false">&lt;</mo>"#),
+            "compact output: {output}"
+        );
         assert!(!output.contains("<mo><</mo>"), "compact output: {output}");
     }
 

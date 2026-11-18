@@ -725,6 +725,22 @@ pub fn nary_op_to_latex(ch: char) -> Option<&'static str> {
     (kind == SymbolKind::LargeOp).then_some(name)
 }
 
+/// Identify fixed line and brace decorations whose presentation markup
+/// otherwise looks identical to a general accent.
+pub(crate) fn fixed_script_decoration(
+    glyph: &str,
+    position: crate::ast::AccentPosition,
+) -> Option<&'static str> {
+    use crate::ast::AccentPosition::{Above, Below};
+    match (glyph, position) {
+        ("‾", Above) => Some("overline"),
+        ("‾", Below) => Some("underline"),
+        ("⏞", Above) => Some("overbrace"),
+        ("⏟", Below) => Some("underbrace"),
+        _ => None,
+    }
+}
+
 /// Glyphs used as a single over- or under-accent in mathematical notation.
 #[inline]
 pub(crate) fn is_accent_glyph(ch: char) -> bool {

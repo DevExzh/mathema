@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Decorated and mixed-content LaTeX operator names now retain their upright
+  letters, nested styles and limit placement through LaTeX and MathML export.
+  The public AST exposes their content and form in `MathNode::StructuredOperator`.
+  Plain named operators keep their existing string representation.
 - LaTeX parsing and export preserve the mathtools smallmatrix family, including
   starred alignment options, fence spacing, and environment names supplied by macros.
   The public heap AST now represents parsed matrices and small matrices with
