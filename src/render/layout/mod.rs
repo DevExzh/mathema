@@ -1515,8 +1515,18 @@ fn layout_node_arena(
         } => layout_array_arena(
             ast,
             matches!(
-                ast.array_environment(id),
-                Some(crate::ast::MatrixKind::SmallMatrix)
+                ast.valid_matrix_environment(
+                    id,
+                    col_aligns,
+                    cells,
+                    num_cols,
+                    arraystretch_pct,
+                    add_jot,
+                    array_style,
+                    col_seps,
+                    row_seps,
+                ),
+                Some((crate::ast::MatrixKind::SmallMatrix, _))
             ),
             col_aligns,
             cells,

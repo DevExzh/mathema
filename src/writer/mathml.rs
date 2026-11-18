@@ -1518,10 +1518,24 @@ fn write_node_fast_in(
             num_cols,
             arraystretch_pct,
             add_jot,
-            ..
+            array_style,
+            col_seps,
+            row_seps,
         } => {
             let nc = num_cols as usize;
-            let environment = arena.array_environment(id);
+            let environment = arena
+                .valid_matrix_environment(
+                    id,
+                    col_aligns,
+                    cells,
+                    num_cols,
+                    arraystretch_pct,
+                    add_jot,
+                    array_style,
+                    col_seps,
+                    row_seps,
+                )
+                .map(|(kind, _)| kind);
             let cell_ids = arena.children(cells);
             let promoted = inherited_table_marker(display_style, add_jot, |marker| {
                 cell_ids
