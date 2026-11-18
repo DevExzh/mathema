@@ -692,11 +692,14 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn operator_token(&mut self, text: &str, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
-        let kind = classify_mo(text);
+        let mut kind = classify_mo(text);
         let name = text.trim();
         // Multi-letter operator tokens and explicitly named operators
         // are distinct from ordinary identifiers in <mi>.
         let attrs = operator_attributes(start, self.fence_depth == Some(self.depth));
+        if attrs.non_fence && is_vertical_bar(name) {
+            kind = SymbolKind::Ordinary;
+        }
         let movable = attrs.movable_limits;
         let mut chars = name.chars();
         let named = attrs.named_operator
@@ -1727,6 +1730,7 @@ struct OperatorAttributes {
     form: FenceRole,
     constrained: bool,
     fixed_literal: bool,
+    non_fence: bool,
 }
 
 impl OperatorAttributes {
@@ -1788,10 +1792,13 @@ fn operator_attributes(
     let mut result = OperatorAttributes::default();
     for attr in start.attributes().flatten() {
         match attr.key.as_ref() {
-            "fence" if inspect_fences => {
-                result.fenced = fence_attr_value(&attr.value)
-                    .trim()
-                    .eq_ignore_ascii_case("true");
+            "fence" => {
+                let value = fence_attr_value(&attr.value);
+                let value = value.trim();
+                result.non_fence = value.eq_ignore_ascii_case("false");
+                if inspect_fences {
+                    result.fenced = value.eq_ignore_ascii_case("true");
+                }
             },
             "stretchy" if inspect_fences => {
                 let value = fence_attr_value(&attr.value);
