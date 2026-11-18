@@ -1865,6 +1865,18 @@ impl<'i> Parser<'i> {
         }
         let base = self.or_empty(base);
         let sym = self.symbol(SymbolKind::Ordinary, &chr);
+        if matches!(chr.as_str(), "→" | "←") {
+            return Ok(self.arena.push_node(CompactNode::Accent {
+                base,
+                accent: chr.chars().next().unwrap_or('→'),
+                position: if top {
+                    AccentPosition::Above
+                } else {
+                    AccentPosition::Below
+                },
+                wide: false,
+            }));
+        }
         Ok(self.arena.push_node(if top {
             CompactNode::Overscript {
                 base,
@@ -1922,6 +1934,9 @@ impl<'i> Parser<'i> {
                 CompactNode::Operator {
                     limits: LimitStyle::AboveBelow,
                     ..
+                } | CompactNode::StructuredOperator {
+                    limits: LimitStyle::AboveBelow,
+                    ..
                 }
             )
         };
@@ -1930,6 +1945,18 @@ impl<'i> Parser<'i> {
                 let base = self.arena.push_node(CompactNode::Operator {
                     name,
                     limits: LimitStyle::AboveBelow,
+                });
+                return Ok(self.arena.push_node(if upper {
+                    CompactNode::Superscript { base, sup: lim }
+                } else {
+                    CompactNode::Subscript { base, sub: lim }
+                }));
+            },
+            _ if self.is_compound_operator_base(base) => {
+                let base = self.arena.push_node(CompactNode::StructuredOperator {
+                    content: base,
+                    limits: LimitStyle::AboveBelow,
+                    starred: true,
                 });
                 return Ok(self.arena.push_node(if upper {
                     CompactNode::Superscript { base, sup: lim }
@@ -1966,6 +1993,30 @@ impl<'i> Parser<'i> {
                 movable_limits: true,
             }
         }))
+    }
+
+    fn is_compound_operator_base(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Accent { base, .. }
+            | CompactNode::Overscript { base, .. }
+            | CompactNode::Underscript { base, .. }
+            | CompactNode::UnderOver { base, .. } => {
+                // OMML uses the same limit objects for a decorated operator
+                // and for a generic over/under expression. Once a decorated
+                // base is inside m:limLow/m:limUpp, retaining it as a
+                // structured operator preserves TeX operator spacing and
+                // effective placement on reimport.
+                let _ = base;
+                true
+            },
+            CompactNode::Row(span) => {
+                let children = self.arena.children(span);
+                children
+                    .iter()
+                    .any(|&child| self.is_compound_operator_base(child))
+            },
+            _ => false,
+        }
     }
 
     /// `m:m` (§22.1.2.60): `mPr{..., mcs}`, `mr+` of `e+`.
