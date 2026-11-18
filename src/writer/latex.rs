@@ -855,7 +855,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             write_delim(buf, open_str);
             buf.push(' ');
             let mut ends_with_command = false;
-            for &child_id in content_ids {
+            for (index, &child_id) in content_ids.iter().enumerate() {
                 match *arena.node(child_id) {
                     CompactNode::Middle(sid) => {
                         buf.push_str(" \\middle");
@@ -872,6 +872,15 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                             buf.push(' ');
                         }
                         write_node(buf, arena, child_id);
+                        // A large operator with an empty body must keep an
+                        // explicit empty group before the next fenced item.
+                        // The normal row writer adds this boundary, while the
+                        // fenced loop writes children directly.
+                        if index + 1 < content_ids.len()
+                            && ends_with_empty_body_nary(arena, child_id)
+                        {
+                            buf.push_str("{}");
+                        }
                         ends_with_command =
                             appended_ends_with_letter_command(buf, output_start, ends_with_command);
                     },

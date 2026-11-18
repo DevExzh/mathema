@@ -1289,6 +1289,16 @@ fn contour_integral_names_and_literals_keep_the_same_script_atom() {
 }
 
 #[test]
+fn empty_contour_integral_body_stays_stable_inside_fence() {
+    let source =
+        "$5$$2$52\\Set{ x $$$5∲$| x<\\frafrac ` 2 X\\x|mapsto* o_Xver*S=| \\xmapsto* o}ver*=";
+    let result = crate::from_latex(source).unwrap();
+    let first = result.to_latex().unwrap();
+    let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
+    assert_eq!(first, second);
+}
+
+#[test]
 fn letterlike_operator_bodies_retain_their_atom_class_and_spelling() {
     for (glyph, command) in [
         ('ℜ', r"\Re"),
