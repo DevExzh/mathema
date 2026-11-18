@@ -3144,10 +3144,31 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
         "{{}_{:}8.82}8.81888::::::::^{\\prime}:::::::::::::+ :::::::::::::::::8::::::"
     );
 
-    for input in ["1 2", "1.2 3.4", "x^1.2"] {
+    for input in [
+        "1 2",
+        "1.2 3.4",
+        "1 2.3 4.5",
+        "1.2 3.4 5.6",
+        ".5 1.2",
+        "1. 2.3",
+        "x^1.2",
+    ] {
         let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
         let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
         assert_eq!(first, second, "{input}");
+
+        let config = Config::default();
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let compact = LatexWriter::write_compact(&compact, &config).unwrap();
+        let heap = crate::from_latex_with(input, &config)
+            .unwrap()
+            .to_latex()
+            .unwrap();
+        assert_eq!(
+            compact, heap,
+            "heap and compact writers diverged for {input}"
+        );
     }
 
     let imported =
@@ -3156,6 +3177,11 @@ fn separated_decimal_numbers_after_a_leading_script_are_stable() {
     let second = crate::from_latex(&first).unwrap().to_latex().unwrap();
     assert_eq!(first, second);
     assert_eq!(first, "{1.2 3.4}");
+
+    let non_decimal =
+        crate::from_mathml(r#"<math><mrow><mn>1e3</mn><mn>4.5</mn></mrow></math>"#).unwrap();
+    let first = non_decimal.to_latex().unwrap();
+    assert_eq!(first, "{1e3 4.5}");
 }
 
 #[test]

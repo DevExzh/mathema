@@ -62,14 +62,22 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
 
     // Phase 3b: merge adjacent Number nodes
     let mut final_nodes = Vec::with_capacity(merged.len());
+    let mut number_dots = None;
     for node in merged {
+        let node_dots = match &node {
+            MathNode::Number(num) => number_decimal_points(num),
+            _ => None,
+        };
         if let MathNode::Number(ref num) = node
             && let Some(MathNode::Number(prev_num)) = final_nodes.last_mut()
-            && can_merge_number_text(prev_num, num)
+            && let (Some(previous_dots), Some(node_dots)) = (number_dots, node_dots)
+            && previous_dots + node_dots <= 1
         {
             prev_num.push_str(num);
+            number_dots = Some(previous_dots + node_dots);
             continue;
         }
+        number_dots = node_dots;
         final_nodes.push(node);
     }
 
@@ -132,15 +140,25 @@ fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
 /// in one node makes the writer emit an ambiguous token that reparses with a
 /// different grouping.
 pub(crate) fn can_merge_number_text(first: &str, second: &str) -> bool {
+    match (number_decimal_points(first), number_decimal_points(second)) {
+        (Some(first_dots), Some(second_dots)) => first_dots + second_dots <= 1,
+        _ => false,
+    }
+}
+
+/// Count decimal points in a number token whose text came from a parser or an
+/// authored MathML `<mn>`. Non-decimal content stays in its own node and is
+/// never merged with neighboring number nodes.
+fn number_decimal_points(text: &str) -> Option<usize> {
     let mut dots = 0;
-    for byte in first.bytes().chain(second.bytes()) {
+    for byte in text.bytes() {
         if byte == b'.' {
             dots += 1;
         } else if !byte.is_ascii_digit() {
-            return false;
+            return None;
         }
     }
-    dots <= 1
+    Some(dots)
 }
 
 fn is_effectively_empty_math(node: &MathNode) -> bool {
@@ -753,14 +771,28 @@ fn merge_runs(
             continue;
         };
         let mut end = i + 1;
-        while end < ids.len()
-            && matches!(key(arena, *arena.node(ids[end])), Some((k, sid)) if k == kind
-            && (kind != MergeKind::Number
-                || can_merge_number_text(
-                    arena.str_val(first_sid),
-                    arena.str_val(sid),
-                )))
-        {
+        let mut number_dots = (kind == MergeKind::Number)
+            .then(|| number_decimal_points(arena.str_val(first_sid)))
+            .flatten();
+        while end < ids.len() {
+            let Some((next_kind, next_sid)) = key(arena, *arena.node(ids[end])) else {
+                break;
+            };
+            if next_kind != kind {
+                break;
+            }
+            if kind == MergeKind::Number {
+                let Some(next_dots) = number_decimal_points(arena.str_val(next_sid)) else {
+                    break;
+                };
+                let Some(previous_dots) = number_dots else {
+                    break;
+                };
+                if previous_dots + next_dots > 1 {
+                    break;
+                }
+                number_dots = Some(previous_dots + next_dots);
+            }
             end += 1;
         }
         if end - i > 1 {
