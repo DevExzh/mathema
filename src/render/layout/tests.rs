@@ -1612,6 +1612,47 @@ fn lim_limits_below_in_display_mode() {
 }
 
 #[test]
+fn variable_limit_compounds_move_only_in_display() {
+    use crate::reader::Reader;
+    use crate::reader::latex::LatexReader;
+
+    fn child_kind(root: &LayoutBox) -> &BoxKind {
+        match &root.kind {
+            BoxKind::HBox { children } => &children[0].layout.kind,
+            _ => panic!("single-node expression should have an outer HBox"),
+        }
+    }
+
+    let config = crate::error::Config::default();
+    let opts = default_options();
+    for source in [r"\varinjlim_i", r"\varlimsup_i"] {
+        let expr = LatexReader::parse_compact(source, &config)
+            .expect("variable-limit source should parse")
+            .expr
+            .to_math_expr();
+        let display = layout_expr(&expr, MathStyle::Display, &opts);
+        let inline = layout_expr(&expr, MathStyle::Text, &opts);
+        assert!(
+            matches!(child_kind(&display), BoxKind::VBox { .. }),
+            "{source}"
+        );
+        assert!(
+            matches!(child_kind(&inline), BoxKind::HBox { .. }),
+            "{source}"
+        );
+    }
+
+    let literal = LatexReader::parse_compact(r"\underrightarrow{\lim}_i", &config)
+        .expect("literal decorated limit should parse")
+        .expr
+        .to_math_expr();
+    let display = layout_expr(&literal, MathStyle::Display, &opts);
+    let inline = layout_expr(&literal, MathStyle::Text, &opts);
+    assert!(matches!(child_kind(&display), BoxKind::HBox { .. }));
+    assert!(matches!(child_kind(&inline), BoxKind::HBox { .. }));
+}
+
+#[test]
 fn wants_limits_above_below_operator_default_display() {
     let op = MathNode::Operator(OperatorAttr {
         name: "lim".into(),

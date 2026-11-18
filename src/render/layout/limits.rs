@@ -81,12 +81,8 @@ pub(super) fn wants_limits_above_below(node: &MathNode, style: MathStyle) -> boo
             LimitStyle::Default => style.is_display(),
             LimitStyle::SubSup => false,
         },
-        // A limit operator decorated with an over/under line or arrow still
-        // behaves as a limit operator (see compact-path note above).
-        MathNode::Overscript { base, .. }
-        | MathNode::Underscript { base, .. }
-        | MathNode::UnderOver { base, .. }
-        | MathNode::Accent { base, .. } => wants_limits_above_below(base, style),
+        // Decorated compounds fall through as ordinary bases; variable-limit
+        // macros add an explicit movable MathAtom when outer scripts move.
         _ => false,
     }
 }
@@ -130,14 +126,8 @@ pub(super) fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: Ma
             LimitStyle::Default => style.is_display(),
             LimitStyle::SubSup => false,
         },
-        // A limit operator decorated with an over/under line or arrow (e.g.
-        // `\varlimsup` → `\overline{\lim}`, `\varprojlim` → `\underleftarrow{\lim}`)
-        // still behaves as a limit operator: scripts attach above/below the
-        // whole decorated stack rather than to its side.
-        CompactNode::Overscript { base, .. }
-        | CompactNode::Underscript { base, .. }
-        | CompactNode::UnderOver { base, .. }
-        | CompactNode::Accent { base, .. } => wants_limits_above_below_c(arena, base, style),
+        // Decorated compounds fall through as ordinary bases; variable-limit
+        // macros add an explicit movable MathAtom when outer scripts move.
         _ => false,
     }
 }

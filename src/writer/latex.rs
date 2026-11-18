@@ -265,9 +265,9 @@ fn write_postscript_base(buf: &mut String, arena: &AstArena, base: NodeId) {
         CompactNode::Operator { .. } => write_node(buf, arena, base),
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
-            ..
+            content,
         } => {
-            write_node(buf, arena, base);
+            write_math_atom_op(buf, arena, content, false);
             buf.push_str("\\nolimits");
         },
         _ => write_script_base(buf, arena, base),
@@ -282,16 +282,14 @@ fn write_compound_limits(
     upper: NodeId,
     movable: bool,
 ) -> bool {
-    if !matches!(
-        *arena.node(base),
-        CompactNode::MathAtom {
-            atom_type: MathAtomType::Op,
-            ..
-        }
-    ) {
+    let CompactNode::MathAtom {
+        atom_type: MathAtomType::Op,
+        content,
+    } = *arena.node(base)
+    else {
         return false;
-    }
-    write_node(buf, arena, base);
+    };
+    write_math_atom_op(buf, arena, content, false);
     if !movable {
         buf.push_str("\\limits");
     }
@@ -1071,7 +1069,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 buf.push('\\');
                 buf.push_str(cmd);
                 buf.push('{');
-                write_wrapped_content(buf, arena, base);
+                write_accent_base_content(buf, arena, base);
                 buf.push('}');
             } else {
                 // No dedicated command: preserve the accent glyph faithfully
@@ -1082,7 +1080,7 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
                 });
                 buf.push(accent);
                 buf.push_str("}{");
-                write_wrapped_content(buf, arena, base);
+                write_accent_base_content(buf, arena, base);
                 buf.push('}');
             }
         },
@@ -1341,9 +1339,13 @@ fn write_node(buf: &mut String, arena: &AstArena, id: NodeId) {
             buf.push('}');
         },
         CompactNode::MathAtom { atom_type, content } => {
+            if atom_type == MathAtomType::Op {
+                write_math_atom_op(buf, arena, content, true);
+                return;
+            }
             let cmd = match atom_type {
                 MathAtomType::Ord => "\\mathord",
-                MathAtomType::Op => "\\mathop",
+                MathAtomType::Op => unreachable!(),
                 MathAtomType::Bin => "\\mathbin",
                 MathAtomType::Rel => "\\mathrel",
                 MathAtomType::Open => "\\mathopen",
@@ -1781,6 +1783,60 @@ fn write_wrapped_content(buf: &mut String, arena: &AstArena, content: NodeId) {
         write_nodes(buf, arena, span);
     } else {
         write_node(buf, arena, content);
+    }
+}
+
+/// Write a compound operator.  An accent is already fixed to its core
+/// operator by the LaTeX parser, so an unscripted `\mathop` around one can be
+/// serialized as the natural accent command.  Scripted compound operators use
+/// the raw `\mathop` form so their movable outer-limit behavior survives a
+/// LaTeX round-trip.
+fn write_math_atom_op(buf: &mut String, arena: &AstArena, content: NodeId, natural_accent: bool) {
+    if natural_accent {
+        let mut id = content;
+        while let CompactNode::Row(span) = *arena.node(id) {
+            let &[only] = arena.children(span) else {
+                break;
+            };
+            id = only;
+        }
+        if is_natural_accent_node(arena, id) {
+            write_node(buf, arena, id);
+            return;
+        }
+    }
+    buf.push_str("\\mathop{");
+    write_wrapped_content(buf, arena, content);
+    buf.push('}');
+}
+
+fn is_natural_accent_node(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Accent { .. } => true,
+        CompactNode::Overscript { over, .. } => is_line_symbol(arena, over),
+        CompactNode::Underscript { under, .. } => is_line_symbol(arena, under),
+        _ => false,
+    }
+}
+
+/// Accent bases keep the accent attached to the core operator, so an
+/// automatically inserted `AboveBelow` marker is not needed in their emitted
+/// LaTeX.  This also avoids redundant `\lim\limits` in canonical accents.
+fn write_accent_base_content(buf: &mut String, arena: &AstArena, content: NodeId) {
+    match *arena.node(content) {
+        CompactNode::Operator {
+            name,
+            limits: LimitStyle::AboveBelow,
+        } => {
+            let name = arena.str_val(name);
+            let style = if crate::unicode::symbols::operator_has_limits(name) {
+                LimitStyle::Default
+            } else {
+                LimitStyle::SubSup
+            };
+            write_operator_name(buf, name, style);
+        },
+        _ => write_wrapped_content(buf, arena, content),
     }
 }
 
