@@ -29,6 +29,34 @@ fn write_latex_choice(source: &str, display: DisplayStyle) -> String {
     OmmlWriter::write_compact(&expr, &config).unwrap()
 }
 
+#[cfg(feature = "render")]
+#[test]
+fn decorated_structured_operator_limits_keep_native_omml_geometry() {
+    for source in [
+        r"\operatorname*{\overline{lim}}_n x",
+        r"\operatorname*{A\overline{lim}B}_n x",
+        r"\operatorname*{\underrightarrow{lim}}\limits_i x",
+        r"\operatorname*{\overline{\frac{a}{b}}}_i x",
+    ] {
+        let original =
+            crate::from_latex_with(source, &Config::default().with_display(DisplayStyle::Block))
+                .unwrap();
+        let omml = original.to_omml().unwrap();
+        let reimported =
+            crate::from_omml_with(&omml, &Config::default().with_display(DisplayStyle::Block))
+                .unwrap();
+        assert_eq!(
+            original.to_svg().unwrap(),
+            reimported.to_svg().unwrap(),
+            "{source}\n{omml}"
+        );
+        assert!(
+            omml.contains("<m:limLow>") || omml.contains("<m:limUpp>"),
+            "{source}\n{omml}"
+        );
+    }
+}
+
 #[test]
 fn number_and_identifier() {
     assert!(write(MathNode::Number("42".into())).contains("<m:r><m:t>42</m:t></m:r>"));
