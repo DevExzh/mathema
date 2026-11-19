@@ -41,7 +41,7 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::StructuredOperator { .. } => Some(
             "UnicodeMath has no source-level StructuredOperator marker; the body and representable bounds were written with standard grouping and script syntax".into(),
         ),
-        CompactNode::Array {cells, ..} => table_loss(arena,*cells),
+        CompactNode::Array { .. } => table_loss(arena, node),
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
@@ -92,28 +92,44 @@ impl MathWriter for UnicodeMathWriter {
     }
 }
 
-fn table_loss(arena: &AstArena, cells: crate::ast::compact::NodeSpan) -> Option<String> {
+fn table_loss(arena: &AstArena, table: &CompactNode) -> Option<String> {
+    let CompactNode::Array {
+        cells,
+        num_cols,
+        col_aligns,
+        array_style,
+        col_seps,
+        row_seps,
+        ..
+    } = *table
+    else {
+        return None;
+    };
+    let columns = arena.children(col_aligns);
+    let stride = usize::from(num_cols.max(1));
     let mut alignment_lost = false;
     let mut spans_lost = false;
     let mut edges_lost = false;
-    for &cell in arena.children(cells) {
-        match *arena.node(cell) {
-            CompactNode::AlignedCell { alignment, .. } => {
-                alignment_lost |= alignment != ColumnAlign::Center
-            },
-            CompactNode::SpannedCell {
-                alignment,
-                span,
-                left_boundaries,
-                right_boundaries,
-                ..
-            } => {
-                alignment_lost |= alignment != ColumnAlign::Center;
-                spans_lost |= span > 1;
-                edges_lost |= !arena.str_val(left_boundaries).is_empty()
-                    || !arena.str_val(right_boundaries).is_empty();
-            },
-            _ => {},
+    for (index, &cell) in arena.children(cells).iter().enumerate() {
+        let declared = columns
+            .get(index % stride)
+            .and_then(|&id| match *arena.node(id) {
+                CompactNode::ColAlign(align) => Some(align),
+                _ => None,
+            })
+            .unwrap_or(ColumnAlign::Center);
+        alignment_lost |= super::effective_cell_alignment(arena, cell, declared)
+            .is_some_and(|align| align != ColumnAlign::Center);
+        if let CompactNode::SpannedCell {
+            span,
+            left_boundaries,
+            right_boundaries,
+            ..
+        } = *arena.node(cell)
+        {
+            spans_lost |= span > 1;
+            edges_lost |= !arena.str_val(left_boundaries).is_empty()
+                || !arena.str_val(right_boundaries).is_empty();
         }
     }
     let mut messages = [
@@ -126,6 +142,11 @@ fn table_loss(arena: &AstArena, cells: crate::ast::compact::NodeSpan) -> Option<
             "UnicodeMath expands a spanning cell into separate matrix entries.",
         ),
         (edges_lost, "UnicodeMath omits per-cell boundary material."),
+        (
+            col_seps != 0 || row_seps != 0,
+            "UnicodeMath omits table rules.",
+        ),
+        (array_style, "UnicodeMath omits TeX outer padding."),
     ]
     .into_iter()
     .filter_map(|(lost, message)| lost.then_some(message));

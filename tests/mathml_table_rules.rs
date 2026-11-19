@@ -266,3 +266,28 @@ fn editing_compact_padding_updates_public_tree_and_output() {
         );
     }
 }
+
+#[test]
+fn padding_and_global_rules_are_reported_on_lossy_table_readback() {
+    let source = mathema::from_latex(r"\begin{array}{|c|}x\end{array}").unwrap();
+    let (omml, omml_diag) = source.to_omml_with_diagnostics().unwrap();
+    let (unicode, unicode_diag) = source.to_unicode_math_with_diagnostics().unwrap();
+    for (back, diagnostics) in [
+        (mathema::from_omml(&omml).unwrap(), omml_diag),
+        (mathema::from_unicode_math(&unicode).unwrap(), unicode_diag),
+    ] {
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("outer padding"))
+        );
+        assert!(diagnostics.iter().any(|d| d.message.contains("rules")));
+        let xml = back.to_mathml().unwrap();
+        assert!(xml.contains("<mtable") && xml.contains(">x</mi>"), "{xml}");
+        assert!(
+            !xml.contains("data-mathema-array-style") && !xml.contains("data-mathema-col-seps")
+        );
+        #[cfg(feature = "render")]
+        assert_ne!(back.to_svg().unwrap(), source.to_svg().unwrap());
+    }
+}

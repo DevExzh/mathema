@@ -811,7 +811,8 @@ mod tests {
             UnicodeMathWriter::write_compact_with_diagnostics(&compact, &config)
                 .unwrap()
                 .1
-                .is_empty()
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("centers table columns"))
         );
     }
 
@@ -921,8 +922,14 @@ mod tests {
                 .to_unicode_math_with_diagnostics()
                 .unwrap()
                 .1
-                .is_empty()
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("centers table columns"))
         );
+        let unicode_back = from_unicode_math(&uniform.to_unicode_math().unwrap())
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(unicode_back.contains(r#"columnalign="center""#));
     }
 
     #[test]

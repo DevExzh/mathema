@@ -928,15 +928,20 @@ impl<'a> Emitter<'a> {
                 add_jot,
                 col_seps,
                 row_seps,
-                ..
-            } => self.array(
-                col_aligns,
-                cells,
-                num_cols,
-                add_jot,
-                arraystretch_pct != 100 || col_seps != 0 || row_seps != 0,
-                fmt,
-            ),
+                array_style,
+            } => {
+                if array_style {
+                    self.loss("OMML output omits TeX outer padding.");
+                }
+                self.array(
+                    col_aligns,
+                    cells,
+                    num_cols,
+                    add_jot,
+                    arraystretch_pct != 100 || col_seps != 0 || row_seps != 0,
+                    fmt,
+                );
+            },
             CompactNode::Phantom(content, kind) => {
                 let (show, zero_wid, zero_asc, zero_desc) = phantom_pr_flags(kind);
                 // m:show defaults to on; write it only to hide the content.
