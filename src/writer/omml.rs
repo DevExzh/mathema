@@ -1221,19 +1221,12 @@ impl<'a> Emitter<'a> {
         fmt: Fmt,
     ) {
         let arena = self.arena;
-        let aligns: Vec<ColumnAlign> = arena
-            .children(col_aligns)
-            .iter()
-            .filter_map(|&id| match *arena.node(id) {
-                CompactNode::ColAlign(a) => Some(a),
-                _ => None,
-            })
-            .collect();
         if spacing_lost {
             self.loss("OMML output does not preserve array row stretch or rules");
         }
         let cell_ids = arena.children(cells);
         let ncols = usize::from(num_cols.max(1));
+        let aligns = matrix_column_alignments(arena, arena.children(col_aligns), cell_ids, ncols);
         let centred = aligns.iter().all(|&a| a == ColumnAlign::Center);
         // Right/left alternating columns are an aligned equation array.
         let aligned = ncols >= 2
@@ -1316,14 +1309,8 @@ impl<'a> Emitter<'a> {
     }
 
     fn note_cell_alignment(&mut self, cell: NodeId, column: ColumnAlign) {
-        match *self.arena.node(cell) {
-            CompactNode::AlignedCell { alignment, .. } => {
-                if alignment != column {
-                    self.loss(format!(
-                        "OMML uses the {column:?} column alignment for a cell that requested {alignment:?} cell alignment"
-                    ));
-                }
-            },
+        let alignment = match *self.arena.node(cell) {
+            CompactNode::AlignedCell { alignment, .. } => alignment,
             CompactNode::SpannedCell {
                 alignment,
                 span,
@@ -1332,26 +1319,67 @@ impl<'a> Emitter<'a> {
                 ..
             } => {
                 if span > 1 {
-                    self.loss(format!(
-                        "OMML has no cell-span construct; the authored span of {span} columns was expanded"
-                    ));
+                    self.loss("OMML writes a cell-span construct as separate matrix entries.");
                 }
                 if !self.arena.str_val(left_boundaries).is_empty()
                     || !self.arena.str_val(right_boundaries).is_empty()
                 {
-                    self.loss(
-                        "OMML has no per-cell boundary material; authored span glue or rules were dropped",
-                    );
+                    self.loss("OMML omits per-cell boundary material.");
                 }
-                if alignment != column {
-                    self.loss(format!(
-                        "OMML uses the {column:?} column alignment for a spanned cell that requested {alignment:?}"
-                    ));
-                }
+                alignment
             },
-            _ => {},
+            _ => return,
+        };
+        if alignment != column {
+            self.loss(format!("OMML uses the {column:?} column alignment for a cell that requested {alignment:?} cell alignment"));
         }
     }
+}
+
+/// OMML can encode an override as a column property whenever all actual
+/// cells in that column agree. A slot covered by another cell is empty in
+/// the projected matrix and contributes no alignment requirement.
+fn matrix_column_alignments(
+    arena: &AstArena,
+    columns: &[NodeId],
+    cells: &[NodeId],
+    stride: usize,
+) -> Vec<ColumnAlign> {
+    let mut result: Vec<_> = columns
+        .iter()
+        .map(|&id| match *arena.node(id) {
+            CompactNode::ColAlign(align) => align,
+            _ => ColumnAlign::Center,
+        })
+        .collect();
+    for col in 0..stride.min(cells.len()) {
+        let declared = result.get(col).copied().unwrap_or(ColumnAlign::Center);
+        let mut requirements =
+            cells[col..]
+                .iter()
+                .step_by(stride)
+                .filter_map(|&id| match *arena.node(id) {
+                    CompactNode::AlignedCell { alignment, .. }
+                    | CompactNode::SpannedCell { alignment, .. } => Some(alignment),
+                    CompactNode::Row(span)
+                        if span.is_empty()
+                            && (arena.is_span_padding(id) || arena.is_matrix_padding(id)) =>
+                    {
+                        None
+                    },
+                    _ => Some(declared),
+                });
+        if let Some(requested) = requirements.next()
+            && requested != declared
+            && requirements.all(|alignment| alignment == requested)
+        {
+            if col >= result.len() {
+                result.resize(col + 1, ColumnAlign::Center);
+            }
+            result[col] = requested;
+        }
+    }
+    result
 }
 
 /// Host-side run formatting for one run.

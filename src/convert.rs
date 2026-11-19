@@ -595,6 +595,35 @@ mod tests {
     }
 
     #[test]
+    fn omml_column_properties_retain_unanimous_cell_overrides() {
+        for (src, aligned_cells, loses_alignment) in [
+            (
+                r"\begin{array}{ll}\multicolumn{1}{r}{a}&1\\\multicolumn{1}{r}{bb}&2\end{array}",
+                2,
+                false,
+            ),
+            (
+                r"\begin{array}{ll}\multicolumn{1}{r}{a}&1\\b&2\end{array}",
+                0,
+                true,
+            ),
+        ] {
+            let (omml, diags) = from_latex(src).unwrap().to_omml_with_diagnostics().unwrap();
+            let readback = from_omml(&omml).unwrap().to_mathml().unwrap();
+            assert_eq!(
+                readback.matches(r#"columnalign="right""#).count(),
+                aligned_cells,
+                "{readback}"
+            );
+            assert_eq!(
+                diags.iter().any(|d| d.message.contains("cell alignment")),
+                loses_alignment,
+                "{diags:?}"
+            );
+        }
+    }
+
+    #[test]
     fn spanned_cell_interchange_reports_only_unrepresentable_table_metadata() {
         use crate::ast::{ColumnAlign, MathExpr, MathNode, SpanBoundary};
 
