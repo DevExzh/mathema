@@ -10,7 +10,6 @@ enum Provenance {
     NativeArray,
     MatrixPadding,
     SpanPadding,
-    MatrixPartitionRules(StrId),
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -459,28 +458,6 @@ impl AstArena {
     pub(crate) fn is_span_padding(&self, id: NodeId) -> bool {
         matches!(self.provenance.get(id), Some(Provenance::SpanPadding))
             && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
-    }
-
-    /// Retain the complete MTEF matrix column-partition pattern, including
-    /// positions beyond the legacy 32-bit AST mask.
-    pub(crate) fn mark_matrix_partition_rules(&mut self, id: NodeId, rules: &[bool]) {
-        let spelling: String = rules
-            .iter()
-            .map(|&rule| if rule { '1' } else { '0' })
-            .collect();
-        let value = self.push_str(&spelling);
-        if !self.size_overflow {
-            self.provenance
-                .insert(id, Provenance::MatrixPartitionRules(value));
-        }
-    }
-
-    /// Return the complete retained MTEF matrix column-partition pattern.
-    pub(crate) fn matrix_partition_rules(&self, id: NodeId) -> Option<&str> {
-        let Provenance::MatrixPartitionRules(value) = self.provenance.get(id)? else {
-            return None;
-        };
-        Some(self.str_val(value))
     }
 
     /// Resolve the cell's alignment and the math list to typeset in it.

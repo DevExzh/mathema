@@ -1394,18 +1394,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 });
             if env == "array" {
                 buf.push('{');
-                let retained_rules = arena.matrix_partition_rules(id);
-                let has_rule = |index: usize| {
-                    retained_rules.map_or_else(
-                        || index < 32 && (col_seps & (1 << index)) != 0,
-                        |rules| rules.as_bytes().get(index) == Some(&b'1'),
-                    )
-                };
                 if trim_edges {
                     buf.push_str("@{}");
                 }
                 for (index, &id) in columns.iter().enumerate() {
-                    if has_rule(index) {
+                    if index < 32 && (col_seps & (1 << index)) != 0 {
                         buf.push('|');
                     }
                     if let CompactNode::ColAlign(col) = *arena.node(id) {
@@ -1416,7 +1409,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         });
                     }
                 }
-                if has_rule(columns.len()) {
+                if columns.len() < 32 && (col_seps & (1 << columns.len())) != 0 {
                     buf.push('|');
                 }
                 if trim_edges {

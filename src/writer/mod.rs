@@ -22,6 +22,26 @@ fn cell_after_style<'a>(arena: &'a AstArena, cell: &'a NodeId, marker: u8) -> Op
     }
 }
 
+/// The alignment of an occupied logical slot when projecting to a format
+/// with a single alignment per matrix or per column.
+fn effective_cell_alignment(
+    arena: &AstArena,
+    id: NodeId,
+    declared: crate::ast::ColumnAlign,
+) -> Option<crate::ast::ColumnAlign> {
+    match *arena.node(id) {
+        CompactNode::AlignedCell { alignment, .. } | CompactNode::SpannedCell { alignment, .. } => {
+            Some(alignment)
+        },
+        CompactNode::Row(span)
+            if span.is_empty() && (arena.is_span_padding(id) || arena.is_matrix_padding(id)) =>
+        {
+            None
+        },
+        _ => Some(declared),
+    }
+}
+
 /// Walk a compact expression and collect a `Warning` for every node the target
 /// writer cannot represent, using a per-format `classify` closure that returns
 /// the warning message for a lossy node (or `None`). Shared by the format

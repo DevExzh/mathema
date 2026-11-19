@@ -624,6 +624,23 @@ mod tests {
     }
 
     #[test]
+    fn mtef_uses_an_effective_alignment_when_every_cell_agrees() {
+        let source = r"\begin{array}{lc}\multicolumn{1}{r}{a}&\multicolumn{1}{r}{1}\\\multicolumn{1}{r}{bb}&\multicolumn{1}{r}{2}\end{array}";
+        for v in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+            let (bytes, diags) = from_latex(source)
+                .unwrap()
+                .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(v))
+                .unwrap();
+            assert!(
+                !diags.iter().any(|d| d.message.contains("alignment")),
+                "{diags:?}"
+            );
+            let xml = from_mtef_bytes(&bytes).unwrap().to_mathml().unwrap();
+            assert_eq!(xml.matches(r#"columnalign="right""#).count(), 4, "{xml}");
+        }
+    }
+
+    #[test]
     fn spanned_cell_interchange_reports_only_unrepresentable_table_metadata() {
         use crate::ast::{ColumnAlign, MathExpr, MathNode, SpanBoundary};
 
@@ -850,16 +867,22 @@ mod tests {
             );
         }
 
-        let pile = from_latex(
+        let nested = from_latex(
             r"\begin{array}{l}\begin{array}{l}\multicolumn{1}{|l|}{a}\\\multicolumn{1}{|l|}{b}\end{array}\end{array}",
-        )
-        .unwrap();
-        let (_, diagnostics) = pile.to_mtef_with_diagnostics().unwrap();
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.message.contains("per-cell boundary material"))
-        );
+        ).unwrap();
+        for version in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+            let (bytes, diagnostics) = nested
+                .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(version))
+                .unwrap();
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("boundary material")),
+                "{diagnostics:?}"
+            );
+            let tex = from_mtef_bytes(&bytes).unwrap().to_latex().unwrap();
+            assert!(tex.contains(r"\begin{array}{|l|}"), "{tex}");
+        }
     }
 
     #[test]

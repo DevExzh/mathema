@@ -1354,21 +1354,10 @@ fn matrix_column_alignments(
         .collect();
     for col in 0..stride.min(cells.len()) {
         let declared = result.get(col).copied().unwrap_or(ColumnAlign::Center);
-        let mut requirements =
-            cells[col..]
-                .iter()
-                .step_by(stride)
-                .filter_map(|&id| match *arena.node(id) {
-                    CompactNode::AlignedCell { alignment, .. }
-                    | CompactNode::SpannedCell { alignment, .. } => Some(alignment),
-                    CompactNode::Row(span)
-                        if span.is_empty()
-                            && (arena.is_span_padding(id) || arena.is_matrix_padding(id)) =>
-                    {
-                        None
-                    },
-                    _ => Some(declared),
-                });
+        let mut requirements = cells[col..]
+            .iter()
+            .step_by(stride)
+            .filter_map(|&id| super::effective_cell_alignment(arena, id, declared));
         if let Some(requested) = requirements.next()
             && requested != declared
             && requirements.all(|alignment| alignment == requested)

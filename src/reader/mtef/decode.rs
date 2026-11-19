@@ -1019,8 +1019,19 @@ impl<'a> Decoder<'a> {
         let cols = usize::from(self.u8()?);
         // Partition line styles: two bits per line, one more line than rows
         // (columns), low bits first, padded to whole bytes.
-        let (row_seps, _) = self.partition_lines(rows + 1, false)?;
-        let (col_seps, column_rules) = self.partition_lines(cols + 1, true)?;
+        let row_rules = self.partition_lines(rows + 1)?;
+        let row_seps = row_rules.low();
+        if row_rules.extended_count() > 0 {
+            self.warn(
+                start,
+                format!(
+                    "{} horizontal matrix partition lines exceed the native row mask",
+                    row_rules.extended_count()
+                ),
+            );
+        }
+        let column_rules = self.partition_lines(cols + 1)?;
+        let col_seps = column_rules.low();
         let list = self.parse_list()?;
         // Cells are only allocated for LINE records actually read, so the
         // declared size cannot make the reader allocate more than the input.
@@ -1050,18 +1061,44 @@ impl<'a> Decoder<'a> {
         while !cells.len().is_multiple_of(num_cols) {
             cells.push(self.empty_row()?);
         }
-        for cell in &mut cells {
-            *cell = self.as_row(*cell)?;
-        }
         let align = column_align(h_just);
+        let mut right_rule = None;
+        // The native mask covers the first 32 boundaries. Retain later
+        // column rules on the preceding cell, in the public tree as well
+        // as the compact one. These wrappers also survive table edits.
+        for (index, cell) in cells.iter_mut().enumerate() {
+            let row = self.as_row(*cell)?;
+            let edge = index % num_cols + 1;
+            *cell = if edge >= u32::BITS as usize && column_rules.get(edge) {
+                let rule = *right_rule.get_or_insert_with(|| {
+                    self.arena
+                        .push_span_boundaries(&[crate::ast::SpanBoundary::Rule])
+                });
+                let content = match *self.arena.node(row) {
+                    CompactNode::Row(span) if self.arena.children(span).len() == 1 => {
+                        self.arena.children(span)[0]
+                    },
+                    _ => row,
+                };
+                self.node(CompactNode::SpannedCell {
+                    alignment: align,
+                    span: 1,
+                    left_boundaries: crate::ast::compact::StrId::EMPTY,
+                    right_boundaries: rule,
+                    content,
+                })?
+            } else {
+                row
+            };
+        }
         let mut aligns: SmallVec<[NodeId; 8]> = SmallVec::new();
         for _ in 0..num_cols {
             aligns.push(self.node(CompactNode::ColAlign(align))?);
         }
         let col_aligns = self.children(&aligns)?;
         let cells = self.children(&cells)?;
-        let array_style = col_seps != 0 || row_seps != 0 || column_rules.iter().any(|&rule| rule);
-        let array = self.node(CompactNode::Array {
+        let array_style = column_rules.any() || row_seps != 0;
+        self.node(CompactNode::Array {
             col_aligns,
             cells,
             num_cols: u16::try_from(num_cols).unwrap_or(u16::MAX),
@@ -1072,46 +1109,25 @@ impl<'a> Decoder<'a> {
             array_style,
             col_seps,
             row_seps,
-        })?;
-        if column_rules.iter().skip(32).any(|&rule| rule) {
-            self.arena.mark_matrix_partition_rules(array, &column_rules);
-        }
-        Ok(array)
+        })
     }
 
-    /// Read `lines` two-bit partition styles; bit i of the result is set when
-    /// line i is drawn (dashed and dotted lines become solid rules).
-    /// The AST records rules before the first 32 rows or columns only; a
-    /// drawn line beyond them is reported and dropped.
-    fn partition_lines(&mut self, lines: usize, retain_extended: bool) -> Result<(u32, Vec<bool>)> {
-        let start = self.pos;
-        let bytes = lines.div_ceil(4);
-        let mut mask = 0u32;
-        let mut dropped = 0usize;
-        let mut rules = vec![false; lines];
-        for byte_index in 0..bytes {
-            let b = self.u8()?;
-            for k in 0..4 {
-                let line = byte_index * 4 + k;
-                if line < lines && (b >> (2 * k)) & 0x3 != 0 {
-                    rules[line] = true;
-                    if line < 32 {
-                        mask |= 1 << line;
-                    } else {
-                        dropped += 1;
-                    }
+    /// Each boundary occupies two bits, least significant first. The
+    /// MathType reader historically projects each visible stroke to solid.
+    fn partition_lines(&mut self, lines: usize) -> Result<super::PartitionMask> {
+        let mut mask = super::PartitionMask::default();
+        for offset in (0..lines).step_by(4) {
+            let byte = self.u8()?;
+            if byte == 0 {
+                continue;
+            }
+            for k in 0..(lines - offset).min(4) {
+                if (byte >> (2 * k)) & 3 != 0 {
+                    mask.set(offset + k, true);
                 }
             }
         }
-        if dropped > 0 && !retain_extended {
-            self.warn(
-                start,
-                format!(
-                    "{dropped} matrix partition line(s) after the 32nd row or column were dropped"
-                ),
-            );
-        }
-        Ok((mask, rules))
+        Ok(mask)
     }
 
     // ── Non-structural records ─────────────────────────────────────────

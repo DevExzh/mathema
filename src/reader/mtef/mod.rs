@@ -32,6 +32,46 @@
 //! length in both modes. A stream that cannot be decoded at all yields an
 //! empty expression and a warning in Lenient mode.
 
+/// MTEF MATRIX has at most 255 cells on each axis and one more boundary.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PartitionMask([u64; 4]);
+
+impl PartitionMask {
+    pub(crate) fn from_low(mask: u32) -> Self {
+        Self([u64::from(mask), 0, 0, 0])
+    }
+    pub(crate) fn low(self) -> u32 {
+        self.0[0] as u32
+    }
+    pub(crate) fn get(self, boundary: usize) -> bool {
+        self.0[boundary / 64] & (1 << (boundary % 64)) != 0
+    }
+    pub(crate) fn set(&mut self, boundary: usize, active: bool) {
+        let bit = 1 << (boundary % 64);
+        let word = &mut self.0[boundary / 64];
+        if active {
+            *word |= bit;
+        } else {
+            *word &= !bit;
+        }
+    }
+    pub(crate) fn any(self) -> bool {
+        self.0 != [0; 4]
+    }
+    pub(crate) fn extended_count(self) -> u32 {
+        self.0.iter().map(|v| v.count_ones()).sum::<u32>() - self.low().count_ones()
+    }
+    pub(crate) fn intersection(self, other: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i] & other.0[i]))
+    }
+    pub(crate) fn union(self, other: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i] | other.0[i]))
+    }
+    pub(crate) fn differing(self, other: Self) -> Self {
+        Self(std::array::from_fn(|i| self.0[i] ^ other.0[i]))
+    }
+}
+
 pub(crate) mod chars;
 mod decode;
 mod info;

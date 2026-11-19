@@ -1072,7 +1072,10 @@ fn partition_lines_beyond_the_ast_are_retained_for_mtef_roundtrip() {
     let cells3: Vec<u8> = (0..40).flat_map(|_| line3(&c3(0, 3, 'a'))).collect();
     let matrix5 = cat(&[&[0x05, 0, 0, 1, 1, 1, 40, 0], &col_parts, &cells5, &[0]]);
     let matrix3 = cat(&[&[0x05, 1, 2, 1, 1, 40, 0], &col_parts, &cells3, &[0]]);
-    for bytes in [eq5(&matrix5), eq3(&matrix3)] {
+    for (bytes, version) in [
+        (eq5(&matrix5), MtefVersion::V5),
+        (eq3(&matrix3), MtefVersion::V3),
+    ] {
         let result = MtefReader::parse_bytes_compact(&bytes, &Config::default()).unwrap();
         assert!(
             !result
@@ -1084,6 +1087,44 @@ fn partition_lines_beyond_the_ast_are_retained_for_mtef_roundtrip() {
             crate::writer::latex::LatexWriter::write_compact(&result.expr, &Config::default())
                 .unwrap()
                 .contains("|")
+        );
+        let mut heap = result.expr.to_math_expr();
+        let MathNode::NativeArray { rows, .. } = &mut heap.nodes[0] else {
+            panic!("expected a ruled array")
+        };
+        assert_eq!(rows[0].len(), 40);
+        assert!(matches!(rows[0][34].as_slice(),
+            [MathNode::SpannedCell {span:1,right_boundaries,..}] if right_boundaries == &[crate::ast::SpanBoundary::Rule]));
+        let compact = crate::CompactExpr::from_math_expr(&heap).unwrap();
+        let (encoded, diagnostics) = crate::writer::mtef::MtefWriter::write_bytes_with_diagnostics(
+            &compact,
+            &Config::default(),
+            &crate::MtefWriteOptions::new(version),
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let imported = MtefReader::parse_bytes(&encoded, &Config::default())
+            .unwrap()
+            .expr;
+        assert_eq!(imported, heap);
+        // Editing the public cell changes the encoded partition as well.
+        let MathNode::NativeArray { rows, .. } = &mut heap.nodes[0] else {
+            unreachable!()
+        };
+        rows[0][34] = vec![MathNode::Identifier("x".into())];
+        let compact = crate::CompactExpr::from_math_expr(&heap).unwrap();
+        let (changed, _) = crate::writer::mtef::MtefWriter::write_bytes_with_diagnostics(
+            &compact,
+            &Config::default(),
+            &crate::MtefWriteOptions::new(version),
+        )
+        .unwrap();
+        assert!(
+            !crate::from_mtef_bytes(&changed)
+                .unwrap()
+                .to_latex()
+                .unwrap()
+                .contains('|')
         );
     }
 }
