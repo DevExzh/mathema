@@ -5020,6 +5020,7 @@ impl LatexCompactParser {
     fn parse_multicolumn<'a>(
         &mut self,
         input: &'a str,
+        remaining_columns: usize,
     ) -> IResult<
         &'a str,
         (
@@ -5037,18 +5038,21 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Char,
             )));
         };
-        let Ok(span) = span_count.trim().parse::<u16>() else {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Verify,
-            )));
+        let span = match span_count.trim().parse::<u16>() {
+            Ok(span) if usize::from(span) > remaining_columns => {
+                return Err(self.table_length_error(input));
+            },
+            Err(error) if *error.kind() == std::num::IntErrorKind::PosOverflow => {
+                return Err(self.table_length_error(input));
+            },
+            Ok(span) if span > 0 => span,
+            _ => {
+                return Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Verify,
+                )));
+            },
         };
-        if span == 0 {
-            return Err(nom::Err::Error(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::Verify,
-            )));
-        }
         let (input, _) = ws(input)?;
         let Some((input, spec)) = super::mhchem::capture_braced(input) else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -6552,7 +6556,8 @@ impl LatexCompactParser {
             (input, (SmallVec::new(), 0u32, true), Vec::new())
         };
 
-        let (input, (mut rows, row_seps)) = self.parse_table_body_with_seps(input)?;
+        let (input, (mut rows, row_seps)) =
+            self.parse_table_body_with_seps(input, columns.0.len())?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
         let (input, _) = ws(input)?;
@@ -7829,11 +7834,22 @@ impl LatexCompactParser {
     // Table parsing helpers
     // -----------------------------------------------------------------------
 
+    fn table_length_error<'a>(&mut self, input: &'a str) -> nom::Err<nom::error::Error<&'a str>> {
+        self.abort = Some(Error::LimitExceeded {
+            kind: crate::error::LimitKind::ListLength,
+            limit: AstArena::MAX_CHILDREN,
+        });
+        nom::Err::Failure(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TooLarge,
+        ))
+    }
+
     fn parse_table_body<'a>(
         &mut self,
         input: &'a str,
     ) -> IResult<&'a str, Vec<Vec<SmallVec<[NodeId; 8]>>>> {
-        let (rest, (rows, _row_seps)) = self.parse_table_body_with_seps(input)?;
+        let (rest, (rows, _row_seps)) = self.parse_table_body_with_seps(input, 0)?;
         Ok((rest, rows))
     }
 
@@ -7844,6 +7860,7 @@ impl LatexCompactParser {
     fn parse_table_body_with_seps<'a>(
         &mut self,
         input: &'a str,
+        declared: usize,
     ) -> IResult<&'a str, (Vec<Vec<SmallVec<[NodeId; 8]>>>, u32)> {
         let mut rows = Vec::with_capacity(4);
         let mut row_seps: u32 = 0;
@@ -7852,7 +7869,8 @@ impl LatexCompactParser {
         if top_hline {
             row_seps |= 1;
         }
-        let (r, first) = self.parse_table_row(rest)?;
+        let mut widest = declared;
+        let (r, first) = self.parse_table_row(rest, AstArena::MAX_CHILDREN, &mut widest)?;
         rows.push(first);
         rest = r;
         loop {
@@ -7879,7 +7897,12 @@ impl LatexCompactParser {
                     if hline && rows.len() < 32 {
                         row_seps |= 1 << rows.len();
                     }
-                    let (r, row) = self.parse_table_row(after_sep)?;
+                    // A wider later row also grows the padded earlier rows.
+                    let limit = AstArena::MAX_CHILDREN / (rows.len() + 1);
+                    if widest > limit {
+                        return Err(self.table_length_error(after_sep));
+                    }
+                    let (r, row) = self.parse_table_row(after_sep, limit, &mut widest)?;
                     rows.push(row);
                     rest = r;
                 },
@@ -7912,10 +7935,16 @@ impl LatexCompactParser {
     fn parse_table_row<'a>(
         &mut self,
         input: &'a str,
+        limit: usize,
+        widest: &mut usize,
     ) -> IResult<&'a str, Vec<SmallVec<[NodeId; 8]>>> {
         let mut raw: Vec<(SmallVec<[NodeId; 8]>, ColortblCell)> = Vec::with_capacity(4);
         let mut rest = input;
-        let (r, first) = self.parse_table_cell_colortbl(rest)?;
+        let (r, first) = self.parse_table_cell_colortbl(rest, limit)?;
+        let mut occupied = self
+            .arena
+            .table_cell_wrapper(&first.0)
+            .map_or(1, |(_, span)| span);
         raw.push(first);
         rest = r;
         loop {
@@ -7923,7 +7952,14 @@ impl LatexCompactParser {
             let saved = rest;
             match parse_cell_separator(rest) {
                 Ok((after_sep, ())) => {
-                    let (r, cell) = self.parse_table_cell_colortbl(after_sep)?;
+                    if occupied >= limit {
+                        return Err(self.table_length_error(after_sep));
+                    }
+                    let (r, cell) = self.parse_table_cell_colortbl(after_sep, limit - occupied)?;
+                    occupied += self
+                        .arena
+                        .table_cell_wrapper(&cell.0)
+                        .map_or(1, |(_, span)| span);
                     raw.push(cell);
                     rest = r;
                 },
@@ -7934,6 +7970,7 @@ impl LatexCompactParser {
                 },
             }
         }
+        *widest = (*widest).max(occupied);
         // A `\rowcolor` on any cell (conventionally the first) colors the row.
         let row_bg = raw.iter().find_map(|(_, cc)| cc.row_bg.clone());
         let mut cells = Vec::with_capacity(raw.len());
@@ -7979,6 +8016,7 @@ impl LatexCompactParser {
     fn parse_table_cell_colortbl<'a>(
         &mut self,
         input: &'a str,
+        remaining_columns: usize,
     ) -> IResult<&'a str, (SmallVec<[NodeId; 8]>, ColortblCell)> {
         let mut rest = input;
         let mut cc = ColortblCell::default();
@@ -8025,7 +8063,7 @@ impl LatexCompactParser {
             // it here keeps it out of unrelated math lists and nested groups.
             self.ensure_node_budget(rest)?;
             let (after, (span, alignment, left_boundaries, right_boundaries, content)) =
-                self.parse_multicolumn(after)?;
+                self.parse_multicolumn(after, remaining_columns)?;
             let (rest, mut trailing) = self.parse_table_cell(after)?;
             if trailing.is_empty() {
                 let has_boundaries = !left_boundaries.is_empty() || !right_boundaries.is_empty();
@@ -8236,6 +8274,50 @@ mod tests {
             ));
             assert_eq!(parser.arena.node_count(), expected_nodes);
         }
+    }
+
+    #[test]
+    fn native_spans_check_grid_capacity_before_reading_the_body() {
+        let too_large = r"\multicolumn{999999999999999999999}{c}{unused}";
+        let past_column = r"a&\multicolumn{2}{r}{unused}";
+        for (src, expected_strings) in [(too_large, 0), (past_column, 1)] {
+            let mut parser = LatexCompactParser::with_capacity(src.len(), None);
+            assert!(matches!(
+                parser.parse_table_row(src, 2, &mut 0),
+                Err(nom::Err::Failure(_))
+            ));
+            assert!(matches!(
+                parser.abort,
+                Some(Error::LimitExceeded {
+                    kind: crate::error::LimitKind::ListLength,
+                    ..
+                })
+            ));
+            assert_eq!(parser.arena.string_count(), expected_strings);
+        }
+        let mut parser = LatexCompactParser::with_capacity(32, None);
+        let mut width = 0;
+        assert!(
+            parser
+                .parse_table_row(r"\multicolumn{2}{c}{x}", 2, &mut width)
+                .is_ok()
+        );
+        assert_eq!(width, 2);
+        // The first row fixes the stride. Reject an extra row before parsing
+        // its content or materializing any of the rectangle's empty slots.
+        let mut parser = LatexCompactParser::with_capacity(96, None);
+        assert!(matches!(
+            parser.parse_table_body(r"\multicolumn{65535}{c}{x}\\unused"),
+            Err(nom::Err::Failure(_))
+        ));
+        assert!(matches!(
+            parser.abort,
+            Some(Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                ..
+            })
+        ));
+        assert!(parser.arena.node_count() < 8);
     }
 
     #[test]
