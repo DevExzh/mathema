@@ -93,7 +93,7 @@ const MAX_PARSE_DEPTH: u32 = 128;
 #[derive(Default)]
 struct MathmlTable {
     cells: Vec<NodeId>,
-    row_lengths: Vec<usize>,
+    row_lengths: SmallVec<[usize; 4]>,
     columns: Vec<ColumnAlign>,
     span_padding: Option<NodeId>,
 }
