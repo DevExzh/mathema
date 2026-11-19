@@ -1802,20 +1802,34 @@ fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[
     // groups retain one identifier node per letter because cell normalization
     // disables only identifier coalescing, so wrapping each remaining
     // multi-letter node is safe for both sources.
+    let writes_upright_text = |id: &NodeId| match *arena.node(*id) {
+        CompactNode::Identifier(sid) => arena.str_val(sid).chars().nth(1).is_some(),
+        CompactNode::Text(TextStyle::Normal, _) => true,
+        _ => false,
+    };
     let mut start = 0;
     for (index, &id) in nodes.iter().enumerate() {
-        let Some(sid) = (match *arena.node(id) {
-            CompactNode::Identifier(sid) if arena.str_val(sid).chars().nth(1).is_some() => {
-                Some(sid)
-            },
-            _ => None,
-        }) else {
+        let CompactNode::Identifier(sid) = *arena.node(id) else {
             continue;
         };
+        let name = arena.str_val(sid);
+        if name.chars().nth(1).is_none() {
+            continue;
+        }
         if start < index {
             write_node_slice(buf, arena, &nodes[start..index], false);
         }
-        write_styled_text(buf, TextStyle::Normal, arena.str_val(sid));
+        // Adjacent text commands coalesce on reimport. Keep a distinct
+        // ordinary math atom for each identifier at such a boundary.
+        let separate = nodes[..index].last().is_some_and(writes_upright_text)
+            || nodes.get(index + 1).is_some_and(writes_upright_text);
+        if separate {
+            buf.push_str(r"\mathord{");
+        }
+        write_styled_text(buf, TextStyle::Normal, name);
+        if separate {
+            buf.push('}');
+        }
         start = index + 1;
     }
     if start < nodes.len() {
@@ -2853,6 +2867,28 @@ mod tests {
         let config = Config::default();
         let parsed = LatexReader::parse(input, &config).unwrap();
         LatexWriter::write(&parsed.expr, &config).unwrap()
+    }
+
+    #[test]
+    fn adjacent_upright_cell_identifiers_remain_separate_on_reimport() {
+        use crate::{Format, convert};
+        for contents in [r"\foo\word", r"\text{AV}\word", r"\foo\text{AV}"] {
+            let src =
+                format!(r"\begin{{array}}{{cc}}\multicolumn{{2}}{{r}}{{{contents}}}\end{{array}}");
+            let first = convert(&src, Format::LaTeX, Format::LaTeX).unwrap();
+            assert!(first.contains(r"\mathord{\text{"), "{first}");
+            assert_eq!(
+                first,
+                convert(&first, Format::LaTeX, Format::LaTeX).unwrap()
+            );
+        }
+        let src = r#"<math><mtable><mtr><mn>1</mn></mtr><mtr><mtd columnalign="right"><mi>AV</mi><mi>end</mi></mtd></mtr></mtable></math>"#;
+        let tex = convert(src, Format::MathML, Format::LaTeX).unwrap();
+        assert!(
+            tex.contains(r"\mathord{\text{AV}}\mathord{\text{end}}"),
+            "{tex}"
+        );
+        assert_eq!(tex, convert(&tex, Format::LaTeX, Format::LaTeX).unwrap());
     }
 
     #[test]
