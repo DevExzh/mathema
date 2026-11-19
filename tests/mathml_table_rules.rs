@@ -179,3 +179,29 @@ fn native_padding_extension_survives_authored_mathml_heap_and_compact_paths() {
     assert_eq!(compact, heap);
     assert!(compact.contains(r#"data-mathema-array-style="true""#));
 }
+
+#[test]
+fn one_sided_native_exterior_edges_use_the_mathema_extension() {
+    for (source, attribute) in [
+        (
+            r"\begin{array}{|l}a\\b\end{array}",
+            "data-mathema-col-seps=\"0x1\"",
+        ),
+        (
+            r"\begin{array}{l|}a\\b\end{array}",
+            "data-mathema-col-seps=\"0x2\"",
+        ),
+        (
+            r"\begin{array}{l}\hline a\\b\end{array}",
+            "data-mathema-row-seps=\"0x1\"",
+        ),
+    ] {
+        let parsed = mathema::from_latex(source).unwrap();
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(mathml.contains(attribute), "{source}: {mathml}");
+        let reimported = mathema::from_mathml(&mathml).unwrap();
+        assert_eq!(reimported.to_mathml().unwrap(), mathml);
+        #[cfg(feature = "render")]
+        assert_eq!(parsed.to_svg().unwrap(), reimported.to_svg().unwrap());
+    }
+}
