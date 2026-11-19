@@ -231,3 +231,38 @@ fn repeated_unrepresentable_style_produces_one_diagnostic_per_axis() {
     let xml = format!(r#"<math><mtable columnlines="dashed"><mtr>{cells}</mtr></mtable></math>"#);
     assert_eq!(mathema::from_mathml(&xml).unwrap().diagnostics().len(), 1);
 }
+
+#[test]
+fn editing_compact_padding_updates_public_tree_and_output() {
+    use mathema::ast::compact::CompactNode;
+    use mathema::reader::{Reader, mathml::MathmlReader};
+    let config = Config::default();
+    for marker in ["", r#" data-mathema-array-environment="matrix""#] {
+        let xml = format!("<math><mtable{marker}><mtr><mtd><mn>7</mn></mtd></mtr></mtable></math>");
+        let mut compact = MathmlReader::parse_compact(&xml, &config).unwrap().expr;
+        let root = compact.arena.children(compact.roots)[0];
+        let CompactNode::Array { array_style, .. } = compact.arena.node_mut(root) else {
+            panic!("expected array")
+        };
+        *array_style = true;
+        let heap = compact.to_math_expr();
+        assert!(matches!(
+            &heap.nodes[0],
+            MathNode::NativeArray {
+                array_style: true,
+                ..
+            }
+        ));
+        let output = MathmlWriter::write(&heap, &config).unwrap();
+        assert!(output.contains(r#"data-mathema-array-style="true""#));
+        assert_eq!(
+            output,
+            MathmlWriter::write_compact(&compact, &config).unwrap()
+        );
+        #[cfg(feature = "render")]
+        assert_eq!(
+            mathema::render::render_to_svg(&heap, &Default::default()).unwrap(),
+            mathema::render::render_to_svg_compact(&compact, &Default::default()).unwrap()
+        );
+    }
+}

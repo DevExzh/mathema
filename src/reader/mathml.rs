@@ -1478,9 +1478,6 @@ impl<'a> MathmlCompactParser<'a> {
             col_seps,
             row_seps,
         });
-        if array_style || col_seps != 0 || row_seps != 0 {
-            self.arena.mark_native_array(array);
-        }
         if let Some(environment) = array_environment(start, arraystretch_pct) {
             self.arena.mark_array_environment(array, environment);
         }

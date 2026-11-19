@@ -1168,12 +1168,6 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             // Reconstruct rows from flat cells
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
-            let has_aligned_cell = cell_ids.iter().any(|&cell| {
-                matches!(
-                    *arena.node(cell),
-                    CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
-                )
-            });
             let mut rows = Vec::new();
             for chunk in cell_ids.chunks(nc.max(1)) {
                 let mut row = Vec::with_capacity(chunk.len());
@@ -1212,10 +1206,10 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                     alignment,
                     rows,
                 },
-                None if arena.is_native_array(id)
-                    || (has_aligned_cell && array_style)
+                None if array_style
                     || col_seps != 0
-                    || row_seps != 0 =>
+                    || row_seps != 0
+                    || arena.is_native_array(id) =>
                 {
                     MathNode::NativeArray {
                         columns,
