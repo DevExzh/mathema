@@ -330,11 +330,7 @@ impl<'a> MathmlCompactParser<'a> {
         is_empty: bool,
     ) -> Result<NodeId> {
         if is_empty {
-            if let Some((text, kind)) = content_constant(name) {
-                return Ok(self.c_sym(text, kind));
-            }
-            // A bare operator token outside an apply: render its label.
-            return Ok(self.op_label(name));
+            return self.parse_empty_content_element(name);
         }
         match name {
             "apply" | "reln" => self.parse_apply(name),
@@ -388,6 +384,44 @@ impl<'a> MathmlCompactParser<'a> {
         }
     }
 
+    /// Lower an empty Content MathML element without reading another XML
+    /// event.  Empty qualifiers and containers are complete elements, so a
+    /// following sibling must remain available to their parent `<apply>` or
+    /// container parser.
+    fn parse_empty_content_element(&mut self, name: &str) -> Result<NodeId> {
+        if let Some((text, kind)) = content_constant(name) {
+            return Ok(self.c_sym(text, kind));
+        }
+        match name {
+            "apply"
+            | "reln"
+            | "fn"
+            | "bvar"
+            | "lowlimit"
+            | "uplimit"
+            | "degree"
+            | "logbase"
+            | "condition"
+            | "domainofapplication"
+            | "momentabout"
+            | "piece"
+            | "otherwise"
+            | "declare"
+            | "sep" => Ok(self.empty_row()),
+            "ci" => Ok(self.c_ident("")),
+            "cn" => Ok(self.c_num("")),
+            "csymbol" => Ok(self.c_ident("")),
+            "set" => Ok(self.c_fenced("{", "}", &[])),
+            "list" | "interval" => Ok(self.c_fenced("[", "]", &[])),
+            "vector" | "matrixrow" => Ok(self.c_fenced("(", ")", &[])),
+            "matrix" => Ok(self.empty_matrix()),
+            "piecewise" => Ok(self.empty_piecewise()),
+            "lambda" => Ok(self.empty_lambda()),
+            // A bare operator token outside `<apply>` is still a named label.
+            _ => Ok(self.op_label(name)),
+        }
+    }
+
     fn parse_ci(&mut self, start: &quick_xml::events::BytesStart<'_>) -> Result<NodeId> {
         let ty = get_attr(start, "type").or_else(|| get_attr(start, "mathvariant"));
         // `<ci>` may hold plain text OR embedded presentation markup
@@ -397,6 +431,10 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Text(e) => text.push_str(&unescape_text(&e)),
+                Event::CData(e) => {
+                    text.push_str(e.xml10_content().as_ref());
+                },
+                Event::GeneralRef(e) => text.push_str(&super::resolve_general_ref(&e)),
                 Event::Start(e) => {
                     let n = Self::local_name(&e);
                     let id = self.parse_element_by_name(&n, &e)?;
@@ -444,6 +482,18 @@ impl<'a> MathmlCompactParser<'a> {
                 Event::Text(e) => {
                     let t = unescape_text(&e);
                     parts.last_mut().unwrap().push_str(&t);
+                },
+                Event::CData(e) => {
+                    parts
+                        .last_mut()
+                        .unwrap()
+                        .push_str(e.xml10_content().as_ref());
+                },
+                Event::GeneralRef(e) => {
+                    parts
+                        .last_mut()
+                        .unwrap()
+                        .push_str(&super::resolve_general_ref(&e));
                 },
                 Event::Empty(e) | Event::Start(e) if Self::local_name(&e) == "sep" => {
                     parts.push(String::new());
@@ -543,17 +593,28 @@ impl<'a> MathmlCompactParser<'a> {
     ) -> Result<()> {
         match name {
             "bvar" => {
-                let v = self.parse_bvar()?;
+                let v = if is_empty {
+                    self.empty_row()
+                } else {
+                    self.parse_bvar()?
+                };
                 acc.bvars.push(v);
             },
-            "lowlimit" => acc.lowlimit = Some(self.parse_child_id("lowlimit")?),
-            "uplimit" => acc.uplimit = Some(self.parse_child_id("uplimit")?),
-            "degree" => acc.degree = Some(self.parse_child_id("degree")?),
-            "logbase" => acc.logbase = Some(self.parse_child_id("logbase")?),
-            "condition" => acc.condition = Some(self.parse_child_id("condition")?),
-            "domainofapplication" => acc.domain = Some(self.parse_child_id("domainofapplication")?),
-            "momentabout" => acc.domain = Some(self.parse_child_id("momentabout")?),
-            "interval" => acc.interval = Some(self.parse_container("interval", "[", "]")?),
+            "lowlimit" => acc.lowlimit = Some(self.parse_qualifier(name, is_empty)?),
+            "uplimit" => acc.uplimit = Some(self.parse_qualifier(name, is_empty)?),
+            "degree" => acc.degree = Some(self.parse_qualifier(name, is_empty)?),
+            "logbase" => acc.logbase = Some(self.parse_qualifier(name, is_empty)?),
+            "condition" => acc.condition = Some(self.parse_qualifier(name, is_empty)?),
+            "domainofapplication" | "momentabout" => {
+                acc.domain = Some(self.parse_qualifier(name, is_empty)?);
+            },
+            "interval" => {
+                acc.interval = Some(if is_empty {
+                    self.c_fenced("[", "]", &[])
+                } else {
+                    self.parse_container("interval", "[", "]")?
+                });
+            },
             _ => {
                 let id = if is_empty {
                     self.parse_empty_element(name, start)?
@@ -564,6 +625,14 @@ impl<'a> MathmlCompactParser<'a> {
             },
         }
         Ok(())
+    }
+
+    fn parse_qualifier(&mut self, name: &str, is_empty: bool) -> Result<NodeId> {
+        if is_empty {
+            Ok(self.empty_row())
+        } else {
+            self.parse_child_id(name)
+        }
     }
 
     /// Read the head operator of an apply (first element child).
@@ -613,13 +682,29 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 Event::Empty(e) => {
                     let n = Self::local_name(&e);
-                    let id = self.parse_empty_element(&n, &e)?;
-                    if var.is_none() {
-                        var = Some(id);
+                    if n == "degree" {
+                        degree = Some(self.empty_row());
+                    } else {
+                        let id = self.parse_empty_element(&n, &e)?;
+                        if var.is_none() {
+                            var = Some(id);
+                        }
                     }
                 },
                 Event::Text(e) => {
                     let t = unescape_text(&e);
+                    if !t.trim().is_empty() && var.is_none() {
+                        var = Some(self.classify_text_compact(&t));
+                    }
+                },
+                Event::CData(e) => {
+                    let t = e.xml10_content();
+                    if !t.trim().is_empty() && var.is_none() {
+                        var = Some(self.classify_text_compact(t.as_ref()));
+                    }
+                },
+                Event::GeneralRef(e) => {
+                    let t = super::resolve_general_ref(&e);
                     if !t.trim().is_empty() && var.is_none() {
                         var = Some(self.classify_text_compact(&t));
                     }
@@ -654,6 +739,57 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(self.c_fenced(open, close, &items))
     }
 
+    fn empty_matrix(&mut self) -> NodeId {
+        let col_aligns = self.arena.push_children_deferred(&[]);
+        let cells = self.arena.push_children_deferred(&[]);
+        let inner = self.arena.push_node(CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols: 0,
+            arraystretch_pct: 100,
+            add_jot: false,
+            array_style: false,
+            col_seps: 0,
+            row_seps: 0,
+        });
+        self.c_fenced("(", ")", &[inner])
+    }
+
+    fn empty_piecewise(&mut self) -> NodeId {
+        let col_aligns = [
+            self.arena
+                .push_node(CompactNode::ColAlign(crate::ast::ColumnAlign::Left)),
+            self.arena
+                .push_node(CompactNode::ColAlign(crate::ast::ColumnAlign::Left)),
+        ];
+        let col_aligns = self.arena.push_children_deferred(&col_aligns);
+        let cells = self.arena.push_children_deferred(&[]);
+        let inner = self.arena.push_node(CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols: 2,
+            arraystretch_pct: 100,
+            add_jot: false,
+            array_style: false,
+            col_seps: 0,
+            row_seps: 0,
+        });
+        let open = self.arena.push_str("{");
+        let close = self.arena.push_str("");
+        let content = self.arena.push_children_deferred(&[inner]);
+        self.arena.push_node(CompactNode::Fenced {
+            open,
+            close,
+            content,
+        })
+    }
+
+    fn empty_lambda(&mut self) -> NodeId {
+        let lambda = self.c_sym("\u{03BB}", SymbolKind::Alphabetic);
+        let dot = self.c_sym(".", SymbolKind::Punctuation);
+        self.c_row(&[lambda, dot])
+    }
+
     fn parse_matrix(&mut self) -> Result<NodeId> {
         self.bump_depth("matrix")?;
         // Each child should be a matrixrow → collect rows of cells.
@@ -667,6 +803,11 @@ impl<'a> MathmlCompactParser<'a> {
                         rows.push(cells.to_vec());
                     } else {
                         let _ = self.parse_element_by_name(&n, &e)?;
+                    }
+                },
+                Event::Empty(e) => {
+                    if Self::local_name(&e) == "matrixrow" {
+                        rows.push(Vec::new());
                     }
                 },
                 Event::End(e) if Self::local_name_end(&e) == "matrix" => {
@@ -738,6 +879,11 @@ impl<'a> MathmlCompactParser<'a> {
                         },
                     }
                 },
+                Event::Empty(e) => match Self::local_name(&e).as_str() {
+                    "piece" => rows.push((self.empty_row(), self.empty_row())),
+                    "otherwise" => rows.push((self.empty_row(), self.c_text("otherwise"))),
+                    _ => {},
+                },
                 Event::End(e) if Self::local_name_end(&e) == "piecewise" => {
                     break;
                 },
@@ -802,9 +948,13 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 Event::Empty(e) => {
                     let n = Self::local_name(&e);
-                    let id = self.parse_empty_element(&n, &e)?;
-                    if body.is_none() {
-                        body = Some(id);
+                    if n == "bvar" {
+                        bvars.push(self.empty_row());
+                    } else {
+                        let id = self.parse_empty_element(&n, &e)?;
+                        if body.is_none() {
+                            body = Some(id);
+                        }
                     }
                 },
                 Event::End(e) if Self::local_name_end(&e) == "lambda" => {

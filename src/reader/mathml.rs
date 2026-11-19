@@ -4390,6 +4390,98 @@ mod tests {
     }
 
     #[test]
+    fn content_empty_qualifiers_do_not_consume_following_operands() {
+        let empty =
+            r#"<math><apply><plus/><lowlimit/><ci>a</ci><ci>b</ci></apply><mi>tail</mi></math>"#;
+        let paired = r#"<math><apply><plus/><lowlimit></lowlimit><ci>a</ci><ci>b</ci></apply><mi>tail</mi></math>"#;
+        assert_eq!(to_latex(empty), to_latex(paired));
+        let output = to_latex(empty);
+        assert!(
+            output.contains('a') && output.contains('b') && output.contains("tail"),
+            "{output}"
+        );
+
+        let empty_bvar = r#"<math><apply><sum/><bvar/><ci>i</ci></apply><mi>tail</mi></math>"#;
+        let paired_bvar =
+            r#"<math><apply><sum/><bvar></bvar><ci>i</ci></apply><mi>tail</mi></math>"#;
+        assert_eq!(to_latex(empty_bvar), to_latex(paired_bvar));
+        assert!(to_latex(empty_bvar).contains("tail"));
+
+        let prefixed = r#"<c:math xmlns:c="urn:content"><c:apply><c:plus/><c:lowlimit/><c:ci>a</c:ci><c:ci>b</c:ci></c:apply><c:mi>tail</c:mi></c:math>"#;
+        let prefixed_without_tail = r#"<c:math xmlns:c="urn:content"><c:apply><c:plus/><c:lowlimit/><c:ci>a</c:ci><c:ci>b</c:ci></c:apply></c:math>"#;
+        assert!(to_latex(prefixed_without_tail).contains('a'));
+        assert!(
+            matches!(parse(prefixed).last(), Some(MathNode::Identifier(value)) if value == "tail")
+        );
+    }
+
+    #[test]
+    fn content_empty_containers_match_paired_empty_containers() {
+        for name in [
+            "apply",
+            "reln",
+            "fn",
+            "ci",
+            "cn",
+            "csymbol",
+            "set",
+            "list",
+            "interval",
+            "vector",
+            "matrix",
+            "matrixrow",
+            "piecewise",
+            "lambda",
+            "declare",
+            "piece",
+            "otherwise",
+        ] {
+            let empty = format!("<math><{name}/></math>");
+            let paired = format!("<math><{name}></{name}></math>");
+            assert_eq!(to_latex(&empty), to_latex(&paired), "{name}");
+        }
+    }
+
+    #[test]
+    fn content_identifiers_and_numbers_keep_entities_and_cdata() {
+        let nodes = parse(
+            "<math><ci>&alpha;</ci><ci><![CDATA[beta]]></ci><cn>&#x32;</cn><cn><![CDATA[42]]></cn></math>",
+        );
+        assert_eq!(
+            nodes,
+            vec![
+                MathNode::Identifier("α".into()),
+                MathNode::Identifier("beta".into()),
+                MathNode::Number("2".into()),
+                MathNode::Number("42".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn content_matrix_piecewise_and_lambda_empty_forms_keep_following_siblings() {
+        for (name, expected) in [("matrix", "x"), ("piecewise", "x"), ("lambda", "x")] {
+            let source = format!("<math><{name}/><mi>x</mi></math>");
+            let paired = format!("<math><{name}></{name}><mi>x</mi></math>");
+            assert_eq!(to_latex(&source), to_latex(&paired), "{name}");
+            assert!(to_latex(&source).contains(expected), "{name}");
+        }
+    }
+
+    #[test]
+    fn content_matrix_rows_are_bounded() {
+        let row = "<matrixrow><ci>x</ci></matrixrow>";
+        let source = format!("<math><matrix>{}</matrix></math>", row.repeat(65_536));
+        assert!(matches!(
+            crate::from_mathml(&source),
+            Err(crate::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn content_function_ln() {
         let l = to_latex("<math><apply><ln/><ci>a</ci></apply></math>");
         assert!(l.contains("\\ln"), "{l}");
