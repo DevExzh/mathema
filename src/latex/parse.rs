@@ -2323,12 +2323,10 @@ impl LatexCompactParser {
     ) -> NodeId {
         let needs_native = col_seps != 0
             || row_seps != 0
-            || rows.iter().flatten().any(|cell| {
-                matches!(
-                    cell.first().map(|id| self.arena.node(*id)),
-                    Some(CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. })
-                )
-            });
+            || rows
+                .iter()
+                .flatten()
+                .any(|cell| self.arena.table_cell_wrapper(cell).is_some());
         let id = self.build_array_with_spacing(
             columns,
             rows,
@@ -2355,9 +2353,49 @@ impl LatexCompactParser {
         let marker = self.arena.push_node(CompactNode::StyleSwitch(style));
         for row in rows {
             for cell in row {
-                cell.insert(0, marker);
+                self.edit_table_cell(cell, |_, nodes| nodes.insert(0, marker));
             }
         }
+    }
+
+    /// Keep the alignment template outside parser-synthesized cell content.
+    /// Ordinary cells are edited directly without allocating another row.
+    fn edit_table_cell(
+        &mut self,
+        cell: &mut SmallVec<[NodeId; 8]>,
+        edit: impl FnOnce(&mut Self, &mut SmallVec<[NodeId; 8]>),
+    ) {
+        let Some((wrapper, _)) = self.arena.table_cell_wrapper(cell) else {
+            edit(self, cell);
+            return;
+        };
+        let (_, nodes) = self.arena.table_cell_parts(&wrapper);
+        let mut nodes = SmallVec::from_slice(nodes);
+        edit(self, &mut nodes);
+        let updated = self.flatten_single(&nodes);
+        match self.arena.node_mut(wrapper) {
+            CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
+                *content = updated
+            },
+            _ => unreachable!("whole-cell wrapper"),
+        }
+    }
+
+    fn table_stride(
+        &mut self,
+        rows: &[Vec<SmallVec<[NodeId; 8]>>],
+        declared: usize,
+    ) -> Option<u16> {
+        let width = rows.iter().fold(declared, |width, row| {
+            width.max(row.iter().fold(0usize, |used, cell| {
+                used.saturating_add(
+                    self.arena
+                        .table_cell_wrapper(cell)
+                        .map_or(1, |(_, span)| span),
+                )
+            }))
+        });
+        self.arena.array_stride_deferred(rows.len(), width)
     }
 
     /// Build an Array node with explicit spacing parameters.
@@ -2376,22 +2414,7 @@ impl LatexCompactParser {
         // column spec and the widest row.  This ensures the flat cell array
         // stride is correct even when rows contain more `&` separators than
         // the column spec declares (e.g. multi-pair `aligned` environments).
-        let max_row_len = rows
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|cell| match cell.first().map(|id| self.arena.node(*id)) {
-                        Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
-                        _ => 1,
-                    })
-                    .sum()
-            })
-            .max()
-            .unwrap_or(0);
-        let Some(num_cols) = self
-            .arena
-            .array_stride_deferred(rows.len(), columns.len().max(max_row_len))
-        else {
+        let Some(num_cols) = self.table_stride(&rows, columns.len()) else {
             return self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
         };
 
@@ -2410,46 +2433,29 @@ impl LatexCompactParser {
             if self.check_node_limit() {
                 break;
             }
+            let row_start = cell_ids.len();
             for cell in row {
                 if self.check_node_limit() {
                     break;
                 }
-                let width = match cell.first().map(|id| self.arena.node(*id)) {
-                    Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
-                    _ => 1,
-                };
-                let id = match cell.as_slice() {
-                    [node]
-                        if matches!(
-                            self.arena.node(*node),
-                            CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
-                        ) =>
-                    {
-                        *node
-                    },
-                    _ => {
-                        let span = self.arena.push_children_deferred(cell);
-                        self.arena.push_node(CompactNode::Row(span))
-                    },
+                let (id, width) = if let Some(wrapper) = self.arena.table_cell_wrapper(cell) {
+                    wrapper
+                } else {
+                    let span = self.arena.push_children_deferred(cell);
+                    (self.arena.push_node(CompactNode::Row(span)), 1)
                 };
                 cell_ids.push(id);
-                for _ in 1..width {
+                if width > 1 {
                     let padding = *span_padding.get_or_insert_with(|| {
                         let id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
                         self.arena.mark_span_padding(id);
                         id
                     });
-                    cell_ids.push(padding);
+                    cell_ids.resize(cell_ids.len() + width - 1, padding);
                 }
             }
             // Pad short rows to num_cols
-            let used = row
-                .iter()
-                .map(|cell| match cell.first().map(|id| self.arena.node(*id)) {
-                    Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
-                    _ => 1,
-                })
-                .sum::<usize>();
+            let used = cell_ids.len() - row_start;
             for _ in used..(num_cols as usize) {
                 if self.check_node_limit() {
                     break;
@@ -6606,8 +6612,13 @@ impl LatexCompactParser {
         };
 
         // mathtools repeats the optional alignment for every matrix column.
-        let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-        let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![align; width];
+        let Some(width) = self.table_stride(&rows, 0) else {
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ));
+        };
+        let columns: SmallVec<[ColumnAlign; 4]> = smallvec::smallvec![align; usize::from(width)];
         let array_id = match environment {
             MatrixKind::Matrix => self.build_array(&columns, rows),
             MatrixKind::SmallMatrix => {
@@ -7700,7 +7711,13 @@ impl LatexCompactParser {
 
         // Aligned environments use repeating rl alignment pairs.
         // Compute the actual column count and repeat the pattern.
-        let max_row_len = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        let Some(width) = self.table_stride(&rows, 2) else {
+            return Ok((
+                input,
+                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            ));
+        };
+        let max_row_len = usize::from(width);
         let base_pattern = [ColumnAlign::Right, ColumnAlign::Left];
         let columns: SmallVec<[ColumnAlign; 8]> = base_pattern
             .iter()
@@ -7856,7 +7873,7 @@ impl LatexCompactParser {
                             height: d,
                             lift: Rational::new(-d.num, d.den),
                         });
-                        cell.push(strut);
+                        self.edit_table_cell(cell, |_, nodes| nodes.push(strut));
                     }
                     // A `\hline` after this separator precedes the next row.
                     if hline && rows.len() < 32 {
@@ -7935,17 +7952,25 @@ impl LatexCompactParser {
 
     /// Wrap a cell's content nodes in a [`CompactNode::Boxed`] with the given
     /// background color (no border), producing a single-element cell.
-    fn wrap_cell_bg(&mut self, ids: SmallVec<[NodeId; 8]>, color: &str) -> SmallVec<[NodeId; 8]> {
-        let span = self.arena.push_children_deferred(&ids);
-        let content = self.arena.push_node(CompactNode::Row(span));
-        let bg_color = self.arena.push_str(color);
-        let border_color = self.arena.push_str("");
-        let boxed = self.arena.push_node(CompactNode::Boxed {
-            content,
-            bg_color,
-            border_color,
+    fn wrap_cell_bg(
+        &mut self,
+        mut ids: SmallVec<[NodeId; 8]>,
+        color: &str,
+    ) -> SmallVec<[NodeId; 8]> {
+        self.edit_table_cell(&mut ids, |parser, nodes| {
+            let span = parser.arena.push_children_deferred(nodes);
+            let content = parser.arena.push_node(CompactNode::Row(span));
+            let bg_color = parser.arena.push_str(color);
+            let border_color = parser.arena.push_str("");
+            let boxed = parser.arena.push_node(CompactNode::Boxed {
+                content,
+                bg_color,
+                border_color,
+            });
+            nodes.clear();
+            nodes.push(boxed);
         });
-        smallvec::smallvec![boxed]
+        ids
     }
 
     /// Parse one table cell, first consuming any leading colortbl directives
@@ -8210,6 +8235,31 @@ mod tests {
                 })
             ));
             assert_eq!(parser.arena.node_count(), expected_nodes);
+        }
+    }
+
+    #[test]
+    fn whole_cell_wrappers_survive_style_struts_and_colortbl() {
+        for source in [
+            r"\begin{smallmatrix}\multicolumn{2}{r}{ab}&c\end{smallmatrix}",
+            r"\begin{array}{ccc}\rowcolor{red}\multicolumn{2}{r}{ab}&c\end{array}",
+            r"\begin{array}{ccc}a&\multicolumn{2}{r}{bc}\\[4pt]x&y&z\end{array}",
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            let latex = parsed.to_latex().unwrap();
+            assert!(latex.contains(r"\multicolumn{2}"), "{source}: {latex}");
+            let reparsed = crate::from_latex(&latex).unwrap();
+            assert_eq!(latex, reparsed.to_latex().unwrap(), "{source}");
+            assert!(
+                reparsed.to_mathml().unwrap().contains("columnspan=\"2\""),
+                "{latex}"
+            );
+            #[cfg(feature = "render")]
+            assert_eq!(
+                parsed.to_svg().unwrap(),
+                reparsed.to_svg().unwrap(),
+                "{source}: {latex}"
+            );
         }
     }
 }

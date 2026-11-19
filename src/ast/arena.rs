@@ -455,6 +455,18 @@ impl AstArena {
         (alignment, nodes)
     }
 
+    /// A cell directive occupies the grid only when it is the entire cell.
+    pub(crate) fn table_cell_wrapper(&self, cell: &[NodeId]) -> Option<(NodeId, usize)> {
+        let &[id] = cell else {
+            return None;
+        };
+        match *self.node(id) {
+            CompactNode::AlignedCell { .. } => Some((id, 1)),
+            CompactNode::SpannedCell { span, .. } => Some((id, usize::from(span.max(1)))),
+            _ => None,
+        }
+    }
+
     /// Return the slice of child `NodeId`s covered by `span`.
     #[inline]
     pub fn children(&self, span: NodeSpan) -> &[NodeId] {
