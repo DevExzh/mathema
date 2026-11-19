@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
-use super::{ColumnAlign, MatrixKind, SpaceBasis};
+use super::{ColumnAlign, MatrixKind, SpaceBasis, SpanBoundary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Provenance {
@@ -184,14 +184,38 @@ impl AstArena {
     /// [`check_limits`](Self::check_limits).
     #[inline]
     pub fn push_str(&mut self, s: &str) -> StrId {
+        self.store_string(s.len(), |pool| pool.push_str(s))
+    }
+
+    pub(crate) fn push_span_boundaries(&mut self, boundaries: &[SpanBoundary]) -> StrId {
+        if boundaries.is_empty() {
+            return StrId::EMPTY;
+        }
+        let bytes = boundaries
+            .iter()
+            .fold(0usize, |total, b| total.saturating_add(b.latex().len()));
+        self.store_string(bytes, |pool| {
+            pool.reserve(bytes);
+            for boundary in boundaries {
+                pool.push_str(boundary.latex());
+            }
+        })
+    }
+
+    #[inline]
+    fn store_string(&mut self, bytes: usize, append: impl FnOnce(&mut String)) -> StrId {
         let id = self.str_starts.len() - 1;
-        if self.strings.len() + s.len() > self.entry_limit || id >= self.entry_limit {
+        if id >= self.entry_limit {
+            self.size_overflow = true;
+            return StrId::EMPTY;
+        }
+        if bytes > self.entry_limit.saturating_sub(self.strings.len()) {
             self.size_overflow = true;
         } else {
-            self.strings.push_str(s);
+            append(&mut self.strings);
         }
         self.str_starts.push(self.strings.len() as u32);
-        StrId::new(id.min(self.entry_limit) as u32)
+        StrId::new(id as u32)
     }
 
     /// The most children one node can hold (a span length is 16 bits).
@@ -225,7 +249,7 @@ impl AstArena {
             });
         };
         let start = self.children.len();
-        if start + ids.len() > self.entry_limit {
+        if ids.len() > self.entry_limit.saturating_sub(start) {
             return Err(crate::error::Error::LimitExceeded {
                 kind: crate::error::LimitKind::ArenaSize,
                 limit: self.entry_limit,
@@ -482,9 +506,6 @@ impl AstArena {
             return "";
         }
         let idx = id.index();
-        if idx == 0 && self.str_starts.len() == 1 {
-            return "";
-        }
         let start = self.str_starts[idx] as usize;
         let end = self.str_starts[idx + 1] as usize;
         &self.strings[start..end]
@@ -591,6 +612,29 @@ mod tests {
             Err(Error::LimitExceeded {
                 kind: LimitKind::ArenaSize,
                 limit: 8
+            })
+        ));
+    }
+
+    #[test]
+    fn boundary_strings_share_the_arena_limits_and_empty_sentinel() {
+        let mut arena = small_arena(4);
+        for _ in 0..8 {
+            assert_eq!(arena.push_span_boundaries(&[]), StrId::EMPTY);
+        }
+        assert_eq!(arena.string_count(), 0);
+        let id = arena.push_span_boundaries(&[SpanBoundary::Rule, SpanBoundary::SuppressGlue]);
+        assert_eq!(arena.str_val(id), "|@{}");
+        for _ in 0..8 {
+            let empty = arena.push_str("a");
+            assert_eq!(arena.str_val(empty), "");
+        }
+        assert_eq!(arena.string_count(), 4);
+        assert!(matches!(
+            arena.check_limits(),
+            Err(Error::LimitExceeded {
+                kind: LimitKind::ArenaSize,
+                limit: 4
             })
         ));
     }

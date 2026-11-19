@@ -1547,18 +1547,8 @@ impl<'a> MathmlCompactParser<'a> {
                     .push_node(CompactNode::AlignedCell { alignment, content })
             } else {
                 let content = self.flatten_ids(&children);
-                let left_boundaries = if left_boundaries.is_empty() {
-                    StrId::EMPTY
-                } else {
-                    self.arena
-                        .push_str(&crate::ast::span_boundary_spelling(&left_boundaries))
-                };
-                let right_boundaries = if right_boundaries.is_empty() {
-                    StrId::EMPTY
-                } else {
-                    self.arena
-                        .push_str(&crate::ast::span_boundary_spelling(&right_boundaries))
-                };
+                let left_boundaries = self.arena.push_span_boundaries(&left_boundaries);
+                let right_boundaries = self.arena.push_span_boundaries(&right_boundaries);
                 self.arena.push_node(CompactNode::SpannedCell {
                     alignment,
                     span: cell_span as u16,

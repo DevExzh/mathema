@@ -74,6 +74,7 @@ pub enum MatrixKind {
 /// their source geometry through compact and heap conversions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum SpanBoundary {
     /// Suppress the ordinary intercolumn glue at this boundary (`@{}`).
     SuppressGlue,
@@ -81,15 +82,13 @@ pub enum SpanBoundary {
     Rule,
 }
 
-#[inline]
-pub(crate) fn span_boundary_spelling(boundaries: &[SpanBoundary]) -> String {
-    boundaries
-        .iter()
-        .map(|boundary| match boundary {
-            SpanBoundary::SuppressGlue => "@{}",
-            SpanBoundary::Rule => "|",
-        })
-        .collect()
+impl SpanBoundary {
+    pub(crate) fn latex(self) -> &'static str {
+        match self {
+            Self::SuppressGlue => "@{}",
+            Self::Rule => "|",
+        }
+    }
 }
 
 pub(crate) fn span_boundaries(mut spelling: &str) -> impl Iterator<Item = SpanBoundary> + '_ {

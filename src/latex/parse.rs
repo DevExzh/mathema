@@ -5026,8 +5026,8 @@ impl LatexCompactParser {
         (
             u16,
             ColumnAlign,
-            Vec<crate::ast::SpanBoundary>,
-            Vec<crate::ast::SpanBoundary>,
+            SmallVec<[crate::ast::SpanBoundary; 4]>,
+            SmallVec<[crate::ast::SpanBoundary; 4]>,
             NodeId,
         ),
     > {
@@ -5061,7 +5061,7 @@ impl LatexCompactParser {
             )));
         };
         let mut spec = spec.trim();
-        let mut left_boundaries = Vec::new();
+        let mut left_boundaries = SmallVec::new();
         loop {
             if let Some(rest) = spec.strip_prefix("@{}") {
                 left_boundaries.push(crate::ast::SpanBoundary::SuppressGlue);
@@ -5073,7 +5073,7 @@ impl LatexCompactParser {
                 break;
             }
         }
-        let mut right_boundaries = Vec::new();
+        let mut right_boundaries = SmallVec::new();
         loop {
             if let Some(rest) = spec.strip_suffix("@{}") {
                 right_boundaries.push(crate::ast::SpanBoundary::SuppressGlue);
@@ -8067,12 +8067,8 @@ impl LatexCompactParser {
             let (rest, mut trailing) = self.parse_table_cell(after)?;
             if trailing.is_empty() {
                 let has_boundaries = !left_boundaries.is_empty() || !right_boundaries.is_empty();
-                let left_boundaries = self
-                    .arena
-                    .push_str(&crate::ast::span_boundary_spelling(&left_boundaries));
-                let right_boundaries = self
-                    .arena
-                    .push_str(&crate::ast::span_boundary_spelling(&right_boundaries));
+                let left_boundaries = self.arena.push_span_boundaries(&left_boundaries);
+                let right_boundaries = self.arena.push_span_boundaries(&right_boundaries);
                 trailing.push(self.arena.push_node(if span == 1 && !has_boundaries {
                     CompactNode::AlignedCell { alignment, content }
                 } else {

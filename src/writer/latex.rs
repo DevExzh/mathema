@@ -52,11 +52,8 @@ fn write_nodes(buf: &mut LatexBuffer, arena: &AstArena, span: NodeSpan) {
 }
 
 fn write_boundaries(buf: &mut LatexBuffer, boundaries: &str) {
-    for boundary in parse_span_boundary_spelling(boundaries) {
-        match boundary {
-            SpanBoundary::SuppressGlue => buf.push_str("@{}"),
-            SpanBoundary::Rule => buf.push('|'),
-        }
+    for boundary in span_boundaries(boundaries) {
+        buf.push_str(boundary.latex());
     }
 }
 

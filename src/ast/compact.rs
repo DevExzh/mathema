@@ -767,8 +767,8 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             content,
         } => {
             let content = push_math_node(arena, content);
-            let left_boundaries = arena.push_str(&super::span_boundary_spelling(left_boundaries));
-            let right_boundaries = arena.push_str(&super::span_boundary_spelling(right_boundaries));
+            let left_boundaries = arena.push_span_boundaries(left_boundaries);
+            let right_boundaries = arena.push_span_boundaries(right_boundaries);
             arena.push_node(CompactNode::SpannedCell {
                 alignment: *alignment,
                 span: (*span).max(1),
