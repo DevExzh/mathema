@@ -5014,7 +5014,16 @@ impl LatexCompactParser {
     fn parse_multicolumn<'a>(
         &mut self,
         input: &'a str,
-    ) -> IResult<&'a str, (u16, ColumnAlign, bool, bool, bool, bool, NodeId)> {
+    ) -> IResult<
+        &'a str,
+        (
+            u16,
+            ColumnAlign,
+            Vec<crate::ast::SpanBoundary>,
+            Vec<crate::ast::SpanBoundary>,
+            NodeId,
+        ),
+    > {
         let (input, _) = ws(input)?;
         let Some((input, span_count)) = super::mhchem::capture_braced(input) else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -5042,33 +5051,32 @@ impl LatexCompactParser {
             )));
         };
         let mut spec = spec.trim();
-        let mut left_rule = false;
-        let mut right_rule = false;
-        let mut left_padding = false;
-        let mut right_padding = false;
+        let mut left_boundaries = Vec::new();
         loop {
             if let Some(rest) = spec.strip_prefix("@{}") {
-                left_padding = true;
+                left_boundaries.push(crate::ast::SpanBoundary::SuppressGlue);
                 spec = rest.trim_start();
             } else if let Some(rest) = spec.strip_prefix('|') {
-                left_rule = true;
+                left_boundaries.push(crate::ast::SpanBoundary::Rule);
                 spec = rest.trim_start();
             } else {
                 break;
             }
         }
+        let mut right_boundaries = Vec::new();
         loop {
             if let Some(rest) = spec.strip_suffix("@{}") {
-                right_padding = true;
+                right_boundaries.push(crate::ast::SpanBoundary::SuppressGlue);
                 spec = rest.trim_end();
             } else if let Some(rest) = spec.strip_suffix('|') {
-                right_rule = true;
+                right_boundaries.push(crate::ast::SpanBoundary::Rule);
                 spec = rest.trim_end();
             } else {
                 break;
             }
         }
-        if spec.contains('|') {
+        right_boundaries.reverse();
+        if spec.contains('|') || spec.contains("@{}") {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Verify,
@@ -5088,15 +5096,7 @@ impl LatexCompactParser {
         let (input, content) = self.parse_required_group(input)?;
         Ok((
             input,
-            (
-                span,
-                alignment,
-                left_rule,
-                right_rule,
-                left_padding,
-                right_padding,
-                content,
-            ),
+            (span, alignment, left_boundaries, right_boundaries, content),
         ))
     }
 
@@ -7999,27 +7999,28 @@ impl LatexCompactParser {
             // An alignment override belongs to a cell template. Recognizing
             // it here keeps it out of unrelated math lists and nested groups.
             self.ensure_node_budget(rest)?;
-            let (
-                after,
-                (span, alignment, left_rule, right_rule, left_padding, right_padding, content),
-            ) = self.parse_multicolumn(after)?;
+            let (after, (span, alignment, left_boundaries, right_boundaries, content)) =
+                self.parse_multicolumn(after)?;
             let (rest, mut trailing) = self.parse_table_cell(after)?;
             if trailing.is_empty() {
-                trailing.push(self.arena.push_node(
-                    if span == 1 && !left_rule && !right_rule && !left_padding && !right_padding {
-                        CompactNode::AlignedCell { alignment, content }
-                    } else {
-                        CompactNode::SpannedCell {
-                            alignment,
-                            span,
-                            left_rule,
-                            right_rule,
-                            left_padding,
-                            right_padding,
-                            content,
-                        }
-                    },
-                ));
+                let has_boundaries = !left_boundaries.is_empty() || !right_boundaries.is_empty();
+                let left_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&left_boundaries));
+                let right_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&right_boundaries));
+                trailing.push(self.arena.push_node(if span == 1 && !has_boundaries {
+                    CompactNode::AlignedCell { alignment, content }
+                } else {
+                    CompactNode::SpannedCell {
+                        alignment,
+                        span,
+                        left_boundaries,
+                        right_boundaries,
+                        content,
+                    }
+                }));
             } else {
                 trailing.insert(0, content);
             }

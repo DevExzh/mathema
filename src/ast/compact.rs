@@ -90,6 +90,9 @@ impl NodeSpan {
 pub struct StrId(u32);
 
 impl StrId {
+    /// Sentinel for an empty interned string without allocating a pool entry.
+    pub const EMPTY: Self = Self(u32::MAX);
+
     #[inline]
     pub(crate) fn new(raw: u32) -> Self {
         Self(raw)
@@ -303,14 +306,10 @@ pub enum CompactNode {
         alignment: ColumnAlign,
         /// Number of logical columns occupied by this cell.
         span: u16,
-        /// Whether the native preamble draws a left edge rule.
-        left_rule: bool,
-        /// Whether the native preamble draws a right edge rule.
-        right_rule: bool,
-        /// Whether the native preamble suppresses the left intercolumn glue.
-        left_padding: bool,
-        /// Whether the native preamble suppresses the right intercolumn glue.
-        right_padding: bool,
+        /// Interned ordered native preamble directives on the left edge.
+        left_boundaries: StrId,
+        /// Interned ordered native preamble directives on the right edge.
+        right_boundaries: StrId,
         /// Cell content node.
         content: NodeId,
     },
@@ -763,20 +762,18 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
         MathNode::SpannedCell {
             alignment,
             span,
-            left_rule,
-            right_rule,
-            left_padding,
-            right_padding,
+            left_boundaries,
+            right_boundaries,
             content,
         } => {
             let content = push_math_node(arena, content);
+            let left_boundaries = arena.push_str(&super::span_boundary_spelling(left_boundaries));
+            let right_boundaries = arena.push_str(&super::span_boundary_spelling(right_boundaries));
             arena.push_node(CompactNode::SpannedCell {
                 alignment: *alignment,
                 span: (*span).max(1),
-                left_rule: *left_rule,
-                right_rule: *right_rule,
-                left_padding: *left_padding,
-                right_padding: *right_padding,
+                left_boundaries,
+                right_boundaries,
                 content,
             })
         },
@@ -1333,18 +1330,14 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         CompactNode::SpannedCell {
             alignment,
             span,
-            left_rule,
-            right_rule,
-            left_padding,
-            right_padding,
+            left_boundaries,
+            right_boundaries,
             content,
         } => MathNode::SpannedCell {
             alignment,
             span,
-            left_rule,
-            right_rule,
-            left_padding,
-            right_padding,
+            left_boundaries: super::parse_span_boundary_spelling(arena.str_val(left_boundaries)),
+            right_boundaries: super::parse_span_boundary_spelling(arena.str_val(right_boundaries)),
             content: Box::new(reconstruct_node(arena, content)),
         },
 

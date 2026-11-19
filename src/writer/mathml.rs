@@ -5,11 +5,28 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
 use crate::writer::Writer as MathWriter;
+
+fn boundary_attr(boundaries: &[SpanBoundary]) -> Option<String> {
+    (!boundaries.is_empty()).then(|| {
+        boundaries
+            .iter()
+            .map(|boundary| match boundary {
+                SpanBoundary::SuppressGlue => "padding",
+                SpanBoundary::Rule => "rule",
+            })
+            .collect::<Vec<_>>()
+            .join("|")
+    })
+}
+
+fn packed_boundary_attr(boundaries: &str) -> Option<String> {
+    boundary_attr(&parse_span_boundary_spelling(boundaries))
+}
 
 /// Classifies a compact node that the MathML writer cannot fully represent.
 /// MathML preserves `Color`/`Boxed`/`Phantom`/`Cancel`, so only the genuinely
@@ -745,17 +762,15 @@ fn write_node_in(
                 while i < num_cols {
                     let cell = authored.next().map(Vec::as_slice).unwrap_or_default();
                     let cell_span = table_cell_span(cell);
-                    let (left_rule, right_rule, left_padding, right_padding) = match cell {
+                    let (left_boundaries, right_boundaries) = match cell {
                         [
                             MathNode::SpannedCell {
-                                left_rule,
-                                right_rule,
-                                left_padding,
-                                right_padding,
+                                left_boundaries,
+                                right_boundaries,
                                 ..
                             },
-                        ] => (*left_rule, *right_rule, *left_padding, *right_padding),
-                        _ => (false, false, false, false),
+                        ] => (left_boundaries.as_slice(), right_boundaries.as_slice()),
+                        _ => (&[][..], &[][..]),
                     };
                     let (cell_override, cell) = table_cell_parts(cell);
                     let mut td = BytesStart::new("mtd");
@@ -770,16 +785,22 @@ fn write_node_in(
                     if cell_span > 1 {
                         td.push_attribute(("columnspan", cell_span.to_string().as_str()));
                     }
-                    if left_rule {
+                    if let Some(value) = boundary_attr(left_boundaries) {
+                        td.push_attribute(("data-mathema-left-boundaries", value.as_str()));
+                    }
+                    if let Some(value) = boundary_attr(right_boundaries) {
+                        td.push_attribute(("data-mathema-right-boundaries", value.as_str()));
+                    }
+                    if left_boundaries.contains(&SpanBoundary::Rule) {
                         td.push_attribute(("data-mathema-left-rule", "true"));
                     }
-                    if right_rule {
+                    if right_boundaries.contains(&SpanBoundary::Rule) {
                         td.push_attribute(("data-mathema-right-rule", "true"));
                     }
-                    if left_padding {
+                    if left_boundaries.contains(&SpanBoundary::SuppressGlue) {
                         td.push_attribute(("data-mathema-left-padding", "true"));
                     }
-                    if right_padding {
+                    if right_boundaries.contains(&SpanBoundary::SuppressGlue) {
                         td.push_attribute(("data-mathema-right-padding", "true"));
                     }
                     w.write_event(Event::Start(td)).map_err(to_err)?;
@@ -1761,24 +1782,16 @@ fn write_node_fast_in(
                     }
                     let align_nodes = arena.children(col_aligns);
                     let (cell_override, mut nodes) = arena.table_cell_parts(&cell_id);
-                    let (cell_span, left_rule, right_rule, left_padding, right_padding) =
-                        match *arena.node(cell_id) {
-                            CompactNode::SpannedCell {
-                                span,
-                                left_rule,
-                                right_rule,
-                                left_padding,
-                                right_padding,
-                                ..
-                            } => (
-                                span.max(1) as usize,
-                                left_rule,
-                                right_rule,
-                                left_padding,
-                                right_padding,
-                            ),
-                            _ => (1, false, false, false, false),
-                        };
+                    let (cell_span, left_boundaries, right_boundaries) = match *arena.node(cell_id)
+                    {
+                        CompactNode::SpannedCell {
+                            span,
+                            left_boundaries,
+                            right_boundaries,
+                            ..
+                        } => (span.max(1) as usize, left_boundaries, right_boundaries),
+                        _ => (1, StrId::EMPTY, StrId::EMPTY),
+                    };
                     buf.push_str("<mtd");
                     if let Some(a) = cell_override.or_else(|| {
                         align_nodes
@@ -1802,16 +1815,30 @@ fn write_node_fast_in(
                         buf.push_str(&cell_span.to_string());
                         buf.push('"');
                     }
-                    if left_rule {
+                    if let Some(value) = packed_boundary_attr(arena.str_val(left_boundaries)) {
+                        buf.push_str(" data-mathema-left-boundaries=\"");
+                        buf.push_str(&value);
+                        buf.push('"');
+                    }
+                    if let Some(value) = packed_boundary_attr(arena.str_val(right_boundaries)) {
+                        buf.push_str(" data-mathema-right-boundaries=\"");
+                        buf.push_str(&value);
+                        buf.push('"');
+                    }
+                    if span_boundary_has(arena.str_val(left_boundaries), SpanBoundary::Rule) {
                         buf.push_str(" data-mathema-left-rule=\"true\"");
                     }
-                    if right_rule {
+                    if span_boundary_has(arena.str_val(right_boundaries), SpanBoundary::Rule) {
                         buf.push_str(" data-mathema-right-rule=\"true\"");
                     }
-                    if left_padding {
+                    if span_boundary_has(arena.str_val(left_boundaries), SpanBoundary::SuppressGlue)
+                    {
                         buf.push_str(" data-mathema-left-padding=\"true\"");
                     }
-                    if right_padding {
+                    if span_boundary_has(
+                        arena.str_val(right_boundaries),
+                        SpanBoundary::SuppressGlue,
+                    ) {
                         buf.push_str(" data-mathema-right-padding=\"true\"");
                     }
                     buf.push('>');
@@ -2653,10 +2680,8 @@ mod tests {
         let span = MathNode::SpannedCell {
             span: 6,
             alignment: ColumnAlign::Right,
-            left_rule: true,
-            right_rule: true,
-            left_padding: true,
-            right_padding: true,
+            left_boundaries: vec![SpanBoundary::SuppressGlue, SpanBoundary::Rule],
+            right_boundaries: vec![SpanBoundary::Rule, SpanBoundary::SuppressGlue],
             content: Box::new(MathNode::Number("1".into())),
         };
         let expr = MathExpr::inline(vec![MathNode::Matrix {
@@ -2685,14 +2710,41 @@ mod tests {
     }
 
     #[test]
+    fn ordered_span_boundaries_survive_mathml_roundtrip() {
+        let cell = MathNode::SpannedCell {
+            span: 1,
+            alignment: ColumnAlign::Left,
+            left_boundaries: vec![SpanBoundary::SuppressGlue, SpanBoundary::Rule],
+            right_boundaries: vec![SpanBoundary::Rule, SpanBoundary::Rule],
+            content: Box::new(MathNode::Identifier("x".into())),
+        };
+        let expr = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Left],
+            rows: vec![vec![vec![cell]]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let config = Config::default();
+        let xml = MathmlWriter::write(&expr, &config).unwrap();
+        assert!(
+            xml.contains(r#"data-mathema-left-boundaries="padding|rule""#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"data-mathema-right-boundaries="rule|rule""#),
+            "{xml}"
+        );
+        let reparsed = crate::from_mathml(&xml).unwrap();
+        assert_eq!(reparsed.expr(), expr);
+    }
+
+    #[test]
     fn expansive_heap_spans_respect_the_compact_grid_limit() {
         let cell = MathNode::SpannedCell {
             span: 32768,
             alignment: ColumnAlign::Left,
-            left_rule: false,
-            right_rule: false,
-            left_padding: false,
-            right_padding: false,
+            left_boundaries: Vec::new(),
+            right_boundaries: Vec::new(),
             content: Box::new(MathNode::Number("1".into())),
         };
         let rows = vec![vec![vec![cell]]; 2];

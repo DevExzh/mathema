@@ -1,5 +1,5 @@
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::unicode::fonts::style_to_latex_font;
@@ -49,6 +49,15 @@ impl std::ops::DerefMut for LatexBuffer {
 
 fn write_nodes(buf: &mut LatexBuffer, arena: &AstArena, span: NodeSpan) {
     write_node_slice(buf, arena, arena.children(span), false);
+}
+
+fn write_boundaries(buf: &mut LatexBuffer, boundaries: &str) {
+    for boundary in parse_span_boundary_spelling(boundaries) {
+        match boundary {
+            SpanBoundary::SuppressGlue => buf.push_str("@{}"),
+            SpanBoundary::Rule => buf.push('|'),
+        }
+    }
 }
 
 /// Write a sequence of sibling nodes (see `write_nodes`).
@@ -1438,44 +1447,38 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         }
                         emitted = true;
                         let (alignment, nodes) = arena.table_cell_parts(cell_id);
-                        let (cell_span, left_rule, right_rule, left_padding, right_padding) =
+                        let (cell_span, left_boundaries, right_boundaries) =
                             match *arena.node(*cell_id) {
                                 CompactNode::SpannedCell {
                                     span,
-                                    left_rule,
-                                    right_rule,
-                                    left_padding,
-                                    right_padding,
+                                    left_boundaries,
+                                    right_boundaries,
                                     ..
-                                } => (
-                                    span.max(1) as usize,
-                                    left_rule,
-                                    right_rule,
-                                    left_padding,
-                                    right_padding,
-                                ),
-                                _ => (1, false, false, false, false),
+                                } => (span.max(1) as usize, left_boundaries, right_boundaries),
+                                _ => (1, StrId::EMPTY, StrId::EMPTY),
                             };
                         if let Some(alignment) = alignment {
                             buf.push_str(r"\multicolumn{");
                             buf.push_str(&cell_span.to_string());
                             buf.push_str("}{");
-                            if left_padding || (trim_edges && col_idx == 0) {
+                            write_boundaries(buf, arena.str_val(left_boundaries));
+                            if trim_edges
+                                && col_idx == 0
+                                && arena.str_val(left_boundaries).is_empty()
+                            {
                                 buf.push_str("@{}");
-                            }
-                            if left_rule {
-                                buf.push('|');
                             }
                             buf.push(match alignment {
                                 ColumnAlign::Left => 'l',
                                 ColumnAlign::Center => 'c',
                                 ColumnAlign::Right => 'r',
                             });
-                            if right_padding || (trim_edges && col_idx + cell_span == nc) {
+                            write_boundaries(buf, arena.str_val(right_boundaries));
+                            if trim_edges
+                                && col_idx + cell_span == nc
+                                && arena.str_val(right_boundaries).is_empty()
+                            {
                                 buf.push_str("@{}");
-                            }
-                            if right_rule {
-                                buf.push('|');
                             }
                             buf.push_str("}{");
                         }
@@ -4158,6 +4161,80 @@ mod tests {
             .and_then(|(value, _)| value.trim_end_matches("px").parse::<f64>().ok())
             .unwrap();
         assert!(width > 30.0, "{width}");
+    }
+
+    #[test]
+    fn multicolumn_boundary_order_and_multiplicity_survive_latex_roundtrip() {
+        let config = Config::default();
+        for (source, expected_spec, expected_left, expected_right) in [
+            (
+                r"\begin{array}{l}\multicolumn{1}{@{}|l}{x}\end{array}",
+                r"\multicolumn{1}{@{}|l}",
+                vec![SpanBoundary::SuppressGlue, SpanBoundary::Rule],
+                Vec::new(),
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{|@{}l}{x}\end{array}",
+                r"\multicolumn{1}{|@{}l}",
+                vec![SpanBoundary::Rule, SpanBoundary::SuppressGlue],
+                Vec::new(),
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{||l}{x}\end{array}",
+                r"\multicolumn{1}{||l}",
+                vec![SpanBoundary::Rule, SpanBoundary::Rule],
+                Vec::new(),
+            ),
+            (
+                r"\begin{array}{l}\multicolumn{1}{l|@{}}{x}\end{array}",
+                r"\multicolumn{1}{l|@{}}",
+                Vec::new(),
+                vec![SpanBoundary::Rule, SpanBoundary::SuppressGlue],
+            ),
+        ] {
+            let compact = LatexReader::parse_compact(source, &config).unwrap().expr;
+            let root = compact.arena.children(compact.roots)[0];
+            let CompactNode::Array { cells, .. } = *compact.arena.node(root) else {
+                panic!("expected array");
+            };
+            let cell = compact.arena.children(cells)[0];
+            let CompactNode::SpannedCell {
+                left_boundaries,
+                right_boundaries,
+                ..
+            } = *compact.arena.node(cell)
+            else {
+                panic!("expected spanned cell");
+            };
+            assert_eq!(
+                parse_span_boundary_spelling(compact.arena.str_val(left_boundaries)),
+                expected_left,
+                "left boundary order changed for {source}"
+            );
+            assert_eq!(
+                parse_span_boundary_spelling(compact.arena.str_val(right_boundaries)),
+                expected_right,
+                "right boundary order changed for {source}"
+            );
+            let first = LatexWriter::write_compact(&compact, &config).unwrap();
+            assert_eq!(
+                first,
+                LatexWriter::write_compact(
+                    &LatexReader::parse_compact(&first, &config).unwrap().expr,
+                    &config,
+                )
+                .unwrap()
+            );
+            assert!(first.contains(expected_spec), "{first}");
+        }
+        let long_rules = "|".repeat(64);
+        let long_source =
+            format!(r"\begin{{array}}{{l}}\multicolumn{{1}}{{{long_rules}l}}{{x}}\end{{array}}");
+        let long = LatexReader::parse_compact(&long_source, &config)
+            .unwrap()
+            .expr;
+        let long_out = LatexWriter::write_compact(&long, &config).unwrap();
+        assert_eq!(long_out.matches('|').count(), 64);
     }
 
     #[test]

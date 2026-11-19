@@ -67,6 +67,53 @@ pub enum MatrixKind {
     SmallMatrix,
 }
 
+/// One ordered directive on the edge of a spanning table cell.
+///
+/// The sequence stored on each side is significant. Repeated directives stay
+/// distinct so native LaTeX forms such as `@{}|r`, `|@{}r`, and `||r` retain
+/// their source geometry through compact and heap conversions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SpanBoundary {
+    /// Suppress the ordinary intercolumn glue at this boundary (`@{}`).
+    SuppressGlue,
+    /// Draw one native vertical rule at this boundary (`|`).
+    Rule,
+}
+
+#[inline]
+pub(crate) fn span_boundary_spelling(boundaries: &[SpanBoundary]) -> String {
+    boundaries
+        .iter()
+        .map(|boundary| match boundary {
+            SpanBoundary::SuppressGlue => "@{}",
+            SpanBoundary::Rule => "|",
+        })
+        .collect()
+}
+
+pub(crate) fn span_boundaries(mut spelling: &str) -> impl Iterator<Item = SpanBoundary> + '_ {
+    std::iter::from_fn(move || {
+        if let Some(rest) = spelling.strip_prefix("@{}") {
+            spelling = rest;
+            Some(SpanBoundary::SuppressGlue)
+        } else if let Some(rest) = spelling.strip_prefix('|') {
+            spelling = rest;
+            Some(SpanBoundary::Rule)
+        } else {
+            None
+        }
+    })
+}
+
+pub(crate) fn parse_span_boundary_spelling(spelling: &str) -> Vec<SpanBoundary> {
+    span_boundaries(spelling).collect()
+}
+
+pub(crate) fn span_boundary_has(spelling: &str, boundary: SpanBoundary) -> bool {
+    span_boundaries(spelling).any(|value| value == boundary)
+}
+
 /// A span belongs to a whole cell. Wrappers among sibling nodes contribute
 /// their content without changing the number of occupied columns.
 pub(crate) fn table_cell_span(cell: &[MathNode]) -> usize {
@@ -446,14 +493,10 @@ pub enum MathNode {
         alignment: ColumnAlign,
         /// Number of logical columns occupied by this cell.
         span: u16,
-        /// Whether the native preamble draws a left edge rule.
-        left_rule: bool,
-        /// Whether the native preamble draws a right edge rule.
-        right_rule: bool,
-        /// Whether the native preamble suppresses the left intercolumn glue.
-        left_padding: bool,
-        /// Whether the native preamble suppresses the right intercolumn glue.
-        right_padding: bool,
+        /// Ordered native preamble directives on the left edge.
+        left_boundaries: Vec<SpanBoundary>,
+        /// Ordered native preamble directives on the right edge.
+        right_boundaries: Vec<SpanBoundary>,
         /// Cell content.
         content: Box<MathNode>,
     },

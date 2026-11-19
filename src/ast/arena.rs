@@ -466,7 +466,13 @@ impl AstArena {
     /// Return the interned string identified by `id`.
     #[inline]
     pub fn str_val(&self, id: StrId) -> &str {
+        if id == StrId::EMPTY {
+            return "";
+        }
         let idx = id.index();
+        if idx == 0 && self.str_starts.len() == 1 {
+            return "";
+        }
         let start = self.str_starts[idx] as usize;
         let end = self.str_starts[idx + 1] as usize;
         &self.strings[start..end]
@@ -502,6 +508,9 @@ impl AstArena {
     #[inline]
     #[allow(dead_code)]
     pub(crate) unsafe fn str_unchecked(&self, id: StrId) -> &str {
+        if id == StrId::EMPTY {
+            return "";
+        }
         unsafe {
             let idx = id.index();
             let start = *self.str_starts.get_unchecked(idx) as usize;

@@ -1452,121 +1452,105 @@ impl<'a> MathmlCompactParser<'a> {
                 }
             }
             let empty = matches!(event, Ok(Event::Empty(_)));
-            let (
-                children,
-                own_alignment,
-                cell_span,
-                left_rule,
-                right_rule,
-                left_padding,
-                right_padding,
-            ) = match event {
-                Ok(Event::Start(e) | Event::Empty(e)) => {
-                    let name = Self::local_name(&e);
-                    if name == "mtd" {
-                        let span =
-                            parse_column_span(get_attr(&e, "columnspan"), max_columns - index)?;
-                        let children = if empty {
-                            SmallVec::new()
+            let (children, own_alignment, cell_span, left_boundaries, right_boundaries) =
+                match event {
+                    Ok(Event::Start(e) | Event::Empty(e)) => {
+                        let name = Self::local_name(&e);
+                        if name == "mtd" {
+                            let span =
+                                parse_column_span(get_attr(&e, "columnspan"), max_columns - index)?;
+                            let children = if empty {
+                                SmallVec::new()
+                            } else {
+                                self.with_table_style(&e, false, Self::parse_table_cell)?
+                            };
+                            (
+                                children,
+                                get_attr(&e, "columnalign"),
+                                span,
+                                parse_boundary_attr(
+                                    get_attr(&e, "data-mathema-left-boundaries"),
+                                    get_attr(&e, "data-mathema-left-rule"),
+                                    get_attr(&e, "data-mathema-left-padding"),
+                                )?,
+                                parse_boundary_attr(
+                                    get_attr(&e, "data-mathema-right-boundaries"),
+                                    get_attr(&e, "data-mathema-right-rule"),
+                                    get_attr(&e, "data-mathema-right-padding"),
+                                )?,
+                            )
                         } else {
-                            self.with_table_style(&e, false, Self::parse_table_cell)?
-                        };
+                            let child = if empty {
+                                self.parse_empty_element(&name, &e)?
+                            } else {
+                                self.parse_element_by_name(&name, &e)?
+                            };
+                            (smallvec::smallvec![child], None, 1, Vec::new(), Vec::new())
+                        }
+                    },
+                    Ok(Event::Text(e)) => {
+                        let text = unescape_text(&e);
+                        if text.trim().is_empty() {
+                            continue;
+                        }
                         (
-                            children,
-                            get_attr(&e, "columnalign"),
-                            span,
-                            get_attr(&e, "data-mathema-left-rule")
-                                .is_some_and(|value| value == "true"),
-                            get_attr(&e, "data-mathema-right-rule")
-                                .is_some_and(|value| value == "true"),
-                            get_attr(&e, "data-mathema-left-padding")
-                                .is_some_and(|value| value == "true"),
-                            get_attr(&e, "data-mathema-right-padding")
-                                .is_some_and(|value| value == "true"),
-                        )
-                    } else {
-                        let child = if empty {
-                            self.parse_empty_element(&name, &e)?
-                        } else {
-                            self.parse_element_by_name(&name, &e)?
-                        };
-                        (
-                            smallvec::smallvec![child],
+                            smallvec::smallvec![self.classify_text_compact(&text)],
                             None,
                             1,
-                            false,
-                            false,
-                            false,
-                            false,
+                            Vec::new(),
+                            Vec::new(),
                         )
-                    }
-                },
-                Ok(Event::Text(e)) => {
-                    let text = unescape_text(&e);
-                    if text.trim().is_empty() {
-                        continue;
-                    }
-                    (
-                        smallvec::smallvec![self.classify_text_compact(&text)],
-                        None,
-                        1,
-                        false,
-                        false,
-                        false,
-                        false,
-                    )
-                },
-                Ok(Event::GeneralRef(r)) => {
-                    let text = resolve_general_ref(&r);
-                    if text.trim().is_empty() {
-                        continue;
-                    }
-                    (
-                        smallvec::smallvec![self.classify_text_compact(&text)],
-                        None,
-                        1,
-                        false,
-                        false,
-                        false,
-                        false,
-                    )
-                },
-                Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
-                Ok(Event::Eof) => break,
-                Err(error) => {
-                    return Err(Error::MathmlParse {
-                        message: format!("XML error: {error}"),
-                    });
-                },
-                _ => continue,
-            };
+                    },
+                    Ok(Event::GeneralRef(r)) => {
+                        let text = resolve_general_ref(&r);
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        (
+                            smallvec::smallvec![self.classify_text_compact(&text)],
+                            None,
+                            1,
+                            Vec::new(),
+                            Vec::new(),
+                        )
+                    },
+                    Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
+                    Ok(Event::Eof) => break,
+                    Err(error) => {
+                        return Err(Error::MathmlParse {
+                            message: format!("XML error: {error}"),
+                        });
+                    },
+                    _ => continue,
+                };
             let alignment = cell_alignment(inherited, index, own_alignment);
             while table.columns.len() < index + cell_span {
                 table.columns.push(alignment);
             }
             let id = if cell_span == 1
-                && !left_rule
-                && !right_rule
-                && !left_padding
-                && !right_padding
+                && left_boundaries.is_empty()
+                && right_boundaries.is_empty()
                 && table.columns[index] == alignment
             {
                 let span = self.arena.push_children(&children)?;
                 self.arena.push_node(CompactNode::Row(span))
-            } else if cell_span == 1 && !left_rule && !right_rule && !left_padding && !right_padding
-            {
+            } else if cell_span == 1 && left_boundaries.is_empty() && right_boundaries.is_empty() {
                 let content = self.flatten_ids(&children);
                 self.arena
                     .push_node(CompactNode::AlignedCell { alignment, content })
             } else {
                 let content = self.flatten_ids(&children);
+                let left_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&left_boundaries));
+                let right_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&right_boundaries));
                 self.arena.push_node(CompactNode::SpannedCell {
                     alignment,
                     span: cell_span as u16,
-                    left_rule,
-                    right_rule,
-                    left_padding,
-                    right_padding,
+                    left_boundaries,
+                    right_boundaries,
                     content,
                 })
             };
@@ -2255,6 +2239,33 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .flatten()
         .find(|a| a.key.as_ref() == key)
         .map(|a| unescape_attr(&a.value))
+}
+
+fn parse_boundary_attr(
+    ordered: Option<String>,
+    legacy_rule: Option<String>,
+    legacy_padding: Option<String>,
+) -> Result<Vec<SpanBoundary>> {
+    if let Some(value) = ordered {
+        let mut boundaries = Vec::new();
+        for token in value.split('|').filter(|token| !token.is_empty()) {
+            let boundary = match token.trim() {
+                "rule" | "|" => SpanBoundary::Rule,
+                "padding" | "@{}" => SpanBoundary::SuppressGlue,
+                _ => continue,
+            };
+            boundaries.push(boundary);
+        }
+        return Ok(boundaries);
+    }
+    let mut boundaries = Vec::new();
+    if legacy_padding.as_deref() == Some("true") {
+        boundaries.push(SpanBoundary::SuppressGlue);
+    }
+    if legacy_rule.as_deref() == Some("true") {
+        boundaries.push(SpanBoundary::Rule);
+    }
+    Ok(boundaries)
 }
 
 fn column_alignment(value: &str) -> ColumnAlign {
