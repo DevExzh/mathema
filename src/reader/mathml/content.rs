@@ -14,7 +14,7 @@
 use quick_xml::events::Event;
 use smallvec::SmallVec;
 
-use super::{MathmlCompactParser, get_attr, unescape_text};
+use super::{MathmlCompactParser, get_attr};
 use crate::ast::compact::{CompactNode, NodeId};
 use crate::ast::{AccentPosition, FractionKind, LimitStyle, SymbolKind, TextStyle};
 use crate::error::Result;
@@ -480,8 +480,8 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Text(e) => {
-                    let t = unescape_text(&e);
-                    parts.last_mut().unwrap().push_str(&t);
+                    let t = e.as_ref();
+                    parts.last_mut().unwrap().push_str(t);
                 },
                 Event::CData(e) => {
                     parts
@@ -567,9 +567,9 @@ impl<'a> MathmlCompactParser<'a> {
                     self.collect_apply_child(n, &e, true, &mut acc)?;
                 },
                 Event::Text(e) => {
-                    let t = unescape_text(&e);
+                    let t = e.as_ref();
                     if !t.trim().is_empty() {
-                        let id = self.classify_text_compact(&t);
+                        let id = self.classify_text_compact(t);
                         acc.args.push(id);
                     }
                 },
@@ -692,9 +692,9 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 },
                 Event::Text(e) => {
-                    let t = unescape_text(&e);
+                    let t = e.as_ref();
                     if !t.trim().is_empty() && var.is_none() {
-                        var = Some(self.classify_text_compact(&t));
+                        var = Some(self.classify_text_compact(t));
                     }
                 },
                 Event::CData(e) => {

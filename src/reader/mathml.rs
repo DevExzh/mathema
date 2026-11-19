@@ -1,6 +1,7 @@
 use quick_xml::Reader;
 use quick_xml::events::{BytesText, Event};
 use smallvec::SmallVec;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::arena::AstArena;
@@ -216,29 +217,24 @@ impl<'a> MathmlCompactParser<'a> {
     fn collect_remaining(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
-            match self.reader.read_event() {
-                Ok(Event::Start(e)) => {
+            match self.reader_read_event()? {
+                Event::Start(e) => {
                     let name = e.local_name().into_inner();
                     nodes.push(self.parse_element_by_name(name, &e)?);
                 },
-                Ok(Event::Empty(e)) => {
+                Event::Empty(e) => {
                     let name = e.local_name().into_inner();
                     nodes.push(self.parse_empty_element(name, &e)?);
                 },
-                Ok(Event::Text(e)) => {
-                    let text = unescape_text(&e);
+                Event::Eof | Event::End(_) => break,
+                event => {
+                    let Some(text) = character_data(event) else {
+                        continue;
+                    };
                     if !text.trim().is_empty() {
                         nodes.push(self.classify_text_compact(&text));
                     }
                 },
-                Ok(Event::GeneralRef(r)) => {
-                    let text = resolve_general_ref(&r);
-                    if !text.trim().is_empty() {
-                        nodes.push(self.classify_text_compact(&text));
-                    }
-                },
-                Ok(Event::Eof) | Ok(Event::End(_)) => break,
-                _ => continue,
             }
         }
         Ok(nodes)
@@ -425,18 +421,6 @@ impl<'a> MathmlCompactParser<'a> {
                     self.restore_style(previous);
                     nodes.push(id);
                 },
-                Ok(Event::Text(e)) => {
-                    let text = unescape_text(&e);
-                    if !text.trim().is_empty() {
-                        nodes.push(self.classify_text_compact(&text));
-                    }
-                },
-                Ok(Event::GeneralRef(r)) => {
-                    let text = resolve_general_ref(&r);
-                    if !text.trim().is_empty() {
-                        nodes.push(self.classify_text_compact(&text));
-                    }
-                },
                 Ok(Event::End(e)) => {
                     if e.local_name().into_inner() == parent_tag {
                         break;
@@ -448,7 +432,14 @@ impl<'a> MathmlCompactParser<'a> {
                         message: format!("XML error in <{parent_tag}>: {e}"),
                     });
                 },
-                _ => continue,
+                Ok(event) => {
+                    let Some(text) = character_data(event) else {
+                        continue;
+                    };
+                    if !text.trim().is_empty() {
+                        nodes.push(self.classify_text_compact(&text));
+                    }
+                },
             }
         }
         self.depth -= 1;
@@ -1224,49 +1215,36 @@ impl<'a> MathmlCompactParser<'a> {
         }
     }
 
-    fn read_text_content(&mut self, tag_name: &str) -> Result<String> {
-        self.read_text_content_with_space(tag_name)
-    }
-
-    fn read_text_content_with_space(&mut self, tag_name: &str) -> Result<String> {
-        let mut text = String::new();
+    fn read_text_content(&mut self, tag_name: &str) -> Result<Cow<'a, str>> {
+        let mut text = Cow::Borrowed("");
         loop {
-            match self.reader.read_event() {
-                Ok(Event::Text(e)) => {
-                    text.push_str(&unescape_text(&e));
+            let part = match self.reader_read_event()? {
+                Event::End(e) if e.local_name().into_inner() == tag_name => break,
+                Event::Eof => break,
+                Event::Empty(e) if e.local_name().into_inner() == "mglyph" => {
+                    get_attr(&e, "alt").map(Cow::Owned)
                 },
-                Ok(Event::GeneralRef(r)) => {
-                    text.push_str(&resolve_general_ref(&r));
+                Event::Start(e) => {
+                    let name = e.local_name().into_inner();
+                    let alt = if name == "mglyph" {
+                        get_attr(&e, "alt")
+                    } else {
+                        None
+                    };
+                    self.skip_element(name)?;
+                    alt.map(Cow::Owned)
                 },
-                Ok(Event::End(e)) => {
-                    if e.local_name().into_inner() == tag_name {
-                        break;
-                    }
-                },
-                Ok(Event::Eof) => break,
-                Ok(Event::Empty(e)) => {
-                    // A nested `<mglyph/>` contributes its `alt` text.
-                    if e.local_name().into_inner() == "mglyph"
-                        && let Some(alt) = get_attr(&e, "alt")
-                    {
-                        text.push_str(&alt);
-                    }
-                },
-                Ok(Event::Start(e)) => {
-                    // Nested element inside text content — capture mglyph alt,
-                    // otherwise skip its body.
-                    let n = e.local_name().into_inner();
-                    if n == "mglyph"
-                        && let Some(alt) = get_attr(&e, "alt")
-                    {
-                        text.push_str(&alt);
-                    }
-                    let _ = self.skip_element(n);
-                },
-                _ => continue,
+                event => character_data(event),
+            };
+            if let Some(part) = part {
+                if text.is_empty() {
+                    text = part;
+                } else if !part.is_empty() {
+                    text.to_mut().push_str(&part);
+                }
             }
         }
-        Ok(collapse_mathml_token_text(&text))
+        Ok(collapse_mathml_token_text(text))
     }
 
     /// Tables start in compact display style and inherit the surrounding
@@ -1538,6 +1516,7 @@ impl<'a> MathmlCompactParser<'a> {
                 // row can follow. Check the borrowed token before interning it.
                 match &event {
                     Ok(Event::Text(text)) if text.as_ref().trim().is_empty() => continue,
+                    Ok(Event::CData(text)) if text.as_ref().trim().is_empty() => continue,
                     Ok(Event::GeneralRef(reference))
                         if crate::unicode::resolve_entity(reference.as_ref())
                             .is_some_and(|text| text.trim().is_empty()) =>
@@ -1545,7 +1524,11 @@ impl<'a> MathmlCompactParser<'a> {
                         continue;
                     },
                     Ok(
-                        Event::Start(_) | Event::Empty(_) | Event::Text(_) | Event::GeneralRef(_),
+                        Event::Start(_)
+                        | Event::Empty(_)
+                        | Event::Text(_)
+                        | Event::CData(_)
+                        | Event::GeneralRef(_),
                     ) => {
                         return Err(table_length_error());
                     },
@@ -1596,32 +1579,6 @@ impl<'a> MathmlCompactParser<'a> {
                             )
                         }
                     },
-                    Ok(Event::Text(e)) => {
-                        let text = unescape_text(&e);
-                        if text.trim().is_empty() {
-                            continue;
-                        }
-                        (
-                            smallvec::smallvec![self.classify_text_compact(&text)],
-                            None,
-                            1,
-                            SmallVec::new(),
-                            SmallVec::new(),
-                        )
-                    },
-                    Ok(Event::GeneralRef(r)) => {
-                        let text = resolve_general_ref(&r);
-                        if text.trim().is_empty() {
-                            continue;
-                        }
-                        (
-                            smallvec::smallvec![self.classify_text_compact(&text)],
-                            None,
-                            1,
-                            SmallVec::new(),
-                            SmallVec::new(),
-                        )
-                    },
                     Ok(Event::End(e)) if e.local_name().into_inner() == parent_tag => break,
                     Ok(Event::Eof) => break,
                     Err(error) => {
@@ -1629,7 +1586,21 @@ impl<'a> MathmlCompactParser<'a> {
                             message: format!("XML error: {error}"),
                         });
                     },
-                    _ => continue,
+                    Ok(event) => {
+                        let Some(text) = character_data(event) else {
+                            continue;
+                        };
+                        if text.trim().is_empty() {
+                            continue;
+                        }
+                        (
+                            smallvec::smallvec![self.classify_text_compact(&text)],
+                            None,
+                            1,
+                            SmallVec::new(),
+                            SmallVec::new(),
+                        )
+                    },
                 };
             let alignment = cell_alignment(inherited, index, own_alignment);
             while table.columns.len() < index + cell_span {
@@ -1982,42 +1953,6 @@ impl<'a> MathmlCompactParser<'a> {
                         }
                     }
                 },
-                Ok(Event::Text(e)) => {
-                    let text = unescape_text(&e);
-                    if !text.trim().is_empty() {
-                        let previous = seen_base
-                            .then(|| self.enter_script_child_style(parent_tag, 1))
-                            .flatten();
-                        let id = self.classify_text_compact(&text);
-                        self.restore_style(previous);
-                        if !seen_base {
-                            base = id;
-                            seen_base = true;
-                        } else if in_pre {
-                            pre.push(id);
-                        } else {
-                            post.push(id);
-                        }
-                    }
-                },
-                Ok(Event::GeneralRef(r)) => {
-                    let text = resolve_general_ref(&r);
-                    if !text.trim().is_empty() {
-                        let previous = seen_base
-                            .then(|| self.enter_script_child_style(parent_tag, 1))
-                            .flatten();
-                        let id = self.classify_text_compact(&text);
-                        self.restore_style(previous);
-                        if !seen_base {
-                            base = id;
-                            seen_base = true;
-                        } else if in_pre {
-                            pre.push(id);
-                        } else {
-                            post.push(id);
-                        }
-                    }
-                },
                 Ok(Event::End(e)) => {
                     if e.local_name().into_inner() == parent_tag {
                         break;
@@ -2029,7 +1964,26 @@ impl<'a> MathmlCompactParser<'a> {
                         message: format!("XML error in <{parent_tag}>: {e}"),
                     });
                 },
-                _ => continue,
+                Ok(event) => {
+                    let Some(text) = character_data(event) else {
+                        continue;
+                    };
+                    if !text.trim().is_empty() {
+                        let previous = seen_base
+                            .then(|| self.enter_script_child_style(parent_tag, 1))
+                            .flatten();
+                        let id = self.classify_text_compact(&text);
+                        self.restore_style(previous);
+                        if !seen_base {
+                            base = id;
+                            seen_base = true;
+                        } else if in_pre {
+                            pre.push(id);
+                        } else {
+                            post.push(id);
+                        }
+                    }
+                },
             }
         }
 
@@ -2555,6 +2509,20 @@ fn table_length_error() -> Error {
     }
 }
 
+/// Decode XML text and MathML named entities while retaining unknown entities.
+/// Content MathML token readers use this helper when a text node contains an
+/// escaped built-in or named entity. General references are handled as their
+/// own streaming events by the presentation reader.
+fn unescape_text(e: &BytesText<'_>) -> String {
+    let raw = e.as_ref();
+    match quick_xml::escape::unescape_with(raw, |name| {
+        crate::unicode::MATHML_ENTITIES.get(name).copied()
+    }) {
+        Ok(cow) => cow.into_owned(),
+        Err(_) => resolve_entities_lossy(raw),
+    }
+}
+
 fn cell_alignment(inherited: &[ColumnAlign], index: usize, cell: Option<String>) -> ColumnAlign {
     if let Some(value) = cell
         .as_deref()
@@ -2569,31 +2537,26 @@ fn cell_alignment(inherited: &[ColumnAlign], index: usize, cell: Option<String>)
         .unwrap_or(ColumnAlign::Center)
 }
 
-/// Unescape text content, resolving the full MathML/HTML named-entity set
-/// (e.g. `&alpha;`, `&InvisibleTimes;`, `&ApplyFunction;`) plus numeric
-/// references. Falls back to a manual pass if quick-xml reports an error so
-/// that a single unknown entity never discards the surrounding text.
-fn unescape_text(e: &BytesText<'_>) -> String {
-    let raw = e.as_ref();
-    match quick_xml::escape::unescape_with(raw, |name| {
-        crate::unicode::MATHML_ENTITIES.get(name).copied()
-    }) {
-        Ok(cow) => cow.into_owned(),
-        Err(_) => resolve_entities_lossy(raw),
+/// The slice reader delivers entity references separately from literal
+/// text. CDATA is literal even when it contains an ampersand or a tag.
+fn character_data(event: Event<'_>) -> Option<Cow<'_, str>> {
+    match event {
+        Event::Text(text) => Some(text.into_inner()),
+        Event::CData(text) => Some(text.into_inner()),
+        Event::GeneralRef(reference) => Some(resolve_general_ref(&reference)),
+        _ => None,
     }
 }
 
-/// Unescape an attribute value the same way text content is unescaped.
+/// Decode character and entity references in an XML attribute value.
 fn unescape_attr(raw: &str) -> String {
     resolve_entities_lossy(raw)
 }
 
 /// Resolve a `&name;` or `&#...;` general entity reference into its replacement.
-fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> String {
+fn resolve_general_ref(r: &quick_xml::events::BytesRef<'_>) -> Cow<'static, str> {
     let name = r.as_ref();
-    crate::unicode::resolve_entity(name)
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|| format!("&{name};"))
+    crate::unicode::resolve_entity(name).unwrap_or_else(|| Cow::Owned(format!("&{name};")))
 }
 
 /// Manual entity resolver used as a robust fallback: replaces every
@@ -2674,7 +2637,13 @@ fn mspace_width(start: &quick_xml::events::BytesStart<'_>) -> Rational {
 
 /// Apply MathML token whitespace rules to the four XML whitespace characters.
 /// Non-ASCII spaces such as NBSP remain rendered characters.
-fn collapse_mathml_token_text(text: &str) -> String {
+fn collapse_mathml_token_text(text: Cow<'_, str>) -> Cow<'_, str> {
+    if !text
+        .bytes()
+        .any(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    {
+        return text;
+    }
     let mut out = String::with_capacity(text.len());
     let mut pending_space = false;
     let mut has_content = false;
@@ -2690,7 +2659,7 @@ fn collapse_mathml_token_text(text: &str) -> String {
         has_content = true;
         pending_space = false;
     }
-    out
+    Cow::Owned(out)
 }
 
 fn mathvariant_to_style(variant: &str) -> Option<TextStyle> {
@@ -4542,5 +4511,47 @@ mod tests {
             },
             other => panic!("expected Array, got {other:?}"),
         }
+    }
+    #[test]
+    fn presentation_character_data_keeps_literal_markup_and_fragment_boundaries() {
+        for (cdata, escaped) in [
+            ("<mi><![CDATA[x]]></mi>", "<mi>x</mi>"),
+            (
+                "<mtext>a<![CDATA[ &alpha; <x> ]]>&amp;b</mtext>",
+                "<mtext>a &amp;alpha; &lt;x&gt; &amp;b</mtext>",
+            ),
+            (
+                "<mtext>A<![CDATA[ \t]]><!-- split --><![CDATA[\n B]]>&#160;C</mtext>",
+                "<mtext>A B&#160;C</mtext>",
+            ),
+            (
+                "<mtext><![CDATA[A]]><mglyph alt='B'/><![CDATA[C]]></mtext>",
+                "<mtext>ABC</mtext>",
+            ),
+            (
+                "<m:mn xmlns:m='urn:math'><![CDATA[2]]></m:mn>",
+                "<mn>2</mn>",
+            ),
+            (
+                "<mmultiscripts><![CDATA[x]]><mn>1</mn><none/></mmultiscripts>",
+                "<mmultiscripts>x<mn>1</mn><none/></mmultiscripts>",
+            ),
+            (
+                "<mtable><mtr><![CDATA[x]]><mtd><mi>y</mi></mtd></mtr></mtable>",
+                "<mtable><mtr>x<mtd><mi>y</mi></mtd></mtr></mtable>",
+            ),
+        ] {
+            let parse =
+                |expr| crate::from_mathml(&format!("<math>{expr}<mn>9</mn></math>")).unwrap();
+            let (actual, expected) = (parse(cdata), parse(escaped));
+            assert_eq!(actual.expr(), expected.expr(), "{cdata}");
+            assert_eq!(actual.to_mathml().unwrap(), expected.to_mathml().unwrap());
+        }
+    }
+
+    #[test]
+    fn unterminated_cdata_reports_an_xml_error_in_strict_mode() {
+        let config = crate::Config::default().with_strictness(crate::Strictness::Strict);
+        assert!(crate::from_mathml_with("<math><mi><![CDATA[x</mi></math>", &config).is_err());
     }
 }
