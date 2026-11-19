@@ -794,12 +794,23 @@ impl<'a> MathmlCompactParser<'a> {
         self.bump_depth("matrix")?;
         // Each child should be a matrixrow → collect rows of cells.
         let mut rows: Vec<Vec<NodeId>> = Vec::new();
+        let mut max_columns = 0usize;
         loop {
             match self.reader_read_event()? {
                 Event::Start(e) => {
                     let n = e.local_name().into_inner();
                     if n == "matrixrow" {
                         let cells = self.parse_children("matrixrow")?;
+                        let row_count = rows
+                            .len()
+                            .checked_add(1)
+                            .ok_or_else(super::table_length_error)?;
+                        max_columns = max_columns.max(cells.len());
+                        if row_count > super::AstArena::MAX_CHILDREN
+                            || max_columns.max(1) > super::AstArena::MAX_CHILDREN / row_count
+                        {
+                            return Err(super::table_length_error());
+                        }
                         rows.push(cells.to_vec());
                     } else {
                         let _ = self.parse_element_by_name(n, &e)?;
@@ -807,6 +818,15 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 Event::Empty(e) => {
                     if e.local_name().into_inner() == "matrixrow" {
+                        let row_count = rows
+                            .len()
+                            .checked_add(1)
+                            .ok_or_else(super::table_length_error)?;
+                        if row_count > super::AstArena::MAX_CHILDREN
+                            || max_columns.max(1) > super::AstArena::MAX_CHILDREN / row_count
+                        {
+                            return Err(super::table_length_error());
+                        }
                         rows.push(Vec::new());
                     }
                 },
@@ -818,7 +838,8 @@ impl<'a> MathmlCompactParser<'a> {
             }
         }
         self.unbump_depth();
-        let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0) as u16;
+        let num_cols = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let num_cols = u16::try_from(num_cols).map_err(|_| super::table_length_error())?;
         let mut cells: Vec<NodeId> = Vec::new();
         for r in &rows {
             for c in 0..num_cols as usize {

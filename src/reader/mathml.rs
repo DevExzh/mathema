@@ -374,7 +374,35 @@ impl<'a> MathmlCompactParser<'a> {
         }
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
-            match self.reader.read_event() {
+            let event = self.reader.read_event();
+            if nodes.len() >= AstArena::MAX_CHILDREN {
+                match &event {
+                    Ok(Event::Start(_) | Event::Empty(_)) => {
+                        return Err(table_length_error());
+                    },
+                    Ok(Event::Text(text)) if !text.as_ref().trim().is_empty() => {
+                        return Err(table_length_error());
+                    },
+                    Ok(Event::CData(text)) if !text.as_ref().trim().is_empty() => {
+                        return Err(table_length_error());
+                    },
+                    Ok(Event::GeneralRef(reference))
+                        if !crate::unicode::resolve_entity(reference.as_ref())
+                            .is_some_and(|text| text.trim().is_empty()) =>
+                    {
+                        return Err(table_length_error());
+                    },
+                    Ok(Event::End(e)) if e.local_name().into_inner() == parent_tag => break,
+                    Ok(Event::Eof) => break,
+                    Err(e) => {
+                        return Err(Error::MathmlParse {
+                            message: format!("XML error in <{parent_tag}>: {e}"),
+                        });
+                    },
+                    _ => continue,
+                }
+            }
+            match event {
                 Ok(Event::Start(e)) => {
                     let name = e.local_name().into_inner();
                     let child_style = script_modes
@@ -4433,6 +4461,52 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn content_matrix_columns_are_bounded_before_width_narrowing() {
+        let cell = "<ci>x</ci>";
+        let source = format!(
+            "<math><matrix><matrixrow>{}</matrixrow></matrix></math>",
+            cell.repeat(AstArena::MAX_CHILDREN + 1)
+        );
+        assert!(matches!(
+            crate::from_mathml(&source),
+            Err(crate::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                limit: AstArena::MAX_CHILDREN,
+            })
+        ));
+    }
+
+    #[test]
+    fn content_matrix_empty_rows_are_bounded_before_rectangular_padding() {
+        let source = format!(
+            "<math><matrix>{}</matrix></math>",
+            "<matrixrow/>".repeat(AstArena::MAX_CHILDREN + 1)
+        );
+        assert!(matches!(
+            crate::from_mathml(&source),
+            Err(crate::Error::LimitExceeded {
+                kind: crate::error::LimitKind::ListLength,
+                limit: AstArena::MAX_CHILDREN,
+            })
+        ));
+    }
+
+    #[test]
+    fn content_matrix_maximum_width_and_row_count_remain_representable() {
+        let width = format!(
+            "<math><matrix><matrixrow>{}</matrixrow></matrix></math>",
+            "<ci>x</ci>".repeat(AstArena::MAX_CHILDREN)
+        );
+        assert!(crate::from_mathml(&width).is_ok());
+
+        let rows = format!(
+            "<math><matrix>{}</matrix></math>",
+            "<matrixrow/>".repeat(AstArena::MAX_CHILDREN)
+        );
+        assert!(crate::from_mathml(&rows).is_ok());
     }
 
     #[test]
