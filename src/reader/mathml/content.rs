@@ -800,15 +800,20 @@ impl<'a> MathmlCompactParser<'a> {
                 Event::Start(e) => {
                     let n = e.local_name().into_inner();
                     if n == "matrixrow" {
-                        let cells = self.parse_children("matrixrow")?;
                         let row_count = rows
                             .len()
                             .checked_add(1)
                             .ok_or_else(super::table_length_error)?;
+                        if row_count > super::AstArena::MAX_CHILDREN {
+                            return Err(super::table_length_error());
+                        }
+                        let max_row_width = super::AstArena::MAX_CHILDREN / row_count;
+                        if max_columns > max_row_width {
+                            return Err(super::table_length_error());
+                        }
+                        let cells = self.parse_children_bounded("matrixrow", max_row_width)?;
                         max_columns = max_columns.max(cells.len());
-                        if row_count > super::AstArena::MAX_CHILDREN
-                            || max_columns.max(1) > super::AstArena::MAX_CHILDREN / row_count
-                        {
+                        if max_columns > max_row_width {
                             return Err(super::table_length_error());
                         }
                         rows.push(cells.to_vec());
@@ -823,7 +828,7 @@ impl<'a> MathmlCompactParser<'a> {
                             .checked_add(1)
                             .ok_or_else(super::table_length_error)?;
                         if row_count > super::AstArena::MAX_CHILDREN
-                            || max_columns.max(1) > super::AstArena::MAX_CHILDREN / row_count
+                            || max_columns > super::AstArena::MAX_CHILDREN / row_count
                         {
                             return Err(super::table_length_error());
                         }

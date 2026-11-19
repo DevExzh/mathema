@@ -245,6 +245,15 @@ impl<'a> MathmlCompactParser<'a> {
             .map(|(children, _)| children)
     }
 
+    fn parse_children_bounded(
+        &mut self,
+        parent_tag: &str,
+        max_children: usize,
+    ) -> Result<SmallVec<[NodeId; 8]>> {
+        self.read_children_bounded(parent_tag, false, max_children)
+            .map(|(children, _)| children)
+    }
+
     /// Recover explicitly marked delimiters of a single MathML row. Interior
     /// brackets may belong to separate pairs; a prefix or postfix vertical
     /// bar inside parentheses is an ordinary child rather than a middle.
@@ -349,7 +358,16 @@ impl<'a> MathmlCompactParser<'a> {
         parent_tag: &str,
         inspect_style: bool,
     ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
-        self.read_children_with_script_modes(parent_tag, inspect_style, None)
+        self.read_children_bounded(parent_tag, inspect_style, AstArena::MAX_CHILDREN)
+    }
+
+    fn read_children_bounded(
+        &mut self,
+        parent_tag: &str,
+        inspect_style: bool,
+        max_children: usize,
+    ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
+        self.read_children_with_script_modes_bounded(parent_tag, inspect_style, None, max_children)
     }
 
     /// Read children while optionally suppressing the automatic script-style
@@ -363,6 +381,22 @@ impl<'a> MathmlCompactParser<'a> {
         inspect_style: bool,
         script_modes: Option<&[ScriptChildMode]>,
     ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
+        self.read_children_with_script_modes_bounded(
+            parent_tag,
+            inspect_style,
+            script_modes,
+            AstArena::MAX_CHILDREN,
+        )
+    }
+
+    fn read_children_with_script_modes_bounded(
+        &mut self,
+        parent_tag: &str,
+        inspect_style: bool,
+        script_modes: Option<&[ScriptChildMode]>,
+        max_children: usize,
+    ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
+        let max_children = max_children.min(AstArena::MAX_CHILDREN);
         let mut body_in_text_style = false;
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
@@ -375,7 +409,7 @@ impl<'a> MathmlCompactParser<'a> {
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         loop {
             let event = self.reader.read_event();
-            if nodes.len() >= AstArena::MAX_CHILDREN {
+            if nodes.len() >= max_children {
                 match &event {
                     Ok(Event::Start(_) | Event::Empty(_)) => {
                         return Err(table_length_error());
