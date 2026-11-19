@@ -6,6 +6,7 @@ use super::*;
 use crate::ast::compact::CompactNode;
 use crate::ast::{LimitStyle, MathNode};
 use crate::error::LimitKind;
+use crate::writer::Writer;
 
 // ── Builders ──────────────────────────────────────────────────────────────
 
@@ -1062,14 +1063,29 @@ fn empty_limit_lines_are_dropped() {
 }
 
 #[test]
-fn partition_lines_beyond_the_ast_are_reported() {
-    // 1 x 40 matrix with a solid line before column 35.
+fn partition_lines_beyond_the_ast_are_retained_for_mtef_roundtrip() {
+    // 1 x 40 matrix with a solid line before column 35. MTEF's partition
+    // field carries it even though the historical u32 AST mask does not.
     let mut col_parts = [0u8; 11];
     col_parts[35 / 4] = 1 << (2 * (35 % 4));
-    let cells: Vec<u8> = (0..40).flat_map(|_| line5(&c5(0, 3, 'a'))).collect();
-    let matrix = cat(&[&[0x05, 0, 0, 1, 1, 1, 40, 0], &col_parts, &cells, &[0]]);
-    let result = MtefReader::parse_bytes(&eq5(&matrix), &Config::default()).unwrap();
-    assert!(has_warning(&result, "partition line"));
+    let cells5: Vec<u8> = (0..40).flat_map(|_| line5(&c5(0, 3, 'a'))).collect();
+    let cells3: Vec<u8> = (0..40).flat_map(|_| line3(&c3(0, 3, 'a'))).collect();
+    let matrix5 = cat(&[&[0x05, 0, 0, 1, 1, 1, 40, 0], &col_parts, &cells5, &[0]]);
+    let matrix3 = cat(&[&[0x05, 1, 2, 1, 1, 40, 0], &col_parts, &cells3, &[0]]);
+    for bytes in [eq5(&matrix5), eq3(&matrix3)] {
+        let result = MtefReader::parse_bytes_compact(&bytes, &Config::default()).unwrap();
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("partition line"))
+        );
+        assert!(
+            crate::writer::latex::LatexWriter::write_compact(&result.expr, &Config::default())
+                .unwrap()
+                .contains("|")
+        );
+    }
 }
 
 #[test]

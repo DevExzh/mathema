@@ -678,7 +678,8 @@ mod tests {
         assert!(
             mtef5_diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.message.contains("boundary material"))
+                .any(|diagnostic| diagnostic.message.contains("boundary")
+                    || diagnostic.message.contains("padding"))
         );
 
         let (mtef3, mtef3_diagnostics) = MtefWriter::write_bytes_with_diagnostics(
@@ -695,7 +696,8 @@ mod tests {
         assert!(
             mtef3_diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.message.contains("boundary material"))
+                .any(|diagnostic| diagnostic.message.contains("boundary")
+                    || diagnostic.message.contains("padding"))
         );
 
         let (unicode, unicode_diagnostics) =
@@ -793,6 +795,70 @@ mod tests {
                 .unwrap()
                 .1
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn mtef_preserves_uniform_cell_rules_for_v3_and_v5() {
+        let source =
+            r"\begin{array}{ll}\multicolumn{1}{|l|}{a}&b\\\multicolumn{1}{|l|}{c}&d\end{array}";
+        let result = from_latex(source).unwrap();
+        for version in [
+            crate::reader::mtef::MtefVersion::V5,
+            crate::reader::mtef::MtefVersion::V3,
+        ] {
+            let (bytes, diagnostics) = result
+                .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(version))
+                .unwrap();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            let back = from_mtef_bytes(&bytes).unwrap();
+            let latex = back.to_latex().unwrap();
+            assert!(latex.contains("{|l|l}"), "{latex}");
+            assert!(
+                latex.contains("a")
+                    && latex.contains("b")
+                    && latex.contains("c")
+                    && latex.contains("d")
+            );
+            assert!(back.diagnostics().is_empty(), "{:?}", back.diagnostics());
+        }
+    }
+
+    #[test]
+    fn mtef_reports_nonuniform_double_and_trimmed_cell_rules() {
+        for (source, expected) in [
+            (
+                r"\begin{array}{ll}\multicolumn{1}{|l|}{a}&b\\c&d\end{array}",
+                "row-varying cell rules",
+            ),
+            (
+                r"\begin{array}{ll}\multicolumn{1}{||l||}{a}&b\\\multicolumn{1}{||l||}{c}&d\end{array}",
+                "repeated cell rules",
+            ),
+            (
+                r"\begin{array}{ll}\multicolumn{1}{@{}l@{}}{a}&b\\\multicolumn{1}{@{}l@{}}{c}&d\end{array}",
+                "glue suppression",
+            ),
+        ] {
+            let result = from_latex(source).unwrap();
+            let (_, diagnostics) = result.to_mtef_with_diagnostics().unwrap();
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected)),
+                "{source}: {diagnostics:?}"
+            );
+        }
+
+        let pile = from_latex(
+            r"\begin{array}{l}\begin{array}{l}\multicolumn{1}{|l|}{a}\\\multicolumn{1}{|l|}{b}\end{array}\end{array}",
+        )
+        .unwrap();
+        let (_, diagnostics) = pile.to_mtef_with_diagnostics().unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("per-cell boundary material"))
         );
     }
 
