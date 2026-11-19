@@ -1,9 +1,8 @@
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::style::MathStyle;
-use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
+use crate::error::{Config, Diagnostic, Result};
 use crate::writer::Writer as MathWriter;
 
 /// Classifies a compact node that the UnicodeMath writer cannot fully or
@@ -42,6 +41,7 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::StructuredOperator { .. } => Some(
             "UnicodeMath has no source-level StructuredOperator marker; the body and representable bounds were written with standard grouping and script syntax".into(),
         ),
+        CompactNode::Array {cells, ..} => table_loss(arena,*cells),
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
@@ -69,6 +69,7 @@ fn write_unicode_space(out: &mut String, em: f64) {
 
 impl MathWriter for UnicodeMathWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
+        crate::ast::validate_ast_depth(expr)?;
         let mut out = String::with_capacity(256);
         write_nodes_with_style(&mut out, &expr.nodes, MathStyle::from(expr.display));
         Ok(out)
@@ -79,8 +80,7 @@ impl MathWriter for UnicodeMathWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let out = Self::write_compact(expr, config)?;
-        let mut diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
-        diags.extend(unicode_math_table_diagnostics(expr));
+        let diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
         Ok((out, diags))
     }
 
@@ -92,97 +92,49 @@ impl MathWriter for UnicodeMathWriter {
     }
 }
 
-fn unicode_math_table_diagnostics(expr: &CompactExpr) -> Vec<Diagnostic> {
-    struct TableVisitor {
-        diagnostics: Vec<Diagnostic>,
-    }
-
-    impl CompactVisitor for TableVisitor {
-        fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
-            if let CompactNode::Array {
-                cells, num_cols, ..
-            } = *arena.node(id)
-            {
-                let columns = usize::from(num_cols.max(1));
-                for (index, &cell) in arena.children(cells).iter().enumerate() {
-                    let column = index % columns + 1;
-                    match *arena.node(cell) {
-                        CompactNode::AlignedCell {
-                            alignment: ColumnAlign::Left,
-                            ..
-                        } => self.diagnostics.push(Diagnostic {
-                            kind: DiagnosticKind::Warning,
-                            message: format!(
-                                "UnicodeMath centers table columns; the authored left cell alignment in column {column} was dropped"
-                            ),
-                            span: None,
-                        }),
-                        CompactNode::AlignedCell {
-                            alignment: ColumnAlign::Right,
-                            ..
-                        } => self.diagnostics.push(Diagnostic {
-                            kind: DiagnosticKind::Warning,
-                            message: format!(
-                                "UnicodeMath centers table columns; the authored right cell alignment in column {column} was dropped"
-                            ),
-                            span: None,
-                        }),
-                        CompactNode::SpannedCell {
-                            alignment,
-                            span,
-                            left_boundaries,
-                            right_boundaries,
-                            ..
-                        } => {
-                            if alignment == ColumnAlign::Left {
-                                self.diagnostics.push(Diagnostic {
-                                    kind: DiagnosticKind::Warning,
-                                    message: format!(
-                                        "UnicodeMath centers table columns; the authored left alignment in spanned column {column} was dropped"
-                                    ),
-                                    span: None,
-                                });
-                            } else if alignment == ColumnAlign::Right {
-                                self.diagnostics.push(Diagnostic {
-                                    kind: DiagnosticKind::Warning,
-                                    message: format!(
-                                        "UnicodeMath centers table columns; the authored right alignment in spanned column {column} was dropped"
-                                    ),
-                                    span: None,
-                                });
-                            }
-                            if span > 1 {
-                                self.diagnostics.push(Diagnostic {
-                                    kind: DiagnosticKind::Warning,
-                                    message: format!(
-                                        "UnicodeMath has no cell-span construct; the authored span of {span} columns was expanded"
-                                    ),
-                                    span: None,
-                                });
-                            }
-                            if !arena.str_val(left_boundaries).is_empty()
-                                || !arena.str_val(right_boundaries).is_empty()
-                            {
-                                self.diagnostics.push(Diagnostic {
-                                    kind: DiagnosticKind::Warning,
-                                    message: "UnicodeMath has no per-cell boundary material; authored span glue or rules were dropped".into(),
-                                    span: None,
-                                });
-                            }
-                        },
-                        _ => {},
-                    }
-                }
-            }
-            walk_compact_node(self, arena, id);
+fn table_loss(arena: &AstArena, cells: crate::ast::compact::NodeSpan) -> Option<String> {
+    let mut alignment_lost = false;
+    let mut spans_lost = false;
+    let mut edges_lost = false;
+    for &cell in arena.children(cells) {
+        match *arena.node(cell) {
+            CompactNode::AlignedCell { alignment, .. } => {
+                alignment_lost |= alignment != ColumnAlign::Center
+            },
+            CompactNode::SpannedCell {
+                alignment,
+                span,
+                left_boundaries,
+                right_boundaries,
+                ..
+            } => {
+                alignment_lost |= alignment != ColumnAlign::Center;
+                spans_lost |= span > 1;
+                edges_lost |= !arena.str_val(left_boundaries).is_empty()
+                    || !arena.str_val(right_boundaries).is_empty();
+            },
+            _ => {},
         }
     }
-
-    let mut visitor = TableVisitor {
-        diagnostics: Vec::new(),
-    };
-    visitor.visit_expr(expr);
-    visitor.diagnostics
+    let mut messages = [
+        (
+            alignment_lost,
+            "UnicodeMath centers table columns with left or right cell alignment.",
+        ),
+        (
+            spans_lost,
+            "UnicodeMath expands a spanning cell into separate matrix entries.",
+        ),
+        (edges_lost, "UnicodeMath omits per-cell boundary material."),
+    ]
+    .into_iter()
+    .filter_map(|(lost, message)| lost.then_some(message));
+    let mut message = messages.next()?.to_owned();
+    for rest in messages {
+        message.push(' ');
+        message.push_str(rest);
+    }
+    Some(message)
 }
 
 /// Forced bounds keep their position in inline math. Movable bounds use
@@ -425,16 +377,43 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         | MathNode::NativeArray { rows, .. } => {
             out.push('\u{25A0}'); // ■
             out.push('(');
+            // A merged cell projects to its content followed by empty
+            // columns. Match the compact rectangle so later operands retain
+            // their logical column even when the source was ragged.
+            let expanded = rows.iter().flatten().any(|cell| table_cell_span(cell) > 1);
+            let width = if expanded {
+                let declared = match node {
+                    MathNode::Array { columns, .. } | MathNode::NativeArray { columns, .. } => {
+                        columns.len()
+                    },
+                    _ => 0,
+                };
+                rows.iter()
+                    .map(|r| table_row_width(r))
+                    .max()
+                    .unwrap_or(0)
+                    .max(declared)
+            } else {
+                0
+            };
             for (i, row) in rows.iter().enumerate() {
                 if i > 0 {
                     out.push('@');
                 }
-                for (j, cell) in row.iter().enumerate() {
-                    if j > 0 {
+                let mut column = 0;
+                for cell in row {
+                    if column != 0 {
                         out.push('&');
                     }
                     write_nodes_with_style(out, cell, MathStyle::Text);
+                    let span = table_cell_span(cell);
+                    out.extend(std::iter::repeat_n('&', span - 1));
+                    column += span;
                 }
+                out.extend(std::iter::repeat_n(
+                    '&',
+                    width.saturating_sub(column.max(1)),
+                ));
             }
             out.push(')');
         },
@@ -1883,7 +1862,9 @@ fn compact_spacing_flags(arena: &AstArena, id: NodeId, style: MathStyle) -> (boo
         | CompactNode::Underscript { .. }
         | CompactNode::Overscript { .. }
         | CompactNode::UnderOver { .. } => (false, true),
-        CompactNode::Color { content, .. } => {
+        CompactNode::AlignedCell { content, .. }
+        | CompactNode::SpannedCell { content, .. }
+        | CompactNode::Color { content, .. } => {
             (false, compact_spacing_flags(arena, content, style).1)
         },
         CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {

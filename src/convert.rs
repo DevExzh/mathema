@@ -561,6 +561,40 @@ mod tests {
     }
 
     #[test]
+    fn unicode_math_projects_a_spanning_cell_to_its_logical_columns() {
+        use crate::ast::{ColumnAlign, MathExpr, MathNode};
+        let cell = MathNode::SpannedCell {
+            alignment: ColumnAlign::Center,
+            span: 2,
+            left_boundaries: vec![],
+            right_boundaries: vec![],
+            content: Box::new(MathNode::Number("7".into())),
+        };
+        let expr = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Center; 4],
+            rows: vec![
+                vec![
+                    vec![MathNode::Number("1".into())],
+                    vec![cell],
+                    vec![MathNode::Number("9".into())],
+                ],
+                vec![vec![MathNode::Number("2".into())]],
+                vec![],
+            ],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let cfg = Config::default();
+        let heap = UnicodeMathWriter::write(&expr, &cfg).unwrap();
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        assert_eq!(heap, "■(1&7&&9@2&&&@&&&)");
+        assert_eq!(
+            heap,
+            UnicodeMathWriter::write_compact(&compact, &cfg).unwrap()
+        );
+    }
+
+    #[test]
     fn spanned_cell_interchange_reports_only_unrepresentable_table_metadata() {
         use crate::ast::{ColumnAlign, MathExpr, MathNode, SpanBoundary};
 
@@ -640,7 +674,7 @@ mod tests {
         assert!(
             unicode_diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.message.contains("cell-span construct"))
+                .any(|diagnostic| diagnostic.message.contains("separate matrix entries"))
         );
         assert!(
             unicode_diagnostics
