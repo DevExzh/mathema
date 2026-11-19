@@ -52,26 +52,31 @@ impl MathReader for MathmlReader {
                 let display = parser.display.unwrap_or(config.display);
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
-                Ok(CompactParseResult::new(CompactExpr {
-                    arena: parser.arena,
-                    roots,
-                    display,
-                }))
+                Ok(CompactParseResult::with_diagnostics(
+                    CompactExpr {
+                        arena: parser.arena,
+                        roots,
+                        display,
+                    },
+                    parser.diagnostics,
+                ))
             },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     let display = parser.display.unwrap_or(config.display);
+                    let mut diagnostics = parser.diagnostics;
+                    diagnostics.push(Diagnostic {
+                        kind: DiagnosticKind::Warning,
+                        message: format!("MathML parse error (recovered): {e}"),
+                        span: None,
+                    });
                     Ok(CompactParseResult::with_diagnostics(
                         CompactExpr {
                             arena: parser.arena,
                             roots: NodeSpan::EMPTY,
                             display,
                         },
-                        vec![Diagnostic {
-                            kind: DiagnosticKind::Warning,
-                            message: format!("MathML parse error (recovered): {e}"),
-                            span: None,
-                        }],
+                        diagnostics,
                     ))
                 } else {
                     Err(e)
@@ -107,6 +112,10 @@ struct MathmlCompactParser<'a> {
     movable_limit_operators: HashMap<NodeId, bool>,
     /// Standard MathML `stretchy` state for operator tokens used as accent scripts.
     wide_accents: HashSet<NodeId>,
+    /// Non-fatal losses while lowering MathML features that have no compact
+    /// AST representation (for example dashed table rules or rule boundaries
+    /// beyond the AST's 32-bit masks).
+    diagnostics: Vec<Diagnostic>,
     style_display: bool,
     /// The authored MathML scriptlevel can exceed TeX's three finite size
     /// levels. Keep the full non-negative level while reading nested
@@ -151,6 +160,7 @@ impl<'a> MathmlCompactParser<'a> {
             depth: 0,
             movable_limit_operators: HashMap::new(),
             wide_accents: HashSet::new(),
+            diagnostics: Vec::new(),
             style_display: display == DisplayStyle::Block,
             style_level: 0,
             mathvariant_style: None,
@@ -1323,6 +1333,105 @@ impl<'a> MathmlCompactParser<'a> {
         Ok(nodes)
     }
 
+    fn table_warning(&mut self, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: message.into(),
+            span: None,
+        });
+    }
+
+    /// Lower the standard MathML table rule attributes into the compact
+    /// native-array bitmasks. MathML's rowlines/columnlines lists describe
+    /// interior boundaries only; a short list repeats its final style.
+    fn table_rule_masks(
+        &mut self,
+        start: &quick_xml::events::BytesStart<'_>,
+        rows: usize,
+        columns: usize,
+    ) -> (u32, u32, bool) {
+        let mut col_lines = None;
+        let mut row_lines = None;
+        let mut frame = None;
+        let mut col_extension = None;
+        let mut row_extension = None;
+        let mut array_style = false;
+        for attr in start.attributes().flatten() {
+            let slot = match attr.key.as_ref() {
+                "columnlines" => &mut col_lines,
+                "rowlines" => &mut row_lines,
+                "frame" => &mut frame,
+                "data-mathema-col-seps" => &mut col_extension,
+                "data-mathema-row-seps" => &mut row_extension,
+                "data-mathema-array-style" => {
+                    array_style = unescape_attr(&attr.value)
+                        .trim()
+                        .eq_ignore_ascii_case("true");
+                    continue;
+                },
+                _ => continue,
+            };
+            slot.get_or_insert_with(|| unescape_attr(&attr.value));
+        }
+        let frame_style = parse_mathml_rule_style(frame.as_deref().unwrap_or_default());
+        match frame_style {
+            MathmlRuleStyle::Dashed => {
+                self.table_warning("MathML mtable frame uses dashed rules and was dropped")
+            },
+            MathmlRuleStyle::Invalid => {
+                self.table_warning("MathML mtable frame has an unrecognized style and was dropped")
+            },
+            _ => {},
+        }
+        let mut axis_rules = |count: usize,
+                              axis: &str,
+                              name,
+                              list: Option<String>,
+                              extension: Option<String>| {
+            let mut warn = |message| self.table_warning(message);
+            let mut mask = parse_mathml_rule_list(list.as_deref(), count, axis, &mut warn);
+            let end_bit = if count < 32 { 1u32 << count } else { 0 };
+            let exterior = 1 | end_bit;
+            if let Some(value) = extension
+                && let Some(extra) =
+                    parse_mathml_mask(&value, name, count.saturating_add(1), axis, &mut warn)
+            {
+                // Legacy masks can include interior bits. Standard attributes
+                // independently control the interiors and the four frame edges.
+                if list.is_none() {
+                    mask |= extra & !exterior;
+                }
+                if frame.is_none() {
+                    mask |= extra & exterior;
+                }
+            }
+            if frame_style == MathmlRuleStyle::Solid {
+                mask |= exterior;
+                if end_bit == 0 {
+                    warn(format!(
+                        "MathML {axis} frame boundary {count} exceeds the native 32-boundary mask and was dropped"
+                    ));
+                }
+            }
+            mask
+        };
+        let col_seps = axis_rules(
+            columns,
+            "column",
+            "data-mathema-col-seps",
+            col_lines,
+            col_extension,
+        );
+        let row_seps = axis_rules(
+            rows,
+            "row",
+            "data-mathema-row-seps",
+            row_lines,
+            row_extension,
+        );
+        (col_seps, row_seps, array_style)
+    }
+
     fn finish_table(
         &mut self,
         start: &quick_xml::events::BytesStart<'_>,
@@ -1337,6 +1446,8 @@ impl<'a> MathmlCompactParser<'a> {
         let stride = columns.len().max(1);
         let total = row_lengths.len() * stride;
         let num_cols = stride as u16;
+        let (col_seps, row_seps, array_style) =
+            self.table_rule_masks(start, row_lengths.len(), stride);
 
         let mut align_ids: SmallVec<[NodeId; 4]> = SmallVec::new();
         for align in columns {
@@ -1363,10 +1474,13 @@ impl<'a> MathmlCompactParser<'a> {
             num_cols,
             arraystretch_pct,
             add_jot: false,
-            array_style: false,
-            col_seps: 0,
-            row_seps: 0,
+            array_style,
+            col_seps,
+            row_seps,
         });
+        if array_style || col_seps != 0 || row_seps != 0 {
+            self.arena.mark_native_array(array);
+        }
         if let Some(environment) = array_environment(start, arraystretch_pct) {
             self.arena.mark_array_environment(array, environment);
         }
@@ -2319,6 +2433,106 @@ fn parse_boundary_attr(
         boundaries.push(SpanBoundary::Rule);
     }
     Ok(boundaries)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MathmlRuleStyle {
+    None,
+    Solid,
+    Dashed,
+    Invalid,
+}
+
+fn parse_mathml_rule_style(value: &str) -> MathmlRuleStyle {
+    match value.trim() {
+        "" | "none" => MathmlRuleStyle::None,
+        "solid" => MathmlRuleStyle::Solid,
+        "dashed" => MathmlRuleStyle::Dashed,
+        _ => MathmlRuleStyle::Invalid,
+    }
+}
+
+fn parse_mathml_rule_list(
+    value: Option<&str>,
+    cells: usize,
+    axis: &str,
+    warn: &mut impl FnMut(String),
+) -> u32 {
+    let Some(value) = value else { return 0 };
+    let mut styles = value.split_ascii_whitespace();
+    let mut last = MathmlRuleStyle::None;
+    let mut mask = 0;
+    let mut dashed = false;
+    let mut invalid = false;
+    let mut first_high = None;
+    for boundary in 1..cells {
+        if let Some(style) = styles.next() {
+            last = parse_mathml_rule_style(style);
+        }
+        match last {
+            MathmlRuleStyle::None => {},
+            MathmlRuleStyle::Solid if boundary < 32 => mask |= 1u32 << boundary,
+            MathmlRuleStyle::Solid => {
+                first_high.get_or_insert(boundary);
+            },
+            MathmlRuleStyle::Dashed => dashed = true,
+            MathmlRuleStyle::Invalid => invalid = true,
+        }
+    }
+    if dashed {
+        warn(format!(
+            "MathML {axis}lines contains dashed rules that were dropped"
+        ));
+    }
+    if invalid {
+        warn(format!(
+            "MathML {axis}lines contains unrecognized rule styles that were dropped"
+        ));
+    }
+    if let Some(boundary) = first_high {
+        warn(format!(
+            "MathML {axis}lines at boundary {boundary} and beyond exceeds the native 32-boundary mask"
+        ));
+    }
+    mask
+}
+
+fn parse_mathml_mask(
+    value: &str,
+    name: &str,
+    boundary_count: usize,
+    axis: &str,
+    warn: &mut impl FnMut(String),
+) -> Option<u32> {
+    let trimmed = value.trim();
+    let (digits, radix) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .map_or((trimmed, 10), |digits| (digits, 16));
+    let mask = match u32::from_str_radix(digits, radix) {
+        Ok(mask) => mask,
+        Err(_) => {
+            warn(format!(
+                "MathML {name} value {value:?} is not a valid native rule mask; standard {axis} rules were retained"
+            ));
+            return None;
+        },
+    };
+    if boundary_count < u32::BITS as usize {
+        let valid = if boundary_count == 0 {
+            0
+        } else {
+            (1u32 << boundary_count) - 1
+        };
+        let dropped = mask & !valid;
+        if dropped != 0 {
+            warn(format!(
+                "MathML {name} contains native {axis} rule bits outside the table boundary count; they were dropped"
+            ));
+            return Some(mask & valid);
+        }
+    }
+    Some(mask)
 }
 
 fn column_alignment(value: &str) -> ColumnAlign {

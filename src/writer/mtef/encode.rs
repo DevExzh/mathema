@@ -2011,13 +2011,17 @@ impl<'a> Encoder<'a> {
     /// PILE: halign, valign (baseline of the centre line), one line per row.
     fn pile(&mut self, id: NodeId, size: Size) -> Result<()> {
         let CompactNode::Array {
-            col_aligns, cells, ..
+            col_aligns,
+            cells,
+            array_style,
+            ..
         } = *self.arena.node(id)
         else {
             return Ok(());
         };
         let rows = self.arena.children(cells);
         let (exported, halign, _) = self.column_align(col_aligns, rows, 1);
+        self.note_array_padding(array_style, false);
         self.need(size);
         self.tag(PILE, 0);
         self.out.push(halign);
@@ -2064,9 +2068,9 @@ impl<'a> Encoder<'a> {
         } else {
             crate::reader::mtef::PartitionMask::from_low(col_seps)
         };
-        if (column_rules.any() || row_seps != 0) && !array_style {
-            self.lose("Mathema restores outer padding when it reads this ruled MTEF matrix, so its trimmed edges will change");
-        }
+        let ruled = (0..=cols).any(|i| column_rules.get(i))
+            || (0..=rows.min(31)).any(|i| row_seps & (1u32 << i) != 0);
+        self.note_array_padding(array_style, ruled);
         self.need(size);
         self.tag(MATRIX, 0);
         self.out.push(1);
@@ -2094,6 +2098,14 @@ impl<'a> Encoder<'a> {
         }
         self.end();
         Ok(())
+    }
+
+    fn note_array_padding(&mut self, padded: bool, ruled: bool) {
+        match (padded, ruled) {
+            (false, true) => self.lose("Mathema restores outer padding when it reads this ruled MTEF matrix, so its trimmed edges will change"),
+            (true, false) => self.lose("MTEF cannot retain TeX outer padding on an unruled table."),
+            _ => {},
+        }
     }
 
     fn note_cell_alignment(&mut self, cell: NodeId, exported: ColumnAlign, matrix_rules: bool) {

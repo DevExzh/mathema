@@ -437,7 +437,7 @@ mod tests {
     fn array_row_separator_after_nary_operator_is_preserved() {
         let node = parse_one(r"\begin{array}{l}\int\\x\end{array}");
         match node {
-            MathNode::Array { rows, .. } => {
+            MathNode::Array { rows, .. } | MathNode::NativeArray { rows, .. } => {
                 assert_eq!(
                     rows.len(),
                     2,

@@ -905,3 +905,19 @@ fn cjk_variables_use_the_far_east_style() {
     assert!(data.windows(5).any(|w| w == [0x02, 0x00, 0x8C, 0x2D, 0x4E]));
     assert!(crate::from_mtef_bytes(&data).is_ok());
 }
+
+#[test]
+fn unruled_native_matrix_and_pile_report_padding_loss() {
+    let config = Config::default();
+    for input in [
+        r"\begin{array}{c}x\end{array}",
+        r"\begin{array}{cc}x&y\end{array}",
+    ] {
+        let result = crate::reader::latex::LatexReader::parse_compact(input, &config).unwrap();
+        let (_, diags) = MtefWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
+        assert!(
+            diags.iter().any(|d| d.message.contains("outer padding")),
+            "{input}: {diags:?}"
+        );
+    }
+}

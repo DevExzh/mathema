@@ -703,45 +703,58 @@ fn write_node_in(
         },
 
         MathNode::Array { .. } | MathNode::Matrix { .. } | MathNode::NativeArray { .. } => {
-            let (columns, rows, arraystretch, add_jot, kind) = match node {
-                MathNode::Array {
-                    columns,
-                    rows,
-                    arraystretch,
-                    add_jot,
-                } => (
-                    Cow::Borrowed(columns.as_slice()),
-                    rows,
-                    *arraystretch,
-                    *add_jot,
-                    None,
-                ),
-                MathNode::Matrix {
-                    kind,
-                    alignment,
-                    rows,
-                } => (
-                    Cow::Owned(vec![*alignment; table_width(rows, 1)?]),
-                    rows,
-                    None,
-                    false,
-                    Some(*kind),
-                ),
-                MathNode::NativeArray {
-                    columns,
-                    rows,
-                    arraystretch,
-                    add_jot,
-                    ..
-                } => (
-                    Cow::Borrowed(columns.as_slice()),
-                    rows,
-                    *arraystretch,
-                    *add_jot,
-                    None,
-                ),
-                _ => unreachable!(),
-            };
+            let (columns, rows, arraystretch, add_jot, array_style, col_seps, row_seps, kind) =
+                match node {
+                    MathNode::Array {
+                        columns,
+                        rows,
+                        arraystretch,
+                        add_jot,
+                    } => (
+                        Cow::Borrowed(columns.as_slice()),
+                        rows,
+                        *arraystretch,
+                        *add_jot,
+                        false,
+                        0,
+                        0,
+                        None,
+                    ),
+                    MathNode::Matrix {
+                        kind,
+                        alignment,
+                        rows,
+                    } => (
+                        Cow::Owned(vec![*alignment; table_width(rows, 1)?]),
+                        rows,
+                        None,
+                        false,
+                        false,
+                        0,
+                        0,
+                        Some(*kind),
+                    ),
+                    MathNode::NativeArray {
+                        columns,
+                        rows,
+                        arraystretch,
+                        add_jot,
+                        array_style,
+                        col_seps,
+                        row_seps,
+                        ..
+                    } => (
+                        Cow::Borrowed(columns.as_slice()),
+                        rows,
+                        *arraystretch,
+                        *add_jot,
+                        *array_style,
+                        *col_seps,
+                        *row_seps,
+                        None,
+                    ),
+                    _ => unreachable!(),
+                };
             let promoted = inherited_table_marker(display_style, add_jot, |marker| {
                 rows.iter().flatten().all(|cell| {
                     table_cell_parts(cell).1.first().is_none_or(
@@ -771,12 +784,22 @@ fn write_node_in(
             if promoted.is_some_and(|marker| MathStyle::branch_from_switch(marker).is_display()) {
                 table.push_attribute(("displaystyle", "true"));
             }
-            w.write_event(Event::Start(table)).map_err(to_err)?;
             let num_cols = if kind.is_some() {
                 columns.len()
             } else {
                 table_width(rows, columns.len())?
             };
+            table_rule_attributes(
+                col_seps,
+                row_seps,
+                num_cols,
+                rows.len(),
+                array_style,
+                |key, value| {
+                    table.push_attribute((key, value));
+                },
+            );
+            w.write_event(Event::Start(table)).map_err(to_err)?;
             for row in rows {
                 w.write_event(Event::Start(BytesStart::new("mtr")))
                     .map_err(to_err)?;
@@ -1793,6 +1816,20 @@ fn write_node_fast_in(
             if promoted.is_some_and(|marker| MathStyle::branch_from_switch(marker).is_display()) {
                 buf.push_str(" displaystyle=\"true\"");
             }
+            table_rule_attributes(
+                col_seps,
+                row_seps,
+                nc,
+                cell_ids.len().div_ceil(nc.max(1)),
+                array_style,
+                |key, value| {
+                    buf.push(' ');
+                    buf.push_str(key);
+                    buf.push_str("=\"");
+                    buf.push_str(value);
+                    buf.push('"');
+                },
+            );
             buf.push('>');
             for row_chunk in cell_ids.chunks(nc.max(1)) {
                 buf.push_str("<mtr>");
@@ -2070,6 +2107,80 @@ fn matrix_attributes(kind: Option<MatrixKind>) -> &'static [(&'static str, &'sta
         ],
         Some(MatrixKind::Matrix) => &[("data-mathema-array-environment", "matrix")],
         None => &[],
+    }
+}
+
+#[inline]
+fn table_rule_bit(mask: u32, boundary: usize) -> bool {
+    boundary < u32::BITS as usize && mask & (1u32 << boundary) != 0
+}
+
+/// Encode an interior rule mask using MathML's repeat-last line-list rule.
+/// Trailing `none` is retained when it is needed to prevent a preceding
+/// `solid` from repeating across the rest of the table.
+fn table_line_attr(mask: u32, cells: usize) -> Option<String> {
+    let limit = cells.saturating_sub(1).min(u32::BITS as usize);
+    if mask & !1 == 0 || !(1..=limit).any(|i| table_rule_bit(mask, i)) {
+        return None;
+    }
+    // Boundary 32 can contribute the final "none" after a solid bit 31.
+    let end = (2..=limit)
+        .rev()
+        .find(|&i| table_rule_bit(mask, i) != table_rule_bit(mask, i - 1))
+        .unwrap_or(1);
+    let mut value = String::new();
+    for i in 1..=end {
+        if i > 1 {
+            value.push(' ');
+        }
+        value.push_str(if table_rule_bit(mask, i) {
+            "solid"
+        } else {
+            "none"
+        });
+    }
+    Some(value)
+}
+
+fn table_rule_attributes(
+    col_seps: u32,
+    row_seps: u32,
+    columns: usize,
+    rows: usize,
+    array_style: bool,
+    mut attr: impl FnMut(&'static str, &str),
+) {
+    if let Some(value) = table_line_attr(col_seps, columns) {
+        attr("columnlines", &value);
+    }
+    if let Some(value) = table_line_attr(row_seps, rows) {
+        attr("rowlines", &value);
+    }
+    if table_rule_bit(col_seps, 0)
+        && table_rule_bit(col_seps, columns)
+        && table_rule_bit(row_seps, 0)
+        && table_rule_bit(row_seps, rows)
+    {
+        attr("frame", "solid");
+    } else {
+        // A MathML frame covers all four sides. The extension encodes just
+        // the partial exterior edges so standard interior lists remain editable.
+        for (key, mask, size) in [
+            ("data-mathema-col-seps", col_seps, columns),
+            ("data-mathema-row-seps", row_seps, rows),
+        ] {
+            let edges = mask
+                & (1 | u32::try_from(size)
+                    .ok()
+                    .and_then(|n| 1u32.checked_shl(n))
+                    .unwrap_or(0));
+            if edges != 0 {
+                attr(key, &format!("0x{edges:x}"));
+            }
+        }
+    }
+    if array_style {
+        attr("data-mathema-array-style", "true");
     }
 }
 

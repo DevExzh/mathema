@@ -2323,6 +2323,7 @@ impl LatexCompactParser {
     ) -> NodeId {
         let needs_native = col_seps != 0
             || row_seps != 0
+            || array_style
             || rows
                 .iter()
                 .flatten()

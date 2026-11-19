@@ -93,6 +93,24 @@ fn canonical(node: &mut MathNode) {
             add_jot: false,
         };
     }
+    // An unruled MATRIX or PILE carries no TeX outer padding setting.
+    if let MathNode::NativeArray {
+        columns,
+        rows,
+        arraystretch,
+        add_jot,
+        array_style: true,
+        col_seps: 0,
+        row_seps: 0,
+    } = node
+    {
+        *node = MathNode::Array {
+            columns: std::mem::take(columns),
+            rows: std::mem::take(rows),
+            arraystretch: *arraystretch,
+            add_jot: *add_jot,
+        };
+    }
     match node {
         MathNode::Operator(attr) => attr.limit_style = LimitStyle::Default,
         MathNode::Nary {
