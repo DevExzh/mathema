@@ -14,7 +14,7 @@
 use quick_xml::events::Event;
 use smallvec::SmallVec;
 
-use super::{MathmlCompactParser, get_attr};
+use super::{MathmlCompactParser, get_attr, unescape_text};
 use crate::ast::compact::{CompactNode, NodeId};
 use crate::ast::{AccentPosition, FractionKind, LimitStyle, SymbolKind, TextStyle};
 use crate::error::Result;
