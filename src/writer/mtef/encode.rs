@@ -2052,13 +2052,40 @@ impl<'a> Encoder<'a> {
     }
 
     fn note_cell_alignment(&mut self, cell: NodeId, exported: ColumnAlign) {
-        let CompactNode::AlignedCell { alignment, .. } = *self.arena.node(cell) else {
-            return;
-        };
-        if alignment != exported {
-            self.lose(&format!(
-                "MTEF exports one matrix alignment ({exported:?}). This cell requested {alignment:?}"
-            ));
+        match *self.arena.node(cell) {
+            CompactNode::AlignedCell { alignment, .. } => {
+                if alignment != exported {
+                    self.lose(&format!(
+                        "MTEF exports one matrix alignment ({exported:?}). This cell requested {alignment:?}"
+                    ));
+                }
+            },
+            CompactNode::SpannedCell {
+                alignment,
+                span,
+                left_boundaries,
+                right_boundaries,
+                ..
+            } => {
+                if span > 1 {
+                    self.lose(&format!(
+                        "MTEF has no cell-span construct; the authored span of {span} columns was expanded"
+                    ));
+                }
+                if !self.arena.str_val(left_boundaries).is_empty()
+                    || !self.arena.str_val(right_boundaries).is_empty()
+                {
+                    self.lose(
+                        "MTEF has no per-cell boundary material; authored span glue or rules were dropped",
+                    );
+                }
+                if alignment != exported {
+                    self.lose(&format!(
+                        "MTEF exports one matrix alignment ({exported:?}). This spanned cell requested {alignment:?}"
+                    ));
+                }
+            },
+            _ => {},
         }
     }
 

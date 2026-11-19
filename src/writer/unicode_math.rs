@@ -1,8 +1,9 @@
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::style::MathStyle;
+use crate::ast::visit::{CompactVisitor, walk_compact_node};
 use crate::ast::*;
-use crate::error::{Config, Diagnostic, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 use crate::writer::Writer as MathWriter;
 
 /// Classifies a compact node that the UnicodeMath writer cannot fully or
@@ -38,9 +39,6 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::MathChoice { .. } => {
             Some("UnicodeMath keeps only the branch of \\mathchoice active at this style".into())
         },
-        CompactNode::Array { cells, .. } if arena.children(*cells).iter().any(|&cell| {
-            matches!(arena.node(cell), CompactNode::AlignedCell { alignment: ColumnAlign::Left | ColumnAlign::Right, .. })
-        }) => Some("UnicodeMath centers table columns and drops left or right cell alignment".into()),
         CompactNode::StructuredOperator { .. } => Some(
             "UnicodeMath has no source-level StructuredOperator marker; the body and representable bounds were written with standard grouping and script syntax".into(),
         ),
@@ -81,7 +79,8 @@ impl MathWriter for UnicodeMathWriter {
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
         let out = Self::write_compact(expr, config)?;
-        let diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        let mut diags = super::collect_loss_diagnostics(expr, unicode_math_loss);
+        diags.extend(unicode_math_table_diagnostics(expr));
         Ok((out, diags))
     }
 
@@ -91,6 +90,99 @@ impl MathWriter for UnicodeMathWriter {
         write_nodes_c_with_style(&mut out, arena, expr.roots, MathStyle::from(expr.display));
         Ok(out)
     }
+}
+
+fn unicode_math_table_diagnostics(expr: &CompactExpr) -> Vec<Diagnostic> {
+    struct TableVisitor {
+        diagnostics: Vec<Diagnostic>,
+    }
+
+    impl CompactVisitor for TableVisitor {
+        fn visit_node(&mut self, arena: &AstArena, id: NodeId) {
+            if let CompactNode::Array {
+                cells, num_cols, ..
+            } = *arena.node(id)
+            {
+                let columns = usize::from(num_cols.max(1));
+                for (index, &cell) in arena.children(cells).iter().enumerate() {
+                    let column = index % columns + 1;
+                    match *arena.node(cell) {
+                        CompactNode::AlignedCell {
+                            alignment: ColumnAlign::Left,
+                            ..
+                        } => self.diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!(
+                                "UnicodeMath centers table columns; the authored left cell alignment in column {column} was dropped"
+                            ),
+                            span: None,
+                        }),
+                        CompactNode::AlignedCell {
+                            alignment: ColumnAlign::Right,
+                            ..
+                        } => self.diagnostics.push(Diagnostic {
+                            kind: DiagnosticKind::Warning,
+                            message: format!(
+                                "UnicodeMath centers table columns; the authored right cell alignment in column {column} was dropped"
+                            ),
+                            span: None,
+                        }),
+                        CompactNode::SpannedCell {
+                            alignment,
+                            span,
+                            left_boundaries,
+                            right_boundaries,
+                            ..
+                        } => {
+                            if alignment == ColumnAlign::Left {
+                                self.diagnostics.push(Diagnostic {
+                                    kind: DiagnosticKind::Warning,
+                                    message: format!(
+                                        "UnicodeMath centers table columns; the authored left alignment in spanned column {column} was dropped"
+                                    ),
+                                    span: None,
+                                });
+                            } else if alignment == ColumnAlign::Right {
+                                self.diagnostics.push(Diagnostic {
+                                    kind: DiagnosticKind::Warning,
+                                    message: format!(
+                                        "UnicodeMath centers table columns; the authored right alignment in spanned column {column} was dropped"
+                                    ),
+                                    span: None,
+                                });
+                            }
+                            if span > 1 {
+                                self.diagnostics.push(Diagnostic {
+                                    kind: DiagnosticKind::Warning,
+                                    message: format!(
+                                        "UnicodeMath has no cell-span construct; the authored span of {span} columns was expanded"
+                                    ),
+                                    span: None,
+                                });
+                            }
+                            if !arena.str_val(left_boundaries).is_empty()
+                                || !arena.str_val(right_boundaries).is_empty()
+                            {
+                                self.diagnostics.push(Diagnostic {
+                                    kind: DiagnosticKind::Warning,
+                                    message: "UnicodeMath has no per-cell boundary material; authored span glue or rules were dropped".into(),
+                                    span: None,
+                                });
+                            }
+                        },
+                        _ => {},
+                    }
+                }
+            }
+            walk_compact_node(self, arena, id);
+        }
+    }
+
+    let mut visitor = TableVisitor {
+        diagnostics: Vec::new(),
+    };
+    visitor.visit_expr(expr);
+    visitor.diagnostics
 }
 
 /// Forced bounds keep their position in inline math. Movable bounds use
