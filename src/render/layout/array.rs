@@ -73,22 +73,20 @@ impl CellTemplate {
     }
 
     fn heap(nodes: &[MathNode]) -> Self {
-        match nodes {
-            [
-                MathNode::SpannedCell {
-                    alignment,
-                    span,
-                    left_boundaries,
-                    right_boundaries,
-                    ..
-                },
-            ] => Self::from_boundaries(
+        match crate::ast::table_cell_wrapper(nodes) {
+            Some(MathNode::SpannedCell {
+                alignment,
+                span,
+                left_boundaries,
+                right_boundaries,
+                ..
+            }) => Self::from_boundaries(
                 usize::from((*span).max(1)),
                 Some(*alignment),
                 left_boundaries.iter().copied(),
                 right_boundaries.iter().copied(),
             ),
-            [MathNode::AlignedCell { alignment, .. }] => Self {
+            Some(MathNode::AlignedCell { alignment, .. }) => Self {
                 alignment: Some(*alignment),
                 ..Self::ORDINARY
             },
@@ -405,11 +403,11 @@ pub(super) fn layout_array(
     for row in rows {
         let mut row_layouts = Vec::new();
         for cell in row {
-            has_span |= matches!(cell.as_slice(), [MathNode::SpannedCell { .. }]);
-            has_override |= matches!(
-                cell.as_slice(),
-                [MathNode::SpannedCell { .. } | MathNode::AlignedCell { .. }]
+            has_span |= matches!(
+                crate::ast::table_cell_wrapper(cell),
+                Some(MathNode::SpannedCell { .. })
             );
+            has_override |= crate::ast::table_cell_wrapper(cell).is_some();
             row_layouts.push(layout_row(crate::ast::table_cell_parts(cell).1, &cell_ctx));
         }
         cell_layouts.push(row_layouts);

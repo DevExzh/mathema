@@ -114,11 +114,32 @@ pub(crate) fn span_boundary_has(spelling: &str, boundary: SpanBoundary) -> bool 
     span_boundaries(spelling).any(|value| value == boundary)
 }
 
+/// Return the only whole-cell wrapper in a cell. Style switches are directives
+/// synthesized by table environments and do not count as cell content.
+pub(crate) fn table_cell_wrapper(cell: &[MathNode]) -> Option<&MathNode> {
+    let mut wrapper = None;
+    for node in cell {
+        if matches!(node, MathNode::StyleSwitch(_)) {
+            continue;
+        }
+        if matches!(
+            node,
+            MathNode::AlignedCell { .. } | MathNode::SpannedCell { .. }
+        ) && wrapper.is_none()
+        {
+            wrapper = Some(node);
+        } else {
+            return None;
+        }
+    }
+    wrapper
+}
+
 /// A span belongs to a whole cell. Wrappers among sibling nodes contribute
 /// their content without changing the number of occupied columns.
 pub(crate) fn table_cell_span(cell: &[MathNode]) -> usize {
-    match cell {
-        [MathNode::SpannedCell { span, .. }] => usize::from((*span).max(1)),
+    match table_cell_wrapper(cell) {
+        Some(MathNode::SpannedCell { span, .. }) => usize::from((*span).max(1)),
         _ => 1,
     }
 }
@@ -151,13 +172,11 @@ pub(crate) fn table_width(rows: &[Vec<Vec<MathNode>>], declared: usize) -> crate
 
 /// Only a wrapper occupying the whole cell supplies its alignment.
 pub(crate) fn table_cell_parts(cell: &[MathNode]) -> (Option<ColumnAlign>, &[MathNode]) {
-    match cell {
-        [MathNode::AlignedCell { alignment, content }]
-        | [
-            MathNode::SpannedCell {
-                alignment, content, ..
-            },
-        ] => {
+    match table_cell_wrapper(cell) {
+        Some(MathNode::AlignedCell { alignment, content })
+        | Some(MathNode::SpannedCell {
+            alignment, content, ..
+        }) => {
             let nodes = match content.as_ref() {
                 MathNode::Row(nodes) => nodes.as_slice(),
                 node => std::slice::from_ref(node),

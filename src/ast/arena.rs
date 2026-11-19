@@ -455,6 +455,33 @@ impl AstArena {
         (alignment, nodes)
     }
 
+    /// Return the sole whole-cell wrapper, ignoring synthesized style nodes.
+    pub(crate) fn table_cell_wrapper(&self, cell: &[NodeId]) -> Option<NodeId> {
+        let mut wrapper = None;
+        for &id in cell {
+            match *self.node(id) {
+                CompactNode::StyleSwitch(_) => continue,
+                CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+                    if wrapper.is_none() =>
+                {
+                    wrapper = Some(id)
+                },
+                _ => return None,
+            }
+        }
+        wrapper
+    }
+
+    /// Return logical columns occupied by one parsed cell.
+    pub(crate) fn table_cell_span(&self, cell: &[NodeId]) -> usize {
+        self.table_cell_wrapper(cell)
+            .and_then(|id| match *self.node(id) {
+                CompactNode::SpannedCell { span, .. } => Some(usize::from(span.max(1))),
+                _ => None,
+            })
+            .unwrap_or(1)
+    }
+
     /// Return the slice of child `NodeId`s covered by `span`.
     #[inline]
     pub fn children(&self, span: NodeSpan) -> &[NodeId] {

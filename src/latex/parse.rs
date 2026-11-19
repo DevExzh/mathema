@@ -2323,12 +2323,10 @@ impl LatexCompactParser {
     ) -> NodeId {
         let needs_native = col_seps != 0
             || row_seps != 0
-            || rows.iter().flatten().any(|cell| {
-                matches!(
-                    cell.first().map(|id| self.arena.node(*id)),
-                    Some(CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. })
-                )
-            });
+            || rows
+                .iter()
+                .flatten()
+                .any(|cell| self.arena.table_cell_wrapper(cell).is_some());
         let id = self.build_array_with_spacing(
             columns,
             rows,
@@ -2355,9 +2353,42 @@ impl LatexCompactParser {
         let marker = self.arena.push_node(CompactNode::StyleSwitch(style));
         for row in rows {
             for cell in row {
+                if let [node] = cell.as_slice() {
+                    let replacement = match *self.arena.node(*node) {
+                        CompactNode::AlignedCell { alignment, content } => {
+                            Some(CompactNode::AlignedCell {
+                                alignment,
+                                content: self.prepend_cell_style(content, marker),
+                            })
+                        },
+                        CompactNode::SpannedCell {
+                            alignment,
+                            span,
+                            left_boundaries,
+                            right_boundaries,
+                            content,
+                        } => Some(CompactNode::SpannedCell {
+                            alignment,
+                            span,
+                            left_boundaries,
+                            right_boundaries,
+                            content: self.prepend_cell_style(content, marker),
+                        }),
+                        _ => None,
+                    };
+                    if let Some(replacement) = replacement {
+                        *self.arena.node_mut(*node) = replacement;
+                        continue;
+                    }
+                }
                 cell.insert(0, marker);
             }
         }
+    }
+
+    fn prepend_cell_style(&mut self, content: NodeId, marker: NodeId) -> NodeId {
+        let span = self.arena.push_children_deferred(&[marker, content]);
+        self.arena.push_node(CompactNode::Row(span))
     }
 
     /// Build an Array node with explicit spacing parameters.
@@ -2380,11 +2411,8 @@ impl LatexCompactParser {
             .iter()
             .map(|row| {
                 row.iter()
-                    .map(|cell| match cell.first().map(|id| self.arena.node(*id)) {
-                        Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
-                        _ => 1,
-                    })
-                    .sum()
+                    .map(|cell| self.arena.table_cell_span(cell))
+                    .fold(0usize, usize::saturating_add)
             })
             .max()
             .unwrap_or(0);
@@ -2414,23 +2442,12 @@ impl LatexCompactParser {
                 if self.check_node_limit() {
                     break;
                 }
-                let width = match cell.first().map(|id| self.arena.node(*id)) {
-                    Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
-                    _ => 1,
-                };
-                let id = match cell.as_slice() {
-                    [node]
-                        if matches!(
-                            self.arena.node(*node),
-                            CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
-                        ) =>
-                    {
-                        *node
-                    },
-                    _ => {
-                        let span = self.arena.push_children_deferred(cell);
-                        self.arena.push_node(CompactNode::Row(span))
-                    },
+                let width = self.arena.table_cell_span(cell);
+                let id = if let Some(wrapper) = self.arena.table_cell_wrapper(cell) {
+                    wrapper
+                } else {
+                    let span = self.arena.push_children_deferred(cell);
+                    self.arena.push_node(CompactNode::Row(span))
                 };
                 cell_ids.push(id);
                 for _ in 1..width {
@@ -2445,11 +2462,8 @@ impl LatexCompactParser {
             // Pad short rows to num_cols
             let used = row
                 .iter()
-                .map(|cell| match cell.first().map(|id| self.arena.node(*id)) {
-                    Some(CompactNode::SpannedCell { span, .. }) => *span as usize,
-                    _ => 1,
-                })
-                .sum::<usize>();
+                .map(|cell| self.arena.table_cell_span(cell))
+                .fold(0usize, usize::saturating_add);
             for _ in used..(num_cols as usize) {
                 if self.check_node_limit() {
                     break;
@@ -7856,7 +7870,7 @@ impl LatexCompactParser {
                             height: d,
                             lift: Rational::new(-d.num, d.den),
                         });
-                        cell.push(strut);
+                        self.append_table_cell_node(cell, strut);
                     }
                     // A `\hline` after this separator precedes the next row.
                     if hline && rows.len() < 32 {
@@ -7936,6 +7950,32 @@ impl LatexCompactParser {
     /// Wrap a cell's content nodes in a [`CompactNode::Boxed`] with the given
     /// background color (no border), producing a single-element cell.
     fn wrap_cell_bg(&mut self, ids: SmallVec<[NodeId; 8]>, color: &str) -> SmallVec<[NodeId; 8]> {
+        if let [wrapper] = ids.as_slice() {
+            let replacement = match *self.arena.node(*wrapper) {
+                CompactNode::AlignedCell { alignment, content } => Some(CompactNode::AlignedCell {
+                    alignment,
+                    content: self.wrap_cell_content_bg(content, color),
+                }),
+                CompactNode::SpannedCell {
+                    alignment,
+                    span,
+                    left_boundaries,
+                    right_boundaries,
+                    content,
+                } => Some(CompactNode::SpannedCell {
+                    alignment,
+                    span,
+                    left_boundaries,
+                    right_boundaries,
+                    content: self.wrap_cell_content_bg(content, color),
+                }),
+                _ => None,
+            };
+            if let Some(replacement) = replacement {
+                *self.arena.node_mut(*wrapper) = replacement;
+                return ids;
+            }
+        }
         let span = self.arena.push_children_deferred(&ids);
         let content = self.arena.push_node(CompactNode::Row(span));
         let bg_color = self.arena.push_str(color);
@@ -7946,6 +7986,56 @@ impl LatexCompactParser {
             border_color,
         });
         smallvec::smallvec![boxed]
+    }
+
+    fn wrap_cell_content_bg(&mut self, content: NodeId, color: &str) -> NodeId {
+        let bg_color = self.arena.push_str(color);
+        let border_color = self.arena.push_str("");
+        self.arena.push_node(CompactNode::Boxed {
+            content,
+            bg_color,
+            border_color,
+        })
+    }
+
+    fn append_table_cell_node(&mut self, cell: &mut SmallVec<[NodeId; 8]>, node: NodeId) {
+        if let [wrapper] = cell.as_slice() {
+            let replacement = match *self.arena.node(*wrapper) {
+                CompactNode::AlignedCell { alignment, content } => Some(CompactNode::AlignedCell {
+                    alignment,
+                    content: self.append_cell_content(content, node),
+                }),
+                CompactNode::SpannedCell {
+                    alignment,
+                    span,
+                    left_boundaries,
+                    right_boundaries,
+                    content,
+                } => Some(CompactNode::SpannedCell {
+                    alignment,
+                    span,
+                    left_boundaries,
+                    right_boundaries,
+                    content: self.append_cell_content(content, node),
+                }),
+                _ => None,
+            };
+            if let Some(replacement) = replacement {
+                *self.arena.node_mut(*wrapper) = replacement;
+                return;
+            }
+        }
+        cell.push(node);
+    }
+
+    fn append_cell_content(&mut self, content: NodeId, node: NodeId) -> NodeId {
+        let mut ids = match *self.arena.node(content) {
+            CompactNode::Row(span) => self.arena.children(span).to_vec(),
+            _ => vec![content],
+        };
+        ids.push(node);
+        let span = self.arena.push_children_deferred(&ids);
+        self.arena.push_node(CompactNode::Row(span))
     }
 
     /// Parse one table cell, first consuming any leading colortbl directives
@@ -8210,6 +8300,30 @@ mod tests {
                 })
             ));
             assert_eq!(parser.arena.node_count(), expected_nodes);
+        }
+    }
+
+    #[test]
+    fn whole_cell_wrappers_survive_style_struts_and_colortbl() {
+        for source in [
+            r"\begin{smallmatrix}\multicolumn{1}{r}{LONG}&c\end{smallmatrix}",
+            r"\begin{array}{ll}\cellcolor{red}\multicolumn{1}{r}{LONG}&c\end{array}",
+            r"\begin{array}{ll}\multicolumn{1}{r}{LONG}&c\\[4pt]x&y\end{array}",
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            let latex = parsed.to_latex().unwrap();
+            let reparsed = crate::from_latex(&latex).unwrap();
+            assert_eq!(
+                parsed.to_mathml().unwrap(),
+                reparsed.to_mathml().unwrap(),
+                "{source}: {latex}"
+            );
+            #[cfg(feature = "render")]
+            assert_eq!(
+                parsed.to_svg().unwrap(),
+                reparsed.to_svg().unwrap(),
+                "{source}: {latex}"
+            );
         }
     }
 }
