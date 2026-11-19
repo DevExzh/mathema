@@ -436,22 +436,22 @@ impl<'a> MathmlCompactParser<'a> {
                 },
                 Event::GeneralRef(e) => text.push_str(&super::resolve_general_ref(&e)),
                 Event::Start(e) => {
-                    let n = Self::local_name(&e);
-                    let id = self.parse_element_by_name(&n, &e)?;
+                    let n = e.local_name().into_inner();
+                    let id = self.parse_element_by_name(n, &e)?;
                     kids.push(id);
                 },
                 Event::Empty(e) => {
-                    let n = Self::local_name(&e);
+                    let n = e.local_name().into_inner();
                     if n == "mglyph"
                         && let Some(alt) = get_attr(&e, "alt")
                     {
                         text.push_str(&alt);
                     } else {
-                        let id = self.parse_empty_element(&n, &e)?;
+                        let id = self.parse_empty_element(n, &e)?;
                         kids.push(id);
                     }
                 },
-                Event::End(e) if Self::local_name_end(&e) == "ci" => {
+                Event::End(e) if e.local_name().into_inner() == "ci" => {
                     break;
                 },
                 Event::Eof => break,
@@ -495,11 +495,11 @@ impl<'a> MathmlCompactParser<'a> {
                         .unwrap()
                         .push_str(&super::resolve_general_ref(&e));
                 },
-                Event::Empty(e) | Event::Start(e) if Self::local_name(&e) == "sep" => {
+                Event::Empty(e) | Event::Start(e) if e.local_name().into_inner() == "sep" => {
                     parts.push(String::new());
                 },
                 Event::End(e) => {
-                    let n = Self::local_name_end(&e);
+                    let n = e.local_name().into_inner();
                     if n == "cn" {
                         break;
                     }
@@ -559,12 +559,12 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Start(e) => {
-                    let n = Self::local_name(&e);
-                    self.collect_apply_child(&n, &e, false, &mut acc)?;
+                    let n = e.local_name().into_inner();
+                    self.collect_apply_child(n, &e, false, &mut acc)?;
                 },
                 Event::Empty(e) => {
-                    let n = Self::local_name(&e);
-                    self.collect_apply_child(&n, &e, true, &mut acc)?;
+                    let n = e.local_name().into_inner();
+                    self.collect_apply_child(n, &e, true, &mut acc)?;
                 },
                 Event::Text(e) => {
                     let t = unescape_text(&e);
@@ -573,7 +573,7 @@ impl<'a> MathmlCompactParser<'a> {
                         acc.args.push(id);
                     }
                 },
-                Event::End(e) if Self::local_name_end(&e) == tag => {
+                Event::End(e) if e.local_name().into_inner() == tag => {
                     break;
                 },
                 Event::Eof => break,
@@ -640,20 +640,20 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Start(e) => {
-                    let name = Self::local_name(&e);
-                    if is_op_token(&name) {
-                        self.skip_element(&name)?;
-                        return Ok(Some(COp::Token(name)));
+                    let name = e.local_name().into_inner();
+                    if is_op_token(name) {
+                        self.skip_element(name)?;
+                        return Ok(Some(COp::Token(name.to_owned())));
                     }
-                    let id = self.parse_element_by_name(&name, &e)?;
+                    let id = self.parse_element_by_name(name, &e)?;
                     return Ok(Some(COp::Func(id)));
                 },
                 Event::Empty(e) => {
-                    let name = Self::local_name(&e);
-                    if is_op_token(&name) {
-                        return Ok(Some(COp::Token(name)));
+                    let name = e.local_name().into_inner();
+                    if is_op_token(name) {
+                        return Ok(Some(COp::Token(name.to_owned())));
                     }
-                    let id = self.parse_empty_element(&name, &e)?;
+                    let id = self.parse_empty_element(name, &e)?;
                     return Ok(Some(COp::Func(id)));
                 },
                 Event::Text(_) => continue,
@@ -670,22 +670,22 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Start(e) => {
-                    let n = Self::local_name(&e);
+                    let n = e.local_name().into_inner();
                     if n == "degree" {
                         degree = Some(self.parse_child_id("degree")?);
                     } else {
-                        let id = self.parse_element_by_name(&n, &e)?;
+                        let id = self.parse_element_by_name(n, &e)?;
                         if var.is_none() {
                             var = Some(id);
                         }
                     }
                 },
                 Event::Empty(e) => {
-                    let n = Self::local_name(&e);
+                    let n = e.local_name().into_inner();
                     if n == "degree" {
                         degree = Some(self.empty_row());
                     } else {
-                        let id = self.parse_empty_element(&n, &e)?;
+                        let id = self.parse_empty_element(n, &e)?;
                         if var.is_none() {
                             var = Some(id);
                         }
@@ -709,7 +709,7 @@ impl<'a> MathmlCompactParser<'a> {
                         var = Some(self.classify_text_compact(&t));
                     }
                 },
-                Event::End(e) if Self::local_name_end(&e) == "bvar" => {
+                Event::End(e) if e.local_name().into_inner() == "bvar" => {
                     break;
                 },
                 Event::Eof => break,
@@ -797,20 +797,20 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Start(e) => {
-                    let n = Self::local_name(&e);
+                    let n = e.local_name().into_inner();
                     if n == "matrixrow" {
                         let cells = self.parse_children("matrixrow")?;
                         rows.push(cells.to_vec());
                     } else {
-                        let _ = self.parse_element_by_name(&n, &e)?;
+                        let _ = self.parse_element_by_name(n, &e)?;
                     }
                 },
                 Event::Empty(e) => {
-                    if Self::local_name(&e) == "matrixrow" {
+                    if e.local_name().into_inner() == "matrixrow" {
                         rows.push(Vec::new());
                     }
                 },
-                Event::End(e) if Self::local_name_end(&e) == "matrix" => {
+                Event::End(e) if e.local_name().into_inner() == "matrix" => {
                     break;
                 },
                 Event::Eof => break,
@@ -855,8 +855,8 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Start(e) => {
-                    let n = Self::local_name(&e);
-                    match n.as_str() {
+                    let n = e.local_name().into_inner();
+                    match n {
                         "piece" => {
                             let kids = self.parse_children("piece")?;
                             let val = kids.first().copied().unwrap_or_else(|| self.empty_row());
@@ -875,16 +875,16 @@ impl<'a> MathmlCompactParser<'a> {
                             rows.push((val, cond));
                         },
                         _ => {
-                            let _ = self.parse_element_by_name(&n, &e)?;
+                            let _ = self.parse_element_by_name(n, &e)?;
                         },
                     }
                 },
-                Event::Empty(e) => match Self::local_name(&e).as_str() {
+                Event::Empty(e) => match e.local_name().into_inner() {
                     "piece" => rows.push((self.empty_row(), self.empty_row())),
                     "otherwise" => rows.push((self.empty_row(), self.c_text("otherwise"))),
                     _ => {},
                 },
-                Event::End(e) if Self::local_name_end(&e) == "piecewise" => {
+                Event::End(e) if e.local_name().into_inner() == "piecewise" => {
                     break;
                 },
                 Event::Eof => break,
@@ -936,28 +936,28 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader_read_event()? {
                 Event::Start(e) => {
-                    let n = Self::local_name(&e);
+                    let n = e.local_name().into_inner();
                     if n == "bvar" {
                         bvars.push(self.parse_bvar()?);
                     } else {
-                        let id = self.parse_element_by_name(&n, &e)?;
+                        let id = self.parse_element_by_name(n, &e)?;
                         if body.is_none() {
                             body = Some(id);
                         }
                     }
                 },
                 Event::Empty(e) => {
-                    let n = Self::local_name(&e);
+                    let n = e.local_name().into_inner();
                     if n == "bvar" {
                         bvars.push(self.empty_row());
                     } else {
-                        let id = self.parse_empty_element(&n, &e)?;
+                        let id = self.parse_empty_element(n, &e)?;
                         if body.is_none() {
                             body = Some(id);
                         }
                     }
                 },
-                Event::End(e) if Self::local_name_end(&e) == "lambda" => {
+                Event::End(e) if e.local_name().into_inner() == "lambda" => {
                     break;
                 },
                 Event::Eof => break,

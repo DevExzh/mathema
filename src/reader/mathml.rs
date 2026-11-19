@@ -169,18 +169,6 @@ impl<'a> MathmlCompactParser<'a> {
         })
     }
 
-    #[inline]
-    fn local_name(start: &quick_xml::events::BytesStart<'_>) -> String {
-        let qname = start.name();
-        qname.local_name().as_ref().to_owned()
-    }
-
-    #[inline]
-    fn local_name_end(end: &quick_xml::events::BytesEnd<'_>) -> String {
-        let qname = end.name();
-        qname.local_name().as_ref().to_owned()
-    }
-
     fn parse_root(&mut self) -> Result<SmallVec<[NodeId; 8]>> {
         let (element, empty) = loop {
             match self.reader.read_event() {
@@ -195,7 +183,7 @@ impl<'a> MathmlCompactParser<'a> {
                 },
             }
         };
-        let name = Self::local_name(&element);
+        let name = element.local_name().into_inner();
         if name == "math" {
             for attr in element.attributes().flatten() {
                 if attr.key.as_ref() == "display" {
@@ -216,9 +204,9 @@ impl<'a> MathmlCompactParser<'a> {
             };
         }
         let id = if empty {
-            self.parse_empty_element(&name, &element)?
+            self.parse_empty_element(name, &element)?
         } else {
-            self.parse_element_by_name(&name, &element)?
+            self.parse_element_by_name(name, &element)?
         };
         let mut nodes = smallvec::smallvec![id];
         nodes.extend(self.collect_remaining()?);
@@ -230,12 +218,12 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = Self::local_name(&e);
-                    nodes.push(self.parse_element_by_name(&name, &e)?);
+                    let name = e.local_name().into_inner();
+                    nodes.push(self.parse_element_by_name(name, &e)?);
                 },
                 Ok(Event::Empty(e)) => {
-                    let name = Self::local_name(&e);
-                    nodes.push(self.parse_empty_element(&name, &e)?);
+                    let name = e.local_name().into_inner();
+                    nodes.push(self.parse_empty_element(name, &e)?);
                 },
                 Ok(Event::Text(e)) => {
                     let text = unescape_text(&e);
@@ -392,7 +380,7 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = Self::local_name(&e);
+                    let name = e.local_name().into_inner();
                     let child_style = script_modes
                         .and_then(|modes| modes.get(nodes.len()).copied())
                         .unwrap_or(ScriptChildMode::Script);
@@ -412,13 +400,13 @@ impl<'a> MathmlCompactParser<'a> {
                         body_in_text_style = true;
                         self.parse_mstyle(&e, true)?
                     } else {
-                        self.parse_element_by_name(&name, &e)?
+                        self.parse_element_by_name(name, &e)?
                     };
                     self.restore_style(previous);
                     nodes.push(id);
                 },
                 Ok(Event::Empty(e)) => {
-                    let name = Self::local_name(&e);
+                    let name = e.local_name().into_inner();
                     if inspect_style && nodes.is_empty() && name == "mstyle" {
                         body_in_text_style = has_explicit_text_size(&e);
                     }
@@ -433,7 +421,7 @@ impl<'a> MathmlCompactParser<'a> {
                             self.enter_accent_child_style(parent_tag, nodes.len())
                         },
                     };
-                    let id = self.parse_empty_element(&name, &e)?;
+                    let id = self.parse_empty_element(name, &e)?;
                     self.restore_style(previous);
                     nodes.push(id);
                 },
@@ -450,7 +438,7 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 },
                 Ok(Event::End(e)) => {
-                    if Self::local_name_end(&e) == parent_tag {
+                    if e.local_name().into_inner() == parent_tag {
                         break;
                     }
                 },
@@ -534,13 +522,10 @@ impl<'a> MathmlCompactParser<'a> {
 
     /// Read the next XML event, mapping reader errors to our error type.
     /// Shared by the Content MathML lowering in the `content` submodule.
-    fn reader_read_event(&mut self) -> Result<Event<'static>> {
-        match self.reader.read_event() {
-            Ok(ev) => Ok(ev.into_owned()),
-            Err(e) => Err(Error::MathmlParse {
-                message: format!("XML error: {e}"),
-            }),
-        }
+    fn reader_read_event(&mut self) -> Result<Event<'a>> {
+        self.reader.read_event().map_err(|e| Error::MathmlParse {
+            message: format!("XML error: {e}"),
+        })
     }
 
     /// Increment the nesting-depth guard, erroring if it is exceeded.
@@ -564,8 +549,8 @@ impl<'a> MathmlCompactParser<'a> {
         let mut depth = 1usize;
         loop {
             match self.reader_read_event()? {
-                Event::Start(e) if Self::local_name(&e) == tag => depth += 1,
-                Event::End(e) if Self::local_name_end(&e) == tag => {
+                Event::Start(e) if e.local_name().into_inner() == tag => depth += 1,
+                Event::End(e) if e.local_name().into_inner() == tag => {
                     depth -= 1;
                     if depth == 0 {
                         break;
@@ -1254,14 +1239,14 @@ impl<'a> MathmlCompactParser<'a> {
                     text.push_str(&resolve_general_ref(&r));
                 },
                 Ok(Event::End(e)) => {
-                    if Self::local_name_end(&e) == tag_name {
+                    if e.local_name().into_inner() == tag_name {
                         break;
                     }
                 },
                 Ok(Event::Eof) => break,
                 Ok(Event::Empty(e)) => {
                     // A nested `<mglyph/>` contributes its `alt` text.
-                    if Self::local_name(&e) == "mglyph"
+                    if e.local_name().into_inner() == "mglyph"
                         && let Some(alt) = get_attr(&e, "alt")
                     {
                         text.push_str(&alt);
@@ -1270,13 +1255,13 @@ impl<'a> MathmlCompactParser<'a> {
                 Ok(Event::Start(e)) => {
                     // Nested element inside text content — capture mglyph alt,
                     // otherwise skip its body.
-                    let n = Self::local_name(&e);
+                    let n = e.local_name().into_inner();
                     if n == "mglyph"
                         && let Some(alt) = get_attr(&e, "alt")
                     {
                         text.push_str(&alt);
                     }
-                    let _ = self.skip_element(&n);
+                    let _ = self.skip_element(n);
                 },
                 _ => continue,
             }
@@ -1500,7 +1485,7 @@ impl<'a> MathmlCompactParser<'a> {
             let empty = matches!(event, Ok(Event::Empty(_)));
             match event {
                 Ok(Event::Start(e) | Event::Empty(e)) => {
-                    let name = Self::local_name(&e);
+                    let name = e.local_name().into_inner();
                     if name != "mtr" && name != "mlabeledtr" {
                         continue;
                     }
@@ -1519,12 +1504,12 @@ impl<'a> MathmlCompactParser<'a> {
                             &row_alignments
                         };
                         self.with_table_style(&e, false, |p| {
-                            p.parse_table_row(&name, inherited, max_columns, &mut table)
+                            p.parse_table_row(name, inherited, max_columns, &mut table)
                         })?
                     };
                     table.row_lengths.push(length);
                 },
-                Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
+                Ok(Event::End(e)) if e.local_name().into_inner() == parent_tag => break,
                 Ok(Event::Eof) => break,
                 Err(error) => {
                     return Err(Error::MathmlParse {
@@ -1571,7 +1556,7 @@ impl<'a> MathmlCompactParser<'a> {
             let (children, own_alignment, cell_span, left_boundaries, right_boundaries) =
                 match event {
                     Ok(Event::Start(e) | Event::Empty(e)) => {
-                        let name = Self::local_name(&e);
+                        let name = e.local_name().into_inner();
                         if name == "mtd" {
                             let attributes = table_cell_attributes(&e);
                             let span =
@@ -1598,9 +1583,9 @@ impl<'a> MathmlCompactParser<'a> {
                             )
                         } else {
                             let child = if empty {
-                                self.parse_empty_element(&name, &e)?
+                                self.parse_empty_element(name, &e)?
                             } else {
-                                self.parse_element_by_name(&name, &e)?
+                                self.parse_element_by_name(name, &e)?
                             };
                             (
                                 smallvec::smallvec![child],
@@ -1637,7 +1622,7 @@ impl<'a> MathmlCompactParser<'a> {
                             SmallVec::new(),
                         )
                     },
-                    Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
+                    Ok(Event::End(e)) if e.local_name().into_inner() == parent_tag => break,
                     Ok(Event::Eof) => break,
                     Err(error) => {
                         return Err(Error::MathmlParse {
@@ -1914,12 +1899,12 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    if Self::local_name(&e) == tag_name {
+                    if e.local_name().into_inner() == tag_name {
                         nested += 1;
                     }
                 },
                 Ok(Event::End(e)) => {
-                    if Self::local_name_end(&e) == tag_name {
+                    if e.local_name().into_inner() == tag_name {
                         if nested == 0 {
                             break;
                         }
@@ -1957,7 +1942,7 @@ impl<'a> MathmlCompactParser<'a> {
         loop {
             match self.reader.read_event() {
                 Ok(Event::Start(e)) => {
-                    let name = Self::local_name(&e);
+                    let name = e.local_name().into_inner();
                     if name == "mprescripts" {
                         in_pre = true;
                         self.skip_element_body("mprescripts")?;
@@ -1965,7 +1950,7 @@ impl<'a> MathmlCompactParser<'a> {
                         let previous = seen_base
                             .then(|| self.enter_script_child_style(parent_tag, 1))
                             .flatten();
-                        let id = self.parse_element_by_name(&name, &e)?;
+                        let id = self.parse_element_by_name(name, &e)?;
                         self.restore_style(previous);
                         if !seen_base {
                             base = id;
@@ -1978,14 +1963,14 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 },
                 Ok(Event::Empty(e)) => {
-                    let name = Self::local_name(&e);
+                    let name = e.local_name().into_inner();
                     if name == "mprescripts" {
                         in_pre = true;
                     } else {
                         let previous = seen_base
                             .then(|| self.enter_script_child_style(parent_tag, 1))
                             .flatten();
-                        let id = self.parse_empty_element(&name, &e)?;
+                        let id = self.parse_empty_element(name, &e)?;
                         self.restore_style(previous);
                         if !seen_base {
                             base = id;
@@ -2034,7 +2019,7 @@ impl<'a> MathmlCompactParser<'a> {
                     }
                 },
                 Ok(Event::End(e)) => {
-                    if Self::local_name_end(&e) == parent_tag {
+                    if e.local_name().into_inner() == parent_tag {
                         break;
                     }
                 },
