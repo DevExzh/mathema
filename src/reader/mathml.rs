@@ -1457,8 +1457,9 @@ impl<'a> MathmlCompactParser<'a> {
                     Ok(Event::Start(e) | Event::Empty(e)) => {
                         let name = Self::local_name(&e);
                         if name == "mtd" {
+                            let attributes = table_cell_attributes(&e);
                             let span =
-                                parse_column_span(get_attr(&e, "columnspan"), max_columns - index)?;
+                                parse_column_span(attributes.columnspan, max_columns - index)?;
                             let children = if empty {
                                 SmallVec::new()
                             } else {
@@ -1466,17 +1467,17 @@ impl<'a> MathmlCompactParser<'a> {
                             };
                             (
                                 children,
-                                get_attr(&e, "columnalign"),
+                                attributes.columnalign,
                                 span,
                                 parse_boundary_attr(
-                                    get_attr(&e, "data-mathema-left-boundaries"),
-                                    get_attr(&e, "data-mathema-left-rule"),
-                                    get_attr(&e, "data-mathema-left-padding"),
+                                    attributes.left_boundaries,
+                                    attributes.left_rule,
+                                    attributes.left_padding,
                                 )?,
                                 parse_boundary_attr(
-                                    get_attr(&e, "data-mathema-right-boundaries"),
-                                    get_attr(&e, "data-mathema-right-rule"),
-                                    get_attr(&e, "data-mathema-right-padding"),
+                                    attributes.right_boundaries,
+                                    attributes.right_rule,
+                                    attributes.right_padding,
                                 )?,
                             )
                         } else {
@@ -1485,7 +1486,13 @@ impl<'a> MathmlCompactParser<'a> {
                             } else {
                                 self.parse_element_by_name(&name, &e)?
                             };
-                            (smallvec::smallvec![child], None, 1, Vec::new(), Vec::new())
+                            (
+                                smallvec::smallvec![child],
+                                None,
+                                1,
+                                SmallVec::new(),
+                                SmallVec::new(),
+                            )
                         }
                     },
                     Ok(Event::Text(e)) => {
@@ -1497,8 +1504,8 @@ impl<'a> MathmlCompactParser<'a> {
                             smallvec::smallvec![self.classify_text_compact(&text)],
                             None,
                             1,
-                            Vec::new(),
-                            Vec::new(),
+                            SmallVec::new(),
+                            SmallVec::new(),
                         )
                     },
                     Ok(Event::GeneralRef(r)) => {
@@ -1510,8 +1517,8 @@ impl<'a> MathmlCompactParser<'a> {
                             smallvec::smallvec![self.classify_text_compact(&text)],
                             None,
                             1,
-                            Vec::new(),
-                            Vec::new(),
+                            SmallVec::new(),
+                            SmallVec::new(),
                         )
                     },
                     Ok(Event::End(e)) if Self::local_name_end(&e) == parent_tag => break,
@@ -1540,12 +1547,18 @@ impl<'a> MathmlCompactParser<'a> {
                     .push_node(CompactNode::AlignedCell { alignment, content })
             } else {
                 let content = self.flatten_ids(&children);
-                let left_boundaries = self
-                    .arena
-                    .push_str(&crate::ast::span_boundary_spelling(&left_boundaries));
-                let right_boundaries = self
-                    .arena
-                    .push_str(&crate::ast::span_boundary_spelling(&right_boundaries));
+                let left_boundaries = if left_boundaries.is_empty() {
+                    StrId::EMPTY
+                } else {
+                    self.arena
+                        .push_str(&crate::ast::span_boundary_spelling(&left_boundaries))
+                };
+                let right_boundaries = if right_boundaries.is_empty() {
+                    StrId::EMPTY
+                } else {
+                    self.arena
+                        .push_str(&crate::ast::span_boundary_spelling(&right_boundaries))
+                };
                 self.arena.push_node(CompactNode::SpannedCell {
                     alignment,
                     span: cell_span as u16,
@@ -2241,13 +2254,63 @@ fn get_attr(start: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<Stri
         .map(|a| unescape_attr(&a.value))
 }
 
+#[derive(Default)]
+struct TableCellAttributes {
+    columnspan: Option<String>,
+    columnalign: Option<String>,
+    left_boundaries: Option<String>,
+    left_rule: Option<String>,
+    left_padding: Option<String>,
+    right_boundaries: Option<String>,
+    right_rule: Option<String>,
+    right_padding: Option<String>,
+}
+
+/// Decode the attributes used by one `<mtd>` in a single pass. `get_attr`
+/// deliberately returns the first occurrence of a name, so each field keeps
+/// the same first-wins behavior while avoiding eight independent scans.
+fn table_cell_attributes(start: &quick_xml::events::BytesStart<'_>) -> TableCellAttributes {
+    let mut result = TableCellAttributes::default();
+    for attr in start.attributes().flatten() {
+        let key = attr.key.as_ref();
+        match key {
+            "columnspan" if result.columnspan.is_none() => {
+                result.columnspan = Some(unescape_attr(&attr.value));
+            },
+            "columnalign" if result.columnalign.is_none() => {
+                result.columnalign = Some(unescape_attr(&attr.value));
+            },
+            "data-mathema-left-boundaries" if result.left_boundaries.is_none() => {
+                result.left_boundaries = Some(unescape_attr(&attr.value));
+            },
+            "data-mathema-left-rule" if result.left_rule.is_none() => {
+                result.left_rule = Some(unescape_attr(&attr.value));
+            },
+            "data-mathema-left-padding" if result.left_padding.is_none() => {
+                result.left_padding = Some(unescape_attr(&attr.value));
+            },
+            "data-mathema-right-boundaries" if result.right_boundaries.is_none() => {
+                result.right_boundaries = Some(unescape_attr(&attr.value));
+            },
+            "data-mathema-right-rule" if result.right_rule.is_none() => {
+                result.right_rule = Some(unescape_attr(&attr.value));
+            },
+            "data-mathema-right-padding" if result.right_padding.is_none() => {
+                result.right_padding = Some(unescape_attr(&attr.value));
+            },
+            _ => {},
+        }
+    }
+    result
+}
+
 fn parse_boundary_attr(
     ordered: Option<String>,
     legacy_rule: Option<String>,
     legacy_padding: Option<String>,
-) -> Result<Vec<SpanBoundary>> {
+) -> Result<SmallVec<[SpanBoundary; 2]>> {
     if let Some(value) = ordered {
-        let mut boundaries = Vec::new();
+        let mut boundaries = SmallVec::new();
         for token in value.split('|').filter(|token| !token.is_empty()) {
             let boundary = match token.trim() {
                 "rule" | "|" => SpanBoundary::Rule,
@@ -2258,7 +2321,7 @@ fn parse_boundary_attr(
         }
         return Ok(boundaries);
     }
-    let mut boundaries = Vec::new();
+    let mut boundaries = SmallVec::new();
     if legacy_padding.as_deref() == Some("true") {
         boundaries.push(SpanBoundary::SuppressGlue);
     }
