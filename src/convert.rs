@@ -762,6 +762,44 @@ mod tests {
     }
 
     #[test]
+    fn mtef_reports_nonuniform_double_and_trimmed_cell_rules() {
+        for (source, expected) in [
+            (
+                r"\begin{array}{ll}\multicolumn{1}{|l|}{a}&b\\c&d\end{array}",
+                "row-varying cell rules",
+            ),
+            (
+                r"\begin{array}{ll}\multicolumn{1}{||l||}{a}&b\\\multicolumn{1}{||l||}{c}&d\end{array}",
+                "repeated cell rules",
+            ),
+            (
+                r"\begin{array}{ll}\multicolumn{1}{@{}l@{}}{a}&b\\\multicolumn{1}{@{}l@{}}{c}&d\end{array}",
+                "glue suppression",
+            ),
+        ] {
+            let result = from_latex(source).unwrap();
+            let (_, diagnostics) = result.to_mtef_with_diagnostics().unwrap();
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(expected)),
+                "{source}: {diagnostics:?}"
+            );
+        }
+
+        let pile = from_latex(
+            r"\begin{array}{l}\begin{array}{l}\multicolumn{1}{|l|}{a}\\\multicolumn{1}{|l|}{b}\end{array}\end{array}",
+        )
+        .unwrap();
+        let (_, diagnostics) = pile.to_mtef_with_diagnostics().unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("per-cell boundary material"))
+        );
+    }
+
+    #[test]
     fn authored_cell_alignment_reports_loss_in_other_table_formats() {
         let source = r#"<math><mtable columnalign="left left"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr columnalign="right center"><mtd><mi>LONG</mi></mtd><mtd><mi>c</mi></mtd></mtr></mtable></math>"#;
         let result = from_mathml(source).unwrap();
