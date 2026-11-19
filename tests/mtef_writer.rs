@@ -93,6 +93,24 @@ fn canonical(node: &mut MathNode) {
             add_jot: false,
         };
     }
+    // MTEF's MATRIX record does not carry native array padding or partition
+    // rules. Compare its reimport against the representable historical Array
+    // shape while the MathML path retains the richer NativeArray metadata.
+    if let MathNode::NativeArray {
+        columns,
+        rows,
+        arraystretch,
+        add_jot,
+        ..
+    } = node
+    {
+        *node = MathNode::Array {
+            columns: std::mem::take(columns),
+            rows: std::mem::take(rows),
+            arraystretch: *arraystretch,
+            add_jot: *add_jot,
+        };
+    }
     match node {
         MathNode::Operator(attr) => attr.limit_style = LimitStyle::Default,
         MathNode::Nary {
