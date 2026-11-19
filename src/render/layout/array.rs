@@ -112,7 +112,13 @@ impl<'a> CellTemplate<'a> {
         }
     }
 
-    fn compact(arena: &'a AstArena, node: &CompactNode, remaining: usize) -> Self {
+    fn compact(
+        arena: &'a AstArena,
+        row: &[NodeId],
+        index: usize,
+        node: &CompactNode,
+        remaining: usize,
+    ) -> Self {
         match *node {
             CompactNode::SpannedCell {
                 alignment,
@@ -121,7 +127,9 @@ impl<'a> CellTemplate<'a> {
                 right_boundaries,
                 ..
             } => Self {
-                span: usize::from(span.max(1)).min(remaining),
+                span: arena
+                    .effective_cell_span_in_row(row, index, span)
+                    .min(remaining),
                 alignment: Some(alignment),
                 left: Boundary::Compact(arena.str_val(left_boundaries)),
                 right: Boundary::Compact(arena.str_val(right_boundaries)),
@@ -583,7 +591,7 @@ pub(super) fn layout_array_arena(
     // Layout all cells (flat storage, row-major, stride = num_cols)
     let cell_ids_ast = ast.children(cells);
     let nc = num_cols as usize;
-    let n_rows = cell_ids_ast.len().checked_div(nc).unwrap_or(0);
+    let n_rows = cell_ids_ast.len().div_ceil(nc.max(1));
 
     // Layout each cell and store the layout box IDs
     let mut cell_layout_ids: Vec<LayoutBoxId> = Vec::with_capacity(cell_ids_ast.len());
@@ -620,9 +628,11 @@ pub(super) fn layout_array_arena(
 
     for i in 0..n_rows {
         let mut j = 0;
-        while j < nc {
+        let row = &cell_ids_ast[i * nc..(i * nc + nc).min(cell_ids_ast.len())];
+        while j < row.len() {
             let idx = i * nc + j;
-            let template = CellTemplate::compact(ast, ast.node(cell_ids_ast[idx]), nc - j);
+            let template =
+                CellTemplate::compact(ast, row, j, ast.node(cell_ids_ast[idx]), row.len() - j);
             let cell = arena.get(cell_layout_ids[idx]);
             grid.measure(j, template, cell.width);
             row_heights[i] = row_heights[i].max(cell.height);
@@ -665,9 +675,11 @@ pub(super) fn layout_array_arena(
         let mut cursor_x = 0.0;
         let mut visible_rules = if has_override { col_seps } else { 0 };
         let mut j = 0;
-        while j < nc {
+        let row = &cell_ids_ast[i * nc..(i * nc + nc).min(cell_ids_ast.len())];
+        while j < row.len() {
             let idx = i * nc + j;
-            let template = CellTemplate::compact(ast, ast.node(cell_ids_ast[idx]), nc - j);
+            let template =
+                CellTemplate::compact(ast, row, j, ast.node(cell_ids_ast[idx]), row.len() - j);
             let cell = cell_layout_ids[idx];
             let (width, dx) = grid.place(j, template, arena.get(cell).width, &columns);
             template.apply_rules(j, &mut visible_rules);

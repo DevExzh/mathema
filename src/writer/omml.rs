@@ -1258,7 +1258,13 @@ impl<'a> Emitter<'a> {
                         );
                     }
                     let column = aligns.get(i).copied().unwrap_or(ColumnAlign::Center);
-                    self.note_cell_alignment(cell, column);
+                    let effective_span = match *self.arena.node(cell) {
+                        CompactNode::SpannedCell { span, .. } => {
+                            Some(self.arena.effective_cell_span_in_row(row, i, span))
+                        },
+                        _ => None,
+                    };
+                    self.note_cell_alignment(cell, column, effective_span);
                     self.with_style(MathStyle::Text, |e| e.cell_content(cell, fmt));
                 }
                 self.close("m:e");
@@ -1300,15 +1306,30 @@ impl<'a> Emitter<'a> {
                     .get(column_index)
                     .copied()
                     .unwrap_or(ColumnAlign::Center);
-                self.note_cell_alignment(cell, column);
+                let effective_span = match *self.arena.node(cell) {
+                    CompactNode::SpannedCell { span, .. } => Some(
+                        self.arena
+                            .effective_cell_span_in_row(row, column_index, span),
+                    ),
+                    _ => None,
+                };
+                self.note_cell_alignment(cell, column, effective_span);
                 self.with_style(MathStyle::Text, |e| e.cell(cell, fmt));
+            }
+            for _ in row.len()..ncols {
+                self.buf.push_str("<m:e></m:e>");
             }
             self.close("m:mr");
         }
         self.close("m:m");
     }
 
-    fn note_cell_alignment(&mut self, cell: NodeId, column: ColumnAlign) {
+    fn note_cell_alignment(
+        &mut self,
+        cell: NodeId,
+        column: ColumnAlign,
+        effective_span: Option<usize>,
+    ) {
         let alignment = match *self.arena.node(cell) {
             CompactNode::AlignedCell { alignment, .. } => alignment,
             CompactNode::SpannedCell {
@@ -1318,7 +1339,7 @@ impl<'a> Emitter<'a> {
                 right_boundaries,
                 ..
             } => {
-                if span > 1 {
+                if effective_span.unwrap_or(usize::from(span.max(1))) > 1 {
                     self.loss("OMML writes a cell-span construct as separate matrix entries.");
                 }
                 if !self.arena.str_val(left_boundaries).is_empty()

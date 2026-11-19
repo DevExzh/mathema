@@ -1419,7 +1419,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
             buf.push(' ');
             if nc > 0 {
-                let num_rows = cell_ids.len() / nc.max(1);
+                let num_rows = cell_ids.len().div_ceil(nc.max(1));
                 for row_idx in 0..num_rows {
                     if row_idx == 0 {
                         if row_seps & 1 != 0 {
@@ -1431,14 +1431,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             buf.push_str(r"\hline ");
                         }
                     }
+                    let row = &cell_ids[row_idx * nc..(row_idx * nc + nc).min(cell_ids.len())];
                     let mut col_idx = 0;
                     let mut emitted = false;
-                    while col_idx < nc {
-                        let cell_id = &cell_ids[row_idx * nc + col_idx];
-                        if arena.is_span_padding(*cell_id) {
-                            col_idx += 1;
-                            continue;
-                        }
+                    while col_idx < row.len() {
+                        let cell_id = &row[col_idx];
                         if emitted {
                             buf.push_str(" & ");
                         }
@@ -1451,7 +1448,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                                     left_boundaries,
                                     right_boundaries,
                                     ..
-                                } => (span.max(1) as usize, left_boundaries, right_boundaries),
+                                } => (
+                                    arena.effective_cell_span_in_row(row, col_idx, span),
+                                    left_boundaries,
+                                    right_boundaries,
+                                ),
                                 _ => (1, StrId::EMPTY, StrId::EMPTY),
                             };
                         if let Some(alignment) = alignment {
@@ -1494,6 +1495,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                             write_node_slice(buf, arena, nodes, false);
                         }
                         col_idx = col_idx.saturating_add(cell_span);
+                    }
+                    while col_idx < nc {
+                        if emitted {
+                            buf.push_str(" & ");
+                        }
+                        emitted = true;
+                        col_idx += 1;
                     }
                 }
                 if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {

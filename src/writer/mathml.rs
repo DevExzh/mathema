@@ -1834,12 +1834,29 @@ fn write_node_fast_in(
             for row_chunk in cell_ids.chunks(nc.max(1)) {
                 buf.push_str("<mtr>");
                 let mut i = 0;
-                while i < row_chunk.len() {
-                    let cell_id = row_chunk[i];
-                    if arena.is_span_padding(cell_id) {
+                while i < nc {
+                    let Some(&cell_id) = row_chunk.get(i) else {
+                        let alignment = arena.children(col_aligns).get(i).and_then(|&id| {
+                            match *arena.node(id) {
+                                CompactNode::ColAlign(value) => Some(value),
+                                _ => None,
+                            }
+                        });
+                        if let Some(alignment) = alignment {
+                            let value = match alignment {
+                                ColumnAlign::Left => "left",
+                                ColumnAlign::Center => "center",
+                                ColumnAlign::Right => "right",
+                            };
+                            buf.push_str("<mtd columnalign=\"");
+                            buf.push_str(value);
+                            buf.push_str("\"></mtd>");
+                        } else {
+                            buf.push_str("<mtd></mtd>");
+                        }
                         i += 1;
                         continue;
-                    }
+                    };
                     let align_nodes = arena.children(col_aligns);
                     let (cell_override, mut nodes) = arena.table_cell_parts(&cell_id);
                     let (cell_span, left_boundaries, right_boundaries) = match *arena.node(cell_id)
@@ -1849,7 +1866,11 @@ fn write_node_fast_in(
                             left_boundaries,
                             right_boundaries,
                             ..
-                        } => (span.max(1) as usize, left_boundaries, right_boundaries),
+                        } => (
+                            arena.effective_cell_span_in_row(row_chunk, i, span),
+                            left_boundaries,
+                            right_boundaries,
+                        ),
                         _ => (1, StrId::EMPTY, StrId::EMPTY),
                     };
                     buf.push_str("<mtd");

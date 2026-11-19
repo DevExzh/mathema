@@ -41,7 +41,9 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::StructuredOperator { .. } => Some(
             "UnicodeMath has no source-level StructuredOperator marker; the body and representable bounds were written with standard grouping and script syntax".into(),
         ),
-        CompactNode::Array {cells, ..} => table_loss(arena,*cells),
+        CompactNode::Array { cells, num_cols, .. } => {
+            table_loss(arena, *cells, usize::from((*num_cols).max(1)))
+        },
         CompactNode::MathAtom { .. } => {
             Some("UnicodeMath does not preserve the math atom spacing class".into())
         },
@@ -92,28 +94,34 @@ impl MathWriter for UnicodeMathWriter {
     }
 }
 
-fn table_loss(arena: &AstArena, cells: crate::ast::compact::NodeSpan) -> Option<String> {
+fn table_loss(
+    arena: &AstArena,
+    cells: crate::ast::compact::NodeSpan,
+    stride: usize,
+) -> Option<String> {
     let mut alignment_lost = false;
     let mut spans_lost = false;
     let mut edges_lost = false;
-    for &cell in arena.children(cells) {
-        match *arena.node(cell) {
-            CompactNode::AlignedCell { alignment, .. } => {
-                alignment_lost |= alignment != ColumnAlign::Center
-            },
-            CompactNode::SpannedCell {
-                alignment,
-                span,
-                left_boundaries,
-                right_boundaries,
-                ..
-            } => {
-                alignment_lost |= alignment != ColumnAlign::Center;
-                spans_lost |= span > 1;
-                edges_lost |= !arena.str_val(left_boundaries).is_empty()
-                    || !arena.str_val(right_boundaries).is_empty();
-            },
-            _ => {},
+    for row in arena.children(cells).chunks(stride) {
+        for (column, &cell) in row.iter().enumerate() {
+            match *arena.node(cell) {
+                CompactNode::AlignedCell { alignment, .. } => {
+                    alignment_lost |= alignment != ColumnAlign::Center
+                },
+                CompactNode::SpannedCell {
+                    alignment,
+                    span,
+                    left_boundaries,
+                    right_boundaries,
+                    ..
+                } => {
+                    alignment_lost |= alignment != ColumnAlign::Center;
+                    spans_lost |= arena.effective_cell_span_in_row(row, column, span) > 1;
+                    edges_lost |= !arena.str_val(left_boundaries).is_empty()
+                        || !arena.str_val(right_boundaries).is_empty();
+                },
+                _ => {},
+            }
         }
     }
     let mut messages = [
@@ -380,22 +388,18 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             // A merged cell projects to its content followed by empty
             // columns. Match the compact rectangle so later operands retain
             // their logical column even when the source was ragged.
-            let expanded = rows.iter().flatten().any(|cell| table_cell_span(cell) > 1);
-            let width = if expanded {
-                let declared = match node {
-                    MathNode::Array { columns, .. } | MathNode::NativeArray { columns, .. } => {
-                        columns.len()
-                    },
-                    _ => 0,
-                };
-                rows.iter()
-                    .map(|r| table_row_width(r))
-                    .max()
-                    .unwrap_or(0)
-                    .max(declared)
-            } else {
-                0
+            let declared = match node {
+                MathNode::Array { columns, .. } | MathNode::NativeArray { columns, .. } => {
+                    columns.len()
+                },
+                _ => 0,
             };
+            let width = rows
+                .iter()
+                .map(|r| table_row_width(r))
+                .max()
+                .unwrap_or(0)
+                .max(declared);
             for (i, row) in rows.iter().enumerate() {
                 if i > 0 {
                     out.push('@');
@@ -1302,20 +1306,22 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             out.push('(');
             let cell_ids = arena.children(cells);
             let nc = num_cols as usize;
-            let num_rows = cell_ids.len().checked_div(nc).unwrap_or(0);
+            let num_rows = cell_ids.len().div_ceil(nc.max(1));
             for i in 0..num_rows {
                 if i > 0 {
                     out.push('@');
                 }
+                let row = &cell_ids[i * nc..(i * nc + nc).min(cell_ids.len())];
                 for j in 0..nc {
                     if j > 0 {
                         out.push('&');
                     }
-                    let cell_id = cell_ids[i * nc + j];
-                    if let CompactNode::Row(cell_span) = *arena.node(cell_id) {
-                        write_nodes_c_with_style(out, arena, cell_span, MathStyle::Text);
-                    } else {
-                        write_node_c(out, arena, cell_id, MathStyle::Text);
+                    if let Some(&cell_id) = row.get(j) {
+                        if let CompactNode::Row(cell_span) = *arena.node(cell_id) {
+                            write_nodes_c_with_style(out, arena, cell_span, MathStyle::Text);
+                        } else {
+                            write_node_c(out, arena, cell_id, MathStyle::Text);
+                        }
                     }
                 }
             }
