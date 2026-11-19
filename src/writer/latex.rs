@@ -1386,12 +1386,15 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push_str(option);
             let trim_edges = env == "array"
                 && !array_style
-                && cell_ids.iter().any(|&cell| {
-                    matches!(
-                        arena.node(cell),
-                        CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
-                    )
-                });
+                && (arena.is_native_array(id)
+                    || col_seps != 0
+                    || row_seps != 0
+                    || cell_ids.iter().any(|&cell| {
+                        matches!(
+                            arena.node(cell),
+                            CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+                        )
+                    }));
             if env == "array" {
                 buf.push('{');
                 if trim_edges {

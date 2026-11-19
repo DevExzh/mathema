@@ -794,7 +794,11 @@ fn write_node_in(
                 row_seps,
                 num_cols,
                 rows.len(),
-                array_style,
+                (array_style
+                    || (matches!(node, MathNode::NativeArray { .. })
+                        && col_seps == 0
+                        && row_seps == 0))
+                    .then_some(array_style),
                 |key, value| {
                     table.push_attribute((key, value));
                 },
@@ -1821,7 +1825,8 @@ fn write_node_fast_in(
                 row_seps,
                 nc,
                 cell_ids.len().div_ceil(nc.max(1)),
-                array_style,
+                (array_style || (arena.is_native_array(id) && col_seps == 0 && row_seps == 0))
+                    .then_some(array_style),
                 |key, value| {
                     buf.push(' ');
                     buf.push_str(key);
@@ -2147,7 +2152,7 @@ fn table_rule_attributes(
     row_seps: u32,
     columns: usize,
     rows: usize,
-    array_style: bool,
+    array_style: Option<bool>,
     mut attr: impl FnMut(&'static str, &str),
 ) {
     if let Some(value) = table_line_attr(col_seps, columns) {
@@ -2179,8 +2184,11 @@ fn table_rule_attributes(
             }
         }
     }
-    if array_style {
-        attr("data-mathema-array-style", "true");
+    if let Some(padded) = array_style {
+        attr(
+            "data-mathema-array-style",
+            if padded { "true" } else { "false" },
+        );
     }
 }
 

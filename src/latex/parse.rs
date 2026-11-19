@@ -2321,16 +2321,6 @@ impl LatexCompactParser {
         array_style: bool,
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
-        // Padding and rules are stored directly on the compact array. A
-        // trimmed native cell override needs a marker to distinguish its
-        // TeX template from an ordinary MathML alignment override.
-        let needs_native = !array_style
-            && col_seps == 0
-            && row_seps == 0
-            && rows
-                .iter()
-                .flatten()
-                .any(|cell| self.arena.table_cell_wrapper(cell).is_some());
         let id = self.build_array_with_spacing(
             columns,
             rows,
@@ -2340,9 +2330,7 @@ impl LatexCompactParser {
             row_seps,
             array_style,
         );
-        if needs_native {
-            self.arena.mark_native_array(id);
-        }
+        self.arena.mark_native_array(id);
         id
     }
 

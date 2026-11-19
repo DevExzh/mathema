@@ -291,3 +291,25 @@ fn padding_and_global_rules_are_reported_on_lossy_table_readback() {
         assert_ne!(back.to_svg().unwrap(), source.to_svg().unwrap());
     }
 }
+
+#[test]
+fn explicitly_trimmed_native_array_keeps_its_outer_edges_on_reparse() {
+    let parsed = mathema::from_latex(r"\begin{array}{@{}cc@{}}a&b\\c&d\end{array}").unwrap();
+    let canonical = parsed.to_latex().unwrap();
+    assert!(canonical.contains("{@{}cc@{}}"), "{canonical}");
+    let xml = parsed.to_mathml().unwrap();
+    assert!(xml.contains(r#"data-mathema-array-style="false""#), "{xml}");
+    assert_eq!(
+        MathmlWriter::write(&parsed.expr(), &Config::default()).unwrap(),
+        xml
+    );
+    for back in [
+        mathema::from_latex(&canonical).unwrap(),
+        mathema::from_mathml(&xml).unwrap(),
+    ] {
+        assert_eq!(back.to_latex().unwrap(), canonical);
+        assert_eq!(back.expr(), parsed.expr());
+        #[cfg(feature = "render")]
+        assert_eq!(back.to_svg().unwrap(), parsed.to_svg().unwrap());
+    }
+}

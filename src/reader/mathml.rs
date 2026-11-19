@@ -1349,13 +1349,13 @@ impl<'a> MathmlCompactParser<'a> {
         start: &quick_xml::events::BytesStart<'_>,
         rows: usize,
         columns: usize,
-    ) -> (u32, u32, bool) {
+    ) -> (u32, u32, Option<bool>) {
         let mut col_lines = None;
         let mut row_lines = None;
         let mut frame = None;
         let mut col_extension = None;
         let mut row_extension = None;
-        let mut array_style = false;
+        let mut array_style = None;
         for attr in start.attributes().flatten() {
             let slot = match attr.key.as_ref() {
                 "columnlines" => &mut col_lines,
@@ -1364,9 +1364,12 @@ impl<'a> MathmlCompactParser<'a> {
                 "data-mathema-col-seps" => &mut col_extension,
                 "data-mathema-row-seps" => &mut row_extension,
                 "data-mathema-array-style" => {
-                    array_style = unescape_attr(&attr.value)
-                        .trim()
-                        .eq_ignore_ascii_case("true");
+                    let value = unescape_attr(&attr.value);
+                    if value.trim().eq_ignore_ascii_case("true") {
+                        array_style = Some(true);
+                    } else if value.trim().eq_ignore_ascii_case("false") {
+                        array_style = Some(false);
+                    }
                     continue;
                 },
                 _ => continue,
@@ -1474,11 +1477,13 @@ impl<'a> MathmlCompactParser<'a> {
             num_cols,
             arraystretch_pct,
             add_jot: false,
-            array_style,
+            array_style: array_style.unwrap_or(false),
             col_seps,
             row_seps,
         });
-        if let Some(environment) = array_environment(start, arraystretch_pct) {
+        if array_style.is_some() {
+            self.arena.mark_native_array(array);
+        } else if let Some(environment) = array_environment(start, arraystretch_pct) {
             self.arena.mark_array_environment(array, environment);
         }
         Ok(array)

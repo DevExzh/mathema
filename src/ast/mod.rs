@@ -466,8 +466,8 @@ pub enum MathNode {
     /// A native LaTeX array retaining layout metadata that the historical
     /// [`MathNode::Array`] shape cannot represent.
     ///
-    /// Readers use this variant for TeX outer padding, table rules, and
-    /// trimmed native arrays with whole-cell template overrides. Existing
+    /// Readers use this variant for native TeX arrays with their padded or
+    /// trimmed outer edges, and for MathML tables carrying rule geometry. Existing
     /// user-constructed [`MathNode::Array`] values keep their original shape
     /// and default layout semantics.
     NativeArray {
