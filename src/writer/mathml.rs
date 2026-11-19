@@ -12,20 +12,43 @@ use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_t
 use crate::writer::Writer as MathWriter;
 
 fn boundary_attr(boundaries: &[SpanBoundary]) -> Option<String> {
-    (!boundaries.is_empty()).then(|| {
-        boundaries
-            .iter()
-            .map(|boundary| match boundary {
-                SpanBoundary::SuppressGlue => "padding",
-                SpanBoundary::Rule => "rule",
-            })
-            .collect::<Vec<_>>()
-            .join("|")
-    })
+    if boundaries.is_empty() {
+        return None;
+    }
+    let mut value = String::new();
+    for (index, boundary) in boundaries.iter().enumerate() {
+        if index > 0 {
+            value.push('|');
+        }
+        value.push_str(match boundary {
+            SpanBoundary::SuppressGlue => "padding",
+            SpanBoundary::Rule => "rule",
+        });
+    }
+    Some(value)
 }
 
 fn packed_boundary_attr(boundaries: &str) -> Option<String> {
-    boundary_attr(&parse_span_boundary_spelling(boundaries))
+    if boundaries.is_empty() {
+        return None;
+    }
+    let mut rest = boundaries;
+    let mut value = String::new();
+    loop {
+        let (name, next) = if let Some(next) = rest.strip_prefix("@{}") {
+            ("padding", next)
+        } else if let Some(next) = rest.strip_prefix('|') {
+            ("rule", next)
+        } else {
+            break;
+        };
+        if !value.is_empty() {
+            value.push('|');
+        }
+        value.push_str(name);
+        rest = next;
+    }
+    (!value.is_empty()).then_some(value)
 }
 
 /// Classifies a compact node that the MathML writer cannot fully represent.
