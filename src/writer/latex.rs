@@ -1326,7 +1326,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         } => {
             let columns = arena.children(col_aligns);
             let cell_ids = arena.children(cells);
-            let nc = num_cols as usize;
+            let nc = usize::from(num_cols.max(1));
             // Preserve the display-style alignment semantics when this table
             // came from an AMS environment. An ordinary array or an isolated
             // cell declaration cannot establish that style for the table.
@@ -1421,87 +1421,85 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 buf.push('}');
             }
             buf.push(' ');
-            if nc > 0 {
-                let num_rows = cell_ids.len() / nc.max(1);
-                for row_idx in 0..num_rows {
-                    if row_idx == 0 {
-                        if row_seps & 1 != 0 {
-                            buf.push_str(r"\hline ");
+            let num_rows = cell_ids.len().div_ceil(nc);
+            for (row_idx, row) in cell_ids.chunks(nc).enumerate() {
+                if row_idx == 0 {
+                    if row_seps & 1 != 0 {
+                        buf.push_str(r"\hline ");
+                    }
+                } else {
+                    buf.push_str(" \\\\ ");
+                    if row_idx < 32 && (row_seps & (1 << row_idx)) != 0 {
+                        buf.push_str(r"\hline ");
+                    }
+                }
+                let mut col_idx = 0;
+                let mut emitted = false;
+                while col_idx < row.len() {
+                    let cell_id = &row[col_idx];
+                    if emitted {
+                        buf.push_str(" & ");
+                    }
+                    emitted = true;
+                    let (alignment, nodes) = arena.table_cell_parts(cell_id);
+                    let (cell_span, left_boundaries, right_boundaries) = match *arena.node(*cell_id)
+                    {
+                        CompactNode::SpannedCell {
+                            span,
+                            left_boundaries,
+                            right_boundaries,
+                            ..
+                        } => (
+                            arena.effective_cell_span_in_row(row, col_idx, span),
+                            left_boundaries,
+                            right_boundaries,
+                        ),
+                        _ => (1, StrId::EMPTY, StrId::EMPTY),
+                    };
+                    if let Some(alignment) = alignment {
+                        buf.push_str(r"\multicolumn{");
+                        buf.push_str(&cell_span.to_string());
+                        buf.push_str("}{");
+                        write_boundaries(buf, arena.str_val(left_boundaries));
+                        if trim_edges && col_idx == 0 && arena.str_val(left_boundaries).is_empty() {
+                            buf.push_str("@{}");
                         }
+                        buf.push(match alignment {
+                            ColumnAlign::Left => 'l',
+                            ColumnAlign::Center => 'c',
+                            ColumnAlign::Right => 'r',
+                        });
+                        write_boundaries(buf, arena.str_val(right_boundaries));
+                        if trim_edges
+                            && col_idx + cell_span == nc
+                            && arena.str_val(right_boundaries).is_empty()
+                        {
+                            buf.push_str("@{}");
+                        }
+                        buf.push_str("}{");
+                    }
+                    let marker = match env {
+                        "smallmatrix" | "smallmatrix*" => Some(2),
+                        "aligned" | "gathered" => Some(0),
+                        _ => None,
+                    };
+                    let nodes = marker
+                        .and_then(|value| super::cell_after_style(arena, cell_id, value))
+                        .unwrap_or(nodes);
+                    if alignment.is_some() {
+                        write_aligned_cell_content(buf, arena, nodes);
+                        buf.push('}');
                     } else {
-                        buf.push_str(" \\\\ ");
-                        if row_idx < 32 && (row_seps & (1 << row_idx)) != 0 {
-                            buf.push_str(r"\hline ");
-                        }
+                        write_node_slice(buf, arena, nodes, false);
                     }
-                    let mut col_idx = 0;
-                    let mut emitted = false;
-                    while col_idx < nc {
-                        let cell_id = &cell_ids[row_idx * nc + col_idx];
-                        if arena.is_span_padding(*cell_id) {
-                            col_idx += 1;
-                            continue;
-                        }
-                        if emitted {
-                            buf.push_str(" & ");
-                        }
-                        emitted = true;
-                        let (alignment, nodes) = arena.table_cell_parts(cell_id);
-                        let (cell_span, left_boundaries, right_boundaries) =
-                            match *arena.node(*cell_id) {
-                                CompactNode::SpannedCell {
-                                    span,
-                                    left_boundaries,
-                                    right_boundaries,
-                                    ..
-                                } => (span.max(1) as usize, left_boundaries, right_boundaries),
-                                _ => (1, StrId::EMPTY, StrId::EMPTY),
-                            };
-                        if let Some(alignment) = alignment {
-                            buf.push_str(r"\multicolumn{");
-                            buf.push_str(&cell_span.to_string());
-                            buf.push_str("}{");
-                            write_boundaries(buf, arena.str_val(left_boundaries));
-                            if trim_edges
-                                && col_idx == 0
-                                && arena.str_val(left_boundaries).is_empty()
-                            {
-                                buf.push_str("@{}");
-                            }
-                            buf.push(match alignment {
-                                ColumnAlign::Left => 'l',
-                                ColumnAlign::Center => 'c',
-                                ColumnAlign::Right => 'r',
-                            });
-                            write_boundaries(buf, arena.str_val(right_boundaries));
-                            if trim_edges
-                                && col_idx + cell_span == nc
-                                && arena.str_val(right_boundaries).is_empty()
-                            {
-                                buf.push_str("@{}");
-                            }
-                            buf.push_str("}{");
-                        }
-                        let marker = match env {
-                            "smallmatrix" | "smallmatrix*" => Some(2),
-                            "aligned" | "gathered" => Some(0),
-                            _ => None,
-                        };
-                        let nodes = marker
-                            .and_then(|value| super::cell_after_style(arena, cell_id, value))
-                            .unwrap_or(nodes);
-                        if alignment.is_some() {
-                            write_aligned_cell_content(buf, arena, nodes);
-                            buf.push('}');
-                        } else {
-                            write_node_slice(buf, arena, nodes, false);
-                        }
-                        col_idx = col_idx.saturating_add(cell_span);
-                    }
+                    col_idx = col_idx.saturating_add(cell_span);
                 }
-                if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {
-                    buf.push_str(r" \\ \hline");
+                for _ in row.len()..nc {
+                    buf.push_str(" & ");
                 }
+            }
+            if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {
+                buf.push_str(r" \\ \hline");
             }
             buf.push_str(r" \end{");
             buf.push_str(env);

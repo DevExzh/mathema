@@ -2027,7 +2027,7 @@ impl<'a> Encoder<'a> {
         self.out.push(halign);
         self.out.push(1);
         for &row in rows {
-            self.note_cell_alignment(row, exported, false);
+            self.note_cell_alignment(std::slice::from_ref(&row), 0, exported, false);
             self.with_math_style(MathStyle::Text, |this| this.slot(size, Some(row)))?;
         }
         self.end();
@@ -2083,17 +2083,15 @@ impl<'a> Encoder<'a> {
             rows + 1,
         );
         self.partition_lines(column_rules, cols + 1);
-        for index in 0..rows * cols {
-            match cells.get(index) {
-                Some(&cell) => {
-                    self.note_cell_alignment(cell, exported, true);
-                    self.with_math_style(MathStyle::Text, |this| this.cell(cell, size))?;
-                },
-                None => {
-                    self.need(size);
-                    self.tag(LINE, 0);
-                    self.end();
-                },
+        for row in cells.chunks(cols) {
+            for (column, &cell) in row.iter().enumerate() {
+                self.note_cell_alignment(row, column, exported, true);
+                self.with_math_style(MathStyle::Text, |this| this.cell(cell, size))?;
+            }
+            for _ in row.len()..cols {
+                self.need(size);
+                self.tag(LINE, 0);
+                self.end();
             }
         }
         self.end();
@@ -2108,7 +2106,14 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    fn note_cell_alignment(&mut self, cell: NodeId, exported: ColumnAlign, matrix_rules: bool) {
+    fn note_cell_alignment(
+        &mut self,
+        row: &[NodeId],
+        index: usize,
+        exported: ColumnAlign,
+        matrix_rules: bool,
+    ) {
+        let cell = row[index];
         match *self.arena.node(cell) {
             CompactNode::AlignedCell { alignment, .. } => {
                 if alignment != exported {
@@ -2124,6 +2129,7 @@ impl<'a> Encoder<'a> {
                 right_boundaries,
                 ..
             } => {
+                let span = self.arena.effective_cell_span_in_row(row, index, span);
                 if span > 1 {
                     self.lose(&format!(
                         "MTEF writes the cell-span construct across {span} separate matrix entries."
@@ -2172,7 +2178,12 @@ impl<'a> Encoder<'a> {
                         if left_suppressed || right_suppressed {
                             self.lose("The MTEF matrix drops per-cell glue suppression.");
                         }
-                        (usize::from(span.max(1)), left, right, true)
+                        (
+                            self.arena.effective_cell_span_in_row(row, column, span),
+                            left,
+                            right,
+                            true,
+                        )
                     },
                     _ => (1, 0, 0, false),
                 };

@@ -9,7 +9,6 @@ enum Provenance {
     Array(MatrixKind),
     NativeArray,
     MatrixPadding,
-    SpanPadding,
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -447,17 +446,25 @@ impl AstArena {
             && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
     }
 
-    #[inline]
-    pub(crate) fn mark_span_padding(&mut self, id: NodeId) {
-        if !self.size_overflow {
-            self.provenance.insert(id, Provenance::SpanPadding);
+    /// Cap an authored span to the consecutive empty physical slots currently
+    /// available after the cell. This keeps public arena edits coherent when a
+    /// span is enlarged without allocating new padding or crossing content.
+    pub(crate) fn effective_cell_span_in_row(
+        &self,
+        row: &[NodeId],
+        index: usize,
+        declared: u16,
+    ) -> usize {
+        let target = usize::from(declared.max(1)).min(row.len().saturating_sub(index));
+        let mut width = 1;
+        while width < target {
+            let id = row[index + width];
+            if !matches!(*self.node(id), CompactNode::Row(span) if span.is_empty()) {
+                break;
+            }
+            width += 1;
         }
-    }
-
-    #[inline]
-    pub(crate) fn is_span_padding(&self, id: NodeId) -> bool {
-        matches!(self.provenance.get(id), Some(Provenance::SpanPadding))
-            && matches!(self.node(id), CompactNode::Row(span) if span.is_empty())
+        width
     }
 
     /// Resolve the cell's alignment and the math list to typeset in it.

@@ -110,26 +110,28 @@ fn table_loss(arena: &AstArena, table: &CompactNode) -> Option<String> {
     let mut alignment_lost = false;
     let mut spans_lost = false;
     let mut edges_lost = false;
-    for (index, &cell) in arena.children(cells).iter().enumerate() {
-        let declared = columns
-            .get(index % stride)
-            .and_then(|&id| match *arena.node(id) {
-                CompactNode::ColAlign(align) => Some(align),
-                _ => None,
-            })
-            .unwrap_or(ColumnAlign::Center);
-        alignment_lost |= super::effective_cell_alignment(arena, cell, declared)
-            .is_some_and(|align| align != ColumnAlign::Center);
-        if let CompactNode::SpannedCell {
-            span,
-            left_boundaries,
-            right_boundaries,
-            ..
-        } = *arena.node(cell)
-        {
-            spans_lost |= span > 1;
-            edges_lost |= !arena.str_val(left_boundaries).is_empty()
-                || !arena.str_val(right_boundaries).is_empty();
+    for row in arena.children(cells).chunks(stride) {
+        for (index, &cell) in row.iter().enumerate() {
+            let declared = columns
+                .get(index)
+                .and_then(|&id| match *arena.node(id) {
+                    CompactNode::ColAlign(align) => Some(align),
+                    _ => None,
+                })
+                .unwrap_or(ColumnAlign::Center);
+            alignment_lost |= super::effective_cell_alignment(arena, cell, declared)
+                .is_some_and(|align| align != ColumnAlign::Center);
+            if let CompactNode::SpannedCell {
+                span,
+                left_boundaries,
+                right_boundaries,
+                ..
+            } = *arena.node(cell)
+            {
+                spans_lost |= arena.effective_cell_span_in_row(row, index, span) > 1;
+                edges_lost |= !arena.str_val(left_boundaries).is_empty()
+                    || !arena.str_val(right_boundaries).is_empty();
+            }
         }
     }
     let mut messages = [
@@ -1322,23 +1324,22 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             out.push('\u{25A0}');
             out.push('(');
             let cell_ids = arena.children(cells);
-            let nc = num_cols as usize;
-            let num_rows = cell_ids.len().checked_div(nc).unwrap_or(0);
-            for i in 0..num_rows {
+            let stride = usize::from(num_cols.max(1));
+            for (i, row) in cell_ids.chunks(stride).enumerate() {
                 if i > 0 {
                     out.push('@');
                 }
-                for j in 0..nc {
+                for (j, &cell_id) in row.iter().enumerate() {
                     if j > 0 {
                         out.push('&');
                     }
-                    let cell_id = cell_ids[i * nc + j];
                     if let CompactNode::Row(cell_span) = *arena.node(cell_id) {
                         write_nodes_c_with_style(out, arena, cell_span, MathStyle::Text);
                     } else {
                         write_node_c(out, arena, cell_id, MathStyle::Text);
                     }
                 }
+                out.extend(std::iter::repeat_n('&', stride - row.len()));
             }
             out.push(')');
         },

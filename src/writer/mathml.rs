@@ -1777,7 +1777,7 @@ fn write_node_fast_in(
             col_seps,
             row_seps,
         } => {
-            let nc = num_cols as usize;
+            let nc = usize::from(num_cols.max(1));
             let environment = arena
                 .valid_matrix_environment(
                     id,
@@ -1839,24 +1839,26 @@ fn write_node_fast_in(
             for row_chunk in cell_ids.chunks(nc.max(1)) {
                 buf.push_str("<mtr>");
                 let mut i = 0;
-                while i < row_chunk.len() {
-                    let cell_id = row_chunk[i];
-                    if arena.is_span_padding(cell_id) {
-                        i += 1;
-                        continue;
-                    }
+                while i < nc {
+                    let slot = row_chunk.get(i);
                     let align_nodes = arena.children(col_aligns);
-                    let (cell_override, mut nodes) = arena.table_cell_parts(&cell_id);
-                    let (cell_span, left_boundaries, right_boundaries) = match *arena.node(cell_id)
-                    {
-                        CompactNode::SpannedCell {
-                            span,
-                            left_boundaries,
-                            right_boundaries,
-                            ..
-                        } => (span.max(1) as usize, left_boundaries, right_boundaries),
-                        _ => (1, StrId::EMPTY, StrId::EMPTY),
-                    };
+                    let (cell_override, mut nodes) = slot
+                        .map(|id| arena.table_cell_parts(id))
+                        .unwrap_or((None, &[]));
+                    let (cell_span, left_boundaries, right_boundaries) =
+                        match slot.map(|&id| *arena.node(id)) {
+                            Some(CompactNode::SpannedCell {
+                                span,
+                                left_boundaries,
+                                right_boundaries,
+                                ..
+                            }) => (
+                                arena.effective_cell_span_in_row(row_chunk, i, span),
+                                left_boundaries,
+                                right_boundaries,
+                            ),
+                            _ => (1, StrId::EMPTY, StrId::EMPTY),
+                        };
                     buf.push_str("<mtd");
                     if let Some(a) = cell_override.or_else(|| {
                         align_nodes

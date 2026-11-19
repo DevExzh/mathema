@@ -1675,11 +1675,7 @@ impl<'a> MathmlCompactParser<'a> {
             };
             table.cells.push(id);
             if cell_span > 1 {
-                let padding = *table.span_padding.get_or_insert_with(|| {
-                    let id = self.empty_row();
-                    self.arena.mark_span_padding(id);
-                    id
-                });
+                let padding = *table.span_padding.get_or_insert_with(|| self.empty_row());
                 table
                     .cells
                     .resize(table.cells.len() + cell_span - 1, padding);

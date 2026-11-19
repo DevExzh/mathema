@@ -958,11 +958,8 @@ fn push_array_node_with_geometry(
             cell_ids.push(id);
             used = used.saturating_add(width);
             for _ in 1..width {
-                let padding = *span_padding.get_or_insert_with(|| {
-                    let id = arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-                    arena.mark_span_padding(id);
-                    id
-                });
+                let padding = *span_padding
+                    .get_or_insert_with(|| arena.push_node(CompactNode::Row(NodeSpan::EMPTY)));
                 cell_ids.push(padding);
             }
         }
@@ -1171,16 +1168,33 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             let mut rows = Vec::new();
             for chunk in cell_ids.chunks(nc.max(1)) {
                 let mut row = Vec::with_capacity(chunk.len());
-                for &cell_id in chunk {
+                let mut column = 0;
+                while column < chunk.len() {
+                    let cell_id = chunk[column];
                     // Each cell is a Row node wrapping the cell contents
-                    if arena.is_matrix_padding(cell_id) || arena.is_span_padding(cell_id) {
+                    if arena.is_matrix_padding(cell_id) {
+                        column += 1;
                         continue;
                     }
-                    row.push(match *arena.node(cell_id) {
-                        CompactNode::Row(span) => reconstruct_children(arena, span),
-                        _ => vec![reconstruct_node(arena, cell_id)],
+                    let width = match *arena.node(cell_id) {
+                        CompactNode::SpannedCell { span, .. } => {
+                            arena.effective_cell_span_in_row(chunk, column, span)
+                        },
+                        _ => 1,
+                    };
+                    let mut value = reconstruct_node(arena, cell_id);
+                    if let MathNode::SpannedCell { span, .. } = &mut value {
+                        *span = width as u16;
+                    }
+                    row.push(match value {
+                        MathNode::Row(nodes) => nodes,
+                        node => vec![node],
                     });
+                    column += width;
                 }
+                // A public compact edit can leave the final row short. Keep
+                // its declared slots when materializing the public rectangle.
+                row.resize_with(row.len() + nc.saturating_sub(chunk.len()), Vec::new);
                 rows.push(row);
             }
 

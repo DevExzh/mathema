@@ -1263,8 +1263,11 @@ impl<'a> Emitter<'a> {
                         );
                     }
                     let column = aligns.get(i).copied().unwrap_or(ColumnAlign::Center);
-                    self.note_cell_alignment(cell, column);
+                    self.note_cell_alignment(row, i, column);
                     self.with_style(MathStyle::Text, |e| e.cell_content(cell, fmt));
+                }
+                for _ in row.len()..ncols {
+                    self.buf.push_str("<m:r><m:t>&amp;</m:t></m:r>");
                 }
                 self.close("m:e");
             }
@@ -1305,15 +1308,19 @@ impl<'a> Emitter<'a> {
                     .get(column_index)
                     .copied()
                     .unwrap_or(ColumnAlign::Center);
-                self.note_cell_alignment(cell, column);
+                self.note_cell_alignment(row, column_index, column);
                 self.with_style(MathStyle::Text, |e| e.cell(cell, fmt));
+            }
+            for _ in row.len()..ncols {
+                self.buf.push_str("<m:e></m:e>");
             }
             self.close("m:mr");
         }
         self.close("m:m");
     }
 
-    fn note_cell_alignment(&mut self, cell: NodeId, column: ColumnAlign) {
+    fn note_cell_alignment(&mut self, row: &[NodeId], index: usize, column: ColumnAlign) {
+        let cell = row[index];
         let alignment = match *self.arena.node(cell) {
             CompactNode::AlignedCell { alignment, .. } => alignment,
             CompactNode::SpannedCell {
@@ -1323,7 +1330,7 @@ impl<'a> Emitter<'a> {
                 right_boundaries,
                 ..
             } => {
-                if span > 1 {
+                if self.arena.effective_cell_span_in_row(row, index, span) > 1 {
                     self.loss("OMML writes a cell-span construct as separate matrix entries.");
                 }
                 if !self.arena.str_val(left_boundaries).is_empty()

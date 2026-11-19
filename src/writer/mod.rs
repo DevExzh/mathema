@@ -33,11 +33,9 @@ fn effective_cell_alignment(
         CompactNode::AlignedCell { alignment, .. } | CompactNode::SpannedCell { alignment, .. } => {
             Some(alignment)
         },
-        CompactNode::Row(span)
-            if span.is_empty() && (arena.is_span_padding(id) || arena.is_matrix_padding(id)) =>
-        {
-            None
-        },
+        // A bare empty slot has no aligned content. A whole-cell wrapper
+        // above still contributes an explicit alignment even if it is empty.
+        CompactNode::Row(span) if span.is_empty() => None,
         _ => Some(declared),
     }
 }

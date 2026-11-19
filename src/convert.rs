@@ -560,6 +560,232 @@ mod tests {
         assert!(latex.contains("42"));
     }
 
+    #[cfg(feature = "render")]
+    #[test]
+    fn public_span_mutations_keep_physical_slots_across_all_routes() {
+        use crate::ast::{ColumnAlign, MathExpr, MathNode};
+        use crate::{CompactNode, StrId};
+
+        fn assert_routes(compact: &CompactExpr, heap: &MathExpr, cells: usize) {
+            let config = Config::default();
+            let heap_compact = CompactExpr::from_math_expr(heap).unwrap();
+            assert_eq!(
+                LatexWriter::write_compact(compact, &config).unwrap(),
+                LatexWriter::write(heap, &config).unwrap()
+            );
+            assert_eq!(
+                MathmlWriter::write_compact(compact, &config).unwrap(),
+                MathmlWriter::write(heap, &config).unwrap()
+            );
+            assert_eq!(
+                UnicodeMathWriter::write_compact(compact, &config).unwrap(),
+                UnicodeMathWriter::write(heap, &config).unwrap()
+            );
+            assert_eq!(
+                OmmlWriter::write_compact(compact, &config).unwrap(),
+                OmmlWriter::write(heap, &config).unwrap()
+            );
+            assert_eq!(
+                crate::render::render_to_svg_compact(
+                    compact,
+                    &crate::render::RenderOptions::default()
+                )
+                .unwrap(),
+                crate::render::render_to_svg(heap, &crate::render::RenderOptions::default())
+                    .unwrap()
+            );
+            for version in [
+                crate::reader::mtef::MtefVersion::V3,
+                crate::reader::mtef::MtefVersion::V5,
+            ] {
+                let options = MtefWriteOptions::new(version);
+                let compact_bytes = MtefWriter::write_bytes(compact, &config, &options).unwrap();
+                let heap_bytes = MtefWriter::write_bytes(&heap_compact, &config, &options).unwrap();
+                assert_eq!(compact_bytes, heap_bytes);
+                let back = from_mtef_bytes(&compact_bytes).unwrap();
+                assert_eq!(back.to_mathml().unwrap().matches("<mtd").count(), cells);
+            }
+        }
+
+        let source = from_latex(r"\begin{array}{lll}\multicolumn{2}{r}{7}&9\end{array}").unwrap();
+        let mut shrunk = source.compact_expr().clone();
+        let root = shrunk.arena.children(shrunk.roots)[0];
+        let cell = match *shrunk.arena.node(root) {
+            CompactNode::Array { cells, .. } => shrunk.arena.children(cells)[0],
+            _ => panic!("expected array"),
+        };
+        let CompactNode::SpannedCell {
+            alignment, content, ..
+        } = *shrunk.arena.node(cell)
+        else {
+            panic!("expected span")
+        };
+        *shrunk.arena.node_mut(cell) = CompactNode::SpannedCell {
+            alignment,
+            span: 1,
+            left_boundaries: StrId::EMPTY,
+            right_boundaries: StrId::EMPTY,
+            content,
+        };
+        let shrunk_heap = shrunk.to_math_expr();
+        let rows = match &shrunk_heap.nodes[0] {
+            MathNode::Array { rows, .. } | MathNode::NativeArray { rows, .. } => rows,
+            _ => panic!("expected heap array"),
+        };
+        assert_eq!(rows[0].len(), 3);
+        assert!(matches!(&rows[0][1][..], []));
+        assert!(matches!(&rows[0][2][..], [MathNode::Number(value)] if value == "9"));
+        assert_routes(&shrunk, &shrunk_heap, 3);
+
+        let content_span = shrunk.arena.push_children(&[content]).unwrap();
+        *shrunk.arena.node_mut(cell) = CompactNode::Row(content_span);
+        let ordinary_heap = shrunk.to_math_expr();
+        assert_routes(&shrunk, &ordinary_heap, 3);
+        assert!(
+            LatexWriter::write_compact(&shrunk, &Config::default())
+                .unwrap()
+                .contains("7 &  & 9")
+        );
+
+        let partial = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Left; 3],
+            rows: vec![
+                vec![
+                    vec![MathNode::Identifier("a".into())],
+                    vec![MathNode::Identifier("b".into())],
+                    vec![MathNode::Identifier("c".into())],
+                ],
+                vec![vec![MathNode::SpannedCell {
+                    alignment: ColumnAlign::Left,
+                    span: 1,
+                    left_boundaries: Vec::new(),
+                    right_boundaries: Vec::new(),
+                    content: Box::new(MathNode::Identifier("7".into())),
+                }]],
+            ],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let mut partial_compact = CompactExpr::from_math_expr(&partial).unwrap();
+        let root = partial_compact.arena.children(partial_compact.roots)[0];
+        let cell = match *partial_compact.arena.node(root) {
+            CompactNode::Array {
+                cells, num_cols, ..
+            } => partial_compact.arena.children(cells)[num_cols as usize],
+            _ => panic!("expected array"),
+        };
+        let CompactNode::SpannedCell {
+            alignment, content, ..
+        } = *partial_compact.arena.node(cell)
+        else {
+            panic!("expected span")
+        };
+        *partial_compact.arena.node_mut(cell) = CompactNode::SpannedCell {
+            alignment,
+            span: 3,
+            left_boundaries: StrId::EMPTY,
+            right_boundaries: StrId::EMPTY,
+            content,
+        };
+        let partial_heap = partial_compact.to_math_expr();
+        let rows = match &partial_heap.nodes[0] {
+            MathNode::Array { rows, .. } | MathNode::NativeArray { rows, .. } => rows,
+            _ => panic!("expected heap array"),
+        };
+        assert!(matches!(
+            &rows[1][0][..],
+            [MathNode::SpannedCell { span: 3, .. }]
+        ));
+        let partial_mathml =
+            MathmlWriter::write_compact(&partial_compact, &Config::default()).unwrap();
+        assert!(partial_mathml.contains(r#"columnspan="3""#));
+        assert_routes(&partial_compact, &partial_heap, 6);
+
+        let contradictory_source =
+            from_latex(r"\begin{array}{ll}\multicolumn{1}{r}{7}&9\end{array}").unwrap();
+        let mut contradictory = contradictory_source.compact_expr().clone();
+        let root = contradictory.arena.children(contradictory.roots)[0];
+        let cell = match *contradictory.arena.node(root) {
+            CompactNode::Array { cells, .. } => contradictory.arena.children(cells)[0],
+            _ => panic!("expected array"),
+        };
+        let (alignment, content) = match *contradictory.arena.node(cell) {
+            CompactNode::AlignedCell { alignment, content }
+            | CompactNode::SpannedCell {
+                alignment, content, ..
+            } => (alignment, content),
+            _ => panic!("expected span wrapper"),
+        };
+        *contradictory.arena.node_mut(cell) = CompactNode::SpannedCell {
+            alignment,
+            span: 2,
+            left_boundaries: StrId::EMPTY,
+            right_boundaries: StrId::EMPTY,
+            content,
+        };
+        let contradictory_heap = contradictory.to_math_expr();
+        let rows = match &contradictory_heap.nodes[0] {
+            MathNode::Array { rows, .. } | MathNode::NativeArray { rows, .. } => rows,
+            _ => panic!("expected heap array"),
+        };
+        assert!(
+            matches!(&rows[0][0][..], [MathNode::SpannedCell { span: 1, .. }]),
+            "{rows:?}"
+        );
+        let contradictory_latex =
+            LatexWriter::write_compact(&contradictory, &Config::default()).unwrap();
+        assert!(contradictory_latex.contains(r"\multicolumn{1}"));
+        assert!(!contradictory_latex.contains(r"\multicolumn{2}"));
+        assert_routes(&contradictory, &contradictory_heap, 2);
+
+        // A public caller can construct a compact grid whose final row is
+        // short. The layout path must retain that row and cap its span to the
+        // actual available slots.
+        let mut arena = crate::AstArena::new();
+        let columns: Vec<_> = (0..3)
+            .map(|_| arena.push_node(CompactNode::ColAlign(ColumnAlign::Left)))
+            .collect();
+        let col_aligns = arena.push_children(&columns).unwrap();
+        let mut identifier = |value: &str| {
+            let sid = arena.push_str(value);
+            arena.push_node(CompactNode::Identifier(sid))
+        };
+        let a = identifier("a");
+        let b = identifier("b");
+        let c = identifier("c");
+        let seven = identifier("7");
+        let span = arena.push_node(CompactNode::SpannedCell {
+            alignment: ColumnAlign::Left,
+            span: 3,
+            left_boundaries: StrId::EMPTY,
+            right_boundaries: StrId::EMPTY,
+            content: seven,
+        });
+        let cells = arena.push_children(&[a, b, c, span]).unwrap();
+        let root = arena.push_node(CompactNode::Array {
+            col_aligns,
+            cells,
+            num_cols: 3,
+            arraystretch_pct: 100,
+            add_jot: false,
+            array_style: false,
+            col_seps: 0,
+            row_seps: 0,
+        });
+        let roots = arena.push_children(&[root]).unwrap();
+        let partial_compact = CompactExpr::new(arena, roots, crate::ast::DisplayStyle::Inline);
+        let partial_heap = partial_compact.to_math_expr();
+        let rows = match &partial_heap.nodes[0] {
+            MathNode::Array { rows, .. } | MathNode::NativeArray { rows, .. } => rows,
+            _ => panic!("expected heap array"),
+        };
+        assert!(matches!(
+            &rows[1][0][..],
+            [MathNode::SpannedCell { span: 1, .. }]
+        ));
+        assert_routes(&partial_compact, &partial_heap, 6);
+    }
+
     #[test]
     fn unicode_math_projects_a_spanning_cell_to_its_logical_columns() {
         use crate::ast::{ColumnAlign, MathExpr, MathNode};

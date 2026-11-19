@@ -2439,9 +2439,7 @@ impl LatexCompactParser {
                 cell_ids.push(id);
                 if width > 1 {
                     let padding = *span_padding.get_or_insert_with(|| {
-                        let id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
-                        self.arena.mark_span_padding(id);
-                        id
+                        self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
                     });
                     cell_ids.resize(cell_ids.len() + width - 1, padding);
                 }
