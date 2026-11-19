@@ -31,48 +31,64 @@ pub(super) fn col_gap_after(j: usize, is_aligned: bool, size: f64) -> f64 {
     }
 }
 
-/// The preamble of one cell. A normal cell inherits its column's alignment
-/// and the two adjacent half-gaps. A multicolumn can replace either side.
 #[derive(Clone, Copy)]
-struct CellTemplate {
-    span: usize,
-    alignment: Option<ColumnAlign>,
-    omit_left: bool,
-    omit_right: bool,
-    left_rules: usize,
-    right_rules: usize,
+enum Boundary<'a> {
+    Heap(&'a [SpanBoundary]),
+    Compact(&'a str),
 }
 
-impl CellTemplate {
+#[derive(Default)]
+struct BoundaryGeometry {
+    first: Option<SpanBoundary>,
+    last: Option<SpanBoundary>,
+    advance: f64,
+}
+
+impl Boundary<'_> {
+    /// Kernel LaTeX centers a rule on the cursor. Consecutive rules advance
+    /// by `\doublerulesep`. An `@{}` immediately after a rule adds another
+    /// half rule width; a subsequent rule is centered on that new position.
+    fn measure(self, size: f64, mut stroke: impl FnMut(f64)) -> BoundaryGeometry {
+        let mut edge = BoundaryGeometry::default();
+        let step = |directive| {
+            if edge.last == Some(SpanBoundary::Rule) {
+                edge.advance += match directive {
+                    SpanBoundary::Rule => 0.2 * size,
+                    SpanBoundary::SuppressGlue => 0.02 * size,
+                };
+            }
+            if directive == SpanBoundary::Rule {
+                stroke(edge.advance);
+            }
+            edge.first.get_or_insert(directive);
+            edge.last = Some(directive);
+        };
+        match self {
+            Self::Heap(source) => source.iter().copied().for_each(step),
+            Self::Compact(source) => span_boundaries(source).for_each(step),
+        }
+        edge
+    }
+}
+
+/// Only an explicit whole-cell wrapper replaces the preamble of its columns.
+#[derive(Clone, Copy)]
+struct CellTemplate<'a> {
+    span: usize,
+    alignment: Option<ColumnAlign>,
+    left: Boundary<'a>,
+    right: Boundary<'a>,
+}
+
+impl<'a> CellTemplate<'a> {
     const ORDINARY: Self = Self {
         span: 1,
         alignment: None,
-        omit_left: false,
-        omit_right: false,
-        left_rules: 0,
-        right_rules: 0,
+        left: Boundary::Heap(&[]),
+        right: Boundary::Heap(&[]),
     };
 
-    fn apply_rules(self, col: usize, mask: &mut u32) {
-        if self.alignment.is_none() {
-            return;
-        }
-        // A vertical rule between columns belongs to the template on its
-        // left. An override replaces internal rules and its trailing rule,
-        // and the leading template rule only in the first logical column.
-        let end = col + self.span;
-        let first = if col == 0 { 0 } else { col + 1 };
-        let preceding = |boundary: usize| ((1u64 << boundary.min(u32::BITS as usize)) - 1) as u32;
-        *mask &= !(preceding(end + 1) & !preceding(first));
-        if self.left_rules > 0 && col < u32::BITS as usize {
-            *mask |= 1 << col;
-        }
-        if self.right_rules > 0 && end < u32::BITS as usize {
-            *mask |= 1 << end;
-        }
-    }
-
-    fn heap(nodes: &[MathNode]) -> Self {
+    fn heap(nodes: &'a [MathNode]) -> Self {
         match nodes {
             [
                 MathNode::SpannedCell {
@@ -82,12 +98,12 @@ impl CellTemplate {
                     right_boundaries,
                     ..
                 },
-            ] => Self::from_boundaries(
-                usize::from((*span).max(1)),
-                Some(*alignment),
-                left_boundaries.iter().copied(),
-                right_boundaries.iter().copied(),
-            ),
+            ] => Self {
+                span: usize::from((*span).max(1)),
+                alignment: Some(*alignment),
+                left: Boundary::Heap(left_boundaries),
+                right: Boundary::Heap(right_boundaries),
+            },
             [MathNode::AlignedCell { alignment, .. }] => Self {
                 alignment: Some(*alignment),
                 ..Self::ORDINARY
@@ -96,7 +112,7 @@ impl CellTemplate {
         }
     }
 
-    fn compact(arena: &AstArena, node: &CompactNode, remaining: usize) -> Self {
+    fn compact(arena: &'a AstArena, node: &CompactNode, remaining: usize) -> Self {
         match *node {
             CompactNode::SpannedCell {
                 alignment,
@@ -104,12 +120,12 @@ impl CellTemplate {
                 left_boundaries,
                 right_boundaries,
                 ..
-            } => Self::from_boundaries(
-                usize::from(span.max(1)).min(remaining),
-                Some(alignment),
-                span_boundaries(arena.str_val(left_boundaries)),
-                span_boundaries(arena.str_val(right_boundaries)),
-            ),
+            } => Self {
+                span: usize::from(span.max(1)).min(remaining),
+                alignment: Some(alignment),
+                left: Boundary::Compact(arena.str_val(left_boundaries)),
+                right: Boundary::Compact(arena.str_val(right_boundaries)),
+            },
             CompactNode::AlignedCell { alignment, .. } => Self {
                 alignment: Some(alignment),
                 ..Self::ORDINARY
@@ -118,55 +134,25 @@ impl CellTemplate {
         }
     }
 
-    fn from_boundaries(
-        span: usize,
-        alignment: Option<ColumnAlign>,
-        left: impl Iterator<Item = SpanBoundary>,
-        right: impl Iterator<Item = SpanBoundary>,
-    ) -> Self {
-        // In the kernel array preamble only consecutive rules add
-        // double-rule separation. An empty material directive breaks the run.
-        fn scan(boundary: impl Iterator<Item = SpanBoundary>) -> (bool, bool, usize) {
-            let mut first = None;
-            let mut last = None;
-            let mut rules = 0;
-            for item in boundary {
-                if item == SpanBoundary::Rule && (rules == 0 || last == Some(SpanBoundary::Rule)) {
-                    rules += 1;
-                }
-                first.get_or_insert(item);
-                last = Some(item);
-            }
-            (
-                first == Some(SpanBoundary::SuppressGlue),
-                last == Some(SpanBoundary::SuppressGlue),
-                rules,
-            )
+    fn apply_rules(self, col: usize, mask: &mut u32) {
+        if self.alignment.is_none() {
+            return;
         }
-        let (_, omit_left, left_rules) = scan(left);
-        let (omit_right, _, right_rules) = scan(right);
-        Self {
-            span,
-            alignment,
-            omit_left,
-            omit_right,
-            left_rules,
-            right_rules,
-        }
+        // The internal and trailing rules belong to the replaced template.
+        // The rule at the left edge of a later cell belongs to its neighbor.
+        let first = if col == 0 { 0 } else { col + 1 };
+        let preceding = |boundary: usize| ((1u64 << boundary.min(u32::BITS as usize)) - 1) as u32;
+        *mask &= !(preceding(col + self.span + 1) & !preceding(first));
     }
 
-    fn extra_rules(
-        self,
-        col: usize,
-        x: f64,
-        width: f64,
-        separation: f64,
-    ) -> impl Iterator<Item = f64> {
-        // Boundaries 0-31 already receive the outside stroke via the mask.
-        let left = usize::from(col < u32::BITS as usize)..self.left_rules;
-        let right = usize::from(col + self.span < u32::BITS as usize)..self.right_rules;
-        left.map(move |n| x + n as f64 * separation)
-            .chain(right.map(move |n| x + width - n as f64 * separation))
+    fn paint_rules(self, size: f64, x: f64, width: f64, mut stroke: impl FnMut(f64)) {
+        if self.alignment.is_none() {
+            return;
+        }
+        self.left.measure(size, |offset| stroke(x + offset));
+        let right_start = x + width - self.right.measure(size, |_| {}).advance;
+        self.right
+            .measure(size, |offset| stroke(right_start + offset));
     }
 }
 
@@ -213,41 +199,42 @@ impl ColumnLayout {
         layout
     }
 
-    fn padding(&self, col: usize, cell: CellTemplate) -> (f64, f64) {
-        let (left_glue, right_glue) = self.glue_padding(col, cell);
-        (
-            left_glue + self.rule_extent(cell.left_rules),
-            right_glue + self.rule_extent(cell.right_rules),
-        )
-    }
-
-    fn glue_padding(&self, col: usize, cell: CellTemplate) -> (f64, f64) {
+    fn padding(&self, col: usize, cell: CellTemplate<'_>) -> (f64, f64) {
         let half_gap = |before| {
             self.gap
                 .unwrap_or_else(|| col_gap_after(before, self.aligned, self.size))
                 * 0.5
         };
         let end = col + cell.span;
-        let left = if cell.omit_left {
-            0.0
-        } else if col == 0 {
+        let left_glue = if col == 0 {
             self.edge
         } else {
             half_gap(col - 1)
         };
-        let right = if cell.omit_right {
-            0.0
-        } else if end == self.widths.len() {
+        let right_glue = if end == self.widths.len() {
             self.edge
         } else {
             half_gap(end - 1)
         };
-        (left, right)
-    }
-
-    fn rule_extent(&self, count: usize) -> f64 {
-        let separation = 0.2 * self.size;
-        count.saturating_sub(1) as f64 * separation
+        if cell.alignment.is_none() {
+            return (left_glue, right_glue);
+        }
+        let left = cell.left.measure(self.size, |_| {});
+        let right = cell.right.measure(self.size, |_| {});
+        (
+            left.advance
+                + if left.last == Some(SpanBoundary::SuppressGlue) {
+                    0.0
+                } else {
+                    left_glue
+                },
+            right.advance
+                + if right.first == Some(SpanBoundary::SuppressGlue) {
+                    0.0
+                } else {
+                    right_glue
+                },
+        )
     }
 
     fn measure(&mut self, col: usize, cell: CellTemplate, width: f64) {
@@ -461,11 +448,7 @@ pub(super) fn layout_array(
             let template = CellTemplate::heap(source);
             let (width, dx) = grid.place(col, template, cell.width, columns);
             template.apply_rules(col, &mut visible_rules);
-            cell_rules.extend(
-                template
-                    .extra_rules(col, cursor_x, width, 0.2 * size)
-                    .map(|x| (x, i, cursor_y)),
-            );
+            template.paint_rules(size, cursor_x, width, |x| cell_rules.push((x, i, cursor_y)));
             children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
             cursor_x += width;
             col += template.span;
@@ -688,11 +671,7 @@ pub(super) fn layout_array_arena(
             let cell = cell_layout_ids[idx];
             let (width, dx) = grid.place(j, template, arena.get(cell).width, &columns);
             template.apply_rules(j, &mut visible_rules);
-            cell_rules.extend(
-                template
-                    .extra_rules(j, cursor_x, width, 0.2 * size)
-                    .map(|x| (x, i, cursor_y)),
-            );
+            template.paint_rules(size, cursor_x, width, |x| cell_rules.push((x, i, cursor_y)));
             arena.push_child(ArenaPositionedBox {
                 dx: cursor_x + dx,
                 dy: box_height - cursor_y,
@@ -801,12 +780,14 @@ mod span_tests {
         }
         let left = CellTemplate {
             span: 2,
-            omit_left: true,
+            alignment: Some(ColumnAlign::Center),
+            left: Boundary::Heap(&[SpanBoundary::SuppressGlue]),
             ..usual
         };
         let right = CellTemplate {
             span: 2,
-            omit_right: true,
+            alignment: Some(ColumnAlign::Center),
+            right: Boundary::Heap(&[SpanBoundary::SuppressGlue]),
             ..usual
         };
         grid.measure(1, left, 0.5);
@@ -839,11 +820,27 @@ mod span_tests {
         CellTemplate {
             span: 2,
             alignment: Some(ColumnAlign::Right),
-            right_rules: 1,
+            right: Boundary::Heap(&[SpanBoundary::Rule]),
             ..CellTemplate::ORDINARY
         }
         .apply_rules(1, &mut mask);
-        assert_eq!(mask, 0b1011);
+        assert_eq!(mask, 0b0011);
+    }
+
+    #[test]
+    fn empty_material_after_a_rule_advances_half_a_rule_width() {
+        let cell = CellTemplate {
+            span: 1,
+            alignment: Some(ColumnAlign::Left),
+            left: Boundary::Compact("|@{}|"),
+            right: Boundary::Compact("||@{}"),
+        };
+        let mut x = Vec::new();
+        cell.paint_rules(1.0, 0.0, 2.0, |v| x.push(v));
+        for (actual, expected) in x.iter().zip([0.0, 0.02, 1.78, 1.98]) {
+            assert!((actual - expected).abs() < 1e-10);
+        }
+        assert_eq!(x.len(), 4);
     }
 
     #[test]
