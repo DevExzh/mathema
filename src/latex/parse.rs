@@ -266,6 +266,16 @@ fn negate_char(ch: char) -> Option<char> {
     }
 }
 
+fn text_character_code(input: &str) -> Option<(&str, char)> {
+    let (rest, ch) = LatexCompactParser::character_code(input).ok()?;
+    // TeX consumes the space token terminating a character number. A
+    // following explicit control-space is part of the text and stays.
+    Some((
+        rest.trim_start_matches(|c: char| c.is_ascii_whitespace()),
+        ch,
+    ))
+}
+
 /// Process raw LaTeX text-mode content: strip braces, handle `~`, `\ `, dashes, etc.
 fn clean_text_content(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
@@ -328,6 +338,13 @@ fn clean_text_content(raw: &str) -> String {
                         let start = i;
                         while i < len && bytes[i].is_ascii_alphabetic() {
                             i += 1;
+                        }
+                        if &raw[start..i] == "char"
+                            && let Some((rest, ch)) = text_character_code(&raw[i..])
+                        {
+                            out.push(ch);
+                            i = len - rest.len();
+                            continue;
                         }
                         if i == start && i < len {
                             // A control symbol consumes only its own character.
@@ -4310,12 +4327,8 @@ impl LatexCompactParser {
         Ok((rest, id))
     }
 
-    /// Parse the character forms emitted by the LaTeX writer's math-mode
-    /// literal-symbol path.  TeX accepts several number syntaxes after
-    /// `\char`; supporting the backtick form is sufficient for writer output,
-    /// while decimal/hex forms make the reader useful for ordinary KaTeX/TeX
-    /// input as well (`\char"7e`, `\char126`).
-    fn parse_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+    /// Scan the decimal, octal, hexadecimal or backtick argument of a TeX character command.
+    fn character_code(input: &str) -> IResult<&str, char> {
         let (input, _) = ws(input)?;
         let Some(first) = input.chars().next() else {
             return Err(nom::Err::Error(nom::error::Error::new(
@@ -4408,6 +4421,11 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::Verify,
             )));
         };
+        Ok((rest, ch))
+    }
+
+    fn parse_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, ch) = Self::character_code(input)?;
         let sid = self.push_char_str(ch);
         let symbol = self
             .arena

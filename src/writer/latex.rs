@@ -19,7 +19,13 @@ impl Writer for LatexWriter {
             text: String::with_capacity(256),
             in_operator_name: false,
         };
-        write_nodes(&mut buf, &expr.arena, expr.roots);
+        write_sequence(
+            &mut buf,
+            &expr.arena,
+            expr.arena.children(expr.roots),
+            false,
+            true,
+        );
         Ok(buf.text)
     }
 }
@@ -49,8 +55,18 @@ fn write_nodes(buf: &mut LatexBuffer, arena: &AstArena, span: NodeSpan) {
 fn write_node_slice(
     buf: &mut LatexBuffer,
     arena: &AstArena,
+    children: &[NodeId],
+    ends_with_command: bool,
+) {
+    write_sequence(buf, arena, children, ends_with_command, false);
+}
+
+fn write_sequence(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
     mut children: &[NodeId],
     mut ends_with_command: bool,
+    top_level: bool,
 ) {
     // A trailing implicit script with no arguments emits nothing. Remove it
     // before deciding whether any preceding base needs grouping or a body.
@@ -205,7 +221,11 @@ fn write_node_slice(
             let next = children.get(i + 1).copied();
             write_script_node_with_next(buf, arena, id, next);
         } else {
-            write_node(buf, arena, id);
+            // Verbatim delimiters are read directly from top-level input.
+            // Inside a macro argument, TeX has already tokenized the text.
+            if !top_level || !write_verbatim_node(buf, arena, id) {
+                write_node(buf, arena, id);
+            }
             // An empty-body nary operator followed by another node needs an
             // explicit `{}` body, otherwise the next node would be re-parsed as
             // the operator's body.
@@ -827,19 +847,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
 
         CompactNode::Symbol(kind, sid) => write_symbol(buf, arena, kind, sid),
 
-        CompactNode::Text(style, sid) => {
-            let s = arena.str_val(sid);
-            if style == TextStyle::Monospace
-                && (s.contains('\\') || s.contains('{') || s.contains('}'))
-            {
-                // \texttt cannot faithfully round-trip content containing
-                // backslashes or braces. Use \verb with a delimiter that does
-                // not appear in the content.
-                write_verb(buf, s);
-            } else {
-                write_styled_text(buf, style, s);
-            }
-        },
+        CompactNode::Text(style, sid) => write_styled_text(buf, style, arena.str_val(sid)),
 
         CompactNode::Space(r) => write_space_with_basis(buf, r, arena.space_basis(id)),
 
@@ -1720,7 +1728,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if atom_type == MathAtomType::Ord
                 && let Some(text) = authored_math_space_symbol(arena, content)
             {
-                write_decimal_math_char(buf, text);
+                write_decimal_char(buf, text, " ");
                 return;
             }
             if atom_type == MathAtomType::Op {
@@ -2143,7 +2151,7 @@ fn write_math_char(buf: &mut String, ch: char) {
         // A raw C0, C1, or DEL character is not a parseable LaTeX atom. Use
         // decimal \\char syntax and retain a source-space terminator so a
         // following digit cannot be consumed as part of the character code.
-        write_decimal_math_char(buf, ch);
+        write_decimal_char(buf, ch, " ");
         return;
     }
     buf.push_str(r"\char`");
@@ -2157,10 +2165,10 @@ fn write_math_char(buf: &mut String, ch: char) {
 }
 
 /// End the decimal character code before a following digit.
-fn write_decimal_math_char(buf: &mut String, ch: char) {
+fn write_decimal_char(buf: &mut String, ch: char, terminator: &str) {
     buf.push_str(r"\char");
     buf.push_str(&(ch as u32).to_string());
-    buf.push(' ');
+    buf.push_str(terminator);
 }
 
 fn single_math_space(text: &str) -> Option<char> {
@@ -2385,7 +2393,7 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 {
                     buf.push_str("{}");
                 }
-                write_text_content(buf, text);
+                write_text_content(buf, text, false);
             } else {
                 write_styled_text(buf, style, arena.str_val(sid));
             }
@@ -2440,19 +2448,27 @@ fn write_always_braced(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     buf.push('}');
 }
 
-/// Write verbatim content using \verb with a delimiter that is not present in
-/// the content.
-fn write_verb(buf: &mut String, content: &str) {
-    const DELIMS: &[char] = &['|', '!', '@', '#', '%', '~', '`', ':', ';', '+', '='];
-    let delim = DELIMS
-        .iter()
-        .copied()
-        .find(|&d| !content.contains(d))
-        .unwrap_or('¶');
-    buf.push_str("\\verb");
+/// Preserve a top-level literal when a single-line verbatim delimiter is available.
+fn write_verbatim_node(buf: &mut String, arena: &AstArena, id: NodeId) -> bool {
+    let CompactNode::Text(TextStyle::Monospace, sid) = *arena.node(id) else {
+        return false;
+    };
+    let content = arena.str_val(sid);
+    if !content.contains(['\\', '{', '}']) || content.chars().any(char::is_control) {
+        return false;
+    }
+    let Some(delim) = [
+        '|', '!', '@', '#', '%', '~', '`', ':', ';', '+', '=', '/', '?', '¶',
+    ]
+    .into_iter()
+    .find(|delim| !content.contains(*delim)) else {
+        return false;
+    };
+    buf.push_str(r"\verb");
     buf.push(delim);
     buf.push_str(content);
     buf.push(delim);
+    true
 }
 
 fn write_styled_text(buf: &mut String, style: TextStyle, text: &str) {
@@ -2471,20 +2487,38 @@ fn write_styled_text(buf: &mut String, style: TextStyle, text: &str) {
     for wrapper in wrappers {
         buf.push_str(wrapper);
     }
-    write_text_content(buf, text);
+    write_text_content(buf, text, style == Monospace);
     for _ in wrappers {
         buf.push('}');
     }
 }
 
 /// Write decoded text so that text-mode syntax and ligatures cannot change it.
-fn write_text_content(buf: &mut String, text: &str) {
+fn write_text_content(buf: &mut String, text: &str, monospace: bool) {
     let mut previous = None;
     for ch in text.chars() {
         if previous == Some(ch) && matches!(ch, '-' | '`' | '\'') {
             buf.push_str("{}");
         }
+        // The text symbol commands for braces and backslash can switch to
+        // the symbol font. A character number uses the selected typewriter
+        // face, just as a verbatim literal does.
+        if monospace
+            && (ch.is_control()
+                || matches!(
+                    ch,
+                    '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~'
+                ))
+        {
+            // An empty group terminates the number without introducing a
+            // text space in KaTeX. Adjacent control-spaces need their own
+            // groups for MathJax to keep each literal blank.
+            write_decimal_char(buf, ch, "{}");
+            previous = Some(ch);
+            continue;
+        }
         match ch {
+            ' ' if monospace => buf.push_str(r"{\ }"),
             '\\' => buf.push_str(r"\textbackslash{}"),
             '~' => buf.push_str(r"\textasciitilde{}"),
             '^' => buf.push_str(r"\textasciicircum{}"),

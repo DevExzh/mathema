@@ -138,6 +138,15 @@ impl LatexCompactParser {
         let mut literal = raw;
         while !rest.is_empty() {
             let (after, token) = split_token(rest).ok_or_else(|| invalid(rest))?;
+            if token == r"\char"
+                && let Some((remaining, _)) = super::text_character_code(after)
+            {
+                // The entire escape is one literal character in the current
+                // face. Keep it with this text run, even if its code names a
+                // delimiter which otherwise switches between text and math.
+                rest = remaining;
+                continue;
+            }
             let close = match token {
                 "$" => Some("$"),
                 r"\(" => Some(r"\)"),

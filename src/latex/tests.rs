@@ -1927,6 +1927,68 @@ fn verbatim_macro_text_round_trips_through_public_api() {
 }
 
 #[test]
+fn monospace_text_with_delimiters_survives_nested_latex_arguments() {
+    use crate::{Format, convert, from_latex};
+    for source in [
+        r"\operatorname{\sqrt{\mathbf{x}+\mathit\verb{y}}\overline{z}}",
+        r"\frac{\verb|{a}\path|}{2}",
+        r"x^{\texttt{\{a\}\textbackslash{}path}}",
+        r"\operatorname{\bar{x}\texttt{\}a\{}}",
+    ] {
+        let latex = convert(source, Format::LaTeX, Format::LaTeX).unwrap();
+        assert!(latex.contains(r"\texttt{"), "{latex}");
+        assert!(!latex.contains(r"\verb"), "{latex}");
+        assert_eq!(
+            convert(&latex, Format::LaTeX, Format::LaTeX).unwrap(),
+            latex
+        );
+        assert_eq!(
+            from_latex(source).unwrap().to_mathml().unwrap(),
+            from_latex(&latex).unwrap().to_mathml().unwrap()
+        );
+    }
+}
+
+#[test]
+fn literal_typewriter_glyphs_keep_their_face_in_text_arguments() {
+    use crate::{Format, convert};
+    let source = r"\frac{\verb|x  {a}\b!|}{2}";
+    let latex = convert(source, Format::LaTeX, Format::LaTeX).unwrap();
+    assert!(
+        latex.contains(r"\texttt{x{\ }{\ }\char123{}a\char125{}\char92{}b!}"),
+        "{latex}"
+    );
+    let round = convert(&latex, Format::LaTeX, Format::MathML).unwrap();
+    assert_eq!(
+        round,
+        convert(source, Format::LaTeX, Format::MathML).unwrap()
+    );
+    assert_eq!(
+        crate::from_latex(source).unwrap().expr(),
+        crate::from_latex(&latex).unwrap().expr()
+    );
+    assert_eq!(
+        latex,
+        convert(&latex, Format::LaTeX, Format::LaTeX).unwrap()
+    );
+}
+
+#[test]
+fn text_character_numbers_consume_only_source_whitespace() {
+    for (source, expected) in [
+        ("\\texttt{\\char65 \t   B}", "AB"),
+        (r"\texttt{\char65 \ B}", "A B"),
+        (r#"\hbox{\char"41\char'102\char`C}"#, "ABC"),
+    ] {
+        let expr = crate::from_latex(source).unwrap().expr();
+        assert!(
+            matches!(&expr.nodes[..], [MathNode::Text(_,value)] if value == expected),
+            "{expr:?}"
+        );
+    }
+}
+
+#[test]
 fn round_trip_script_base_tokens() {
     let config = Config::default();
     let cases = [
