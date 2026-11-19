@@ -561,6 +561,179 @@ mod tests {
     }
 
     #[test]
+    fn spanned_cell_interchange_reports_only_unrepresentable_table_metadata() {
+        use crate::ast::{ColumnAlign, MathExpr, MathNode, SpanBoundary};
+
+        let expr = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![
+                ColumnAlign::Left,
+                ColumnAlign::Left,
+                ColumnAlign::Left,
+                ColumnAlign::Left,
+            ],
+            rows: vec![vec![
+                vec![MathNode::Identifier("a".into())],
+                vec![MathNode::SpannedCell {
+                    alignment: ColumnAlign::Right,
+                    span: 2,
+                    left_boundaries: vec![SpanBoundary::SuppressGlue, SpanBoundary::Rule],
+                    right_boundaries: vec![SpanBoundary::Rule, SpanBoundary::SuppressGlue],
+                    content: Box::new(MathNode::Identifier("LONG".into())),
+                }],
+                vec![MathNode::Identifier("z".into())],
+            ]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let compact = CompactExpr::from_math_expr(&expr).unwrap();
+        let config = Config::default();
+
+        let (omml, omml_diagnostics) =
+            OmmlWriter::write_compact_with_diagnostics(&compact, &config).unwrap();
+        assert!(
+            omml_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("cell-span construct"))
+        );
+        assert!(
+            omml_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("boundary material"))
+        );
+
+        let (mtef5, mtef5_diagnostics) = MtefWriter::write_bytes_with_diagnostics(
+            &compact,
+            &config,
+            &MtefWriteOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            mtef5_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("cell-span construct"))
+        );
+        assert!(
+            mtef5_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("boundary material"))
+        );
+
+        let (mtef3, mtef3_diagnostics) = MtefWriter::write_bytes_with_diagnostics(
+            &compact,
+            &config,
+            &MtefWriteOptions::new(crate::reader::mtef::MtefVersion::V3),
+        )
+        .unwrap();
+        assert!(
+            mtef3_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("cell-span construct"))
+        );
+        assert!(
+            mtef3_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("boundary material"))
+        );
+
+        let (unicode, unicode_diagnostics) =
+            UnicodeMathWriter::write_compact_with_diagnostics(&compact, &config).unwrap();
+        assert!(
+            unicode_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("cell-span construct"))
+        );
+        assert!(
+            unicode_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("boundary material"))
+        );
+
+        let omml_back = from_omml(&omml).unwrap().to_mathml().unwrap();
+        let mtef5_back = from_mtef_bytes(&mtef5).unwrap().to_mathml().unwrap();
+        let mtef3_back = from_mtef_bytes(&mtef3).unwrap().to_mathml().unwrap();
+        let unicode_back = from_unicode_math(&unicode).unwrap().to_mathml().unwrap();
+        for output in [omml_back, mtef5_back, mtef3_back, unicode_back] {
+            let long = output.contains(">LONG</")
+                || ["L", "O", "N", "G"]
+                    .into_iter()
+                    .all(|part| output.contains(&format!(">{part}</")));
+            assert!(
+                output.contains(">a</") && long && output.contains(">z</"),
+                "{output}"
+            );
+            assert!(!output.contains("columnspan"));
+        }
+
+        let standalone = MathExpr::inline(vec![MathNode::SpannedCell {
+            alignment: ColumnAlign::Right,
+            span: 2,
+            left_boundaries: vec![SpanBoundary::Rule],
+            right_boundaries: vec![SpanBoundary::SuppressGlue],
+            content: Box::new(MathNode::Identifier("x".into())),
+        }]);
+        let mixed = MathExpr::inline(vec![MathNode::Row(vec![
+            MathNode::SpannedCell {
+                alignment: ColumnAlign::Right,
+                span: 2,
+                left_boundaries: Vec::new(),
+                right_boundaries: Vec::new(),
+                content: Box::new(MathNode::Identifier("x".into())),
+            },
+            MathNode::Identifier("y".into()),
+        ])]);
+        for value in [standalone, mixed] {
+            let compact = CompactExpr::from_math_expr(&value).unwrap();
+            assert!(
+                OmmlWriter::write_compact_with_diagnostics(&compact, &config)
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+            assert!(
+                MtefWriter::write_compact_with_diagnostics(&compact, &config)
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+            assert!(
+                UnicodeMathWriter::write_compact_with_diagnostics(&compact, &config)
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
+        }
+
+        let control = MathExpr::inline(vec![MathNode::Array {
+            columns: vec![ColumnAlign::Left, ColumnAlign::Left],
+            rows: vec![vec![
+                vec![MathNode::Identifier("a".into())],
+                vec![MathNode::Identifier("b".into())],
+            ]],
+            arraystretch: None,
+            add_jot: false,
+        }]);
+        let compact = CompactExpr::from_math_expr(&control).unwrap();
+        assert!(
+            OmmlWriter::write_compact_with_diagnostics(&compact, &config)
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert!(
+            MtefWriter::write_compact_with_diagnostics(&compact, &config)
+                .unwrap()
+                .1
+                .is_empty()
+        );
+        assert!(
+            UnicodeMathWriter::write_compact_with_diagnostics(&compact, &config)
+                .unwrap()
+                .1
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn authored_cell_alignment_reports_loss_in_other_table_formats() {
         let source = r#"<math><mtable columnalign="left left"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd></mtr><mtr columnalign="right center"><mtd><mi>LONG</mi></mtd><mtd><mi>c</mi></mtd></mtr></mtable></math>"#;
         let result = from_mathml(source).unwrap();

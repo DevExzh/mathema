@@ -1316,13 +1316,40 @@ impl<'a> Emitter<'a> {
     }
 
     fn note_cell_alignment(&mut self, cell: NodeId, column: ColumnAlign) {
-        let CompactNode::AlignedCell { alignment, .. } = *self.arena.node(cell) else {
-            return;
-        };
-        if alignment != column {
-            self.loss(format!(
-                "OMML uses the {column:?} column alignment for a cell that requested {alignment:?} cell alignment"
-            ));
+        match *self.arena.node(cell) {
+            CompactNode::AlignedCell { alignment, .. } => {
+                if alignment != column {
+                    self.loss(format!(
+                        "OMML uses the {column:?} column alignment for a cell that requested {alignment:?} cell alignment"
+                    ));
+                }
+            },
+            CompactNode::SpannedCell {
+                alignment,
+                span,
+                left_boundaries,
+                right_boundaries,
+                ..
+            } => {
+                if span > 1 {
+                    self.loss(format!(
+                        "OMML has no cell-span construct; the authored span of {span} columns was expanded"
+                    ));
+                }
+                if !self.arena.str_val(left_boundaries).is_empty()
+                    || !self.arena.str_val(right_boundaries).is_empty()
+                {
+                    self.loss(
+                        "OMML has no per-cell boundary material; authored span glue or rules were dropped",
+                    );
+                }
+                if alignment != column {
+                    self.loss(format!(
+                        "OMML uses the {column:?} column alignment for a spanned cell that requested {alignment:?}"
+                    ));
+                }
+            },
+            _ => {},
         }
     }
 }
