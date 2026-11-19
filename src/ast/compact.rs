@@ -90,6 +90,9 @@ impl NodeSpan {
 pub struct StrId(u32);
 
 impl StrId {
+    /// Sentinel for an empty interned string without allocating a pool entry.
+    pub const EMPTY: Self = Self(u32::MAX);
+
     #[inline]
     pub(crate) fn new(raw: u32) -> Self {
         Self(raw)
@@ -303,12 +306,10 @@ pub enum CompactNode {
         alignment: ColumnAlign,
         /// Number of logical columns occupied by this cell.
         span: u16,
-        /// Ordered native preamble directives on the left edge, packed in two
-        /// bits per directive.
-        left_boundaries: u32,
-        /// Ordered native preamble directives on the right edge, packed in two
-        /// bits per directive.
-        right_boundaries: u32,
+        /// Interned ordered native preamble directives on the left edge.
+        left_boundaries: StrId,
+        /// Interned ordered native preamble directives on the right edge.
+        right_boundaries: StrId,
         /// Cell content node.
         content: NodeId,
     },
@@ -766,11 +767,13 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             content,
         } => {
             let content = push_math_node(arena, content);
+            let left_boundaries = arena.push_str(&super::span_boundary_spelling(left_boundaries));
+            let right_boundaries = arena.push_str(&super::span_boundary_spelling(right_boundaries));
             arena.push_node(CompactNode::SpannedCell {
                 alignment: *alignment,
                 span: (*span).max(1),
-                left_boundaries: super::pack_span_boundaries(left_boundaries),
-                right_boundaries: super::pack_span_boundaries(right_boundaries),
+                left_boundaries,
+                right_boundaries,
                 content,
             })
         },
@@ -1333,8 +1336,8 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         } => MathNode::SpannedCell {
             alignment,
             span,
-            left_boundaries: super::unpack_span_boundaries(left_boundaries),
-            right_boundaries: super::unpack_span_boundaries(right_boundaries),
+            left_boundaries: super::parse_span_boundary_spelling(arena.str_val(left_boundaries)),
+            right_boundaries: super::parse_span_boundary_spelling(arena.str_val(right_boundaries)),
             content: Box::new(reconstruct_node(arena, content)),
         },
 

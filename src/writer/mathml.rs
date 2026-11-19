@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::io::Cursor;
 
 use crate::ast::arena::AstArena;
-use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, Result};
 use crate::unicode::operators::{OperatorForm, lookup_operator_any, symbol_kind_to_form};
@@ -24,8 +24,8 @@ fn boundary_attr(boundaries: &[SpanBoundary]) -> Option<String> {
     })
 }
 
-fn packed_boundary_attr(boundaries: u32) -> Option<String> {
-    boundary_attr(&unpack_span_boundaries(boundaries))
+fn packed_boundary_attr(boundaries: &str) -> Option<String> {
+    boundary_attr(&parse_span_boundary_spelling(boundaries))
 }
 
 /// Classifies a compact node that the MathML writer cannot fully represent.
@@ -1790,7 +1790,7 @@ fn write_node_fast_in(
                             right_boundaries,
                             ..
                         } => (span.max(1) as usize, left_boundaries, right_boundaries),
-                        _ => (1, 0, 0),
+                        _ => (1, StrId::EMPTY, StrId::EMPTY),
                     };
                     buf.push_str("<mtd");
                     if let Some(a) = cell_override.or_else(|| {
@@ -1815,26 +1815,30 @@ fn write_node_fast_in(
                         buf.push_str(&cell_span.to_string());
                         buf.push('"');
                     }
-                    if let Some(value) = packed_boundary_attr(left_boundaries) {
+                    if let Some(value) = packed_boundary_attr(arena.str_val(left_boundaries)) {
                         buf.push_str(" data-mathema-left-boundaries=\"");
                         buf.push_str(&value);
                         buf.push('"');
                     }
-                    if let Some(value) = packed_boundary_attr(right_boundaries) {
+                    if let Some(value) = packed_boundary_attr(arena.str_val(right_boundaries)) {
                         buf.push_str(" data-mathema-right-boundaries=\"");
                         buf.push_str(&value);
                         buf.push('"');
                     }
-                    if span_boundary_has(left_boundaries, SpanBoundary::Rule) {
+                    if span_boundary_has(arena.str_val(left_boundaries), SpanBoundary::Rule) {
                         buf.push_str(" data-mathema-left-rule=\"true\"");
                     }
-                    if span_boundary_has(right_boundaries, SpanBoundary::Rule) {
+                    if span_boundary_has(arena.str_val(right_boundaries), SpanBoundary::Rule) {
                         buf.push_str(" data-mathema-right-rule=\"true\"");
                     }
-                    if span_boundary_has(left_boundaries, SpanBoundary::SuppressGlue) {
+                    if span_boundary_has(arena.str_val(left_boundaries), SpanBoundary::SuppressGlue)
+                    {
                         buf.push_str(" data-mathema-left-padding=\"true\"");
                     }
-                    if span_boundary_has(right_boundaries, SpanBoundary::SuppressGlue) {
+                    if span_boundary_has(
+                        arena.str_val(right_boundaries),
+                        SpanBoundary::SuppressGlue,
+                    ) {
                         buf.push_str(" data-mathema-right-padding=\"true\"");
                     }
                     buf.push('>');

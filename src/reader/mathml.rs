@@ -1540,11 +1540,17 @@ impl<'a> MathmlCompactParser<'a> {
                     .push_node(CompactNode::AlignedCell { alignment, content })
             } else {
                 let content = self.flatten_ids(&children);
+                let left_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&left_boundaries));
+                let right_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&right_boundaries));
                 self.arena.push_node(CompactNode::SpannedCell {
                     alignment,
                     span: cell_span as u16,
-                    left_boundaries: crate::ast::pack_span_boundaries(&left_boundaries),
-                    right_boundaries: crate::ast::pack_span_boundaries(&right_boundaries),
+                    left_boundaries,
+                    right_boundaries,
                     content,
                 })
             };
@@ -2249,9 +2255,6 @@ fn parse_boundary_attr(
                 _ => continue,
             };
             boundaries.push(boundary);
-            if boundaries.len() > MAX_SPAN_BOUNDARIES {
-                return Err(table_length_error());
-            }
         }
         return Ok(boundaries);
     }

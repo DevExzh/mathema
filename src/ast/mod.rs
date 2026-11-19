@@ -81,55 +81,38 @@ pub enum SpanBoundary {
     Rule,
 }
 
-/// Maximum number of ordered directives retained on one side of a spanning
-/// cell in the compact representation. Readers reject longer authored lists.
-pub const MAX_SPAN_BOUNDARIES: usize = 15;
-
 #[inline]
-pub(crate) fn pack_span_boundaries(boundaries: &[SpanBoundary]) -> u32 {
+pub(crate) fn span_boundary_spelling(boundaries: &[SpanBoundary]) -> String {
     boundaries
         .iter()
-        .take(MAX_SPAN_BOUNDARIES)
-        .enumerate()
-        .fold(0, |bits, (index, boundary)| {
-            let value = match boundary {
-                SpanBoundary::SuppressGlue => 1,
-                SpanBoundary::Rule => 2,
-            };
-            bits | (value << (index * 2))
+        .map(|boundary| match boundary {
+            SpanBoundary::SuppressGlue => "@{}",
+            SpanBoundary::Rule => "|",
         })
-}
-
-#[inline]
-pub(crate) fn span_boundary_at(bits: u32, index: usize) -> Option<SpanBoundary> {
-    if index >= MAX_SPAN_BOUNDARIES {
-        return None;
-    }
-    match (bits >> (index * 2)) & 0x3 {
-        1 => Some(SpanBoundary::SuppressGlue),
-        2 => Some(SpanBoundary::Rule),
-        _ => None,
-    }
-}
-
-#[inline]
-pub(crate) fn unpack_span_boundaries(bits: u32) -> Vec<SpanBoundary> {
-    (0..MAX_SPAN_BOUNDARIES)
-        .map_while(|index| span_boundary_at(bits, index))
         .collect()
 }
 
 #[inline]
-pub(crate) fn span_boundary_has(bits: u32, boundary: SpanBoundary) -> bool {
-    (0..MAX_SPAN_BOUNDARIES).any(|index| span_boundary_at(bits, index) == Some(boundary))
+pub(crate) fn parse_span_boundary_spelling(spelling: &str) -> Vec<SpanBoundary> {
+    let mut boundaries = Vec::new();
+    let mut rest = spelling;
+    while !rest.is_empty() {
+        if let Some(next) = rest.strip_prefix("@{}") {
+            boundaries.push(SpanBoundary::SuppressGlue);
+            rest = next;
+        } else if let Some(next) = rest.strip_prefix('|') {
+            boundaries.push(SpanBoundary::Rule);
+            rest = next;
+        } else {
+            break;
+        }
+    }
+    boundaries
 }
 
 #[inline]
-#[allow(dead_code)]
-pub(crate) fn span_boundary_count(bits: u32, boundary: SpanBoundary) -> usize {
-    (0..MAX_SPAN_BOUNDARIES)
-        .filter(|&index| span_boundary_at(bits, index) == Some(boundary))
-        .count()
+pub(crate) fn span_boundary_has(spelling: &str, boundary: SpanBoundary) -> bool {
+    parse_span_boundary_spelling(spelling).contains(&boundary)
 }
 
 /// A span belongs to a whole cell. Wrappers among sibling nodes contribute

@@ -5058,14 +5058,6 @@ impl LatexCompactParser {
             }
         }
         right_boundaries.reverse();
-        if left_boundaries.len() > crate::ast::MAX_SPAN_BOUNDARIES
-            || right_boundaries.len() > crate::ast::MAX_SPAN_BOUNDARIES
-        {
-            return Err(nom::Err::Failure(nom::error::Error::new(
-                input,
-                nom::error::ErrorKind::TooLarge,
-            )));
-        }
         if spec.contains('|') || spec.contains("@{}") {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
@@ -7993,19 +7985,24 @@ impl LatexCompactParser {
                 self.parse_multicolumn(after)?;
             let (rest, mut trailing) = self.parse_table_cell(after)?;
             if trailing.is_empty() {
-                trailing.push(self.arena.push_node(
-                    if span == 1 && left_boundaries.is_empty() && right_boundaries.is_empty() {
-                        CompactNode::AlignedCell { alignment, content }
-                    } else {
-                        CompactNode::SpannedCell {
-                            alignment,
-                            span,
-                            left_boundaries: crate::ast::pack_span_boundaries(&left_boundaries),
-                            right_boundaries: crate::ast::pack_span_boundaries(&right_boundaries),
-                            content,
-                        }
-                    },
-                ));
+                let has_boundaries = !left_boundaries.is_empty() || !right_boundaries.is_empty();
+                let left_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&left_boundaries));
+                let right_boundaries = self
+                    .arena
+                    .push_str(&crate::ast::span_boundary_spelling(&right_boundaries));
+                trailing.push(self.arena.push_node(if span == 1 && !has_boundaries {
+                    CompactNode::AlignedCell { alignment, content }
+                } else {
+                    CompactNode::SpannedCell {
+                        alignment,
+                        span,
+                        left_boundaries,
+                        right_boundaries,
+                        content,
+                    }
+                }));
             } else {
                 trailing.insert(0, content);
             }
