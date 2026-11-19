@@ -23,8 +23,8 @@ use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::normalize::{can_carry_script, can_take_prescripts, is_blank, takes_limits};
 use crate::ast::style::MathStyle;
 use crate::ast::{
-    AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, StrokeKind,
-    TextStyle,
+    AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, SpanBoundary,
+    StrokeKind, TextStyle,
 };
 use crate::error::{Config, Diagnostic, DiagnosticKind, Error, LimitKind, Result, Strictness};
 use crate::reader::mtef::chars::negated;
@@ -1984,7 +1984,7 @@ impl<'a> Encoder<'a> {
         self.out.push(1);
         let rows: SmallVec<[NodeId; 8]> = self.arena.children(cells).into();
         for row in rows {
-            self.note_cell_alignment(row, exported);
+            self.note_cell_alignment(row, exported, false);
             self.with_math_style(MathStyle::Text, |this| this.slot(size, Some(row)))?;
         }
         self.end();
@@ -2033,11 +2033,24 @@ impl<'a> Encoder<'a> {
         self.out.push(rows_u8);
         self.out.push(cols_u8);
         self.partition_lines(row_seps, rows + 1);
-        self.partition_lines(col_seps, cols + 1);
+        if let Some(spelling) = self.arena.matrix_partition_rules(id).map(str::to_owned) {
+            let column_rules: Vec<bool> = spelling.bytes().map(|value| value == b'1').collect();
+            self.partition_lines_vec(&column_rules);
+        } else if cells.iter().any(|&cell| {
+            matches!(
+                self.arena.node(cell),
+                CompactNode::AlignedCell { .. } | CompactNode::SpannedCell { .. }
+            )
+        }) {
+            let column_rules = self.column_partition_rules(col_seps, &cells, cols, rows);
+            self.partition_lines_vec(&column_rules);
+        } else {
+            self.partition_lines(col_seps, cols + 1);
+        }
         for index in 0..rows * cols {
             match cells.get(index) {
                 Some(&cell) => {
-                    self.note_cell_alignment(cell, exported);
+                    self.note_cell_alignment(cell, exported, true);
                     self.with_math_style(MathStyle::Text, |this| this.cell(cell, size))?;
                 },
                 None => {
@@ -2051,7 +2064,7 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 
-    fn note_cell_alignment(&mut self, cell: NodeId, exported: ColumnAlign) {
+    fn note_cell_alignment(&mut self, cell: NodeId, exported: ColumnAlign, matrix_rules: bool) {
         match *self.arena.node(cell) {
             CompactNode::AlignedCell { alignment, .. } => {
                 if alignment != exported {
@@ -2072,8 +2085,9 @@ impl<'a> Encoder<'a> {
                         "MTEF has no cell-span construct; the authored span of {span} columns was expanded"
                     ));
                 }
-                if !self.arena.str_val(left_boundaries).is_empty()
-                    || !self.arena.str_val(right_boundaries).is_empty()
+                if !matrix_rules
+                    && (!self.arena.str_val(left_boundaries).is_empty()
+                        || !self.arena.str_val(right_boundaries).is_empty())
                 {
                     self.lose(
                         "MTEF has no per-cell boundary material; authored span glue or rules were dropped",
@@ -2087,6 +2101,95 @@ impl<'a> Encoder<'a> {
             },
             _ => {},
         }
+    }
+
+    fn column_partition_rules(
+        &mut self,
+        col_seps: u32,
+        cells: &[NodeId],
+        cols: usize,
+        rows: usize,
+    ) -> Vec<bool> {
+        let base: Vec<bool> = (0..=cols)
+            .map(|boundary| boundary < u32::BITS as usize && col_seps & (1 << boundary) != 0)
+            .collect();
+        if rows == 0 || cols == 0 {
+            return base;
+        }
+        let mut row_rules = Vec::with_capacity(rows);
+        for row_index in 0..rows {
+            let mut rules = base.clone();
+            let mut column = 0usize;
+            while column < cols {
+                let Some(&cell) = cells.get(row_index * cols + column) else {
+                    break;
+                };
+                let (span, left_rules, right_rules, overridden) = match *self.arena.node(cell) {
+                    CompactNode::AlignedCell { .. } => (1, 0, 0, true),
+                    CompactNode::SpannedCell {
+                        span,
+                        left_boundaries,
+                        right_boundaries,
+                        ..
+                    } => {
+                        let (left, left_suppressed) = self.boundary_rules(left_boundaries);
+                        let (right, right_suppressed) = self.boundary_rules(right_boundaries);
+                        if left_suppressed || right_suppressed {
+                            self.lose(
+                                "MTEF has no per-cell glue suppression; authored span padding was dropped",
+                            );
+                        }
+                        (usize::from(span.max(1)), left, right, true)
+                    },
+                    _ => (1, 0, 0, false),
+                };
+                let width = span.min(cols - column).max(1);
+                if overridden {
+                    let end = column + width;
+                    let first = if column == 0 { 0 } else { column + 1 };
+                    for rule in rules.iter_mut().take(end + 1).skip(first) {
+                        *rule = false;
+                    }
+                    if left_rules > 0 {
+                        rules[column] = true;
+                    }
+                    if right_rules > 0 {
+                        rules[end] = true;
+                    }
+                }
+                column += width;
+            }
+            row_rules.push(rules);
+        }
+        let mut effective = base;
+        for boundary in 0..=cols {
+            let first = row_rules[0][boundary];
+            if row_rules.iter().all(|row| row[boundary] == first) {
+                effective[boundary] = first;
+            } else {
+                self.lose(
+                    "MTEF cannot represent row-varying cell rules; only the common matrix rule pattern was written",
+                );
+            }
+        }
+        effective
+    }
+
+    fn boundary_rules(&mut self, id: StrId) -> (usize, bool) {
+        let mut rules = 0;
+        let mut suppressed = false;
+        for boundary in crate::ast::span_boundaries(self.arena.str_val(id)) {
+            match boundary {
+                SpanBoundary::Rule => rules += 1,
+                SpanBoundary::SuppressGlue => suppressed = true,
+            }
+        }
+        if rules > 1 {
+            self.lose(
+                "MTEF partition fields have one line per boundary; repeated cell rules were collapsed",
+            );
+        }
+        (rules, suppressed)
     }
 
     fn cell(&mut self, cell: NodeId, size: Size) -> Result<()> {
@@ -2120,6 +2223,19 @@ impl<'a> Encoder<'a> {
                 }
             }
             self.out.push(byte);
+        }
+    }
+
+    fn partition_lines_vec(&mut self, rules: &[bool]) {
+        let mut byte = 0u8;
+        for (index, &rule) in rules.iter().enumerate() {
+            if rule {
+                byte |= 1 << (2 * (index % 4));
+            }
+            if index % 4 == 3 || index + 1 == rules.len() {
+                self.out.push(byte);
+                byte = 0;
+            }
         }
     }
 

@@ -1019,8 +1019,8 @@ impl<'a> Decoder<'a> {
         let cols = usize::from(self.u8()?);
         // Partition line styles: two bits per line, one more line than rows
         // (columns), low bits first, padded to whole bytes.
-        let row_seps = self.partition_lines(rows + 1)?;
-        let col_seps = self.partition_lines(cols + 1)?;
+        let (row_seps, _) = self.partition_lines(rows + 1, false)?;
+        let (col_seps, column_rules) = self.partition_lines(cols + 1, true)?;
         let list = self.parse_list()?;
         // Cells are only allocated for LINE records actually read, so the
         // declared size cannot make the reader allocate more than the input.
@@ -1060,7 +1060,8 @@ impl<'a> Decoder<'a> {
         }
         let col_aligns = self.children(&aligns)?;
         let cells = self.children(&cells)?;
-        self.node(CompactNode::Array {
+        let array_style = col_seps != 0 || row_seps != 0 || column_rules.iter().any(|&rule| rule);
+        let array = self.node(CompactNode::Array {
             col_aligns,
             cells,
             num_cols: u16::try_from(num_cols).unwrap_or(u16::MAX),
@@ -1068,26 +1069,32 @@ impl<'a> Decoder<'a> {
             add_jot: false,
             // MATRIX partition lines record the rules. Import a ruled matrix
             // with standard array padding on its outer edges.
-            array_style: col_seps != 0 || row_seps != 0,
+            array_style,
             col_seps,
             row_seps,
-        })
+        })?;
+        if column_rules.iter().skip(32).any(|&rule| rule) {
+            self.arena.mark_matrix_partition_rules(array, &column_rules);
+        }
+        Ok(array)
     }
 
     /// Read `lines` two-bit partition styles; bit i of the result is set when
     /// line i is drawn (dashed and dotted lines become solid rules).
     /// The AST records rules before the first 32 rows or columns only; a
     /// drawn line beyond them is reported and dropped.
-    fn partition_lines(&mut self, lines: usize) -> Result<u32> {
+    fn partition_lines(&mut self, lines: usize, retain_extended: bool) -> Result<(u32, Vec<bool>)> {
         let start = self.pos;
         let bytes = lines.div_ceil(4);
         let mut mask = 0u32;
         let mut dropped = 0usize;
+        let mut rules = vec![false; lines];
         for byte_index in 0..bytes {
             let b = self.u8()?;
             for k in 0..4 {
                 let line = byte_index * 4 + k;
                 if line < lines && (b >> (2 * k)) & 0x3 != 0 {
+                    rules[line] = true;
                     if line < 32 {
                         mask |= 1 << line;
                     } else {
@@ -1096,7 +1103,7 @@ impl<'a> Decoder<'a> {
                 }
             }
         }
-        if dropped > 0 {
+        if dropped > 0 && !retain_extended {
             self.warn(
                 start,
                 format!(
@@ -1104,7 +1111,7 @@ impl<'a> Decoder<'a> {
                 ),
             );
         }
-        Ok(mask)
+        Ok((mask, rules))
     }
 
     // ── Non-structural records ─────────────────────────────────────────
