@@ -99,9 +99,12 @@ fn katex_commands_round_trip_through_latex() {
         let latex = first.to_latex().unwrap();
         let second = from_latex(&latex)
             .unwrap_or_else(|e| panic!("{input:?} wrote unparsable {latex:?}: {e}"));
+        // Compare the trees, not MathML: `<mo>` hides the atom class, which
+        // is exactly what a lossy spelling (`\vartriangle` -> `\triangle`)
+        // changes.
         assert_eq!(
-            first.to_mathml().unwrap(),
-            second.to_mathml().unwrap(),
+            first.expr(),
+            second.expr(),
             "{input:?} changed meaning via {latex:?}"
         );
         assert_eq!(latex, second.to_latex().unwrap(), "{input:?} is not stable");

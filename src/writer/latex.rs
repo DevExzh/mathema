@@ -2115,6 +2115,8 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
             '%' => buf.push_str("\\%"),
             // `\&` is an ordinary atom; KaTeX's `\And` is its binary form.
             '&' if kind == SymbolKind::BinaryOp => buf.push_str("\\And"),
+            // A full stop is ordinary in math; `\ldotp` is its punctuation form.
+            '.' if kind == SymbolKind::Punctuation => buf.push_str("\\ldotp"),
             '&' => buf.push_str("\\&"),
             '\\' => buf.push_str("\\textbackslash "),
             _ => buf.push(ch),
@@ -2126,7 +2128,9 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     let command = match (kind, ch) {
         (SymbolKind::Ordinary, '†') => Some("dag"),
         (SymbolKind::Ordinary, '‡') => Some("ddag"),
-        _ => canonical_command,
+        // Many core commands (`\boxdot`) have no canonical reverse entry;
+        // any command with the same glyph and class reparses identically.
+        _ => canonical_command.or_else(|| crate::unicode::symbols::command_for_class(ch, kind)),
     };
     if let Some(cmd) = command {
         // For example, U+2223 has the relation command `\mid`. Preserve
@@ -2137,7 +2141,30 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
                 !matches!(mapped, SymbolKind::Ordinary | SymbolKind::Alphabetic)
             })
         {
+            if let Some(alias) = crate::unicode::symbols::command_for_class(ch, kind) {
+                buf.push('\\');
+                buf.push_str(alias);
+                return;
+            }
             buf.push_str("\\mathord{\\");
+            buf.push_str(cmd);
+            buf.push('}');
+            return;
+        }
+        // Likewise for the other atom classes: `\vartriangle` is a relation
+        // spelled with the glyph of the ordinary `\triangle`, and `\cdotp` is
+        // punctuation spelled with the binary `\cdot`.
+        let command_kind = crate::unicode::symbols::lookup_command(cmd).map(|(_, kind)| kind);
+        if let Some(wrapper) = explicit_class_wrapper(kind)
+            && command_kind.is_some_and(|command_kind| command_kind != kind)
+        {
+            if let Some(alias) = crate::unicode::symbols::command_for_class(ch, kind) {
+                buf.push('\\');
+                buf.push_str(alias);
+                return;
+            }
+            buf.push_str(wrapper);
+            buf.push('\\');
             buf.push_str(cmd);
             buf.push('}');
             return;
@@ -2170,31 +2197,51 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     }
 }
 
-/// Write a multi-character symbol as one atom of class `kind` without losing
-/// any of its characters.
-fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
-    let wrapper = match kind {
+/// The class command that forces an atom of `kind`, for the classes that a
+/// bare glyph or command might not reparse as.
+fn explicit_class_wrapper(kind: SymbolKind) -> Option<&'static str> {
+    match kind {
         SymbolKind::Relation => Some("\\mathrel{"),
         SymbolKind::BinaryOp => Some("\\mathbin{"),
         SymbolKind::Open => Some("\\mathopen{"),
         SymbolKind::Close => Some("\\mathclose{"),
         SymbolKind::Punctuation => Some("\\mathpunct{"),
-        SymbolKind::LargeOp => Some("\\mathop{"),
-        // Non-ASCII glyphs reparse as one ordinary run on their own; ASCII
-        // ones (`:`, `=`, `+`) carry their own classes and need the wrapper.
-        SymbolKind::Ordinary | SymbolKind::Fence | SymbolKind::Alphabetic => {
-            s.bytes().any(|b| b.is_ascii()).then_some("\\mathord{")
+        SymbolKind::LargeOp | SymbolKind::Ordinary | SymbolKind::Fence | SymbolKind::Alphabetic => {
+            None
         },
+    }
+}
+
+/// Write a multi-character symbol as one atom of class `kind` without losing
+/// any of its characters.
+fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
+    let wrapper = match kind {
+        SymbolKind::LargeOp => Some("\\mathop{"),
+        SymbolKind::Ordinary | SymbolKind::Fence | SymbolKind::Alphabetic => {
+            // A run of plain non-ASCII glyphs reparses as ordinary on its
+            // own; anything carrying its own class (`:`, `≈`) or a combining
+            // mark that could attach elsewhere needs the explicit atom.
+            s.chars()
+                .any(|ch| {
+                    ch.is_ascii()
+                        || is_combining_mark(ch)
+                        || mapped_symbol_kind(ch).is_some_and(|kind| {
+                            !matches!(kind, SymbolKind::Ordinary | SymbolKind::Alphabetic)
+                        })
+                })
+                .then_some("\\mathord{")
+        },
+        _ => explicit_class_wrapper(kind),
     };
     if let Some(wrapper) = wrapper {
         buf.push_str(wrapper);
     }
     for ch in s.chars() {
-        if ch.is_control()
-            || matches!(
-                ch,
-                '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~' | '\''
-            )
+        // ASCII source whitespace is discarded by the reader, so a plain space
+        // is written as a character token; Unicode spaces stay literal.
+        if ch.is_ascii_whitespace()
+            || math_literal_needs_char(ch)
+            || matches!(ch, '%' | '#' | '$' | '&' | '"')
         {
             write_math_char(buf, ch);
         } else {
@@ -2204,6 +2251,19 @@ fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
     if wrapper.is_some() {
         buf.push('}');
     }
+}
+
+/// Combining diacritical marks, which would attach to whatever precedes them
+/// if written outside an explicit atom.
+fn is_combining_mark(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
 }
 
 /// Whether a literal ASCII glyph would be reinterpreted by the math parser or
@@ -4532,6 +4592,52 @@ mod tests {
             let canonical = reparsed.to_latex().unwrap();
             let again = crate::from_latex(&canonical).unwrap().to_latex().unwrap();
             assert_eq!(again, canonical, "{mo} is not stable");
+        }
+    }
+
+    #[test]
+    fn compound_symbols_escape_and_keep_their_class() {
+        // Direct trees: the readers never build these, but writers must not
+        // emit unparsable or lossy LaTeX for them.
+        for (kind, text) in [
+            (SymbolKind::Ordinary, "\"=\""),
+            (SymbolKind::Relation, "a b"),
+            (SymbolKind::Ordinary, "\u{2236}\u{2248}"),
+            (SymbolKind::Ordinary, "\u{2248}\u{0338}"),
+        ] {
+            let expr = CompactExpr::from_math_expr(&MathExpr::inline(vec![MathNode::Symbol(
+                kind,
+                text.into(),
+            )]))
+            .unwrap();
+            let latex = LatexWriter::write_compact(&expr, &Config::default()).unwrap();
+            let reparsed = crate::from_latex(&latex)
+                .unwrap_or_else(|e| panic!("{text:?} wrote unparsable {latex:?}: {e}"));
+            let glyphs: String = reparsed
+                .to_mathml()
+                .unwrap()
+                .split('<')
+                .filter_map(|tag| tag.split_once('>').map(|(_, text)| text))
+                .collect::<String>()
+                .replace("&quot;", "\"");
+            assert!(glyphs.contains(text), "{text:?} via {latex:?}: {glyphs}");
+            assert!(
+                latex.starts_with('\\'),
+                "{text:?} must stay one atom: {latex:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn writer_never_emits_commands_katex_lacks() {
+        // bboldx's `\bbone` and textcomp's `\textmu` are not KaTeX math commands.
+        for glyph in ["\u{1D7D9}", "\u{00B5}"] {
+            let xml = format!("<math><mi>{glyph}</mi><mo>{glyph}</mo></math>");
+            let latex = crate::from_mathml(&xml).unwrap().to_latex().unwrap();
+            assert!(
+                !latex.contains(r"\bb") && !latex.contains(r"\text"),
+                "{latex}"
+            );
         }
     }
 }

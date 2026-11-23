@@ -162,15 +162,17 @@ fn package_symbol_map() -> &'static HashMap<&'static str, (&'static str, SymbolC
 /// The writer consults it only after the core tables miss, so compounds such
 /// as `∶≈` (`\colonapprox`) and package-only glyphs such as `Ⅎ` (`\Finv`) are
 /// written with the command KaTeX understands rather than as raw Unicode.
+/// Tables whose commands KaTeX lacks are excluded below.
 fn package_symbol_reverse_map() -> &'static HashMap<(&'static str, SymbolClass), &'static str> {
     static MAP: OnceLock<HashMap<(&'static str, SymbolClass), &'static str>> = OnceLock::new();
     MAP.get_or_init(|| {
         let mut m = HashMap::new();
-        // textcomp's `\text…` commands are text-mode only in LaTeX and KaTeX,
-        // so the writer must not emit them into math.
-        let math_tables = PACKAGE_SYMBOLS
-            .iter()
-            .filter(|table| !core::ptr::eq(**table, textcomp::SYMBOLS));
+        // Only emit commands KaTeX defines in math mode: textcomp's `\text…`
+        // names are text-mode only, and bboldx's `\bb…` names are unknown to
+        // KaTeX, so those glyphs stay raw Unicode.
+        let math_tables = PACKAGE_SYMBOLS.iter().filter(|table| {
+            !core::ptr::eq(**table, textcomp::SYMBOLS) && !core::ptr::eq(**table, bboldx::SYMBOLS)
+        });
         for table in math_tables {
             for &(cmd, unicode, class) in *table {
                 let reachable = crate::unicode::symbols::lookup_command(cmd).is_none()

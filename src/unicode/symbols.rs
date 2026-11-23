@@ -758,6 +758,85 @@ static UNICODE_TO_LATEX: phf::Map<char, (&'static str, SymbolKind)> = phf_map! {
     '\u{2A7E}' => ("geqslant", Relation),
     '\u{2AAF}' => ("preceq", Relation),
     '\u{2AB0}' => ("succeq", Relation),
+    // Reverse spellings for glyphs reachable only through KaTeX aliases or
+    // amssymb names, so the writer emits a command KaTeX accepts rather than
+    // raw Unicode and keeps the atom class.
+    '\u{0391}' => ("Alpha", Alphabetic),
+    '\u{0392}' => ("Beta", Alphabetic),
+    '\u{0395}' => ("Epsilon", Alphabetic),
+    '\u{0396}' => ("Zeta", Alphabetic),
+    '\u{0397}' => ("Eta", Alphabetic),
+    '\u{0399}' => ("Iota", Alphabetic),
+    '\u{039A}' => ("Kappa", Alphabetic),
+    '\u{039C}' => ("Mu", Alphabetic),
+    '\u{039D}' => ("Nu", Alphabetic),
+    '\u{039F}' => ("Omicron", Alphabetic),
+    '\u{03A1}' => ("Rho", Alphabetic),
+    '\u{03A4}' => ("Tau", Alphabetic),
+    '\u{03A7}' => ("Chi", Alphabetic),
+    '\u{03BF}' => ("omicron", Alphabetic),
+    '\u{1D6E4}' => ("varGamma", Alphabetic),
+    '\u{1D6E5}' => ("varDelta", Alphabetic),
+    '\u{1D6E9}' => ("varTheta", Alphabetic),
+    '\u{1D6EC}' => ("varLambda", Alphabetic),
+    '\u{1D6EF}' => ("varXi", Alphabetic),
+    '\u{1D6F1}' => ("varPi", Alphabetic),
+    '\u{1D6F4}' => ("varSigma", Alphabetic),
+    '\u{1D6F6}' => ("varUpsilon", Alphabetic),
+    '\u{1D6F7}' => ("varPhi", Alphabetic),
+    '\u{1D6F9}' => ("varPsi", Alphabetic),
+    '\u{1D6FA}' => ("varOmega", Alphabetic),
+    '\u{220C}' => ("notni", Relation),
+    '\u{25CA}' => ("Diamond", Ordinary),
+    '\u{00A9}' => ("copyright", Ordinary),
+    '\u{00A3}' => ("pounds", Ordinary),
+    '\u{22F0}' => ("iddots", Ordinary),
+    '\u{25B2}' => ("blacktriangle", Ordinary),
+    '\u{25BC}' => ("blacktriangledown", Ordinary),
+    '\u{25EF}' => ("bigcirc", BinaryOp),
+    '\u{22D2}' => ("doublecap", BinaryOp),
+    '\u{22D3}' => ("doublecup", BinaryOp),
+    '\u{22B2}' => ("lhd", BinaryOp),
+    '\u{22B3}' => ("rhd", BinaryOp),
+    '\u{22B4}' => ("unlhd", BinaryOp),
+    '\u{22B5}' => ("unrhd", BinaryOp),
+    '\u{21B0}' => ("Lsh", Relation),
+    '\u{21B1}' => ("Rsh", Relation),
+    '\u{21DD}' => ("leadsto", Relation),
+    '\u{21BE}' => ("upharpoonright", Relation),
+    '\u{21C3}' => ("downharpoonleft", Relation),
+    '\u{21C2}' => ("downharpoonright", Relation),
+    '\u{2322}' => ("frown", Relation),
+    '\u{2226}' => ("nparallel", Relation),
+    '\u{22D9}' => ("ggg", Relation),
+    '\u{22D8}' => ("lll", Relation),
+    '\u{2268}' => ("lneqq", Relation),
+    '\u{2269}' => ("gneqq", Relation),
+    '\u{2A86}' => ("gtrapprox", Relation),
+    '\u{2A8B}' => ("lesseqqgtr", Relation),
+    '\u{2A8C}' => ("gtreqqless", Relation),
+    '\u{2A96}' => ("eqslantgtr", Relation),
+    '\u{22E0}' => ("npreceq", Relation),
+    '\u{22E1}' => ("nsucceq", Relation),
+    '\u{2AB5}' => ("precneqq", Relation),
+    '\u{2AB6}' => ("succneqq", Relation),
+    '\u{2AB7}' => ("precapprox", Relation),
+    '\u{2AB8}' => ("succapprox", Relation),
+    '\u{228A}' => ("subsetneq", Relation),
+    '\u{228B}' => ("supsetneq", Relation),
+    '\u{22AE}' => ("nVdash", Relation),
+    '\u{22AF}' => ("nVDash", Relation),
+    '\u{22B6}' => ("origof", Relation),
+    '\u{22B7}' => ("imageof", Relation),
+    '\u{25B6}' => ("blacktriangleright", Relation),
+    '\u{27EE}' => ("lgroup", Open),
+    '\u{27EF}' => ("rgroup", Close),
+    '\u{23B0}' => ("lmoustache", Open),
+    '\u{23B1}' => ("rmoustache", Close),
+    '\u{27E6}' => ("llbracket", Open),
+    '\u{27E7}' => ("rrbracket", Close),
+    '\u{2983}' => ("lBrace", Open),
+    '\u{2984}' => ("rBrace", Close),
 };
 
 // Named functions have word-valued glyphs and are separate from n-ary symbols.
@@ -859,6 +938,32 @@ pub fn unicode_to_latex(ch: char) -> Option<&'static str> {
 #[inline]
 pub(crate) fn mapped_symbol_kind(ch: char) -> Option<SymbolKind> {
     UNICODE_TO_LATEX.get(&ch).map(|&(_, kind)| kind)
+}
+
+/// Find a core command spelling `ch` with exactly the atom class `kind`.
+///
+/// Several commands share a glyph but differ in class (`\triangle` is
+/// ordinary, `\vartriangle` a relation, `\bigtriangleup` a binary operator).
+/// The writer uses this when the canonical spelling would change the class.
+/// Ties resolve to the lexicographically smallest name, so output is stable.
+pub(crate) fn command_for_class(ch: char, kind: SymbolKind) -> Option<&'static str> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<(char, SymbolKind), &'static str>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        for (&name, &(glyph, class)) in &LATEX_TO_UNICODE {
+            map.entry((glyph, class))
+                .and_modify(|best: &mut &'static str| {
+                    if name < *best {
+                        *best = name;
+                    }
+                })
+                .or_insert(name);
+        }
+        map
+    })
+    .get(&(ch, kind))
+    .copied()
 }
 
 /// Look up the math symbol kind for a Unicode character.
