@@ -84,12 +84,18 @@ fn write_sequence(
     }
     // Output offsets just after each written row break, guarded at the end.
     let mut row_breaks: smallvec::SmallVec<[usize; 2]> = smallvec::SmallVec::new();
+    // The atom the next sibling is spaced against, when it is not simply the
+    // preceding child (a bare large operator written together with its body).
+    let mut spacing_prev: Option<NodeId> = None;
     let mut i = 0;
     while i < children.len() {
         let id = children[i];
         if i > 0 && matches!(*arena.node(children[i - 1]), CompactNode::Newline) {
             row_breaks.push(buf.len());
         }
+        let prev = spacing_prev
+            .take()
+            .or_else(|| i.checked_sub(1).map(|j| children[j]));
 
         if let Some(cmd) = scalar_negation_command(arena, &children[i..]) {
             buf.push_str("\\centernot\\");
@@ -137,7 +143,7 @@ fn write_sequence(
         {
             let output_start = buf.len();
             if i > 0 {
-                let space = needs_space(arena, children.get(i - 1).copied(), id)
+                let space = needs_space(arena, prev, id)
                     || (ends_with_command && node_starts_with_ascii_letter(arena, id));
                 if space {
                     buf.push(' ');
@@ -199,7 +205,7 @@ fn write_sequence(
         if i + 3 <= children.len() && is_idotsint_triple(arena, &children[i..i + 3]) {
             let output_start = buf.len();
             if i > 0 {
-                let space = needs_space(arena, children.get(i - 1).copied(), children[i])
+                let space = needs_space(arena, prev, children[i])
                     || (ends_with_command && node_starts_with_ascii_letter(arena, children[i]));
                 if space {
                     buf.push(' ');
@@ -217,8 +223,8 @@ fn write_sequence(
             // A leading-script group is always set off by a space, so that the
             // spacing does not depend on how the node before is classified
             // (a minus read back as a binary operator gets one anyway).
-            let space = needs_space(arena, children.get(i - 1).copied(), id)
-                || adjacent_number_nodes_need_separator(arena, children[i - 1], id)
+            let space = needs_space(arena, prev, id)
+                || prev.is_some_and(|prev| adjacent_number_nodes_need_separator(arena, prev, id))
                 || (has_visible_prescripts(arena, id) && !buf.ends_with(' '))
                 || (ends_with_command && node_starts_with_ascii_letter(arena, id));
             if space {
@@ -228,19 +234,18 @@ fn write_sequence(
 
         // A bare large operator (from a single-token argument such as
         // `\braket\int`, or MathML `<mo>∫</mo>`) is read back as an n-ary
-        // operator that takes this sibling as its body. Spell the sibling the
-        // way the Nary writer spells a body, so the next pass agrees.
-        if i > 0
-            && matches!(
-                *arena.node(children[i - 1]),
-                CompactNode::Symbol(SymbolKind::LargeOp, _)
-            )
-        {
-            if !buf.ends_with(' ') {
-                buf.push(' ');
-            }
-            write_nary_body(buf, arena, id);
-        } else if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
+        // operator that takes the next sibling as its body. Write the pair
+        // as that operator would be written; the next sibling is then spaced
+        // as after an n-ary operator.
+        if is_bare_large_op(arena, id) {
+            let consumed = write_large_op_chain(buf, arena, &children[i..]);
+            ends_with_command =
+                appended_ends_with_letter_command(buf, output_start, ends_with_command);
+            spacing_prev = Some(id);
+            i += consumed;
+            continue;
+        }
+        if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
             // Script nodes whose argument would merge with the following
             // sibling need to be written with the argument forcibly braced.
             let next = children.get(i + 1).copied();
@@ -2458,12 +2463,6 @@ fn write_delim(buf: &mut LatexBuffer, delim: &str) {
     }
 }
 
-/// Write a node wrapped in braces. If the node is a single simple token,
-/// skip the braces for cleaner output. A single-child Row containing a
-/// non-simple node keeps the braces so the child is not unwrapped in contexts
-/// where grouping matters (e.g. a script base that is a Row wrapping a Color
-/// or command node).
-#[inline]
 /// A leading-script base that is a nonzero math space; its scripts are
 /// written without the usual enclosing group.
 fn is_bare_space_prescript_base(arena: &AstArena, base: NodeId) -> bool {
@@ -2488,11 +2487,67 @@ fn write_nary_body(buf: &mut LatexBuffer, arena: &AstArena, body: NodeId) {
         write_node(buf, arena, body);
     } else if is_numeric_argument(arena, body) {
         write_always_braced(buf, arena, body);
+    } else if is_script_with_empty_base(arena, body) {
+        // The group is read back as a row holding one stand-alone script,
+        // so spell it as one: `\int {{}^{2}}`, not `\int {{}^2}`.
+        buf.push('{');
+        write_node_slice(buf, arena, &[body], false);
+        buf.push('}');
     } else {
         write_braced(buf, arena, body);
     }
 }
 
+/// True for a large operator symbol that is not yet an n-ary node.
+fn is_bare_large_op(arena: &AstArena, id: NodeId) -> bool {
+    matches!(*arena.node(id), CompactNode::Symbol(SymbolKind::LargeOp, _))
+}
+
+/// Whether the reader takes `id` as the body of a preceding n-ary operator.
+/// A row or cell break ends the body; `\middle` is not read as a fence
+/// separator there; an empty-base script would become a limit.
+fn reads_as_nary_body(arena: &AstArena, id: NodeId) -> bool {
+    !matches!(
+        *arena.node(id),
+        CompactNode::Newline | CompactNode::ColAlign(_) | CompactNode::Middle(_)
+    ) && !is_script_with_empty_base(arena, id)
+}
+
+/// Write a bare large operator `ops[0]` together with the body the reader
+/// will give it, and return the number of sibling nodes written. A body
+/// that is itself a bare operator nests its own body, `\int {\int x}`, as
+/// the reader groups `\int\int x`. A sibling that cannot be a body gets an
+/// explicit empty body, as an empty-body Nary does.
+fn write_large_op_chain(buf: &mut LatexBuffer, arena: &AstArena, ops: &[NodeId]) -> usize {
+    write_node(buf, arena, ops[0]);
+    let Some(&body) = ops.get(1) else {
+        return 1;
+    };
+    if !reads_as_nary_body(arena, body) {
+        buf.push_str("{}");
+        return 1;
+    }
+    buf.push(' ');
+    if is_bare_large_op(arena, body)
+        && ops
+            .get(2)
+            .is_some_and(|&next| reads_as_nary_body(arena, next))
+    {
+        buf.push('{');
+        let nested = write_large_op_chain(buf, arena, &ops[1..]);
+        buf.push('}');
+        return 1 + nested;
+    }
+    write_nary_body(buf, arena, body);
+    2
+}
+
+/// Write a node wrapped in braces. If the node is a single simple token,
+/// skip the braces for cleaner output. A single-child Row containing a
+/// non-simple node keeps the braces so the child is not unwrapped in contexts
+/// where grouping matters (e.g. a script base that is a Row wrapping a Color
+/// or command node).
+#[inline]
 fn write_braced(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     if is_simple_token(arena, id) {
         write_node(buf, arena, id);

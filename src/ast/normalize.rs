@@ -299,6 +299,7 @@ fn is_empty_script_base_math(node: &MathNode) -> bool {
     match node {
         MathNode::Row(children) => children.iter().all(is_empty_script_base_math),
         MathNode::Scaled { content, .. } => is_empty_script_base_math(content),
+        MathNode::Identifier(name) => name.is_empty(),
         MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
         MathNode::Color { color, content } => {
             is_unwritable_color(color) && is_empty_script_base_math(content)
@@ -1359,6 +1360,8 @@ fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
             .iter()
             .all(|&child| is_empty_script_base(arena, child)),
         CompactNode::Scaled { content, .. } => is_empty_script_base(arena, content),
+        // An empty `<mi/>` base writes nothing and reads back as `{}`.
+        CompactNode::Identifier(sid) => arena.str_val(sid).is_empty(),
         CompactNode::Space(r) => r == Rational::zero(),
         CompactNode::Color { color, content } => {
             is_unwritable_color(arena.str_val(color)) && is_empty_script_base(arena, content)

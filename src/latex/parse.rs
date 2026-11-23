@@ -3157,7 +3157,11 @@ impl LatexCompactParser {
         //
         // Inside a `\left...\right` fence the body must not consume the closing
         // `\right`; treat it as an empty body so the fence parser can terminate.
-        let (input, body_id) = if is_nary_body_boundary(input) {
+        // A fence separator in a `\left...\right` belongs to the fence, not
+        // to the body (outside a fence `\middle` is a plain delimiter).
+        let (input, body_id) = if is_nary_body_boundary(input)
+            || (self.in_left_right && strip_control_word(input, "middle").is_some())
+        {
             let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
             (input, row_id)
         } else {

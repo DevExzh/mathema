@@ -666,20 +666,105 @@ fn bare_large_operator_before_a_sibling_uses_the_nary_body_spelling() {
             "unstable round trip for {input:?}"
         );
     }
-    // MathML keeps the same spelling and an ordinary body stays unbraced.
+    // MathML: the follower of a bare operator is spelled as its body, and
+    // the node after that is spaced as after the whole n-ary operator.
     for (mathml, expected) in [
         (
             "<math><mo>⟨</mo><mo>∫</mo><mo>⟩</mo></math>",
             r"\langle\int {\rangle}",
         ),
         ("<math><mo>∫</mo><mi>t</mi></math>", r"\int t"),
+        // `\idotsint` takes no body.
+        (
+            "<math><mo>∫</mo><mo>⋯</mo><mo>∫</mo><mo>−</mo></math>",
+            r"\idotsint-",
+        ),
+        (
+            "<math><mo>∫</mo><mo>⋯</mo><mo>∫</mo><mo>*</mo></math>",
+            r"\idotsint*",
+        ),
+        // A chain nests as the reader groups it.
+        (
+            "<math><mo>∫</mo><mo>∫</mo><mi>x</mi></math>",
+            r"\int {\int x}",
+        ),
+        (
+            "<math><mo>∫</mo><mo>∫</mo><mo>∫</mo><mi>x</mi></math>",
+            r"\int {\int {\int x}}",
+        ),
+        (
+            "<math><mo>∏</mo><mo>∑</mo><mi>x</mi></math>",
+            r"\prod {\sum x}",
+        ),
+        ("<math><mo>∫</mo><mo>∫</mo></math>", r"\int {\int}"),
+        ("<math><mo>∫</mo><mo>+</mo><mi>x</mi></math>", r"\int +x"),
+        ("<math><mo>∫</mo><mo>=</mo><mi>x</mi></math>", r"\int =x"),
+        ("<math><mo>∫</mo><mo>−</mo><mn>1</mn></math>", r"\int {-}1"),
+        (
+            "<math><mo>∫</mo><mo>∥</mo><mi>x</mi></math>",
+            r"\int {\parallel}x",
+        ),
+        // An empty `<mi/>` script base is an empty base: a limit here.
+        (
+            "<math><mo>∫</mo><msup><mi></mi><mn>2</mn></msup><mi>x</mi></math>",
+            r"{\int}^{2}x",
+        ),
+        (
+            "<math><msup><mi></mi><mn>2</mn></msup><mi>x</mi></math>",
+            r"{{}^{2}x}",
+        ),
     ] {
         let latex = crate::convert(mathml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
         assert_eq!(latex, expected, "{mathml}");
+        let mut heap = crate::reader::mathml::MathmlReader::parse(mathml, &config)
+            .unwrap()
+            .expr;
+        normalize_expr(&mut heap);
+        assert_eq!(
+            LatexWriter::write(&heap, &config).unwrap(),
+            latex,
+            "heap/compact mismatch for {mathml}"
+        );
         assert_eq!(
             crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
             latex,
             "{mathml}"
+        );
+    }
+}
+
+#[test]
+fn empty_base_script_body_and_fence_separator_after_a_large_operator() {
+    let config = Config::default();
+    for (input, expected) in [
+        // The body group holds one stand-alone script.
+        (r"\int {}^2 x", r"\int {{}^{2}}x"),
+        (r"\intop\mskip_ZT_Z", r"\int {{}_{Z}}T_Z"),
+        // A fence separator is not read as the integral's body.
+        (
+            r"\left\langle\int\middle| x\right\rangle",
+            r"\left\langle \int{} \middle| x \right\rangle",
+        ),
+        // Outside a fence `\middle` is a plain delimiter and can be a body.
+        (r"\intop\middle -!", r"\int {-}!"),
+    ] {
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        let mut heap = compact.to_math_expr();
+        normalize_compact_expr(&mut compact).unwrap();
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        assert_eq!(first, expected, "first write for {input:?}");
+        normalize_expr(&mut heap);
+        assert_eq!(
+            LatexWriter::write(&heap, &config).unwrap(),
+            first,
+            "heap/compact mismatch for {input:?}"
+        );
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
+        normalize_compact_expr(&mut reparsed).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed, &config).unwrap(),
+            first,
+            "unstable round trip for {input:?}"
         );
     }
 }
