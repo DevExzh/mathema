@@ -108,6 +108,11 @@ fn clamp255(v: f64) -> u8 {
 /// Parse a 3- or 6-digit hex color body (no leading `#`).
 fn parse_hex(hex: &str) -> Option<[u8; 3]> {
     let hex = hex.trim();
+    // Validate up front: byte slicing below would split a multi-byte
+    // character, and `from_str_radix` would accept a sign (`+f`).
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     match hex.len() {
         6 => Some([
             u8::from_str_radix(&hex[0..2], 16).ok()?,
@@ -306,6 +311,29 @@ static CSS_COLORS: phf::Map<&'static str, [u8; 3]> = phf_map! {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hex_colors_reject_non_hex_bytes() {
+        // A 3- or 6-byte body containing a multi-byte character used to
+        // panic on a char boundary; signs were accepted as digits.
+        for body in [
+            "A\u{B9}",
+            "\u{B9}\u{B9}\u{B9}",
+            "+f+f+f",
+            "+ff",
+            "ab\u{E9}cd",
+        ] {
+            assert_eq!(super::parse_hex(body), None, "{body:?}");
+        }
+        assert_eq!(super::parse_hex("1aF"), Some([0x11, 0xAA, 0xFF]));
+        assert_eq!(super::parse_hex("00ff80"), Some([0, 0xFF, 0x80]));
+    }
+
+    #[test]
+    fn color_with_multibyte_hex_body_renders() {
+        let parsed = crate::from_latex("\\color{#A\u{B9}!50}x").unwrap();
+        parsed.to_svg().unwrap();
+    }
+
     use super::*;
 
     #[test]
