@@ -191,3 +191,13 @@ fn and_is_a_binary_ampersand() {
     // The ordinary `\&` keeps its own spelling and class.
     assert_eq!(from_latex(r"a \& b").unwrap().to_latex().unwrap(), r"a\&b");
 }
+
+#[test]
+fn portable_spellings_are_preferred_over_katex_only_aliases() {
+    // `\Alpha` exists only in KaTeX and would override `\mathbf`, so raw
+    // Greek capitals stay raw; `\Diamond` is ◇ in LaTeX, so ◊ is `\lozenge`.
+    let latex = |input: &str| from_latex(input).unwrap().to_latex().unwrap();
+    assert_eq!(latex("\u{0391}\u{03BF}"), "\u{0391}\u{03BF}");
+    assert_eq!(latex(r"\mathbf{\Alpha}"), "\\mathbf{\u{0391}}");
+    assert_eq!(latex(r"\Diamond \lozenge"), r"\lozenge\lozenge");
+}

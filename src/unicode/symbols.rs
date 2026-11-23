@@ -760,21 +760,9 @@ static UNICODE_TO_LATEX: phf::Map<char, (&'static str, SymbolKind)> = phf_map! {
     '\u{2AB0}' => ("succeq", Relation),
     // Reverse spellings for glyphs reachable only through KaTeX aliases or
     // amssymb names, so the writer emits a command KaTeX accepts rather than
-    // raw Unicode and keeps the atom class.
-    '\u{0391}' => ("Alpha", Alphabetic),
-    '\u{0392}' => ("Beta", Alphabetic),
-    '\u{0395}' => ("Epsilon", Alphabetic),
-    '\u{0396}' => ("Zeta", Alphabetic),
-    '\u{0397}' => ("Eta", Alphabetic),
-    '\u{0399}' => ("Iota", Alphabetic),
-    '\u{039A}' => ("Kappa", Alphabetic),
-    '\u{039C}' => ("Mu", Alphabetic),
-    '\u{039D}' => ("Nu", Alphabetic),
-    '\u{039F}' => ("Omicron", Alphabetic),
-    '\u{03A1}' => ("Rho", Alphabetic),
-    '\u{03A4}' => ("Tau", Alphabetic),
-    '\u{03A7}' => ("Chi", Alphabetic),
-    '\u{03BF}' => ("omicron", Alphabetic),
+    // raw Unicode and keeps the atom class. Upright Greek capitals that share
+    // Latin shapes (`\Alpha`...) are deliberately absent: those commands are
+    // KaTeX-only, so the raw letters are the portable spelling.
     '\u{1D6E4}' => ("varGamma", Alphabetic),
     '\u{1D6E5}' => ("varDelta", Alphabetic),
     '\u{1D6E9}' => ("varTheta", Alphabetic),
@@ -787,15 +775,15 @@ static UNICODE_TO_LATEX: phf::Map<char, (&'static str, SymbolKind)> = phf_map! {
     '\u{1D6F9}' => ("varPsi", Alphabetic),
     '\u{1D6FA}' => ("varOmega", Alphabetic),
     '\u{220C}' => ("notni", Relation),
-    '\u{25CA}' => ("Diamond", Ordinary),
+    '\u{25CA}' => ("lozenge", Ordinary),
     '\u{00A9}' => ("copyright", Ordinary),
     '\u{00A3}' => ("pounds", Ordinary),
     '\u{22F0}' => ("iddots", Ordinary),
     '\u{25B2}' => ("blacktriangle", Ordinary),
     '\u{25BC}' => ("blacktriangledown", Ordinary),
     '\u{25EF}' => ("bigcirc", BinaryOp),
-    '\u{22D2}' => ("doublecap", BinaryOp),
-    '\u{22D3}' => ("doublecup", BinaryOp),
+    '\u{22D2}' => ("Cap", BinaryOp),
+    '\u{22D3}' => ("Cup", BinaryOp),
     '\u{22B2}' => ("lhd", BinaryOp),
     '\u{22B3}' => ("rhd", BinaryOp),
     '\u{22B4}' => ("unlhd", BinaryOp),

@@ -2154,7 +2154,13 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         // Likewise for the other atom classes: `\vartriangle` is a relation
         // spelled with the glyph of the ordinary `\triangle`, and `\cdotp` is
         // punctuation spelled with the binary `\cdot`.
-        let command_kind = crate::unicode::symbols::lookup_command(cmd).map(|(_, kind)| kind);
+        // The canonical spelling's class is in the same reverse entry; only
+        // the dagger special cases need a forward lookup.
+        let command_kind = if canonical_command == Some(cmd) {
+            mapped_symbol_kind(ch)
+        } else {
+            crate::unicode::symbols::lookup_command(cmd).map(|(_, kind)| kind)
+        };
         if let Some(wrapper) = explicit_class_wrapper(kind)
             && command_kind.is_some_and(|command_kind| command_kind != kind)
         {
