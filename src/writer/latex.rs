@@ -268,7 +268,7 @@ fn write_sequence(
     }
     // Insert from the back so earlier offsets stay valid.
     for &start in row_breaks.iter().rev() {
-        guard_row_break_bracket(buf, start);
+        guard_row_break_argument(buf, start);
     }
 }
 
@@ -278,13 +278,25 @@ fn write_sequence(
 /// `start` (just after a `\\`) begins with `[`, put an empty group before
 /// it: `\\ {}[b]` reads back as the literal bracket, and the empty group is
 /// dropped by normalization.
-fn guard_row_break_bracket(buf: &mut LatexBuffer, start: usize) {
+///
+/// A leading `*` can likewise be taken as the starred break `\\*`: LaTeX's
+/// `\@ifstar` looks for the star with `\@ifnextchar`, which skips spaces.
+/// Brace it as `{*}` instead of adding `{}`: a binary operator at the start of
+/// a row is already an ordinary atom, so the group renders the same, while
+/// `{}*` would turn it into a spaced binary operator.
+fn guard_row_break_argument(buf: &mut LatexBuffer, start: usize) {
     let Some(rest) = buf.get(start..) else {
         return;
     };
     let offset = rest.len() - rest.trim_start().len();
-    if rest[offset..].starts_with('[') {
-        buf.insert_str(start + offset, "{}");
+    let at = start + offset;
+    match rest.as_bytes().get(offset) {
+        Some(b'[') => buf.insert_str(at, "{}"),
+        Some(b'*') => {
+            buf.insert(at + 1, '}');
+            buf.insert(at, '{');
+        },
+        _ => {},
     }
 }
 
@@ -964,7 +976,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             write_delim(buf, open_str);
             buf.push(' ');
             let mut ends_with_command = false;
+            // Output offsets just after each fenced row break; see
+            // `write_sequence`.
+            let mut row_breaks: smallvec::SmallVec<[usize; 2]> = smallvec::SmallVec::new();
             for (index, &child_id) in content_ids.iter().enumerate() {
+                if index > 0 && matches!(*arena.node(content_ids[index - 1]), CompactNode::Newline)
+                {
+                    row_breaks.push(buf.len());
+                }
                 match *arena.node(child_id) {
                     CompactNode::Middle(sid) => {
                         buf.push_str(" \\middle");
@@ -1003,6 +1022,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 }
             }
 
+            for &start in row_breaks.iter().rev() {
+                guard_row_break_argument(buf, start);
+            }
             buf.push_str(" \\right");
             write_delim(buf, close_str);
         },
@@ -1534,7 +1556,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     buf.push_str(" & ");
                 }
                 if let Some(start) = row_start {
-                    guard_row_break_bracket(buf, start);
+                    guard_row_break_argument(buf, start);
                 }
             }
             if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {
@@ -3529,6 +3551,46 @@ mod tests {
             assert_eq!(first, expected, "{input}");
             assert_eq!(normalized_latex(&first), first, "{input}");
             assert!(first.contains('['), "bracket lost for {input}");
+        }
+    }
+
+    #[test]
+    fn literal_bracket_after_a_fenced_row_break_is_not_a_spacing_argument() {
+        for (input, expected) in [
+            (r"\left(a\\{[}b]\right)", r"\left( a\\ {}[b] \right)"),
+            (
+                r"\left(a\middle|b\\{[}c]\right)",
+                r"\left( a \middle| b\\ {}[c] \right)",
+            ),
+        ] {
+            let first = normalized_latex(input);
+            assert_eq!(first, expected, "{input}");
+            assert_eq!(normalized_latex(&first), first, "{input}");
+        }
+    }
+
+    #[test]
+    fn literal_star_after_a_row_break_is_not_a_starred_break() {
+        for (input, expected) in [
+            (
+                r"\begin{array}{c}a\\{*}b\end{array}",
+                r"\begin{array}{c} a \\ {*} b \end{array}",
+            ),
+            (
+                r"\begin{matrix}a\\{*}^2b\end{matrix}",
+                r"\begin{matrix} a \\ {*}^{2}b \end{matrix}",
+            ),
+            (r"a\\{*}b", r"a\\ {*} b"),
+            (r"\left(a\\{*}b\right)", r"\left( a\\ {*}b \right)"),
+            // A star later in the row is not at the break.
+            (
+                r"\begin{array}{c}a\\b*c\end{array}",
+                r"\begin{array}{c} a \\ b* c \end{array}",
+            ),
+        ] {
+            let first = normalized_latex(input);
+            assert_eq!(first, expected, "{input}");
+            assert_eq!(normalized_latex(&first), first, "{input}");
         }
     }
 
