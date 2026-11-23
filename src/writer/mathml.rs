@@ -3355,6 +3355,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "render")]
     fn svg_dimensions(svg: &str) -> (&str, &str, &str) {
         let root = svg.split('>').next().expect("SVG root");
         let attr = |name: &str| {

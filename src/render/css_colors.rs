@@ -328,10 +328,20 @@ mod tests {
         assert_eq!(super::parse_hex("00ff80"), Some([0, 0xFF, 0x80]));
     }
 
+    // This module is also compiled without `render` (the LaTeX parser and
+    // OMML writer resolve colors), so the layout check needs the feature.
+    #[cfg(feature = "render")]
     #[test]
     fn color_with_multibyte_hex_body_renders() {
         let parsed = crate::from_latex("\\color{#A\u{B9}!50}x").unwrap();
         parsed.to_svg().unwrap();
+    }
+
+    #[test]
+    fn color_with_multibyte_hex_body_converts_without_rendering() {
+        // The OMML writer resolves `mathcolor` through the same parser.
+        let parsed = crate::from_latex("\\color{#A\u{B9}!50}x").unwrap();
+        parsed.to_omml().unwrap();
     }
 
     use super::*;
