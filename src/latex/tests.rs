@@ -4635,3 +4635,89 @@ fn malformed_textcolor_recovery_is_latex_idempotent() {
     assert_eq!(first, r"{\mathord{\operatorname{f}}}_d{i}^{2}x");
     assert_eq!(first, second);
 }
+
+#[test]
+fn text_mode_accents_and_special_letters() {
+    for (input, expected) in [
+        // Each accent, braced and bare, composing to the precomposed letter.
+        (r"\text{\'{e}\'e}", "éé"),
+        (r"\text{\`{a}\`a}", "àà"),
+        (r"\text{\^{o}\^o}", "ôô"),
+        (r"\text{\~{n}\~n}", "ññ"),
+        (r#"\text{\"{u}\"u}"#, "üü"),
+        (r"\text{\={a}\=a}", "āā"),
+        (r"\text{\u{a}\u a}", "ăă"),
+        (r"\text{\.{z}\.z}", "żż"),
+        (r"\text{\r{a}\r a}", "åå"),
+        (r"\text{\H{o}\H o}", "őő"),
+        (r"\text{\v{c}\v c}", "čč"),
+        (r"\text{\c{c}\c c}", "çç"),
+        (
+            r#"\text{\'{e} \`a \^{o} \~n \"u \=a \u{a} \.{z} \r{a} \H{o} \v{c} \c{c}}"#,
+            "é à ô ñ ü ā ă ż å ő č ç",
+        ),
+        // Undelimited-argument spacing and control-word base.
+        (r"\text{\' e}", "é"),
+        (r"\text{\v {s}x}", "šx"),
+        (r#"\text{\'{\i}\^\j \"\i x}"#, "íĵïx"),
+        // No precomposed form: base followed by a combining mark.
+        (
+            r"\text{\'{q}\v{\i}\c{\i}\d{a}}",
+            "q\u{301}\u{131}\u{30C}\u{131}\u{327}a\u{323}",
+        ),
+        // A multi-letter group accents its first letter; nested accents compose.
+        (r"\text{\'{ab}\v{\'{e}}}", "áb\u{e9}\u{30C}"),
+        // Special letters; a control word consumes following spaces.
+        (
+            r"\text{\ss \i \j \o \O \l \L \oe \OE \aa \AA \ae \AE}",
+            "ßıȷøØłŁœŒåÅæÆ",
+        ),
+        (r"\text{Stra\ss e \o\ x}", "Straße ø x"),
+        (r"\mbox{\ss}", "ß"),
+        (r"\hbox{\ss\v c}", "ßč"),
+        // An accent with no argument keeps its old literal fallback.
+        (r"\text{a\'}", "a'"),
+        (r"\text{\^{}}", "^"),
+        // Existing control symbols are unaffected.
+        (r"\text{a\ b}", "a b"),
+        (r"\text{\&\#\$\%\_}", "&#$%_"),
+        (r"\text{a\\b}", "a b"),
+        (r"\text{a\,b\;c}", "a\u{2009}b\u{2005}c"),
+        (r"\text{a\relax b}", "ab"),
+        (r"\text{\alpha x}", "αx"),
+    ] {
+        let parsed = crate::from_latex(input).unwrap();
+        assert_eq!(
+            parsed.expr().nodes,
+            [MathNode::Text(
+                crate::ast::TextStyle::Normal,
+                expected.into()
+            )],
+            "{input}"
+        );
+        let first = parsed.to_latex().unwrap();
+        let again = crate::from_latex(&first).unwrap();
+        assert_eq!(
+            again.expr().nodes,
+            parsed.expr().nodes,
+            "{input} -> {first}"
+        );
+        assert_eq!(again.to_latex().unwrap(), first, "{input}");
+    }
+    // Text-mode accents don't leak into math mode.
+    let math = crate::from_latex(r"\acute{e}").unwrap();
+    assert!(!format!("{:?}", math.expr().nodes).contains('é'));
+}
+
+#[test]
+fn deeply_nested_text_accents_stay_bounded() {
+    let depth = 5000;
+    let input = format!(r"\text{{{}e{}}}", r"\'{".repeat(depth), "}".repeat(depth));
+    let parsed = crate::from_latex(&input).unwrap();
+    assert!(
+        matches!(&parsed.expr().nodes[..], [MathNode::Text(_, text)]
+            if text.starts_with('\u{e9}') && !text.contains('\'')),
+        "{:?}",
+        parsed.expr().nodes
+    );
+}

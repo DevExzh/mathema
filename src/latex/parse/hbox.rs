@@ -166,6 +166,8 @@ impl LatexCompactParser {
                             name != "relax"
                                 && !name.is_empty()
                                 && name.bytes().all(|b| b.is_ascii_alphabetic())
+                                && super::text_accent::accent_mark(name).is_none()
+                                && super::text_accent::special_letter(name).is_none()
                                 && crate::unicode::symbols::latex_to_unicode(name).is_none()
                                 && crate::latex::packages::lookup_package_symbol(name).is_none()
                         }))

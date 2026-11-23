@@ -1,6 +1,7 @@
 mod braket;
 mod dimension;
 mod hbox;
+mod text_accent;
 
 use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
@@ -276,9 +277,107 @@ fn text_character_code(input: &str) -> Option<(&str, char)> {
     ))
 }
 
-/// Process raw LaTeX text-mode content: strip braces, handle `~`, `\ `, dashes, etc.
+/// Nesting bound for braced accent arguments (`\'{\'{…}}`) decoded recursively.
+/// Deeper accents are dropped and their argument decoded inline.
+const MAX_TEXT_ACCENT_DEPTH: usize = 16;
+
+/// Process raw LaTeX text-mode content: strip braces, handle `~`, `\ `, dashes,
+/// accents, etc.
 fn clean_text_content(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
+    push_text_content(&mut out, raw, 0);
+    out
+}
+
+/// Single character produced by a text-mode control word used as an accent
+/// base (`\'\i`, `\"\o`).
+fn text_control_word_char(name: &str) -> Option<char> {
+    text_accent::special_letter(name)
+        .or_else(|| crate::unicode::symbols::latex_to_unicode(name))
+        .or_else(|| {
+            super::packages::lookup_package_symbol(name).and_then(|(text, _)| text.chars().next())
+        })
+}
+
+/// Byte index of the `}` closing the group opened at `open`, skipping escaped
+/// braces.
+fn matching_text_brace(raw: &str, open: usize) -> Option<usize> {
+    let bytes = raw.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 1,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            },
+            _ => {},
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Apply a text-mode accent to the argument starting at `pos` (after optional
+/// spaces, as for any undelimited TeX macro argument): a braced group, a
+/// control word such as `\i`, or a single character. Returns the position
+/// after the argument, or `None` when there is no usable argument.
+/// Beyond [`MAX_TEXT_ACCENT_DEPTH`] the accent is dropped without consuming
+/// anything.
+fn push_text_accent(
+    out: &mut String,
+    raw: &str,
+    pos: usize,
+    mark: char,
+    depth: usize,
+) -> Option<usize> {
+    if depth >= MAX_TEXT_ACCENT_DEPTH {
+        // Drop the accent; the caller decodes its argument inline.
+        return Some(pos);
+    }
+    let bytes = raw.as_bytes();
+    let mut i = pos;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    match *bytes.get(i)? {
+        b'{' => {
+            let close = matching_text_brace(raw, i)?;
+            let mut base = String::new();
+            push_text_content(&mut base, &raw[i + 1..close], depth + 1);
+            if base.is_empty() {
+                return None;
+            }
+            text_accent::push_accented(out, &base, mark);
+            Some(close + 1)
+        },
+        b'}' => None,
+        b'\\' => {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len() && bytes[end].is_ascii_alphabetic() {
+                end += 1;
+            }
+            let base = text_control_word_char(&raw[start..end])?;
+            text_accent::push_accented(out, base.encode_utf8(&mut [0; 4]), mark);
+            while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+                end += 1;
+            }
+            Some(end)
+        },
+        _ => {
+            let base = raw[i..].chars().next()?;
+            text_accent::push_accented(out, base.encode_utf8(&mut [0; 4]), mark);
+            Some(i + base.len_utf8())
+        },
+    }
+}
+
+fn push_text_content(out: &mut String, raw: &str, depth: usize) {
     let bytes = raw.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -347,38 +446,50 @@ fn clean_text_content(raw: &str) -> String {
                             continue;
                         }
                         if i == start && i < len {
-                            // A control symbol consumes only its own character.
+                            // A control symbol consumes only its own character,
+                            // unless it is an accent (`\'e`) taking an argument.
                             let ch = raw[i..].chars().next().unwrap();
-                            out.push(ch);
                             i += ch.len_utf8();
+                            if let Some(mark) = text_accent::accent_mark(&raw[start..i])
+                                && let Some(next) = push_text_accent(out, raw, i, mark, depth)
+                            {
+                                i = next;
+                            } else {
+                                out.push(ch);
+                            }
                             continue;
-                        } else if &raw[start..i] == "KaTeX" {
+                        }
+                        let name = &raw[start..i];
+                        // A control word consumes any following source
+                        // whitespace, just as TeX does.
+                        while i < len && bytes[i].is_ascii_whitespace() {
+                            i += 1;
+                        }
+                        if let Some(mark) = text_accent::accent_mark(name) {
+                            if let Some(next) = push_text_accent(out, raw, i, mark, depth) {
+                                i = next;
+                            }
+                        } else if let Some(ch) = text_accent::special_letter(name) {
+                            out.push(ch);
+                        } else if name == "KaTeX" {
                             out.push_str("KaTeX");
-                        } else if &raw[start..i] == "LaTeX" {
+                        } else if name == "LaTeX" {
                             out.push_str("LaTeX");
-                        } else if &raw[start..i] == "TeX" {
+                        } else if name == "TeX" {
                             out.push_str("TeX");
-                        } else if &raw[start..i] == "relax" {
+                        } else if name == "relax" {
                             // Native TeX no-op: do not turn `\relax` into
                             // visible identifier letters in a text run.
-                        } else if let Some(ch) =
-                            crate::unicode::symbols::latex_to_unicode(&raw[start..i])
-                        {
+                        } else if let Some(ch) = crate::unicode::symbols::latex_to_unicode(name) {
                             // A symbol command (`\int`, `\alpha`) keeps its
                             // character rather than vanishing from the text.
                             out.push(ch);
-                        } else if let Some((text, _)) =
-                            super::packages::lookup_package_symbol(&raw[start..i])
+                        } else if let Some((text, _)) = super::packages::lookup_package_symbol(name)
                         {
                             out.push_str(text);
                         }
-                        // Otherwise drop the command name. A control word also
-                        // consumes any following source whitespace, just as
-                        // TeX does. Explicit `\ ` is handled above and is not
-                        // consumed here.
-                        while i < len && raw.as_bytes()[i].is_ascii_whitespace() {
-                            i += 1;
-                        }
+                        // Otherwise drop the command name. Explicit `\ ` is
+                        // handled above and its space is kept.
                     },
                 }
             },
@@ -406,7 +517,6 @@ fn clean_text_content(raw: &str) -> String {
             },
         }
     }
-    out
 }
 
 /// Decode literal content of an operatorname argument. Grouping braces are
