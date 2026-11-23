@@ -8155,6 +8155,17 @@ impl LatexCompactParser {
             // keep the empty row only if it carries no rule semantics; existing
             // behavior preserved otherwise (do not change row count here).
         }
+        // A rule after the final `\\` (`a \\ \hline \end{array}`) is the
+        // bottom edge: `\hline` is no row, so TeX ends the table there. Its
+        // bit already sits at the bottom boundary once the empty row goes.
+        let last = rows.len() - 1;
+        if last > 0
+            && last < 32
+            && row_seps & (1 << last) != 0
+            && matches!(rows[last].as_slice(), [cell] if cell.is_empty())
+        {
+            rows.pop();
+        }
         Ok((rest, (rows, row_seps, dashed_rows)))
     }
 

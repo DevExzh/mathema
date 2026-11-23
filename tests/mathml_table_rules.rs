@@ -131,6 +131,11 @@ fn dashed_rules_survive_mathml_latex_and_heap_round_trips() {
     let latex = parsed.to_latex().unwrap();
     assert!(latex.contains(r"\hdashline"), "{latex}");
     let via_latex = mathema::from_latex(&latex).unwrap();
+    assert_eq!(via_latex.to_latex().unwrap(), latex);
+    assert_eq!(
+        via_latex.to_mathml().unwrap(),
+        reimported.to_mathml().unwrap()
+    );
     match native_array(&via_latex.expr()) {
         MathNode::NativeArray {
             dashed_col_seps,
@@ -432,4 +437,39 @@ fn partial_cline_is_dropped_with_a_diagnostic() {
         parsed.diagnostics()
     );
     assert_eq!(row_seps_of(&parsed.expr()), 0b10);
+}
+
+#[test]
+fn rule_after_the_final_row_break_is_the_bottom_edge() {
+    for (source, rows, row_seps) in [
+        (r"\begin{array}{c}a\\\hline\end{array}", 1, 0b10),
+        (r"\begin{array}{|c|}\hline a\\ \hline\end{array}", 1, 0b11),
+        (r"\begin{array}{c}a\\\hdashline\end{array}", 1, 0b10),
+        // A row break alone, or an empty row with cells, is still a row.
+        (r"\begin{array}{cc}a&b\\\hline&\end{array}", 2, 0b10),
+        (r"\begin{array}{c}a\\\hline\\\hline\end{array}", 2, 0b110),
+    ] {
+        let parsed = mathema::from_latex(source).unwrap();
+        match native_array(&parsed.expr()) {
+            MathNode::NativeArray {
+                rows: cells,
+                row_seps: seps,
+                ..
+            } => {
+                assert_eq!(cells.len(), rows, "{source}");
+                assert_eq!(*seps, row_seps, "{source}");
+            },
+            other => panic!("expected NativeArray, got {other:?}"),
+        }
+        let latex = parsed.to_latex().unwrap();
+        assert_eq!(
+            mathema::from_latex(&latex).unwrap().to_latex().unwrap(),
+            latex
+        );
+        let mathml = parsed.to_mathml().unwrap();
+        assert_eq!(
+            mathema::from_mathml(&mathml).unwrap().to_latex().unwrap(),
+            latex
+        );
+    }
 }
