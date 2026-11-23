@@ -617,11 +617,12 @@ fn script_attachment_and_scope_wrappers_are_canonical_on_first_write() {
         (r"\tt{\displaystyle a}", r"\mathtt{\displaystyle a}"),
     ] {
         let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        // The heap normalizer starts from the same raw parse.
+        let mut heap = compact.to_math_expr();
         normalize_compact_expr(&mut compact).unwrap();
         let first = LatexWriter::write_compact(&compact, &config).unwrap();
         assert_eq!(first, expected, "first write for {input:?}");
 
-        let mut heap = compact.to_math_expr();
         normalize_expr(&mut heap);
         assert_eq!(
             LatexWriter::write(&heap, &config).unwrap(),
@@ -635,6 +636,50 @@ fn script_attachment_and_scope_wrappers_are_canonical_on_first_write() {
             LatexWriter::write_compact(&reparsed, &config).unwrap(),
             first,
             "unstable round trip for {input:?}"
+        );
+    }
+}
+
+#[test]
+fn bare_large_operator_before_a_sibling_uses_the_nary_body_spelling() {
+    let config = Config::default();
+    // A single-token argument leaves a bare large operator, which the next
+    // parse reads as an n-ary operator taking the following node as its body.
+    for (input, expected) in [
+        (r"\braket\int", r"\mathinner{\langle\int {\rangle}}"),
+        (
+            r"\braket\int'FF",
+            r"{\mathinner{\langle\int {\rangle}}}^{\prime}FF",
+        ),
+        (r"\langle\int\rangle", r"\langle\int {\rangle}"),
+        (r"\int {{}_{C}f}", r"\int {{}_{C}f}"),
+    ] {
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        assert_eq!(first, expected, "first write for {input:?}");
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
+        normalize_compact_expr(&mut reparsed).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed, &config).unwrap(),
+            first,
+            "unstable round trip for {input:?}"
+        );
+    }
+    // MathML keeps the same spelling and an ordinary body stays unbraced.
+    for (mathml, expected) in [
+        (
+            "<math><mo>⟨</mo><mo>∫</mo><mo>⟩</mo></math>",
+            r"\langle\int {\rangle}",
+        ),
+        ("<math><mo>∫</mo><mi>t</mi></math>", r"\int t"),
+    ] {
+        let latex = crate::convert(mathml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+        assert_eq!(latex, expected, "{mathml}");
+        assert_eq!(
+            crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+            latex,
+            "{mathml}"
         );
     }
 }

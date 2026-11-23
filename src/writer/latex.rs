@@ -226,9 +226,23 @@ fn write_sequence(
             }
         }
 
-        // Script nodes whose argument would merge with the following sibling
-        // need to be written with the argument forcibly braced.
-        if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
+        // A bare large operator (from a single-token argument such as
+        // `\braket\int`, or MathML `<mo>∫</mo>`) is read back as an n-ary
+        // operator that takes this sibling as its body. Spell the sibling the
+        // way the Nary writer spells a body, so the next pass agrees.
+        if i > 0
+            && matches!(
+                *arena.node(children[i - 1]),
+                CompactNode::Symbol(SymbolKind::LargeOp, _)
+            )
+        {
+            if !buf.ends_with(' ') {
+                buf.push(' ');
+            }
+            write_nary_body(buf, arena, id);
+        } else if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
+            // Script nodes whose argument would merge with the following
+            // sibling need to be written with the argument forcibly braced.
             let next = children.get(i + 1).copied();
             write_script_node_with_next(buf, arena, id, next);
         } else {
@@ -1070,15 +1084,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // let `\int` take `{}` as its body, or join the base with the node
             // after. The base follows the scripts directly, so a script is
             // always braced: `{}^{6}6`, not `{}^66`.
-            let bare_space_base = match *arena.node(base) {
-                CompactNode::Space(width) => width.num != 0,
-                CompactNode::Symbol(_, sid) => single_math_space(arena.str_val(sid)).is_some(),
-                CompactNode::MathAtom {
-                    atom_type: MathAtomType::Ord,
-                    content,
-                } => authored_math_space_symbol(arena, content).is_some(),
-                _ => false,
-            };
+            let bare_space_base = is_bare_space_prescript_base(arena, base);
             if bare_space_base {
                 // A nonzero math space cannot absorb a script or adjacent
                 // token. Avoid an unnecessary outer group, which disappears
@@ -1259,11 +1265,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // Only write the body if it's non-empty — avoids \prod vs \prod {} divergence
             if !is_empty_body(arena, body) {
                 buf.push(' ');
-                if is_numeric_argument(arena, body) {
-                    write_always_braced(buf, arena, body);
-                } else {
-                    write_braced(buf, arena, body);
-                }
+                write_nary_body(buf, arena, body);
             }
         },
 
@@ -2462,6 +2464,35 @@ fn write_delim(buf: &mut LatexBuffer, delim: &str) {
 /// where grouping matters (e.g. a script base that is a Row wrapping a Color
 /// or command node).
 #[inline]
+/// A leading-script base that is a nonzero math space; its scripts are
+/// written without the usual enclosing group.
+fn is_bare_space_prescript_base(arena: &AstArena, base: NodeId) -> bool {
+    match *arena.node(base) {
+        CompactNode::Space(width) => width.num != 0,
+        CompactNode::Symbol(_, sid) => single_math_space(arena.str_val(sid)).is_some(),
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Ord,
+            content,
+        } => authored_math_space_symbol(arena, content).is_some(),
+        _ => false,
+    }
+}
+
+/// Write the (non-empty) body of an n-ary operator, after its separator.
+fn write_nary_body(buf: &mut LatexBuffer, arena: &AstArena, body: NodeId) {
+    if let CompactNode::PreScripts { base, .. } = *arena.node(body)
+        && has_visible_prescripts(arena, body)
+        && !is_bare_space_prescript_base(arena, base)
+    {
+        // Leading scripts are already written as one `{{}_{C}f}` group.
+        write_node(buf, arena, body);
+    } else if is_numeric_argument(arena, body) {
+        write_always_braced(buf, arena, body);
+    } else {
+        write_braced(buf, arena, body);
+    }
+}
+
 fn write_braced(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     if is_simple_token(arena, id) {
         write_node(buf, arena, id);

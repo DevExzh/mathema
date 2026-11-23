@@ -19,12 +19,19 @@ pub fn normalize_expr(expr: &mut MathExpr) {
 
 /// Match the compact normalizer when a row contains a color name that the
 /// LaTeX writer elides: its content joins the surrounding sequence.
-fn push_row_child(children: &mut Vec<MathNode>, node: MathNode) {
+/// Every nested layer of such colors is peeled.
+fn push_row_child(children: &mut Vec<MathNode>, mut node: MathNode) {
+    let mut peeled = false;
+    while let MathNode::Color { color, content } = node {
+        if !is_unwritable_color(&color) {
+            node = MathNode::Color { color, content };
+            break;
+        }
+        node = *content;
+        peeled = true;
+    }
     match node {
-        MathNode::Color { color, content } if is_unwritable_color(&color) => match *content {
-            MathNode::Row(inner) => children.extend(inner),
-            other => children.push(other),
-        },
+        MathNode::Row(inner) if peeled => children.extend(inner),
         other => children.push(other),
     }
 }
@@ -158,6 +165,17 @@ fn normalize_nodes_depth_with_identifiers(
         let last = coalesced.remove(content_end - 1);
         let prev = std::mem::replace(&mut coalesced[content_end - 2], MathNode::Row(Vec::new()));
         coalesced[content_end - 2] = make_script_with_base_math(prev, last);
+        // The joined node can take a leading script that the bare node
+        // refused (see `normalize_compact_span`).
+        if content_end >= 3
+            && is_empty_base_script_math(&coalesced[content_end - 3])
+            && can_take_prescripts_math(&coalesced[content_end - 2])
+        {
+            let joined = coalesced.remove(content_end - 2);
+            let script =
+                std::mem::replace(&mut coalesced[content_end - 3], MathNode::Row(Vec::new()));
+            coalesced[content_end - 3] = make_prescripts_math(script, joined);
+        }
     }
     *nodes = coalesced;
 }
@@ -566,6 +584,13 @@ fn normalize_node_depth_with_identifiers(
         },
         MathNode::Styled(_, children) => {
             normalize_nodes_depth_with_identifiers(children, d, merge_identifiers);
+            // The font command's braces scope a lone style group (see the
+            // compact normalizer).
+            if let [MathNode::Row(inner)] = children.as_mut_slice()
+                && inner.iter().any(|n| matches!(n, MathNode::StyleSwitch(_)))
+            {
+                *children = std::mem::take(inner);
+            }
         },
         MathNode::Color { content, .. } => {
             normalize_node_depth_with_identifiers(content, d, merge_identifiers)
