@@ -916,3 +916,41 @@ fn lenient_preserves_valid_parse() {
     assert_eq!(strict_result.expr, lenient_result.expr);
     assert!(!lenient_result.has_warnings());
 }
+
+#[test]
+fn mathml_forced_line_break_is_a_line_break() {
+    let newline = r#"<mspace linebreak="newline"/>"#;
+    for (xml, latex) in [
+        (
+            r#"<math><mi>a</mi><mspace linebreak="newline"/><mi>b</mi></math>"#,
+            r"a\\ b",
+        ),
+        (
+            r#"<math><mi>a</mi><mspace linebreak="indentingnewline"></mspace><mi>b</mi></math>"#,
+            r"a\\ b",
+        ),
+        // In a cell the break is grouped, since a bare `\\` ends the row.
+        (
+            r#"<math><mtable><mtr><mtd><mi>a</mi><mspace linebreak="newline"/><mi>b</mi></mtd></mtr></mtable></math>"#,
+            r"\begin{array}{c} {a\\ b} \end{array}",
+        ),
+    ] {
+        let tex = convert(xml, Format::MathML, Format::LaTeX).unwrap();
+        assert_eq!(tex, latex, "{xml}");
+        assert_eq!(convert(&tex, Format::LaTeX, Format::LaTeX).unwrap(), tex);
+        let mathml = convert(xml, Format::MathML, Format::MathML).unwrap();
+        assert!(mathml.contains(newline), "{mathml}");
+        assert_eq!(
+            convert(&mathml, Format::MathML, Format::MathML).unwrap(),
+            mathml
+        );
+        let via_latex = convert(&tex, Format::LaTeX, Format::MathML).unwrap();
+        assert!(via_latex.contains(newline), "{via_latex}");
+    }
+    // MathML 3 ignores the break attribute on an mspace with dimensions.
+    let sized = r#"<math><mi>a</mi><mspace linebreak="newline" width="1em"/><mi>b</mi></math>"#;
+    assert_eq!(
+        convert(sized, Format::MathML, Format::LaTeX).unwrap(),
+        r"a\quad b"
+    );
+}

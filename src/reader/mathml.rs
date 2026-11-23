@@ -629,6 +629,15 @@ impl<'a> MathmlCompactParser<'a> {
         self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
     }
 
+    fn mspace(&mut self, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
+        let node = if is_mspace_newline(start) {
+            CompactNode::Newline
+        } else {
+            CompactNode::Space(mspace_width(start))
+        };
+        self.arena.push_node(node)
+    }
+
     /// Resolve the supported absolute and relative `mstyle` attributes.
     /// The AST has four TeX-style levels, so larger absolute levels clamp to
     /// scriptscript and mixed `displaystyle`/nonzero `scriptlevel` values use
@@ -908,10 +917,7 @@ impl<'a> MathmlCompactParser<'a> {
                     .arena
                     .push_node(CompactNode::Text(TextStyle::Normal, sid)))
             },
-            "mspace" => {
-                let r = mspace_width(start);
-                Ok(self.arena.push_node(CompactNode::Space(r)))
-            },
+            "mspace" => Ok(self.mspace(start)),
             "mrow" => {
                 let attrs = mrow_attributes(start);
                 let reflected = match attrs.style.as_deref() {
@@ -1254,10 +1260,7 @@ impl<'a> MathmlCompactParser<'a> {
                 })
             },
             "mo" => Ok(self.operator_token("", start)),
-            "mspace" => {
-                let r = mspace_width(start);
-                Ok(self.arena.push_node(CompactNode::Space(r)))
-            },
+            "mspace" => Ok(self.mspace(start)),
             "mprescripts" => Ok(self.empty_row()),
             "none" => Ok(self.empty_row()),
             "mstyle" => Ok(self.empty_row()),
@@ -1346,6 +1349,24 @@ impl<'a> MathmlCompactParser<'a> {
                 .map(|&id| self.arena.node(id))
         {
             nodes = self.arena.children(span).iter().copied().collect();
+        }
+        // A line break directly in a cell list would be a row separator in
+        // LaTeX (normalization turns it into a space). A group keeps it a
+        // break within the cell, as `{a\\b}` is in a LaTeX cell.
+        // A leading style marker stays outside the group.
+        let content = usize::from(
+            nodes
+                .first()
+                .is_some_and(|&id| matches!(self.arena.node(id), CompactNode::StyleSwitch(_))),
+        );
+        if nodes[content..]
+            .iter()
+            .any(|&id| matches!(self.arena.node(id), CompactNode::Newline))
+        {
+            let span = self.arena.push_children(&nodes[content..])?;
+            let group = self.arena.push_node(CompactNode::Row(span));
+            nodes.truncate(content);
+            nodes.push(group);
         }
         let marker = self.style_marker_for((self.style_display, self.style_level));
         if marker != 1
@@ -2678,6 +2699,19 @@ fn single_accent_char(s: &str) -> Option<char> {
     let mut chars = s.chars();
     let ch = chars.next()?;
     chars.next().is_none().then_some(ch)
+}
+
+/// A forced MathML line break: `linebreak="newline"` (or
+/// `"indentingnewline"`, whose indentation has no AST form) on an `mspace`
+/// without dimensions. MathML 3 ignores the line-breaking attribute when a
+/// dimension is also given.
+fn is_mspace_newline(start: &quick_xml::events::BytesStart<'_>) -> bool {
+    matches!(
+        get_attr(start, "linebreak").as_deref().map(str::trim),
+        Some("newline" | "indentingnewline")
+    ) && ["width", "height", "depth"]
+        .iter()
+        .all(|name| get_attr(start, name).is_none())
 }
 
 fn mspace_width(start: &quick_xml::events::BytesStart<'_>) -> Rational {

@@ -2053,7 +2053,7 @@ fn write_node_fast_in(
             }
         },
         CompactNode::SizeScale(_) => {},
-        CompactNode::Newline => {},
+        CompactNode::Newline => buf.push_str(r#"<mspace linebreak="newline"/>"#),
         CompactNode::MathChoice {
             display,
             text,
