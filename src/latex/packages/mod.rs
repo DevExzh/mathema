@@ -189,6 +189,7 @@ fn package_symbol_reverse_map() -> &'static HashMap<(&'static str, SymbolClass),
 
 /// Writer lookup: the package command that reparses to the symbol `text`
 /// with class `class`, if any.
+#[cold]
 pub fn package_command_for_symbol(text: &str, class: SymbolClass) -> Option<&'static str> {
     package_symbol_reverse_map().get(&(text, class)).copied()
 }

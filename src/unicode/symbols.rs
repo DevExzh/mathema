@@ -922,6 +922,13 @@ pub fn unicode_to_latex(ch: char) -> Option<&'static str> {
     UNICODE_TO_LATEX.get(&ch).map(|&(cmd, _)| cmd)
 }
 
+/// The canonical LaTeX command for `ch` together with its atom class, from
+/// one lookup.
+#[inline]
+pub(crate) fn unicode_to_latex_entry(ch: char) -> Option<(&'static str, SymbolKind)> {
+    UNICODE_TO_LATEX.get(&ch).copied()
+}
+
 /// Return the declared atom class when the glyph has a canonical control word.
 #[inline]
 pub(crate) fn mapped_symbol_kind(ch: char) -> Option<SymbolKind> {
@@ -934,6 +941,7 @@ pub(crate) fn mapped_symbol_kind(ch: char) -> Option<SymbolKind> {
 /// ordinary, `\vartriangle` a relation, `\bigtriangleup` a binary operator).
 /// The writer uses this when the canonical spelling would change the class.
 /// Ties resolve to the lexicographically smallest name, so output is stable.
+#[cold]
 pub(crate) fn command_for_class(ch: char, kind: SymbolKind) -> Option<&'static str> {
     static MAP: std::sync::OnceLock<std::collections::HashMap<(char, SymbolKind), &'static str>> =
         std::sync::OnceLock::new();

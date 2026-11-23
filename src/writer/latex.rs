@@ -1997,6 +1997,7 @@ fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
 
 fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     let ch = s.chars().next().unwrap_or('?');
+    let is_compound = s.len() > ch.len_utf8();
     // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064 INVISIBLE
     // PLUS) have no glyph or width in LaTeX. Emit an empty ordinary atom
     // rather than a literal space: source whitespace is discarded by the
@@ -2008,11 +2009,25 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         buf.push_str("\\mathord{}");
         return;
     }
+    // Hot path: a single non-ASCII relation, operator or delimiter whose
+    // canonical command has its class (`\leq`, `\cdot`, `\langle`). None of
+    // the special spellings below apply to such a glyph: they concern
+    // compounds, ASCII, ordinary atoms, the minus sign and the dagger pair.
+    let canonical = crate::unicode::symbols::unicode_to_latex_entry(ch);
+    if !is_compound
+        && !ch.is_ascii()
+        && kind != SymbolKind::Ordinary
+        && let Some((name, class)) = canonical
+        && class == kind
+        && !matches!(ch, '\u{2020}' | '\u{2021}')
+    {
+        buf.push('\\');
+        buf.push_str(name);
+        return;
+    }
     // A compound glyph contributed by a package (`\colonapprox` is `∶≈`)
     // reparses to the same single symbol only through its command name.
-    if s.chars().nth(1).is_some()
-        && let Some(cmd) = crate::latex::packages::package_command_for_symbol(s, kind)
-    {
+    if is_compound && let Some(cmd) = crate::latex::packages::package_command_for_symbol(s, kind) {
         buf.push('\\');
         buf.push_str(cmd);
         return;
@@ -2061,7 +2076,7 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     // keep every character: the single-glyph spellings below look only at the
     // first one. Raw Unicode reparses losslessly, so write the characters
     // literally (escaping TeX specials) inside one atom of the original class.
-    if s.chars().nth(1).is_some() {
+    if is_compound {
         write_compound_symbol(buf, kind, s);
         return;
     }
@@ -2124,7 +2139,17 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         return;
     }
     // The same dagger glyph has ordinary and binary TeX commands.
-    let canonical_command = unicode_to_latex(ch);
+    let canonical_command = canonical.map(|(name, _)| name);
+    let canonical_kind = canonical.map(|(_, class)| class);
+    // Common case: the canonical command already has the symbol's class.
+    if let Some((name, class)) = canonical
+        && class == kind
+        && !matches!(ch, '†' | '‡')
+    {
+        buf.push('\\');
+        buf.push_str(name);
+        return;
+    }
     let command = match (kind, ch) {
         (SymbolKind::Ordinary, '†') => Some("dag"),
         (SymbolKind::Ordinary, '‡') => Some("ddag"),
@@ -2137,7 +2162,7 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         // the ordinary atom class when the source gave it ordinary spacing.
         if kind == SymbolKind::Ordinary
             && canonical_command == Some(cmd)
-            && mapped_symbol_kind(ch).is_some_and(|mapped| {
+            && canonical_kind.is_some_and(|mapped| {
                 !matches!(mapped, SymbolKind::Ordinary | SymbolKind::Alphabetic)
             })
         {
@@ -2157,7 +2182,7 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         // The canonical spelling's class is in the same reverse entry; only
         // the dagger special cases need a forward lookup.
         let command_kind = if canonical_command == Some(cmd) {
-            mapped_symbol_kind(ch)
+            canonical_kind
         } else {
             crate::unicode::symbols::lookup_command(cmd).map(|(_, kind)| kind)
         };
@@ -2220,6 +2245,7 @@ fn explicit_class_wrapper(kind: SymbolKind) -> Option<&'static str> {
 
 /// Write a multi-character symbol as one atom of class `kind` without losing
 /// any of its characters.
+#[cold]
 fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
     let wrapper = match kind {
         SymbolKind::LargeOp => Some("\\mathop{"),
