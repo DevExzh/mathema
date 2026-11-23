@@ -3570,6 +3570,33 @@ mod tests {
     }
 
     #[test]
+    fn braced_line_break_in_a_table_cell_stays_a_line_break() {
+        for (input, expected) in [
+            (
+                r"\begin{array}{c}{\large a\\}\end{array}",
+                r"\begin{array}{c} {\large a\\ } \end{array}",
+            ),
+            (
+                r"\begin{matrix}{{a\\}}\\b\end{matrix}",
+                r"\begin{matrix} {a\\ } \\ b \end{matrix}",
+            ),
+            (
+                r"\begin{array}{cc}x&{a\\b}c\end{array}",
+                r"\begin{array}{cc} x & {a\\ b}c \end{array}",
+            ),
+            // An unbraced break is a row separator and needs no group.
+            (
+                r"\begin{array}{c}\large a\\b\end{array}",
+                r"\begin{array}{c} \large a \\ b \end{array}",
+            ),
+        ] {
+            let first = normalized_latex(input);
+            assert_eq!(first, expected, "{input}");
+            assert_eq!(normalized_latex(&first), first, "{input}");
+        }
+    }
+
+    #[test]
     fn literal_star_after_a_row_break_is_not_a_starred_break() {
         for (input, expected) in [
             (

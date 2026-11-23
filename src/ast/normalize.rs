@@ -663,6 +663,20 @@ fn normalize_compact_span_with_identifiers(
     depth: usize,
     merge_identifiers: bool,
 ) -> crate::error::Result<NodeSpan> {
+    normalize_span_keeping_breaks(arena, span, depth, merge_identifiers, false)
+}
+
+/// The span normalization. With `keep_break_groups` (a table cell list), a
+/// group that holds a line break is neither flattened nor unwrapped: in the
+/// cell list the `\\` would be a row separator, which
+/// `normalize_array_cell` replaces with a space.
+fn normalize_span_keeping_breaks(
+    arena: &mut AstArena,
+    span: NodeSpan,
+    depth: usize,
+    merge_identifiers: bool,
+    keep_break_groups: bool,
+) -> crate::error::Result<NodeSpan> {
     if depth > super::MAX_AST_DEPTH {
         return Ok(span);
     }
@@ -694,6 +708,9 @@ fn normalize_compact_span_with_identifiers(
                 // Explicit groups containing a style declaration must remain
                 // grouped so the declaration cannot leak into following
                 // siblings when LaTeX is written back.
+                flattened.push(id);
+            },
+            CompactNode::Row(inner) if keep_break_groups && has_direct_newline(arena, inner) => {
                 flattened.push(id);
             },
             CompactNode::Row(inner) => {
@@ -950,17 +967,7 @@ fn normalize_compact_node_with_identifiers(
     let node = *arena.node(id);
     match node {
         CompactNode::Row(span) => {
-            let new_span =
-                normalize_compact_span_with_identifiers(arena, span, d, merge_identifiers)?;
-            let children = arena.children(new_span);
-            if children.len() == 1
-                && !matches!(*arena.node(children[0]), CompactNode::StyleSwitch(_))
-            {
-                // Unwrap single-child Row: replace this node with its child
-                arena.replace_from(id, children[0]);
-            } else {
-                *arena.node_mut(id) = CompactNode::Row(new_span);
-            }
+            normalize_row_node(arena, id, span, d, merge_identifiers, false)?;
         },
 
         CompactNode::Styled(style, span) => {
@@ -1109,10 +1116,17 @@ fn normalize_compact_node_with_identifiers(
             // whitespace and replace any internal row separators with ordinary
             // space. A `\\`/`\cr` inside a cell is always a row separator on
             // re-parse, so keeping it as a node makes the written shape unstable.
+            // A braced line break (`{a\\b}`) is a break within the cell, so
+            // its group is kept intact instead.
             let cell_ids: SmallVec<[NodeId; 8]> = arena.children(cells).into();
             let mut new_cells: SmallVec<[NodeId; 8]> = SmallVec::new();
             for &cell_id in &cell_ids {
-                normalize_compact_node_with_identifiers(arena, cell_id, d, merge_identifiers)?;
+                if let CompactNode::Row(span) = *arena.node(cell_id) {
+                    // The depth a nested `normalize_compact_node` call uses.
+                    normalize_row_node(arena, cell_id, span, d + 1, merge_identifiers, true)?;
+                } else {
+                    normalize_compact_node_with_identifiers(arena, cell_id, d, merge_identifiers)?;
+                }
                 let new_id = normalize_array_cell(arena, cell_id)?;
                 new_cells.push(new_id);
             }
@@ -1290,6 +1304,43 @@ fn has_direct_style_switch(arena: &AstArena, span: NodeSpan) -> bool {
         .children(span)
         .iter()
         .any(|&id| matches!(*arena.node(id), CompactNode::StyleSwitch(_)))
+}
+
+/// Normalize a `Row` node in place: normalize its list, then unwrap a single
+/// child. With `keep_break_groups` (see `normalize_span_keeping_breaks`), a
+/// lone group holding a line break stays a group.
+fn normalize_row_node(
+    arena: &mut AstArena,
+    id: NodeId,
+    span: NodeSpan,
+    depth: usize,
+    merge_identifiers: bool,
+    keep_break_groups: bool,
+) -> crate::error::Result<()> {
+    let new_span =
+        normalize_span_keeping_breaks(arena, span, depth, merge_identifiers, keep_break_groups)?;
+    let children = arena.children(new_span);
+    let keep_group = |child: NodeId| match *arena.node(child) {
+        CompactNode::StyleSwitch(_) => true,
+        CompactNode::Row(inner) => keep_break_groups && has_direct_newline(arena, inner),
+        _ => false,
+    };
+    if let [only] = children
+        && !keep_group(*only)
+    {
+        // Unwrap single-child Row: replace this node with its child
+        arena.replace_from(id, *only);
+    } else {
+        *arena.node_mut(id) = CompactNode::Row(new_span);
+    }
+    Ok(())
+}
+
+fn has_direct_newline(arena: &AstArena, span: NodeSpan) -> bool {
+    arena
+        .children(span)
+        .iter()
+        .any(|&id| matches!(*arena.node(id), CompactNode::Newline))
 }
 
 /// Source whitespace is consumed by the parser. Keep authored math spaces,
