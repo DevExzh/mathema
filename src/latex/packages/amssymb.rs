@@ -40,7 +40,7 @@ pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
     ("vDash", "\u{22A8}", Relation),    // ⊨ TRUE
     ("Vdash", "\u{22A9}", Relation),    // ⊩ FORCES
     ("Vvdash", "\u{22AA}", Relation),   // ⊪ TRIPLE VERTICAL BAR RIGHT TURNSTILE
-    ("blacktriangleleft", "\u{25C2}", Relation), // ◂ BLACK LEFT-POINTING SMALL TRIANGLE
+    ("blacktriangleleft", "\u{25C0}", Relation), // ◀ BLACK LEFT-POINTING TRIANGLE (KaTeX glyph)
     // === Negated relations =========================================
     ("nless", "\u{226E}", Relation),        // ≮ NOT LESS-THAN
     ("ngtr", "\u{226F}", Relation),         // ≯ NOT GREATER-THAN

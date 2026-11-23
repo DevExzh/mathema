@@ -56,6 +56,43 @@ pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
     ("Coloneqq", "\u{2A74}", SymbolClass::Relation), // ⩴  ( ::= )
     ("vcentcolon", "\u{2236}", SymbolClass::Relation), // ∶  ( centered colon )
     ("dblcolon", "\u{2237}", SymbolClass::Relation), // ∷  ( double colon )
+    // The remaining mathtools and `colonequals` compounds have no dedicated
+    // code point; they are spelled with the centred RATIO (∶) and PROPORTION
+    // (∷) glyphs so the colon sits on the math axis as in KaTeX.
+    ("coloneq", "\u{2236}\u{2212}", SymbolClass::Relation), // ∶−
+    ("Coloneq", "\u{2237}\u{2212}", SymbolClass::Relation), // ∷−
+    ("eqcolon", "\u{2212}\u{2236}", SymbolClass::Relation), // −∶
+    ("Eqcolon", "\u{2212}\u{2237}", SymbolClass::Relation), // −∷
+    ("Eqqcolon", "=\u{2237}", SymbolClass::Relation),       // =∷
+    ("colonapprox", "\u{2236}\u{2248}", SymbolClass::Relation), // ∶≈
+    ("Colonapprox", "\u{2237}\u{2248}", SymbolClass::Relation), // ∷≈
+    ("colonsim", "\u{2236}\u{223C}", SymbolClass::Relation), // ∶∼
+    ("Colonsim", "\u{2237}\u{223C}", SymbolClass::Relation), // ∷∼
+    // `colonequals` package spellings (aliases of the forms above).
+    ("ratio", "\u{2236}", SymbolClass::Relation),
+    ("coloncolon", "\u{2237}", SymbolClass::Relation),
+    ("colonequals", "\u{2254}", SymbolClass::Relation),
+    ("coloncolonequals", "\u{2A74}", SymbolClass::Relation),
+    ("equalscolon", "\u{2255}", SymbolClass::Relation),
+    ("equalscoloncolon", "=\u{2237}", SymbolClass::Relation),
+    ("colonminus", "\u{2236}\u{2212}", SymbolClass::Relation),
+    ("coloncolonminus", "\u{2237}\u{2212}", SymbolClass::Relation),
+    ("minuscolon", "\u{2212}\u{2236}", SymbolClass::Relation),
+    ("minuscoloncolon", "\u{2212}\u{2237}", SymbolClass::Relation),
+    (
+        "coloncolonapprox",
+        "\u{2237}\u{2248}",
+        SymbolClass::Relation,
+    ),
+    ("coloncolonsim", "\u{2237}\u{223C}", SymbolClass::Relation),
+    ("approxcolon", "\u{2248}\u{2236}", SymbolClass::Relation),
+    (
+        "approxcoloncolon",
+        "\u{2248}\u{2237}",
+        SymbolClass::Relation,
+    ),
+    ("simcolon", "\u{223C}\u{2236}", SymbolClass::Relation),
+    ("simcoloncolon", "\u{223C}\u{2237}", SymbolClass::Relation),
 ];
 
 #[cfg(test)]

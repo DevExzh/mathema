@@ -4333,7 +4333,9 @@ impl LatexCompactParser {
             // TeX's `\relax` terminates scanners and contributes no glyph or
             // spacing.  Keep it as an empty row so scripts can recognize an
             // empty argument without turning the command name into letters.
-            "relax" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
+            // A `\noexpand` left over after macro expansion has already done
+            // its job (suppressing expansion), so it is equally inert here.
+            "relax" | "noexpand" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
             // Line-break hints and equation tags are layout no-ops in this renderer.
             "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak" | "limits"
             | "nolimits" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),

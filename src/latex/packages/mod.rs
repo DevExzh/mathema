@@ -65,6 +65,7 @@ pub mod centernot;
 pub mod dsfont;
 pub mod extpfeil;
 pub mod gensymb;
+pub mod katex;
 pub mod mathtools;
 pub(crate) use mathtools::smallmatrix_fences;
 pub mod physics;
@@ -85,6 +86,7 @@ const PACKAGE_MACROS: &[&[(&str, u8, &str)]] = &[
     dsfont::MACROS,
     extpfeil::MACROS,
     gensymb::MACROS,
+    katex::MACROS,
     mathtools::MACROS,
     physics::MACROS,
     textcomp::MACROS,
@@ -105,6 +107,7 @@ const PACKAGE_SYMBOLS: &[&[(&str, &str, SymbolClass)]] = &[
     dsfont::SYMBOLS,
     extpfeil::SYMBOLS,
     gensymb::SYMBOLS,
+    katex::SYMBOLS,
     mathtools::SYMBOLS,
     physics::SYMBOLS,
     textcomp::SYMBOLS,
@@ -151,6 +154,41 @@ fn package_symbol_map() -> &'static HashMap<&'static str, (&'static str, SymbolC
         }
         m
     })
+}
+
+/// Cached reverse map from a package glyph string and its class to the first
+/// command that the parser resolves to exactly that pair.
+///
+/// The writer consults it only after the core tables miss, so compounds such
+/// as `∶≈` (`\colonapprox`) and package-only glyphs such as `Ⅎ` (`\Finv`) are
+/// written with the command KaTeX understands rather than as raw Unicode.
+fn package_symbol_reverse_map() -> &'static HashMap<(&'static str, SymbolClass), &'static str> {
+    static MAP: OnceLock<HashMap<(&'static str, SymbolClass), &'static str>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut m = HashMap::new();
+        // textcomp's `\text…` commands are text-mode only in LaTeX and KaTeX,
+        // so the writer must not emit them into math.
+        let math_tables = PACKAGE_SYMBOLS
+            .iter()
+            .filter(|table| !core::ptr::eq(**table, textcomp::SYMBOLS));
+        for table in math_tables {
+            for &(cmd, unicode, class) in *table {
+                let reachable = crate::unicode::symbols::lookup_command(cmd).is_none()
+                    && !crate::unicode::symbols::is_operator_command(cmd)
+                    && lookup_package_symbol(cmd) == Some((unicode, class));
+                if reachable {
+                    m.entry((unicode, class)).or_insert(cmd);
+                }
+            }
+        }
+        m
+    })
+}
+
+/// Writer lookup: the package command that reparses to the symbol `text`
+/// with class `class`, if any.
+pub fn package_command_for_symbol(text: &str, class: SymbolClass) -> Option<&'static str> {
+    package_symbol_reverse_map().get(&(text, class)).copied()
 }
 
 /// Parser fallback: look up a package-contributed symbol by command name.

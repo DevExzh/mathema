@@ -2008,6 +2008,15 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         buf.push_str("\\mathord{}");
         return;
     }
+    // A compound glyph contributed by a package (`\colonapprox` is `∶≈`)
+    // reparses to the same single symbol only through its command name.
+    if s.chars().nth(1).is_some()
+        && let Some(cmd) = crate::latex::packages::package_command_for_symbol(s, kind)
+    {
+        buf.push('\\');
+        buf.push_str(cmd);
+        return;
+    }
     // A scalar large-operator glyph represented as an ordinary symbol can
     // come from a middle delimiter or an imported/direct AST. Emit an
     // explicit ordinary atom so the LaTeX command cannot be reparsed as an
@@ -2046,6 +2055,14 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
             LimitStyle::SubSup
         };
         write_operator_name(buf, s, limits);
+        return;
+    }
+    // Any other multi-character operator (`<mo>:=</mo>`, `<mo>≈:</mo>`) must
+    // keep every character: the single-glyph spellings below look only at the
+    // first one. Raw Unicode reparses losslessly, so write the characters
+    // literally (escaping TeX specials) inside one atom of the original class.
+    if s.chars().nth(1).is_some() {
+        write_compound_symbol(buf, kind, s);
         return;
     }
     // A handful of ASCII characters are active or classed specially in math
@@ -2096,6 +2113,8 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
             '#' => buf.push_str("\\#"),
             '$' => buf.push_str("\\$"),
             '%' => buf.push_str("\\%"),
+            // `\&` is an ordinary atom; KaTeX's `\And` is its binary form.
+            '&' if kind == SymbolKind::BinaryOp => buf.push_str("\\And"),
             '&' => buf.push_str("\\&"),
             '\\' => buf.push_str("\\textbackslash "),
             _ => buf.push(ch),
@@ -2127,6 +2146,11 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         buf.push_str(cmd);
         return;
     }
+    if let Some(cmd) = crate::latex::packages::package_command_for_symbol(s, kind) {
+        buf.push('\\');
+        buf.push_str(cmd);
+        return;
+    }
     // For relation/binary operators that have no direct LaTeX command in our
     // table, wrap the raw Unicode character so its math class is preserved
     // across round-trips. Without this, the parser would re-read the bare
@@ -2143,6 +2167,42 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
             buf.push('}');
         },
         _ => buf.push_str(s),
+    }
+}
+
+/// Write a multi-character symbol as one atom of class `kind` without losing
+/// any of its characters.
+fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
+    let wrapper = match kind {
+        SymbolKind::Relation => Some("\\mathrel{"),
+        SymbolKind::BinaryOp => Some("\\mathbin{"),
+        SymbolKind::Open => Some("\\mathopen{"),
+        SymbolKind::Close => Some("\\mathclose{"),
+        SymbolKind::Punctuation => Some("\\mathpunct{"),
+        SymbolKind::LargeOp => Some("\\mathop{"),
+        // Non-ASCII glyphs reparse as one ordinary run on their own; ASCII
+        // ones (`:`, `=`, `+`) carry their own classes and need the wrapper.
+        SymbolKind::Ordinary | SymbolKind::Fence | SymbolKind::Alphabetic => {
+            s.bytes().any(|b| b.is_ascii()).then_some("\\mathord{")
+        },
+    };
+    if let Some(wrapper) = wrapper {
+        buf.push_str(wrapper);
+    }
+    for ch in s.chars() {
+        if ch.is_control()
+            || matches!(
+                ch,
+                '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~' | '\''
+            )
+        {
+            write_math_char(buf, ch);
+        } else {
+            buf.push(ch);
+        }
+    }
+    if wrapper.is_some() {
+        buf.push('}');
     }
 }
 
@@ -4006,7 +4066,7 @@ mod tests {
         for (input, expected) in [
             ("\u{2113}{}^2", r"\ell^{2}"),
             (r"\ell{}^2", r"\ell^{2}"),
-            (r"\Finv{}^2", "\u{2132}^{2}"),
+            (r"\Finv{}^2", r"\Finv^{2}"),
             (r"\textohm{}^2", r"\Omega^{2}"),
         ] {
             let out1 = crate::from_latex(input).unwrap().to_latex().unwrap();
@@ -4026,7 +4086,7 @@ mod tests {
             (MathNode::Identifier(":".into()), ":^{2}"),
             (
                 MathNode::Symbol(SymbolKind::Ordinary, "\u{2132}".into()),
-                "\u{2132}^{2}",
+                r"\Finv^{2}",
             ),
         ] {
             let expr =
@@ -4430,5 +4490,48 @@ mod tests {
         let latex =
             crate::convert(style_only, crate::Format::MathML, crate::Format::LaTeX).unwrap();
         assert!(latex.starts_with(r"\mathreflectbox{"), "{latex:?}");
+    }
+
+    #[test]
+    fn multi_character_operators_keep_every_character() {
+        // Each `<mo>` used to be spelled from its first character alone, so
+        // `:=` became `:` and `≈:` became `\approx`.
+        for (mo, glyphs, expected) in [
+            (":=", ":=", r"a\mathord{:=}b"),
+            ("=:", "=:", r"a\mathrel{=:} b"),
+            ("\u{2248}:", "\u{2248}:", "a\\mathrel{\u{2248}:} b"),
+            ("\u{2212}:", "\u{2212}:", "a\\mathbin{\u{2212}:} b"),
+            (
+                "\u{2260}\u{2260}",
+                "\u{2260}\u{2260}",
+                "a\\mathrel{\u{2260}\u{2260}} b",
+            ),
+            (
+                "{&amp;}",
+                "{&amp;}",
+                r"a\mathopen{\char`\{\char`\&\char`\}}b",
+            ),
+        ] {
+            let xml = format!("<math><mi>a</mi><mo>{mo}</mo><mi>b</mi></math>");
+            let latex = crate::from_mathml(&xml).unwrap().to_latex().unwrap();
+            assert_eq!(latex, expected, "{mo}");
+            // The LaTeX reader splits the class group into one atom per
+            // glyph, so the first reparse is a fixed point that still carries
+            // every character.
+            let reparsed = crate::from_latex(&latex).unwrap();
+            let glyph_text: String = reparsed
+                .to_mathml()
+                .unwrap()
+                .split('<')
+                .filter_map(|tag| tag.split_once('>').map(|(_, text)| text))
+                .collect();
+            assert!(
+                glyph_text.contains(&format!("a{glyphs}b")),
+                "{mo}: {glyph_text}"
+            );
+            let canonical = reparsed.to_latex().unwrap();
+            let again = crate::from_latex(&canonical).unwrap().to_latex().unwrap();
+            assert_eq!(again, canonical, "{mo} is not stable");
+        }
     }
 }
