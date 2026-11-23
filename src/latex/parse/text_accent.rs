@@ -1,9 +1,10 @@
 //! Text-mode accents (`\'e`, `\v{c}`, `\"{\i}`) and special letters (`\ss`,
 //! `\o`, `\AE`) as supported by KaTeX in `\text{…}`.
 //!
-//! An accent applied to a base letter yields the precomposed Latin-1 /
-//! Latin Extended-A character when one exists, and otherwise the base followed
-//! by the combining diacritic.
+//! An accent applied to a base letter yields the precomposed character when
+//! one exists (Latin-1, Latin Extended-A/B, and a few common Latin Extended
+//! Additional letters), and otherwise the base followed by the combining
+//! diacritic.
 
 /// Combining diacritic for a text-mode accent command name (control symbol
 /// such as `'` or control word such as `v`).
@@ -53,25 +54,29 @@ pub(super) fn special_letter(name: &str) -> Option<char> {
 const COMPOSE: &[(char, &str, &str)] = &[
     (
         '\u{0301}',
-        "aeiouyAEIOUYcCnNsSzZlLrR",
-        "áéíóúýÁÉÍÓÚÝćĆńŃśŚźŹĺĹŕŔ",
+        "aeiouyAEIOUYcCnNsSzZlLrRgGæÆøØ",
+        "áéíóúýÁÉÍÓÚÝćĆńŃśŚźŹĺĹŕŔǵǴǽǼǿǾ",
     ),
-    ('\u{0300}', "aeiouAEIOU", "àèìòùÀÈÌÒÙ"),
+    ('\u{0300}', "aeiounAEIOUN", "àèìòùǹÀÈÌÒÙǸ"),
     (
         '\u{0302}',
         "aeiouAEIOUcCgGhHjJsSwWyY",
         "âêîôûÂÊÎÔÛĉĈĝĜĥĤĵĴŝŜŵŴŷŶ",
     ),
-    ('\u{0303}', "aonAONiIuU", "ãõñÃÕÑĩĨũŨ"),
+    ('\u{0303}', "aonAONiIuUeEyY", "ãõñÃÕÑĩĨũŨẽẼỹỸ"),
     ('\u{0308}', "aeiouyAEIOUY", "äëïöüÿÄËÏÖÜŸ"),
-    ('\u{0304}', "aeiouAEIOU", "āēīōūĀĒĪŌŪ"),
+    ('\u{0304}', "aeiouyAEIOUY", "āēīōūȳĀĒĪŌŪȲ"),
     ('\u{0306}', "aegiouAEGIOU", "ăĕğĭŏŭĂĔĞĬŎŬ"),
     ('\u{0307}', "cegzCEGIZ", "ċėġżĊĖĠİŻ"),
     ('\u{030A}', "auAU", "åůÅŮ"),
     ('\u{030B}', "ouOU", "őűŐŰ"),
-    ('\u{030C}', "cdenrstzlCDENRSTZL", "čďěňřšťžľČĎĚŇŘŠŤŽĽ"),
+    (
+        '\u{030C}',
+        "cdenrstzlaiougkjhCDENRSTZLAIOUGKH",
+        "čďěňřšťžľǎǐǒǔǧǩǰȟČĎĚŇŘŠŤŽĽǍǏǑǓǦǨȞ",
+    ),
     ('\u{0327}', "cCsStTgGkKlLnNrR", "çÇşŞţŢģĢķĶļĻņŅŗŖ"),
-    ('\u{0328}', "aeiuAEIU", "ąęįųĄĘĮŲ"),
+    ('\u{0328}', "aeiouAEIOU", "ąęįǫųĄĘĮǪŲ"),
 ];
 
 fn compose(base: char, mark: char) -> Option<char> {

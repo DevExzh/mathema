@@ -299,27 +299,30 @@ fn text_control_word_char(name: &str) -> Option<char> {
         })
 }
 
-/// Byte index of the `}` closing the group opened at `open`, skipping escaped
-/// braces.
-fn matching_text_brace(raw: &str, open: usize) -> Option<usize> {
+/// Matched `{`/`}` byte positions of a text run, sorted by the opening brace,
+/// skipping escaped braces. Built once per run in O(n) so repeated accent
+/// argument lookups never rescan an unbalanced run (`\'{\'{…` split by
+/// inline math).
+fn text_brace_pairs(raw: &str) -> Vec<(usize, usize)> {
     let bytes = raw.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open;
+    let mut open = Vec::new();
+    let mut pairs = Vec::new();
+    let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => i += 1,
-            b'{' => depth += 1,
+            b'{' => open.push(i),
             b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
+                if let Some(start) = open.pop() {
+                    pairs.push((start, i));
                 }
             },
             _ => {},
         }
         i += 1;
     }
-    None
+    pairs.sort_unstable();
+    pairs
 }
 
 /// Apply a text-mode accent to the argument starting at `pos` (after optional
@@ -334,6 +337,7 @@ fn push_text_accent(
     pos: usize,
     mark: char,
     depth: usize,
+    braces: &mut Option<Vec<(usize, usize)>>,
 ) -> Option<usize> {
     if depth >= MAX_TEXT_ACCENT_DEPTH {
         // Drop the accent; the caller decodes its argument inline.
@@ -346,7 +350,11 @@ fn push_text_accent(
     }
     match *bytes.get(i)? {
         b'{' => {
-            let close = matching_text_brace(raw, i)?;
+            let pairs = braces.get_or_insert_with(|| text_brace_pairs(raw));
+            let close = pairs
+                .binary_search_by_key(&i, |&(open, _)| open)
+                .ok()
+                .map(|index| pairs[index].1)?;
             let mut base = String::new();
             push_text_content(&mut base, &raw[i + 1..close], depth + 1);
             if base.is_empty() {
@@ -378,6 +386,7 @@ fn push_text_accent(
 }
 
 fn push_text_content(out: &mut String, raw: &str, depth: usize) {
+    let mut braces = None;
     let bytes = raw.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -451,7 +460,8 @@ fn push_text_content(out: &mut String, raw: &str, depth: usize) {
                             let ch = raw[i..].chars().next().unwrap();
                             i += ch.len_utf8();
                             if let Some(mark) = text_accent::accent_mark(&raw[start..i])
-                                && let Some(next) = push_text_accent(out, raw, i, mark, depth)
+                                && let Some(next) =
+                                    push_text_accent(out, raw, i, mark, depth, &mut braces)
                             {
                                 i = next;
                             } else {
@@ -466,7 +476,9 @@ fn push_text_content(out: &mut String, raw: &str, depth: usize) {
                             i += 1;
                         }
                         if let Some(mark) = text_accent::accent_mark(name) {
-                            if let Some(next) = push_text_accent(out, raw, i, mark, depth) {
+                            if let Some(next) =
+                                push_text_accent(out, raw, i, mark, depth, &mut braces)
+                            {
                                 i = next;
                             }
                         } else if let Some(ch) = text_accent::special_letter(name) {

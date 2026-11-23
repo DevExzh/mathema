@@ -24,6 +24,14 @@ fn skip_control_word_space<'a>(token: &str, input: &'a str) -> &'a str {
     }
 }
 
+/// Whether a text accent control word (`\v`, `\c`) is followed by a base its
+/// text decoder can apply to within the same run, rather than ending the box
+/// or meeting inline math.
+fn accent_has_argument(after: &str) -> bool {
+    let next = after.trim_start_matches(|ch: char| ch.is_ascii_whitespace());
+    !next.is_empty() && !next.starts_with(['}', '$']) && !next.starts_with(r"\(")
+}
+
 /// An escaped dollar is a control symbol. Dollars in nested math groups
 /// (including a nested text argument) don't end the surrounding math run.
 fn math_end<'a>(input: &'a str, close: &str) -> Parsed<'a, (&'a str, &'a str)> {
@@ -166,7 +174,8 @@ impl LatexCompactParser {
                             name != "relax"
                                 && !name.is_empty()
                                 && name.bytes().all(|b| b.is_ascii_alphabetic())
-                                && super::text_accent::accent_mark(name).is_none()
+                                && (super::text_accent::accent_mark(name).is_none()
+                                    || !accent_has_argument(after))
                                 && super::text_accent::special_letter(name).is_none()
                                 && crate::unicode::symbols::latex_to_unicode(name).is_none()
                                 && crate::latex::packages::lookup_package_symbol(name).is_none()

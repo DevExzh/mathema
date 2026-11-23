@@ -4661,9 +4661,11 @@ fn text_mode_accents_and_special_letters() {
         (r"\text{\v {s}x}", "šx"),
         (r#"\text{\'{\i}\^\j \"\i x}"#, "íĵïx"),
         // No precomposed form: base followed by a combining mark.
+        (r"\text{\'{q}\c{\i}\d{a}}", "q\u{301}\u{131}\u{327}a\u{323}"),
+        // Latin Extended-B forms (pinyin caron, etc.).
         (
-            r"\text{\'{q}\v{\i}\c{\i}\d{a}}",
-            "q\u{301}\u{131}\u{30C}\u{131}\u{327}a\u{323}",
+            r"\text{\v a\v{\i}\v o\v u\v{U}\'g\'{\o}\k o\~e}",
+            "ǎǐǒǔǓǵǿǫẽ",
         ),
         // A multi-letter group accents its first letter; nested accents compose.
         (r"\text{\'{ab}\v{\'{e}}}", "áb\u{e9}\u{30C}"),
@@ -4720,4 +4722,46 @@ fn deeply_nested_text_accents_stay_bounded() {
         "{:?}",
         parsed.expr().nodes
     );
+}
+
+#[test]
+fn reflectbox_accepts_text_accents_and_letters() {
+    for (input, expected) in [
+        (r"\reflectbox{\ss}", "ß"),
+        (r"\reflectbox{\v c}", "č"),
+        (r"\reflectbox{\'e}", "é"),
+    ] {
+        let nodes = crate::from_latex(input).unwrap().expr().nodes;
+        assert!(
+            matches!(&nodes[..], [MathNode::Reflect { content, .. }]
+                if matches!(&**content, MathNode::Text(_, text) if text == expected)),
+            "{input}: {nodes:?}"
+        );
+    }
+    // An accent control word without a base is still rejected in box syntax.
+    for input in [
+        r"\reflectbox{\c}",
+        r"\reflectbox{\b}",
+        r"\reflectbox{\v $x$}",
+    ] {
+        assert!(crate::from_latex(input).is_err(), "{input}");
+    }
+}
+
+#[test]
+fn unbalanced_accent_groups_in_split_text_runs_stay_linear() {
+    // Inline math or a nested font command splits the text into runs, so the
+    // first run holds many `\'{` with no closing brace. Each accent must not
+    // rescan the rest of the run.
+    let n = 100_000;
+    for mid in ["$x$", r"\textbf{x}"] {
+        let input = format!(r"\text{{{}{mid}{}}}", r"\'{".repeat(n), "}".repeat(n));
+        let start = std::time::Instant::now();
+        crate::from_latex(&input).unwrap();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "{mid}: {:?}",
+            start.elapsed()
+        );
+    }
 }
