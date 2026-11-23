@@ -485,6 +485,14 @@ pub enum MathNode {
         col_seps: u32,
         /// Horizontal rule positions from native `\hline` commands.
         row_seps: u32,
+        /// The rules of `col_seps` drawn dashed (`:` in the preamble, MathML
+        /// `dashed`). Bits without a rule in `col_seps` are ignored.
+        #[cfg_attr(feature = "serde", serde(default))]
+        dashed_col_seps: u32,
+        /// The rules of `row_seps` drawn dashed (`\hdashline`, MathML
+        /// `dashed`). Bits without a rule in `row_seps` are ignored.
+        #[cfg_attr(feature = "serde", serde(default))]
+        dashed_row_seps: u32,
     },
     /// A native table cell occupying multiple logical columns.
     SpannedCell {
@@ -1272,6 +1280,8 @@ mod tests {
                 array_style: true,
                 col_seps: 0,
                 row_seps: 0,
+                dashed_col_seps: 0,
+                dashed_row_seps: 0,
             },
             MathNode::StructuredOperator {
                 content: Box::new(MathNode::Identifier("f".into())),

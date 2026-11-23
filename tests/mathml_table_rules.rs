@@ -89,38 +89,91 @@ fn standard_frame_and_line_lists_follow_mathml_repeat_last_rules() {
 }
 
 #[test]
-fn dashed_rules_are_dropped_with_reader_diagnostics_not_solidified() {
+fn dashed_rules_survive_mathml_latex_and_heap_round_trips() {
     let xml = r#"<math><mtable frame="dashed" columnlines="dashed solid" rowlines="none dashed"><mtr><mtd><mi>a</mi></mtd><mtd><mi>b</mi></mtd><mtd><mi>c</mi></mtd></mtr><mtr><mtd><mi>d</mi></mtd><mtd><mi>e</mi></mtd><mtd><mi>f</mi></mtd></mtr><mtr><mtd><mi>g</mi></mtd><mtd><mi>h</mi></mtd><mtd><mi>i</mi></mtd></mtr></mtable></math>"#;
     let parsed = mathema::from_mathml(xml).unwrap();
-    let warnings: Vec<_> = parsed
-        .diagnostics()
-        .iter()
-        .filter(|diag| diag.kind == DiagnosticKind::Warning)
-        .map(|diag| diag.message.as_str())
-        .collect();
-    assert_eq!(warnings.len(), 3, "{warnings:?}");
-    assert!(warnings.iter().any(|message| message.contains("frame")));
     assert!(
-        warnings
-            .iter()
-            .any(|message| message.contains("columnlines"))
+        parsed.diagnostics().is_empty(),
+        "{:?}",
+        parsed.diagnostics()
     );
-    assert!(warnings.iter().any(|message| message.contains("rowlines")));
     match native_array(&parsed.expr()) {
         MathNode::NativeArray {
-            col_seps, row_seps, ..
+            col_seps,
+            row_seps,
+            dashed_col_seps,
+            dashed_row_seps,
+            ..
         } => {
-            // Only the solid interior column line survives.
-            assert_eq!(*col_seps, 0b0100);
-            assert_eq!(*row_seps, 0);
+            // The dashed frame adds both dashed edges on each axis.
+            assert_eq!(*col_seps, 0b1111);
+            assert_eq!(*dashed_col_seps, 0b1011);
+            assert_eq!(*row_seps, 0b1101);
+            assert_eq!(*dashed_row_seps, 0b1101);
         },
         other => panic!("expected NativeArray, got {other:?}"),
     }
     let canonical = parsed.to_mathml().unwrap();
-    assert!(!canonical.contains("dashed"), "{canonical}");
+    assert_eq!(
+        MathmlWriter::write(&parsed.expr(), &Config::default()).unwrap(),
+        canonical
+    );
+    for attr in [
+        r#"frame="dashed""#,
+        r#"columnlines="dashed solid""#,
+        r#"rowlines="none dashed""#,
+    ] {
+        assert!(canonical.contains(attr), "{attr}: {canonical}");
+    }
+    let reimported = mathema::from_mathml(&canonical).unwrap();
+    assert_eq!(reimported.to_mathml().unwrap(), canonical);
+
+    let latex = parsed.to_latex().unwrap();
+    assert!(latex.contains(r"\hdashline"), "{latex}");
+    let via_latex = mathema::from_latex(&latex).unwrap();
+    match native_array(&via_latex.expr()) {
+        MathNode::NativeArray {
+            dashed_col_seps,
+            dashed_row_seps,
+            ..
+        } => {
+            assert_eq!(*dashed_col_seps, 0b1011);
+            assert_eq!(*dashed_row_seps, 0b1101);
+        },
+        other => panic!("expected NativeArray, got {other:?}"),
+    }
+    #[cfg(feature = "render")]
+    assert_eq!(parsed.to_svg().unwrap(), reimported.to_svg().unwrap());
+}
+
+#[test]
+fn latex_dashed_rules_round_trip_through_mathml() {
+    let source = r"\begin{array}{|c:c|}\hdashline a&b\\\hline c&d\\\hdashline e&f\end{array}";
+    let parsed = mathema::from_latex(source).unwrap();
+    let latex = parsed.to_latex().unwrap();
+    assert_eq!(
+        latex,
+        r"\begin{array}{|c:c|} \hdashline a & b \\ \hline c & d \\ \hdashline e & f \end{array}"
+    );
+    let mathml = parsed.to_mathml().unwrap();
+    // Mixed solid and dashed edges cannot be one MathML frame.
+    assert!(!mathml.contains("frame="), "{mathml}");
+    assert!(mathml.contains(r#"columnlines="dashed""#), "{mathml}");
+    assert!(mathml.contains(r#"rowlines="solid dashed""#), "{mathml}");
     assert!(
-        canonical.contains(r#"columnlines="none solid""#),
-        "{canonical}"
+        mathml.contains(r#"data-mathema-dashed-row-seps="0x1""#),
+        "{mathml}"
+    );
+    let reimported = mathema::from_mathml(&mathml).unwrap();
+    assert!(reimported.diagnostics().is_empty());
+    assert_eq!(reimported.to_latex().unwrap(), latex);
+    assert_eq!(reimported.to_mathml().unwrap(), mathml);
+    // A solid rule wins at a boundary that also has a dashed one.
+    let mixed =
+        mathema::from_latex(r"\begin{array}{c|:c}a&b\\\hline\hdashline c&d\end{array}").unwrap();
+    assert_eq!(
+        mixed.to_latex().unwrap(),
+        r"\begin{array}{c|c} a & b \\ \hline c & d \end{array}"
     );
 }
 

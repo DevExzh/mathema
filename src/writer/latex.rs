@@ -1,4 +1,4 @@
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{Config, Result};
@@ -297,6 +297,24 @@ fn guard_row_break_argument(buf: &mut LatexBuffer, start: usize) {
             buf.insert(at, '{');
         },
         _ => {},
+    }
+}
+
+/// The preamble rule at a column boundary: arydshln's `:` when dashed.
+fn column_rule(dashes: RuleDashes, boundary: usize) -> char {
+    if dashes.cols & (1 << boundary) != 0 {
+        ':'
+    } else {
+        '|'
+    }
+}
+
+/// The rule command at a row boundary, with its trailing space.
+fn row_rule(dashes: RuleDashes, boundary: usize) -> &'static str {
+    if dashes.rows & (1 << boundary) != 0 {
+        r"\hdashline "
+    } else {
+        r"\hline "
     }
 }
 
@@ -1380,6 +1398,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         } => {
             let columns = arena.children(col_aligns);
             let cell_ids = arena.children(cells);
+            let dashes = arena.rule_dashes(id);
             let nc = usize::from(num_cols.max(1));
             // Preserve the display-style alignment semantics when this table
             // came from an AMS environment. An ordinary array or an isolated
@@ -1456,7 +1475,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 }
                 for (index, &id) in columns.iter().enumerate() {
                     if index < 32 && (col_seps & (1 << index)) != 0 {
-                        buf.push('|');
+                        buf.push(column_rule(dashes, index));
                     }
                     if let CompactNode::ColAlign(col) = *arena.node(id) {
                         buf.push(match col {
@@ -1467,7 +1486,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     }
                 }
                 if columns.len() < 32 && (col_seps & (1 << columns.len())) != 0 {
-                    buf.push('|');
+                    buf.push(column_rule(dashes, columns.len()));
                 }
                 if trim_edges {
                     buf.push_str("@{}");
@@ -1479,7 +1498,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             for (row_idx, row) in cell_ids.chunks(nc).enumerate() {
                 let row_start = if row_idx == 0 {
                     if row_seps & 1 != 0 {
-                        buf.push_str(r"\hline ");
+                        buf.push_str(row_rule(dashes, 0));
                     }
                     None
                 } else {
@@ -1487,7 +1506,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     // `\hline` already separates the break from the row.
                     let start = buf.len();
                     if row_idx < 32 && (row_seps & (1 << row_idx)) != 0 {
-                        buf.push_str(r"\hline ");
+                        buf.push_str(row_rule(dashes, row_idx));
                     }
                     Some(start)
                 };
@@ -1560,7 +1579,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 }
             }
             if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {
-                buf.push_str(r" \\ \hline");
+                buf.push_str(r" \\ ");
+                buf.push_str(row_rule(dashes, num_rows).trim_end());
             }
             buf.push_str(r" \end{");
             buf.push_str(env);

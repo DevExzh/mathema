@@ -7,7 +7,7 @@ use super::metrics::{self, GlyphMetrics};
 use super::params::TexParams;
 use super::spacing::{self, AtomType};
 use super::style::MathStyle;
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 /// Layout engine: converts MathExpr → LayoutBox tree.
 /// Applies TeX typesetting rules for positioning.
@@ -683,6 +683,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             false,
             0,
             0,
+            RuleDashes::default(),
             ctx,
         ),
         MathNode::NativeArray {
@@ -693,6 +694,8 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             array_style,
             col_seps,
             row_seps,
+            dashed_col_seps,
+            dashed_row_seps,
         } => layout_array(
             false,
             columns,
@@ -702,6 +705,10 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             *array_style,
             *col_seps,
             *row_seps,
+            RuleDashes {
+                cols: dashed_col_seps & col_seps,
+                rows: dashed_row_seps & row_seps,
+            },
             ctx,
         ),
         MathNode::Matrix {
@@ -725,6 +732,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                 false,
                 0,
                 0,
+                RuleDashes::default(),
                 ctx,
             )
         },
@@ -1832,6 +1840,7 @@ fn layout_node_arena(
             add_jot,
             col_seps,
             row_seps,
+            ast.rule_dashes(id),
             array_style,
             arena,
             ctx,

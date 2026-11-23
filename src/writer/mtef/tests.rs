@@ -43,6 +43,8 @@ fn write_reports_native_rule_padding_normalization() {
             array_style: false,
             col_seps,
             row_seps,
+            dashed_col_seps: 0,
+            dashed_row_seps: 0,
         }]);
         let compact = CompactExpr::from_math_expr(&expr).unwrap();
         let (_, diagnostics) =

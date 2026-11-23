@@ -116,6 +116,8 @@ mod tests {
                 array_style: true,
                 col_seps: 1,
                 row_seps: 1,
+                dashed_col_seps: 0,
+                dashed_row_seps: 0,
             }],
             DisplayStyle::Inline,
         );

@@ -102,6 +102,7 @@ fn canonical(node: &mut MathNode) {
         array_style: true,
         col_seps: 0,
         row_seps: 0,
+        ..
     } = node
     {
         *node = MathNode::Array {

@@ -326,6 +326,42 @@ fn row_rules<'a>(
         .filter_map(move |(index, boundary)| (mask & (1 << index) != 0).then_some(boundary))
 }
 
+/// The filled path of a `width` × `height` rule. A dashed rule is a run of
+/// dashes along its long side, `vertical` or horizontal, with arydshln's
+/// default 4pt dash and 4pt gap (at 10pt).
+fn rule_path(width: f64, height: f64, dashed: bool, vertical: bool, size: f64) -> String {
+    let length = if vertical { height } else { width };
+    let dash = 0.4 * size;
+    // Very long or degenerate rules stay solid rather than emitting a huge path.
+    const MAX_DASHES: f64 = 4096.0;
+    if !dashed || !(dash > 0.0 && length.is_finite() && length / (2.0 * dash) < MAX_DASHES) {
+        return format!(
+            "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
+            width, width, height, height
+        );
+    }
+    let mut path = String::from("F:");
+    let mut start = 0.0;
+    while start < length {
+        let end = (start + dash).min(length);
+        let (x0, y0, x1, y1) = if vertical {
+            (0.0, start, width, end)
+        } else {
+            (start, 0.0, end, height)
+        };
+        path.push_str(&format!(
+            "M{x0:.4},{y0:.4} L{x1:.4},{y0:.4} L{x1:.4},{y1:.4} L{x0:.4},{y1:.4} Z"
+        ));
+        start += 2.0 * dash;
+    }
+    path
+}
+
+/// Split a rule mask into its solid and dashed rules.
+fn rule_styles(mask: u32, dashed: u32) -> [(u32, bool); 2] {
+    [(mask & !dashed, false), (mask & dashed, true)]
+}
+
 /// amsmath's smallmatrix uses no minimum strut. In a regular array the
 /// height and depth of the strut split the stretched baseline skip 70:30.
 fn array_strut(smallmatrix: bool, size: f64, stretch: f64) -> (f64, f64) {
@@ -367,6 +403,7 @@ pub(super) fn layout_array(
     array_style: bool,
     col_seps: u32,
     row_seps: u32,
+    dashes: RuleDashes,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let size = ctx.size();
@@ -448,13 +485,17 @@ pub(super) fn layout_array(
             let template = CellTemplate::heap(source);
             let (width, dx) = grid.place(col, template, cell.width, columns);
             template.apply_rules(col, &mut visible_rules);
-            template.paint_rules(size, cursor_x, width, |x| cell_rules.push((x, i, cursor_y)));
+            template.paint_rules(size, cursor_x, width, |x| {
+                cell_rules.push((x, i, cursor_y, false))
+            });
             children.push(PositionedBox::new(cursor_x + dx, cursor_y, cell));
             cursor_x += width;
             col += template.span;
         }
         if visible_rules != 0 {
-            cell_rules.extend(grid.rules(visible_rules).map(|x| (x, i, cursor_y)));
+            for (mask, dashed) in rule_styles(visible_rules, dashes.cols) {
+                cell_rules.extend(grid.rules(mask).map(|x| (x, i, cursor_y, dashed)));
+            }
         }
         cursor_y += row_depths[i];
     }
@@ -480,32 +521,28 @@ pub(super) fn layout_array(
     if col_seps != 0 && !has_override {
         let rule_w = 0.04 * size;
         let rule_total_h = box_height + box_depth;
-        for bx in grid.rules(col_seps) {
-            let path = format!(
-                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                rule_w, rule_w, rule_total_h, rule_total_h
-            );
-            children.push(PositionedBox::new(
-                bx - rule_w / 2.0,
-                0.0,
-                LayoutBox {
-                    width: rule_w,
-                    height: box_height,
-                    depth: box_depth,
-                    kind: BoxKind::SvgPath(path),
-                },
-            ));
+        for (mask, dashed) in rule_styles(col_seps, dashes.cols) {
+            for bx in grid.rules(mask) {
+                let path = rule_path(rule_w, rule_total_h, dashed, true, size);
+                children.push(PositionedBox::new(
+                    bx - rule_w / 2.0,
+                    0.0,
+                    LayoutBox {
+                        width: rule_w,
+                        height: box_height,
+                        depth: box_depth,
+                        kind: BoxKind::SvgPath(path),
+                    },
+                ));
+            }
         }
     }
 
     if !cell_rules.is_empty() {
         let rule_w = 0.04 * size;
-        for (bx, row, baseline) in cell_rules {
+        for (bx, row, baseline, dashed) in cell_rules {
             let rule_total_h = row_heights[row] + row_depths[row];
-            let path = format!(
-                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                rule_w, rule_w, rule_total_h, rule_total_h
-            );
+            let path = rule_path(rule_w, rule_total_h, dashed, true, size);
             children.push(PositionedBox::new(
                 bx - rule_w / 2.0,
                 box_height - baseline,
@@ -521,21 +558,20 @@ pub(super) fn layout_array(
 
     if row_seps != 0 {
         let rule_t = 0.04 * size;
-        for boundary in row_rules(&row_heights, &row_depths, row_seps) {
-            let path = format!(
-                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                total_width, total_width, rule_t, rule_t
-            );
-            children.push(PositionedBox::new(
-                0.0,
-                box_height - boundary - rule_t / 2.0,
-                LayoutBox {
-                    width: total_width,
-                    height: rule_t,
-                    depth: 0.0,
-                    kind: BoxKind::SvgPath(path),
-                },
-            ));
+        for (mask, dashed) in rule_styles(row_seps, dashes.rows) {
+            for boundary in row_rules(&row_heights, &row_depths, mask) {
+                let path = rule_path(total_width, rule_t, dashed, false, size);
+                children.push(PositionedBox::new(
+                    0.0,
+                    box_height - boundary - rule_t / 2.0,
+                    LayoutBox {
+                        width: total_width,
+                        height: rule_t,
+                        depth: 0.0,
+                        kind: BoxKind::SvgPath(path),
+                    },
+                ));
+            }
         }
     }
 
@@ -559,6 +595,7 @@ pub(super) fn layout_array_arena(
     add_jot: bool,
     col_seps: u32,
     row_seps: u32,
+    dashes: RuleDashes,
     array_style: bool,
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
@@ -671,7 +708,9 @@ pub(super) fn layout_array_arena(
             let cell = cell_layout_ids[idx];
             let (width, dx) = grid.place(j, template, arena.get(cell).width, &columns);
             template.apply_rules(j, &mut visible_rules);
-            template.paint_rules(size, cursor_x, width, |x| cell_rules.push((x, i, cursor_y)));
+            template.paint_rules(size, cursor_x, width, |x| {
+                cell_rules.push((x, i, cursor_y, false))
+            });
             arena.push_child(ArenaPositionedBox {
                 dx: cursor_x + dx,
                 dy: box_height - cursor_y,
@@ -681,7 +720,9 @@ pub(super) fn layout_array_arena(
             j += template.span;
         }
         if visible_rules != 0 {
-            cell_rules.extend(grid.rules(visible_rules).map(|x| (x, i, cursor_y)));
+            for (mask, dashed) in rule_styles(visible_rules, dashes.cols) {
+                cell_rules.extend(grid.rules(mask).map(|x| (x, i, cursor_y, dashed)));
+            }
         }
         cursor_y += row_depths[i];
     }
@@ -693,33 +734,29 @@ pub(super) fn layout_array_arena(
         let rule_total_h = box_height + (half - axis);
         let box_depth = half - axis;
 
-        for bx in grid.rules(col_seps) {
-            let path = format!(
-                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                rule_w, rule_w, rule_total_h, rule_total_h
-            );
-            let rule_id = arena.alloc(ArenaLayoutBox {
-                width: rule_w,
-                height: box_height,
-                depth: box_depth,
-                kind: ArenaBoxKind::SvgPath(path),
-            });
-            arena.push_child(ArenaPositionedBox {
-                dx: bx - rule_w / 2.0,
-                dy: 0.0,
-                id: rule_id,
-            });
+        for (mask, dashed) in rule_styles(col_seps, dashes.cols) {
+            for bx in grid.rules(mask) {
+                let path = rule_path(rule_w, rule_total_h, dashed, true, size);
+                let rule_id = arena.alloc(ArenaLayoutBox {
+                    width: rule_w,
+                    height: box_height,
+                    depth: box_depth,
+                    kind: ArenaBoxKind::SvgPath(path),
+                });
+                arena.push_child(ArenaPositionedBox {
+                    dx: bx - rule_w / 2.0,
+                    dy: 0.0,
+                    id: rule_id,
+                });
+            }
         }
     }
 
     if !cell_rules.is_empty() {
         let rule_w = 0.04 * size;
-        for (bx, row, baseline) in cell_rules {
+        for (bx, row, baseline, dashed) in cell_rules {
             let rule_total_h = row_heights[row] + row_depths[row];
-            let path = format!(
-                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                rule_w, rule_w, rule_total_h, rule_total_h
-            );
+            let path = rule_path(rule_w, rule_total_h, dashed, true, size);
             let rule_id = arena.alloc(ArenaLayoutBox {
                 width: rule_w,
                 height: row_heights[row],
@@ -737,23 +774,22 @@ pub(super) fn layout_array_arena(
     // Add horizontal rules (\hline) if row_seps is non-zero.
     if row_seps != 0 {
         let rule_t = 0.04 * size;
-        for by in row_rules(&row_heights, &row_depths, row_seps) {
-            let line_dy = box_height - by;
-            let path = format!(
-                "F:M0,0 L{:.4},0 L{:.4},{:.4} L0,{:.4} Z",
-                total_width, total_width, rule_t, rule_t
-            );
-            let rule_id = arena.alloc(ArenaLayoutBox {
-                width: total_width,
-                height: rule_t,
-                depth: 0.0,
-                kind: ArenaBoxKind::SvgPath(path),
-            });
-            arena.push_child(ArenaPositionedBox {
-                dx: 0.0,
-                dy: line_dy - rule_t / 2.0,
-                id: rule_id,
-            });
+        for (mask, dashed) in rule_styles(row_seps, dashes.rows) {
+            for by in row_rules(&row_heights, &row_depths, mask) {
+                let line_dy = box_height - by;
+                let path = rule_path(total_width, rule_t, dashed, false, size);
+                let rule_id = arena.alloc(ArenaLayoutBox {
+                    width: total_width,
+                    height: rule_t,
+                    depth: 0.0,
+                    kind: ArenaBoxKind::SvgPath(path),
+                });
+                arena.push_child(ArenaPositionedBox {
+                    dx: 0.0,
+                    dy: line_dy - rule_t / 2.0,
+                    id: rule_id,
+                });
+            }
         }
     }
 

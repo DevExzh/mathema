@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 
-use super::arena::AstArena;
+use super::arena::{AstArena, RuleDashes};
 use super::{
     AccentPosition, ColumnAlign, DisplayStyle, FencedItem, FractionKind, LimitStyle, MathAtomType,
     MathExpr, MathNode, MatrixKind, OperatorAttr, OperatorNameForm, PhantomKind, Rational,
@@ -723,6 +723,8 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             array_style,
             col_seps,
             row_seps,
+            dashed_col_seps,
+            dashed_row_seps,
         } => push_array_node_with_geometry(
             arena,
             columns,
@@ -733,7 +735,10 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             *col_seps,
             *row_seps,
             None,
-            true,
+            Some(RuleDashes {
+                cols: *dashed_col_seps,
+                rows: *dashed_row_seps,
+            }),
         ),
         MathNode::Matrix {
             kind,
@@ -910,7 +915,7 @@ fn push_array_node(
         0,
         0,
         environment,
-        false,
+        None,
     )
 }
 
@@ -925,7 +930,7 @@ fn push_array_node_with_geometry(
     col_seps: u32,
     row_seps: u32,
     environment: Option<MatrixKind>,
-    native_array: bool,
+    native_array: Option<RuleDashes>,
 ) -> NodeId {
     let widest = rows
         .iter()
@@ -997,8 +1002,8 @@ fn push_array_node_with_geometry(
     if let Some(environment) = environment {
         arena.mark_array_environment(id, environment);
     }
-    if native_array {
-        arena.mark_native_array(id);
+    if let Some(dashes) = native_array {
+        arena.mark_native_array(id, dashes);
     }
     id
 }
@@ -1225,6 +1230,7 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                     || row_seps != 0
                     || arena.is_native_array(id) =>
                 {
+                    let dashes = arena.rule_dashes(id);
                     MathNode::NativeArray {
                         columns,
                         rows,
@@ -1233,6 +1239,8 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
                         array_style,
                         col_seps,
                         row_seps,
+                        dashed_col_seps: dashes.cols,
+                        dashed_row_seps: dashes.rows,
                     }
                 },
                 None => MathNode::Array {
@@ -1480,6 +1488,8 @@ mod tests {
             array_style: true,
             col_seps: 0,
             row_seps: 0,
+            dashed_col_seps: 0,
+            dashed_row_seps: 0,
         }]);
         let compact = CompactExpr::from_math_expr(&expr).unwrap();
         assert_eq!(compact.to_math_expr(), expr);

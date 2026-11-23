@@ -452,6 +452,8 @@ mod tests {
             array_style: true,
             col_seps: 0,
             row_seps: 0,
+            dashed_col_seps: 0,
+            dashed_row_seps: 0,
         };
         for node in [&array, &matrix, &native] {
             assert_eq!(classify_node(node), AtomType::Ord);

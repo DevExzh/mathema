@@ -7,8 +7,16 @@ use super::{ColumnAlign, MatrixKind, SpaceBasis, SpanBoundary};
 enum Provenance {
     SpaceBasis(SpaceBasis),
     Array(MatrixKind),
-    NativeArray,
+    NativeArray(RuleDashes),
     MatrixPadding,
+}
+
+/// The native table rules drawn dashed, parallel to an array's `col_seps`
+/// and `row_seps` masks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RuleDashes {
+    pub(crate) cols: u32,
+    pub(crate) rows: u32,
 }
 
 type ProvenanceEntry = (NodeId, Provenance);
@@ -370,16 +378,33 @@ impl AstArena {
     }
 
     #[inline]
-    pub(crate) fn mark_native_array(&mut self, id: NodeId) {
+    pub(crate) fn mark_native_array(&mut self, id: NodeId, dashes: RuleDashes) {
         if !self.size_overflow {
-            self.provenance.insert(id, Provenance::NativeArray);
+            self.provenance.insert(id, Provenance::NativeArray(dashes));
         }
     }
 
     #[inline]
     pub(crate) fn is_native_array(&self, id: NodeId) -> bool {
-        matches!(self.provenance.get(id), Some(Provenance::NativeArray))
+        matches!(self.provenance.get(id), Some(Provenance::NativeArray(_)))
             && matches!(self.node(id), CompactNode::Array { .. })
+    }
+
+    /// The dashed rules of a native array, limited to the rules it draws.
+    #[inline]
+    pub(crate) fn rule_dashes(&self, id: NodeId) -> RuleDashes {
+        match (self.provenance.get(id), self.node(id)) {
+            (
+                Some(Provenance::NativeArray(dashes)),
+                &CompactNode::Array {
+                    col_seps, row_seps, ..
+                },
+            ) => RuleDashes {
+                cols: dashes.cols & col_seps,
+                rows: dashes.rows & row_seps,
+            },
+            _ => RuleDashes::default(),
+        }
     }
 
     /// Return matrix provenance only when the current compact array still has

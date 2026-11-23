@@ -2536,3 +2536,28 @@ fn svg_complex_fraction_tower() {
     let svg = latex_to_svg(r"\frac{1}{\frac{1}{\frac{1}{x+1}+1}+1}");
     assert_valid_svg(&svg, "fraction tower");
 }
+
+#[test]
+fn dashed_table_rules_are_drawn_as_dashes() {
+    // Count filled subpaths: a dashed rule is several dashes, a solid one is
+    // one rectangle.
+    let subpaths = |svg: &str| svg.matches("M").count();
+    for (dashed, solid) in [
+        (
+            r"\begin{array}{cc}a&b\\\hdashline c&d\end{array}",
+            r"\begin{array}{cc}a&b\\\hline c&d\end{array}",
+        ),
+        (
+            r"\begin{array}{c:c}a&b\\c&d\end{array}",
+            r"\begin{array}{c|c}a&b\\c&d\end{array}",
+        ),
+    ] {
+        for render in [latex_to_svg, render_latex, compact_latex_to_svg] {
+            let (dashed, solid) = (render(dashed), render(solid));
+            assert!(
+                subpaths(&dashed) > subpaths(&solid) + 1,
+                "{dashed}\n{solid}"
+            );
+        }
+    }
+}

@@ -4,7 +4,7 @@ use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use std::borrow::Cow;
 use std::io::Cursor;
 
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, Result};
@@ -789,9 +789,21 @@ fn write_node_in(
             } else {
                 table_width(rows, columns.len())?
             };
+            let dashes = match node {
+                MathNode::NativeArray {
+                    dashed_col_seps,
+                    dashed_row_seps,
+                    ..
+                } => RuleDashes {
+                    cols: dashed_col_seps & col_seps,
+                    rows: dashed_row_seps & row_seps,
+                },
+                _ => RuleDashes::default(),
+            };
             table_rule_attributes(
                 col_seps,
                 row_seps,
+                dashes,
                 num_cols,
                 rows.len(),
                 (array_style
@@ -1823,6 +1835,7 @@ fn write_node_fast_in(
             table_rule_attributes(
                 col_seps,
                 row_seps,
+                arena.rule_dashes(id),
                 nc,
                 cell_ids.len().div_ceil(nc.max(1)),
                 (array_style || (arena.is_native_array(id) && col_seps == 0 && row_seps == 0))
@@ -2122,29 +2135,37 @@ fn table_rule_bit(mask: u32, boundary: usize) -> bool {
     boundary < u32::BITS as usize && mask & (1u32 << boundary) != 0
 }
 
+/// The MathML line style of a native rule boundary.
+fn table_rule_style(mask: u32, dashed: u32, boundary: usize) -> &'static str {
+    if !table_rule_bit(mask, boundary) {
+        "none"
+    } else if table_rule_bit(dashed, boundary) {
+        "dashed"
+    } else {
+        "solid"
+    }
+}
+
 /// Encode an interior rule mask using MathML's repeat-last line-list rule.
 /// Trailing `none` is retained when it is needed to prevent a preceding
 /// `solid` from repeating across the rest of the table.
-fn table_line_attr(mask: u32, cells: usize) -> Option<String> {
+fn table_line_attr(mask: u32, dashed: u32, cells: usize) -> Option<String> {
     let limit = cells.saturating_sub(1).min(u32::BITS as usize);
     if mask & !1 == 0 || !(1..=limit).any(|i| table_rule_bit(mask, i)) {
         return None;
     }
+    let style = |i| table_rule_style(mask, dashed, i);
     // Boundary 32 can contribute the final "none" after a solid bit 31.
     let end = (2..=limit)
         .rev()
-        .find(|&i| table_rule_bit(mask, i) != table_rule_bit(mask, i - 1))
+        .find(|&i| style(i) != style(i - 1))
         .unwrap_or(1);
     let mut value = String::new();
     for i in 1..=end {
         if i > 1 {
             value.push(' ');
         }
-        value.push_str(if table_rule_bit(mask, i) {
-            "solid"
-        } else {
-            "none"
-        });
+        value.push_str(style(i));
     }
     Some(value)
 }
@@ -2152,37 +2173,62 @@ fn table_line_attr(mask: u32, cells: usize) -> Option<String> {
 fn table_rule_attributes(
     col_seps: u32,
     row_seps: u32,
+    dashes: RuleDashes,
     columns: usize,
     rows: usize,
     array_style: Option<bool>,
     mut attr: impl FnMut(&'static str, &str),
 ) {
-    if let Some(value) = table_line_attr(col_seps, columns) {
+    if let Some(value) = table_line_attr(col_seps, dashes.cols, columns) {
         attr("columnlines", &value);
     }
-    if let Some(value) = table_line_attr(row_seps, rows) {
+    if let Some(value) = table_line_attr(row_seps, dashes.rows, rows) {
         attr("rowlines", &value);
     }
-    if table_rule_bit(col_seps, 0)
-        && table_rule_bit(col_seps, columns)
-        && table_rule_bit(row_seps, 0)
-        && table_rule_bit(row_seps, rows)
-    {
-        attr("frame", "solid");
+    let edges = [
+        (col_seps, dashes.cols, columns),
+        (row_seps, dashes.rows, rows),
+    ]
+    .map(|(mask, dashed, size)| [0, size].map(|boundary| table_rule_style(mask, dashed, boundary)));
+    let frame = match edges.as_flattened() {
+        [first, rest @ ..] if *first != "none" && rest.iter().all(|style| style == first) => {
+            Some(*first)
+        },
+        _ => None,
+    };
+    if let Some(frame) = frame {
+        attr("frame", frame);
     } else {
-        // A MathML frame covers all four sides. The extension encodes just
-        // the partial exterior edges so standard interior lists remain editable.
-        for (key, mask, size) in [
-            ("data-mathema-col-seps", col_seps, columns),
-            ("data-mathema-row-seps", row_seps, rows),
+        // A MathML frame covers all four sides in one style. The extension
+        // encodes just the partial or mixed exterior edges so standard
+        // interior lists remain editable.
+        for (key, dashed_key, mask, dashed, size) in [
+            (
+                "data-mathema-col-seps",
+                "data-mathema-dashed-col-seps",
+                col_seps,
+                dashes.cols,
+                columns,
+            ),
+            (
+                "data-mathema-row-seps",
+                "data-mathema-dashed-row-seps",
+                row_seps,
+                dashes.rows,
+                rows,
+            ),
         ] {
-            let edges = mask
-                & (1 | u32::try_from(size)
-                    .ok()
-                    .and_then(|n| 1u32.checked_shl(n))
-                    .unwrap_or(0));
+            let exterior = 1 | u32::try_from(size)
+                .ok()
+                .and_then(|n| 1u32.checked_shl(n))
+                .unwrap_or(0);
+            let edges = mask & exterior;
             if edges != 0 {
                 attr(key, &format!("0x{edges:x}"));
+            }
+            let dashed_edges = edges & dashed;
+            if dashed_edges != 0 {
+                attr(dashed_key, &format!("0x{dashed_edges:x}"));
             }
         }
     }

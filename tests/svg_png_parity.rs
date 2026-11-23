@@ -121,6 +121,11 @@ fn svg_matches_png_on_corpus() {
             true,
         ),
         (
+            "dashed_rules",
+            r"\begin{array}{|c:c|} \hdashline a & b \\ \hline c & d \\ \hdashline e & f \end{array}",
+            true,
+        ),
+        (
             "cases",
             r"f(x) = \begin{cases} x^2 & \text{if } x > 0 \\ 0 & \text{otherwise} \end{cases}",
             true,

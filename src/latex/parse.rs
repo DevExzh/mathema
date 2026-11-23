@@ -9,7 +9,7 @@ use nom::character::complete::char;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 use crate::error::{
@@ -891,17 +891,21 @@ fn centernot_precomposed(ch: char) -> Option<char> {
     })
 }
 
-/// Parse an array preamble into its column alignments and separator mask.
+/// Column alignments, the vertical rule mask and its dashed (arydshln `:`)
+/// subset. A boundary with both `|` and `:` draws a solid rule.
+type ColumnSpec = (SmallVec<[ColumnAlign; 4]>, u32, u32);
+
+/// Parse an array preamble into its column alignments and separator masks.
 ///
 /// The alignment list is stored in an arena span whose length is a `u16`.
 /// Check each append and repetition before allocating or iterating so a
 /// compact input such as `*{usize::MAX}{c}` cannot consume unbounded CPU or
 /// memory while constructing a preamble that could never be represented.
-fn parse_column_spec(spec: &str) -> Result<(SmallVec<[ColumnAlign; 4]>, u32)> {
+fn parse_column_spec(spec: &str) -> Result<ColumnSpec> {
     parse_column_spec_at_depth(spec, 0)
 }
 
-fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[ColumnAlign; 4]>, u32)> {
+fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<ColumnSpec> {
     if depth >= MAX_PARSE_DEPTH {
         return Err(Error::LimitExceeded {
             kind: crate::error::LimitKind::Depth,
@@ -910,6 +914,8 @@ fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[Colum
     }
     let mut result = SmallVec::new();
     let mut seps: u32 = 0;
+    let mut dashed: u32 = 0;
+    let mut solid: u32 = 0;
     let mut chars = spec.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
@@ -926,12 +932,17 @@ fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[Colum
                     _ => ColumnAlign::Right,
                 });
             },
-            '|' => {
+            '|' | ':' => {
                 // Set separator bit at current column boundary.
                 // Position = number of alignment columns seen so far.
                 let pos = result.len();
                 if pos < 32 {
                     seps |= 1 << pos;
+                    if c == ':' {
+                        dashed |= 1 << pos;
+                    } else {
+                        solid |= 1 << pos;
+                    }
                 }
             },
             '*'
@@ -977,7 +988,8 @@ fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[Colum
                             }
                             pattern.push(ch);
                         }
-                        let (sub, _sub_seps) = parse_column_spec_at_depth(&pattern, depth + 1)?;
+                        let (sub, _sub_seps, _) =
+                            parse_column_spec_at_depth(&pattern, depth + 1)?;
                         // An empty pattern has no columns; skip the loop
                         // entirely so even a huge repetition count is O(1).
                         if sub.is_empty() {
@@ -996,10 +1008,10 @@ fn parse_column_spec_at_depth(spec: &str, depth: u32) -> Result<(SmallVec<[Colum
                         }
                     }
                 },
-            _ => {}, // skip :, @{}, and other decorations
+            _ => {}, // skip @{} and other decorations
         }
     }
-    Ok((result, seps))
+    Ok((result, seps, dashed & !solid))
 }
 
 /// True if `input` begins with a `\cr` row separator (not `\cross` etc.).
@@ -1450,6 +1462,8 @@ fn xy_take_script(input: &str) -> (&str, &str) {
 struct RowRules {
     /// A solid `\hline`.
     hline: bool,
+    /// A dashed `\hdashline`.
+    hdashline: bool,
     /// Columns underlined by `\cline{i-j}`, bit `c - 1` for column `c`.
     cline: u64,
     /// A `\cline` whose range is malformed or reaches past column 64.
@@ -1491,9 +1505,8 @@ fn take_cline_range(input: &str) -> (&str, Option<u64>) {
 }
 
 /// Consume leading `\hline`/`\hdashline`/`\cline` directives, reporting the
-/// rules they draw. Only a solid `\hline` (not merely `\hdashline`) is
-/// recorded as a full-width rule. Used to record horizontal-rule positions
-/// for array rendering.
+/// rules they draw. Used to record horizontal-rule positions for array
+/// rendering.
 fn take_table_directives(input: &str) -> (&str, RowRules) {
     let mut rules = RowRules::default();
     let mut cur = input;
@@ -1503,6 +1516,7 @@ fn take_table_directives(input: &str) -> (&str, RowRules) {
             rules.hline = true;
             cur = rest;
         } else if let Some(rest) = strip_control_word(trimmed, "hdashline") {
+            rules.hdashline = true;
             cur = rest;
         } else if let Some(rest) = strip_control_word(trimmed, "cline") {
             let (rest, range) = take_cline_range(rest);
@@ -2478,6 +2492,7 @@ impl LatexCompactParser {
         columns: &[ColumnAlign],
         col_seps: u32,
         row_seps: u32,
+        dashes: RuleDashes,
         array_style: bool,
         rows: Vec<Vec<SmallVec<[NodeId; 8]>>>,
     ) -> NodeId {
@@ -2490,7 +2505,7 @@ impl LatexCompactParser {
             row_seps,
             array_style,
         );
-        self.arena.mark_native_array(id);
+        self.arena.mark_native_array(id, dashes);
         id
     }
 
@@ -6699,7 +6714,7 @@ impl LatexCompactParser {
                         // Extract `>{\columncolor{..}}` column backgrounds and
                         // strip them so the alignment spec parses cleanly.
                         let (cleaned, col_bg) = self.extract_column_colors(spec);
-                        let (aligns, col_seps) = match parse_column_spec(&cleaned) {
+                        let (aligns, col_seps, dashed_cols) = match parse_column_spec(&cleaned) {
                             Ok(parsed) => parsed,
                             Err(error) => {
                                 self.abort = Some(error);
@@ -6713,14 +6728,14 @@ impl LatexCompactParser {
                         // unless the preamble suppresses it with a leading `@{}`
                         // (as in `@{}cc@{}`).
                         let array_style = !cleaned.trim_start().starts_with('@');
-                        break 'col (rest, (aligns, col_seps, array_style), col_bg);
+                        break 'col (rest, (aligns, col_seps, array_style, dashed_cols), col_bg);
                     }
                 }
             }
-            (input, (SmallVec::new(), 0u32, true), Vec::new())
+            (input, (SmallVec::new(), 0u32, true, 0u32), Vec::new())
         };
 
-        let (input, (mut rows, row_seps)) =
+        let (input, (mut rows, row_seps, dashed_rows)) =
             self.parse_table_body_with_seps(input, columns.0.len())?;
         let (input, _) = ws(input)?;
         let (input, _) = tag("\\end")(input)?;
@@ -6734,7 +6749,17 @@ impl LatexCompactParser {
 
         Ok((
             input,
-            self.build_array_with_seps_rows(&columns.0, columns.1, row_seps, columns.2, rows),
+            self.build_array_with_seps_rows(
+                &columns.0,
+                columns.1,
+                row_seps,
+                RuleDashes {
+                    cols: columns.3,
+                    rows: dashed_rows,
+                },
+                columns.2,
+                rows,
+            ),
         ))
     }
 
@@ -8013,31 +8038,39 @@ impl LatexCompactParser {
         &mut self,
         input: &'a str,
     ) -> IResult<&'a str, Vec<Vec<SmallVec<[NodeId; 8]>>>> {
-        let (rest, (rows, _row_seps)) = self.parse_table_body_with_seps(input, 0)?;
+        let (rest, (rows, _row_seps, _dashed)) = self.parse_table_body_with_seps(input, 0)?;
         Ok((rest, rows))
     }
 
-    /// Like [`parse_table_body`], but also returns the horizontal-rule bitmask:
-    /// bit `i` set means a solid `\hline` precedes row `i` (bit `num_rows`
-    /// means a rule at the bottom edge).
+    /// Like [`parse_table_body`], but also returns the horizontal-rule bitmask
+    /// and its dashed (`\hdashline`) subset: bit `i` set means a rule
+    /// precedes row `i` (bit `num_rows` means a rule at the bottom edge).
     #[allow(clippy::type_complexity)]
     fn parse_table_body_with_seps<'a>(
         &mut self,
         input: &'a str,
         declared: usize,
-    ) -> IResult<&'a str, (Vec<Vec<SmallVec<[NodeId; 8]>>>, u32)> {
+    ) -> IResult<&'a str, (Vec<Vec<SmallVec<[NodeId; 8]>>>, u32, u32)> {
         let mut rows = Vec::with_capacity(4);
         let mut row_seps: u32 = 0;
-        // Skip leading \hline / \hdashline before first row (top edge = bit 0)
-        let (mut rest, top_rules) = take_table_directives(input);
-        if top_rules.hline {
-            row_seps |= 1;
-        }
+        let mut dashed_rows: u32 = 0;
         // `\cline` rules by boundary, resolved once the width is known.
         let mut clines: SmallVec<[(usize, RowRules); 2]> = SmallVec::new();
-        if top_rules.has_cline() {
-            clines.push((0, top_rules));
-        }
+        // A solid `\hline` wins over an `\hdashline` at the same boundary.
+        let mut record = |boundary: usize, rules: RowRules| {
+            if boundary < 32 && (rules.hline || rules.hdashline) {
+                row_seps |= 1 << boundary;
+                if !rules.hline {
+                    dashed_rows |= 1 << boundary;
+                }
+            }
+            if rules.has_cline() {
+                clines.push((boundary, rules));
+            }
+        };
+        // Rules before the first row are on the top edge (bit 0).
+        let (mut rest, top_rules) = take_table_directives(input);
+        record(0, top_rules);
         let mut widest = declared;
         let (r, first) = self.parse_table_row(rest, AstArena::MAX_CHILDREN, &mut widest)?;
         rows.push(first);
@@ -8062,13 +8095,8 @@ impl LatexCompactParser {
                         });
                         self.edit_table_cell(cell, |_, nodes| nodes.push(strut));
                     }
-                    // A `\hline` after this separator precedes the next row.
-                    if rules.hline && rows.len() < 32 {
-                        row_seps |= 1 << rows.len();
-                    }
-                    if rules.has_cline() {
-                        clines.push((rows.len(), rules));
-                    }
+                    // A rule after this separator precedes the next row.
+                    record(rows.len(), rules);
                     // A wider later row also grows the padded earlier rows.
                     let limit = AstArena::MAX_CHILDREN / (rows.len() + 1);
                     if widest > limit {
@@ -8094,6 +8122,7 @@ impl LatexCompactParser {
             } else if rules.cline_spans(widest) {
                 if boundary < 32 {
                     row_seps |= 1 << boundary;
+                    dashed_rows &= !(1 << boundary);
                 }
             } else {
                 partial_cline = true;
@@ -8116,11 +8145,17 @@ impl LatexCompactParser {
             if last < 32 && row_seps & (1 << last) != 0 {
                 row_seps &= !(1 << last);
                 row_seps |= 1 << (last - 1);
+                if dashed_rows & (1 << last) != 0 {
+                    dashed_rows &= !(1 << last);
+                    dashed_rows |= 1 << (last - 1);
+                } else {
+                    dashed_rows &= !(1 << (last - 1));
+                }
             }
             // keep the empty row only if it carries no rule semantics; existing
             // behavior preserved otherwise (do not change row count here).
         }
-        Ok((rest, (rows, row_seps)))
+        Ok((rest, (rows, row_seps, dashed_rows)))
     }
 
     fn parse_table_row<'a>(
