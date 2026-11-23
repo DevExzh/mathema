@@ -568,20 +568,16 @@ pub(super) fn layout_fenced(
         && open != "."
         && let Some(ch) = open.chars().next()
     {
-        let dw = compute_delim_w(ch);
-        children.push(PositionedBox::new(
-            cursor_x,
-            0.0,
-            LayoutBox {
-                width: dw,
-                height: delim_h,
-                depth: delim_d,
-                kind: BoxKind::Delimiter {
-                    ch,
-                    target_height: target_h,
-                },
-            },
-        ));
+        let delim = delimiter_box(
+            ch,
+            compute_delim_w(ch),
+            delim_h,
+            delim_d,
+            target_h,
+            ctx.size(),
+        );
+        let dw = delim.width;
+        children.push(PositionedBox::new(cursor_x, 0.0, delim));
         cursor_x += dw;
         // Inner padding between open delimiter and content (TeX null-delimiter-space)
         cursor_x += 0.12 * ctx.size();
@@ -616,20 +612,16 @@ pub(super) fn layout_fenced(
                             cursor_x += space * ctx.size();
                         }
                     }
-                    let dw = compute_delim_w(ch);
-                    children.push(PositionedBox::new(
-                        cursor_x,
-                        0.0,
-                        LayoutBox {
-                            width: dw,
-                            height: delim_h,
-                            depth: delim_d,
-                            kind: BoxKind::Delimiter {
-                                ch,
-                                target_height: target_h,
-                            },
-                        },
-                    ));
+                    let delim = delimiter_box(
+                        ch,
+                        compute_delim_w(ch),
+                        delim_h,
+                        delim_d,
+                        target_h,
+                        ctx.size(),
+                    );
+                    let dw = delim.width;
+                    children.push(PositionedBox::new(cursor_x, 0.0, delim));
                     cursor_x += dw;
                     // Next element sees middle delimiter as Inner for spacing
                     prev_atom = Some(spacing::AtomType::Inner);
@@ -645,20 +637,16 @@ pub(super) fn layout_fenced(
     {
         // Inner padding between content and close delimiter
         cursor_x += 0.12 * ctx.size();
-        let dw = compute_delim_w(ch);
-        children.push(PositionedBox::new(
-            cursor_x,
-            0.0,
-            LayoutBox {
-                width: dw,
-                height: delim_h,
-                depth: delim_d,
-                kind: BoxKind::Delimiter {
-                    ch,
-                    target_height: target_h,
-                },
-            },
-        ));
+        let delim = delimiter_box(
+            ch,
+            compute_delim_w(ch),
+            delim_h,
+            delim_d,
+            target_h,
+            ctx.size(),
+        );
+        let dw = delim.width;
+        children.push(PositionedBox::new(cursor_x, 0.0, delim));
         cursor_x += dw;
     }
 
@@ -772,15 +760,15 @@ pub(super) fn layout_fenced_arena(
                 base_delim_width
             }
         };
-        let delim_id = arena.alloc(ArenaLayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: ArenaBoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
-        });
+        let delim_id = alloc_delimiter(
+            arena,
+            ch,
+            delim_width,
+            delim_h,
+            delim_d,
+            target_h,
+            ctx.size(),
+        );
         let dw = arena.get(delim_id).width;
         arena.push_child(ArenaPositionedBox {
             dx: cursor_x,
@@ -826,15 +814,15 @@ pub(super) fn layout_fenced_arena(
                                 base_delim_width
                             }
                         };
-                    let delim_id = arena.alloc(ArenaLayoutBox {
-                        width: delim_width,
-                        height: delim_h,
-                        depth: delim_d,
-                        kind: ArenaBoxKind::Delimiter {
-                            ch,
-                            target_height: target_h,
-                        },
-                    });
+                    let delim_id = alloc_delimiter(
+                        arena,
+                        ch,
+                        delim_width,
+                        delim_h,
+                        delim_d,
+                        target_h,
+                        ctx.size(),
+                    );
                     let dw = arena.get(delim_id).width;
                     arena.push_child(ArenaPositionedBox {
                         dx: cursor_x,
@@ -886,15 +874,15 @@ pub(super) fn layout_fenced_arena(
                 base_delim_width
             }
         };
-        let delim_id = arena.alloc(ArenaLayoutBox {
-            width: delim_width,
-            height: delim_h,
-            depth: delim_d,
-            kind: ArenaBoxKind::Delimiter {
-                ch,
-                target_height: target_h,
-            },
-        });
+        let delim_id = alloc_delimiter(
+            arena,
+            ch,
+            delim_width,
+            delim_h,
+            delim_d,
+            target_h,
+            ctx.size(),
+        );
         let dw = arena.get(delim_id).width;
         arena.push_child(ArenaPositionedBox {
             dx: cursor_x,
@@ -910,5 +898,66 @@ pub(super) fn layout_fenced_arena(
         height: max_h.max(delim_h),
         depth: max_d.max(delim_d),
         kind: ArenaBoxKind::HBox { children },
+    })
+}
+
+/// A stretchy-delimiter box for `ch`, or — when no font glyph, MATH variant
+/// or built-in path can draw `ch` — its [`glyph_fallback`] outline stretched to
+/// the delimiter's extent, so the delimiter is never invisible.
+pub(super) fn delimiter_box(
+    ch: char,
+    width: f64,
+    height: f64,
+    depth: f64,
+    target_h: f64,
+    size: f64,
+) -> LayoutBox {
+    if glyph_fallback::delimiter_needs_fallback(ch, target_h) {
+        let s = glyph_fallback::delimiter_shape(ch, size, height, depth);
+        return LayoutBox {
+            width: s.width,
+            height: s.height,
+            depth: s.depth,
+            kind: BoxKind::SvgPath(s.path),
+        };
+    }
+    LayoutBox {
+        width,
+        height,
+        depth,
+        kind: BoxKind::Delimiter {
+            ch,
+            target_height: target_h,
+        },
+    }
+}
+
+/// Arena counterpart of [`delimiter_box`].
+pub(super) fn alloc_delimiter(
+    arena: &mut LayoutArena,
+    ch: char,
+    width: f64,
+    height: f64,
+    depth: f64,
+    target_h: f64,
+    size: f64,
+) -> LayoutBoxId {
+    if glyph_fallback::delimiter_needs_fallback(ch, target_h) {
+        let s = glyph_fallback::delimiter_shape(ch, size, height, depth);
+        return arena.alloc(ArenaLayoutBox {
+            width: s.width,
+            height: s.height,
+            depth: s.depth,
+            kind: ArenaBoxKind::SvgPath(s.path),
+        });
+    }
+    arena.alloc(ArenaLayoutBox {
+        width,
+        height,
+        depth,
+        kind: ArenaBoxKind::Delimiter {
+            ch,
+            target_height: target_h,
+        },
     })
 }

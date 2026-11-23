@@ -42,7 +42,7 @@ pub fn glyph_metrics(ch: char) -> GlyphMetrics {
         if m.width >= 0.0 {
             return *m;
         }
-        return heuristic_metrics(ch);
+        return ascii_font_metrics(ch);
     }
     // Non-ASCII: binary search on sorted table
     if let Some(m) = lookup_metrics(ch) {
@@ -67,7 +67,7 @@ pub fn glyph_metrics_upright(ch: char) -> GlyphMetrics {
         if m.width >= 0.0 {
             return *m;
         }
-        return heuristic_metrics(ch);
+        return ascii_font_metrics(ch);
     }
     // Non-ASCII: no separate upright data, use italic metrics
     if let Some(m) = lookup_metrics(ch) {
@@ -126,6 +126,13 @@ pub fn glyph_metrics_display(ch: char) -> GlyphMetrics {
         '⨄' | '⨆' => GlyphMetrics::new(0.656, 0.344, 0.694, 0.0),
         _ => glyph_metrics(ch),
     }
+}
+
+/// ASCII characters absent from the hand-tuned tables (`^ _ ~ * @ # …`): read
+/// the real advance/bbox from the font so the box encloses the ink (the
+/// generic punctuation heuristic is x-height tall, which clipped e.g. `^`).
+fn ascii_font_metrics(ch: char) -> GlyphMetrics {
+    super::math_table::font_glyph_metrics_upright(ch).unwrap_or_else(|| heuristic_metrics(ch))
 }
 
 fn heuristic_metrics(ch: char) -> GlyphMetrics {

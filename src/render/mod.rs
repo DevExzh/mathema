@@ -16,6 +16,8 @@ pub(crate) mod font_embed;
 #[cfg(feature = "render")]
 #[allow(dead_code)]
 pub(crate) mod fonts_registry;
+#[cfg(feature = "render")]
+pub(crate) mod glyph_fallback;
 pub(crate) mod glyph_variants;
 #[doc(hidden)]
 pub mod layout;

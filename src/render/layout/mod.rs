@@ -1,5 +1,6 @@
 use super::RenderOptions;
 use super::fonts_registry::{self, FontId};
+use super::glyph_fallback;
 use super::glyph_variants;
 use super::math_table;
 use super::metrics::{self, GlyphMetrics};
@@ -168,6 +169,9 @@ impl LayoutBox {
                 kind: BoxKind::Kern,
             };
         }
+        if glyph_fallback::needs_fallback(ch, font) {
+            return Self::fallback_glyph(ch, size, italic);
+        }
         let m = if font.is_math() {
             if italic {
                 metrics::glyph_metrics(ch)
@@ -192,6 +196,9 @@ impl LayoutBox {
 
     #[inline]
     fn glyph_with_metrics(ch: char, m: GlyphMetrics, size: f64, italic: bool) -> Self {
+        if glyph_fallback::needs_fallback(ch, FontId::Math) {
+            return Self::fallback_glyph(ch, size, italic);
+        }
         Self {
             width: m.width * size,
             height: m.height * size,
@@ -202,6 +209,23 @@ impl LayoutBox {
                 italic,
                 font: FontId::Math,
             },
+        }
+    }
+
+    /// Box for a character no embedded face can draw: the glyph from a Latin
+    /// Modern text face when one has it, else the composed/notdef outline from
+    /// [`glyph_fallback`] (an `SvgPath`, drawn identically by every backend).
+    #[cold]
+    fn fallback_glyph(ch: char, size: f64, italic: bool) -> Self {
+        if let Some(font) = glyph_fallback::text_face_for(ch, italic) {
+            return Self::glyph_font(ch, size, italic, font);
+        }
+        let s = glyph_fallback::glyph_shape(ch, size);
+        Self {
+            width: s.width,
+            height: s.height,
+            depth: s.depth,
+            kind: BoxKind::SvgPath(s.path),
         }
     }
 }
@@ -1158,6 +1182,9 @@ fn alloc_glyph_font(
             kind: ArenaBoxKind::Kern,
         });
     }
+    if glyph_fallback::needs_fallback(ch, font) {
+        return alloc_fallback_glyph(arena, ch, size, italic);
+    }
     let m = if font.is_math() {
         if italic {
             metrics::glyph_metrics(ch)
@@ -1180,6 +1207,21 @@ fn alloc_glyph_font(
     })
 }
 
+/// Arena counterpart of [`LayoutBox::fallback_glyph`].
+#[cold]
+fn alloc_fallback_glyph(arena: &mut LayoutArena, ch: char, size: f64, italic: bool) -> LayoutBoxId {
+    if let Some(font) = glyph_fallback::text_face_for(ch, italic) {
+        return alloc_glyph_font(arena, ch, size, italic, font);
+    }
+    let s = glyph_fallback::glyph_shape(ch, size);
+    arena.alloc(ArenaLayoutBox {
+        width: s.width,
+        height: s.height,
+        depth: s.depth,
+        kind: ArenaBoxKind::SvgPath(s.path),
+    })
+}
+
 fn alloc_glyph_with_metrics(
     arena: &mut LayoutArena,
     ch: char,
@@ -1194,6 +1236,9 @@ fn alloc_glyph_with_metrics(
             depth: 0.0,
             kind: ArenaBoxKind::Kern,
         });
+    }
+    if glyph_fallback::needs_fallback(ch, FontId::Math) {
+        return alloc_fallback_glyph(arena, ch, size, italic);
     }
     arena.alloc(ArenaLayoutBox {
         width: m.width * size,

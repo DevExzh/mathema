@@ -157,6 +157,13 @@ fn svg_matches_png_on_corpus() {
             r"\left( \frac{\frac{a}{b}}{\frac{c}{d}} \right)",
             true,
         ),
+        // Glyphs missing from Latin Modern Math: composed/notdef fallbacks
+        // (inline and as stretched delimiters) must match across backends.
+        (
+            "missing_glyph_fallbacks",
+            r"a \Coloneqq b \bigstar \pitchfork \subseteqq \Game ⪵ 中 \left⦃ \frac{x}{y} \right⦄",
+            true,
+        ),
     ];
 
     let scale = 2.0f32;
