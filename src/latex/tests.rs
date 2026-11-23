@@ -697,6 +697,15 @@ fn bare_large_operator_before_a_sibling_uses_the_nary_body_spelling() {
             r"\prod {\sum x}",
         ),
         ("<math><mo>∫</mo><mo>∫</mo></math>", r"\int {\int}"),
+        // `\idotsint` is one body element and takes no body itself.
+        (
+            "<math><mo>∫</mo><mo>∫</mo><mo>⋯</mo><mo>∫</mo><mi>x</mi></math>",
+            r"\int {\idotsint}x",
+        ),
+        (
+            "<math><mo>∫</mo><mo>∫</mo><mo>∫</mo><mo>⋯</mo><mo>∫</mo></math>",
+            r"\int {\int {\idotsint}}",
+        ),
         ("<math><mo>∫</mo><mo>+</mo><mi>x</mi></math>", r"\int +x"),
         ("<math><mo>∫</mo><mo>=</mo><mi>x</mi></math>", r"\int =x"),
         ("<math><mo>∫</mo><mo>−</mo><mn>1</mn></math>", r"\int {-}1"),
@@ -729,6 +738,36 @@ fn bare_large_operator_before_a_sibling_uses_the_nary_body_spelling() {
             crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
             latex,
             "{mathml}"
+        );
+    }
+}
+
+/// A long chain of bare large operators is written without recursion, and
+/// the nesting is bounded so the output reads back the same.
+#[test]
+fn long_bare_large_operator_chains_write_iteratively_and_stably() {
+    let config = Config::default();
+    let ops = "<mo>∫</mo>".repeat(4000);
+    let mathml = format!("<math>{ops}<mi>x</mi></math>");
+    let mut parsed = crate::reader::mathml::MathmlReader::parse_compact(&mathml, &config).unwrap();
+    normalize_compact_expr(&mut parsed.expr).unwrap();
+    let expr = parsed.expr;
+    let latex = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || LatexWriter::write_compact(&expr, &Config::default()).unwrap())
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(latex.matches(r"\int").count(), 4000);
+
+    for count in [32, 33, 34, 70] {
+        let ops = "<mo>∫</mo>".repeat(count);
+        let mathml = format!("<math>{ops}<mi>x</mi></math>");
+        let latex = crate::convert(&mathml, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+        assert_eq!(
+            crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap(),
+            latex,
+            "chain of {count}"
         );
     }
 }

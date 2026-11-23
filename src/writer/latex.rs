@@ -2513,33 +2513,56 @@ fn reads_as_nary_body(arena: &AstArena, id: NodeId) -> bool {
     ) && !is_script_with_empty_base(arena, id)
 }
 
+/// Nesting limit for a chain of bare large operators. Longer chains start a
+/// new chain, which keeps the output well within the reader's depth limit
+/// (and the writer iterative) while every chain still reads back the same.
+const MAX_LARGE_OP_NESTING: usize = 32;
+
 /// Write a bare large operator `ops[0]` together with the body the reader
 /// will give it, and return the number of sibling nodes written. A body
 /// that is itself a bare operator nests its own body, `\int {\int x}`, as
-/// the reader groups `\int\int x`. A sibling that cannot be a body gets an
-/// explicit empty body, as an empty-body Nary does.
+/// the reader groups `\int\int x`; a `∫⋯∫` triple is one `\idotsint` body.
+/// A sibling that cannot be a body gets an explicit empty body, as an
+/// empty-body Nary does.
 fn write_large_op_chain(buf: &mut LatexBuffer, arena: &AstArena, ops: &[NodeId]) -> usize {
-    write_node(buf, arena, ops[0]);
-    let Some(&body) = ops.get(1) else {
-        return 1;
+    let mut open = 0;
+    let mut i = 0;
+    let consumed = loop {
+        write_node(buf, arena, ops[i]);
+        let rest = &ops[i + 1..];
+        let Some(&body) = rest.first() else {
+            break i + 1;
+        };
+        if !reads_as_nary_body(arena, body) {
+            buf.push_str("{}");
+            break i + 1;
+        }
+        buf.push(' ');
+        if rest.len() >= 3 && is_idotsint_triple(arena, &rest[..3]) {
+            // `\idotsint` takes no body of its own.
+            buf.push('{');
+            write_idotsint(buf);
+            buf.push('}');
+            break i + 4;
+        }
+        if is_bare_large_op(arena, body)
+            && open < MAX_LARGE_OP_NESTING
+            && rest
+                .get(1)
+                .is_some_and(|&next| reads_as_nary_body(arena, next))
+        {
+            buf.push('{');
+            open += 1;
+            i += 1;
+            continue;
+        }
+        write_nary_body(buf, arena, body);
+        break i + 2;
     };
-    if !reads_as_nary_body(arena, body) {
-        buf.push_str("{}");
-        return 1;
-    }
-    buf.push(' ');
-    if is_bare_large_op(arena, body)
-        && ops
-            .get(2)
-            .is_some_and(|&next| reads_as_nary_body(arena, next))
-    {
-        buf.push('{');
-        let nested = write_large_op_chain(buf, arena, &ops[1..]);
+    for _ in 0..open {
         buf.push('}');
-        return 1 + nested;
     }
-    write_nary_body(buf, arena, body);
-    2
+    consumed
 }
 
 /// Write a node wrapped in braces. If the node is a single simple token,
