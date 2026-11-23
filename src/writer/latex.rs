@@ -82,9 +82,14 @@ fn write_sequence(
         }
         children = prefix;
     }
+    // Output offsets just after each written row break, guarded at the end.
+    let mut row_breaks: smallvec::SmallVec<[usize; 2]> = smallvec::SmallVec::new();
     let mut i = 0;
     while i < children.len() {
         let id = children[i];
+        if i > 0 && matches!(*arena.node(children[i - 1]), CompactNode::Newline) {
+            row_breaks.push(buf.len());
+        }
 
         if let Some(cmd) = scalar_negation_command(arena, &children[i..]) {
             buf.push_str("\\centernot\\");
@@ -241,6 +246,26 @@ fn write_sequence(
         }
         ends_with_command = appended_ends_with_letter_command(buf, output_start, ends_with_command);
         i += 1;
+    }
+    // Insert from the back so earlier offsets stay valid.
+    for &start in row_breaks.iter().rev() {
+        guard_row_break_bracket(buf, start);
+    }
+}
+
+/// A `[` after a row break `\\` (even past white space) is read as the
+/// break's optional spacing argument by LaTeX and by this crate's table
+/// parser, so the bracketed content would vanish. If the output written from
+/// `start` (just after a `\\`) begins with `[`, put an empty group before
+/// it: `\\ {}[b]` reads back as the literal bracket, and the empty group is
+/// dropped by normalization.
+fn guard_row_break_bracket(buf: &mut LatexBuffer, start: usize) {
+    let Some(rest) = buf.get(start..) else {
+        return;
+    };
+    let offset = rest.len() - rest.trim_start().len();
+    if rest[offset..].starts_with('[') {
+        buf.insert_str(start + offset, "{}");
     }
 }
 
@@ -1423,16 +1448,20 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             buf.push(' ');
             let num_rows = cell_ids.len().div_ceil(nc);
             for (row_idx, row) in cell_ids.chunks(nc).enumerate() {
-                if row_idx == 0 {
+                let row_start = if row_idx == 0 {
                     if row_seps & 1 != 0 {
                         buf.push_str(r"\hline ");
                     }
+                    None
                 } else {
                     buf.push_str(" \\\\ ");
+                    // `\hline` already separates the break from the row.
+                    let start = buf.len();
                     if row_idx < 32 && (row_seps & (1 << row_idx)) != 0 {
                         buf.push_str(r"\hline ");
                     }
-                }
+                    Some(start)
+                };
                 let mut col_idx = 0;
                 let mut emitted = false;
                 while col_idx < row.len() {
@@ -1496,6 +1525,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 }
                 for _ in row.len()..nc {
                     buf.push_str(" & ");
+                }
+                if let Some(start) = row_start {
+                    guard_row_break_bracket(buf, start);
                 }
             }
             if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {
@@ -3352,6 +3384,43 @@ mod tests {
         let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
         crate::ast::normalize::normalize_compact_expr(&mut parsed.expr).unwrap();
         LatexWriter::write_compact(&parsed.expr, &config).unwrap()
+    }
+
+    #[test]
+    fn literal_bracket_after_a_row_break_is_not_a_spacing_argument() {
+        for (input, expected) in [
+            (
+                r"\begin{array}{c}a\\{[}b]\end{array}",
+                r"\begin{array}{c} a \\ {}[b] \end{array}",
+            ),
+            (
+                r"\xymatrix{a\\[b]c}",
+                r"\begin{array}{c} a \\ {}[b]c \end{array}",
+            ),
+            (
+                r"\begin{matrix}a\\{[}b]\end{matrix}",
+                r"\begin{matrix} a \\ {}[b] \end{matrix}",
+            ),
+            (
+                r"\begin{aligned}a&=b\\{[}c]&=d\end{aligned}",
+                r"\begin{aligned} a & = b \\ {}[c] & = d \end{aligned}",
+            ),
+            (r"a\\{[}b]", r"a\\ {}[b]"),
+            // `\hline` already ends the break, and later cells are unaffected.
+            (
+                r"\begin{array}{|c|}\hline a\\\hline{[}b]\end{array}",
+                r"\begin{array}{|c|} \hline a \\ \hline [b] \end{array}",
+            ),
+            (
+                r"\begin{array}{cc}a&b\\&{[}d]\end{array}",
+                r"\begin{array}{cc} a & b \\  & [d] \end{array}",
+            ),
+        ] {
+            let first = normalized_latex(input);
+            assert_eq!(first, expected, "{input}");
+            assert_eq!(normalized_latex(&first), first, "{input}");
+            assert!(first.contains('['), "bracket lost for {input}");
+        }
     }
 
     #[test]
