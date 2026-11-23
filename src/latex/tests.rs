@@ -597,6 +597,49 @@ fn empty_style_group_after_a_leading_script_is_idempotent() {
 }
 
 #[test]
+fn script_attachment_and_scope_wrappers_are_canonical_on_first_write() {
+    let config = Config::default();
+    for (input, expected) in [
+        // A trailing script joins a style group, which can then take the
+        // leading script before it, exactly as the reparsed output does.
+        (
+            r"'{\textstyle x}{}'",
+            r"{{}^{\prime}{\textstyle x}^{\prime}}",
+        ),
+        (
+            r"'\tbinom ab\middle'",
+            r"{{}^{\prime}{\textstyle \binom{a}{b}}^{\prime}}",
+        ),
+        // Nested colors that cannot be written are all dropped at once.
+        (r"A\color{_}\color{_}'x", r"A {{}^{\prime}x}"),
+        // A font command's braces already scope a style declaration.
+        (r"\tt\dbinom ab", r"\mathtt{\displaystyle \binom{a}{b}}"),
+        (r"\tt{\displaystyle a}", r"\mathtt{\displaystyle a}"),
+    ] {
+        let mut compact = LatexReader::parse_compact(input, &config).unwrap().expr;
+        normalize_compact_expr(&mut compact).unwrap();
+        let first = LatexWriter::write_compact(&compact, &config).unwrap();
+        assert_eq!(first, expected, "first write for {input:?}");
+
+        let mut heap = compact.to_math_expr();
+        normalize_expr(&mut heap);
+        assert_eq!(
+            LatexWriter::write(&heap, &config).unwrap(),
+            first,
+            "heap/compact mismatch for {input:?}"
+        );
+
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
+        normalize_compact_expr(&mut reparsed).unwrap();
+        assert_eq!(
+            LatexWriter::write_compact(&reparsed, &config).unwrap(),
+            first,
+            "unstable round trip for {input:?}"
+        );
+    }
+}
+
+#[test]
 fn legacy_font_declarations_scope_like_grouped_fonts() {
     for (source, expected) in [
         (r"\rm xyz", r"\mathrm{xyz}"),

@@ -685,20 +685,25 @@ fn normalize_compact_span_with_identifiers(
     // such colors and emits only the content, so keeping the wrapper in the
     // AST hides the content's edges from the spacing logic and produces output
     // like `m=m` instead of `m= m`.
+    // Nested unwritable colors (`\color{_}\color{_}x`) are all dropped by
+    // the writer, so peel every such layer here; otherwise the inner wrapper
+    // only disappears on the next parse.
     let mut splayed: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in &flattened {
-        if let CompactNode::Color { color, content } = *arena.node(id)
+        let mut node_id = id;
+        while let CompactNode::Color { color, content } = *arena.node(node_id)
             && is_unwritable_color(arena.str_val(color))
         {
-            if let CompactNode::Row(inner) = *arena.node(content) {
-                for &inner_id in arena.children(inner) {
-                    splayed.push(inner_id);
-                }
-            } else {
-                splayed.push(content);
+            node_id = content;
+        }
+        if node_id == id {
+            splayed.push(id);
+        } else if let CompactNode::Row(inner) = *arena.node(node_id) {
+            for &inner_id in arena.children(inner) {
+                splayed.push(inner_id);
             }
         } else {
-            splayed.push(id);
+            splayed.push(node_id);
         }
     }
 
@@ -782,17 +787,10 @@ fn normalize_compact_span_with_identifiers(
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in with_limits.iter().rev() {
         if let Some(&next_id) = coalesced.last()
-            && let Some((sub, sup)) = empty_base_scripts(arena, id)
-            && can_take_prescripts(*arena.node(next_id))
-            && !matches!(*arena.node(next_id), CompactNode::Row(span) if has_direct_style_switch(arena, span))
-            && !is_empty_base_script(arena, next_id)
+            && let Some(prescripts) = leading_scripts_on(arena, id, next_id)
         {
             coalesced.pop();
-            coalesced.push(arena.push_node(CompactNode::PreScripts {
-                base: next_id,
-                pre_sub: sub,
-                pre_sup: sup,
-            }));
+            coalesced.push(arena.push_node(prescripts));
             continue;
         }
         coalesced.push(id);
@@ -812,9 +810,34 @@ fn normalize_compact_span_with_identifiers(
         let joined = make_script_with_base(arena, prev, last);
         coalesced.remove(content_end - 1);
         coalesced[content_end - 2] = joined;
+        // The joined node is a new candidate base for a leading script
+        // before it. A style group refuses leading scripts, but the scripted
+        // group does not, so the next parse (where the parser already joined
+        // the trailing script) would attach them. Attach them now as well.
+        if content_end >= 3
+            && let Some(prescripts) = leading_scripts_on(arena, coalesced[content_end - 3], joined)
+        {
+            coalesced.remove(content_end - 2);
+            coalesced[content_end - 3] = arena.push_node(prescripts);
+        }
     }
 
     arena.push_children(&coalesced)
+}
+
+/// The `PreScripts` node that results from attaching the empty-base script
+/// `script` to the following node `next`, or `None` when `next` cannot take
+/// leading scripts.
+fn leading_scripts_on(arena: &AstArena, script: NodeId, next: NodeId) -> Option<CompactNode> {
+    let (pre_sub, pre_sup) = empty_base_scripts(arena, script)?;
+    let takes = can_take_prescripts(*arena.node(next))
+        && !matches!(*arena.node(next), CompactNode::Row(span) if has_direct_style_switch(arena, span))
+        && !is_empty_base_script(arena, next);
+    takes.then_some(CompactNode::PreScripts {
+        base: next,
+        pre_sub,
+        pre_sup,
+    })
 }
 
 /// The node kinds whose adjacent runs normalization merges.
@@ -917,6 +940,17 @@ fn normalize_compact_node_with_identifiers(
         CompactNode::Styled(style, span) => {
             let new_span =
                 normalize_compact_span_with_identifiers(arena, span, d, merge_identifiers)?;
+            // The font command's braces already scope a declaration, and the
+            // parser reads `\mathtt{{\displaystyle x}}` without the inner
+            // group. Drop a lone style group here too (`\tt\dbinom ab`).
+            let children = arena.children(new_span);
+            let new_span = match children {
+                [only] => match *arena.node(*only) {
+                    CompactNode::Row(inner) if has_direct_style_switch(arena, inner) => inner,
+                    _ => new_span,
+                },
+                _ => new_span,
+            };
             *arena.node_mut(id) = CompactNode::Styled(style, new_span);
         },
 
