@@ -1013,7 +1013,7 @@ fn is_cr_row_separator(input: &str) -> bool {
             .is_some_and(|b| b.is_ascii_alphabetic())
 }
 
-fn parse_row_separator(input: &str) -> IResult<&str, (Option<&str>, bool)> {
+fn parse_row_separator(input: &str) -> IResult<&str, (Option<&str>, RowRules)> {
     let (input, _) = ws(input)?;
     // Accept \\ or \cr as row separator
     let input = if let Ok((rest, _)) = tag::<&str, &str, nom::error::Error<&str>>("\\cr")(input) {
@@ -1046,10 +1046,10 @@ fn parse_row_separator(input: &str) -> IResult<&str, (Option<&str>, bool)> {
         (input, None)
     };
     let (input, _) = ws(input)?;
-    // Consume any \hline or \hdashline directives that follow; report whether a
-    // solid \hline was present so the caller can record a horizontal rule.
-    let (input, hline) = take_table_directives(input);
-    Ok((input, (extra, hline)))
+    // Consume any rule directives that follow so the caller can record a
+    // horizontal rule.
+    let (input, rules) = take_table_directives(input);
+    Ok((input, (extra, rules)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1445,39 +1445,77 @@ fn xy_take_script(input: &str) -> (&str, &str) {
     (&t[ch_len..], &t[..ch_len])
 }
 
-/// Consume leading `\hline`/`\hdashline` directives, reporting whether at least
-/// one solid `\hline` (not merely `\hdashline`) was seen. Used to record
-/// horizontal-rule positions for array rendering.
-fn take_table_directives(input: &str) -> (&str, bool) {
-    let mut had_hline = false;
+/// The rule directives at one row boundary.
+#[derive(Clone, Copy, Default)]
+struct RowRules {
+    /// A solid `\hline`.
+    hline: bool,
+    /// Columns underlined by `\cline{i-j}`, bit `c - 1` for column `c`.
+    cline: u64,
+    /// A `\cline` whose range is malformed or reaches past column 64.
+    cline_unreadable: bool,
+}
+
+impl RowRules {
+    /// Whether `\cline` rules underline every one of `columns` columns, so
+    /// together they are one full-width rule.
+    fn cline_spans(self, columns: usize) -> bool {
+        !self.cline_unreadable
+            && (1..=64).contains(&columns)
+            && self.cline & (u64::MAX >> (64 - columns)) == u64::MAX >> (64 - columns)
+    }
+
+    fn has_cline(self) -> bool {
+        self.cline != 0 || self.cline_unreadable
+    }
+}
+
+/// Read the `{i-j}` argument of `\cline` into a column mask, consuming a
+/// braced argument even when its range cannot be read.
+fn take_cline_range(input: &str) -> (&str, Option<u64>) {
+    let trimmed = input.trim_start();
+    let Some(body) = trimmed.strip_prefix('{') else {
+        return (input, None);
+    };
+    let Some(end) = body.find('}') else {
+        return (input, None);
+    };
+    let rest = &body[end + 1..];
+    let range = body[..end].split_once('-').and_then(|(from, to)| {
+        let from: u32 = from.trim().parse().ok()?;
+        let to: u32 = to.trim().parse().ok()?;
+        (1 <= from && from <= to && to <= 64)
+            .then(|| (u64::MAX >> (64 - (to - from + 1))) << (from - 1))
+    });
+    (rest, range)
+}
+
+/// Consume leading `\hline`/`\hdashline`/`\cline` directives, reporting the
+/// rules they draw. Only a solid `\hline` (not merely `\hdashline`) is
+/// recorded as a full-width rule. Used to record horizontal-rule positions
+/// for array rendering.
+fn take_table_directives(input: &str) -> (&str, RowRules) {
+    let mut rules = RowRules::default();
     let mut cur = input;
     loop {
         let trimmed = cur.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("\\hline") {
-            // Ensure it's not a prefix of a longer command
-            if rest
-                .as_bytes()
-                .first()
-                .is_some_and(|b| b.is_ascii_alphabetic())
-            {
-                break;
-            }
-            had_hline = true;
+        if let Some(rest) = strip_control_word(trimmed, "hline") {
+            rules.hline = true;
             cur = rest;
-        } else if let Some(rest) = trimmed.strip_prefix("\\hdashline") {
-            if rest
-                .as_bytes()
-                .first()
-                .is_some_and(|b| b.is_ascii_alphabetic())
-            {
-                break;
+        } else if let Some(rest) = strip_control_word(trimmed, "hdashline") {
+            cur = rest;
+        } else if let Some(rest) = strip_control_word(trimmed, "cline") {
+            let (rest, range) = take_cline_range(rest);
+            match range {
+                Some(columns) => rules.cline |= columns,
+                None => rules.cline_unreadable = true,
             }
             cur = rest;
         } else {
             break;
         }
     }
-    (cur, had_hline)
+    (cur, rules)
 }
 
 fn parse_cell_separator(input: &str) -> IResult<&str, ()> {
@@ -4135,6 +4173,14 @@ impl LatexCompactParser {
                 input,
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             )),
+            "cline" => {
+                let (input, _) = take_cline_range(input);
+                self.warn("\\cline outside a row boundary was dropped");
+                Ok((
+                    input,
+                    self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+                ))
+            },
 
             // --- Label (consume and discard) ---
             "label" => {
@@ -7983,9 +8029,14 @@ impl LatexCompactParser {
         let mut rows = Vec::with_capacity(4);
         let mut row_seps: u32 = 0;
         // Skip leading \hline / \hdashline before first row (top edge = bit 0)
-        let (mut rest, top_hline) = take_table_directives(input);
-        if top_hline {
+        let (mut rest, top_rules) = take_table_directives(input);
+        if top_rules.hline {
             row_seps |= 1;
+        }
+        // `\cline` rules by boundary, resolved once the width is known.
+        let mut clines: SmallVec<[(usize, RowRules); 2]> = SmallVec::new();
+        if top_rules.has_cline() {
+            clines.push((0, top_rules));
         }
         let mut widest = declared;
         let (r, first) = self.parse_table_row(rest, AstArena::MAX_CHILDREN, &mut widest)?;
@@ -7995,7 +8046,7 @@ impl LatexCompactParser {
             self.ensure_node_budget(rest)?;
             let saved = rest;
             match parse_row_separator(rest) {
-                Ok((after_sep, (extra, hline))) => {
+                Ok((after_sep, (extra, rules))) => {
                     // Apply \\[dim] extra inter-row space by adding an invisible
                     // depth strut to the row just completed.
                     if let Some(dim_str) = extra
@@ -8012,8 +8063,11 @@ impl LatexCompactParser {
                         self.edit_table_cell(cell, |_, nodes| nodes.push(strut));
                     }
                     // A `\hline` after this separator precedes the next row.
-                    if hline && rows.len() < 32 {
+                    if rules.hline && rows.len() < 32 {
                         row_seps |= 1 << rows.len();
+                    }
+                    if rules.has_cline() {
+                        clines.push((rows.len(), rules));
                     }
                     // A wider later row also grows the padded earlier rows.
                     let limit = AstArena::MAX_CHILDREN / (rows.len() + 1);
@@ -8030,6 +8084,25 @@ impl LatexCompactParser {
                     break;
                 },
             }
+        }
+        // `\cline` rules that together underline every column are one
+        // full-width rule. A partial rule has no AST form.
+        let mut partial_cline = false;
+        for (boundary, rules) in clines {
+            if rules.hline {
+                // An `\hline` at this boundary already covers every column.
+            } else if rules.cline_spans(widest) {
+                if boundary < 32 {
+                    row_seps |= 1 << boundary;
+                }
+            } else {
+                partial_cline = true;
+            }
+        }
+        if partial_cline {
+            self.warn(
+                "\\cline over only some columns was dropped; only full-width horizontal rules are representable",
+            );
         }
         // Drop a trailing rule recorded against a phantom empty row: if the last
         // row is entirely empty it was produced by a trailing `\\`; move its rule

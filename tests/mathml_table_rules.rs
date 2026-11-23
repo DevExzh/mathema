@@ -313,3 +313,70 @@ fn explicitly_trimmed_native_array_keeps_its_outer_edges_on_reparse() {
         assert_eq!(back.to_svg().unwrap(), parsed.to_svg().unwrap());
     }
 }
+
+fn row_seps_of(expr: &mathema::MathExpr) -> u32 {
+    match native_array(expr) {
+        MathNode::NativeArray { row_seps, .. } => *row_seps,
+        other => panic!("expected NativeArray, got {other:?}"),
+    }
+}
+
+#[test]
+fn cline_spanning_every_column_is_a_full_rule() {
+    for source in [
+        r"\begin{array}{cc}a&b\\\cline{1-2}c&d\end{array}",
+        r"\begin{array}{cc}a&b\\ \cline{1-1} \cline{2-2} c&d\end{array}",
+    ] {
+        let parsed = mathema::from_latex(source).unwrap();
+        assert!(
+            parsed.diagnostics().is_empty(),
+            "{:?}",
+            parsed.diagnostics()
+        );
+        assert_eq!(row_seps_of(&parsed.expr()), 0b10, "{source}");
+        assert_eq!(
+            parsed.to_latex().unwrap(),
+            r"\begin{array}{cc} a & b \\ \hline c & d \end{array}"
+        );
+    }
+}
+
+#[test]
+fn partial_cline_is_dropped_with_a_diagnostic() {
+    let lenient = Config::default().with_strictness(mathema::Strictness::Lenient);
+    for config in [Config::default(), lenient] {
+        for (source, expected) in [
+            (
+                r"\begin{array}{cc}a&b\\\cline{1-1}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ c & d \end{array}",
+            ),
+            // An unreadable range is consumed too, not written as text.
+            (
+                r"\begin{array}{cc}a&b\\\cline{x}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ c & d \end{array}",
+            ),
+            (r"a\cline{1-2}b", "ab"),
+        ] {
+            let parsed = mathema::from_latex_with(source, &config).unwrap();
+            assert_eq!(parsed.to_latex().unwrap(), expected, "{source}");
+            assert!(
+                parsed
+                    .diagnostics()
+                    .iter()
+                    .any(|diag| diag.kind == DiagnosticKind::Warning
+                        && diag.message.contains(r"\cline")),
+                "{source}: {:?}",
+                parsed.diagnostics()
+            );
+        }
+    }
+    // A full `\hline` at the same boundary already draws the rule.
+    let parsed =
+        mathema::from_latex(r"\begin{array}{cc}a&b\\\hline\cline{1-1}c&d\end{array}").unwrap();
+    assert!(
+        parsed.diagnostics().is_empty(),
+        "{:?}",
+        parsed.diagnostics()
+    );
+    assert_eq!(row_seps_of(&parsed.expr()), 0b10);
+}
