@@ -157,11 +157,14 @@ fn svg_matches_png_on_corpus() {
             r"\left( \frac{\frac{a}{b}}{\frac{c}{d}} \right)",
             true,
         ),
-        // Glyphs missing from Latin Modern Math: composed/notdef fallbacks
-        // (inline and as stretched delimiters) must match across backends.
+        // Glyphs missing from Latin Modern Math: recipe fallbacks (inline, in
+        // text runs and as stretched delimiters) must match across backends.
+        // Characters with no recipe (e.g. CJK) are deliberately excluded: the
+        // SVG emitters keep them as `<text>` for the viewer's system fonts
+        // while the PNG draws a hollow notdef box, so they intentionally differ.
         (
             "missing_glyph_fallbacks",
-            r"a \Coloneqq b \bigstar \pitchfork \subseteqq \Game ⪵ 中 \left⦃ \frac{x}{y} \right⦄",
+            r"a \Coloneqq b \bigstar \pitchfork \subseteqq \Game ⪵ \text{★⩴} \left⦃ \frac{x}{y} \right⦄",
             true,
         ),
     ];

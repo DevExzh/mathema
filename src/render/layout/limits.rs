@@ -150,17 +150,18 @@ pub(super) fn wants_limits_above_below_c(arena: &AstArena, id: NodeId, style: Ma
     }
 }
 
-/// Returns `true` if the over/under symbol char is a stretchy decoration
-/// (brace, bracket, overline) that should scale to the base width.
-pub(super) fn is_stretchy_overunder(sym: &str) -> bool {
-    matches!(
-        sym,
-        "\u{23DE}"  // overbrace ⏞
-        | "\u{23DF}" // underbrace ⏟
-        | "\u{23B4}" // overbracket ⎴
-        | "\u{23B5}" // underbracket ⎵
-        | "\u{203E}" // overline ‾
-    )
+/// The canonical stretchy over/under symbol for `sym`, accepting the
+/// vertical-presentation-form braces (`︷` U+FE37, `︸` U+FE38) that MathML
+/// sources use for `⏞`/`⏟` (the font has no glyph for the former).
+pub(super) fn canonical_stretchy_overunder(sym: &str) -> Option<&'static str> {
+    Some(match sym {
+        "\u{23DE}" | "\u{FE37}" => "\u{23DE}",
+        "\u{23DF}" | "\u{FE38}" => "\u{23DF}",
+        "\u{23B4}" => "\u{23B4}",
+        "\u{23B5}" => "\u{23B5}",
+        "\u{203E}" => "\u{203E}",
+        _ => return None,
+    })
 }
 
 /// Returns `true` if the symbol string is an overbrace character (U+23DE).
@@ -635,11 +636,9 @@ pub(super) fn layout_nary(
 }
 
 /// Extract the symbol string from a MathNode if it is a stretchy overunder decoration.
-pub(super) fn get_stretchy_overunder_sym(node: &MathNode) -> Option<&str> {
-    if let MathNode::Symbol(_, s) = node
-        && is_stretchy_overunder(s)
-    {
-        return Some(s);
+pub(super) fn get_stretchy_overunder_sym(node: &MathNode) -> Option<&'static str> {
+    if let MathNode::Symbol(_, s) = node {
+        return canonical_stretchy_overunder(s);
     }
     None
 }
@@ -918,12 +917,9 @@ pub(super) fn layout_underover(
 
 /// Check if a CompactNode (referenced by NodeId) is a stretchy overunder decoration symbol.
 /// Returns the symbol string if so.
-pub(super) fn get_stretchy_overunder_sym_c(arena: &AstArena, id: NodeId) -> Option<&str> {
+pub(super) fn get_stretchy_overunder_sym_c(arena: &AstArena, id: NodeId) -> Option<&'static str> {
     if let CompactNode::Symbol(_, sid) = *arena.node(id) {
-        let s = arena.str_val(sid);
-        if is_stretchy_overunder(s) {
-            return Some(s);
-        }
+        return canonical_stretchy_overunder(arena.str_val(sid));
     }
     None
 }

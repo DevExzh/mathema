@@ -50,6 +50,7 @@ The MathML reader handles **both Presentation and Content MathML**. Content form
 - `layout.rs` — recursive layout producing a `LayoutBox` tree (TeXBook Rules 11-18)
 - `spacing.rs` — inter-atom spacing per Knuth's spacing table
 - `emit.rs` — SVG serialization from positioned layout boxes
+- `glyph_fallback.rs` — characters no embedded face covers (O(1) coverage bitset, checked when glyph boxes and text runs are laid out): substitute in-font code point → Latin Modern text face → data-driven `RECIPES` (transformed/composed in-font outlines, emitted as a filled `SvgPath` so all backends match) → notdef (SVG keeps `<text>`, raster draws a hollow box). Add a missing symbol by adding one recipe row
 - `glyph_variants.rs` — OpenType MATH-table size variants (stretchy delimiters, display large operators); shared by the raster and embedded-SVG emitters so both draw the same glyphs
 - `font_embed.rs` / `subset.rs` — glyph outline extraction via `ttf-parser` (now under the `render` feature)
 - `svg_writer.rs` — standalone SVG with embedded `<path>` glyph outlines (under `render`)

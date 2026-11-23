@@ -169,8 +169,10 @@ impl LayoutBox {
                 kind: BoxKind::Kern,
             };
         }
-        if glyph_fallback::needs_fallback(ch, font) {
-            return Self::fallback_glyph(ch, size, italic);
+        if glyph_fallback::needs_fallback(ch, font)
+            && let Some(b) = Self::fallback_glyph(ch, size, italic)
+        {
+            return b;
         }
         let m = if font.is_math() {
             if italic {
@@ -196,8 +198,10 @@ impl LayoutBox {
 
     #[inline]
     fn glyph_with_metrics(ch: char, m: GlyphMetrics, size: f64, italic: bool) -> Self {
-        if glyph_fallback::needs_fallback(ch, FontId::Math) {
-            return Self::fallback_glyph(ch, size, italic);
+        if glyph_fallback::needs_fallback(ch, FontId::Math)
+            && let Some(b) = Self::fallback_glyph(ch, size, italic)
+        {
+            return b;
         }
         Self {
             width: m.width * size,
@@ -212,21 +216,29 @@ impl LayoutBox {
         }
     }
 
-    /// Box for a character no embedded face can draw: the glyph from a Latin
-    /// Modern text face when one has it, else the composed/notdef outline from
-    /// [`glyph_fallback`] (an `SvgPath`, drawn identically by every backend).
+    /// Box for a character no embedded face can draw (see
+    /// [`glyph_fallback::resolve`]): a substitute glyph, the glyph from a
+    /// Latin Modern text face, or a recipe outline (`SvgPath`, drawn
+    /// identically by every backend). `None` = notdef: keep the plain glyph box
+    /// so SVG emits `<text>` and raster draws a hollow box.
     #[cold]
-    fn fallback_glyph(ch: char, size: f64, italic: bool) -> Self {
-        if let Some(font) = glyph_fallback::text_face_for(ch, italic) {
-            return Self::glyph_font(ch, size, italic, font);
-        }
-        let s = glyph_fallback::glyph_shape(ch, size);
-        Self {
-            width: s.width,
-            height: s.height,
-            depth: s.depth,
-            kind: BoxKind::SvgPath(s.path),
-        }
+    fn fallback_glyph(ch: char, size: f64, italic: bool) -> Option<Self> {
+        Some(match glyph_fallback::resolve(ch, italic) {
+            glyph_fallback::Resolution::Substitute(sub) => {
+                Self::glyph_font(sub, size, italic, FontId::Math)
+            },
+            glyph_fallback::Resolution::TextFace(font) => Self::glyph_font(ch, size, italic, font),
+            glyph_fallback::Resolution::Recipe => {
+                let s = glyph_fallback::glyph_shape(ch, size);
+                Self {
+                    width: s.width,
+                    height: s.height,
+                    depth: s.depth,
+                    kind: BoxKind::SvgPath(s.path),
+                }
+            },
+            glyph_fallback::Resolution::Notdef => return None,
+        })
     }
 }
 
@@ -784,6 +796,12 @@ fn layout_text_run(
 ) -> LayoutBox {
     let size = ctx.size();
     let font = fonts_registry::font_for_text_run(text_style);
+    if text
+        .chars()
+        .any(|c| glyph_fallback::text_run_needs_rewrite(c, font))
+    {
+        return layout_text_run_fallback(text, ctx, italic, text_style, font);
+    }
     let mut total_width = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
@@ -817,6 +835,68 @@ fn layout_text_run(
             text_style,
         },
     }
+}
+
+/// A text run containing characters no face can draw but that have a
+/// substitute (swapped in place) or a recipe (split out as an `SvgPath` box);
+/// see [`glyph_fallback`].
+#[cold]
+fn layout_text_run_fallback(
+    text: &str,
+    ctx: &LayoutCtx,
+    italic: bool,
+    text_style: Option<TextStyle>,
+    font: FontId,
+) -> LayoutBox {
+    let size = ctx.size();
+    let mut out = LayoutBox {
+        width: 0.0,
+        height: 0.0,
+        depth: 0.0,
+        kind: BoxKind::HBox {
+            children: Vec::new(),
+        },
+    };
+    let push = |out: &mut LayoutBox, b: LayoutBox| {
+        out.height = out.height.max(b.height);
+        out.depth = out.depth.max(b.depth);
+        let dx = out.width;
+        out.width += b.width;
+        if let BoxKind::HBox { children } = &mut out.kind {
+            children.push(PositionedBox::new(dx, 0.0, b));
+        }
+    };
+    let mut seg = String::new();
+    for c in text.chars() {
+        if glyph_fallback::needs_fallback(c, font) {
+            if let Some(sub) = glyph_fallback::substitute(c) {
+                seg.push(sub);
+                continue;
+            }
+            if glyph_fallback::has_recipe(c) {
+                if !seg.is_empty() {
+                    push(&mut out, layout_text_run(&seg, ctx, italic, text_style));
+                    seg.clear();
+                }
+                let s = glyph_fallback::glyph_shape(c, size);
+                push(
+                    &mut out,
+                    LayoutBox {
+                        width: s.width,
+                        height: s.height,
+                        depth: s.depth,
+                        kind: BoxKind::SvgPath(s.path),
+                    },
+                );
+                continue;
+            }
+        }
+        seg.push(c);
+    }
+    if !seg.is_empty() {
+        push(&mut out, layout_text_run(&seg, ctx, italic, text_style));
+    }
+    out
 }
 
 fn layout_operator(op: &OperatorAttr, ctx: &LayoutCtx) -> LayoutBox {
@@ -1182,8 +1262,10 @@ fn alloc_glyph_font(
             kind: ArenaBoxKind::Kern,
         });
     }
-    if glyph_fallback::needs_fallback(ch, font) {
-        return alloc_fallback_glyph(arena, ch, size, italic);
+    if glyph_fallback::needs_fallback(ch, font)
+        && let Some(id) = alloc_fallback_glyph(arena, ch, size, italic)
+    {
+        return id;
     }
     let m = if font.is_math() {
         if italic {
@@ -1209,16 +1291,29 @@ fn alloc_glyph_font(
 
 /// Arena counterpart of [`LayoutBox::fallback_glyph`].
 #[cold]
-fn alloc_fallback_glyph(arena: &mut LayoutArena, ch: char, size: f64, italic: bool) -> LayoutBoxId {
-    if let Some(font) = glyph_fallback::text_face_for(ch, italic) {
-        return alloc_glyph_font(arena, ch, size, italic, font);
-    }
-    let s = glyph_fallback::glyph_shape(ch, size);
-    arena.alloc(ArenaLayoutBox {
-        width: s.width,
-        height: s.height,
-        depth: s.depth,
-        kind: ArenaBoxKind::SvgPath(s.path),
+fn alloc_fallback_glyph(
+    arena: &mut LayoutArena,
+    ch: char,
+    size: f64,
+    italic: bool,
+) -> Option<LayoutBoxId> {
+    Some(match glyph_fallback::resolve(ch, italic) {
+        glyph_fallback::Resolution::Substitute(sub) => {
+            alloc_glyph_font(arena, sub, size, italic, FontId::Math)
+        },
+        glyph_fallback::Resolution::TextFace(font) => {
+            alloc_glyph_font(arena, ch, size, italic, font)
+        },
+        glyph_fallback::Resolution::Recipe => {
+            let s = glyph_fallback::glyph_shape(ch, size);
+            arena.alloc(ArenaLayoutBox {
+                width: s.width,
+                height: s.height,
+                depth: s.depth,
+                kind: ArenaBoxKind::SvgPath(s.path),
+            })
+        },
+        glyph_fallback::Resolution::Notdef => return None,
     })
 }
 
@@ -1237,8 +1332,10 @@ fn alloc_glyph_with_metrics(
             kind: ArenaBoxKind::Kern,
         });
     }
-    if glyph_fallback::needs_fallback(ch, FontId::Math) {
-        return alloc_fallback_glyph(arena, ch, size, italic);
+    if glyph_fallback::needs_fallback(ch, FontId::Math)
+        && let Some(id) = alloc_fallback_glyph(arena, ch, size, italic)
+    {
+        return id;
     }
     arena.alloc(ArenaLayoutBox {
         width: m.width * size,
@@ -1286,6 +1383,69 @@ fn center_glyph_on_axis_arena(
     })
 }
 
+/// Arena counterpart of [`layout_text_run_fallback`].
+#[cold]
+fn layout_text_run_fallback_arena(
+    text: &str,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+    italic: bool,
+    text_style: Option<TextStyle>,
+    font: FontId,
+) -> LayoutBoxId {
+    let size = ctx.size();
+    // Lay out every piece first, then record them as children in one go.
+    let mut parts: SmallVec<[LayoutBoxId; 4]> = SmallVec::new();
+    let mut seg = String::new();
+    for c in text.chars() {
+        if glyph_fallback::needs_fallback(c, font) {
+            if let Some(sub) = glyph_fallback::substitute(c) {
+                seg.push(sub);
+                continue;
+            }
+            if glyph_fallback::has_recipe(c) {
+                if !seg.is_empty() {
+                    parts.push(layout_text_run_arena(&seg, arena, ctx, italic, text_style));
+                    seg.clear();
+                }
+                let s = glyph_fallback::glyph_shape(c, size);
+                parts.push(arena.alloc(ArenaLayoutBox {
+                    width: s.width,
+                    height: s.height,
+                    depth: s.depth,
+                    kind: ArenaBoxKind::SvgPath(s.path),
+                }));
+                continue;
+            }
+        }
+        seg.push(c);
+    }
+    if !seg.is_empty() {
+        parts.push(layout_text_run_arena(&seg, arena, ctx, italic, text_style));
+    }
+    let (mut width, mut height, mut depth) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let start = arena.begin_children();
+    for id in parts {
+        let b = arena.get(id);
+        let (w, h, d) = (b.width, b.height, b.depth);
+        arena.push_child(ArenaPositionedBox {
+            dx: width,
+            dy: 0.0,
+            id,
+        });
+        width += w;
+        height = height.max(h);
+        depth = depth.max(d);
+    }
+    let children = arena.finish_children(start);
+    arena.alloc(ArenaLayoutBox {
+        width,
+        height,
+        depth,
+        kind: ArenaBoxKind::HBox { children },
+    })
+}
+
 fn layout_text_run_arena(
     text: &str,
     arena: &mut LayoutArena,
@@ -1295,6 +1455,12 @@ fn layout_text_run_arena(
 ) -> LayoutBoxId {
     let size = ctx.size();
     let font = fonts_registry::font_for_text_run(text_style);
+    if text
+        .chars()
+        .any(|c| glyph_fallback::text_run_needs_rewrite(c, font))
+    {
+        return layout_text_run_fallback_arena(text, arena, ctx, italic, text_style, font);
+    }
     let mut total_width = 0.0;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;

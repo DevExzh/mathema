@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Symbols missing from the bundled Latin Modern fonts no longer render as
+  silent gaps. The renderer substitutes equivalent in-font characters (MathML
+  `&OverBar;`, presentation-form braces `︷︸︵︶`), draws from a Latin Modern
+  text face (`ƒ`), or composes the glyph from in-font outlines (`\Coloneqq`,
+  `\bigstar`, `\pitchfork`, `\subseteqq`, `\precneqq`, `\lBrace`,
+  `\lmoustache`, `\Game`, `\Finv`, `\digamma`, `\circledS`, dashed arrows,
+  small triangles, …) in math and in text runs. Any other uncovered character
+  is still emitted as `<text>` in SVG output (rendered by the viewer's fonts)
+  and drawn as a hollow box in PNG/JPEG output. Untabled ASCII punctuation
+  (`^ _ ~ * @ …`) now uses real font metrics, so `\textasciicircum` is no
+  longer clipped.
 - Decorated and mixed-content LaTeX operator names now retain their upright
   letters, nested styles and limit placement through LaTeX and MathML export.
   The public AST exposes their content and form in `MathNode::StructuredOperator`.

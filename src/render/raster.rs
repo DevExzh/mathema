@@ -1073,6 +1073,12 @@ fn draw_glyph(
         .entry(key)
         .or_insert_with(|| fontdue_font(used_font).rasterize(render_ch, font_size_px));
     if metrics.width == 0 || metrics.height == 0 || bitmap.is_empty() {
+        // No face can draw it (and it is not a space/control): draw a hollow
+        // notdef box instead of a silent gap. The SVG emitters keep `<text>`.
+        if super::glyph_fallback::needs_fallback(ch, font) {
+            let m = fonts_registry::text_metrics(ch, italic, font);
+            draw_notdef(pixmap, fg, x, baseline_y, f64::from(font_size_px), m, xform);
+        }
         return;
     }
 
@@ -1133,6 +1139,48 @@ fn draw_glyph(
         let tx = base_x - effective_skew * (baseline_y as f32 - gy);
         let transform = Transform::from_row(1.0, 0.0, effective_skew, 1.0, tx, gy);
         pixmap.draw_pixmap(0, 0, glyph_ref, &PixmapPaint::default(), transform, None);
+    }
+}
+
+/// Draw the hollow notdef box ([`super::glyph_fallback::notdef_frame`]) for a
+/// glyph with layout metrics `m` (em) at `size_px` pixels per em.
+fn draw_notdef(
+    pixmap: &mut Pixmap,
+    fg: [u8; 3],
+    x: f64,
+    baseline_y: f64,
+    size_px: f64,
+    m: super::metrics::GlyphMetrics,
+    xform: HorizontalTransform,
+) {
+    let (x0, x1, top, bottom, t) = super::glyph_fallback::notdef_frame(m.width, m.height, m.depth);
+    let px = |ex: f64| xform.map(x + ex * size_px) as f32;
+    let py = |ey: f64| (baseline_y - ey * size_px) as f32;
+    let (l, r) = (px(x0), px(x1));
+    let (l, r) = (l.min(r), l.max(r));
+    let (tp, bt) = (py(top), py(bottom));
+    let st = (t * size_px) as f32;
+    if !(l.is_finite() && r.is_finite() && tp.is_finite() && bt.is_finite()) || r - l <= 2.0 * st {
+        return;
+    }
+    let mut pb = PathBuilder::new();
+    if let Some(outer) = Rect::from_ltrb(l, tp, r, bt) {
+        pb.push_rect(outer);
+    }
+    if let Some(inner) = Rect::from_ltrb(l + st, tp + st, r - st, bt - st) {
+        pb.push_rect(inner);
+    }
+    if let Some(path) = pb.finish() {
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(fg[0], fg[1], fg[2], 255);
+        paint.anti_alias = true;
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::EvenOdd,
+            Transform::identity(),
+            None,
+        );
     }
 }
 

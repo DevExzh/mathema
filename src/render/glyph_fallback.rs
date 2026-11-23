@@ -2,24 +2,28 @@
 //!
 //! The renderer draws every glyph from Latin Modern Math (or a Latin Modern
 //! text face). A code point absent from those fonts would otherwise rasterize
-//! to nothing — a silent gap in PNG/JPEG/SVG output. Glyph boxes are therefore
-//! checked against the fonts' coverage at layout time (an O(1) bitset probe,
-//! so ordinary glyphs pay almost nothing), and an uncovered character is
-//! replaced by a filled [`SvgPath`](super::layout::BoxKind::SvgPath) box built
-//! from one data-driven [`RECIPES`] table:
+//! to nothing — a silent gap in PNG/JPEG output. Glyph boxes and text-run
+//! characters are therefore checked against the fonts' coverage at layout time
+//! (printable ASCII short-circuits; otherwise an O(1) bitset probe), and an
+//! uncovered character is [resolved](resolve) in this order:
 //!
-//! 1. **substitution / transformation** of an in-font glyph (`★` = scaled `⋆`,
-//!    `Ⅎ` = `F` turned 180°);
-//! 2. **composition** of in-font glyphs, individual glyph contours and simple
-//!    rules (`⩴` = `∷` + `=`, `⪵` = `≺` over the lower contour of `≨`);
-//! 3. a hollow **notdef box** for anything else, so a missing glyph is never
-//!    invisible.
-//!
-//! Because the result is an ordinary layout box, every backend (embedded-outline
-//! SVG, text SVG, PNG/JPEG) draws exactly the same shape, keeping SVG↔PNG
-//! parity.
+//! 1. **substitution** by an equivalent in-font code point ([`SUBSTITUTES`]:
+//!    `‾` → `¯`, presentation-form braces `︷` → `⏞`, …);
+//! 2. a Latin Modern **text face** that has it (e.g. `ƒ`);
+//! 3. a **recipe** from the data-driven [`RECIPES`] table — an in-font glyph
+//!    transformed (`★` = scaled `⋆`, `Ⅎ` = `F` turned 180°) or composed from
+//!    glyphs, single glyph contours and rules (`⩴` = `∷` + `=`, `⪵` = `≺`
+//!    over the lower contour of `≨`). The result is a filled
+//!    [`SvgPath`](super::layout::BoxKind::SvgPath) box, so every backend
+//!    (embedded SVG, text SVG, PNG/JPEG) draws exactly the same shape;
+//! 4. **notdef**: the glyph box is left as is. Both SVG emitters then write
+//!    the character as `<text>` (so a browser can still show e.g. CJK from a
+//!    system font), while the raster backend draws a hollow box
+//!    ([`notdef_frame`]) — never a silent blank. This is the one intentional
+//!    SVG/PNG difference.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, RwLock};
 
 use super::fonts_registry::{self, FontId};
 use super::path_writer::PathWriter;
@@ -58,7 +62,9 @@ fn math_has_glyph(ch: char) -> bool {
     if cp < BITSET_LIMIT {
         MATH_COVERAGE[(cp / 64) as usize] & (1 << (cp % 64)) != 0
     } else {
-        fonts_registry::face(FontId::Math).glyph_index(ch).is_some()
+        fonts_registry::face(FontId::Math)
+            .glyph_index(ch)
+            .is_some_and(|g| g.0 != 0)
     }
 }
 
@@ -102,17 +108,87 @@ fn needs_fallback_cold(ch: char, font: FontId) -> bool {
     font.is_math() || fonts_registry::face(font).glyph_index(ch).is_none()
 }
 
-/// First fallback step: a Latin Modern text face that has `ch` (e.g. `ƒ`,
-/// which only the text faces carry). The glyph box can then simply be drawn
-/// from that face.
+/// Compatibility / presentation-form characters whose canonical equivalent is
+/// in Latin Modern Math (sorted by the first element).
+static SUBSTITUTES: &[(char, char)] = &[
+    ('\u{203E}', '\u{00AF}'), // ‾ OVERLINE (MathML &OverBar;) → ¯ MACRON
+    ('\u{FE35}', '\u{23DC}'), // ︵ → ⏜ top parenthesis
+    ('\u{FE36}', '\u{23DD}'), // ︶ → ⏝ bottom parenthesis
+    ('\u{FE37}', '\u{23DE}'), // ︷ → ⏞ top curly bracket
+    ('\u{FE38}', '\u{23DF}'), // ︸ → ⏟ bottom curly bracket
+    ('\u{FE39}', '\u{23E0}'), // ︹ → ⏠ top tortoise shell bracket
+    ('\u{FE3A}', '\u{23E1}'), // ︺ → ⏡ bottom tortoise shell bracket
+];
+
+/// The in-font equivalent of a compatibility character, if any.
+#[inline]
+pub(crate) fn substitute(ch: char) -> Option<char> {
+    SUBSTITUTES
+        .binary_search_by_key(&ch, |&(c, _)| c)
+        .ok()
+        .map(|i| SUBSTITUTES[i].1)
+}
+
+/// A Latin Modern text face that has `ch` (e.g. `ƒ`, which only the text
+/// faces carry): roman italic first for italic glyphs, then roman regular.
 #[cold]
 pub(crate) fn text_face_for(ch: char, italic: bool) -> Option<FontId> {
-    let font = if italic {
-        FontId::RomanItalic
+    let candidates: &[FontId] = if italic {
+        &[FontId::RomanItalic, FontId::RomanRegular]
     } else {
-        FontId::RomanRegular
+        &[FontId::RomanRegular]
     };
-    fonts_registry::face(font).glyph_index(ch).map(|_| font)
+    candidates.iter().copied().find(|&font| {
+        fonts_registry::face(font)
+            .glyph_index(ch)
+            .is_some_and(|g| g.0 != 0)
+    })
+}
+
+/// How an uncovered character (one for which [`needs_fallback`] is true) is
+/// drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resolution {
+    /// Draw this in-font code point instead.
+    Substitute(char),
+    /// Draw the character from this Latin Modern text face.
+    TextFace(FontId),
+    /// Draw the [`RECIPES`] outline via [`glyph_shape`].
+    Recipe,
+    /// Keep the glyph: SVG emits `<text>`, raster draws [`notdef_frame`].
+    Notdef,
+}
+
+/// Resolve an uncovered character (see the module docs for the order).
+#[cold]
+pub(crate) fn resolve(ch: char, italic: bool) -> Resolution {
+    if let Some(sub) = substitute(ch) {
+        Resolution::Substitute(sub)
+    } else if let Some(font) = text_face_for(ch, italic) {
+        Resolution::TextFace(font)
+    } else if has_recipe(ch) {
+        Resolution::Recipe
+    } else {
+        Resolution::Notdef
+    }
+}
+
+/// Must a text run be rewritten because `ch` (uncovered in the run's `font`)
+/// has a substitute or a recipe? Notdef and text-face characters need no
+/// rewrite: the run's per-character emitters already handle them.
+#[inline]
+pub(crate) fn text_run_needs_rewrite(ch: char, font: FontId) -> bool {
+    needs_fallback(ch, font) && (substitute(ch).is_some() || has_recipe(ch))
+}
+
+/// Geometry of the hollow notdef box the raster backend draws for a glyph no
+/// face can render, given the glyph's layout metrics (em): `(x0, x1, top,
+/// bottom, stroke)` relative to the pen position and baseline, y up.
+#[cfg_attr(not(feature = "raster"), allow(dead_code))]
+pub(crate) fn notdef_frame(width: f64, height: f64, depth: f64) -> (f64, f64, f64, f64, f64) {
+    let w = width.max(0.3);
+    let top = height.max(0.5);
+    (0.08 * w, 0.92 * w, top, -depth.max(0.0), 0.05)
 }
 
 // ── Recipe table ────────────────────────────────────────────────────────────
@@ -128,8 +204,6 @@ enum Shape {
     Contours(char, u8, u8),
     /// Filled axis-aligned rectangle `(x0, y0, x1, y1)`.
     Rect(f32, f32, f32, f32),
-    /// Hollow rectangle `(x0, y0, x1, y1, stroke)` — the notdef box.
-    Frame(f32, f32, f32, f32, f32),
     /// Filled polygon (counter-clockwise in y-up font units, matching the
     /// orientation of the font's outer contours so overlaps union under the
     /// nonzero fill rule).
@@ -198,10 +272,12 @@ struct Recipe {
     parts: &'static [Part],
 }
 
-use Shape::{Contours, Frame, Glyph, Path, Poly, Rect};
+use Shape::{Contours, Glyph, Path, Poly, Rect};
 
 /// Head of `→` (U+2192) cut from its shaft at x = 844, used by the dashed
-/// arrows.
+/// arrows. Hand-copied from the Latin Modern Math 1.959 outline (as are the
+/// other literal coordinates in this table); `recipe_components_exist_in_font`
+/// guards the glyph references if the font is ever updated.
 const ARROW_HEAD: &[Seg] = &[
     Seg::M(943.0, 250.0),
     Seg::C(943.0, 256.0, 939.0, 261.0, 934.0, 263.0),
@@ -454,7 +530,9 @@ static RECIPES: &[Recipe] = &[
             at(Contours('⪆', 1, 3)),
         ],
     },
-    // ⪹ \precnapprox: ≺ placed like the < of ⪉, over ⪉'s slashed ≈.
+    // ⪹ \precnapprox: ≺ placed like the < of ⪉, over ⪉'s slashed ≈. The
+    // ⪹/⪺ offsets differ (310.3 vs 278.3) because they copy the font's own
+    // asymmetric ⪉ (< at 272..756) and ⪊ (> at 240..724).
     Recipe {
         ch: '\u{2AB9}',
         advance: 776.0,
@@ -494,15 +572,16 @@ static RECIPES: &[Recipe] = &[
     },
 ];
 
-/// Hollow box drawn for any other uncovered code point.
-const NOTDEF: &[Part] = &[at(Frame(60.0, 0.0, 540.0, 700.0, 50.0))];
-const NOTDEF_ADVANCE: f32 = 600.0;
+fn recipe(ch: char) -> Option<&'static Recipe> {
+    RECIPES
+        .binary_search_by_key(&ch, |r| r.ch)
+        .ok()
+        .map(|i| &RECIPES[i])
+}
 
-fn recipe(ch: char) -> (f32, &'static [Part]) {
-    match RECIPES.binary_search_by_key(&ch, |r| r.ch) {
-        Ok(i) => (RECIPES[i].advance, RECIPES[i].parts),
-        Err(_) => (NOTDEF_ADVANCE, NOTDEF),
-    }
+#[inline]
+pub(crate) fn has_recipe(ch: char) -> bool {
+    recipe(ch).is_some()
 }
 
 // ── Outline assembly ────────────────────────────────────────────────────────
@@ -549,12 +628,6 @@ impl Outline {
                 sink.glyph(ch);
             },
             Rect(x0, y0, x1, y1) => sink.poly(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]),
-            Frame(x0, y0, x1, y1, t) => {
-                sink.poly(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1)]);
-                // Inner contour runs clockwise so it punches a hole.
-                let (a0, b0, a1, b1) = (x0 + t, y0 + t, x1 - t, y1 - t);
-                sink.poly(&[(a0, b0), (a0, b1), (a1, b1), (a1, b0)]);
-            },
             Poly(pts) => sink.poly(pts),
             Path(segs) => {
                 use ttf_parser::OutlineBuilder;
@@ -670,20 +743,44 @@ pub(crate) struct FallbackShape {
     pub path: String,
 }
 
-fn assemble(ch: char) -> (f32, Outline) {
-    let (advance, parts) = recipe(ch);
+/// An assembled recipe: advance width plus outline (font units).
+struct Assembled {
+    advance: f32,
+    outline: Outline,
+}
+
+/// Assembled outlines keyed by code point. Bounded by the recipe table size,
+/// so repeated renders skip re-reading the component glyph outlines.
+static ASSEMBLED: LazyLock<RwLock<HashMap<char, Arc<Assembled>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// The assembled outline for `ch`'s recipe; a recipe whose components vanished
+/// from the font (guarded by tests) yields an empty-but-valid outline.
+fn assemble(ch: char) -> Arc<Assembled> {
+    if let Some(hit) = ASSEMBLED.read().ok().and_then(|m| m.get(&ch).cloned()) {
+        return hit;
+    }
     let mut outline = Outline::new();
-    for p in parts {
-        outline.add_part(p);
-    }
+    let advance = match recipe(ch) {
+        Some(r) => {
+            for p in r.parts {
+                outline.add_part(p);
+            }
+            r.advance
+        },
+        None => 0.0,
+    };
     if outline.cmds.is_empty() {
-        // Defensive: a recipe whose component glyph vanished still draws.
-        for p in NOTDEF {
-            outline.add_part(p);
-        }
-        return (NOTDEF_ADVANCE, outline);
+        outline.min_y = 0.0;
+        outline.max_y = 0.0;
     }
-    (advance, outline)
+    let built = Arc::new(Assembled { advance, outline });
+    if recipe(ch).is_some()
+        && let Ok(mut m) = ASSEMBLED.write()
+    {
+        m.insert(ch, Arc::clone(&built));
+    }
+    built
 }
 
 /// Serialize `outline`, mapping font-unit `(x, y)` to em `(x·sx, (top − y)·sy)`.
@@ -708,7 +805,8 @@ fn write_path(outline: &Outline, sx: f64, sy: f64, top: f64) -> String {
 /// Fallback drawing of `ch` at its natural size, for a glyph box of font size
 /// `size` (em).
 pub(crate) fn glyph_shape(ch: char, size: f64) -> FallbackShape {
-    let (advance, outline) = assemble(ch);
+    let a = assemble(ch);
+    let (advance, outline) = (a.advance, &a.outline);
     let s = size / fonts_registry::font_info(FontId::Math).units_per_em;
     let top = f64::from(outline.max_y.max(0.0));
     let bottom = f64::from(outline.min_y.min(0.0));
@@ -716,15 +814,17 @@ pub(crate) fn glyph_shape(ch: char, size: f64) -> FallbackShape {
         width: f64::from(advance) * s,
         height: top * s,
         depth: -bottom * s,
-        path: write_path(&outline, s, s, top),
+        path: write_path(outline, s, s, top),
     }
 }
 
-/// True when a stretchy delimiter for `ch` (at `target_height` em) would draw
-/// nothing: no font glyph and no built-in delimiter path.
+/// True when a stretchy delimiter for `ch` (at `target_height` em) has no font
+/// glyph or built-in path but does have a recipe. (Without a recipe the
+/// delimiter box is kept: SVG emits `<text>`, raster draws notdef.)
 #[inline]
 pub(crate) fn delimiter_needs_fallback(ch: char, target_height: f64) -> bool {
     needs_fallback(ch, FontId::Math)
+        && has_recipe(ch)
         && super::delimiter_paths::delimiter_path(ch, target_height, 1.0).is_none()
 }
 
@@ -732,7 +832,8 @@ pub(crate) fn delimiter_needs_fallback(ch: char, target_height: f64) -> bool {
 /// vertically to span `height` above and `depth` below the baseline, keeping
 /// its natural width at font size `size`.
 pub(crate) fn delimiter_shape(ch: char, size: f64, height: f64, depth: f64) -> FallbackShape {
-    let (advance, outline) = assemble(ch);
+    let a = assemble(ch);
+    let (advance, outline) = (a.advance, &a.outline);
     let s = size / fonts_registry::font_info(FontId::Math).units_per_em;
     let ink = f64::from(outline.max_y - outline.min_y).max(1.0);
     let sy = (height + depth).max(0.0) / ink;
@@ -740,7 +841,7 @@ pub(crate) fn delimiter_shape(ch: char, size: f64, height: f64, depth: f64) -> F
         width: f64::from(advance) * s,
         height,
         depth,
-        path: write_path(&outline, s, sy, f64::from(outline.max_y)),
+        path: write_path(outline, s, sy, f64::from(outline.max_y)),
     }
 }
 
@@ -775,9 +876,8 @@ mod tests {
                     );
                 }
             }
-            let (_, outline) = assemble(r.ch);
             assert!(
-                outline.cmds.len() > 4,
+                assemble(r.ch).outline.cmds.len() > 4,
                 "U+{:04X} recipe drew nothing",
                 r.ch as u32
             );
@@ -787,7 +887,7 @@ mod tests {
     #[test]
     fn coverage_matches_cmap() {
         let face = fonts_registry::face(FontId::Math);
-        for cp in (0..0x3_0000_u32).step_by(7) {
+        for cp in 0..0x3_0000_u32 {
             if let Some(ch) = char::from_u32(cp) {
                 assert_eq!(
                     math_has_glyph(ch),
@@ -811,10 +911,35 @@ mod tests {
     }
 
     #[test]
-    fn unknown_char_gets_notdef_box() {
-        let s = glyph_shape('\u{4E2D}', 1.0);
-        assert!(s.width > 0.0 && s.height > 0.0);
-        assert!(s.path.starts_with("F:M"));
+    fn resolution_order() {
+        for w in SUBSTITUTES.windows(2) {
+            assert!(w[0].0 < w[1].0, "SUBSTITUTES must be sorted");
+        }
+        for &(from, to) in SUBSTITUTES {
+            assert!(needs_fallback(from, FontId::Math), "U+{:04X}", from as u32);
+            assert!(math_has_glyph(to), "U+{:04X}", to as u32);
+        }
+        assert_eq!(resolve('\u{FE37}', false), Resolution::Substitute('⏞'));
+        assert_eq!(resolve('\u{203E}', false), Resolution::Substitute('¯'));
+        assert_eq!(
+            resolve('\u{0192}', false),
+            Resolution::TextFace(FontId::RomanRegular)
+        );
+        assert_eq!(resolve('\u{2A74}', false), Resolution::Recipe);
+        assert_eq!(resolve('\u{4E2D}', false), Resolution::Notdef);
+        assert!(text_run_needs_rewrite('★', FontId::RomanRegular));
+        assert!(text_run_needs_rewrite('\u{FE37}', FontId::RomanRegular));
+        assert!(!text_run_needs_rewrite('a', FontId::RomanRegular));
+        assert!(!text_run_needs_rewrite('\u{4E2D}', FontId::RomanRegular));
+    }
+
+    #[test]
+    fn recipe_shape_is_cached_and_valid() {
+        let a = glyph_shape('\u{2605}', 1.0);
+        let b = glyph_shape('\u{2605}', 1.0);
+        assert_eq!(a.path, b.path);
+        assert!(a.width > 0.0 && a.height > 0.0);
+        assert!(a.path.starts_with("F:M"));
     }
 
     #[test]
@@ -878,15 +1003,27 @@ mod tests {
         }
 
         let mut blank = Vec::new();
+        let mut notdef = Vec::new();
+        let mut unparsed = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (name, text) in &cmds {
+            // Notdef has ink in the PNG, so check resolution separately: every
+            // table character must come from a font, text face or recipe.
+            for c in text.chars() {
+                if needs_fallback(c, FontId::Math) && resolve(c, false) == Resolution::Notdef {
+                    notdef.push(format!("\\{name} (U+{:04X})", c as u32));
+                }
+            }
             if text.chars().all(is_inkless) || !seen.insert(text.clone()) {
                 continue;
             }
             // Accents etc. need an argument; try bare first, then with `{}`.
             let parsed = crate::from_latex(&format!("\\{name}"))
                 .or_else(|_| crate::from_latex(&format!("\\{name}{{}}")));
-            let Ok(parsed) = parsed else { continue };
+            let Ok(parsed) = parsed else {
+                unparsed.push(format!("\\{name}"));
+                continue;
+            };
             let png = parsed.to_png().expect("png render");
             if ink_pixels(&png) == 0 {
                 let cps: Vec<String> = text
@@ -902,10 +1039,22 @@ mod tests {
             blank.len(),
             blank.join("\n  ")
         );
+        assert!(
+            notdef.is_empty(),
+            "{} symbol(s) only resolve to a notdef box:\n  {}",
+            notdef.len(),
+            notdef.join("\n  ")
+        );
+        assert!(
+            unparsed.is_empty(),
+            "{} symbol command(s) fail to parse:\n  {}",
+            unparsed.len(),
+            unparsed.join("\n  ")
+        );
     }
 
     #[cfg(feature = "raster")]
-    fn ink_pixels(png: &[u8]) -> usize {
+    pub(super) fn ink_pixels(png: &[u8]) -> usize {
         let mut reader = png::Decoder::new(std::io::Cursor::new(png))
             .read_info()
             .expect("png header");
@@ -924,5 +1073,81 @@ mod tests {
                 _ => p[0] < 224,
             })
             .count()
+    }
+}
+
+#[cfg(all(test, feature = "raster"))]
+mod render_tests {
+    /// Notdef characters stay `<text>` in both SVG outputs (browser fonts can
+    /// still show them) while recipe characters become identical paths.
+    #[test]
+    fn notdef_stays_text_in_svg_and_recipes_become_paths() {
+        for tex in [
+            r"x_{最大}",
+            r"\mathrm{中}",
+            r"\text{中}",
+            r"\operatorname{中}",
+        ] {
+            let r = crate::from_latex(tex).unwrap();
+            let cjk = tex.chars().find(|c| !c.is_ascii()).unwrap();
+            assert!(r.to_svg().unwrap().contains(cjk), "{tex}: to_svg");
+            assert!(r.to_svg_text().unwrap().contains(cjk), "{tex}: to_svg_text");
+        }
+        let r = crate::from_latex(r"\text{a★b}").unwrap();
+        for svg in [r.to_svg().unwrap(), r.to_svg_text().unwrap()] {
+            assert!(!svg.contains('★'), "recipe char must be drawn as a path");
+            assert!(svg.contains("<path"), "recipe path missing");
+        }
+    }
+
+    fn ink(tex: &str) -> usize {
+        let png = crate::from_latex(tex).unwrap().to_png().unwrap();
+        super::tests::ink_pixels(&png)
+    }
+
+    /// Raster never leaves a gap: recipe and notdef characters in math and in
+    /// text runs all put ink on the PNG.
+    #[test]
+    fn raster_draws_text_runs_and_notdef() {
+        for tex in [
+            r"\text{★}",
+            r"\text{⩴}",
+            r"\operatorname{中}",
+            r"x_{最大}",
+            r"\mathrm{中}",
+            "\u{FE37}",
+            r"\text{︷}",
+        ] {
+            assert!(ink(tex) > 0, "{tex} renders no ink");
+        }
+    }
+
+    /// MathML presentation forms render exactly like their canonical
+    /// characters (stretchy braces, overline accent), not as notdef.
+    #[test]
+    fn mathml_overbar_and_presentation_braces() {
+        let svg = |mml: String| crate::from_mathml(&mml).unwrap().to_svg().unwrap();
+        let over = |base: &str, op: &str, tag: &str, attr: &str| {
+            format!("<math><{tag}{attr}>{base}<mo>{op}</mo></{tag}></math>")
+        };
+        let ab = "<mrow><mi>a</mi><mi>b</mi></mrow>";
+        for (form, canon, tag) in [
+            ("&#xFE37;", "&#x23DE;", "mover"),
+            ("&#xFE38;", "&#x23DF;", "munder"),
+            ("&#xFE35;", "&#x23DC;", "mover"),
+            ("&#xFE36;", "&#x23DD;", "munder"),
+        ] {
+            assert_eq!(
+                svg(over(ab, form, tag, "")),
+                svg(over(ab, canon, tag, "")),
+                "{form}"
+            );
+        }
+        let y = "<mi>y</mi>";
+        let acc = r#" accent="true""#;
+        assert_eq!(
+            svg(over(y, "&OverBar;", "mover", acc)),
+            svg(over(y, "&#x0304;", "mover", acc))
+        );
     }
 }

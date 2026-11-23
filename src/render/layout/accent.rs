@@ -580,6 +580,13 @@ pub(super) fn layout_accent(
     ctx: &LayoutCtx,
 ) -> LayoutBox {
     let base_box = layout_node(base, ctx);
+    // MathML `&OverBar;` (U+203E, absent from the font) as an over-accent is
+    // the stretchy bar accent.
+    let accent = if accent == '\u{203E}' && matches!(position, AccentPosition::Above) {
+        '\u{0304}'
+    } else {
+        accent
+    };
     let base_width = base_box.width;
     if let Some((symbol, spacing)) = wide_bracket(accent, position, wide) {
         let size = ctx.size();
@@ -918,6 +925,13 @@ pub(super) fn layout_accent_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let base_id = layout_node_arena(ast, base, arena, ctx);
+    // MathML `&OverBar;` (U+203E, absent from the font) as an over-accent is
+    // the stretchy bar accent.
+    let accent = if accent == '\u{203E}' && matches!(position, AccentPosition::Above) {
+        '\u{0304}'
+    } else {
+        accent
+    };
 
     let base_w = arena.get(base_id).width;
     if let Some((symbol, spacing)) = wide_bracket(accent, position, wide) {
