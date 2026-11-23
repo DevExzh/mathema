@@ -2013,7 +2013,14 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     // canonical command has its class (`\leq`, `\cdot`, `\langle`). None of
     // the special spellings below apply to such a glyph: they concern
     // compounds, ASCII, ordinary atoms, the minus sign and the dagger pair.
-    let canonical = crate::unicode::symbols::unicode_to_latex_entry(ch);
+    // ASCII glyphs and the math minus never reach the table spelling (their
+    // branches below return first), so skip the lookup for the most common
+    // symbols (`+ = ( ) −`).
+    let canonical = if ch.is_ascii() || ch == '\u{2212}' {
+        None
+    } else {
+        crate::unicode::symbols::unicode_to_latex_entry(ch)
+    };
     if !is_compound
         && !ch.is_ascii()
         && kind != SymbolKind::Ordinary

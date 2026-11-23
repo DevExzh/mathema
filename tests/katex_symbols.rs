@@ -11,63 +11,63 @@ use mathema::from_latex;
 /// Control words KaTeX supports, written without the backslash. Each is used
 /// as `a \name b`, so commands that take an argument consume the `b`.
 const KATEX_COMMANDS: &str = "
-    Alpha And Bbbk Beta Box Cap Chi Colonapprox Coloneq Coloneqq Colonsim Complex Cup Dagger 
-    Darr Delta Diamond Downarrow Epsilon Eqcolon Eqqcolon Eta Finv Game Gamma Harr Im Iota 
-    Join Kappa Lambda Larr Leftarrow Leftrightarrow Lleftarrow Longleftarrow 
-    Longleftrightarrow Longrightarrow Lrarr Lsh Mu N Nu  Omega Omicron Phi Pi Pr Psi R Rarr 
-    Re Reals Rho Rightarrow Rrightarrow Rsh Sigma Subset Supset Tau Theta Uarr Uparrow 
-    Updownarrow Upsilon Vdash Vert Vvdash Xi Z Zeta alef alefsym aleph alpha amalg angle 
-    approxcolon approxcoloncolon arccos arcctg arcsin arctan arctg arg argmax argmin ast 
-    backprime backslash barwedge because beta beth bigcap bigcirc bigcup bigodot bigoplus 
-    bigotimes bigsqcup bigstar bigtriangledown bigtriangleup biguplus bigvee bigwedge 
-    blacklozenge blacksquare blacktriangle blacktriangledown blacktriangleleft 
-    blacktriangleright bot boxdot boxminus boxplus boxtimes bullet cap cdot cdotp cdots 
-    centerdot ch checkmark chi circ circlearrowleft circlearrowright circledR circledS 
-    clubsuit cnums colonapprox coloncolonequals coloneq coloneqq colonequals colonsim 
-    complement coprod copyright cos cosec cosh cot cotg coth csc ctg cth cup curlyvee 
-    curlywedge curvearrowleft curvearrowright dArr dag dagger daleth darr dashleftarrow 
-    dashrightarrow dblcolon ddag ddagger ddots deg degree delta det diagdown diagup diamond 
-    diamondsuit digamma dim div divideontimes doteqdot dotplus dots dotsb dotsc dotsi dotsm 
-    dotso doublebarwedge doublecap doublecup downarrow downdownarrows downharpoonleft 
-    downharpoonright ell empty emptyset epsilon eqcirc eqcolon eqqcolon eqsim eqslantgtr 
-    eqslantless equalscolon equalscoloncolon eta eth exist exists exp fallingdotseq flat 
-    forall frown gamma gcd ge geq geqq geqslant gg ggg gggtr gimel gnapprox gneq gneqq gnsim 
-    gt gtrapprox gtrdot gtreqless gtreqqless gtrless gtrsim gvertneqq hArr harr hbar 
-    heartsuit hom hookleftarrow hookrightarrow hslash iddots iff iiint iint image imageof 
-    imath impliedby implies in inf infty injlim int intercal intop iota isin  jmath kappa 
-    ker lArr lBrace lVert lambda land lang langle larr lbrace lbrack lceil ldotp ldots le 
-    leadsto leftarrow leftarrowtail leftharpoondown leftharpoonup leftleftarrows 
-    leftrightarrow leftrightarrows leftrightharpoons leftrightsquigarrow leftthreetimes leq 
-    leqq leqslant lessapprox lessdot lesseqgtr lesseqqgtr lessgtr lesssim lfloor lg lgroup 
-    lhd lim liminf limsup ll llbracket llcorner lll llless lmoustache ln lnapprox lneq lneqq 
-    lnot lnsim log longleftarrow longleftrightarrow longmapsto longrightarrow looparrowleft 
-    looparrowright lor lozenge lrArr lrarr lrcorner lt ltimes lvert lvertneqq maltese mapsto 
-    mathellipsis mathsterling max measuredangle mid min minuscolon minuso models mp mu 
-    multimap nLeftarrow nLeftrightarrow nRightarrow nVDash nVdash nabla natnums natural ncong 
-    ne nearrow neg neq nexists ngeq ngeqq ngeqslant ngtr ni nleftarrow nleftrightarrow nleq 
-    nleqq nleqslant nless nmid notin notni nparallel nprec npreceq nrightarrow nshortmid 
-    nshortparallel nsim nsubseteq nsubseteqq nsucc nsucceq nsupseteq nsupseteqq ntriangleleft 
-    ntrianglelefteq ntriangleright ntrianglerighteq nu nvDash nvdash nwarrow  odot oiiint 
-    oiint oint omega omicron ominus oplus origof oslash otimes owns parallel partial perp phi 
-    pi pitchfork plim pm pounds prec precapprox preccurlyeq preceq precnapprox precneqq 
-    precnsim precsim prime prod projlim propto psi rArr rBrace rVert rang rangle rarr ratio 
-    rbrace rbrack rceil real reals restriction rfloor rgroup rhd rho rightarrow 
-    rightarrowtail rightharpoondown rightharpoonup rightleftarrows rightleftharpoons 
-    rightrightarrows rightsquigarrow rightthreetimes risingdotseq rmoustache rrbracket rtimes 
-    rvert searrow sec setminus sh sharp shortmid shortparallel sigma sim simcolon 
-    simcoloncolon simeq sin sinh smallfrown smallsetminus smallsmile smile spadesuit 
-    sphericalangle sqcap sqcup sqsubset sqsubseteq sqsupset sqsupseteq square star subset 
-    subseteq subseteqq subsetneq subsetneqq succ succapprox succcurlyeq succeq succnapprox 
-    succneqq succnsim succsim sum sup supset supseteq supseteqq supsetneq supsetneqq swarrow 
-    tan tanh tau tg th therefore theta thetasym thickapprox thicksim times to top triangle 
-    triangledown triangleleft trianglelefteq triangleq triangleright trianglerighteq 
-    twoheadleftarrow twoheadrightarrow uArr uarr ulcorner unlhd unrhd uparrow updownarrow 
-    upharpoonleft upharpoonright uplus upsilon upuparrows urcorner vDash varDelta varGamma 
-    varLambda varOmega varPhi varPi varPsi varSigma varTheta varUpsilon varXi varepsilon 
-    varinjlim varkappa varliminf varlimsup varnothing varphi varpi varprojlim varpropto 
-    varrho varsigma varsubsetneq varsubsetneqq varsupsetneq varsupsetneqq vartheta 
-    vartriangle vartriangleleft vartriangleright vcentcolon vdash vdots vee veebar vert wedge 
-    weierp wp wr xi yen zeta 
+    Alpha And Bbbk Beta Box Cap Chi Colonapprox Coloneq Coloneqq Colonsim Complex Cup Dagger
+    Darr Delta Diamond Downarrow Epsilon Eqcolon Eqqcolon Eta Finv Game Gamma Harr Im Iota
+    Join Kappa Lambda Larr Leftarrow Leftrightarrow Lleftarrow Longleftarrow
+    Longleftrightarrow Longrightarrow Lrarr Lsh Mu N Nu  Omega Omicron Phi Pi Pr Psi R Rarr
+    Re Reals Rho Rightarrow Rrightarrow Rsh Sigma Subset Supset Tau Theta Uarr Uparrow
+    Updownarrow Upsilon Vdash Vert Vvdash Xi Z Zeta alef alefsym aleph alpha amalg angle
+    approxcolon approxcoloncolon arccos arcctg arcsin arctan arctg arg argmax argmin ast
+    backprime backslash barwedge because beta beth bigcap bigcirc bigcup bigodot bigoplus
+    bigotimes bigsqcup bigstar bigtriangledown bigtriangleup biguplus bigvee bigwedge
+    blacklozenge blacksquare blacktriangle blacktriangledown blacktriangleleft
+    blacktriangleright bot boxdot boxminus boxplus boxtimes bullet cap cdot cdotp cdots
+    centerdot ch checkmark chi circ circlearrowleft circlearrowright circledR circledS
+    clubsuit cnums colonapprox coloncolonequals coloneq coloneqq colonequals colonsim
+    complement coprod copyright cos cosec cosh cot cotg coth csc ctg cth cup curlyvee
+    curlywedge curvearrowleft curvearrowright dArr dag dagger daleth darr dashleftarrow
+    dashrightarrow dblcolon ddag ddagger ddots deg degree delta det diagdown diagup diamond
+    diamondsuit digamma dim div divideontimes doteqdot dotplus dots dotsb dotsc dotsi dotsm
+    dotso doublebarwedge doublecap doublecup downarrow downdownarrows downharpoonleft
+    downharpoonright ell empty emptyset epsilon eqcirc eqcolon eqqcolon eqsim eqslantgtr
+    eqslantless equalscolon equalscoloncolon eta eth exist exists exp fallingdotseq flat
+    forall frown gamma gcd ge geq geqq geqslant gg ggg gggtr gimel gnapprox gneq gneqq gnsim
+    gt gtrapprox gtrdot gtreqless gtreqqless gtrless gtrsim gvertneqq hArr harr hbar
+    heartsuit hom hookleftarrow hookrightarrow hslash iddots iff iiint iint image imageof
+    imath impliedby implies in inf infty injlim int intercal intop iota isin  jmath kappa
+    ker lArr lBrace lVert lambda land lang langle larr lbrace lbrack lceil ldotp ldots le
+    leadsto leftarrow leftarrowtail leftharpoondown leftharpoonup leftleftarrows
+    leftrightarrow leftrightarrows leftrightharpoons leftrightsquigarrow leftthreetimes leq
+    leqq leqslant lessapprox lessdot lesseqgtr lesseqqgtr lessgtr lesssim lfloor lg lgroup
+    lhd lim liminf limsup ll llbracket llcorner lll llless lmoustache ln lnapprox lneq lneqq
+    lnot lnsim log longleftarrow longleftrightarrow longmapsto longrightarrow looparrowleft
+    looparrowright lor lozenge lrArr lrarr lrcorner lt ltimes lvert lvertneqq maltese mapsto
+    mathellipsis mathsterling max measuredangle mid min minuscolon minuso models mp mu
+    multimap nLeftarrow nLeftrightarrow nRightarrow nVDash nVdash nabla natnums natural ncong
+    ne nearrow neg neq nexists ngeq ngeqq ngeqslant ngtr ni nleftarrow nleftrightarrow nleq
+    nleqq nleqslant nless nmid notin notni nparallel nprec npreceq nrightarrow nshortmid
+    nshortparallel nsim nsubseteq nsubseteqq nsucc nsucceq nsupseteq nsupseteqq ntriangleleft
+    ntrianglelefteq ntriangleright ntrianglerighteq nu nvDash nvdash nwarrow  odot oiiint
+    oiint oint omega omicron ominus oplus origof oslash otimes owns parallel partial perp phi
+    pi pitchfork plim pm pounds prec precapprox preccurlyeq preceq precnapprox precneqq
+    precnsim precsim prime prod projlim propto psi rArr rBrace rVert rang rangle rarr ratio
+    rbrace rbrack rceil real reals restriction rfloor rgroup rhd rho rightarrow
+    rightarrowtail rightharpoondown rightharpoonup rightleftarrows rightleftharpoons
+    rightrightarrows rightsquigarrow rightthreetimes risingdotseq rmoustache rrbracket rtimes
+    rvert searrow sec setminus sh sharp shortmid shortparallel sigma sim simcolon
+    simcoloncolon simeq sin sinh smallfrown smallsetminus smallsmile smile spadesuit
+    sphericalangle sqcap sqcup sqsubset sqsubseteq sqsupset sqsupseteq square star subset
+    subseteq subseteqq subsetneq subsetneqq succ succapprox succcurlyeq succeq succnapprox
+    succneqq succnsim succsim sum sup supset supseteq supseteqq supsetneq supsetneqq swarrow
+    tan tanh tau tg th therefore theta thetasym thickapprox thicksim times to top triangle
+    triangledown triangleleft trianglelefteq triangleq triangleright trianglerighteq
+    twoheadleftarrow twoheadrightarrow uArr uarr ulcorner unlhd unrhd uparrow updownarrow
+    upharpoonleft upharpoonright uplus upsilon upuparrows urcorner vDash varDelta varGamma
+    varLambda varOmega varPhi varPi varPsi varSigma varTheta varUpsilon varXi varepsilon
+    varinjlim varkappa varliminf varlimsup varnothing varphi varpi varprojlim varpropto
+    varrho varsigma varsubsetneq varsubsetneqq varsupsetneq varsupsetneqq vartheta
+    vartriangle vartriangleleft vartriangleright vcentcolon vdash vdots vee veebar vert wedge
+    weierp wp wr xi yen zeta
 ";
 
 fn commands() -> impl Iterator<Item = &'static str> {
