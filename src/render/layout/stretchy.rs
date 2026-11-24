@@ -961,3 +961,131 @@ pub(super) fn alloc_delimiter(
         },
     })
 }
+
+/// TeX's `\nulldelimiterspace` (1.2pt at 10pt), the width of `\big.`.
+pub(super) const NULL_DELIMITER_SPACE_EM: f64 = 0.12;
+
+/// Geometry of a `\big`-family delimiter drawn through the MATH table.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BigDelimiter {
+    pub ch: char,
+    /// Advance width of the drawn glyph.
+    pub width: f64,
+    /// Height and depth of the `Delimiter` box around its own baseline.
+    pub height: f64,
+    pub depth: f64,
+    /// `target_height` of the `Delimiter` box. Every emitter picks its glyph
+    /// from this value through [`glyph_variants::delimiter_variant`] (or the
+    /// assembly when that returns `None`), exactly as the layout does here.
+    pub target_height: f64,
+    /// Raise applied to the box so the glyph is centered on the math axis,
+    /// as TeX centers every `\left` delimiter.
+    pub shift: f64,
+}
+
+/// The `\big`-family size whose `Scaled` factor is `factor`.
+pub(super) fn is_big_delim_factor(factor: Rational) -> bool {
+    crate::ast::BIG_DELIM_SIZES
+        .iter()
+        .any(|size| size.scale == factor)
+}
+
+/// Lay out the delimiter `ch` of a `\big`, `\Big`, `\bigg` or `\Bigg` whose
+/// `Scaled` factor is `factor`, at font size `size`.
+///
+/// The factors (1.2, 1.8, 2.4, 3.0) double as TeX's delimiter heights in em:
+/// plain TeX's 8.5–17.5pt boxes pass through Rule 19 to requests that cmex
+/// answers with its `size1`–`size4` glyphs, which KaTeX's `sizeToMaxHeight`
+/// lists as 1.2/1.8/2.4/3.0 em. The glyph is the font's size variant for that
+/// height (see [`glyph_variants::big_delimiter_glyph`]) drawn at its natural
+/// size rather than a scaled base outline, or an extensible assembly when the
+/// target is taller than every variant.
+///
+/// Returns `None` when `factor` is not a `\big` size or the font has no
+/// variants for `ch`; the caller then keeps scaling the content.
+pub(super) fn big_delimiter(
+    factor: Rational,
+    ch: char,
+    size: f64,
+    axis: f64,
+) -> Option<BigDelimiter> {
+    if !is_big_delim_factor(factor) {
+        return None;
+    }
+    let target_em = factor.as_f64();
+    let target_height = match glyph_variants::big_delimiter_glyph(ch, target_em)? {
+        glyph_variants::BigDelimiterGlyph::Variant(v) => v.advance_em * size,
+        glyph_variants::BigDelimiterGlyph::Assembly => target_em * size,
+    };
+    if let Some(v) = glyph_variants::delimiter_variant(ch, target_height) {
+        // At `size` 1 this is the variant chosen above, drawn unscaled.
+        let s = target_height / v.advance_em;
+        let height = v.y_max_em * s;
+        let depth = -v.y_min_em * s;
+        return Some(BigDelimiter {
+            ch,
+            width: v.h_adv_em * s,
+            height,
+            depth,
+            target_height,
+            shift: axis - (height - depth) / 2.0,
+        });
+    }
+    let asm = glyph_variants::vertical_assembly(ch, target_height)?;
+    // The emitters stretch the assembly over the whole box.
+    Some(BigDelimiter {
+        ch,
+        width: asm.width_em * size,
+        height: target_height / 2.0,
+        depth: target_height / 2.0,
+        target_height,
+        shift: axis,
+    })
+}
+
+/// Heap layout of a [`BigDelimiter`]: the delimiter box raised onto the axis.
+pub(super) fn big_delimiter_box(d: BigDelimiter, size: f64) -> LayoutBox {
+    let delim = delimiter_box(d.ch, d.width, d.height, d.depth, d.target_height, size);
+    LayoutBox {
+        width: delim.width,
+        height: (delim.height + d.shift).max(0.0),
+        depth: (delim.depth - d.shift).max(0.0),
+        kind: BoxKind::HBox {
+            children: vec![PositionedBox::new(0.0, d.shift, delim)],
+        },
+    }
+}
+
+/// Arena counterpart of [`big_delimiter_box`].
+pub(super) fn alloc_big_delimiter(
+    arena: &mut LayoutArena,
+    d: BigDelimiter,
+    size: f64,
+) -> LayoutBoxId {
+    let delim = alloc_delimiter(
+        arena,
+        d.ch,
+        d.width,
+        d.height,
+        d.depth,
+        d.target_height,
+        size,
+    );
+    let (width, height, depth) = {
+        let b = arena.get(delim);
+        (b.width, b.height, b.depth)
+    };
+    let start = arena.begin_children();
+    arena.push_child(ArenaPositionedBox {
+        dx: 0.0,
+        dy: d.shift,
+        id: delim,
+    });
+    let children = arena.finish_children(start);
+    arena.alloc(ArenaLayoutBox {
+        width,
+        height: (height + d.shift).max(0.0),
+        depth: (depth - d.shift).max(0.0),
+        kind: ArenaBoxKind::HBox { children },
+    })
+}

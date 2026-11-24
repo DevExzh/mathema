@@ -2335,3 +2335,178 @@ fn scale_svg_path_implicit_lineto_after_move() {
     let scaled = scale_svg_path_data(path, 2.0);
     assert_eq!(scaled, "M20 40 60 80");
 }
+
+// ── `\big`-family delimiters ──────────────────────────────────────────
+
+/// The first `Delimiter` box in `b` with the raise of its parent chain.
+fn find_delimiter(b: &LayoutBox, dy: f64) -> Option<(f64, &LayoutBox)> {
+    match &b.kind {
+        BoxKind::Delimiter { .. } => Some((dy, b)),
+        BoxKind::HBox { children } | BoxKind::VBox { children } => children
+            .iter()
+            .find_map(|c| find_delimiter(&c.layout, dy + c.dy)),
+        BoxKind::Color { child, .. } => find_delimiter(&child.layout, dy + child.dy),
+        _ => None,
+    }
+}
+
+fn big_delimiter_layout(latex: &str) -> LayoutBox {
+    let parsed = crate::latex::parse::parse(latex, &Default::default()).expect("parse failed");
+    layout_expr(&parsed.expr, MathStyle::Text, &default_options())
+}
+
+#[test]
+fn big_family_selects_tex_sized_variants() {
+    use glyph_variants::{BigDelimiterGlyph, big_delimiter_glyph};
+    // (glyph, expected variant advance per size: \big, \Big, \bigg, \Bigg);
+    // `None` means the extensible assembly.
+    let cases: [(char, [Option<f64>; 4]); 6] = [
+        ('(', [Some(1.195), Some(1.793), Some(2.393), Some(2.991)]),
+        ('[', [Some(1.201), Some(1.801), Some(2.401), Some(3.001)]),
+        (
+            '\u{27E8}',
+            [Some(1.201), Some(1.801), Some(2.401), Some(3.001)],
+        ),
+        ('|', [Some(1.203), Some(1.735), Some(2.503), Some(3.005)]),
+        ('/', [Some(1.311), Some(1.717), Some(2.249), Some(2.945)]),
+        ('\u{2191}', [Some(1.349), None, None, None]),
+    ];
+    for (ch, expected) in cases {
+        for (size, want) in crate::ast::BIG_DELIM_SIZES.iter().zip(expected) {
+            let got = big_delimiter_glyph(ch, size.scale.as_f64())
+                .unwrap_or_else(|| panic!("{ch:?} has variants"));
+            match (got, want) {
+                (BigDelimiterGlyph::Variant(v), Some(want)) => assert!(
+                    (v.advance_em - want).abs() < 0.002,
+                    "\\{}{ch}: variant {:.3} em, want {want}",
+                    size.command,
+                    v.advance_em
+                ),
+                (BigDelimiterGlyph::Assembly, None) => {},
+                (got, want) => panic!("\\{}{ch}: got {got:?}, want {want:?}", size.command),
+            }
+        }
+    }
+    // A glyph without MATH variants keeps the scaled fallback.
+    assert!(big_delimiter_glyph('x', 1.2).is_none());
+}
+
+#[test]
+fn big_family_heights_match_tex_sizes() {
+    let axis = TexParams::default().axis_height;
+    for (size, open, close) in [
+        ("big", '(', ')'),
+        ("Big", '[', ']'),
+        ("bigg", '{', '}'),
+        ("Bigg", '(', ')'),
+    ] {
+        let tex = crate::ast::BIG_DELIM_SIZES
+            .iter()
+            .find(|s| s.command == size)
+            .unwrap()
+            .scale
+            .as_f64();
+        for ch in [open, close] {
+            let latex = format!(
+                "\\{size}{}",
+                if ch == '{' || ch == '}' {
+                    format!("\\{ch}")
+                } else {
+                    ch.to_string()
+                }
+            );
+            let root = big_delimiter_layout(&latex);
+            let (dy, d) =
+                find_delimiter(&root, 0.0).unwrap_or_else(|| panic!("{latex}: no Delimiter box"));
+            let BoxKind::Delimiter { target_height, .. } = d.kind else {
+                unreachable!()
+            };
+            let total = d.height + d.depth;
+            // TeX's size1–size4 heights (1.2/1.8/2.4/3.0 em), within the
+            // font's rounding.
+            assert!(
+                (total - tex).abs() < 0.012,
+                "{latex}: height {total:.3}, TeX {tex}"
+            );
+            assert!(
+                (target_height - total).abs() < 0.01,
+                "{latex}: target {target_height:.3}"
+            );
+            // Centered on the math axis, as TeX centers delimiters.
+            let center = dy + (d.height - d.depth) / 2.0;
+            assert!(
+                (center - axis).abs() < 1e-9,
+                "{latex}: center {center:.4}, axis {axis}"
+            );
+        }
+    }
+}
+
+#[test]
+fn big_family_assembly_spans_the_tex_height() {
+    let root = big_delimiter_layout(r"\Bigg\uparrow");
+    let (_, d) = find_delimiter(&root, 0.0).expect("Delimiter box");
+    let BoxKind::Delimiter { ch, target_height } = d.kind else {
+        unreachable!()
+    };
+    assert_eq!(ch, '\u{2191}');
+    assert!((target_height - 3.0).abs() < 1e-9);
+    assert!((d.height + d.depth - 3.0).abs() < 1e-9);
+    // The emitters fall through to the assembly for this target.
+    assert!(glyph_variants::delimiter_variant(ch, target_height).is_none());
+    assert!(glyph_variants::vertical_assembly(ch, target_height).is_some());
+}
+
+#[test]
+fn big_family_draws_the_variant_unscaled() {
+    // The box is as wide as the variant glyph, not a scaled base glyph.
+    let root = big_delimiter_layout(r"\Bigg(");
+    let (_, d) = find_delimiter(&root, 0.0).expect("Delimiter box");
+    let v = glyph_variants::delimiter_variant('(', 2.991).expect("size4 variant");
+    assert!((d.width - v.h_adv_em).abs() < 1e-9, "width {}", d.width);
+    assert!(d.width < 3.0 * metrics::glyph_metrics('(').width);
+}
+
+#[test]
+fn big_null_delimiter_is_nulldelimiterspace_wide() {
+    for latex in [r"\big.", r"\Biggl."] {
+        let root = big_delimiter_layout(latex);
+        assert!(
+            (root.width - 0.12).abs() < 1e-9,
+            "{latex}: width {}",
+            root.width
+        );
+        assert!(find_delimiter(&root, 0.0).is_none());
+    }
+}
+
+#[test]
+fn scaled_delimiter_with_other_factor_keeps_scaling() {
+    let content = MathNode::Symbol(SymbolKind::Open, "(".into());
+    let ctx = LayoutCtx {
+        style: MathStyle::Text,
+        params: TexParams::default(),
+        options: &default_options(),
+        depth: 0,
+        size_scale: 1.0,
+        spacing_style: None,
+        display_choice: false,
+        styled_face: None,
+    };
+    let normal = layout_node(&content, &ctx);
+    let scaled = layout_scaled(Rational::new(2, 1), &content, &ctx);
+    assert!((scaled.width - 2.0 * normal.width).abs() < 1e-9);
+    assert!(find_delimiter(&scaled, 0.0).is_none());
+}
+
+#[test]
+fn big_family_arena_matches_heap() {
+    for latex in [
+        r"\bigl( \Bigl[ \biggl\{ \Biggl\langle x \Biggr\rangle \biggr\} \Bigr] \bigr)",
+        r"\big| \Big\| \bigg/ \Bigg\backslash \big\uparrow \Bigg\uparrow \big.",
+        r"x_{\big( \Bigg\uparrow}",
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        assert_arena_heap_equivalent(latex, MathStyle::Display);
+    }
+}

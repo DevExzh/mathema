@@ -145,6 +145,18 @@ fn svg_matches_png_on_corpus() {
             r"\left( \frac{1}{1 + \frac{1}{1 + x}} \right) \left[ \sum_k a_k \right]",
             true,
         ),
+        // `\big`-family delimiters: MATH-table size variants, plus the
+        // extensible assembly `\Big\uparrow` needs.
+        (
+            "big_family",
+            r"\bigl( \Bigl[ \biggl\{ \Biggl\langle x \Biggr\rangle \biggr\} \Bigr] \bigr)",
+            false,
+        ),
+        (
+            "big_family_bars",
+            r"\big| \Big\| \bigg/ \Bigg\backslash \big\uparrow \Bigg\uparrow \big.",
+            false,
+        ),
         ("actuarial", r"A_{\angl n}+B_{\angl g}", true),
         ("mirrored", r"\mathreflectbox{b+\frac{x}{y}}", true),
         ("middle", r"\left\langle x \middle| y \right\rangle", true),

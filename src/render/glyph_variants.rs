@@ -340,6 +340,56 @@ pub fn delimiter_variant(ch: char, target_height_em: f64) -> Option<VariantGlyph
     }
 }
 
+/// How much shorter than its target a size variant chosen for a `\big`-family
+/// delimiter may be.
+///
+/// The targets are TeX's sizes (1.2, 1.8, 2.4 and 3.0 em, the heights of the
+/// cmex `size1`–`size4` glyphs). Latin Modern Math also ships half steps
+/// between them (1.095, 1.445 and 2.093 em for `(`), so "the smallest variant
+/// that reaches the target" alone would turn `\big(` (1.195 em) into `\Big(`.
+/// Accepting variants down to 93% of the target keeps the cmex-equivalent
+/// glyph for parentheses, brackets, braces and angles, and gives glyphs whose
+/// variants grow in other steps (`|` 1.203/1.735/2.503/3.005 em, `/`
+/// 1.311/1.717/2.249/2.945 em) four distinct sizes. TeX's own Rule 19 has the
+/// same kind of slack: `\delimiterfactor` = 901 accepts a delimiter down to
+/// 90.1% of the request.
+pub const BIG_DELIM_MIN_FRACTION: f64 = 0.93;
+
+/// The glyph construction a `\big`-family delimiter is drawn with.
+#[derive(Debug, Clone, Copy)]
+pub enum BigDelimiterGlyph {
+    /// A pre-designed size variant, drawn at its natural size.
+    Variant(VariantGlyph),
+    /// No variant is tall enough: an extensible assembly at the target height.
+    Assembly,
+}
+
+/// Choose the glyph for a `\big`-family delimiter `ch` of `target_height_em`
+/// (in em of the current font size): the smallest size variant at least
+/// [`BIG_DELIM_MIN_FRACTION`] as tall as the target, else the font's
+/// extensible assembly, else the largest variant.
+///
+/// Returns `None` when the font has no vertical variants for `ch`.
+#[allow(dead_code)]
+pub fn big_delimiter_glyph(ch: char, target_height_em: f64) -> Option<BigDelimiterGlyph> {
+    let table = &*VARIANT_TABLE;
+    let idx = table.vertical.binary_search_by_key(&ch, |(c, _)| *c).ok()?;
+    let variants = &table.vertical[idx].1;
+    let min_height = target_height_em * BIG_DELIM_MIN_FRACTION;
+    if let Some(v) = variants.iter().find(|v| v.advance_em >= min_height) {
+        return Some(BigDelimiterGlyph::Variant(*v));
+    }
+    let has_assembly = table
+        .vertical_assemblies
+        .binary_search_by_key(&ch, |(c, _)| *c)
+        .is_ok();
+    if has_assembly {
+        Some(BigDelimiterGlyph::Assembly)
+    } else {
+        variants.last().copied().map(BigDelimiterGlyph::Variant)
+    }
+}
+
 /// Build a stretchy vertical assembly for `ch` tall enough to reach
 /// `target_height_em`, using the font's OpenType MATH `GlyphAssembly` parts
 /// (e.g. radical checkmark + stretchy extender + top, or the 5-part brace).

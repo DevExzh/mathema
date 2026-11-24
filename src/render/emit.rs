@@ -519,8 +519,10 @@ fn emit_box(
                     );
                 }
             } else {
-                // Fallback: text element with font-size scaling
+                // Fallback: text element with font-size scaling, centered
+                // on the box like the outline backends' variant glyph.
                 let font_size = target_height * em;
+                let y = delimiter_text_baseline(*ch, y, layout.height, layout.depth, em, font_size);
                 svg.push_str(r#"<text x=""#);
                 push_f3(svg, x);
                 svg.push_str(r#"" y=""#);
@@ -900,8 +902,10 @@ fn emit_box_arena(
                     );
                 }
             } else {
-                // Fallback: text element with font-size scaling
+                // Fallback: text element with font-size scaling, centered
+                // on the box like the outline backends' variant glyph.
                 let font_size = target_height * em;
+                let y = delimiter_text_baseline(*ch, y, layout.height, layout.depth, em, font_size);
                 svg.push_str(r#"<text x=""#);
                 push_f3(svg, x);
                 svg.push_str(r#"" y=""#);
@@ -1023,6 +1027,23 @@ pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
         '\'' => out.push_str("&apos;"),
         _ => out.push(ch),
     }
+}
+
+/// Baseline for a delimiter drawn as a `<text>` glyph at `font_size`: the
+/// glyph's ink is centered on the delimiter box, which the layout centers on
+/// the math axis, instead of hanging from the box baseline.
+fn delimiter_text_baseline(
+    ch: char,
+    y: f64,
+    layout_height: f64,
+    layout_depth: f64,
+    em: f64,
+    font_size: f64,
+) -> f64 {
+    let m = super::metrics::glyph_metrics(ch);
+    let box_center = (layout_height - layout_depth) / 2.0 * em;
+    let glyph_center = (m.height - m.depth) / 2.0 * font_size;
+    y - (box_center - glyph_center)
 }
 
 #[cfg(test)]
