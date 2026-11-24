@@ -2308,6 +2308,34 @@ fn malformed_color_brace_prime_script_is_idempotent() {
 }
 
 #[test]
+fn scripted_escaped_brace_before_a_script_without_a_base_is_idempotent() {
+    // Found by fuzzing: `\{` followed by two scripts without a base is
+    // written as `\{` taking the first script's markers, which reads back
+    // as a scripted brace followed by the second script. That node must be
+    // spelled with the same script-argument bracing on the next write.
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\{ {}^2 '", r"\{^{2}{}^{\prime}"),
+        (r"\mathbf{\} {}^2 '}", r"\mathbf{\}^{2}{}^{\prime}}"),
+        (
+            "2eg\\gg\\chooeHcu~\\{$_-_-",
+            r"2eg\gg \mathord{\text{\textbackslash{}chooeHcu}}\ \{_-{}_{-}",
+        ),
+        (r"\{^2 {}^3", r"\{^{2}{}^{3}"),
+        (r"x^2 {}^3", r"x^{2}{}^{3}"),
+    ] {
+        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut parsed.expr).unwrap();
+        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+        assert_eq!(first, expected, "{input}");
+        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+        normalize_compact_expr(&mut reparsed.expr).unwrap();
+        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        assert_eq!(first, second, "{input}");
+    }
+}
+
+#[test]
 fn zero_width_nary_bodies_keep_following_tokens_stable() {
     let config = Config::default();
     for (input, expected) in [

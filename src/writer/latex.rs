@@ -240,7 +240,16 @@ fn write_sequence(
                     buf.push('}');
                     write_empty_base_script_markers(buf, arena, script_id, next);
                 } else {
-                    write_node(buf, arena, id);
+                    // A script node is spelled as `write_sequence` spells
+                    // it elsewhere: the trailing script may have come from
+                    // a token base taking its first script's markers on the
+                    // previous write (`\{^{2}{}^{\prime}`), which reads back
+                    // as this node.
+                    if is_script_node(arena, id) {
+                        write_script_node_with_next(buf, arena, id, Some(script_id));
+                    } else {
+                        write_node(buf, arena, id);
+                    }
                     write_standalone_empty_base_script(buf, arena, script_id, next);
                 }
             }
@@ -378,6 +387,14 @@ fn write_escaped_undefined_command(
             }
         }
         write_node_slice(buf, arena, children, false);
+        // `\int\}` would read the brace (or the scripted brace standing for
+        // the trailing script) as the operator's body.
+        let empty_nary_body = children
+            .last()
+            .is_some_and(|&last| ends_with_empty_body_nary(arena, last));
+        if empty_nary_body {
+            buf.push_str("{}");
+        }
         if let Some(script) = trailing_script {
             if !buf.ends_with(' ') {
                 buf.push(' ');
@@ -385,13 +402,11 @@ fn write_escaped_undefined_command(
             write_brace_prescripts(buf, arena, script);
             continue;
         }
-        if let Some(&last) = children.last() {
-            if ends_with_empty_body_nary(arena, last) {
-                // `\int\}` would read the brace as the operator's body.
-                buf.push_str("{}");
-            } else if needs_space(arena, Some(last), group) {
-                buf.push(' ');
-            }
+        if !empty_nary_body
+            && let Some(&last) = children.last()
+            && needs_space(arena, Some(last), group)
+        {
+            buf.push(' ');
         }
         buf.push_str("\\}");
     }

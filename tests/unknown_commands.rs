@@ -767,3 +767,17 @@ fn an_escaped_group_starting_with_leading_scripts_is_stable() {
         assert_eq!(latex_default(&first), first, "{input:?} is not stable");
     }
 }
+
+#[test]
+fn an_empty_nary_body_before_a_trailing_script_keeps_its_group() {
+    // Found by fuzzing: the group's last script without a base becomes the
+    // closing brace's leading script, but the empty `{}` body the integral
+    // before it needs was dropped, so the second write added it.
+    let input = r"\foo{' \int {} {}'}";
+    let first = latex_default(input);
+    assert_eq!(
+        first,
+        r"\mathord{\text{\textbackslash{}foo}\{ {{}^{\prime}\int}{} {{}^{\prime}\}}}"
+    );
+    assert_eq!(latex_default(&first), first, "{input} is not stable");
+}
