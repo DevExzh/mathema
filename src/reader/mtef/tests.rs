@@ -260,6 +260,42 @@ fn v3_sum_slots_are_main_lower_upper_then_operator() {
 }
 
 #[test]
+fn v3_operator_character_is_not_latex_syntax() {
+    // The operator of a sum or integral template may be any character.
+    let operator = |selector: u8, ch: char, lower: &str| {
+        let lower = cat(&lower
+            .chars()
+            .map(|c| c3(1, 3, c))
+            .collect::<Vec<_>>()
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>());
+        latex(&eq3(&cat(&[
+            &[0x03, selector, 2, 0],
+            &line3(&c3(1, 3, 'a')),
+            &line3(&lower),
+            &line3(&[]),
+            &[0x0D],
+            &c3(0, 6, ch),
+            &[0],
+        ])))
+    };
+    for (ch, sum, sum_without_limits) in [
+        ('}', r"\mathop{\}}", r"\mathop{\}}a"),
+        ('{', r"\mathop{\{}", r"\mathop{\{}a"),
+        ('8', r"\mathop{8}", r"\mathop{8}a"),
+        ('%', r"\mathop{\%}", r"\mathop{\%}a"),
+        ('\\', r"\mathop{\setminus}", r"\mathop{\setminus}a"),
+        ('^', r"\mathop{\char`\^}", r"\mathop{\char`\^}a"),
+        ('砀', r"\mathop{砀}", r"\mathop{砀}a"),
+    ] {
+        assert_eq!(operator(43, ch, "k"), format!(r"{sum}\limits_ka"));
+        assert_eq!(operator(43, ch, ""), sum_without_limits);
+        assert_eq!(operator(42, ch, "k"), format!(r"{sum}\nolimits_ka"));
+    }
+}
+
+#[test]
 fn v3_limit_on_a_function_name() {
     let lim = cat(&[
         &[0x03, 39, 1, 0],

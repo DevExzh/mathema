@@ -455,18 +455,36 @@ fn adjacent_number_nodes_need_separator(
 /// True if the node is, or its LaTeX ends with, a Nary operator with an
 /// effectively empty body (a leading script's base is written last), so
 /// that the next sibling would be read as its body.
+#[inline]
 fn ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
+    matches!(
+        *arena.node(id),
+        CompactNode::PreScripts { .. } | CompactNode::Nary { .. }
+    ) && output_ends_with_empty_body_nary(arena, id)
+}
+
+fn output_ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
-        CompactNode::PreScripts { base, .. } => ends_with_empty_body_nary(arena, base),
-        _ => is_empty_body_nary(arena, id),
+        CompactNode::PreScripts { base, .. } => output_ends_with_empty_body_nary(arena, base),
+        CompactNode::Nary { body, .. } if is_empty_body(arena, body) => {
+            is_empty_body_nary(arena, id)
+        },
+        // Without a command: `\mathop{…}` and its body (`write_unnamed_nary`).
+        CompactNode::Nary { op, body, .. } => {
+            (is_bare_large_op(arena, body) || output_ends_with_empty_body_nary(arena, body))
+                && nary_op_to_latex(op).is_none()
+        },
+        _ => false,
     }
 }
 
-/// True if the node is a Nary operator with an effectively empty body.
+/// True if the node is a Nary operator, read back as one, with an
+/// effectively empty body.
 fn is_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
     matches!(
         *arena.node(id),
-        CompactNode::Nary { body, .. } if is_empty_body(arena, body)
+        CompactNode::Nary { op, body, .. }
+            if is_empty_body(arena, body) && nary_op_to_latex(op).is_some()
     )
 }
 
@@ -556,6 +574,18 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
             write_node(buf, arena, content);
             buf.push_str("}}");
         },
+        // Without limits and body, such an operator is only its `\mathop`.
+        CompactNode::Nary {
+            op, sub, sup, body, ..
+        } if nary_op_to_latex(op).is_none()
+            && is_empty_body(arena, body)
+            && is_effectively_empty_arg(arena, sub)
+            && is_effectively_empty_arg(arena, sup) =>
+        {
+            buf.push_str("{\\mathord{");
+            write_mathop_glyph(buf, op);
+            buf.push_str("}}");
+        },
         CompactNode::MathAtom {
             atom_type: MathAtomType::Op,
             content,
@@ -615,13 +645,7 @@ fn write_scalar_operator_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeI
     let CompactNode::Symbol(SymbolKind::LargeOp, sid) = *arena.node(arg) else {
         return false;
     };
-    let text = arena.str_val(sid);
-    let Some(ch) = text.chars().next() else {
-        return false;
-    };
-    if text.len() == ch.len_utf8()
-        && let Some(cmd) = nary_op_to_latex(ch)
-    {
+    if let Some(cmd) = single_char(arena.str_val(sid)).and_then(nary_op_to_latex) {
         buf.push('\\');
         buf.push_str(cmd);
         true
@@ -685,29 +709,28 @@ fn write_script_arg(
                 // non-alphabetic symbols keep the braces needed to isolate
                 // their control words.
                 write_script_base(buf, arena, arg);
-                // A glyph spelled with the `\char` primitive is the primitive
-                // and its character code, not one token (`x^\char`\^` is an
-                // error in KaTeX).
-                // So is a glyph that needs a class command (`\mathrel{…}`).
-                if buf[start..].starts_with(r"\char")
-                    || (buf[start..].starts_with(r"\math")
-                        && matches!(*arena.node(arg), CompactNode::Symbol(..)))
-                {
-                    buf.insert_text(start, "{");
-                    buf.push('}');
-                }
             }
         },
     }
     let written = &buf[start..];
-    // Every spelling above is one argument. A spelling that is not would
-    // render differently from the AST, so it fails debug builds (tests and
-    // fuzzing); release builds still group it.
-    let one = is_one_tex_argument(written);
-    debug_assert!(one, "script argument `{written}` is not one TeX token");
-    if !one {
+    // A base may be a command and its argument, a script argument may not: TeX
+    // would take the command alone. So a single glyph spelled `\char…`,
+    // `\mathrel{…}` or `\mathop{…}` is grouped here. Every other spelling above
+    // is one argument already; one that is not would render differently from
+    // the AST, so it fails debug builds (tests and fuzzing), and release
+    // builds still group it.
+    if !is_one_tex_argument(written) {
+        debug_assert!(
+            is_script_base_token(arena, written_script_content(arena, arg)),
+            "script argument `{written}` is not one TeX token"
+        );
         buf.insert_text(start, "{");
         buf.push('}');
+        debug_assert!(
+            is_one_tex_argument(&buf[start..]),
+            "script argument `{}` is not one group",
+            &buf[start..]
+        );
         return false;
     }
     let bytes = written.as_bytes();
@@ -862,6 +885,9 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
         // wrapped atom for spacing decisions (e.g. \Big\ggg-).
         CompactNode::Scaled { content, .. } => needs_space(arena, Some(content), curr),
         CompactNode::PreScripts { base, .. } => needs_space(arena, Some(base), curr),
+        // Written as an operator atom and then its body, which is what `curr`
+        // follows (see `write_unnamed_nary`).
+        CompactNode::Nary { op, body, .. } => nary_needs_space(arena, op, body, curr),
         // An operatorname ending in a braced argument already delimits the
         // name, e.g. `\operatorname{rank}A`. Native control words retain
         // their usual separator.
@@ -880,6 +906,13 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
         // Control words are separated using the emitted buffer in write_node_slice.
         _ => false,
     }
+}
+
+#[inline(never)]
+fn nary_needs_space(arena: &AstArena, op: char, body: NodeId, curr: NodeId) -> bool {
+    !is_empty_body(arena, body)
+        && needs_space(arena, Some(body), curr)
+        && nary_op_to_latex(op).is_none()
 }
 
 /// A superscript/subscript with an empty base is meant to attach to the
@@ -928,6 +961,11 @@ fn node_starts_with_ascii_letter(arena: &AstArena, id: NodeId) -> bool {
             let ch = s.chars().next().unwrap_or('?');
             ch.is_ascii_alphabetic() && unicode_to_latex(ch).is_none()
         },
+        // An ordinary letter is a character token, a large operator `\mathop`.
+        CompactNode::Symbol(kind, sid) => {
+            !matches!(kind, SymbolKind::Ordinary | SymbolKind::LargeOp)
+                && matches!(arena.str_val(sid).as_bytes(), [b] if b.is_ascii_alphabetic())
+        },
         CompactNode::Number(sid) => arena
             .str_val(sid)
             .as_bytes()
@@ -955,6 +993,10 @@ fn node_starts_with_ascii_letter(arena: &AstArena, id: NodeId) -> bool {
         // if the sizing command is dropped (non-delimiter content), so the
         // wrapper itself can start with a letter.
         CompactNode::Scaled { content, .. } => node_starts_with_ascii_letter(arena, content),
+        // A color that cannot be written leaves only its content.
+        CompactNode::Color { color, content } if latex_color(arena.str_val(color)).is_none() => {
+            node_starts_with_ascii_letter(arena, content)
+        },
         _ => false,
     }
 }
@@ -1036,9 +1078,32 @@ fn write_leaf_with_math_spaces(buf: &mut LatexBuffer, s: &str, kind: MathLeafKin
 
 fn write_math_leaf_segment(buf: &mut LatexBuffer, s: &str, kind: MathLeafKind) {
     match kind {
-        MathLeafKind::Number => buf.push_str(s),
+        MathLeafKind::Number => write_number_chars(buf, s),
         MathLeafKind::Identifier => write_identifier_text(buf, s),
         MathLeafKind::Symbol(symbol_kind) => write_symbol_text(buf, symbol_kind, s),
+    }
+}
+
+/// A number is written as it stands (`1.5`, `1,000`, `½`), except for
+/// characters that are not themselves in a math list: MathML's `<mn>` may
+/// hold any text, such as `50%`.
+fn write_number_chars(buf: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '#' | '$' | '%' | '&' => {
+                buf.push('\\');
+                buf.push(ch);
+            },
+            '\'' | '"' | '\\' | '^' | '_' | '~' | '{' | '}' => write_math_char(buf, ch),
+            // White space in a math list is nothing; a blank line is an error.
+            _ if ch.is_ascii_whitespace() => buf.push(' '),
+            // A script glyph (`²`) would be the script of what precedes it,
+            // and an error after another one.
+            _ if ch.is_control() || math_literal_needs_char(ch) && !ch.is_ascii() => {
+                write_math_char(buf, ch)
+            },
+            _ => buf.push(ch),
+        }
     }
 }
 
@@ -1081,7 +1146,7 @@ fn latex_color(name: &str) -> Option<ColorArgument<'_>> {
         && hex.bytes().all(|b| b.is_ascii_hexdigit())
     {
         Some(ColorArgument::Html(hex))
-    } else if name.contains(['{', '}', '\\', '~', '#', '$', '%', '&', '^', '_']) {
+    } else if name.contains(is_tex_special) {
         None
     } else {
         Some(ColorArgument::Named(name))
@@ -1122,8 +1187,10 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(sid) => {
             let s = arena.str_val(sid);
-            if !write_leaf_with_math_spaces(buf, s, MathLeafKind::Number) {
+            if s.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
                 buf.push_str(s);
+            } else if !write_leaf_with_math_spaces(buf, s, MathLeafKind::Number) {
+                write_number_chars(buf, s);
             }
         },
 
@@ -1219,8 +1286,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
 
             buf.push_str("\\left");
-            write_delim(buf, open_str);
-            buf.push(' ');
+            if writes_as_delimiter(open_str) {
+                write_delim(buf, open_str);
+                buf.push(' ');
+            } else {
+                buf.push_str(". ");
+                write_literal_delimiter(buf, open_str, "\\mathopen{");
+            }
+            let literal_close = !writes_as_delimiter(close_str);
             let mut ends_with_command = false;
             // Output offsets just after each fenced row break; see
             // `write_sequence`.
@@ -1232,9 +1305,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 }
                 match *arena.node(child_id) {
                     CompactNode::Middle(sid) => {
-                        buf.push_str(" \\middle");
-                        write_delim(buf, arena.str_val(sid));
-                        buf.push(' ');
+                        let delim = arena.str_val(sid);
+                        if writes_as_delimiter(delim) {
+                            buf.push_str(" \\middle");
+                            write_delim(buf, delim);
+                            buf.push(' ');
+                        } else {
+                            write_literal_delimiter(buf, delim, "\\mathrel{");
+                        }
                         ends_with_command = false;
                     },
                     _ => {
@@ -1257,7 +1335,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                         // explicit empty group before the next fenced item.
                         // The normal row writer adds this boundary, while the
                         // fenced loop writes children directly.
-                        if index + 1 < content_ids.len()
+                        if (literal_close || index + 1 < content_ids.len())
                             && ends_with_empty_body_nary(arena, child_id)
                         {
                             buf.push_str("{}");
@@ -1270,8 +1348,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             for &start in row_breaks.iter().rev() {
                 guard_row_break_argument(buf, start);
             }
-            buf.push_str(" \\right");
-            write_delim(buf, close_str);
+            if literal_close {
+                write_literal_delimiter(buf, close_str, "\\mathclose{");
+                buf.push_str(" \\right.");
+            } else {
+                buf.push_str(" \\right");
+                write_delim(buf, close_str);
+            }
         },
 
         CompactNode::Subscript { base, .. }
@@ -1462,12 +1545,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             body,
             limits,
         } => {
-            if let Some(cmd) = nary_op_to_latex(op) {
-                buf.push('\\');
-                buf.push_str(cmd);
-            } else {
-                buf.push(op);
-            }
+            let Some(cmd) = nary_op_to_latex(op) else {
+                write_unnamed_nary(buf, arena, op, [sub, sup], body, limits);
+                return;
+            };
+            buf.push('\\');
+            buf.push_str(cmd);
             match limits {
                 LimitStyle::AboveBelow => buf.push_str("\\limits"),
                 LimitStyle::SubSup => buf.push_str("\\nolimits"),
@@ -1923,8 +2006,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             // A middle delimiter can survive inside an infix-fraction
             // argument. Preserve its node class when emitted outside the
             // immediate `\left...\right` writer loop.
-            buf.push_str("\\middle");
-            write_delim(buf, arena.str_val(sid));
+            let delim = arena.str_val(sid);
+            if writes_as_delimiter(delim) {
+                buf.push_str("\\middle");
+                write_delim(buf, delim);
+            } else {
+                write_literal_delimiter(buf, delim, "\\mathrel{");
+            }
         },
         CompactNode::ColAlign(_) => {},
         CompactNode::Rule {
@@ -2181,11 +2269,11 @@ fn write_identifier_text(buf: &mut String, s: &str) {
 
 /// An identifier read from MathML may contain punctuation even though a normal
 /// LaTeX identifier is alphabetic.  Keep the same reserved-glyph protection as
-/// ordinary symbols, and add the four LaTeX parameter/comment characters that
-/// cannot appear literally in a math input stream.
+/// ordinary symbols, and add the four LaTeX parameter/comment characters and
+/// the double quote, none of which can appear literally in a math input stream.
 #[inline]
 fn math_identifier_needs_char(ch: char) -> bool {
-    math_literal_needs_char(ch) || matches!(ch, '#' | '$' | '%' | '&')
+    math_literal_needs_char(ch) || matches!(ch, '#' | '$' | '%' | '&' | '"')
 }
 
 #[inline]
@@ -2259,7 +2347,7 @@ fn write_operator_name_content(buf: &mut String, name: &str) {
             '$' => buf.push_str("\\$"),
             '&' => buf.push_str("\\&"),
             '_' => buf.push_str("\\_"),
-            '^' => buf.push_str("\\^"),
+            '^' => buf.push_str("\\textasciicircum{}"),
             '{' => buf.push_str("\\{"),
             '}' => buf.push_str("\\}"),
             '~' => buf.push_str("\\textasciitilde{}"),
@@ -2278,6 +2366,15 @@ fn write_symbol(buf: &mut LatexBuffer, arena: &AstArena, kind: SymbolKind, sid: 
 }
 
 fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
+    // The reader knows a large operator by its command only; any other glyph
+    // needs an explicit operator atom.
+    if kind == SymbolKind::LargeOp
+        && let Some(ch) = single_char(s)
+        && nary_op_to_latex(ch).is_none()
+    {
+        write_mathop_glyph(buf, ch);
+        return;
+    }
     if kind == SymbolKind::Ordinary && buf.in_operator_name {
         match s {
             "'" | "-" | "*" => {
@@ -2350,6 +2447,7 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     // explicit ordinary atom so the LaTeX command cannot be reparsed as an
     // n-ary operator that absorbs the following element as its body.
     if kind == SymbolKind::Ordinary
+        && !is_compound
         && let Some(cmd) = nary_op_to_latex(ch)
     {
         buf.push_str("\\mathord{");
@@ -2446,7 +2544,11 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
             // A full stop is ordinary in math; `\ldotp` is its punctuation form.
             '.' if kind == SymbolKind::Punctuation => buf.push_str("\\ldotp"),
             '&' => buf.push_str("\\&"),
-            '\\' => buf.push_str("\\textbackslash "),
+            // In another class the characters that `math_literal_needs_char`
+            // escapes in an ordinary symbol are no safer.
+            '\'' | '"' | '\\' | '^' | '_' | '~' | '\0'..=' ' | '\u{7F}' => {
+                write_class_char(buf, kind, ch)
+            },
             _ => buf.push(ch),
         }
         return;
@@ -2517,6 +2619,10 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         buf.push_str(cmd);
         return;
     }
+    if symbol_glyph_needs_char(ch) {
+        write_class_char(buf, kind, ch);
+        return;
+    }
     if let Some(cmd) = crate::latex::packages::package_command_for_symbol(s, kind) {
         buf.push('\\');
         buf.push_str(cmd);
@@ -2538,6 +2644,17 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
             buf.push('}');
         },
         _ => buf.push_str(s),
+    }
+}
+
+/// The character token of `ch` in an atom of class `kind`.
+#[cold]
+fn write_class_char(buf: &mut String, kind: SymbolKind, ch: char) {
+    let wrapper = explicit_class_wrapper(kind);
+    buf.push_str(wrapper.unwrap_or_default());
+    write_math_char(buf, ch);
+    if wrapper.is_some() {
+        buf.push('}');
     }
 }
 
@@ -2589,6 +2706,11 @@ fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
             || matches!(ch, '%' | '#' | '$' | '&' | '"')
         {
             write_math_char(buf, ch);
+        } else if let Some(cmd) = nary_op_to_latex(ch) {
+            // The reader would take what follows as the operator's body.
+            buf.push_str("\\mathord{\\");
+            buf.push_str(cmd);
+            buf.push('}');
         } else {
             buf.push(ch);
         }
@@ -2621,6 +2743,17 @@ fn math_literal_needs_char(ch: char) -> bool {
             ch,
             '\'' | '<' | '>' | '\\' | '^' | '_' | '|' | '~' | '{' | '}'
         )
+}
+
+/// Whether a glyph of an operator, delimiter or punctuation class has no
+/// literal or command spelling: the other special characters (`{`, `%`, …)
+/// have a control symbol, and `<`, `>` and `|` read as themselves.
+#[inline]
+fn symbol_glyph_needs_char(ch: char) -> bool {
+    matches!(ch, '\'' | '"' | '\\' | '^' | '_' | '~')
+        || ch.is_ascii_whitespace()
+        || ch.is_control()
+        || (!ch.is_ascii() && crate::unicode::decode_script_scalar(ch).is_some())
 }
 
 /// Emit one ordinary glyph with TeX's character-token primitive.  TeX
@@ -2666,7 +2799,11 @@ fn write_accent_glyph(buf: &mut String, ch: char) {
             buf.push(ch);
         },
         '\\' => buf.push_str(r"\backslash"),
-        _ if is_tex_special(ch) || ch == '"' || ch.is_whitespace() || ch.is_control() => {
+        _ if is_tex_special(ch)
+            || matches!(ch, '"' | '\'')
+            || ch.is_whitespace()
+            || ch.is_control() =>
+        {
             if ch.is_whitespace() || ch.is_control() {
                 write_decimal_char(buf, ch, " ");
             } else {
@@ -2745,10 +2882,18 @@ fn write_space_with_basis(buf: &mut String, width: Rational, basis: Option<Space
 /// The `\big`-family command name for a scaled delimiter, or `None` when the
 /// factor is not one of the four TeX sizes or the content is not a delimiter.
 fn big_delim_command(arena: &AstArena, factor: Rational, content: NodeId) -> Option<&'static str> {
-    if !matches!(
-        *arena.node(content),
-        CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, ..)
-    ) {
+    let CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, sid) =
+        *arena.node(content)
+    else {
+        return None;
+    };
+    // The reader refuses any other glyph after a sizing command.
+    let delim = arena.str_val(sid);
+    if !delim.is_empty()
+        && !single_char(delim).is_some_and(|ch| {
+            matches!(ch, '<' | '>') || crate::unicode::symbols::is_tex_delimiter(ch)
+        })
+    {
         return None;
     }
     crate::ast::BIG_DELIM_SIZES
@@ -2838,6 +2983,39 @@ fn write_delim(buf: &mut LatexBuffer, delim: &str) {
     write_delim_with_class(buf, delim, None);
 }
 
+/// Whether `\left`, `\middle` and `\right` take `delim` as their delimiter:
+/// nothing, or one glyph that is not a letter or digit (a letter would join
+/// the command's name). MathML's `<mfenced>` and the other formats allow any
+/// text.
+fn writes_as_delimiter(delim: &str) -> bool {
+    match delim.as_bytes() {
+        [] => true,
+        [byte] => byte.is_ascii_punctuation(),
+        _ => single_char(delim).is_some_and(|ch| !ch.is_whitespace() && !ch.is_control()),
+    }
+}
+
+/// Text that is no delimiter, as an atom of the delimiter's class inside a
+/// fence that has none there.
+#[cold]
+fn write_literal_delimiter(buf: &mut LatexBuffer, delim: &str, wrapper: &str) {
+    buf.push_str(wrapper);
+    if let Some(ch) = single_char(delim) {
+        write_literal_glyph(buf, ch);
+    } else {
+        for ch in delim.chars() {
+            if ch.is_ascii_alphanumeric() {
+                buf.push(ch);
+            } else if crate::unicode::math_space_width(ch).is_some() {
+                write_decimal_char(buf, ch, " ");
+            } else {
+                write_symbol_text(buf, SymbolKind::Ordinary, ch.encode_utf8(&mut [0; 4]));
+            }
+        }
+    }
+    buf.push('}');
+}
+
 /// A leading-script base that is a nonzero math space; its scripts are
 /// written without the usual enclosing group.
 fn is_bare_space_prescript_base(arena: &AstArena, base: NodeId) -> bool {
@@ -2882,9 +3060,103 @@ fn write_nary_body(buf: &mut LatexBuffer, arena: &AstArena, body: NodeId) {
     }
 }
 
-/// True for a large operator symbol that is not yet an n-ary node.
+/// The only character of `text`.
+fn single_char(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
+}
+
+/// True for a large operator symbol that is not yet an n-ary node. One
+/// without a command is written `\mathop{…}`, which takes no body.
+#[inline(always)]
 fn is_bare_large_op(arena: &AstArena, id: NodeId) -> bool {
-    matches!(*arena.node(id), CompactNode::Symbol(SymbolKind::LargeOp, _))
+    matches!(*arena.node(id), CompactNode::Symbol(SymbolKind::LargeOp, sid)
+        if is_named_large_op(arena.str_val(sid)))
+}
+
+fn is_named_large_op(text: &str) -> bool {
+    single_char(text).is_some_and(|ch| nary_op_to_latex(ch).is_some())
+}
+
+/// An n-ary operator whose glyph is no large operator of its own (MTEF and
+/// OMML accept any character): the operator atom `\mathop{…}` with its
+/// limits, then the body as the next sibling. A placement control has
+/// nothing to place without scripts and is left out, as it is when the
+/// result is read back.
+#[cold]
+fn write_unnamed_nary(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
+    op: char,
+    scripts: [NodeId; 2],
+    body: NodeId,
+    limits: LimitStyle,
+) {
+    let start = buf.len();
+    write_mathop_glyph(buf, op);
+    let visible = scripts.map(|script| !is_effectively_empty_arg(arena, script));
+    if visible != [false; 2] {
+        match limits {
+            LimitStyle::AboveBelow => buf.push_str("\\limits"),
+            LimitStyle::SubSup => buf.push_str("\\nolimits"),
+            LimitStyle::Default => {},
+        }
+    }
+    for ((marker, script), visible) in ['_', '^'].into_iter().zip(scripts).zip(visible) {
+        if visible {
+            buf.push(marker);
+            write_script_arg(buf, arena, script, ScriptArgGroup::Minimal);
+        }
+    }
+    if is_empty_body(arena, body) {
+        return;
+    }
+    if (has_visible_prescripts(arena, body) && !buf.ends_with(' '))
+        || (appended_ends_with_letter_command(buf, start, false)
+            && node_starts_with_ascii_letter(arena, body))
+    {
+        buf.push(' ');
+    }
+    write_node_slice(buf, arena, &[body], false);
+}
+
+/// `ch` as one large-operator atom, for a glyph no command reads back as a
+/// large operator.
+#[cold]
+fn write_mathop_glyph(buf: &mut LatexBuffer, ch: char) {
+    buf.push_str("\\mathop{");
+    write_literal_glyph(buf, ch);
+    buf.push('}');
+}
+
+/// Write `ch` so that the reader (and TeX) sees that one glyph and nothing
+/// else, with the class the glyph has on its own. The spelling reads back as
+/// a node that is written the same way.
+#[cold]
+fn write_literal_glyph(buf: &mut LatexBuffer, ch: char) {
+    match ch {
+        '{' | '}' | '#' | '$' | '%' | '&' => {
+            buf.push('\\');
+            buf.push(ch);
+        },
+        '\'' | '"' | '\\' | '^' | '_' | '~' => write_math_char(buf, ch),
+        _ if ch == ' ' || ch.is_control() || crate::unicode::math_space_width(ch).is_some() => {
+            write_decimal_char(buf, ch, " ")
+        },
+        _ if ch.is_ascii() => buf.push(ch),
+        _ if math_literal_needs_char(ch) => write_math_char(buf, ch),
+        _ => match mapped_symbol_kind(ch) {
+            None | Some(SymbolKind::Alphabetic) if ch.is_alphabetic() => {
+                write_identifier_text(buf, ch.encode_utf8(&mut [0; 4]))
+            },
+            kind => write_symbol_text(
+                buf,
+                kind.unwrap_or(SymbolKind::Ordinary),
+                ch.encode_utf8(&mut [0; 4]),
+            ),
+        },
+    }
 }
 
 /// Whether the reader takes `id` as the body of a preceding n-ary operator.
@@ -3310,11 +3582,30 @@ fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
                 || (ch.is_ascii() && math_literal_needs_char(ch))
         }),
         CompactNode::Symbol(kind, _) => script_base_char(arena, id).is_some_and(|ch| {
+            if kind == SymbolKind::LargeOp && nary_op_to_latex(ch).is_none() {
+                // `\mathop{…}`, whose limits a group would take away.
+                return false;
+            }
             (!ch.is_ascii() && !ch.is_alphabetic())
                 || (kind == SymbolKind::Ordinary && ch.is_ascii() && math_literal_needs_char(ch))
+                || symbol_is_class_atom(kind, ch)
         }),
         CompactNode::Scaled { content, .. } => script_base_needs_braces(arena, content),
         _ => false,
+    }
+}
+
+/// Whether the symbol writer spells the glyph `ch` as a class command with its
+/// argument (`\mathrel{…}`) or a character token. Such an atom is grouped like
+/// the `MathAtom` it reads back as. (A large operator's `\mathop{…}` is not:
+/// its scripts are limits, which a group would take away.)
+fn symbol_is_class_atom(kind: SymbolKind, ch: char) -> bool {
+    match kind {
+        SymbolKind::LargeOp | SymbolKind::Ordinary => false,
+        SymbolKind::Relation | SymbolKind::BinaryOp if !ch.is_ascii() => {
+            mapped_symbol_kind(ch) != Some(kind)
+        },
+        _ => symbol_glyph_needs_char(ch),
     }
 }
 
@@ -3471,12 +3762,11 @@ fn is_simple_token(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Number(_) => true,
         CompactNode::Identifier(sid) => arena.str_val(sid).chars().count() == 1,
-        CompactNode::Symbol(_, sid) => {
-            let text = arena.str_val(sid);
-            text.chars().next().is_some_and(|ch| {
-                text.len() == ch.len_utf8() && (ch.is_ascii() || ch.is_alphabetic())
-            })
-        },
+        CompactNode::Symbol(kind, sid) => single_char(arena.str_val(sid)).is_some_and(|ch| {
+            (ch.is_ascii() || ch.is_alphabetic())
+                && !symbol_is_class_atom(kind, ch)
+                && (kind != SymbolKind::LargeOp || nary_op_to_latex(ch).is_some())
+        }),
         // An invalid \big-like sizing wrapper around a simple non-delimiter
         // should be treated as simple so that surrounding braces are not added
         // when the sizing command is dropped during writing.
