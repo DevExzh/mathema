@@ -2889,11 +2889,17 @@ fn is_bare_large_op(arena: &AstArena, id: NodeId) -> bool {
 
 /// Whether the reader takes `id` as the body of a preceding n-ary operator.
 /// A row or cell break ends the body; `\middle` is not read as a fence
-/// separator there; an empty-base script would become a limit.
+/// separator there; an empty-base script would become a limit; a size or
+/// style declaration applies to the rest of the list, as in the parser's
+/// `starts_declaration`.
 fn reads_as_nary_body(arena: &AstArena, id: NodeId) -> bool {
     !matches!(
         *arena.node(id),
-        CompactNode::Newline | CompactNode::ColAlign(_) | CompactNode::Middle(_)
+        CompactNode::Newline
+            | CompactNode::ColAlign(_)
+            | CompactNode::Middle(_)
+            | CompactNode::SizeScale(_)
+            | CompactNode::StyleSwitch(_)
     ) && !is_script_with_empty_base(arena, id)
 }
 

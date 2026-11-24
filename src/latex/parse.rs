@@ -165,8 +165,9 @@ fn source_newline_is_hard_break(full_input: &str, newline_at: &str) -> bool {
         .is_some_and(|ch| matches!(ch, '=' | '<' | '>' | ':' | ';'))
 }
 
-/// Whether the next command is a text-size declaration.
-fn starts_size_declaration(input: &str) -> bool {
+/// Whether the next command is a text-size or math-style declaration. Keep
+/// in step with the LaTeX writer's `reads_as_nary_body`.
+fn starts_declaration(input: &str) -> bool {
     let Some(rest) = input.strip_prefix('\\') else {
         return false;
     };
@@ -185,6 +186,10 @@ fn starts_size_declaration(input: &str) -> bool {
             | "LARGE"
             | "huge"
             | "Huge"
+            | "displaystyle"
+            | "textstyle"
+            | "scriptstyle"
+            | "scriptscriptstyle"
     )
 }
 
@@ -2938,9 +2943,9 @@ impl LatexCompactParser {
         // A fence separator in a `\left...\right` belongs to the fence, not
         // to the body (outside a fence `\middle` is a plain delimiter). An
         // infix fraction command divides the list the operator is in.
-        // A size declaration is no body: it sizes the rest of the list.
+        // A declaration is no body: it applies to the rest of the list.
         let (input, body_id) = if is_nary_body_boundary(input)
-            || starts_size_declaration(input)
+            || starts_declaration(input)
             || infix::starts_infix_command(input)
             || (self.in_left_right && strip_control_word(input, "middle").is_some())
         {
@@ -6750,7 +6755,10 @@ impl LatexCompactParser {
             {
                 self.flush_font_run(style, &mut run, &mut output);
                 output.push(self.font_node_outside_tables(style, child));
-            } else if matches!(self.arena.node(child), CompactNode::SizeScale(_)) {
+            } else if matches!(
+                self.arena.node(child),
+                CompactNode::SizeScale(_) | CompactNode::StyleSwitch(_)
+            ) {
                 // It applies to the tables and the later runs too.
                 self.flush_font_run(style, &mut run, &mut output);
                 output.push(child);

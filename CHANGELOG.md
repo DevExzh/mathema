@@ -203,8 +203,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The heap UnicodeMath writer brackets a physical space in a fraction as
   the compact one does.
 - The LaTeX reader scopes size declarations as TeX does: `{\large}a` sizes
-  nothing, `\int \large x` sizes `x` (the declaration was taken as the
-  integrand), and `\mathbf{\large \begin{matrix}…\end{matrix}b}` sizes the
+  nothing, `\int \large x` and `\int \scriptstyle x` apply to `x` (the
+  declaration was taken as the integrand), and `\mathbf{\large \begin{matrix}…\end{matrix}b}` sizes the
   table and `b`.
 - Normalization no longer opens a group holding a size declaration:
   `convert` read `{\large x}y` as `\large xy`.
@@ -216,9 +216,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   3 named spaces from `veryverythinmathspace` to `veryverythickmathspace`
   and their `negative…` forms. Only `em` was read before; any other width
   became zero. A percentage or unitless width is, per MathML 3, a multiple
-  of the default width 0; a width that is not a MathML length (`+1em`,
-  `1 em`, `wide`) is read as 0 with a warning, and recovered where
-  possible under `Strictness::Lenient`.
+  of the default width 0; CSS numbers (`+1em`, `1e1em`),
+  valid in MathML Core, are accepted. A width that is not a length
+  (`1 em`, `wide`) is read as 0 with a warning; `Strictness::Lenient`
+  recovers `1 em`.
 
 - A `\color` switch in a `\left…\right` list stays in force across
   `\middle` to the end of the fence, as in TeX and KaTeX:

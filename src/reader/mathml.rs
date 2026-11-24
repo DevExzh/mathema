@@ -812,24 +812,16 @@ impl<'a> MathmlCompactParser<'a> {
         ))
     }
 
-    /// Parse a length. Lenient reading also takes a `+`, a space before the
-    /// unit and, for `em`, an exponent.
+    /// Parse a length. Lenient reading also takes a space before the unit.
     fn length(&self, value: &str) -> Option<MathLength> {
         parse_length(value).or_else(|| {
-            let value = value.trim();
             if !self.lenient {
-                None
-            } else if let Some(number) = value.strip_suffix("em") {
-                Rational::from_scaled_decimal(number.trim(), Rational::one())
-                    .map(MathLength::FontRelative)
-            } else {
-                let value: String = value
-                    .strip_prefix('+')
-                    .unwrap_or(value)
-                    .split_ascii_whitespace()
-                    .collect();
-                parse_length(&value)
+                return None;
             }
+            let value = value.trim();
+            let (number, unit) = value.split_at(number_len(value));
+            let unit = unit.trim_start();
+            parse_length(&format!("{number}{unit}"))
         })
     }
 
@@ -3368,7 +3360,7 @@ impl MspaceAttributes<'_> {
 /// The length of a [`KERN_ATTRIBUTE`], in nominal ten-point ems.
 fn kern_length(value: &str) -> Option<Rational> {
     let number = value.strip_suffix("pt")?;
-    is_mathml_number(number)
+    (number_len(number) == number.len())
         .then(|| Rational::from_scaled_decimal(number, Rational::new(1, 10)))
         .flatten()
 }
@@ -3420,18 +3412,37 @@ fn element_mathsize(name: &str, start: &quick_xml::events::BytesStart<'_>) -> Op
         .flatten()
 }
 
-/// The number syntax of MathML 3 (§2.1.5.1): an optional `-`, then digits
-/// with at most one decimal point. No `+`, exponent or space.
-fn is_mathml_number(text: &str) -> bool {
-    let digits = text.strip_prefix('-').unwrap_or(text);
-    let mut points = 0;
-    digits.bytes().all(|byte| match byte {
-        b'.' => {
-            points += 1;
-            points == 1
-        },
-        _ => byte.is_ascii_digit(),
-    }) && digits.len() > points
+/// The length of the number a MathML length starts with: that of MathML 3
+/// (§2.1.5.1), or a CSS number (MathML Core), which may have a `+` and an
+/// exponent. 0 when there is none.
+fn number_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let digits_from = |start: usize| {
+        start
+            + bytes[start..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .count()
+    };
+    let start = usize::from(matches!(bytes.first(), Some(b'-' | b'+')));
+    let mut end = digits_from(start);
+    let mut digits = end - start;
+    if bytes.get(end) == Some(&b'.') {
+        let fraction = digits_from(end + 1);
+        digits += fraction - (end + 1);
+        end = fraction;
+    }
+    if digits == 0 {
+        return 0;
+    }
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let sign = usize::from(matches!(bytes.get(end + 1), Some(b'-' | b'+')));
+        let exponent = digits_from((end + 1 + sign).min(bytes.len()));
+        if exponent > end + 1 + sign {
+            end = exponent;
+        }
+    }
+    end
 }
 
 /// A MathML 3 length (§2.1.5.2), resolved at the converter's nominal
@@ -3484,7 +3495,8 @@ fn named_space(name: &str) -> Option<i32> {
 fn parse_length(value: &str) -> Option<MathLength> {
     let value = value.trim();
     if let Some(number) = value.strip_suffix("em")
-        && is_mathml_number(number)
+        && number_len(number) == number.len()
+        && !number.is_empty()
     {
         return Rational::from_scaled_decimal(number, Rational::one())
             .map(MathLength::FontRelative);
@@ -3492,11 +3504,8 @@ fn parse_length(value: &str) -> Option<MathLength> {
     if let Some(eighteenths) = named_space(value) {
         return Some(MathLength::FontRelative(Rational::new(eighteenths, 18)));
     }
-    let split = value
-        .find(|c: char| c.is_ascii_alphabetic() || c == '%')
-        .unwrap_or(value.len());
-    let (number, unit) = value.split_at(split);
-    if !is_mathml_number(number) {
+    let (number, unit) = value.split_at(number_len(value));
+    if number.is_empty() {
         return None;
     }
     let scaled =
@@ -3646,13 +3655,17 @@ mod tests {
             ("2", em(0, 1)),
             // Not a length.
             ("wide", em(0, 1)),
-            ("+1em", em(0, 1)),
+            ("+1em", em(1, 1)),
+            ("1e1em", em(10, 1)),
+            ("+2.5E-1em", em(1, 4)),
+            ("1e0pt", physical(803, 8000)),
             ("1 em", em(0, 1)),
-            ("1e1em", em(0, 1)),
+            ("1eem", em(0, 1)),
+            ("+em", em(0, 1)),
         ] {
             let input = format!(r#"<math><mspace width="{width}"/></math>"#);
             assert_eq!(parse_one(&input), expected, "{width}");
-            let malformed = ["wide", "+1em", "1 em", "1e1em"].contains(&width);
+            let malformed = ["wide", "1 em", "1eem", "+em"].contains(&width);
             assert_eq!(warnings(&input).len(), usize::from(malformed), "{width}");
         }
         // The writer's negative-space spelling accepts any unit too.
@@ -3960,12 +3973,7 @@ mod tests {
     fn lenient_reading_recovers_lengths() {
         let lenient = Config::default().with_strictness(Strictness::Lenient);
         let read = |input: &str| MathmlReader::parse(input, &lenient).unwrap();
-        for (width, expected) in [
-            ("+1em", Rational::new(1, 1)),
-            ("1 em", Rational::new(1, 1)),
-            ("1e1em", Rational::new(10, 1)),
-            ("+9mu", Rational::new(1, 2)),
-        ] {
+        for (width, expected) in [("1 em", Rational::new(1, 1)), ("9 mu", Rational::new(1, 2))] {
             let result = read(&format!(r#"<math><mspace width="{width}"/></math>"#));
             assert_eq!(result.expr.nodes, [MathNode::Space(expected)], "{width}");
             assert!(
@@ -3995,7 +4003,7 @@ mod tests {
         );
         assert!(warnings(between)[0].contains("nearest size, 248.8% of the normal size"));
 
-        for invalid in ["huge", "0%", "-120%", "+1em", "1 em"] {
+        for invalid in ["huge", "0%", "-120%", "1 em"] {
             let input = format!(r#"<math><mstyle mathsize="{invalid}"><mi>x</mi></mstyle></math>"#);
             assert_eq!(
                 parse_one(&input),
