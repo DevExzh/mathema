@@ -879,12 +879,16 @@ fn normalize_span_keeping_breaks(
 /// the following node `next`, or `None` when `next` cannot take leading
 /// scripts.
 ///
-/// A group holding a line break stays a group in a table cell list (see
-/// `normalize_span_keeping_breaks`), where any other group is flattened and
-/// the scripts lead its first node. They lead that first node of the kept
-/// group too (`{}^{a}{b\\c}` is `{{}^{a}b\\c}`): a group is transparent to
-/// a leading script, and as the base of one the group would be written
-/// inside the script's own group, where it is flattened on reading back.
+/// A group is transparent to a leading script: a flattened group's scripts
+/// lead its first node. A group that holds a direct line break may be kept
+/// as a group instead: one in a table cell list (see
+/// `normalize_span_keeping_breaks`), and one that also holds a style switch,
+/// anywhere. The scripts lead the first node of such a kept group too, even
+/// with a style switch (which refuses leading scripts on the group itself),
+/// as the line break is checked first. So `{}^{a}{b\\c}` in a cell means
+/// `{{}^{a}b}\\c` in one group; the writer spells it `{{{}^{a}b}\\ c}`. As
+/// the base of a leading script the group would be written inside the
+/// script's own group, where it is flattened on reading back.
 fn leading_scripts_on(
     arena: &mut AstArena,
     script: NodeId,

@@ -454,6 +454,14 @@ fn leading_script_before_a_cell_group_with_a_break_is_stable() {
             r"\begin{array}{c}{}'{\\x}\end{array}",
             r"\begin{array}{c} {}^{\prime}{\\ x} \end{array}",
         ),
+        // A style switch keeps the group as well; the script still leads
+        // its first node.
+        (
+            r"\begin{array}{c}{}^a{9\displaystyle\\x}\end{array}",
+            r"\begin{array}{c} {{{}^{a}9}\displaystyle \\ x} \end{array}",
+        ),
+        // Outside a cell the group is flattened, as before.
+        (r"{}'{9\\x}", r"{{}^{\prime}9}\\ x"),
         // Found by fuzz_latex_roundtrip (an `\xymatrix` cell).
         (
             "\\xymatrix{dd$' {9*~S\\\\x}}",
