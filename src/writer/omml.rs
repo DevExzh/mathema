@@ -722,6 +722,17 @@ impl<'a> Emitter<'a> {
                 self.close("m:e");
                 self.close("m:func");
             },
+            CompactNode::Symbol(SymbolKind::Ordinary, sid)
+                if ordinary_operator_glyph(self.arena.str_val(sid)) =>
+            {
+                // A plain run would read back with the glyph's operator class
+                // (`\dag` as `\dagger`); a box keeps it ordinary.
+                self.open("m:box");
+                self.open("m:e");
+                self.leaf(sid, Leaf::Symbol, fmt);
+                self.close("m:e");
+                self.close("m:box");
+            },
             CompactNode::Symbol(_, sid) => self.leaf(sid, Leaf::Symbol, fmt),
             CompactNode::Text(style, sid) => self.text_node(style, sid, fmt),
             CompactNode::Space(width) => {
@@ -1395,6 +1406,18 @@ struct Host {
 fn is_xml_char(c: char) -> bool {
     matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}')
         || c >= '\u{10000}'
+}
+
+/// Whether a lone glyph reads back from a plain OMML run with an operator
+/// class from the symbol table, so an ordinary use of it must be boxed. The
+/// `‖` bar reads as a fence, which TeX output already writes as ordinary.
+fn ordinary_operator_glyph(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|ch| {
+        chars.as_str().is_empty()
+            && ch != '\u{2016}'
+            && crate::unicode::symbols::operator_glyph_kind(ch).is_some()
+    })
 }
 
 #[cfg(test)]

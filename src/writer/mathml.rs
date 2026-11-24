@@ -1061,16 +1061,11 @@ fn write_node_in(
                 write_big_delim(w, class, delim)
             } else if let Some(class) = annotated_atom_class(*atom_type) {
                 write_atom_group(w, content, class, false, display_style)
-            } else if *atom_type == MathAtomType::Ord
+            } else if let Some(kind) = atom_symbol_kind(*atom_type)
                 && let MathNode::Symbol(_, s) = content.as_ref()
-                && marks_ordinary_operator(SymbolKind::Ordinary, s)
+                && let Some(marker) = atom_marker(kind, s)
             {
-                write_symbol_node(w, SymbolKind::Ordinary, s)
-            } else if let Some(kind) = spacing_atom_kind(*atom_type)
-                && let MathNode::Symbol(SymbolKind::Ordinary, s) = content.as_ref()
-                && marks_ordinary_operator(SymbolKind::Ordinary, s)
-            {
-                write_symbol_node(w, kind, s)
+                write_symbol_marked(w, kind, s, marker)
             } else {
                 write_node_in(w, content, single_argument, display_style)
             }
@@ -1081,27 +1076,65 @@ fn write_node_in(
     }
 }
 
-/// Whether an ordinary `<mo>` needs `data-mjx-texclass="ORD"` so the reader
-/// does not give it the glyph's default operator class (`\mathord{-}`,
-/// `\mathord{\lneqq}`, `\mathord{\llbracket}`).
-fn marks_ordinary_operator(kind: SymbolKind, text: &str) -> bool {
-    if kind != SymbolKind::Ordinary {
-        return false;
+/// The `data-mjx-texclass` a symbol's `<mo>` needs so the reader does not
+/// give it the glyph's default class: an ordinary use of an operator glyph
+/// (`\mathord{-}`, `\mathord{\lneqq}`, `\dag`), or a non-ASCII glyph used
+/// with another operator class. ASCII operators keep their context-dependent
+/// plain spelling (`:` and `!` are written unmarked).
+fn symbol_marker(kind: SymbolKind, text: &str) -> Option<&'static str> {
+    if kind == SymbolKind::Ordinary && text == "'" {
+        return Some("ORD");
     }
-    text == "'" || crate::reader::mathml::ordinary_mo_needs_marker(text)
+    if kind != SymbolKind::Ordinary && text.is_ascii() {
+        return None;
+    }
+    crate::unicode::operators::mo_texclass_marker(text, kind)
 }
 
-/// `\mathbin`/`\mathrel` around an ordinary operator glyph (`\mathbin{\dag}`)
-/// is written as a plain `<mo>` rather than the ordinary marker.
-fn spacing_atom_kind(atom: MathAtomType) -> Option<SymbolKind> {
+/// The symbol class a `\mathord`/`\mathbin`/`\mathrel`/`\mathpunct` atom
+/// gives the single operator it wraps.
+fn atom_symbol_kind(atom: MathAtomType) -> Option<SymbolKind> {
     match atom {
+        MathAtomType::Ord => Some(SymbolKind::Ordinary),
         MathAtomType::Bin => Some(SymbolKind::BinaryOp),
         MathAtomType::Rel => Some(SymbolKind::Relation),
+        MathAtomType::Punct => Some(SymbolKind::Punctuation),
         _ => None,
     }
 }
 
+/// How a class atom around a single `<mo>` is written: `Some(None)` when the
+/// glyph reads back with `kind` unmarked (`\mathbin{\dag}`), `Some(Some(_))`
+/// with an explicit class marker (`\mathrel{\star}`, `\mathord{\lneqq}`),
+/// and `None` when no marker can carry the class (listed fences), so the
+/// caller keeps writing the content as before.
+fn atom_marker(kind: SymbolKind, text: &str) -> Option<Option<&'static str>> {
+    if kind == SymbolKind::Ordinary && text == "'" {
+        return Some(Some("ORD"));
+    }
+    // ASCII operators are left unmarked, as for plain symbols.
+    let marker = if kind != SymbolKind::Ordinary && text.is_ascii() {
+        None
+    } else {
+        crate::unicode::operators::mo_texclass_marker(text, kind)
+    };
+    match marker {
+        Some(marker) => Some(Some(marker)),
+        None if crate::unicode::operators::mo_class(text).kind == kind => Some(None),
+        None => None,
+    }
+}
+
 fn write_symbol_node(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<()> {
+    write_symbol_marked(w, kind, text, symbol_marker(kind, text))
+}
+
+fn write_symbol_marked(
+    w: &mut XmlWriter,
+    kind: SymbolKind,
+    text: &str,
+    marker: Option<&str>,
+) -> Result<()> {
     let mut elem = BytesStart::new("mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(text, "|" | "‖");
     match kind {
@@ -1123,10 +1156,12 @@ fn write_symbol_node(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<
             }
         }
     }
-    if marks_ordinary_operator(kind, text) {
-        elem.push_attribute(("data-mjx-texclass", "ORD"));
-        elem.push_attribute(("lspace", "0em"));
-        elem.push_attribute(("rspace", "0em"));
+    if let Some(marker) = marker {
+        elem.push_attribute(("data-mjx-texclass", marker));
+        if marker == "ORD" {
+            elem.push_attribute(("lspace", "0em"));
+            elem.push_attribute(("rspace", "0em"));
+        }
     }
     w.write_event(Event::Start(elem)).map_err(to_err)?;
     w.write_event(Event::Text(BytesText::new(text)))
@@ -2230,16 +2265,11 @@ fn write_node_fast_in(
                 write_big_delim_fast(buf, class, delim);
             } else if let Some(class) = annotated_atom_class(atom_type) {
                 write_atom_group_fast(buf, arena, content, class, false, display_style);
-            } else if atom_type == MathAtomType::Ord
+            } else if let Some(kind) = atom_symbol_kind(atom_type)
                 && let CompactNode::Symbol(_, sid) = *arena.node(content)
-                && marks_ordinary_operator(SymbolKind::Ordinary, arena.str_val(sid))
+                && let Some(marker) = atom_marker(kind, arena.str_val(sid))
             {
-                write_mo_symbol_fast(buf, SymbolKind::Ordinary, arena.str_val(sid));
-            } else if let Some(kind) = spacing_atom_kind(atom_type)
-                && let CompactNode::Symbol(SymbolKind::Ordinary, sid) = *arena.node(content)
-                && marks_ordinary_operator(SymbolKind::Ordinary, arena.str_val(sid))
-            {
-                write_mo_symbol_fast(buf, kind, arena.str_val(sid));
+                write_mo_symbol_marked(buf, kind, arena.str_val(sid), marker);
             } else {
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
@@ -2950,6 +2980,10 @@ fn needs_explicit_endpoint_roles(open: &str, close: &str) -> bool {
 }
 
 fn write_mo_symbol_fast(buf: &mut XmlBuffer, kind: SymbolKind, s: &str) {
+    write_mo_symbol_marked(buf, kind, s, symbol_marker(kind, s));
+}
+
+fn write_mo_symbol_marked(buf: &mut XmlBuffer, kind: SymbolKind, s: &str, marker: Option<&str>) {
     buf.push_str("<mo");
     let ordinary_literal_bar = kind == SymbolKind::Ordinary && matches!(s, "|" | "‖");
     match kind {
@@ -2972,8 +3006,13 @@ fn write_mo_symbol_fast(buf: &mut XmlBuffer, kind: SymbolKind, s: &str) {
             }
         }
     }
-    if marks_ordinary_operator(kind, s) {
-        buf.push_str(r#" data-mjx-texclass="ORD" lspace="0em" rspace="0em""#);
+    if let Some(marker) = marker {
+        buf.push_str(r#" data-mjx-texclass=""#);
+        buf.push_str(marker);
+        buf.push('"');
+        if marker == "ORD" {
+            buf.push_str(r#" lspace="0em" rspace="0em""#);
+        }
     }
     buf.push('>');
     xml_escape_into(buf, s);

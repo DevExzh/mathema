@@ -780,10 +780,8 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn operator_token(&mut self, text: &str, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
-        let listed = listed_mo_kind(text);
-        let mut kind = listed
-            .or_else(|| table_mo_kind(text))
-            .unwrap_or(SymbolKind::Ordinary);
+        let class = crate::unicode::operators::mo_class(text);
+        let mut kind = class.kind;
         let name = text.trim();
         // Multi-letter operator tokens and explicitly named operators
         // are distinct from ordinary identifiers in <mi>.
@@ -804,16 +802,15 @@ impl<'a> MathmlCompactParser<'a> {
                 .arena
                 .push_node(CompactNode::Scaled { factor, content });
         }
-        // An explicit TeX class overrides the default class of a lone
-        // binary/relation glyph or a glyph classed by the symbol table;
-        // explicit zero `lspace`/`rspace` keeps a table-classed glyph
-        // ordinary, as before.
+        // An explicit TeX class overrides the default class of a lone glyph
+        // (listed fences and delimiters excepted); explicit zero
+        // `lspace`/`rspace` keeps a table-classed glyph ordinary, as before.
         if let Some(marked_kind) = attrs
             .symbol_kind
-            .filter(|_| matches!(name, "'") || texclass_overrides(name, listed, kind))
+            .filter(|_| crate::unicode::operators::mo_texclass_overrides(name, class))
         {
             kind = marked_kind;
-        } else if listed.is_none() && attrs.zero_lspace && attrs.zero_rspace {
+        } else if class.listed.is_none() && attrs.zero_lspace && attrs.zero_rspace {
             kind = SymbolKind::Ordinary;
         }
         if vertical_line
@@ -976,9 +973,17 @@ impl<'a> MathmlCompactParser<'a> {
                     Ok(self
                         .arena
                         .push_node(CompactNode::Reflect { content, text_mode }))
-                } else if let Some(atom_type) = attrs.atom_type {
+                } else if let Some(atom_type) = attrs.atom_type
+                    // MathJax's REL row is a `\bigm` atom only around a sized
+                    // delimiter; otherwise it classes the operator it wraps.
+                    && (atom_type != MathAtomType::Rel || self.is_single_scaled(&children))
+                {
                     let content = self.flatten_ids(&children);
                     Ok(self.marked_atom(atom_type, content, &attrs))
+                } else if let Some(class) = attrs.operator_class
+                    && let Some(atom) = self.classed_operator(&children, class)
+                {
+                    Ok(atom)
                 } else {
                     let span = self.arena.push_children_deferred(&children);
                     Ok(self.arena.push_node(CompactNode::Row(span)))
@@ -1241,6 +1246,68 @@ impl<'a> MathmlCompactParser<'a> {
                 let children = self.parse_children(name)?;
                 Ok(self.flatten_ids(&children))
             },
+        }
+    }
+
+    /// Whether `children`, ignoring empty style rows, is one sized delimiter.
+    fn is_single_scaled(&self, children: &[NodeId]) -> bool {
+        let mut operands = children
+            .iter()
+            .copied()
+            .filter(|&child| !self.is_empty_style_subtree(child));
+        matches!(
+            (operands.next(), operands.next()),
+            (Some(only), None) if matches!(self.arena.node(only), CompactNode::Scaled { .. })
+        )
+    }
+
+    /// Apply an mrow's operator class to the single operator it wraps. A bare
+    /// `<mo>` of another class becomes a class atom (`\mathord{\lneqq}`); an
+    /// operator under `mover`/`munder` (MathJax's extensible arrows) takes the
+    /// class itself, so the wrapper keeps writing as `\overset{f}{\to}`.
+    /// Returns the atom to use in place of the row, if any.
+    fn classed_operator(&mut self, children: &[NodeId], class: SymbolKind) -> Option<NodeId> {
+        let mut operands = children
+            .iter()
+            .copied()
+            .filter(|&child| !self.is_empty_style_subtree(child));
+        let only = operands.next()?;
+        if operands.next().is_some() {
+            return None;
+        }
+        let atom_type = match class {
+            SymbolKind::Ordinary => MathAtomType::Ord,
+            SymbolKind::BinaryOp => MathAtomType::Bin,
+            SymbolKind::Relation => MathAtomType::Rel,
+            SymbolKind::Punctuation => MathAtomType::Punct,
+            _ => return None,
+        };
+        match *self.arena.node(only) {
+            // `|`/`‖` already write as ordinary TeX glyphs.
+            CompactNode::Symbol(kind, _) if kind != class && kind != SymbolKind::Fence => {
+                Some(self.arena.push_node(CompactNode::MathAtom {
+                    atom_type,
+                    content: only,
+                }))
+            },
+            CompactNode::Overscript { base, .. }
+            | CompactNode::Underscript { base, .. }
+            | CompactNode::UnderOver { base, .. } => {
+                let mut base = base;
+                loop {
+                    match *self.arena.node(base) {
+                        CompactNode::Overscript { base: inner, .. }
+                        | CompactNode::Underscript { base: inner, .. }
+                        | CompactNode::UnderOver { base: inner, .. } => base = inner,
+                        CompactNode::Symbol(_, sid) => {
+                            *self.arena.node_mut(base) = CompactNode::Symbol(class, sid);
+                            return None;
+                        },
+                        _ => return None,
+                    }
+                }
+            },
+            _ => None,
         }
     }
 
@@ -2402,11 +2469,7 @@ fn operator_attributes(
             "data-mjx-texclass" => {
                 let class = unescape_attr(&attr.value);
                 result.texclass_op = class == "OP";
-                result.symbol_kind = match class.as_str() {
-                    "ORD" => Some(SymbolKind::Ordinary),
-                    "BIN" => Some(SymbolKind::BinaryOp),
-                    _ => None,
-                };
+                result.symbol_kind = crate::unicode::operators::texclass_kind(&class);
             },
             _ => {},
         }
@@ -2425,6 +2488,10 @@ fn is_zero_length(value: &str) -> bool {
 #[derive(Default)]
 struct MrowAttributes {
     reflect: Option<String>,
+    /// `data-mjx-texclass` naming an operator class (ORD/BIN/REL/PUNCT), as
+    /// MathJax writes around a single classed operator (`\mathord{\lneqq}`,
+    /// `\xrightarrow{f}`).
+    operator_class: Option<SymbolKind>,
     style: Option<String>,
     atom_type: Option<MathAtomType>,
     structured_operator: Option<OperatorNameForm>,
@@ -2448,11 +2515,19 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
                 result.style = Some(unescape_attr(&attr.value));
             },
             "data-mjx-texclass" => {
-                result.atom_type = match unescape_attr(&attr.value).as_str() {
+                let class = unescape_attr(&attr.value);
+                result.atom_type = match class.as_str() {
                     "OPEN" => Some(MathAtomType::Open),
                     "CLOSE" => Some(MathAtomType::Close),
                     "OP" => Some(MathAtomType::Op),
                     "REL" => Some(MathAtomType::Rel),
+                    _ => None,
+                };
+                result.operator_class = match class.as_str() {
+                    "ORD" => Some(SymbolKind::Ordinary),
+                    "BIN" => Some(SymbolKind::BinaryOp),
+                    "REL" => Some(SymbolKind::Relation),
+                    "PUNCT" => Some(SymbolKind::Punctuation),
                     _ => None,
                 };
             },
@@ -2791,59 +2866,7 @@ fn resolve_entities_lossy(s: &str) -> String {
 }
 
 fn classify_mo(text: &str) -> SymbolKind {
-    listed_mo_kind(text)
-        .or_else(|| table_mo_kind(text))
-        .unwrap_or(SymbolKind::Ordinary)
-}
-
-/// The class a single-glyph `<mo>` takes from the symbol table when the
-/// reader's own operator list does not name it (`≨` is a relation, `⋒` a
-/// binary operator), so `<mo>` keeps operator spacing in TeX output.
-fn table_mo_kind(text: &str) -> Option<SymbolKind> {
-    single_accent_char(text.trim()).and_then(crate::unicode::symbols::operator_glyph_kind)
-}
-
-/// Whether a `data-mjx-texclass` marker overrides the default class of `<mo>`
-/// text: a lone binary/relation glyph, or a glyph classed only by the symbol
-/// table. Listed fences and delimiters keep their reader-specific handling.
-fn texclass_overrides(name: &str, listed: Option<SymbolKind>, kind: SymbolKind) -> bool {
-    single_accent_char(name).is_some()
-        && kind != SymbolKind::Ordinary
-        && (listed.is_none() || matches!(kind, SymbolKind::Relation | SymbolKind::BinaryOp))
-}
-
-/// Whether an ordinary symbol written as `<mo>text</mo>` needs an explicit
-/// ordinary marker to read back as ordinary. Shared with the MathML writer so
-/// the two stay in step.
-pub(crate) fn ordinary_mo_needs_marker(text: &str) -> bool {
-    let listed = listed_mo_kind(text);
-    let kind = listed
-        .or_else(|| table_mo_kind(text))
-        .unwrap_or(SymbolKind::Ordinary);
-    texclass_overrides(text, listed, kind)
-}
-
-fn listed_mo_kind(text: &str) -> Option<SymbolKind> {
-    let text = text.trim();
-    let ch = text.chars().next().unwrap_or(' ');
-    Some(match ch {
-        '+' | '-' | '\u{2212}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}'
-        | '\u{2217}' | '\u{2218}' | '*' => SymbolKind::BinaryOp,
-        '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' | '\u{2248}' | '\u{2261}'
-        | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}' | '\u{2208}' | '\u{2223}'
-        | '\u{2225}' | '\u{2192}' | '\u{2190}' | '\u{21A4}' | '\u{21A6}' | '\u{21D2}'
-        | '\u{21D0}' => SymbolKind::Relation,
-        '(' | '[' | '{' | '\u{27E8}' | '\u{230A}' | '\u{2308}' => SymbolKind::Open,
-        ')' | ']' | '}' | '\u{27E9}' | '\u{230B}' | '\u{2309}' => SymbolKind::Close,
-        ',' | ';' => SymbolKind::Punctuation,
-        _ if ch.len_utf8() == text.len()
-            && crate::unicode::symbols::nary_op_to_latex(ch).is_some() =>
-        {
-            SymbolKind::LargeOp
-        },
-        '|' | '\u{2016}' => SymbolKind::Fence,
-        _ => return None,
-    })
+    crate::unicode::operators::mo_class(text).kind
 }
 
 fn single_accent_char(s: &str) -> Option<char> {
@@ -4372,6 +4395,95 @@ mod tests {
             parse(listed)[1],
             MathNode::Symbol(SymbolKind::Relation, "=".into())
         );
+    }
+
+    #[test]
+    fn mathjax_class_rows_set_the_operator_class() {
+        // MathJax 4 output for `\xrightarrow{f}`, `\xleftarrow[g]{f}`,
+        // `\xlongequal{f}`: the outer REL row carries the class, the inner
+        // ORD only stops the arrow stretching as an operator.
+        for (source, latex) in [
+            (
+                r#"<math><mi>a</mi><mrow data-mjx-texclass="REL"><mrow data-mjx-texclass="NONE"></mrow><mover><mo data-mjx-texclass="ORD">&#x2192;</mo><mpadded width="+0.833em" lspace="0.278em" voffset="-.2em" height="-.2em"><mi>f</mi><mspace depth=".2em"></mspace></mpadded></mover></mrow><mi>b</mi></math>"#,
+                r"a{\overset{f}{\rightarrow}}b",
+            ),
+            (
+                r#"<math><mi>a</mi><mrow data-mjx-texclass="REL"><mrow data-mjx-texclass="NONE"></mrow><munderover><mo data-mjx-texclass="ORD">&#x2190;</mo><mpadded width="+0.833em" lspace="0.278em" voffset=".15em" depth="-.15em"><mi>g</mi></mpadded><mpadded width="+0.833em" lspace="0.278em" voffset="-.2em" height="-.2em"><mi>f</mi><mspace depth=".2em"></mspace></mpadded></munderover></mrow><mi>b</mi></math>"#,
+                r"a{\underset{g}{\overset{f}{\leftarrow}}}b",
+            ),
+            (
+                r#"<math><mi>a</mi><mrow data-mjx-texclass="REL"><mrow data-mjx-texclass="NONE"></mrow><mover><mo data-mjx-texclass="ORD">=</mo><mpadded width="+0.833em" lspace="0.278em" voffset="-.2em" height="-.2em"><mi>f</mi><mspace depth=".2em"></mspace></mpadded></mover></mrow><mi>b</mi></math>"#,
+                r"a{\overset{f}{=}}b",
+            ),
+        ] {
+            let latex_out = crate::from_mathml(source).unwrap().to_latex().unwrap();
+            assert_eq!(latex_out, latex, "{source}");
+        }
+        // MathJax `\mathord{\lneqq}` and `\mathord{\uparrow}`.
+        for (glyph, latex) in [
+            ("&#x2268;", r"a\mathord{\lneqq}b"),
+            ("&#x2191;", r"a\mathord{\uparrow}b"),
+        ] {
+            let source = format!(
+                r#"<math><mi>a</mi><mrow data-mjx-texclass="ORD"><mo>{glyph}</mo></mrow><mi>b</mi></math>"#
+            );
+            assert_eq!(
+                crate::from_mathml(&source).unwrap().to_latex().unwrap(),
+                latex
+            );
+        }
+        // A row whose operator already has the class is left as before.
+        let same =
+            r#"<math><mi>a</mi><mrow data-mjx-texclass="REL"><mo>≨</mo></mrow><mi>b</mi></math>"#;
+        assert_eq!(
+            crate::from_mathml(same).unwrap().to_latex().unwrap(),
+            r"a\lneqq b"
+        );
+    }
+
+    #[test]
+    fn mo_texclass_names_every_operator_class() {
+        for (class, kind) in [
+            ("REL", SymbolKind::Relation),
+            ("BIN", SymbolKind::BinaryOp),
+            ("PUNCT", SymbolKind::Punctuation),
+            ("OPEN", SymbolKind::Open),
+            ("CLOSE", SymbolKind::Close),
+            ("ORD", SymbolKind::Ordinary),
+        ] {
+            let xml = format!(
+                r#"<math><mi>a</mi><mo data-mjx-texclass="{class}">⋆</mo><mi>b</mi></math>"#
+            );
+            assert_eq!(parse(&xml)[1], MathNode::Symbol(kind, "⋆".into()), "{xml}");
+        }
+        // Listed fences keep their own reading.
+        let bar = r#"<math><mo data-mjx-texclass="OPEN">(</mo><mi>a</mi></math>"#;
+        assert_eq!(
+            parse(bar)[0],
+            MathNode::Symbol(SymbolKind::Open, "(".into())
+        );
+    }
+
+    #[test]
+    fn class_atoms_around_operator_glyphs_round_trip_through_mathml() {
+        for (source, marker) in [
+            (r"a\mathrel{\star}b", Some("REL")),
+            (r"a\mathbin{\lneqq}b", Some("BIN")),
+            (r"a\mathrel{\dag}b", Some("REL")),
+            (r"a\mathbin{\dag}b", None),
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            let mathml = parsed.to_mathml().unwrap();
+            match marker {
+                Some(class) => assert!(
+                    mathml.contains(&format!(r#"data-mjx-texclass="{class}""#)),
+                    "{source}: {mathml}"
+                ),
+                None => assert!(!mathml.contains("data-mjx-texclass"), "{source}: {mathml}"),
+            }
+            let reparsed = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(reparsed.to_mathml().unwrap(), mathml, "{source}");
+        }
     }
 
     #[test]

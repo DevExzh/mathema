@@ -1551,6 +1551,11 @@ impl<'i> Parser<'i> {
             }
         }
         let content = self.or_empty(content);
+        // The writer boxes an ordinary operator glyph (`\dag`, `\mathord{\lneqq}`)
+        // so it does not read back with its symbol-table class.
+        if !op_emu && let Some(symbol) = self.boxed_operator_glyph(content) {
+            return Ok(symbol);
+        }
         let atom_type = if op_emu {
             MathAtomType::Op
         } else {
@@ -1559,6 +1564,30 @@ impl<'i> Parser<'i> {
         Ok(self
             .arena
             .push_node(CompactNode::MathAtom { atom_type, content }))
+    }
+
+    /// The ordinary symbol a box holding only one table-classed operator glyph
+    /// stands for, if `content` is such a glyph (directly or in a one-item row).
+    fn boxed_operator_glyph(&mut self, content: NodeId) -> Option<NodeId> {
+        let mut id = content;
+        if let CompactNode::Row(span) = *self.arena.node(id) {
+            let &[only] = self.arena.children(span) else {
+                return None;
+            };
+            id = only;
+        }
+        let CompactNode::Symbol(_, sid) = *self.arena.node(id) else {
+            return None;
+        };
+        let mut chars = self.arena.str_val(sid).chars();
+        let ch = chars.next()?;
+        (chars.as_str().is_empty()
+            && ch != '\u{2016}'
+            && crate::unicode::symbols::operator_glyph_kind(ch).is_some())
+        .then(|| {
+            self.arena
+                .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid))
+        })
     }
 
     /// `m:borderBox` (§22.1.2.11). Strikes over a box whose four sides are

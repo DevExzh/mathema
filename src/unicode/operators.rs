@@ -377,6 +377,111 @@ pub fn symbol_kind_to_form(kind: crate::ast::SymbolKind) -> OperatorForm {
     }
 }
 
+/// The default atom class of MathML `<mo>` text, and whether it came from the
+/// reader's own operator list (`listed`) rather than the symbol table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MoClass {
+    /// The class from the short operator list, which also drives fence handling.
+    pub listed: Option<crate::ast::SymbolKind>,
+    /// The resolved default class: listed, else the symbol table, else ordinary.
+    pub kind: crate::ast::SymbolKind,
+}
+
+/// Resolve the default class of `<mo>` text. A lone glyph outside the operator
+/// list takes its operator class from the symbol table (`≨` is a relation, `⋒`
+/// a binary operator), so `<mo>` keeps operator spacing in TeX output.
+pub(crate) fn mo_class(text: &str) -> MoClass {
+    use crate::ast::SymbolKind;
+    let listed = listed_mo_kind(text);
+    let kind = listed
+        .or_else(|| single_char(text.trim()).and_then(crate::unicode::symbols::operator_glyph_kind))
+        .unwrap_or(SymbolKind::Ordinary);
+    MoClass { listed, kind }
+}
+
+/// Whether an explicit `data-mjx-texclass` on `<mo>` replaces its default
+/// class: any lone glyph except listed fences, delimiters, punctuation and
+/// large operators, which keep their reader-specific handling.
+pub(crate) fn mo_texclass_overrides(text: &str, class: MoClass) -> bool {
+    use crate::ast::SymbolKind;
+    single_char(text.trim()).is_some()
+        && class
+            .listed
+            .is_none_or(|kind| matches!(kind, SymbolKind::Relation | SymbolKind::BinaryOp))
+}
+
+/// The class an `<mo>` marked `data-mjx-texclass="…"` with this `kind` reads
+/// back as, when the marker names it; shared by the MathML reader and writer.
+pub(crate) fn texclass_name(kind: crate::ast::SymbolKind) -> Option<&'static str> {
+    use crate::ast::SymbolKind;
+    Some(match kind {
+        SymbolKind::Ordinary => "ORD",
+        SymbolKind::BinaryOp => "BIN",
+        SymbolKind::Relation => "REL",
+        SymbolKind::Open => "OPEN",
+        SymbolKind::Close => "CLOSE",
+        SymbolKind::Punctuation => "PUNCT",
+        _ => return None,
+    })
+}
+
+/// Inverse of [`texclass_name`].
+pub(crate) fn texclass_kind(name: &str) -> Option<crate::ast::SymbolKind> {
+    use crate::ast::SymbolKind;
+    Some(match name {
+        "ORD" => SymbolKind::Ordinary,
+        "BIN" => SymbolKind::BinaryOp,
+        "REL" => SymbolKind::Relation,
+        "OPEN" => SymbolKind::Open,
+        "CLOSE" => SymbolKind::Close,
+        "PUNCT" => SymbolKind::Punctuation,
+        _ => return None,
+    })
+}
+
+/// The `data-mjx-texclass` a writer must put on `<mo>text</mo>` so it reads
+/// back with class `kind`, or `None` when the default reading already gives
+/// `kind` (or no marker can change it).
+pub(crate) fn mo_texclass_marker(text: &str, kind: crate::ast::SymbolKind) -> Option<&'static str> {
+    let class = mo_class(text);
+    if class.kind == kind || !mo_texclass_overrides(text, class) {
+        return None;
+    }
+    texclass_name(kind)
+}
+
+fn single_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    let ch = chars.next()?;
+    chars.next().is_none().then_some(ch)
+}
+
+/// The reader's own `<mo>` operator list. Its fences, delimiters and
+/// punctuation drive fence recovery, so explicit markers do not override them.
+fn listed_mo_kind(text: &str) -> Option<crate::ast::SymbolKind> {
+    use crate::ast::SymbolKind;
+    let text = text.trim();
+    let ch = text.chars().next().unwrap_or(' ');
+    Some(match ch {
+        '+' | '-' | '\u{2212}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}'
+        | '\u{2217}' | '\u{2218}' | '*' => SymbolKind::BinaryOp,
+        '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' | '\u{2248}' | '\u{2261}'
+        | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}' | '\u{2208}' | '\u{2223}'
+        | '\u{2225}' | '\u{2192}' | '\u{2190}' | '\u{21A4}' | '\u{21A6}' | '\u{21D2}'
+        | '\u{21D0}' => SymbolKind::Relation,
+        '(' | '[' | '{' | '\u{27E8}' | '\u{230A}' | '\u{2308}' => SymbolKind::Open,
+        ')' | ']' | '}' | '\u{27E9}' | '\u{230B}' | '\u{2309}' => SymbolKind::Close,
+        ',' | ';' => SymbolKind::Punctuation,
+        _ if ch.len_utf8() == text.len()
+            && crate::unicode::symbols::nary_op_to_latex(ch).is_some() =>
+        {
+            SymbolKind::LargeOp
+        },
+        '|' | '\u{2016}' => SymbolKind::Fence,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

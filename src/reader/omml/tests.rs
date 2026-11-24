@@ -685,6 +685,19 @@ fn run_operator_glyphs_take_symbol_table_class() {
 }
 
 #[test]
+fn ordinary_operator_glyphs_round_trip_through_omml() {
+    for source in [r"a\dag b", r"a\triangledown b", r"a\mathord{\lneqq}b"] {
+        let omml = crate::from_latex(source).unwrap().to_omml().unwrap();
+        assert!(omml.contains("<m:box>"), "{source}: {omml}");
+        let latex = crate::convert(&omml, crate::Format::Omml, crate::Format::LaTeX).unwrap();
+        assert_eq!(latex, source);
+    }
+    // Operator uses stay plain runs.
+    let omml = crate::from_latex(r"a\dagger b").unwrap().to_omml().unwrap();
+    assert!(!omml.contains("<m:box>"), "{omml}");
+}
+
+#[test]
 fn nesting_depth_is_bounded() {
     let depth = 2000;
     let mut input = format!("<m:oMath {NS}>");
