@@ -2990,10 +2990,6 @@ fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> 
         })
 }
 
-/// Write a compound operator as `\mathop{...}`.  The wrapper is always kept:
-/// in TeX `\mathop{\hat x}` is an Op atom (operator spacing, movable
-/// limits) while a bare `\hat{x}` is an ordinary accent atom, so dropping
-/// the wrapper around an accent would change the class on the next read.
 /// Whether `id` is a `\middle`, or a row or styled run holding one outside
 /// any nested fence.
 fn holds_middle(arena: &AstArena, id: NodeId) -> bool {
@@ -3010,6 +3006,10 @@ fn holds_middle(arena: &AstArena, id: NodeId) -> bool {
     false
 }
 
+/// Write a compound operator as `\mathop{...}`.  The wrapper is always kept:
+/// in TeX `\mathop{\hat x}` is an Op atom (operator spacing, movable
+/// limits) while a bare `\hat{x}` is an ordinary accent atom, so dropping
+/// the wrapper around an accent would change the class on the next read.
 fn write_math_atom_op(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     buf.push_str("\\mathop{");
     write_wrapped_content(buf, arena, content);
