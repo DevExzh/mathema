@@ -1783,6 +1783,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
         };
     let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
     parser.source = (input.as_ptr() as usize, input.len());
+    parser.lenient = config.strictness == Strictness::Lenient;
     if let Some(error) = warning {
         parser.warn(format!(
             "{error}; parsed the original source without macro expansion"
@@ -2034,6 +2035,9 @@ pub(crate) struct LatexCompactParser {
     /// Address and length of the caller's input, used only to give a
     /// diagnostic the span of a name that is a slice of it.
     source: (usize, usize),
+    /// `Strictness::Lenient`: also report valid TeX that is easily misread,
+    /// such as a multi-digit number after a script marker (`x^22`).
+    lenient: bool,
 }
 
 impl LatexCompactParser {
@@ -2065,6 +2069,7 @@ impl LatexCompactParser {
             undefined_commands: None,
             single_token: None,
             source: (0, 0),
+            lenient: false,
         }
     }
 
@@ -3392,7 +3397,9 @@ impl LatexCompactParser {
                 ScriptMarker::UnicodeSub | ScriptMarker::UnicodeSup => {
                     self.parse_unicode_script_arg_run(next, is_sub)?
                 },
-                ScriptMarker::Sub | ScriptMarker::Sup => self.parse_script_arg(&next[1..])?,
+                ScriptMarker::Sub | ScriptMarker::Sup => {
+                    self.parse_script_arg(&next[1..], is_sub)?
+                },
                 ScriptMarker::Primes => self.parse_prime_argument(next)?,
             };
             // KaTeX assigns the newest contiguous Unicode run to its slot.
@@ -3419,7 +3426,7 @@ impl LatexCompactParser {
         }
         let next = &rest[self.skip_script_ws(rest.as_bytes())..];
         let rest = if let Some(arg) = next.strip_prefix('^') {
-            let (rest, extra) = self.parse_script_arg(arg)?;
+            let (rest, extra) = self.parse_script_arg(arg, false)?;
             ids.push(extra);
             rest
         } else {
@@ -3487,8 +3494,25 @@ impl LatexCompactParser {
         self.script_fields(input, true, true, None)
     }
 
-    /// Parse a single script argument: either a single token or a braced group.
-    fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+    /// Parse a single script argument: exactly one TeX token or one braced
+    /// group, as TeX, KaTeX and MathJax read it.
+    ///
+    /// What counts as one token:
+    /// - one character: an ASCII letter, digit or symbol, or one Unicode
+    ///   scalar. A number is *not* one token: `x^22` is `x^{2}2` and `x^2.5`
+    ///   is `x^{2}.5` (`x_ab` is likewise `x_{a}b`). Under
+    ///   `Strictness::Lenient` a digit followed by more digits or a decimal
+    ///   part is reported, since the whole number was most likely meant.
+    /// - one control sequence together with the arguments it reads itself,
+    ///   each of which is again one token or one group: `x^\alpha\beta` is
+    ///   `x^{\alpha}\beta`, `x^\frac12` is `x^{\frac{1}{2}}`, and
+    ///   `x^\mathrm{ab}` is `x^{\mathrm{ab}}`, all as in KaTeX (its `\frac`
+    ///   and font commands are `allowedInArgument`). KaTeX rejects a command
+    ///   that is not, such as `x^\sqrt2` ("Got function '\sqrt' with no
+    ///   arguments as superscript"); mathema reads it as `x^{\sqrt{2}}`, as
+    ///   MathJax does, rather than failing on input whose meaning is clear.
+    /// - a braced group, whatever it holds.
+    fn parse_script_arg<'a>(&mut self, input: &'a str, is_sub: bool) -> IResult<&'a str, NodeId> {
         let (mut input, _) = ws(input)?;
         let mut skipped_relax = false;
         while let Some(rest) = strip_control_word(input, "relax") {
@@ -3508,6 +3532,20 @@ impl LatexCompactParser {
                 input,
                 nom::error::ErrorKind::Tag,
             )));
+        }
+        if input.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            // One digit, not the whole number `parse_atom` would read.
+            if self.check_node_limit() {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::TooLarge,
+                )));
+            }
+            if self.lenient {
+                self.report_split_script_number(input, is_sub);
+            }
+            let sid = self.arena.push_str(&input[..1]);
+            return Ok((&input[1..], self.arena.push_node(CompactNode::Number(sid))));
         }
         let argument_start = input;
         let (input, arg) = self.parse_atom(input)?;
@@ -3530,6 +3568,61 @@ impl LatexCompactParser {
         // marker is omitted and the `__infix_*__` sentinel never leaks into
         // output.
         Ok((input, self.resolve_stray_infix_marker(arg)))
+    }
+
+    /// Report a script argument that is the first digit of a longer number
+    /// (`x^22`, `x_2.5`): valid TeX, but the whole number was most likely
+    /// meant. `digits` starts at that first digit.
+    #[cold]
+    #[inline(never)]
+    fn report_split_script_number(&mut self, digits: &str, is_sub: bool) {
+        let bytes = digits.as_bytes();
+        let decimal = |i: usize| {
+            bytes.get(i) == Some(&b'.') && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
+        };
+        if !(bytes.get(1).is_some_and(u8::is_ascii_digit) || decimal(1)) {
+            return;
+        }
+        let mut end = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+        if decimal(end) {
+            end += 1 + bytes[end + 1..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+        }
+        let number = &digits[..end];
+        let (marker, role, verb) = if is_sub {
+            ('_', "subscript", "lower")
+        } else {
+            ('^', "superscript", "raise")
+        };
+        let message = format!(
+            "only the first digit `{}` is the {role}; write `{marker}{{{number}}}` to {verb} the whole number",
+            &number[..1]
+        );
+        let span = self.source_span_of(number);
+        if self
+            .diagnostics
+            .iter()
+            .any(|d| d.span == span && d.message == message)
+        {
+            // The same text re-read after backtracking.
+            return;
+        }
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message,
+            span,
+        });
+    }
+
+    /// The span of `text` in the caller's input, when it is a slice of that
+    /// input rather than of text the preprocessor rewrote.
+    fn source_span_of(&self, text: &str) -> Option<Span> {
+        let (base, len) = self.source;
+        let start = (text.as_ptr() as usize).checked_sub(base)?;
+        let end = start.checked_add(text.len())?;
+        (end <= len).then(|| Span::new(start, end))
     }
 
     // -----------------------------------------------------------------------

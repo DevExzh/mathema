@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (behavior):** the LaTeX reader takes exactly one TeX token or
+  one brace group as a script argument, as TeX, KaTeX and MathJax do. A
+  number is no longer one token: `x^22` now reads as `x^{2}2` (was
+  `x^{22}`) and `x^2.5` as `x^{2}.5` (was `x^{2.5}`); in MathML `x^22` is
+  `<msup><mi>x</mi><mn>2</mn></msup><mn>2</mn>`. This applies to every
+  script argument: after `^`/`_`, after primes (`x'^22`), on `\limits`
+  operators (`\sum_10^20` is `\sum_{1}` with body `0^{2}`, then `0`), in
+  `\sideset` groups and prescripts. A control sequence is one token
+  together with the arguments it reads (`x^\frac12` is
+  `x^{\frac{1}{2}}`, `x^\alpha\beta` is `x^{\alpha}\beta`). Write the
+  braced form (`x^{22}`) for the whole number. `Strictness::Strict` still
+  accepts `x^22` (it is valid TeX); `Strictness::Lenient` adds a warning
+  such as "only the first digit `2` is the superscript; write `^{22}` to
+  raise the whole number". A `\sideset` group holding more than scripts
+  (`\sideset{_12}{}\sum`) is rejected like `\sideset{_a b}{}\sum`
+  already was. The mhchem (`\ce`, `\pu`) and siunitx rewrites already
+  brace the scripts they generate, so `\ce{C6H12O6}` and `\SI{3}{m^{22}}`
+  are unchanged.
+
 - `\big`, `\Big`, `\bigg` and `\Bigg` delimiters render with the OpenType
   MATH table's pre-designed size variants (or an extensible assembly) at TeX's
   1.2/1.8/2.4/3.0 em instead of a scaled base glyph, centred on the math axis,
