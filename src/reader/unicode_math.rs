@@ -1442,7 +1442,7 @@ fn classify_unicode_symbol(ch: char) -> SymbolKind {
         },
         '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\u{2016}' | '\u{27E8}' | '\u{27E9}'
         | '\u{2308}' | '\u{2309}' | '\u{230A}' | '\u{230B}' => SymbolKind::Fence,
-        _ => SymbolKind::Ordinary,
+        _ => crate::unicode::symbols::operator_glyph_kind(ch).unwrap_or(SymbolKind::Ordinary),
     }
 }
 
@@ -1459,6 +1459,18 @@ mod tests {
     fn number() {
         let nodes = parse("42");
         assert!(matches!(&nodes[0], MathNode::Number(s) if s == "42"));
+    }
+
+    #[test]
+    fn operator_glyphs_take_symbol_table_class() {
+        let nodes = parse("a ≨ b ⋒ c");
+        assert_eq!(nodes[1], MathNode::Symbol(SymbolKind::Relation, "≨".into()));
+        assert_eq!(nodes[3], MathNode::Symbol(SymbolKind::BinaryOp, "⋒".into()));
+        // Bracket glyphs keep the reader's own fence reading.
+        assert_eq!(
+            parse("a | b")[1],
+            MathNode::Symbol(SymbolKind::Fence, "|".into())
+        );
     }
 
     #[test]

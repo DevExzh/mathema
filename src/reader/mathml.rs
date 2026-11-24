@@ -780,7 +780,10 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn operator_token(&mut self, text: &str, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
-        let mut kind = classify_mo(text);
+        let listed = listed_mo_kind(text);
+        let mut kind = listed
+            .or_else(|| table_mo_kind(text))
+            .unwrap_or(SymbolKind::Ordinary);
         let name = text.trim();
         // Multi-letter operator tokens and explicitly named operators
         // are distinct from ordinary identifiers in <mi>.
@@ -801,11 +804,17 @@ impl<'a> MathmlCompactParser<'a> {
                 .arena
                 .push_node(CompactNode::Scaled { factor, content });
         }
+        // An explicit TeX class overrides the default class of a lone
+        // binary/relation glyph or a glyph classed by the symbol table;
+        // explicit zero `lspace`/`rspace` keeps a table-classed glyph
+        // ordinary, as before.
         if let Some(marked_kind) = attrs
             .symbol_kind
-            .filter(|_| matches!(name, "-" | "−" | "*" | "'"))
+            .filter(|_| matches!(name, "'") || texclass_overrides(name, listed, kind))
         {
             kind = marked_kind;
+        } else if listed.is_none() && attrs.zero_lspace && attrs.zero_rspace {
+            kind = SymbolKind::Ordinary;
         }
         if vertical_line
             && attrs.non_fence
@@ -2228,6 +2237,8 @@ struct OperatorAttributes {
     non_fence: bool,
     minsize: Option<f64>,
     maxsize: Option<f64>,
+    zero_lspace: bool,
+    zero_rspace: bool,
 }
 
 impl OperatorAttributes {
@@ -2361,8 +2372,17 @@ fn operator_attributes(
                 }
                 result.constrained |= inspect_fences;
             },
-            "lspace" | "rspace" | "style" | "mathsize" | "mathvariant" | "mathcolor"
-            | "mathbackground" | "class" | "displaystyle" | "scriptlevel"
+            "lspace" | "rspace" => {
+                let zero = is_zero_length(&fence_attr_value(&attr.value));
+                if attr.key.as_ref() == "lspace" {
+                    result.zero_lspace = zero;
+                } else {
+                    result.zero_rspace = zero;
+                }
+                result.constrained |= inspect_fences;
+            },
+            "style" | "mathsize" | "mathvariant" | "mathcolor" | "mathbackground" | "class"
+            | "displaystyle" | "scriptlevel"
                 if inspect_fences =>
             {
                 result.constrained = true;
@@ -2392,6 +2412,14 @@ fn operator_attributes(
         }
     }
     result
+}
+
+/// Whether a MathML length (`0`, `0em`, `0.0pt`, …) is zero.
+fn is_zero_length(value: &str) -> bool {
+    let number = value
+        .trim()
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%');
+    !number.is_empty() && number.parse::<f64>().is_ok_and(|n| n == 0.0)
 }
 
 #[derive(Default)]
@@ -2763,9 +2791,42 @@ fn resolve_entities_lossy(s: &str) -> String {
 }
 
 fn classify_mo(text: &str) -> SymbolKind {
+    listed_mo_kind(text)
+        .or_else(|| table_mo_kind(text))
+        .unwrap_or(SymbolKind::Ordinary)
+}
+
+/// The class a single-glyph `<mo>` takes from the symbol table when the
+/// reader's own operator list does not name it (`≨` is a relation, `⋒` a
+/// binary operator), so `<mo>` keeps operator spacing in TeX output.
+fn table_mo_kind(text: &str) -> Option<SymbolKind> {
+    single_accent_char(text.trim()).and_then(crate::unicode::symbols::operator_glyph_kind)
+}
+
+/// Whether a `data-mjx-texclass` marker overrides the default class of `<mo>`
+/// text: a lone binary/relation glyph, or a glyph classed only by the symbol
+/// table. Listed fences and delimiters keep their reader-specific handling.
+fn texclass_overrides(name: &str, listed: Option<SymbolKind>, kind: SymbolKind) -> bool {
+    single_accent_char(name).is_some()
+        && kind != SymbolKind::Ordinary
+        && (listed.is_none() || matches!(kind, SymbolKind::Relation | SymbolKind::BinaryOp))
+}
+
+/// Whether an ordinary symbol written as `<mo>text</mo>` needs an explicit
+/// ordinary marker to read back as ordinary. Shared with the MathML writer so
+/// the two stay in step.
+pub(crate) fn ordinary_mo_needs_marker(text: &str) -> bool {
+    let listed = listed_mo_kind(text);
+    let kind = listed
+        .or_else(|| table_mo_kind(text))
+        .unwrap_or(SymbolKind::Ordinary);
+    texclass_overrides(text, listed, kind)
+}
+
+fn listed_mo_kind(text: &str) -> Option<SymbolKind> {
     let text = text.trim();
     let ch = text.chars().next().unwrap_or(' ');
-    match ch {
+    Some(match ch {
         '+' | '-' | '\u{2212}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}'
         | '\u{2217}' | '\u{2218}' | '*' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2264}' | '\u{2265}' | '\u{2260}' | '\u{2248}' | '\u{2261}'
@@ -2781,8 +2842,8 @@ fn classify_mo(text: &str) -> SymbolKind {
             SymbolKind::LargeOp
         },
         '|' | '\u{2016}' => SymbolKind::Fence,
-        _ => SymbolKind::Ordinary,
-    }
+        _ => return None,
+    })
 }
 
 fn single_accent_char(s: &str) -> Option<char> {
@@ -4245,6 +4306,95 @@ mod tests {
                 reparsed.expr().nodes.as_slice(),
                 [MathNode::Fenced { .. }]
             ));
+        }
+    }
+
+    #[test]
+    fn single_glyph_mo_takes_symbol_table_class() {
+        for (glyph, kind, latex) in [
+            ("≨", SymbolKind::Relation, r"a\lneqq b"),
+            ("⪯", SymbolKind::Relation, r"a\preceq b"),
+            ("⋒", SymbolKind::BinaryOp, r"a\Cap b"),
+            ("↑", SymbolKind::Relation, r"a\uparrow b"),
+            ("⟦", SymbolKind::Open, r"a\llbracket b"),
+        ] {
+            let xml = format!("<math><mi>a</mi><mo>{glyph}</mo><mi>b</mi></math>");
+            assert_eq!(
+                parse(&xml)[1],
+                MathNode::Symbol(kind, glyph.into()),
+                "{xml}"
+            );
+            assert_eq!(crate::from_mathml(&xml).unwrap().to_latex().unwrap(), latex);
+        }
+        // Alphabetic table entries and unmapped glyphs stay ordinary.
+        for glyph in ["α", "⊛⊛", "@"] {
+            let xml = format!("<math><mo>{glyph}</mo></math>");
+            assert!(
+                matches!(parse_one(&xml), MathNode::Symbol(SymbolKind::Ordinary, _)),
+                "{xml}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_mo_class_signals_override_symbol_table_class() {
+        for attrs in [
+            r#" data-mjx-texclass="ORD""#,
+            r#" lspace="0em" rspace="0em""#,
+            r#" lspace="0" rspace="0.0pt""#,
+        ] {
+            let xml = format!("<math><mi>a</mi><mo{attrs}>≨</mo><mi>b</mi></math>");
+            assert_eq!(
+                parse(&xml)[1],
+                MathNode::Symbol(SymbolKind::Ordinary, "≨".into()),
+                "{xml}"
+            );
+        }
+        let ordinary_le = r#"<math><mi>a</mi><mo data-mjx-texclass="ORD">≤</mo><mi>b</mi></math>"#;
+        assert_eq!(
+            parse(ordinary_le)[1],
+            MathNode::Symbol(SymbolKind::Ordinary, "≤".into())
+        );
+        let binary = r#"<math><mi>a</mi><mo data-mjx-texclass="BIN">≨</mo><mi>b</mi></math>"#;
+        assert_eq!(
+            parse(binary)[1],
+            MathNode::Symbol(SymbolKind::BinaryOp, "≨".into())
+        );
+        // One-sided or nonzero spacing does not make the operator ordinary.
+        let spaced = r#"<math><mi>a</mi><mo lspace="0em" rspace="0.2em">≨</mo><mi>b</mi></math>"#;
+        assert_eq!(
+            parse(spaced)[1],
+            MathNode::Symbol(SymbolKind::Relation, "≨".into())
+        );
+        // Listed glyphs keep their reading under explicit zero spacing.
+        let listed = r#"<math><mi>a</mi><mo lspace="0" rspace="0">=</mo><mi>b</mi></math>"#;
+        assert_eq!(
+            parse(listed)[1],
+            MathNode::Symbol(SymbolKind::Relation, "=".into())
+        );
+    }
+
+    #[test]
+    fn ordinary_operator_glyphs_round_trip_through_mathml() {
+        for source in [
+            r"a\mathord{\lneqq}b",
+            r"a\mathord{\llbracket}b",
+            r"a\dag b",
+            r"a\triangledown b",
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            let mathml = parsed.to_mathml().unwrap();
+            assert!(
+                mathml.contains(r#"data-mjx-texclass="ORD" lspace="0em" rspace="0em""#),
+                "{source}: {mathml}"
+            );
+            let reparsed = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(reparsed.to_latex().unwrap(), parsed.to_latex().unwrap());
+            assert_eq!(reparsed.to_mathml().unwrap(), mathml);
+        }
+        for source in [r"a\lneqq b", r"a\mathbin{\dag}b"] {
+            let mathml = crate::from_latex(source).unwrap().to_mathml().unwrap();
+            assert!(!mathml.contains("data-mjx-texclass"), "{source}: {mathml}");
         }
     }
 

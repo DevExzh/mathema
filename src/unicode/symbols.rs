@@ -935,6 +935,21 @@ pub(crate) fn mapped_symbol_kind(ch: char) -> Option<SymbolKind> {
     UNICODE_TO_LATEX.get(&ch).map(|&(_, kind)| kind)
 }
 
+/// The atom class a lone non-ASCII operator glyph (MathML `<mo>`, an OMML
+/// math-run symbol, a UnicodeMath operator) takes from the symbol table, when
+/// that class is an operator class. Ordinary and alphabetic entries return
+/// `None` so callers keep their own default for them, as do ASCII glyphs:
+/// their class is context-dependent (`:` is a TeX relation but the table
+/// records `\colon`), so each reader keeps its own reading of them.
+#[inline]
+pub(crate) fn operator_glyph_kind(ch: char) -> Option<SymbolKind> {
+    if ch.is_ascii() {
+        return None;
+    }
+    mapped_symbol_kind(ch)
+        .filter(|kind| !matches!(kind, SymbolKind::Ordinary | SymbolKind::Alphabetic))
+}
+
 /// Find a core command spelling `ch` with exactly the atom class `kind`.
 ///
 /// Several commands share a glyph but differ in class (`\triangle` is

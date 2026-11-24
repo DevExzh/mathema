@@ -1063,9 +1063,14 @@ fn write_node_in(
                 write_atom_group(w, content, class, false, display_style)
             } else if *atom_type == MathAtomType::Ord
                 && let MathNode::Symbol(_, s) = content.as_ref()
-                && matches!(s.as_str(), "-" | "−")
+                && marks_ordinary_operator(SymbolKind::Ordinary, s)
             {
                 write_symbol_node(w, SymbolKind::Ordinary, s)
+            } else if let Some(kind) = spacing_atom_kind(*atom_type)
+                && let MathNode::Symbol(SymbolKind::Ordinary, s) = content.as_ref()
+                && marks_ordinary_operator(SymbolKind::Ordinary, s)
+            {
+                write_symbol_node(w, kind, s)
             } else {
                 write_node_in(w, content, single_argument, display_style)
             }
@@ -1073,6 +1078,26 @@ fn write_node_in(
         MathNode::StructuredOperator { content, form } => {
             write_structured_operator_group(w, content, *form, false, display_style)
         },
+    }
+}
+
+/// Whether an ordinary `<mo>` needs `data-mjx-texclass="ORD"` so the reader
+/// does not give it the glyph's default operator class (`\mathord{-}`,
+/// `\mathord{\lneqq}`, `\mathord{\llbracket}`).
+fn marks_ordinary_operator(kind: SymbolKind, text: &str) -> bool {
+    if kind != SymbolKind::Ordinary {
+        return false;
+    }
+    text == "'" || crate::reader::mathml::ordinary_mo_needs_marker(text)
+}
+
+/// `\mathbin`/`\mathrel` around an ordinary operator glyph (`\mathbin{\dag}`)
+/// is written as a plain `<mo>` rather than the ordinary marker.
+fn spacing_atom_kind(atom: MathAtomType) -> Option<SymbolKind> {
+    match atom {
+        MathAtomType::Bin => Some(SymbolKind::BinaryOp),
+        MathAtomType::Rel => Some(SymbolKind::Relation),
+        _ => None,
     }
 }
 
@@ -1098,7 +1123,7 @@ fn write_symbol_node(w: &mut XmlWriter, kind: SymbolKind, text: &str) -> Result<
             }
         }
     }
-    if kind == SymbolKind::Ordinary && matches!(text, "-" | "−" | "*" | "'") {
+    if marks_ordinary_operator(kind, text) {
         elem.push_attribute(("data-mjx-texclass", "ORD"));
         elem.push_attribute(("lspace", "0em"));
         elem.push_attribute(("rspace", "0em"));
@@ -2207,9 +2232,14 @@ fn write_node_fast_in(
                 write_atom_group_fast(buf, arena, content, class, false, display_style);
             } else if atom_type == MathAtomType::Ord
                 && let CompactNode::Symbol(_, sid) = *arena.node(content)
-                && matches!(arena.str_val(sid), "-" | "−")
+                && marks_ordinary_operator(SymbolKind::Ordinary, arena.str_val(sid))
             {
                 write_mo_symbol_fast(buf, SymbolKind::Ordinary, arena.str_val(sid));
+            } else if let Some(kind) = spacing_atom_kind(atom_type)
+                && let CompactNode::Symbol(SymbolKind::Ordinary, sid) = *arena.node(content)
+                && marks_ordinary_operator(SymbolKind::Ordinary, arena.str_val(sid))
+            {
+                write_mo_symbol_fast(buf, kind, arena.str_val(sid));
             } else {
                 write_node_fast_in(buf, arena, content, single_argument, display_style);
             }
@@ -2942,7 +2972,7 @@ fn write_mo_symbol_fast(buf: &mut XmlBuffer, kind: SymbolKind, s: &str) {
             }
         }
     }
-    if kind == SymbolKind::Ordinary && matches!(s, "-" | "−" | "*" | "'") {
+    if marks_ordinary_operator(kind, s) {
         buf.push_str(r#" data-mjx-texclass="ORD" lspace="0em" rspace="0em""#);
     }
     buf.push('>');

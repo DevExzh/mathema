@@ -667,6 +667,24 @@ fn character_references_and_predefined_entities_resolve() {
 }
 
 #[test]
+fn run_operator_glyphs_take_symbol_table_class() {
+    let node = parse_one(&omath("<m:r><m:t>a≨b⋒c∈d</m:t></m:r>"));
+    let MathNode::Row(nodes) = node else {
+        panic!("expected a row, got {node:?}");
+    };
+    assert_eq!(nodes[1], MathNode::Symbol(SymbolKind::Relation, "≨".into()));
+    assert_eq!(nodes[3], MathNode::Symbol(SymbolKind::BinaryOp, "⋒".into()));
+    assert_eq!(nodes[5], MathNode::Symbol(SymbolKind::Relation, "∈".into()));
+    let latex = crate::convert(
+        &omath("<m:r><m:t>a≨b</m:t></m:r>"),
+        crate::Format::Omml,
+        crate::Format::LaTeX,
+    )
+    .unwrap();
+    assert_eq!(latex, r"a\lneqq b");
+}
+
+#[test]
 fn nesting_depth_is_bounded() {
     let depth = 2000;
     let mut input = format!("<m:oMath {NS}>");

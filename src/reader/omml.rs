@@ -2547,7 +2547,7 @@ fn classify_op_char(ch: char) -> SymbolKind {
         ',' | ';' => SymbolKind::Punctuation,
         '|' | '\u{2016}' => SymbolKind::Fence,
         '\u{2211}' | '\u{220F}' | '\u{222B}' => SymbolKind::LargeOp,
-        _ => SymbolKind::Ordinary,
+        _ => crate::unicode::symbols::operator_glyph_kind(ch).unwrap_or(SymbolKind::Ordinary),
     }
 }
 
