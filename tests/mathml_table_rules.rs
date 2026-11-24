@@ -473,3 +473,28 @@ fn rule_after_the_final_row_break_is_the_bottom_edge() {
         );
     }
 }
+
+/// Normalize, write and reread LaTeX until it is a fixed point after one
+/// pass, as the round-trip fuzz target requires.
+fn assert_latex_idempotent(source: &str) -> String {
+    let first = mathema::convert(source, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap();
+    let second = mathema::convert(&first, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap();
+    assert_eq!(second, first, "{source}");
+    first
+}
+
+#[test]
+fn a_group_that_is_only_a_line_break_stays_in_its_cell() {
+    let expected = r"\begin{array}{c} {\\ } \end{array}";
+    assert_eq!(
+        assert_latex_idempotent(r"\begin{array}{c}{\\}\end{array}"),
+        expected
+    );
+    let xml =
+        r#"<math><mtable><mtr><mtd><mspace linebreak="newline"/></mtd></mtr></mtable></math>"#;
+    let latex = mathema::convert(xml, mathema::Format::MathML, mathema::Format::LaTeX).unwrap();
+    assert_eq!(latex, expected);
+    let mathml = mathema::convert(&latex, mathema::Format::LaTeX, mathema::Format::MathML).unwrap();
+    assert_eq!(mathml.matches("<mtr>").count(), 1, "{mathml}");
+    assert!(mathml.contains(r#"linebreak="newline""#), "{mathml}");
+}

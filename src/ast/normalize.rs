@@ -1112,12 +1112,11 @@ fn normalize_compact_node_with_identifiers(
         },
 
         CompactNode::Array { cells, .. } => {
-            // Each cell is a Row node — normalize it, then trim leading/trailing
-            // whitespace and replace any internal row separators with ordinary
-            // space. A `\\`/`\cr` inside a cell is always a row separator on
-            // re-parse, so keeping it as a node makes the written shape unstable.
-            // A braced line break (`{a\\b}`) is a break within the cell, so
-            // its group is kept intact instead.
+            // Each cell is a Row node — normalize it, then keep internal line
+            // breaks inside groups. A bare `\\`/`\cr` in a cell list is always
+            // a row separator on re-parse, so a braced line break (`{a\\b}`),
+            // a break within the cell, keeps its group, and a direct break is
+            // put in one (`normalize_array_cell`).
             let cell_ids: SmallVec<[NodeId; 8]> = arena.children(cells).into();
             let mut new_cells: SmallVec<[NodeId; 8]> = SmallVec::new();
             for &cell_id in &cell_ids {
@@ -1344,9 +1343,17 @@ fn has_direct_newline(arena: &AstArena, span: NodeSpan) -> bool {
 }
 
 /// Source whitespace is consumed by the parser. Keep authored math spaces,
-/// including edge kerns. A row separator stored as direct cell content
-/// continues to use the writer's horizontal-space fallback.
+/// including edge kerns. A line break stored as direct cell content would be
+/// a row separator when written, so it becomes a braced break (`{\\}`, which
+/// the parser reads back as such a direct break) within the cell.
 fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::Result<NodeId> {
+    if matches!(arena.node(cell_id), CompactNode::Newline) {
+        // A cell that is only a break, unwrapped from its one-child list.
+        let group = arena.push_children(&[cell_id])?;
+        let group = arena.push_node(CompactNode::Row(group));
+        let cell = arena.push_children(&[group])?;
+        return Ok(arena.push_node(CompactNode::Row(cell)));
+    }
     let CompactNode::Row(span) = *arena.node(cell_id) else {
         return Ok(cell_id);
     };
@@ -1360,7 +1367,8 @@ fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::
     let mut children: SmallVec<[NodeId; 8]> = children.into();
     for id in &mut children[first_break..] {
         if matches!(arena.node(*id), CompactNode::Newline) {
-            *id = arena.push_node(CompactNode::Space(Rational::new(1, 4)));
+            let span = arena.push_children(&[*id])?;
+            *id = arena.push_node(CompactNode::Row(span));
         }
     }
     let span = arena.push_children(&children)?;

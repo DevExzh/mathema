@@ -944,7 +944,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 write_idotsint(buf);
                 return;
             }
-            if row_contains_style_switch(arena, span, 0) {
+            if row_contains_style_switch(arena, span, 0)
+                || matches!(children, [only] if matches!(*arena.node(*only), CompactNode::Newline))
+            {
+                // A group that is just `\\` is a break within a table cell,
+                // where a bare `\\` would end the row.
                 buf.push('{');
                 write_nodes(buf, arena, span);
                 buf.push('}');
