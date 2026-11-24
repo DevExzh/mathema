@@ -95,7 +95,7 @@ const PACKAGE_MACROS: &[&[(&str, u8, &str)]] = &[
 ];
 
 /// All package symbol tables, in registration order.
-const PACKAGE_SYMBOLS: &[&[(&str, &str, SymbolClass)]] = &[
+pub(crate) const PACKAGE_SYMBOLS: &[&[(&str, &str, SymbolClass)]] = &[
     amsbsy::SYMBOLS,
     amsfonts::SYMBOLS,
     amsmath::SYMBOLS,
@@ -188,7 +188,8 @@ fn package_symbol_map() -> &'static HashMap<&'static str, (&'static str, SymbolC
 /// The writer consults it only after the core tables miss, so compounds such
 /// as `∶≈` (`\colonapprox`) and package-only glyphs such as `Ⅎ` (`\Finv`) are
 /// written with the command KaTeX understands rather than as raw Unicode.
-/// Only [`WRITER_PACKAGE_SYMBOLS`] contributes, so text-mode and non-KaTeX names stay out.
+/// Only [`WRITER_PACKAGE_SYMBOLS`] contributes, so text-mode and non-KaTeX
+/// names stay out.
 fn package_symbol_reverse_map() -> &'static HashMap<(&'static str, SymbolClass), &'static str> {
     static MAP: OnceLock<HashMap<(&'static str, SymbolClass), &'static str>> = OnceLock::new();
     MAP.get_or_init(|| {
@@ -257,6 +258,20 @@ pub fn conflicting_macro_shadows() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use crate::{Format, convert};
+
+    /// `WRITER_PACKAGE_SYMBOLS` must be `PACKAGE_SYMBOLS` minus the excluded
+    /// tables, in order, so a newly registered package is not silently left
+    /// out of the writer. Compares contents: `const` addresses are unreliable.
+    #[test]
+    fn writer_tables_are_package_tables_minus_text_mode_and_non_katex() {
+        use super::{PACKAGE_SYMBOLS, WRITER_PACKAGE_SYMBOLS, bboldx, textcomp};
+        let expected: Vec<_> = PACKAGE_SYMBOLS
+            .iter()
+            .copied()
+            .filter(|t| *t != textcomp::SYMBOLS && *t != bboldx::SYMBOLS)
+            .collect();
+        assert_eq!(WRITER_PACKAGE_SYMBOLS, expected.as_slice());
+    }
 
     fn to_mathml(latex: &str) -> String {
         convert(latex, Format::LaTeX, Format::MathML).expect("convert should succeed")

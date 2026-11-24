@@ -219,4 +219,6 @@ fn text_mode_and_non_katex_package_names_are_never_written() {
         assert!(!out.contains(r"\text"), "{input:?} wrote {out:?}");
         assert!(!out.contains(r"\bb"), "{input:?} wrote {out:?}");
     }
+    // Writer-eligible package glyphs still get their command.
+    assert_eq!(from_latex(r"\Finv").unwrap().to_latex().unwrap(), r"\Finv");
 }

@@ -978,25 +978,7 @@ mod tests {
             }
         }
         assert!(cmds.len() > 300, "scanned only {} core symbols", cmds.len());
-        let tables: &[&[(&str, &str, pk::SymbolClass)]] = &[
-            pk::amsbsy::SYMBOLS,
-            pk::amsfonts::SYMBOLS,
-            pk::amsmath::SYMBOLS,
-            pk::amssymb::SYMBOLS,
-            pk::bbm::SYMBOLS,
-            pk::bboldx::SYMBOLS,
-            pk::braket::SYMBOLS,
-            pk::centernot::SYMBOLS,
-            pk::dsfont::SYMBOLS,
-            pk::extpfeil::SYMBOLS,
-            pk::gensymb::SYMBOLS,
-            pk::mathtools::SYMBOLS,
-            pk::physics::SYMBOLS,
-            pk::textcomp::SYMBOLS,
-            pk::units::SYMBOLS,
-            pk::upgreek::SYMBOLS,
-        ];
-        for table in tables {
+        for table in pk::PACKAGE_SYMBOLS {
             for &(name, text, _) in *table {
                 cmds.push((name.to_owned(), text.to_owned()));
             }
