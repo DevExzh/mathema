@@ -151,7 +151,19 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     ("|∑_i a_i|", "|∑_i a_i|", r"|\sum\limits_i {a_i}|"),
     ("∫∫ f", "∫ ∫ f", r"\int\nolimits {\int\nolimits f}"),
-    ("∑ (a+b)", "∑ (a+b)", r"\sum\limits {a+ b}"),
+    // Parentheses around an n-aryand are kept (section 3.4).
+    ("∑ (a+b)", "∑ (a+b)", r"\sum\limits {\left( a+b \right)}"),
+    (
+        "∏_k (1+x_k)",
+        "∏_k (1+x_k)",
+        r"\prod\limits_k {\left( 1+x_k \right)}",
+    ),
+    (
+        "∑_(k=0)^n (n¦k) a^k b^(n-k)",
+        "∑_(k=0)^n (n¦k) a^k b^(n-k)",
+        r"\sum\limits_{k= 0}^n {\binom{n}{k}}a^k{b}^{n- k}",
+    ),
+    ("∑ 〖a+b〗", "∑ 〖a+b〗", r"\sum\limits {a+ b}"),
     ("∑_i′ a", "∑_i^′ a", r"\sum\limits_i^{\prime} a"),
     // In text, `\\` is a backslash; a backslash before the last quote ends
     // the text, and any other backslash is literal.
@@ -231,7 +243,31 @@ const LATEX_STABLE: &[&str] = &[
     "\\text{a\\textbackslash}x\\text{b}",
     "\\sum_i a_i",
     "\\int_0^1 \\frac{f(x)}{x} dx",
+    "\\prod_k \\left(1+x_k\\right)",
+    "\\sum_k \\binom{n}{k}",
+    "\\sum_i (a_i+b_i)",
 ];
+
+/// LaTeX n-aryands in parentheses keep a single pair.
+#[test]
+fn latex_naryand_parentheses_stay_single() {
+    for (input, written) in [
+        ("\\prod_k \\left(1+x_k\\right)", "∏_k (1+x_k)"),
+        ("\\sum_k \\binom{n}{k}", "∑_k (n¦k)"),
+        ("\\sum_i (a_i+b_i)", "∑_i (a_i+b_i)"),
+    ] {
+        assert_eq!(
+            convert(input, Format::LaTeX, Format::UnicodeMath).unwrap(),
+            written,
+            "{input}"
+        );
+        let latex = convert(written, Format::UnicodeMath, Format::LaTeX).unwrap();
+        assert!(
+            latex.contains('(') || latex.contains("binom"),
+            "{written}: {latex}"
+        );
+    }
+}
 
 #[test]
 fn latex_scripts_write_stable_unicode_math() {

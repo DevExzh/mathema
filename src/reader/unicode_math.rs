@@ -1681,8 +1681,11 @@ impl CompactParser {
     /// UTN #28 section 3.4: "The operand that follows this operator becomes
     /// the n-aryand", after white space or `▒`: the factors up to a space or
     /// an operator, by the operand rule of fractions (`∑_i a_i`,
-    /// `∫_0^1 f(x)/x ⅆx`). Parentheses around the whole operand only group
-    /// it. A nested n-ary operator is the whole n-aryand (`∫∫ f`).
+    /// `∫_0^1 f(x)/x ⅆx`). "Unlike for the fraction numerator and
+    /// denominator, the outermost parentheses of an n-aryand are not
+    /// removed" (`∏_k (1+x_k)`, `∑ (n¦k)`); an invisible group around it
+    /// only groups it. A nested n-ary operator is the whole n-aryand
+    /// (`∫∫ f`).
     fn parse_naryand<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let mut rest = input.trim_start();
         if let Some(after) = rest.strip_prefix('\u{2592}') {
@@ -1720,7 +1723,20 @@ impl CompactParser {
         }
         let body = match ids.as_slice() {
             [] => self.push_node(CompactNode::Row(NodeSpan::EMPTY)),
-            [only] => self.unparenthesized(*only),
+            // An invisible group around a compound n-aryand only groups it.
+            [only] => match *self.arena.node(*only) {
+                CompactNode::MathAtom {
+                    atom_type: MathAtomType::Inner,
+                    content,
+                } if matches!(
+                    *self.arena.node(content),
+                    CompactNode::Row(span) if !span.is_empty()
+                ) || matches!(*self.arena.node(content), CompactNode::Text(..)) =>
+                {
+                    content
+                },
+                _ => *only,
+            },
             _ => self.flatten_single(&ids),
         };
         Ok((rest, body))

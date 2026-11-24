@@ -1216,9 +1216,9 @@ fn separate_following_operand(
 
 /// Write an n-ary operator's n-aryand, which the reader takes as the
 /// operand after the operator (UTN #28 section 3.4): a row of factors as is
-/// (`∑_i a_i b_i`), anything else that is not one operand, or that is
-/// written with a space, in parentheses (`∑ (a+b)`; parentheses are kept
-/// as `((a))`).
+/// (`∑_i a_i b_i`), and anything else that is not one operand, or that is
+/// written with a space, in an invisible group (`∑ 〖a+b〗`): the reader
+/// keeps parentheses around an n-aryand (`∏_k (1+x_k)`).
 fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
     let node = select_mathchoice(node, style);
     let plain = match node {
@@ -1226,7 +1226,6 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
             !matches!(child, MathNode::StyleSwitch(_))
                 && operand_edge(select_mathchoice(child, style)) == OperandEdge::Operand
         }),
-        MathNode::Fenced { open, close, .. } => !(open == "(" && close == ")"),
         MathNode::Text(..) => false,
         // A nested n-ary operator is a whole n-aryand (`∫∫ f`); a lone
         // symbol (LaTeX `\sum (`) has no better spelling.
@@ -1234,10 +1233,10 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
     };
     let start = out.len();
     write_node(out, node, style);
-    // A space would end the n-aryand early (`∑ (y′ sin x)`).
+    // A space would end the n-aryand early (`∑ 〖y′ sin x〗`).
     if !plain || (matches!(node, MathNode::Row(_)) && out[start..].contains(' ')) {
-        out.insert(start, '(');
-        out.push(')');
+        out.insert(start, '〖');
+        out.push('〗');
     }
 }
 
@@ -1250,9 +1249,6 @@ fn write_naryand_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathSt
                 && operand_edge_c(arena, select_mathchoice_c(arena, child, style))
                     == OperandEdge::Operand
         }),
-        CompactNode::Fenced { open, close, .. } => {
-            !(arena.str_val(open) == "(" && arena.str_val(close) == ")")
-        },
         CompactNode::Text(..) => false,
         // A nested n-ary operator is a whole n-aryand (`∫∫ f`); a lone
         // symbol (LaTeX `\sum (`) has no better spelling.
@@ -1260,10 +1256,10 @@ fn write_naryand_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathSt
     };
     let start = out.len();
     write_node_c(out, arena, id, style);
-    // A space would end the n-aryand early (`∑ (y′ sin x)`).
+    // A space would end the n-aryand early (`∑ 〖y′ sin x〗`).
     if !plain || (matches!(*arena.node(id), CompactNode::Row(_)) && out[start..].contains(' ')) {
-        out.insert(start, '(');
-        out.push(')');
+        out.insert(start, '〖');
+        out.push('〗');
     }
 }
 
