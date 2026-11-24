@@ -784,6 +784,31 @@ mod tests {
         (r"\text{a}\times\1", r"{\mathrm{\text{a}\times\^{1}}}", true),
         (r"és\~e-1.2C", r"{\mathrm{és\~e^{-1.2}C}}", true),
         (r"0 2\^°", r"{0~\mathrm{2\^°}}", true),
+        // `\over` and its kin are unit text: the fraction is the
+        // `\mathrm{}` group's, with an empty numerator, after the number.
+        (r"1 \over 2", r"{1~\mathrm{\over 2}}", true),
+        (
+            r"3 \over 4 m",
+            r"{3~\mathrm{\over 4}\mkern3mu \mathrm{m}}",
+            true,
+        ),
+        (r"1 \atop 2", r"{1~\mathrm{\atop 2}}", true),
+        (r"1 \choose 2", r"{1~\mathrm{\choose 2}}", true),
+        (
+            r"x \over y",
+            r"{\mathrm{x}\mkern3mu \mathrm{\over y}}",
+            true,
+        ),
+        (
+            r"12 kg \over 3",
+            r"{12~\mathrm{kg}\mkern3mu \mathrm{\over 3}}",
+            true,
+        ),
+        (
+            r"1 \over 2 \over 3",
+            r"{1~\mathrm{\over 2}\mkern3mu \mathrm{\over 3}}",
+            true,
+        ),
         (r"m_2", r"{\mathrm{m_^{2}}}", false),
         (r"m^2^3", r"{\mathrm{m^{2}^{3}}}", false),
         (r"m^-1^2", r"{\mathrm{m^{-1}^{2}}}", false),

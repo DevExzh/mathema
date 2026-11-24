@@ -130,6 +130,32 @@ fn pu_reads_as_katex_mhchem_writes() {
     }
 }
 
+/// mhchem reads `\over` (and `\atop`, `\choose`) in `\pu` as unit text, so
+/// the fraction is the `\mathrm{}` group's: KaTeX writes `\pu{1 \over 2}` as
+/// `{1~\mathrm{\over 2}}`, the `1` before a fraction with an empty
+/// numerator. In `\ce` the whole formula before it is the numerator.
+#[test]
+fn infix_fraction_in_pu_and_ce_reads_as_katex() {
+    for (input, katex) in [
+        (r"\pu{1 \over 2}", r"{1~\mathrm{\over 2}}"),
+        (
+            r"\pu{3 \over 4 m}",
+            r"{3~\mathrm{\over 4}\mkern3mu \mathrm{m}}",
+        ),
+        (r"\pu{1 \atop 2}", r"{1~\mathrm{\atop 2}}"),
+        (r"\pu{x \over y}", r"{\mathrm{x}\mkern3mu \mathrm{\over y}}"),
+    ] {
+        assert_eq!(latex(input), latex(katex), "{input}");
+    }
+    let ml = mathml(r"\pu{1 \over 2}");
+    assert!(
+        ml.contains("<mn>1</mn>") && ml.contains("<mfrac><mrow></mrow><mn>2</mn></mfrac>"),
+        "{ml}"
+    );
+    let ml = mathml(r"\ce{1 \over 2}");
+    assert!(ml.contains("<mfrac><mrow><mn>1</mn>"), "{ml}");
+}
+
 /// `\ce` gives a base at most one subscript and one superscript, as TeX
 /// requires: a further script goes on a new empty base (mhchem's
 /// `{\vphantom{X}}`), and a bare charge after a superscript joins it, as in
