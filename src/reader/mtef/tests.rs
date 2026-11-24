@@ -727,6 +727,35 @@ fn decimals_primes_and_quotes() {
 }
 
 #[test]
+fn possessive_apostrophes_are_not_primes() {
+    let (x, s, i) = (c5(0, 3, 'x'), c5(0, 3, 's'), c5(0, 3, 'i'));
+    let a = c5(0, 2, '\'');
+    assert_eq!(latex5(&[&x, &a, &s]), "x\\char`'s");
+    // A product and a function name after a prime.
+    assert_eq!(latex5(&[&x, &a, &s, &i]), r"x^{\prime}si");
+    assert_eq!(latex5(&[&x, &a, &s, &sub5(&[], 'i')]), r"x^{\prime}s_i");
+    let sin = cat(&[&c5(2, 2, 's'), &c5(0, 2, 'i'), &c5(0, 2, 'n')]);
+    assert_eq!(latex5(&[&x, &a, &sin, &i]), r"x^{\prime}\sin i");
+}
+
+#[test]
+fn leading_scripts_before_fences_and_functions_follow_the_item_before() {
+    // tmPAREN (1) with both sides, holding Q.
+    let fence = cat(&[&[3, 0, 1, 3, 0, 1, 0], &c5(0, 3, 'Q'), &[0, 0]]);
+    let d = c5(0, 3, 'D');
+    let log = cat(&[&c5(2, 2, 'l'), &c5(0, 2, 'o'), &c5(0, 2, 'g')]);
+    let follow = latex5(&[&d, &pre_sup5('2'), &fence]);
+    assert!(follow.starts_with(r"D^{2}\left("), "{follow}");
+    assert_eq!(latex5(&[&d, &pre_sup5('2'), &log]), r"D^{2}\log");
+    // Nothing that carries it is before the function name: it leads (¹⁸⁸Re).
+    let lead = latex5(&[&c5(0, 6, '\u{2192}'), &pre_sup5('2'), &log]);
+    assert!(
+        lead.contains("{}^{2}") && !lead.contains("arrow^"),
+        "{lead}"
+    );
+}
+
+#[test]
 fn letters_stay_separate_identifiers() {
     let mut body = vec![0x0A, 1, 0];
     body.extend(cat(&[&c5(0, 3, 'd'), &c5(0, 3, 't')]));

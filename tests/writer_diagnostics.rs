@@ -182,3 +182,17 @@ fn convert_result_surfaces_writer_diagnostics() {
     let r = mathema::from_latex("x + y = z").unwrap();
     assert!(r.to_mathml_with_diagnostics().unwrap().1.is_empty());
 }
+
+#[test]
+fn omml_reports_structure_colors_it_drops() {
+    use mathema::{OmmlOptions, OmmlRunProperties};
+    let result = mathema::from_latex(r"\textcolor{red}{\left\{ \right.}").unwrap();
+    for host in [OmmlRunProperties::None, OmmlRunProperties::WordprocessingMl] {
+        let options = OmmlOptions::default().with_run_properties(host);
+        let (_, diagnostics) = result.to_omml_with_options(&options).unwrap();
+        assert!(
+            diagnostics.iter().any(|d| d.message.contains("color")),
+            "{host:?}: {diagnostics:?}"
+        );
+    }
+}

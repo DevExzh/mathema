@@ -17,8 +17,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decimals are one number; the ASCII hyphen, tilde, apostrophe and backslash
   become `−`, `∼`, a prime and `∖` outside text; empty scripts and limits are
   dropped; a leading script with nothing to lead becomes a script of the item
-  before it. Colours (MTEF 5) and dashed partition lines are read and
-  written; dotted lines are read as dashed.
+  before it, also before a fence template or function name. Colours (MTEF 5) and dashed partition lines are read and
+  written; dotted lines are read as dashed. Colours are kept as they are:
+  equations from dark slides may be pure white, which is invisible on a white
+  page. OMML output drops colour by default, as before, with a diagnostic;
+  `OmmlRunProperties` keeps it on text runs. The diagnostic about colour
+  moved from reading to the writers that drop it. An apostrophe before a lone
+  `s` (`ν_e's`) stays an apostrophe; the hyphen of a compound typed as math
+  (`S-wave`) is read as a minus sign.
+- The MTEF writer reports identifiers of several characters (MathML
+  `<mi>rate</mi>`), which it writes as separate variables, and `convert` no
+  longer joins letters (`dx`) on the way to MTEF. OMML output reports colour
+  it drops from delimiters, operators, rules and accents.
+- MathML `<mo>` holding one of those letter-like symbols (`<mo>ℜ</mo>`) is
+  read as the letter.
 - The LaTeX writer no longer braces a font command that carries a script
   (`\mathbf{F}_{x}`).
 - **Breaking (behavior):** `\above` and `\abovewithdelims` need a

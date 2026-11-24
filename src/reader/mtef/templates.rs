@@ -378,7 +378,6 @@ pub(super) fn describe_v5(selector: u8, variation: u16) -> Option<Desc> {
     Some(desc)
 }
 
-/// `tmSTRIKE` variation bits (`tvST_HORIZ`, `tvST_UP`, `tvST_DOWN`).
 /// The accent a lone character in an upper limit slot draws.
 fn limit_accent(ch: char) -> Option<char> {
     Some(match ch {
@@ -391,6 +390,7 @@ fn limit_accent(ch: char) -> Option<char> {
     })
 }
 
+/// `tmSTRIKE` variation bits (`tvST_HORIZ`, `tvST_UP`, `tvST_DOWN`).
 fn strike_stroke(variation: u16) -> StrokeKind {
     let horizontal = variation & 0x1 != 0;
     let up = variation & 0x2 != 0;
@@ -464,7 +464,7 @@ impl Decoder<'_> {
 
     /// The character of a node that is (a row holding only) a one-character
     /// symbol, identifier or operator.
-    fn single_char(&self, id: NodeId) -> Option<char> {
+    pub(super) fn single_char(&self, id: NodeId) -> Option<char> {
         let children = self.children_of(id);
         let [only] = children.as_slice() else {
             return None;

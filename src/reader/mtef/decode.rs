@@ -1328,6 +1328,7 @@ impl<'a> Decoder<'a> {
         let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
         let mut pending: Option<ScriptSlots> = None;
         let mut items: VecDeque<Item> = items.into();
+        mark_primes(items.make_contiguous());
         while let Some(item) = items.pop_front() {
             match item {
                 Item::Glyph(glyph) => {
@@ -1568,6 +1569,9 @@ impl<'a> Decoder<'a> {
                     | SymbolKind::Fence
             ),
             CompactNode::Space(width) => width == Rational::zero(),
+            // In every real file a script before a fence template or a
+            // function name is the script of the item before it.
+            CompactNode::Fenced { .. } | CompactNode::Operator { .. } => false,
             _ => true,
         }
     }
@@ -1584,6 +1588,10 @@ impl<'a> Decoder<'a> {
             ),
             CompactNode::Space(_) | CompactNode::Text(..) | CompactNode::PreScripts { .. } => false,
             CompactNode::Row(span) => !span.is_empty(),
+            // A labelled arrow is a relation: `\xrightarrow{…} {}^{188}Re`.
+            CompactNode::Overscript { base, .. }
+            | CompactNode::Underscript { base, .. }
+            | CompactNode::UnderOver { base, .. } => self.carries_script(base),
             _ => true,
         }
     }
@@ -1611,13 +1619,16 @@ impl<'a> Decoder<'a> {
             pre_sup,
         } = *self.arena.node(base)
         {
-            // `{}_a^b z′`: the prime is the base's, after the leading scripts.
-            let base = self.prime(inner, marks)?;
-            return self.node(CompactNode::PreScripts {
-                base,
-                pre_sub,
-                pre_sup,
-            });
+            // `{}_a^b z′`: the prime is the letter's. (A group's prime stays
+            // outside, where the writer's script template puts it back.)
+            if self.single_char(inner).is_some() {
+                let base = self.prime(inner, marks)?;
+                return self.node(CompactNode::PreScripts {
+                    base,
+                    pre_sub,
+                    pre_sup,
+                });
+            }
         }
         if let CompactNode::Superscript { base: inner, sup } = *self.arena.node(base)
             && self.all_primes(sup)
@@ -1676,16 +1687,31 @@ impl<'a> Decoder<'a> {
         } else {
             base
         };
-        if let (Some(sub), None) = (slots.sub, slots.sup)
-            && let CompactNode::Superscript { base: inner, sup } = *self.arena.node(base)
-            && self.all_primes(sup)
-        {
-            // `y′` then a subscript: the subscript is the primed letter's.
-            return self.node(CompactNode::SubSup {
-                base: inner,
-                sub,
-                sup,
-            });
+        if let (Some(sub), None) = (slots.sub, slots.sup) {
+            // `y′` then a subscript: the subscript is the primed letter's,
+            // with leading scripts or without.
+            match *self.arena.node(base) {
+                CompactNode::Superscript { base, sup } if self.all_primes(sup) => {
+                    return self.node(CompactNode::SubSup { base, sub, sup });
+                },
+                CompactNode::PreScripts {
+                    base: led,
+                    pre_sub,
+                    pre_sup,
+                } => {
+                    if let CompactNode::Superscript { base, sup } = *self.arena.node(led)
+                        && self.all_primes(sup)
+                    {
+                        let base = self.node(CompactNode::PreScripts {
+                            base,
+                            pre_sub,
+                            pre_sup,
+                        })?;
+                        return self.node(CompactNode::SubSup { base, sub, sup });
+                    }
+                },
+                _ => {},
+            }
         }
         match (slots.sub, slots.sup) {
             (Some(sub), Some(sup)) => self.node(CompactNode::SubSup { base, sub, sup }),
@@ -1730,24 +1756,43 @@ impl<'a> Decoder<'a> {
         if color == self.color_context {
             return Ok(id);
         }
-        // Content painted as a whole shows none of the colour around it.
-        if let [only] = self.children_of(id)[..]
-            && let CompactNode::Color {
+        // Content that has its own colour shows none of the colour around
+        // it: only the runs between such content are painted.
+        let around = self.color_name(self.color_context).to_owned();
+        let name = self.color_name(color).to_owned();
+        let children = self.children_of(id);
+        let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut i = 0;
+        while i < children.len() {
+            if let CompactNode::Color {
                 color: inner,
                 content,
-            } = *self.arena.node(only)
-        {
-            let around = self.color_name(self.color_context);
-            return Ok(if self.arena.str_val(inner) == around {
-                content
+            } = *self.arena.node(children[i])
+            {
+                if self.arena.str_val(inner) == around {
+                    out.extend(self.children_of(content));
+                } else {
+                    out.push(children[i]);
+                }
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < children.len()
+                && !matches!(*self.arena.node(children[i]), CompactNode::Color { .. })
+            {
+                i += 1;
+            }
+            let content = if start == 0 && i == children.len() {
+                id
             } else {
-                only
-            });
+                self.wrap(&children[start..i])?
+            };
+            out.push(self.str_node(&name, |color| CompactNode::Color { color, content })?);
         }
-        let name = self.color_name(color).to_owned();
-        let wrapped = self.str_node(&name, |color| CompactNode::Color { color, content: id })?;
-        self.set_color(wrapped, self.color_context);
-        Ok(wrapped)
+        let painted = if out.is_empty() { id } else { self.wrap(&out)? };
+        self.set_color(painted, self.color_context);
+        Ok(painted)
     }
 
     /// The parts of a script node and the node's colour: the colour its base
@@ -1808,7 +1853,38 @@ impl<'a> Decoder<'a> {
             }
             i = end;
         }
-        Ok(wrapped)
+        // A part painted on its own (the base of a script in another colour)
+        // joins its neighbours of the same colour.
+        let mut merged: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut i = 0;
+        while i < wrapped.len() {
+            let color_at = |d: &Self, i: usize| match wrapped.get(i).map(|&id| *d.arena.node(id)) {
+                Some(CompactNode::Color { color, .. }) => Some(d.arena.str_val(color).to_owned()),
+                _ => None,
+            };
+            let name = color_at(self, i);
+            let mut end = i + 1;
+            while name.is_some() && color_at(self, end) == name {
+                end += 1;
+            }
+            if end - i == 1 {
+                merged.push(wrapped[i]);
+            } else {
+                let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+                for &id in &wrapped[i..end] {
+                    if let CompactNode::Color { content, .. } = *self.arena.node(id) {
+                        ids.extend(self.children_of(content));
+                    }
+                }
+                let content = self.wrap(&ids)?;
+                let name = name.unwrap_or_default();
+                let node = self.str_node(&name, |color| CompactNode::Color { color, content })?;
+                self.set_color(node, context);
+                merged.push(node);
+            }
+            i = end;
+        }
+        Ok(merged)
     }
 
     /// The node for a single character of an upright or bold run.
@@ -1942,6 +2018,31 @@ impl<'a> Decoder<'a> {
                     wide: false,
                 })
             },
+        }
+    }
+}
+
+/// Read the apostrophes of a line as primes, except the possessive or plural
+/// one of `ν_e's`: it follows an item and precedes a lone `s` that is not the
+/// start of a function name.
+fn mark_primes(items: &mut [Item]) {
+    let letter = |item: Option<&Item>| match item {
+        Some(Item::Glyph(g)) if g.ch.is_alphabetic() => Some((g.typeface, g.ch)),
+        _ => None,
+    };
+    for i in 0..items.len() {
+        let possessive = i > 0
+            && letter(items.get(i + 1))
+                .is_some_and(|(typeface, ch)| ch == 's' && typeface != chars::FN_FUNCTION)
+            && letter(items.get(i + 2)).is_none()
+            // A variable: `l_1 s_1 l_1's_1'`.
+            && !matches!(items.get(i + 2), Some(Item::Script(_)));
+        if let Item::Glyph(glyph) = &mut items[i]
+            && glyph.ch == '\''
+            && !possessive
+            && !matches!(glyph.typeface, chars::FN_TEXT | chars::FN_TEXT_FE)
+        {
+            glyph.ch = '\u{2032}';
         }
     }
 }

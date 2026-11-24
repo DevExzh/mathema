@@ -705,6 +705,27 @@ impl<'a> Emitter<'a> {
     }
 
     fn node(&mut self, id: NodeId, fmt: Fmt) {
+        if fmt.color.is_some()
+            && matches!(
+                *self.arena.node(id),
+                CompactNode::Fenced { .. }
+                    | CompactNode::Nary { .. }
+                    | CompactNode::Fraction { .. }
+                    | CompactNode::Sqrt(_)
+                    | CompactNode::Root { .. }
+                    | CompactNode::Accent { .. }
+                    | CompactNode::Overscript { .. }
+                    | CompactNode::Underscript { .. }
+                    | CompactNode::UnderOver { .. }
+                    | CompactNode::Boxed { .. }
+                    | CompactNode::Cancel { .. }
+            )
+        {
+            self.loss(
+                "OMML output colors text runs only; the color of delimiters, large operators, \
+                 rules, radicals and accents was dropped",
+            );
+        }
         match *self.arena.node(id) {
             CompactNode::Number(sid) => self.leaf(sid, Leaf::Number, fmt),
             CompactNode::Identifier(sid) => self.leaf(sid, Leaf::Identifier, fmt),

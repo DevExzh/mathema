@@ -977,3 +977,45 @@ fn partly_coloured_scripts_round_trip() {
         assert_eq!(back.to_mathml().unwrap(), first.to_mathml().unwrap());
     }
 }
+
+#[test]
+fn leading_scripts_survive_where_the_reader_moves_them() {
+    for latex in [
+        r"x{{}_{2}=}y",
+        r"x{{}_{2}(}y)",
+        r"x{{}_{2}\left(a\right)}",
+        r"x{{}_{2}\log}a",
+        r"x{{}_{2}y}",
+    ] {
+        let mut first = crate::reader::latex::LatexReader::parse_compact(latex, &Config::default())
+            .unwrap()
+            .expr;
+        crate::ast::normalize::normalize_compact_expr(&mut first).unwrap();
+        for version in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+            let bytes = MtefWriter::write_bytes(
+                &first,
+                &Config::default(),
+                &MtefWriteOptions::new(version),
+            )
+            .unwrap();
+            let back = crate::from_mtef_bytes(&bytes).unwrap();
+            assert!(
+                format!("{:?}", back.expr()).contains("PreScripts"),
+                "{latex}"
+            );
+            let again = back.to_mtef_bytes(&MtefWriteOptions::new(version)).unwrap();
+            assert_eq!(again, bytes, "{latex}");
+        }
+    }
+}
+
+#[test]
+fn a_coloured_pile_is_stable_in_mtef_3() {
+    let result =
+        crate::from_latex(r"\textcolor{red}{\begin{array}{l} a \\ b \end{array}}").unwrap();
+    let v3 = MtefWriteOptions::new(crate::MtefVersion::V3);
+    let (bytes, diagnostics) = result.to_mtef_bytes_with_diagnostics(&v3).unwrap();
+    assert!(diagnostics.iter().any(|d| d.message.contains("no colours")));
+    let back = crate::from_mtef_bytes(&bytes).unwrap();
+    assert_eq!(back.to_mtef_bytes(&v3).unwrap(), bytes);
+}

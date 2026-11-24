@@ -43,6 +43,7 @@ const COLOR: u8 = 15;
 const COLOR_DEF: u8 = 16;
 /// Distinct colours written before further ones are dropped.
 const MAX_COLORS: usize = 4096;
+const V3_COLOR_LOSS: &str = "MTEF 3 has no colours; the content was written without colour";
 /// The typesize records FULL (10) to SUBSYM (14) are 10 + the typesize.
 const TYPESIZE_BASE: u8 = 10;
 
@@ -483,9 +484,13 @@ impl<'a> Encoder<'a> {
     pub(super) fn equation(&mut self, roots: NodeSpan) -> Result<()> {
         let ids: SmallVec<[NodeId; 8]> = self.arena.children(roots).into();
         match ids.as_slice() {
-            [only] if self.is_pile(*only) => {
+            [only] if self.is_pile(self.drawn_root(*only)) => {
+                let pile = self.drawn_root(*only);
+                if pile != *only {
+                    self.lose(V3_COLOR_LOSS);
+                }
                 self.enter()?;
-                self.pile(*only, Size::Full)?;
+                self.pile(pile, Size::Full)?;
                 self.depth -= 1;
             },
             _ => {
@@ -503,6 +508,17 @@ impl<'a> Encoder<'a> {
             });
         }
         Ok(())
+    }
+
+    /// The node the equation's only root is written as: MTEF 3 drops the
+    /// colours around it.
+    fn drawn_root(&self, mut id: NodeId) -> NodeId {
+        while !self.v5
+            && let CompactNode::Color { content, .. } = *self.arena.node(id)
+        {
+            id = self.unwrap_row(content);
+        }
+        id
     }
 
     fn list(&mut self, span: NodeSpan, size: Size) -> Result<()> {
@@ -550,7 +566,7 @@ impl<'a> Encoder<'a> {
                 && let Some(next) = self.prescript_target(ids, i)
             {
                 self.enter()?;
-                self.script_template(size, sub, sup, true)?;
+                self.leading_script(size, sub, sup, next)?;
                 self.depth -= 1;
                 self.node(next, size)?;
                 i += 2;
@@ -596,7 +612,20 @@ impl<'a> Encoder<'a> {
         }
         match *self.arena.node(id) {
             CompactNode::Number(s) => self.leaf(size, Leaf::Number, s),
-            CompactNode::Identifier(s) => self.leaf(size, Leaf::Identifier, s),
+            CompactNode::Identifier(s) => {
+                // The AST does not say whether such an identifier is upright
+                // (MathML `<mi>rate</mi>`) or italic (an OMML italic run), so
+                // its letters keep the variable style; a style around it
+                // writes them as one run instead.
+                if matches!(self.style, None | Some(TextStyle::Italic))
+                    && self.arena.str_val(s).chars().nth(1).is_some()
+                {
+                    self.lose(
+                        "MTEF has no identifiers of several characters; each was written as separate variables",
+                    );
+                }
+                self.leaf(size, Leaf::Identifier, s)
+            },
             CompactNode::Operator { name, .. } => self.leaf(size, Leaf::Operator, name),
             CompactNode::StructuredOperator { content, .. } => {
                 self.lose(
@@ -662,7 +691,7 @@ impl<'a> Encoder<'a> {
                     pre_sup.is_some().then_some(pre_sup),
                 );
                 if sub.is_some() || sup.is_some() {
-                    self.script_template(size, sub, sup, true)?;
+                    self.leading_script(size, sub, sup, base)?;
                 }
                 self.node(base, size)
             },
@@ -832,7 +861,7 @@ impl<'a> Encoder<'a> {
                         self.lose(if self.v5 {
                             "too many distinct colours; the content was written without colour"
                         } else {
-                            "MTEF 3 has no colours; the content was written without colour"
+                            V3_COLOR_LOSS
                         });
                         self.node(content, size)
                     },
@@ -984,6 +1013,46 @@ impl<'a> Encoder<'a> {
             }
         }
         self.color = index;
+    }
+
+    /// A script that leads `base`. Before anything but a letter, a digit or
+    /// text, the reader may give it to the item before it, as authors mean
+    /// it there; a zero space, which carries no script, keeps it leading.
+    fn leading_script(
+        &mut self,
+        size: Size,
+        sub: Option<NodeId>,
+        sup: Option<NodeId>,
+        base: NodeId,
+    ) -> Result<()> {
+        let mut first = base;
+        let leads = loop {
+            first = match *self.arena.node(first) {
+                CompactNode::Identifier(s) => {
+                    break self
+                        .arena
+                        .str_val(s)
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_alphabetic);
+                },
+                CompactNode::Number(_) | CompactNode::Text(..) => break true,
+                CompactNode::Subscript { base, .. }
+                | CompactNode::Superscript { base, .. }
+                | CompactNode::SubSup { base, .. } => base,
+                CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+                    match self.arena.children(span).first() {
+                        Some(&id) => id,
+                        None => break false,
+                    }
+                },
+                _ => break false,
+            };
+        };
+        if !leads && self.line_has_items() {
+            self.space_code(size, chars::SPACE_ZERO)?;
+        }
+        self.script_template(size, sub, sup, true)
     }
 
     /// The typeface value of an explicit font with the given style bits,
@@ -2330,10 +2399,9 @@ impl<'a> Encoder<'a> {
         self.slot(size, Some(cell))
     }
 
-    /// Two bits per partition line (solid when drawn), low bits first,
-    /// padded to whole bytes (MTEFv5.md "MATRIX record").
-    /// Two bits per boundary, least significant first: 1 for a solid line,
-    /// 2 for a dashed one (`dashed` covers the first 32 boundaries).
+    /// Two bits per partition line, low bits first, padded to whole bytes
+    /// (MTEFv5.md "MATRIX record"): 1 for a solid line, 2 for a dashed one
+    /// (`dashed` covers the first 32 boundaries).
     fn partition_lines(
         &mut self,
         mask: crate::reader::mtef::PartitionMask,

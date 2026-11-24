@@ -37,17 +37,19 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
         compact.expr.roots,
         config.effective_max_depth(),
     )?;
-    normalize_for(&mut compact.expr, from)?;
+    normalize_for(&mut compact.expr, from, to)?;
     write_compact(&compact.expr, to, config)
 }
 
 /// Normalize a freshly read expression. MTEF characters are atoms of their
 /// own: a run of variable-style letters is several italic variables, not
-/// one multi-letter identifier, so its identifiers are not merged.
-fn normalize_for(expr: &mut CompactExpr, from: Format) -> Result<()> {
-    match from {
-        Format::Mtef => normalize_compact_expr_keeping_identifiers(expr),
-        _ => normalize_compact_expr(expr),
+/// one multi-letter identifier, so identifiers are merged neither on the
+/// way from MTEF nor on the way to it.
+fn normalize_for(expr: &mut CompactExpr, from: Format, to: Format) -> Result<()> {
+    if from == Format::Mtef || to == Format::Mtef {
+        normalize_compact_expr_keeping_identifiers(expr)
+    } else {
+        normalize_compact_expr(expr)
     }
 }
 
@@ -464,7 +466,7 @@ fn finish_mtef(
     config: &Config,
 ) -> Result<ConvertResult> {
     check_depth(&compact, config)?;
-    normalize_for(&mut compact.expr, Format::Mtef)?;
+    normalize_for(&mut compact.expr, Format::Mtef, Format::Mtef)?;
     Ok(ConvertResult {
         compact,
         config: *config,

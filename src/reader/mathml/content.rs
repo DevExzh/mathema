@@ -1230,7 +1230,12 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn prefix_symbol(&mut self, sym: &str, args: &[NodeId]) -> NodeId {
-        let s = self.c_sym(sym, SymbolKind::Ordinary);
+        // `ℜ` and `ℑ` are letters, as `\Re` and `\Im` are; `∇` is not.
+        let s = if sym.chars().all(char::is_alphabetic) {
+            self.c_ident(sym)
+        } else {
+            self.c_sym(sym, SymbolKind::Ordinary)
+        };
         if args.is_empty() {
             return s;
         }

@@ -844,6 +844,13 @@ impl<'a> MathmlCompactParser<'a> {
             };
             self.arena
                 .push_node(CompactNode::Operator { name: sid, limits })
+        } else if kind == SymbolKind::Ordinary
+            && let Some(letter) = lone_letter(name)
+        {
+            // `<mo>ℜ</mo>` is the letter, as `<mi>ℜ</mi>` and `\Re` are.
+            let mut buf = [0u8; 4];
+            let sid = self.arena.push_str(letter.encode_utf8(&mut buf));
+            self.arena.push_node(CompactNode::Identifier(sid))
         } else {
             self.arena.push_node(CompactNode::Symbol(kind, sid))
         };
@@ -2983,6 +2990,25 @@ fn mathvariant_to_style(variant: &str) -> Option<TextStyle> {
     }
 }
 
+/// The letter-like symbol (`ℜ`, `ℏ`, `ℵ`) that `text` consists of.
+fn lone_letter(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    (chars.next().is_none()
+        && matches!(
+            ch,
+            '\u{00F0}'
+                | '\u{0131}'
+                | '\u{0237}'
+                | '\u{210F}'
+                | '\u{2111}'
+                | '\u{2113}'
+                | '\u{211C}'
+                | '\u{2135}'..='\u{2138}'
+        ))
+    .then_some(ch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3000,6 +3026,17 @@ mod tests {
             nodes.into_iter().next().unwrap()
         } else {
             MathNode::Row(nodes)
+        }
+    }
+
+    #[test]
+    fn letterlike_operator_tokens_are_letters() {
+        for (token, command) in [("ℜ", r"\Re"), ("ℑ", r"\Im"), ("ℏ", r"\hbar"), ("℘", r"\wp")]
+        {
+            let first = crate::from_mathml(&format!("<math><mo>{token}</mo></math>")).unwrap();
+            assert_eq!(first.to_latex().unwrap(), command);
+            let back = crate::from_latex(command).unwrap();
+            assert_eq!(back.expr().nodes, first.expr().nodes);
         }
     }
 

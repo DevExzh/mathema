@@ -328,15 +328,16 @@ pub(super) fn normalize_code_point(ch: char) -> char {
 }
 
 /// The mathematical character an ASCII character stands for outside the text
-/// styles: the hyphen is the minus sign, the tilde the similarity relation,
-/// the apostrophe a prime and the backslash the set difference. The double
-/// quote is left alone: authors type it both as a double prime and as a
-/// quotation mark.
+/// styles: the hyphen is the minus sign, the tilde the similarity relation
+/// and the backslash the set difference (the apostrophe depends on its line:
+/// see `mark_primes`). Nothing in the records tells the hyphen of `S-wave`
+/// from the minus of `A-V`, so the few compounds become differences too. The
+/// double quote is left alone: authors type it both as a double prime and as
+/// a quotation mark.
 pub(super) fn math_ascii(ch: char) -> char {
     match ch {
         '-' => '\u{2212}',
         '~' => '\u{223C}',
-        '\'' => '\u{2032}',
         '\\' => '\u{2216}',
         _ => ch,
     }

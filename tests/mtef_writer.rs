@@ -78,31 +78,7 @@ fn fixtures_convert_between_versions() {
 /// MTEF has no place for an operator's limit style, for the default limit
 /// placement of a big operator (it is written as the operator's usual one),
 /// or for array stretch and jot; drop them before comparing.
-/// Split a run of letters into one identifier per letter: the LaTeX side is
-/// normalized with its letter runs merged, while every MTEF character is an
-/// identifier of its own.
-fn split_letters(nodes: &mut Vec<MathNode>) {
-    *nodes = std::mem::take(nodes)
-        .into_iter()
-        .flat_map(|node| match node {
-            MathNode::Row(children) => children,
-            node => vec![node],
-        })
-        .collect();
-}
-
 fn canonical(node: &mut MathNode) {
-    if let MathNode::Identifier(name) = node
-        && name.len() > 1
-        && name.bytes().all(|b| b.is_ascii_alphabetic())
-    {
-        *node = MathNode::Row(
-            name.chars()
-                .map(|c| MathNode::Identifier(c.to_string()))
-                .collect(),
-        );
-        return;
-    }
     // MTEF stores the table cells and alignments in the same MATRIX record
     // for a TeX matrix, smallmatrix, or array.
     if let MathNode::Matrix {
@@ -169,7 +145,6 @@ fn canonical(node: &mut MathNode) {
         },
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             children.iter_mut().for_each(canonical);
-            split_letters(children);
         },
         MathNode::Fenced { content, .. } => {
             for item in content {
@@ -220,7 +195,6 @@ fn canonical(node: &mut MathNode) {
 
 fn canonical_expr(mut expr: MathExpr) -> MathExpr {
     expr.nodes.iter_mut().for_each(canonical);
-    split_letters(&mut expr.nodes);
     expr
 }
 
@@ -234,8 +208,11 @@ fn assert_round_trip(latex: &str, version: MtefVersion) {
         .unwrap();
     let back = from_mtef_bytes(&bytes).unwrap_or_else(|e| panic!("{latex} ({version:?}): {e}"));
     assert_eq!(back.mtef_info().unwrap().version, version);
+    // `expected` is normalized, which joins the letters of `dx`; so is this.
+    let mut read = back.compact_expr().clone();
+    normalize_compact_expr(&mut read).unwrap();
     assert_eq!(
-        canonical_expr(back.expr()),
+        canonical_expr(read.to_math_expr()),
         expected,
         "{latex} ({version:?})"
     );
@@ -629,4 +606,32 @@ fn mtef3_compound_operator_limits_use_general_bigop_slots() {
         assert_eq!(decoded.to_latex().unwrap(), expected, "{input}");
         assert_eq!(decoded.to_mtef_bytes(&options).unwrap(), bytes, "{input}");
     }
+}
+
+#[test]
+fn multi_letter_identifiers_are_reported() {
+    use mathema::{Format, convert, from_mathml};
+    for version in [MtefVersion::V3, MtefVersion::V5] {
+        let options = MtefWriteOptions::new(version);
+        let reported = |mathml: &str| {
+            let result = from_mathml(mathml).unwrap();
+            let (bytes, diagnostics) = result.to_mtef_bytes_with_diagnostics(&options).unwrap();
+            let latex = from_mtef_bytes(&bytes).unwrap().to_latex().unwrap();
+            let reported = diagnostics
+                .iter()
+                .any(|d| d.message.contains("identifiers of several characters"));
+            (latex, reported)
+        };
+        let rate = "<math><mi>rate</mi></math>";
+        assert_eq!(reported(rate), ("rate".into(), true));
+        let letters = "<math><mi>d</mi><mi>x</mi></math>";
+        assert_eq!(reported(letters), ("dx".into(), false));
+        // An upright run keeps its letters together in its font.
+        let upright = r#"<math><mstyle mathvariant="normal"><mi>rate</mi></mstyle></math>"#;
+        assert_eq!(reported(upright), (r"\mathrm{rate}".into(), false));
+    }
+    // `convert` does not join the letters of `dx` on the way to MTEF or back.
+    let mtef = convert("dx", Format::LaTeX, Format::Mtef).unwrap();
+    let mathml = convert(&mtef, Format::Mtef, Format::MathML).unwrap();
+    assert!(mathml.contains("<mi>d</mi><mi>x</mi>"), "{mathml}");
 }
