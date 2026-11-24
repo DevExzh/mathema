@@ -488,7 +488,7 @@ impl CompactParser {
 
     /// The atom `base` with the scripts that follow it, as the numerator of
     /// a fraction that follows them: scripts bind tighter than `/` and `¦`
-    /// (UTN #28 section 2), so `x^2/y` is `\frac{x^2}{y}`.
+    /// (UTN #28 table 3.1), so `x^2/y` is `\frac{x^2}{y}`.
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
         let (input, num) = self.parse_attached_scripts(input, base)?;
         // A fraction: numerator / denominator, or the barless stack

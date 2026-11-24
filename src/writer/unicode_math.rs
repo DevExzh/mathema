@@ -989,15 +989,17 @@ fn prime_superscript<'a>(
     }
 }
 
+/// Write a script argument. One that writes as nothing is an empty group:
+/// `x^` or `(_1)` alone reads back as text.
 fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
     let start = out.len();
-    write_script_arg_inner(out, node, style);
+    write_script_arg_unguarded(out, node, style);
     if out.len() == start {
         out.push_str("〖〗");
     }
 }
 
-fn write_script_arg_inner(out: &mut String, node: &MathNode, style: MathStyle) {
+fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
@@ -2008,15 +2010,16 @@ fn prime_superscript_c(
     }
 }
 
+/// Compact counterpart of [`write_script_arg`].
 fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     let start = out.len();
-    write_script_arg_inner_c(out, arena, id, style);
+    write_script_arg_unguarded_c(out, arena, id, style);
     if out.len() == start {
         out.push_str("〖〗");
     }
 }
 
-fn write_script_arg_inner_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
