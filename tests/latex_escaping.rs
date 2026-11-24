@@ -644,6 +644,23 @@ fn text_is_inert() {
     };
     assert_eq!(name("a\n\n\x0C b\0\x1B"), r"\operatorname{a    b}");
     assert_eq!(name(r"\~"), r"\operatorname{\char`\\\char`\~}");
+    assert_eq!(name("\0si\0n"), r"\sin");
+    assert_eq!(name("\0inj\u{2009}lim"), r"\injlim\nolimits");
+    // Nested faces around nothing would be one face and join their neighbour.
+    for (style, latex) in [
+        (TextStyle::Bold, r"\textbf{}"),
+        (TextStyle::BoldItalic, r"\mathord{\textbf{}}"),
+        (TextStyle::SansSerifBoldItalic, r"\mathord{\textsf{}}"),
+    ] {
+        assert_eq!(text(style, "\0"), latex);
+        let around = format!(r"\textbf{{a}}{latex}\textbf{{b}}");
+        if style != TextStyle::Bold {
+            assert_eq!(
+                mathema::convert(&around, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap(),
+                around
+            );
+        }
+    }
     // What is lost is reported.
     let (latex, lost) = mathema::from_mathml("<math><mtext>a&#x7;b</mtext></math>")
         .unwrap()
@@ -1267,4 +1284,55 @@ fn nested_dropped_colors_are_linear() {
     assert_eq!(latex.matches(r"\textcolor{red}").count(), 30);
     assert_eq!(latex.matches('y').count(), 60);
     reread(&latex);
+}
+
+/// A name with a character token is a math list when it is read back: its
+/// other characters are written as the atoms they are read as.
+#[test]
+fn names_with_character_tokens_are_stable() {
+    let name = |s: &str| {
+        write(vec![
+            MathNode::Operator(OperatorAttr {
+                name: s.into(),
+                limit_style: LimitStyle::SubSup,
+            }),
+            id("z"),
+        ])
+    };
+    assert_eq!(name(r"mts i\p"), r"\operatorname{mtsi\char`\\p}z");
+    assert_eq!(name(r"\<d"), r"\operatorname{\char`\\\char`<d}z");
+    assert_eq!(name("a b~∂y"), r"\operatorname{ab\char`\~\partial y}z");
+    // An argument in a name follows the same rule.
+    let braket = mathema::convert(
+        r"\operatorname{\braket*}",
+        mathema::Format::LaTeX,
+        mathema::Format::LaTeX,
+    );
+    assert_eq!(
+        braket.unwrap(),
+        r"\operatorname{\mathinner{\langle*\rangle}}"
+    );
+    for input in [
+        "\\operatorname{\0lim}0",
+        "\\hat{\\operatorname*{\0lim}}",
+        "\\operatorname*{\0lim}_x y",
+        "\\operatorname{s\0in}x",
+        r"\operatorname\not",
+        "\\operatorname{\u{301}}x",
+    ] {
+        let once = mathema::convert(input, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap();
+        let twice = mathema::convert(&once, mathema::Format::LaTeX, mathema::Format::LaTeX);
+        assert_eq!(twice.unwrap(), once, "{input:?}");
+    }
+    for ch in characters() {
+        for name in [
+            name(&format!("{ch}^")),
+            name(&format!("x{ch}~1{ch}y")),
+            name(&format!("\\R{ch}d{ch}\\{ch}e")),
+        ] {
+            assert_eq!(reread(&name).to_latex().unwrap(), name);
+            let again = mathema::convert(&name, mathema::Format::LaTeX, mathema::Format::LaTeX);
+            assert_eq!(again.unwrap(), name);
+        }
+    }
 }

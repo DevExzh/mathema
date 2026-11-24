@@ -7,6 +7,7 @@ use crate::unicode::symbols::{
     latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
 };
 use crate::writer::Writer;
+use std::borrow::Cow;
 use std::collections::HashSet;
 
 mod color_spec;
@@ -1016,7 +1017,7 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
         // name, e.g. `\operatorname{rank}A`. Native control words retain
         // their usual separator.
         CompactNode::Operator { name, limits } => {
-            latex_operator_command(arena.str_val(name)).is_some()
+            latex_operator_command(&kept_name(arena.str_val(name))).is_some()
                 || limits == LimitStyle::AboveBelow
         },
         CompactNode::Symbol(SymbolKind::BinaryOp, _)
@@ -1070,10 +1071,11 @@ fn appended_ends_with_letter_command(buf: &str, start: usize, previous: bool) ->
         i -= 1;
     }
     if i == 0 {
-        previous
-    } else {
-        bytes[i - 1] == b'\\'
+        return previous;
     }
+    // An escaped backslash (``\char`\\``) starts no command.
+    let backslashes = bytes[..i].iter().rev().take_while(|&&b| b == b'\\').count();
+    backslashes % 2 == 1
 }
 
 /// Check if a node's first written character would be a plain ASCII letter.
@@ -2217,7 +2219,7 @@ fn write_structured_operator(
     });
     let start = buf.len();
     let previous = std::mem::replace(&mut buf.in_operator_name, true);
-    write_wrapped_content(buf, arena, content);
+    write_atom_content(buf, arena, content);
     buf.in_operator_name = previous;
     // A constructed structured name may contain only plain letters. Keep a
     // TeX atom boundary so another import can recover its form and placement.
@@ -2332,10 +2334,36 @@ fn latex_operator_command(name: &str) -> Option<&str> {
     }
 }
 
+/// The characters of a function name that are written: control characters are
+/// not, or as a space.
+fn kept_name(name: &str) -> Cow<'_, str> {
+    if !name.contains(char::is_control) {
+        return Cow::Borrowed(name);
+    }
+    let mut kept = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_control() {
+            write_char(&mut kept, ch, Place::Name);
+        } else {
+            kept.push(ch);
+        }
+    }
+    Cow::Owned(kept)
+}
+
 /// A function name: its LaTeX command when one exists, else
 /// `\operatorname{…}`, or `\operatorname*{…}` for one whose scripts are
 /// limits (`argmax`).
 fn write_operator_name(buf: &mut LatexBuffer, name: &str, limits: LimitStyle) {
+    // Without its control characters the name may be a command's.
+    if name.contains(char::is_control) {
+        let kept = kept_name(name);
+        name.chars()
+            .filter(|&ch| escape::spelling(ch, Place::Name) == Spelling::Dropped)
+            .for_each(|ch| buf.report.char(ch));
+        write_operator_name(buf, &kept, limits);
+        return;
+    }
     if let Some(command) = latex_operator_command(name)
         && !(limits == LimitStyle::Default && !crate::unicode::symbols::operator_has_limits(name))
     {
@@ -2380,11 +2408,49 @@ fn write_operator_name_content(buf: &mut LatexBuffer, name: &str) {
         buf.push_str(name);
         return;
     }
+    // A character token makes the reader take the name as a math list.
+    if name.chars().any(|ch| matches!(ch, '\\' | '^' | '~')) {
+        write_operator_name_list(buf, name);
+        return;
+    }
     for ch in name.chars() {
         if !write_char(buf, ch, Place::Name) {
             buf.report.char(ch);
         }
     }
+}
+
+/// A function name as the math list it reads back as: an ordinary atom for
+/// each character, and no white space.
+fn write_operator_name_list(buf: &mut LatexBuffer, name: &str) {
+    let outer = std::mem::replace(&mut buf.in_operator_name, true);
+    let start = buf.len();
+    let mut rest = name;
+    while let Some(ch) = rest.chars().next() {
+        let letters = rest
+            .find(|ch: char| {
+                !ch.is_alphabetic()
+                    || !matches!(mapped_symbol_kind(ch), None | Some(SymbolKind::Alphabetic))
+            })
+            .unwrap_or(rest.len());
+        let (run, after) = rest.split_at(if letters > 0 { letters } else { ch.len_utf8() });
+        rest = after;
+        if letters > 0 {
+            if ch.is_ascii() && appended_ends_with_letter_command(buf, start, false) {
+                buf.push(' ');
+            }
+            write_identifier_text(buf, run);
+        } else if let Some(width) = crate::unicode::math_space_width(ch) {
+            write_space(buf, width);
+        } else if ch.is_ascii_digit() {
+            buf.push(ch);
+        } else if ch.is_control() && !ch.is_ascii_whitespace() {
+            buf.report.char(ch);
+        } else if !ch.is_ascii_whitespace() && ch != '\x0B' {
+            write_symbol_text(buf, SymbolKind::Ordinary, run);
+        }
+    }
+    buf.in_operator_name = outer;
 }
 
 fn write_symbol(buf: &mut LatexBuffer, arena: &AstArena, kind: SymbolKind, sid: compact::StrId) {
@@ -3246,7 +3312,7 @@ fn write_accent_base_content(buf: &mut LatexBuffer, arena: &AstArena, content: N
             name,
             limits: LimitStyle::AboveBelow,
         } => {
-            let name = arena.str_val(name);
+            let name = &*kept_name(arena.str_val(name));
             let style = if crate::unicode::symbols::operator_has_limits(name) {
                 LimitStyle::Default
             } else {
@@ -3286,6 +3352,12 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     buf.push_str("{}");
                 }
                 write_text_content(buf, text, false);
+            } else if is_dropped_text(arena.str_val(sid)) {
+                // In text mode there is nothing to keep apart.
+                arena
+                    .str_val(sid)
+                    .chars()
+                    .for_each(|ch| buf.report.char(ch));
             } else {
                 write_styled_text(buf, style, arena.str_val(sid));
             }
@@ -3340,6 +3412,12 @@ fn write_always_braced(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     buf.push('}');
 }
 
+/// Whether nothing of `text` is written.
+fn is_dropped_text(text: &str) -> bool {
+    text.chars()
+        .all(|ch| escape::spelling(ch, Place::Text) == Spelling::Dropped)
+}
+
 fn write_styled_text(buf: &mut LatexBuffer, style: TextStyle, text: &str) {
     use TextStyle::*;
     let wrappers: &[&str] = match style {
@@ -3353,15 +3431,17 @@ fn write_styled_text(buf: &mut LatexBuffer, style: TextStyle, text: &str) {
         SansSerifBoldItalic => &[r"\textsf{", r"\textbf{", r"\textit{"],
         _ => &[r"\text{"],
     };
-    // Around no text, the reader does not combine nested faces.
-    let wrappers = if text
-        .chars()
-        .all(|ch| escape::spelling(ch, Place::Text) == Spelling::Dropped)
+    // Around no text, the reader does not combine nested faces, and the outer
+    // one would join its neighbours: keep it an atom of its own.
+    if let [outer, _, ..] = wrappers
+        && is_dropped_text(text)
     {
-        &wrappers[..1]
-    } else {
-        wrappers
-    };
+        buf.push_str(r"\mathord{");
+        buf.push_str(outer);
+        buf.push_str("}}");
+        text.chars().for_each(|ch| buf.report.char(ch));
+        return;
+    }
     for wrapper in wrappers {
         buf.push_str(wrapper);
     }

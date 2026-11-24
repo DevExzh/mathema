@@ -4506,6 +4506,8 @@ impl LatexCompactParser {
                 let sid = self.arena.push_str(&input[..1]);
                 Ok((&input[1..], self.arena.push_node(CompactNode::Number(sid))))
             },
+            // Ordinary in a function name (see `parse_atom`).
+            Some(b'-' | b'*' | b'\'') if self.in_operator_name => self.parse_atom(input),
             Some(&b) if is_symbol_byte(b) => self.parse_symbol_char(input),
             // `~` (a non-breaking space) is one token too: `\frac~x`.
             Some(&b) if !b.is_ascii() || b == b'~' => self.parse_atom(input),
