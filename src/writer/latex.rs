@@ -424,7 +424,7 @@ fn write_brace_prescripts(buf: &mut LatexBuffer, arena: &AstArena, script: NodeI
     for (mark, script) in [('_', sub), ('^', sup)] {
         if script.is_some() && !is_effectively_empty_arg(arena, script) {
             buf.push(mark);
-            write_script_arg(buf, arena, script, ScriptArgGroup::Group);
+            write_script_arg(buf, arena, script, ScriptArgGroup::Always);
         }
     }
     buf.push_str("\\}}");
@@ -583,7 +583,7 @@ fn write_script_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
             write_postscript_base(buf, arena, base);
             buf.push('_');
-            write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
+            write_script_arg(buf, arena, sub, ScriptArgGroup::Minimal);
         },
         CompactNode::Superscript { base, sup } => {
             if is_effectively_empty_arg(arena, sup) {
@@ -592,7 +592,7 @@ fn write_script_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
             write_postscript_base(buf, arena, base);
             buf.push('^');
-            write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
+            write_script_arg(buf, arena, sup, ScriptArgGroup::Minimal);
         },
         CompactNode::SubSup { base, sub, sup } => {
             let sub_empty = is_effectively_empty_arg(arena, sub);
@@ -604,11 +604,11 @@ fn write_script_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             write_postscript_base(buf, arena, base);
             if !sub_empty {
                 buf.push('_');
-                write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Minimal);
             }
             if !sup_empty {
                 buf.push('^');
-                write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Minimal);
             }
         },
         _ => write_node(buf, arena, id),
@@ -677,7 +677,7 @@ fn write_compound_limits(
     for (marker, limit) in [('_', lower), ('^', upper)] {
         if !is_effectively_empty_arg(arena, limit) {
             buf.push(marker);
-            write_script_arg(buf, arena, limit, ScriptArgGroup::Token);
+            write_script_arg(buf, arena, limit, ScriptArgGroup::Minimal);
         }
     }
     true
@@ -709,10 +709,11 @@ fn write_scalar_operator_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeI
 enum ScriptArgGroup {
     /// The canonical spelling: a token on its own when TeX reads it as the
     /// whole argument, otherwise a brace group.
-    Token,
+    Minimal,
     /// Always a brace group, for scripts that must stay isolated from the
-    /// text around them (scripts without a base, leading scripts).
-    Group,
+    /// text around them (scripts without a base, leading scripts). A large
+    /// operator's control word is still written bare.
+    Always,
 }
 
 /// Write the argument of a `_`/`^` marker. Every script and limit argument
@@ -723,18 +724,27 @@ enum ScriptArgGroup {
 /// `x^22` is `x^{2}2` and `x^2.5` is `x^{2}.5`. The argument is therefore
 /// written either as one token (`x^a`, `x^\alpha`) or as one brace group.
 /// Numbers are always braced, so that neither a following digit or `.` nor
-/// the argument's position in its row changes the spelling. Whatever the
-/// node-specific spelling produces, the written text is checked and braced
-/// when it is not one argument.
-fn write_script_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeId, group: ScriptArgGroup) {
+/// the argument's position in its row changes the spelling.
+///
+/// Returns whether the argument was written as a bare control word, which
+/// needs a separator before a following letter.
+fn write_script_arg(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
+    arg: NodeId,
+    group: ScriptArgGroup,
+) -> bool {
     let start = buf.len();
     match group {
-        ScriptArgGroup::Group => {
+        ScriptArgGroup::Always => {
             if !write_scalar_operator_arg(buf, arena, arg) {
                 write_always_braced(buf, arena, arg);
+                if buf.len() == start {
+                    buf.push_str("{}");
+                }
             }
         },
-        ScriptArgGroup::Token => {
+        ScriptArgGroup::Minimal => {
             let arg = written_script_content(arena, arg);
             if write_scalar_operator_arg(buf, arena, arg) {
                 // A large-operator control word is one token.
@@ -749,13 +759,29 @@ fn write_script_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeId, group:
                 // non-alphabetic symbols keep the braces needed to isolate
                 // their control words.
                 write_script_base(buf, arena, arg);
+                // A glyph spelled with the `\char` primitive is the primitive
+                // and its character code, not one token (`x^\char`\^` is an
+                // error in KaTeX).
+                if buf[start..].starts_with(r"\char") {
+                    buf.insert_text(start, "{");
+                    buf.push('}');
+                }
             }
         },
     }
-    if !is_one_tex_argument(&buf[start..]) {
+    let written = &buf[start..];
+    // Every spelling above is one argument. A spelling that is not would
+    // render differently from the AST, so it fails debug builds (tests and
+    // fuzzing); release builds still group it.
+    let one = is_one_tex_argument(written);
+    debug_assert!(one, "script argument `{written}` is not one TeX token");
+    if !one {
         buf.insert_text(start, "{");
         buf.push('}');
+        return false;
     }
+    let bytes = written.as_bytes();
+    bytes.len() > 1 && bytes[0] == b'\\' && bytes[1..].iter().all(u8::is_ascii_alphabetic)
 }
 
 /// Whether TeX reads `text`, written right after a `_`/`^` marker, as exactly
@@ -832,22 +858,22 @@ fn write_standalone_empty_base_script_markers(
     match *arena.node(script_id) {
         CompactNode::Subscript { sub, .. } if !is_effectively_empty_arg(arena, sub) => {
             buf.push('_');
-            write_script_arg(buf, arena, sub, ScriptArgGroup::Group);
+            write_script_arg(buf, arena, sub, ScriptArgGroup::Always);
         },
         CompactNode::Superscript { sup, .. } if !is_effectively_empty_arg(arena, sup) => {
             buf.push('^');
-            write_script_arg(buf, arena, sup, ScriptArgGroup::Group);
+            write_script_arg(buf, arena, sup, ScriptArgGroup::Always);
         },
         CompactNode::SubSup { sub, sup, .. } => {
             let sub_empty = is_effectively_empty_arg(arena, sub);
             let sup_empty = is_effectively_empty_arg(arena, sup);
             if !sub_empty {
                 buf.push('_');
-                write_script_arg(buf, arena, sub, ScriptArgGroup::Group);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Always);
             }
             if !sup_empty {
                 buf.push('^');
-                write_script_arg(buf, arena, sup, ScriptArgGroup::Group);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Always);
             }
         },
         _ => {},
@@ -862,14 +888,14 @@ fn write_empty_base_script_markers(buf: &mut LatexBuffer, arena: &AstArena, scri
                 return;
             }
             buf.push('_');
-            write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
+            write_script_arg(buf, arena, sub, ScriptArgGroup::Minimal);
         },
         CompactNode::Superscript { sup, .. } => {
             if is_effectively_empty_arg(arena, sup) {
                 return;
             }
             buf.push('^');
-            write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
+            write_script_arg(buf, arena, sup, ScriptArgGroup::Minimal);
         },
         CompactNode::SubSup { sub, sup, .. } => {
             let sub_empty = is_effectively_empty_arg(arena, sub);
@@ -879,11 +905,11 @@ fn write_empty_base_script_markers(buf: &mut LatexBuffer, arena: &AstArena, scri
             }
             if !sub_empty {
                 buf.push('_');
-                write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Minimal);
             }
             if !sup_empty {
                 buf.push('^');
-                write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Minimal);
             }
         },
         _ => {},
@@ -1347,10 +1373,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             {
                 if visible {
                     buf.push(mark);
-                    write_script_arg(buf, arena, script, ScriptArgGroup::Group);
-                    // A grouped argument ends in `}`; a bare large-operator
-                    // control word needs a separator before a letter.
-                    scalar_last = !buf.ends_with('}');
+                    scalar_last = write_script_arg(buf, arena, script, ScriptArgGroup::Always);
                 }
             }
             if scalar_last && node_starts_with_ascii_letter(arena, base) {
@@ -1469,8 +1492,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             let start = buf.len();
             write_wrapped_content(buf, arena, index);
             let argument = &buf[start..];
-            if argument.as_bytes().contains(&b']')
-                && crate::latex::optional_argument_end(argument).is_some()
+            // KaTeX strips one pair of braces from a bracketed argument that
+            // starts with `{` and ends with `}`, matched or not, so
+            // `[{\mathcal{L}}^{10}]` would lose its first and last brace.
+            if (argument.starts_with('{') && argument.ends_with('}'))
+                || (argument.as_bytes().contains(&b']')
+                    && crate::latex::optional_argument_end(argument).is_some())
             {
                 // Preserve a literal closing bracket or a nested root's index:
                 // at this level TeX would otherwise finish the outer index.
@@ -1502,11 +1529,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
             if !is_effectively_empty_arg(arena, sub) {
                 buf.push('_');
-                write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Minimal);
             }
             if !is_effectively_empty_arg(arena, sup) {
                 buf.push('^');
-                write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Minimal);
             }
             // Only write the body if it's non-empty — avoids \prod vs \prod {} divergence
             if !is_empty_body(arena, body) {
@@ -1577,14 +1604,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     AccentPosition::Above => "\\overset{",
                     AccentPosition::Below => "\\underset{",
                 });
-                // A TeX special character is spelled as its character token:
-                // raw, `^`/`_` would be script markers without an argument,
-                // and a brace or `%` would unbalance the group.
-                if matches!(accent, '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^') {
-                    write_math_char(buf, accent);
-                } else {
-                    buf.push(accent);
-                }
+                write_accent_glyph(buf, accent);
                 buf.push_str("}{");
                 write_accent_base_content(buf, arena, base);
                 buf.push('}');
@@ -2669,13 +2689,45 @@ fn write_math_char(buf: &mut String, ch: char) {
         return;
     }
     buf.push_str(r"\char`");
-    if matches!(
-        ch,
-        '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~'
-    ) {
+    if is_tex_special(ch) {
         buf.push('\\');
     }
     buf.push(ch);
+}
+
+/// The characters TeX gives a special category code (escape, group,
+/// comment, parameter, math shift, alignment, scripts, active `~`). None of
+/// them can be written as itself to mean the glyph.
+fn is_tex_special(ch: char) -> bool {
+    matches!(
+        ch,
+        '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~'
+    )
+}
+
+/// Write an accent glyph that has no accent command, as the `\overset` /
+/// `\underset` annotation. A TeX special character takes its command
+/// spelling where LaTeX has one (`\{`, `\%`, `\backslash`, …), which every
+/// engine renders as the glyph, and its character token otherwise (`^`,
+/// `~`, and `_`, whose `\_` the LaTeX reader does not take in math). A
+/// quote or a space would not read back as itself either, so it is a
+/// character token too.
+fn write_accent_glyph(buf: &mut String, ch: char) {
+    match ch {
+        '{' | '}' | '%' | '#' | '&' | '$' => {
+            buf.push('\\');
+            buf.push(ch);
+        },
+        '\\' => buf.push_str(r"\backslash"),
+        _ if is_tex_special(ch) || ch == '"' || ch.is_whitespace() || ch.is_control() => {
+            if ch.is_whitespace() || ch.is_control() {
+                write_decimal_char(buf, ch, " ");
+            } else {
+                write_math_char(buf, ch);
+            }
+        },
+        _ => buf.push(ch),
+    }
 }
 
 /// End the decimal character code before a following digit.
@@ -3203,13 +3255,7 @@ fn write_text_content(buf: &mut String, text: &str, monospace: bool) {
         // The text symbol commands for braces and backslash can switch to
         // the symbol font. A character number uses the selected typewriter
         // face, just as a verbatim literal does.
-        if monospace
-            && (ch.is_control()
-                || matches!(
-                    ch,
-                    '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~'
-                ))
-        {
+        if monospace && (ch.is_control() || is_tex_special(ch)) {
             // An empty group terminates the number without introducing a
             // text space in KaTeX. Adjacent control-spaces need their own
             // groups for MathJax to keep each literal blank.

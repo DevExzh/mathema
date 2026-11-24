@@ -391,7 +391,8 @@ proptest! {
     fn latex_script_arguments_are_one_tex_token(expr in arb_math_expr()) {
         let config = Config::default();
         if let Ok(latex) = LatexWriter::write(&expr, &config) {
-            prop_assert!(common::check_script_args(&latex).is_ok(), "{:?}", common::check_script_args(&latex));
+            let checked = common::check_script_args(&latex);
+            prop_assert!(checked.is_ok(), "{:?}", checked);
         }
     }
 

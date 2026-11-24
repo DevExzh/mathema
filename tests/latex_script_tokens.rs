@@ -13,23 +13,31 @@ fn latex(input: &str) -> String {
 
 #[test]
 fn checker_flags_multi_token_arguments() {
-    for bad in [r"x^22", r"x_2.5", r"\int_22^3 f", r"x^ 2", r"x^\mathrm{d}"] {
+    for bad in [
+        r"x^22",
+        r"x_2.5",
+        r"x^2.",
+        r"\int_22^3 f",
+        r"x^ 22",
+        r"x^\mathrm{d}",
+        r"x^\char`\^",
+        r"x^\char65",
+        r"x^",
+        r"x^}",
+    ] {
         assert!(check_script_args(bad).is_err(), "{bad}");
     }
     for good in [
         r"x^{22}",
         r"x^2+1",
+        r"x^ 2",
         r"x_a^\alpha",
         r"\_22",
         r"\char`\^22",
+        r"x^{\char`\^}",
         r"{}^{\prime}",
-        r"x^2.",
     ] {
-        if good == r"x^2." {
-            assert!(check_script_args(good).is_err(), "{good}");
-        } else {
-            assert!(check_script_args(good).is_ok(), "{good}");
-        }
+        assert!(check_script_args(good).is_ok(), "{good}");
     }
 }
 
@@ -105,15 +113,26 @@ fn number_behind_an_unwritable_color_stays_braced() {
     }
 }
 
-/// An accent glyph without an accent command is written as a character
-/// token when it is special to TeX; raw, `^` is a marker with no argument.
+/// An accent glyph without an accent command is written so that it reads
+/// back as the glyph: by its command where LaTeX has one, else as a character
+/// token. Raw, `^` is a marker with no argument, `{` unbalances the group,
+/// `~` is a space and `"` does not parse.
 #[test]
-fn special_accent_glyphs_are_character_tokens() {
+fn special_accent_glyphs_are_spelled_as_glyphs() {
     let cases = [
         ("^", r"\overset{\char`\^}{x}"),
+        ("~", r"\overset{\char`\~}{x}"),
         ("_", r"\overset{\char`\_}{x}"),
-        ("{", r"\overset{\char`\{}{x}"),
-        ("%", r"\overset{\char`\%}{x}"),
+        ("\"", r#"\overset{\char`"}{x}"#),
+        ("\u{a0}", r"\overset{\char160 }{x}"),
+        ("{", r"\overset{\{}{x}"),
+        ("}", r"\overset{\}}{x}"),
+        ("%", r"\overset{\%}{x}"),
+        ("#", r"\overset{\#}{x}"),
+        ("&amp;", r"\overset{\&}{x}"),
+        ("$", r"\overset{\$}{x}"),
+        ("\\", r"\overset{\backslash}{x}"),
+        ("é", r"\overset{é}{x}"),
     ];
     for (glyph, expected) in cases {
         let input = format!("<math><mover accent='true'><mi>x</mi><mo>{glyph}</mo></mover></math>");
@@ -124,6 +143,34 @@ fn special_accent_glyphs_are_character_tokens() {
             "{written}"
         );
     }
+}
+
+/// KaTeX strips the outer braces of a bracketed argument that starts with
+/// `{` and ends with `}`, matched or not, so such a root index is grouped.
+#[test]
+fn root_index_starting_and_ending_with_a_brace_is_grouped() {
+    let cases = [
+        (
+            r"\sqrt[\mathcal{L}^{10}]{y}",
+            r"\sqrt[{{\mathcal{L}}^{10}}]{y}",
+        ),
+        (r"\sqrt[\mathbf{v}_1]{y}", r"\sqrt[{{\mathbf{v}}_{1}}]{y}"),
+        (r"\sqrt[{a}]{y}", r"\sqrt[a]{y}"),
+        (r"\sqrt[x^2]{y}", r"\sqrt[x^{2}]{y}"),
+    ];
+    for (input, expected) in cases {
+        let written = latex(input);
+        assert_eq!(written, expected, "{input}");
+        assert_eq!(latex(&written), written, "{input}");
+    }
+}
+
+/// A glyph spelled with the `\char` primitive is braced as a script argument.
+#[test]
+fn char_primitive_script_arguments_are_braced() {
+    assert_eq!(latex(r"x^{\char65}"), r"x^{\char`A}");
+    assert_eq!(latex(r"x^{\char`\^}"), r"x^{\char`\^}");
+    assert_eq!(latex(r"x_{\char`<}"), r"x_{\char`<}");
 }
 
 const LATEX_CORPUS: &[&str] = &[
@@ -208,6 +255,10 @@ const LATEX_CORPUS: &[&str] = &[
     r"\dot{x}^{12}_{34}",
     r"\big( ^{22}",
     r"\frac{a}{x_{\color{#zz}22}}",
+    r"x^{\char65}",
+    r"x^{\char`\^}_{\char`\~}",
+    r"\sqrt[\mathcal{L}^{10}]{y}",
+    r"\sqrt[\mathbf{v}_1]{y}",
     r"\sqrt{x^{\color{#zz}22}}",
 ];
 
@@ -234,14 +285,17 @@ const MATHML_CORPUS: &[&str] = &[
     "<math><mstyle mathcolor='red'><msup><mi>x</mi><mn>22</mn></msup></mstyle></math>",
     "<math><mover accent='true'><mi>x</mi><mo>^</mo></mover><msup><mi/><mn>22</mn></msup></math>",
     "<math><munder accent='true'><mi>x</mi><mo>_</mo></munder></math>",
+    "<math><msup><mi>x</mi><mo>^</mo></msup></math>",
+    "<math><msup><mi>x</mi><mo>~</mo></msup></math>",
+    "<math><msub><mi>x</mi><mi>&lt;</mi></msub></math>",
+    "<math><msup><mi>x</mi><mn>-1</mn></msup></math>",
 ];
 
 #[test]
 fn written_script_arguments_are_one_tex_token() {
     for input in LATEX_CORPUS {
-        let Ok(written) = convert(input, Format::LaTeX, Format::LaTeX) else {
-            continue;
-        };
+        let written = convert(input, Format::LaTeX, Format::LaTeX)
+            .unwrap_or_else(|e| panic!("input `{input}` does not parse: {e}"));
         if let Err(violation) = check_script_args(&written) {
             panic!("input `{input}`: {violation}");
         }

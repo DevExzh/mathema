@@ -2,12 +2,13 @@
 
 /// Check TeX's one-token rule for every script marker in written LaTeX.
 ///
-/// TeX, KaTeX and MathJax take exactly one token after `^` or `_`, so
-/// `x^22` is `x^{2}2`. Every marker must therefore be followed by a brace
-/// group, a control sequence that takes no group right after it, or a single
-/// character. A single digit must also not be followed by a digit or `.`:
-/// mathema's own reader (like a human reading the source) would take the
-/// whole decimal as the argument, while TeX takes the one digit.
+/// TeX, KaTeX and MathJax take exactly one token after `^` or `_` (spaces
+/// before it are skipped), so `x^22` is `x^{2}2`. Every marker must therefore
+/// be followed by a brace group, a control sequence that takes no group right
+/// after it, or a single character. `\char` is not one token: it is followed
+/// by its character code. A single digit must also not be followed by a digit
+/// or `.`: a human reading the source takes the whole decimal as the
+/// argument, while TeX takes the one digit.
 ///
 /// Returns a description of the first violation.
 pub fn check_script_args(latex: &str) -> Result<(), String> {
@@ -34,6 +35,9 @@ pub fn check_script_args(latex: &str) -> Result<(), String> {
                     Err(format!("{why} at {at:?} (`{context}`) in `{latex}`"))
                 };
                 i += 1;
+                while chars.get(i).is_some_and(|ch| *ch == ' ') {
+                    i += 1;
+                }
                 match chars.get(i) {
                     None => return violation("marker without an argument"),
                     Some('{') => {},
@@ -48,6 +52,9 @@ pub fn check_script_args(latex: &str) -> Result<(), String> {
                         }
                         if chars.get(j) == Some(&'{') {
                             return violation("control sequence with a group argument");
+                        }
+                        if chars[i + 1..j].iter().collect::<String>() == "char" {
+                            return violation("`\\char` with its character code");
                         }
                     },
                     Some(&ch) if ch.is_whitespace() || matches!(ch, '}' | '^' | '_') => {
