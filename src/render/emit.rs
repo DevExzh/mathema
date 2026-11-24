@@ -470,8 +470,12 @@ fn emit_box(
         },
 
         BoxKind::Delimiter {
-            ch, target_height, ..
+            ch,
+            target_height,
+            scale,
+            ..
         } => {
+            let glyph_scale = delimiter_glyph_scale(*scale);
             // The radical (√) renders from the synthetic path here (the text-based
             // SVG cannot embed font outlines); standalone SVG / raster use the
             // real MATH-table variant glyph.
@@ -492,7 +496,7 @@ fn emit_box(
                 svg.push_str(&attrs.fg_color);
                 svg.push_str(r#"" stroke="none"/></g>"#);
             } else if let Some(dp) =
-                super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+                super::delimiter_paths::delimiter_path(*ch, *target_height / glyph_scale, 1.0)
             {
                 let tx = x;
                 let ty = y - layout.height * em;
@@ -501,7 +505,7 @@ fn emit_box(
                 svg.push(',');
                 push_f3(svg, ty);
                 svg.push_str(r#") scale("#);
-                push_f3(svg, em);
+                push_f3(svg, em * glyph_scale);
                 // "F:" prefix indicates a filled path (parens, braces)
                 if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
                     svg.push_str(r#")"><path d=""#);
@@ -852,8 +856,12 @@ fn emit_box_arena(
         },
 
         ArenaBoxKind::Delimiter {
-            ch, target_height, ..
+            ch,
+            target_height,
+            scale,
+            ..
         } => {
+            let glyph_scale = delimiter_glyph_scale(*scale);
             // See the heap `BoxKind::Delimiter` arm: √ uses the synthetic path here.
             if *ch == '\u{221A}' {
                 let tx = x;
@@ -872,7 +880,7 @@ fn emit_box_arena(
                 svg.push_str(&attrs.fg_color);
                 svg.push_str(r#"" stroke="none"/></g>"#);
             } else if let Some(dp) =
-                super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0)
+                super::delimiter_paths::delimiter_path(*ch, *target_height / glyph_scale, 1.0)
             {
                 let tx = x;
                 let ty = y - layout.height * em;
@@ -881,7 +889,7 @@ fn emit_box_arena(
                 svg.push(',');
                 push_f3(svg, ty);
                 svg.push_str(r#") scale("#);
-                push_f3(svg, em);
+                push_f3(svg, em * glyph_scale);
                 // "F:" prefix indicates a filled path (parens, braces)
                 if let Some(fill_path) = dp.path_data.strip_prefix("F:") {
                     svg.push_str(r#")"><path d=""#);
@@ -1020,6 +1028,17 @@ pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
         '"' => out.push_str("&quot;"),
         '\'' => out.push_str("&apos;"),
         _ => out.push(ch),
+    }
+}
+
+/// The font size a delimiter's glyph is chosen at, for the built-in paths:
+/// drawn at `target_height / scale` and magnified, as the outline emitters
+/// magnify the chosen variant. Non-finite or non-positive values mean 1.
+fn delimiter_glyph_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
     }
 }
 

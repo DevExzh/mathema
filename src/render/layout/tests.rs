@@ -2606,3 +2606,25 @@ fn text_svg_squeezes_assembled_big_arrows_into_their_box() {
         assert!(sx > 0.2 && sx < 0.5, "squeeze {sx}: {svg}");
     }
 }
+
+#[test]
+fn text_svg_draws_large_big_delimiter_paths_at_their_chosen_size() {
+    // Under `\Huge` the `\Bigg(` glyph is chosen at normal size and magnified;
+    // the text SVG's built-in path must be magnified the same way (thick
+    // strokes), not redrawn at the full height with hairline strokes.
+    fn path_scale(latex: &str) -> f64 {
+        let svg = crate::from_latex(latex).unwrap().to_svg_text().unwrap();
+        let part = svg
+            .split(r#"<g transform="translate("#)
+            .nth(1)
+            .and_then(|g| g.split(") scale(").nth(1))
+            .unwrap_or_else(|| panic!("no delimiter path: {svg}"));
+        part.split(')').next().unwrap().parse().unwrap()
+    }
+    let normal = path_scale(r"\Bigg(");
+    let huge = path_scale(r"\Huge\Bigg(");
+    assert!((huge / normal - 2.488).abs() < 0.01, "{normal} vs {huge}");
+    // `\left…\right` keeps drawing its path at the full height (scale 1,
+    // i.e. the 16px em).
+    assert_eq!(path_scale(r"\left( \frac{a}{b} \right)"), 16.0);
+}
