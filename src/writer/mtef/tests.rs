@@ -1105,3 +1105,70 @@ fn a_coloured_pile_is_stable_in_mtef_3() {
     let back = crate::from_mtef_bytes(&bytes).unwrap();
     assert_eq!(back.to_mtef_bytes(&v3).unwrap(), bytes);
 }
+
+/// Trees nested too deeply for normalization keep their zero spaces; writing
+/// one back must not add another each time.
+#[test]
+fn zero_spaces_before_leading_scripts_do_not_accumulate() {
+    let space = || MathNode::Space(crate::ast::Rational::zero());
+    for base in [
+        space(),
+        MathNode::Row(Vec::new()),
+        MathNode::Symbol(crate::ast::SymbolKind::Relation, "=".into()),
+    ] {
+        let expr = MathExpr::inline(vec![
+            MathNode::Identifier("x".into()),
+            MathNode::Symbol(crate::ast::SymbolKind::Open, "(".into()),
+            MathNode::PreScripts {
+                base: Box::new(base.clone()),
+                pre_sub: Some(Box::new(MathNode::Number("1".into()))),
+                pre_sup: None,
+            },
+            MathNode::Symbol(crate::ast::SymbolKind::BinaryOp, "+".into()),
+        ]);
+        for version in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+            let options = MtefWriteOptions::new(version);
+            let config = Config::default();
+            // Written and read without normalization.
+            let mut compact = CompactExpr::from_math_expr(&expr).unwrap();
+            let mut written = Vec::new();
+            for _ in 0..4 {
+                let bytes = MtefWriter::write_bytes(&compact, &config, &options).unwrap();
+                compact = crate::reader::mtef::MtefReader::parse_bytes_compact(&bytes, &config)
+                    .unwrap()
+                    .expr;
+                written.push(bytes);
+            }
+            assert_eq!(written[1], written[2], "{base:?}");
+            assert_eq!(written[2], written[3], "{base:?}");
+        }
+    }
+    // The space of a closed slot does not stand in for the one needed here.
+    let fraction = MathExpr::inline(vec![
+        MathNode::Fraction {
+            kind: crate::ast::FractionKind::Normal,
+            num: Box::new(MathNode::Identifier("a".into())),
+            den: Box::new(MathNode::Row(vec![
+                MathNode::Identifier("b".into()),
+                space(),
+            ])),
+        },
+        MathNode::PreScripts {
+            base: Box::new(MathNode::Symbol(
+                crate::ast::SymbolKind::Relation,
+                "=".into(),
+            )),
+            pre_sub: Some(Box::new(MathNode::Number("1".into()))),
+            pre_sup: None,
+        },
+    ]);
+    let compact = CompactExpr::from_math_expr(&fraction).unwrap();
+    let bytes = MtefWriter::write_bytes(&compact, &Config::default(), &MtefWriteOptions::default())
+        .unwrap();
+    let back = crate::from_mtef_bytes(&bytes).unwrap();
+    assert!(
+        format!("{:?}", back.expr()).contains("PreScripts"),
+        "{:?}",
+        back.expr()
+    );
+}

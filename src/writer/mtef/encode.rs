@@ -144,6 +144,9 @@ pub(super) struct Encoder<'a> {
     /// The records whose object lists are open, innermost last: whether
     /// each is a LINE, and the item count when it was opened.
     open: Vec<(bool, usize)>,
+    /// The item count and number of open lists right after the last zero
+    /// space: both unchanged while it is the last item of its list.
+    zero_space: Option<(usize, usize)>,
     /// Set when the object lists nest deeper than the reader accepts.
     too_deep: bool,
     /// Set when Far East text was written (MTEF 5 then defines its font).
@@ -193,6 +196,7 @@ impl<'a> Encoder<'a> {
             last_run: None,
             items: 0,
             open: Vec::new(),
+            zero_space: None,
             too_deep: false,
             far_east: false,
             alphabets: false,
@@ -482,7 +486,11 @@ impl<'a> Encoder<'a> {
     fn space_code(&mut self, size: Size, low: u16) -> Result<()> {
         let base: u32 = if self.v5 { 0xEF00 } else { 0xEB00 };
         let ch = char::from_u32(base + u32::from(low)).unwrap_or('\u{FFFD}');
-        self.glyph(size, Glyph::new(FN_SPACE, ch), false, &[])
+        self.glyph(size, Glyph::new(FN_SPACE, ch), false, &[])?;
+        if low == chars::SPACE_ZERO {
+            self.zero_space = Some((self.items, self.open.len()));
+        }
+        Ok(())
     }
 
     // ── Equation ───────────────────────────────────────────────────────
@@ -1095,6 +1103,7 @@ impl<'a> Encoder<'a> {
                         .is_some_and(char::is_alphabetic);
                 },
                 CompactNode::Number(_) | CompactNode::Text(..) => break true,
+                CompactNode::Space(width) => break width == Rational::zero(),
                 CompactNode::Subscript { base, .. }
                 | CompactNode::Superscript { base, .. }
                 | CompactNode::SubSup { base, .. } => base,
@@ -1107,7 +1116,10 @@ impl<'a> Encoder<'a> {
                 _ => break false,
             };
         };
-        if !leads && self.line_has_items() {
+        // One zero space is enough: trees too deep for normalization keep the
+        // spaces read back, which must not grow with every write.
+        if !leads && self.line_has_items() && self.zero_space != Some((self.items, self.open.len()))
+        {
             self.space_code(size, chars::SPACE_ZERO)?;
         }
         self.script_template(size, sub, sup, true)
