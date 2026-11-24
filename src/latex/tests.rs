@@ -5086,3 +5086,45 @@ fn xymatrix_label_with_multibyte_control_symbol_does_not_panic() {
         let _ = crate::from_latex_with(input, &lenient);
     }
 }
+
+#[test]
+fn color_spec_ending_in_control_space_round_trips() {
+    // Fuzz-found: trimming the color spec `a\ ` to `a\` left a dangling
+    // backslash, so the written `\colorbox{a\}{J}` escaped its own closing
+    // brace and could not be read back.
+    let config = Config::default();
+    for (input, expected) in [
+        (r"\colorbox{a\ }J", r"\colorbox{a\ }{J}"),
+        (r"\colorbox[rgb]{a\ }J", r"\colorbox{a\ }{J}"),
+        (r"\colorbox{a!\ }J", r"\colorbox{a!\ }{J}"),
+        (r"\fcolorbox{a\ }{\ }J", r"\fcolorbox{a\ }{\ }{J}"),
+        ("\\colorbox{a\\\t}J", "\\colorbox{a\\\t}{J}"),
+        (r"\colorbox{a\\ }J", r"\colorbox{a\\}{J}"),
+        (
+            r"\begin{array}{c}\cellcolor{a\ }b\end{array}",
+            r"\begin{array}{c} \colorbox{a\ }{b} \end{array}",
+        ),
+        (
+            r"\begin{array}{c}\cellcolor[x]{a\ }b\end{array}",
+            r"\begin{array}{c} \colorbox{a\ }{b} \end{array}",
+        ),
+        (
+            r"\rowcolors{1}{a\ }{b}\begin{array}{c}b\\c\end{array}",
+            r"\begin{array}{c} \colorbox{a\ }{b} \\ \colorbox{b}{c} \end{array}",
+        ),
+        (
+            "\\colorbox{x\\colorbox{Zb%:\r\n[\u{c}1\\rm\t}*J\\\t}J",
+            "\\colorbox{x\\colorbox{Zb\r\n[\u{c}1\\rm\t}*J\\\t}{J}",
+        ),
+    ] {
+        let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut r1.expr).unwrap();
+        let out1 = LatexWriter::write_compact(&r1.expr, &config).unwrap();
+        assert_eq!(out1, expected, "{input}");
+        let mut r2 = LatexReader::parse_compact(&out1, &config)
+            .unwrap_or_else(|e| panic!("{input}: {out1:?} does not re-parse: {e}"));
+        normalize_compact_expr(&mut r2.expr).unwrap();
+        let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
+        assert_eq!(out1, out2, "{input}");
+    }
+}

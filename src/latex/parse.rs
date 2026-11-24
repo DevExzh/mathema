@@ -1516,6 +1516,25 @@ fn braced_text(input: &str) -> IResult<&str, &str> {
     }
 }
 
+/// Trim the whitespace around a braced text argument (a color spec) as TeX
+/// would skip it, but keep a whitespace character escaped by an odd run of
+/// backslashes: `a\ ` is a control space, and trimming it to `a\` would
+/// leave a dangling backslash that escapes the `}` written after it.
+fn trim_tex_text(text: &str) -> &str {
+    let text = text.trim_start();
+    let trimmed = text.trim_end();
+    let backslashes = trimmed.bytes().rev().take_while(|&b| b == b'\\').count();
+    if backslashes % 2 == 0 {
+        return trimmed;
+    }
+    // Keep the one escaped whitespace character after the odd backslash.
+    let escaped = text[trimmed.len()..]
+        .chars()
+        .next()
+        .map_or(0, char::len_utf8);
+    &text[..trimmed.len() + escaped]
+}
+
 /// Read the `{i-j}` argument of `\cline` into a column mask. A balanced
 /// braced argument is consumed even when its range cannot be read; an
 /// unbalanced one is left for the cell parser, as before `\cline` was read.
@@ -6200,7 +6219,7 @@ impl LatexCompactParser {
             let (input, spec) = braced_text(input)?;
             let resolved = crate::css_colors::resolve_color_model(model.trim(), spec.trim())
                 .map(crate::css_colors::rgb_to_hex)
-                .unwrap_or_else(|| spec.trim().to_string());
+                .unwrap_or_else(|| trim_tex_text(spec).to_string());
             Ok((input, resolved))
         } else {
             let (input, name) = braced_text(input)?;
@@ -6266,7 +6285,7 @@ impl LatexCompactParser {
     /// colors are kept verbatim (for round-trip stability); user-defined
     /// colors and xcolor mixing expressions resolve to `#rrggbb`.
     fn resolve_color(&self, token: &str) -> String {
-        let token = token.trim();
+        let token = trim_tex_text(token);
         if token.contains('!') {
             return self
                 .resolve_color_rgb(token)
