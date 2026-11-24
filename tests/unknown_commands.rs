@@ -724,35 +724,34 @@ fn only_the_single_token_command_itself_skips_its_groups() {
 #[test]
 fn an_escaped_group_starting_with_leading_scripts_is_stable() {
     // Found by fuzzing: a group's first node with leading scripts, followed
-    // by a script without a base that the next read attaches to that node.
-    // The sequence writer puts no space before it then, so neither may the
-    // first write.
+    // by a script without a base. That script keeps its own empty base (TeX
+    // reads `x{}^4` so), and the first node is set off by the space the
+    // sequence writer puts before a node with leading scripts.
     for (input, expected) in [
         (
             "imMpod'''_$\n_$,4\t\tn\\txettbfexttt{'\n\n=\n'\n'\n'}n",
-            r"imMpo{d}^{\prime\prime\prime},4n\mathord{\text{\textbackslash{}txettbfexttt}\{{{}^{\prime}=^{\prime}}{}^{\prime} {{}^{\prime}\}}}n",
+            r"imMpo{d}^{\prime\prime\prime},4n\mathord{\text{\textbackslash{}txettbfexttt}\{ {{}^{\prime}=^{\prime}}{}^{\prime} {{}^{\prime}\}}}n",
         ),
         (
             r"\foo{' = ' ' '}",
-            r"\mathord{\text{\textbackslash{}foo}\{{{}^{\prime}=^{\prime}}{}^{\prime} {{}^{\prime}\}}}",
+            r"\mathord{\text{\textbackslash{}foo}\{ {{}^{\prime}=^{\prime}}{}^{\prime} {{}^{\prime}\}}}",
         ),
         (
             r"\foo{{}^2x{}^4{}^5}",
-            r"\mathord{\text{\textbackslash{}foo}\{{{}^{2}x}{}^{4} {{}^{5}\}}}",
+            r"\mathord{\text{\textbackslash{}foo}\{ {{}^{2}x}{}^{4} {{}^{5}\}}}",
         ),
         (
             r"\foo{{}^2x{}^4{}^5y}",
-            r"\mathord{\text{\textbackslash{}foo}\{{{}^{2}x}{}^{4} {{}^{5}y}\}}",
+            r"\mathord{\text{\textbackslash{}foo}\{ {{}^{2}x}{}^{4} {{}^{5}y}\}}",
         ),
         (
             r"\foo{{}^1{}^2x{}^4{}^5}",
-            r"\mathord{\text{\textbackslash{}foo}\{^{1}{{}^{2}x}{}^{4} {{}^{5}\}}}",
+            r"\mathord{\text{\textbackslash{}foo}\{^{1} {{}^{2}x}{}^{4} {{}^{5}\}}}",
         ),
         (
             r"\foo{{}^2=^3{}^4{}^5}",
-            r"\mathord{\text{\textbackslash{}foo}\{{{}^{2}=^{3}}{}^{4} {{}^{5}\}}}",
+            r"\mathord{\text{\textbackslash{}foo}\{ {{}^{2}=^{3}}{}^{4} {{}^{5}\}}}",
         ),
-        // Without such a script the space stays.
         (
             r"\foo{{}^2x{}^4}",
             r"\mathord{\text{\textbackslash{}foo}\{ {{}^{2}x} {{}^{4}\}}}",

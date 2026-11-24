@@ -880,11 +880,11 @@ fn adjacent_texts_are_written_stably() {
 
 #[test]
 fn trailing_empty_base_script_is_written_stably() {
-    // Not normalized: `x{}^2` reads back as x squared, as it normalizes.
+    // Not normalized: `x{}^2` keeps its empty base, as in TeX.
     let result = crate::from_latex("x{}^2").unwrap();
     let first = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
     let back = crate::from_mtef_bytes(&first).unwrap();
-    assert_eq!(back.to_latex().unwrap(), "x^{2}");
+    assert_eq!(back.to_latex().unwrap(), "x{}^{2}");
     assert_eq!(
         back.to_mtef_bytes(&MtefWriteOptions::default()).unwrap(),
         first

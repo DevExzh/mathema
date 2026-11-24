@@ -96,12 +96,13 @@ fn mathml_number_script_arguments_are_braced() {
     }
 }
 
-/// A number followed by a script without a base after a number it cannot
-/// join is written as the scripted number it reads back as.
+/// A number before a script without a base stays apart from the number
+/// before it, and the script keeps its own empty base, as in TeX.
 #[test]
 fn number_before_a_script_without_a_base_stays_apart() {
-    assert_eq!(latex(r"1.1 1.1{}_{a}"), r"1.1{1.1}_a");
-    assert_eq!(latex(r"1.1 1.1{}_{a} {{}_{b}c}"), r"1.1{1.1}_a {{}_{b}c}");
+    for input in [r"1.1 1.1{}_{a}", r"1.1 1.1{}_{a} {{}_{b}c}"] {
+        assert_eq!(latex(input), input);
+    }
 }
 
 /// A script argument behind a color the writer cannot spell is written as

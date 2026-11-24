@@ -154,29 +154,6 @@ fn normalize_nodes_depth_with_identifiers(
         coalesced.push(node);
     }
     coalesced.reverse();
-    let content_end = coalesced
-        .iter()
-        .rposition(|node| !matches!(node, MathNode::Space(_) | MathNode::ExplicitSpace { .. }))
-        .map_or(0, |i| i + 1);
-    if content_end >= 2
-        && is_empty_base_script_math(&coalesced[content_end - 1])
-        && can_carry_script_math(&coalesced[content_end - 2])
-    {
-        let last = coalesced.remove(content_end - 1);
-        let prev = std::mem::replace(&mut coalesced[content_end - 2], MathNode::Row(Vec::new()));
-        coalesced[content_end - 2] = make_script_with_base_math(prev, last);
-        // The joined node can take a leading script that the bare node
-        // refused (see `normalize_compact_span`).
-        if content_end >= 3
-            && is_empty_base_script_math(&coalesced[content_end - 3])
-            && can_take_prescripts_math(&coalesced[content_end - 2])
-        {
-            let joined = coalesced.remove(content_end - 2);
-            let script =
-                std::mem::replace(&mut coalesced[content_end - 3], MathNode::Row(Vec::new()));
-            coalesced[content_end - 3] = make_prescripts_math(script, joined);
-        }
-    }
     *nodes = coalesced;
 }
 
@@ -306,20 +283,6 @@ fn is_empty_script_base_math(node: &MathNode) -> bool {
         },
         _ => false,
     }
-}
-
-/// True for a node that can serve as the base of a sub/superscript in the
-/// high-level AST. Mirrors `can_carry_script` for compact nodes.
-fn can_carry_script_math(node: &MathNode) -> bool {
-    !matches!(
-        node,
-        MathNode::Subscript { .. }
-            | MathNode::Superscript { .. }
-            | MathNode::SubSup { .. }
-            | MathNode::PreScripts { .. }
-            | MathNode::Symbol(_, _)
-            | MathNode::Space(_)
-    )
 }
 
 fn make_script_with_base_math(base: MathNode, script: MathNode) -> MathNode {
@@ -846,31 +809,6 @@ fn normalize_span_keeping_breaks(
         coalesced.push(id);
     }
     coalesced.reverse();
-    // With nothing but space after it, a script belongs to the atom before
-    // it, as in TeX (`x'` written with white space or a group between).
-    let content_end = coalesced
-        .iter()
-        .rposition(|&id| !is_blank(*arena.node(id)))
-        .map_or(0, |i| i + 1);
-    if content_end >= 2
-        && is_empty_base_script(arena, coalesced[content_end - 1])
-        && can_carry_script(*arena.node(coalesced[content_end - 2]))
-    {
-        let (prev, last) = (coalesced[content_end - 2], coalesced[content_end - 1]);
-        let joined = make_script_with_base(arena, prev, last);
-        coalesced.remove(content_end - 1);
-        coalesced[content_end - 2] = joined;
-        // The joined node is a new candidate base for a leading script
-        // before it. A style group refuses leading scripts, but the scripted
-        // group does not, so the next parse (where the parser already joined
-        // the trailing script) would attach them. Attach them now as well.
-        if content_end >= 3
-            && let Some(prescripts) = leading_scripts_on(arena, coalesced[content_end - 3], joined)?
-        {
-            coalesced.remove(content_end - 2);
-            coalesced[content_end - 3] = prescripts;
-        }
-    }
 
     arena.push_children(&coalesced)
 }
@@ -1538,11 +1476,6 @@ pub(crate) fn takes_limits(arena: &AstArena, node: CompactNode) -> bool {
     }
 }
 
-/// A node that only spaces (white space or a line break).
-pub(crate) fn is_blank(node: CompactNode) -> bool {
-    matches!(node, CompactNode::Space(_) | CompactNode::Newline)
-}
-
 /// Whether a node can be the base of leading scripts.
 pub(crate) fn can_take_prescripts(node: CompactNode) -> bool {
     !matches!(
@@ -1732,12 +1665,16 @@ mod tests {
             },
         ]);
         normalize_expr(&mut expr);
+        // The trailing `{}^2` keeps its own empty base (TeX's `x{}^2`).
         assert_eq!(
             expr.nodes,
-            vec![MathNode::Superscript {
-                base: Box::new(MathNode::Identifier("x".into())),
-                sup: Box::new(MathNode::Number("2".into())),
-            }]
+            vec![
+                MathNode::Identifier("x".into()),
+                MathNode::Superscript {
+                    base: Box::new(MathNode::Row(Vec::new())),
+                    sup: Box::new(MathNode::Number("2".into())),
+                }
+            ]
         );
 
         assert_normalize_equiv(MathExpr::inline(vec![

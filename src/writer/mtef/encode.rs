@@ -20,7 +20,7 @@ use super::chars::{
 };
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactNode, NodeId, NodeSpan, StrId};
-use crate::ast::normalize::{can_carry_script, can_take_prescripts, is_blank, takes_limits};
+use crate::ast::normalize::{can_take_prescripts, takes_limits};
 use crate::ast::style::MathStyle;
 use crate::ast::{
     AccentPosition, ColumnAlign, DisplayStyle, FractionKind, LimitStyle, Rational, SpanBoundary,
@@ -523,9 +523,9 @@ impl<'a> Encoder<'a> {
             }
             // An empty-base script means what normalization makes of it: a
             // limit or script of a big operator or function name before it,
-            // a leading script of the node after it (written as MathType
-            // does, with tvSU_PRECEDES directly before that node), or with
-            // nothing after it a script of the node before it.
+            // or a leading script of the node after it (written as MathType
+            // does, with tvSU_PRECEDES directly before that node). Otherwise
+            // it keeps its own empty base (`x{}_1`), as in TeX.
             if let Some(&script) = ids.get(i + 1)
                 && let Some((sub, sup)) = self.empty_base_scripts(script)
                 && self.attaches_to_previous(ids, i + 1)
@@ -561,16 +561,11 @@ impl<'a> Encoder<'a> {
     }
 
     /// Whether normalization attaches the empty-base script at `i` to the
-    /// node before it.
+    /// node before it: as a limit of a big operator or function name.
     fn attaches_to_previous(&self, ids: &[NodeId], i: usize) -> bool {
-        let Some(&prev) = i.checked_sub(1).and_then(|p| ids.get(p)) else {
-            return false;
-        };
-        let prev = *self.arena.node(prev);
-        let trailing = ids[i + 1..]
-            .iter()
-            .all(|&id| is_blank(*self.arena.node(id)));
-        takes_limits(self.arena, prev) || (trailing && can_carry_script(prev))
+        i.checked_sub(1)
+            .and_then(|p| ids.get(p))
+            .is_some_and(|&prev| takes_limits(self.arena, *self.arena.node(prev)))
     }
 
     // ── Nodes ──────────────────────────────────────────────────────────

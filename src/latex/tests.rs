@@ -602,15 +602,15 @@ fn empty_style_group_after_a_leading_script_is_idempotent() {
 fn script_attachment_and_scope_wrappers_are_canonical_on_first_write() {
     let config = Config::default();
     for (input, expected) in [
-        // A trailing script joins a style group, which can then take the
-        // leading script before it, exactly as the reparsed output does.
+        // A script after an empty group keeps that base (TeX's `x{}'`), so
+        // it does not join the style group, which refuses the leading one.
         (
             r"'{\textstyle x}{}'",
-            r"{{}^{\prime}{\textstyle x}^{\prime}}",
+            r"{}^{\prime}{\textstyle x}{}^{\prime}",
         ),
         (
             r"'\tbinom ab\middle'",
-            r"{{}^{\prime}{\textstyle \binom{a}{b}}^{\prime}}",
+            r"{}^{\prime}{\textstyle \binom{a}{b}}{}^{\prime}",
         ),
         // Nested colors that cannot be written are all dropped at once.
         (r"A\color{_}\color{_}'x", r"A {{}^{\prime}x}"),
@@ -2309,27 +2309,26 @@ fn malformed_color_brace_prime_script_is_idempotent() {
 
 #[test]
 fn scripted_base_before_a_script_without_a_base_is_idempotent() {
-    // Found by fuzzing: a token followed by two scripts without a base is
-    // written as the token taking the first script's markers, which reads
-    // back as a scripted base followed by the second script. That node must
-    // be spelled with the same script-argument bracing on the next write.
+    // Found by fuzzing: a token followed by two scripts without a base.
+    // Each script keeps its own empty base, as TeX reads `\{{}^2{}'`, and
+    // is spelled with the same script-argument bracing on the next write.
     let default = Config::default();
     let keep = Config::default().with_undefined_commands(crate::UndefinedCommands::Keep);
     for (config, input, expected) in [
-        (&default, r"\{ {}^2 '", r"\{^{2}{}^{\prime}"),
-        (&default, r"\{ {}_- {}_-", r"\{_-{}_{-}"),
+        (&default, r"\{ {}^2 '", r"\{{}^{2}{}^{\prime}"),
+        (&default, r"\{ {}_- {}_-", r"\{{}_{-}{}_{-}"),
         (
             &default,
             r"\mathbf{\} {}^2 '}",
-            r"\mathbf{\}^{2}{}^{\prime}}",
+            r"\mathbf{\}{}^{2}{}^{\prime}}",
         ),
         // The original fuzz artifact.
         (
             &default,
             "2eg\\gg\\chooeHcu~\\{$_-_-",
-            r"2eg\gg \mathord{\text{\textbackslash{}chooeHcu}}\ \{_-{}_{-}",
+            r"2eg\gg \mathord{\text{\textbackslash{}chooeHcu}}\ \{{}_{-}{}_{-}",
         ),
-        (&keep, r"\foo \{ {}^2 '", r"\foo\{^{2}{}^{\prime}"),
+        (&keep, r"\foo \{ {}^2 '", r"\foo\{{}^{2}{}^{\prime}"),
         (&default, r"\{^2 {}^3", r"\{^{2}{}^{3}"),
         (&default, r"x^2 {}^3", r"x^{2}{}^{3}"),
         // `x_2^2.5` would read the `.5` outside the superscript.
@@ -4803,13 +4802,13 @@ fn empty_colored_prescripts_normalize_before_following_scripts() {
     for (input, expected, structure) in [
         (
             r"{}^{\color{red}{}}x{}^2",
-            r"x^{2}",
-            "<msup><mi>x</mi><mn>2</mn></msup>",
+            r"x{}^{2}",
+            "<mi>x</mi><msup><mrow></mrow><mn>2</mn></msup>",
         ),
         (
             r"{}_{\color{red}{}}x{}_2",
-            r"x_{2}",
-            "<msub><mi>x</mi><mn>2</mn></msub>",
+            r"x{}_{2}",
+            "<mi>x</mi><msub><mrow></mrow><mn>2</mn></msub>",
         ),
         (
             r"{}^{\color{red}{}}x{}^2+b",

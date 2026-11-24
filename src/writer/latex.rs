@@ -153,43 +153,32 @@ fn write_sequence(
             continue;
         }
 
-        // Stand-alone empty-base script (first child or following another
-        // empty-base script). Write it with an explicit `{}` base so that it
-        // stays a separate atom and remains stable across round-trips.
+        // An empty-base script that no node before it took (see below). Write
+        // it with an explicit `{}` base so that it stays a separate atom, as
+        // TeX reads `x{}_1`, and remains stable across round-trips.
         if is_script_with_empty_base(arena, id) {
             let output_start = buf.len();
-            // A Middle node is only a fence separator while it is inside a
-            // left/right construction. It can also occur in a nested group
-            // after infix-fraction splitting. Writing an explicit empty group
-            // after it makes the next parser pass treat the literal `|` as a
-            // new fence atom, which changes the spelling on the second write.
-            // The empty base is already implicit at this boundary, so retain
-            // just the markers and their arguments.
-            if i > 0
-                && (matches!(*arena.node(children[i - 1]), CompactNode::Middle(_))
-                    || is_escaped_brace_symbol(arena, children[i - 1]))
-            {
-                write_empty_base_script_markers(buf, arena, id);
-            } else {
-                write_standalone_empty_base_script(buf, arena, id);
-            }
+            write_standalone_empty_base_script(buf, arena, id);
             ends_with_command =
                 appended_ends_with_letter_command(buf, output_start, ends_with_command);
             i += 1;
             continue;
         }
 
-        // A trailing implicit script can attach here when the next sibling
-        // cannot take it as a prescript. This also applies before explicit
-        // spacing, just as in row normalization.
-        // Not after a bare undefined command: the script's `{}` base would
-        // read back as the command's argument (`\\foo{}^2`).
+        // An empty-base script after a node keeps its own `{}` base, as in
+        // TeX: `x{}_1` is x followed by an empty atom with a subscript, not
+        // `x_1`. The standalone branch above writes it so. Two bases need
+        // the pair written together: the parser would take the `{}` after an
+        // operator with an empty body as its body, and a bare `\middle|`
+        // would take the script.
+        let middle = matches!(*arena.node(id), CompactNode::Middle(_));
         if i + 1 < children.len()
             && is_script_with_empty_base(arena, children[i + 1])
-            && !is_bare_undefined_command(buf, arena, id)
-            && children.get(i + 2).is_none_or(|&after| {
-                !crate::ast::normalize::can_take_prescripts(*arena.node(after))
-            })
+            && (middle
+                || is_empty_body_nary(arena, id)
+                    && children.get(i + 2).is_none_or(|&after| {
+                        !crate::ast::normalize::can_take_prescripts(*arena.node(after))
+                    }))
         {
             let output_start = buf.len();
             if i > 0 {
@@ -200,59 +189,21 @@ fn write_sequence(
                 }
             }
             let script_id = children[i + 1];
-            if is_script_node(arena, id) && !script_has_any_arg(arena, id) {
-                // The preceding script has no effective arguments. Keep its
-                // base as the single surviving base, then attach the trailing
-                // implicit script's markers to it once. This avoids emitting
-                // an extra `{}` base before a real trailing script.
-                let base = script_base_id(arena, id).expect("script node has a base");
-                write_script_base(buf, arena, base);
-                write_empty_base_script_markers(buf, arena, script_id);
-            } else if is_script_base_token(arena, id)
-                && (!would_merge_with_buffer(buf, arena, id)
-                    || matches!(*arena.node(id), CompactNode::Number(_)))
-            {
-                // Use the same canonical base spelling and bracing as an ordinary
-                // script node, rather than bypassing it on this fast path. A
-                // number after a number is braced there (`1.1{2.2}_{a}`): it
-                // is spelled so here too, as the scripted number it reads
-                // back as. Written bare with its own `{}` base, it would join
-                // the number before it on the next read (`1.12.2{}_{a}`).
-                write_script_base(buf, arena, id);
-                write_empty_base_script_markers(buf, arena, script_id);
-            } else if matches!(*arena.node(id), CompactNode::Row(_)) {
-                // Use the script-base writer so that a single-child Row wrapping
-                // a simple token gets braced when it would otherwise merge with
-                // the preceding output (e.g. `p{p}^{\prime}`).
-                write_script_base(buf, arena, id);
-                write_empty_base_script_markers(buf, arena, script_id);
-            } else if is_empty_body_nary(arena, id) {
+            if middle {
+                // A `\middle|` outside its fence reads a script after it as
+                // its own, even after an empty group. Group the delimiter so
+                // that the script keeps its own empty base.
+                buf.push('{');
+                write_node(buf, arena, id);
+                buf.push('}');
+                write_standalone_empty_base_script(buf, arena, script_id);
+            } else {
                 // The parser reads a following scripted empty group as the
                 // integral's body. Group that whole body on the first write.
                 write_node(buf, arena, id);
                 buf.push_str(" {{}");
                 write_standalone_empty_base_script_markers(buf, arena, script_id);
                 buf.push('}');
-            } else {
-                // Complex or merge-prone base: keep the script as a separate
-                // atom so the output shape is preserved.
-                if matches!(*arena.node(id), CompactNode::Middle(_)) {
-                    // The parser treats `\middle|` followed by a script as
-                    // one scripted Middle base. Group it now so the next
-                    // writer pass sees the same base shape.
-                    buf.push('{');
-                    write_node(buf, arena, id);
-                    buf.push('}');
-                    write_empty_base_script_markers(buf, arena, script_id);
-                } else {
-                    // A script node is spelled as `write_sequence` spells
-                    // it elsewhere: the trailing script may have come from
-                    // a token base taking its first script's markers on the
-                    // previous write (`\{^{2}{}^{\prime}`), which reads back
-                    // as this node. Any other node is written by `write_node`.
-                    write_script_node(buf, arena, id);
-                    write_standalone_empty_base_script(buf, arena, script_id);
-                }
             }
             ends_with_command =
                 appended_ends_with_letter_command(buf, output_start, ends_with_command);
@@ -366,23 +317,12 @@ fn write_escaped_undefined_command(
         };
         // On the next read the group's first node follows the `\{` in one
         // row, so it gets the space `write_sequence` puts before a node with
-        // leading scripts, unless that writer takes the node's next sibling
-        // (a script without a base) as its script. Decide that against the
-        // siblings the next read sees: after the content comes the `\}`,
-        // which takes leading scripts unless it already has the trailing
-        // one.
-        if let Some(&first) = children.first()
-            && has_visible_prescripts(arena, first)
+        // leading scripts.
+        if children
+            .first()
+            .is_some_and(|&first| has_visible_prescripts(arena, first))
         {
-            let takes_next_script = children
-                .get(1)
-                .is_some_and(|&next| is_script_with_empty_base(arena, next))
-                && children.get(2).map_or(trailing_script.is_some(), |&after| {
-                    !crate::ast::normalize::can_take_prescripts(*arena.node(after))
-                });
-            if !takes_next_script {
-                buf.push(' ');
-            }
+            buf.push(' ');
         }
         write_node_slice(buf, arena, children, false);
         // `\int\}` would read the brace (or the scripted brace standing for
@@ -445,16 +385,6 @@ fn write_undefined_command_group(buf: &mut LatexBuffer, arena: &AstArena, group:
         _ => write_node(buf, arena, group),
     }
     buf.push('}');
-}
-
-/// An undefined command written as a bare control word, whose following
-/// groups the reader takes as its arguments.
-fn is_bare_undefined_command(buf: &LatexBuffer, arena: &AstArena, id: NodeId) -> bool {
-    // With `UndefinedCommands::Escape` it is written as an inert atom.
-    buf.keep_undefined
-        && matches!(*arena.node(id), CompactNode::UndefinedCommand { name, .. }
-        if crate::ast::undefined::writes_as_command(arena.str_val(name))
-            && !crate::ast::undefined::is_context_command(arena.str_val(name)))
 }
 
 /// A `[` after a row break `\\` (even past white space) is read as the
@@ -520,17 +450,6 @@ fn adjacent_number_nodes_need_separator(
     !crate::ast::normalize::can_merge_number_text(arena.str_val(previous), arena.str_val(current))
 }
 
-/// A literal brace is already emitted as a control sequence (`\{`/`\}`).
-/// An explicit empty script base after it changes how the next parser pass
-/// attaches the script, so keep only the script marker here.
-fn is_escaped_brace_symbol(arena: &AstArena, id: NodeId) -> bool {
-    matches!(
-        *arena.node(id),
-        CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close, sid)
-            if matches!(arena.str_val(sid), "{" | "}")
-    )
-}
-
 /// True if the node is, or its LaTeX ends with, a Nary operator with an
 /// effectively empty body (a leading script's base is written last), so
 /// that the next sibling would be read as its body.
@@ -557,15 +476,6 @@ fn is_script_node(arena: &AstArena, id: NodeId) -> bool {
             | CompactNode::Superscript { .. }
             | CompactNode::SubSup { .. }
     )
-}
-
-fn script_base_id(arena: &AstArena, id: NodeId) -> Option<NodeId> {
-    match *arena.node(id) {
-        CompactNode::Subscript { base, .. }
-        | CompactNode::Superscript { base, .. }
-        | CompactNode::SubSup { base, .. } => Some(base),
-        _ => None,
-    }
 }
 
 /// Write a script node in a row. Its arguments are spelled by
@@ -4915,10 +4825,10 @@ mod tests {
     #[test]
     fn unnormalized_empty_group_script_bases_are_stable() {
         for (input, expected) in [
-            ("\u{2113}{}^2", r"\ell^{2}"),
-            (r"\ell{}^2", r"\ell^{2}"),
-            (r"\Finv{}^2", r"\Finv^{2}"),
-            (r"\textohm{}^2", r"\Omega^{2}"),
+            ("\u{2113}{}^2", r"\ell{}^{2}"),
+            (r"\ell{}^2", r"\ell{}^{2}"),
+            (r"\Finv{}^2", r"\Finv{}^{2}"),
+            (r"\textohm{}^2", r"\Omega{}^{2}"),
         ] {
             let out1 = crate::from_latex(input).unwrap().to_latex().unwrap();
             let out2 = crate::from_latex(&out1).unwrap().to_latex().unwrap();
@@ -5164,7 +5074,8 @@ mod tests {
         let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap().expr;
         crate::ast::normalize::normalize_compact_expr(&mut reparsed).unwrap();
         let second = LatexWriter::write_compact(&reparsed, &config).unwrap();
-        assert_eq!(first, r"A{\textcolor{teal}{}}^{2}");
+        // The double superscript's `^2` keeps the empty base it was read with.
+        assert_eq!(first, r"A\textcolor{teal}{}{}^{2}");
         assert_eq!(first, second);
 
         let heap_first = crate::from_latex(input).unwrap().to_latex().unwrap();
@@ -5194,9 +5105,10 @@ mod tests {
     #[test]
     fn elided_scripts_attach_one_trailing_implicit_script() {
         for (input, expected) in [
+            // The double superscript's last script keeps its empty base.
             (
                 r"\teal^\teal^\utilde'",
-                r"{\textcolor{teal}{}}^{\utilde{\prime}}",
+                r"\textcolor{teal}{}{}^{\utilde{\prime}}",
             ),
             (r"x^{}^\utilde'", r"x^{\utilde{\prime}}"),
             (

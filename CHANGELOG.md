@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exponent as mhchem does: `\pu{123 m^22}` keeps `m^{22}`, and
   `\pu{kJ mol^-1}` reads as `mol^{-1}` (it was `mol^{-}1`).
 
+- **Breaking (behavior):** a script after an explicit empty group keeps that
+  group as its base, as in TeX, KaTeX and MathJax. `x{}_1` is x followed by an
+  empty atom carrying the subscript; normalization attached a trailing one to
+  the node before it and the LaTeX writer wrote every such script onto the
+  node before it, so `x{}_1`, `x{}^2`, `x{}'` and `x {}_1^2` became `x_{1}`,
+  `x^{2}`, `x^{\prime}` and `x_{1}^{2}` in every format and in layout (also
+  `x\sideset{_1 {}_2}{}\sum`, whose `_1` moved onto x). They are now written
+  `x{}_{1}`, and so on; MathML keeps `<mi>x</mi><msub><mrow></mrow><mn>1</mn></msub>`.
+  A script after white space (`x '`) still attaches to the atom before it,
+  as in TeX, and an empty-base script before a node (`{}_1 x`) is still its
+  leading script.
+
 - `\big`, `\Big`, `\bigg` and `\Bigg` delimiters render with the OpenType
   MATH table's pre-designed size variants (or an extensible assembly) at TeX's
   1.2/1.8/2.4/3.0 em instead of a scaled base glyph, centred on the math axis,
