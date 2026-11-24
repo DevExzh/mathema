@@ -205,6 +205,60 @@ fn expand_source(input: &str, for_parser: bool) -> Result<Cow<'_, str>, Expansio
     Ok(Cow::Owned(ordered_stream::expand(&source)?))
 }
 
+/// A control word the preprocessor acts on before parsing: a definition,
+/// grouping or expansion primitive. Builtin package macros
+/// (`packages::is_builtin_macro_name`) are expanded as well.
+pub(crate) fn is_expansion_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "newcommand"
+            | "renewcommand"
+            | "providecommand"
+            | "def"
+            | "gdef"
+            | "edef"
+            | "xdef"
+            | "let"
+            | "futurelet"
+            | "begingroup"
+            | "endgroup"
+            | "expandafter"
+            | "noexpand"
+            | "global"
+            | "long"
+            | "protected"
+            | "@firstoftwo"
+            | "@secondoftwo"
+            | "@ifstar"
+            | "@ifnextchar"
+            | "TextOrMath"
+            | "newenvironment"
+    )
+}
+
+/// Whether the preprocessor would rewrite any part of `text` read as LaTeX
+/// source: a `%` comment, a `\verb` segment, an expansion primitive or a
+/// builtin macro. Text for which this is false reaches the parser verbatim,
+/// so a writer can emit it as an inert argument.
+pub(crate) fn acts_on(text: &str) -> bool {
+    let mut rest = text;
+    while let Some(pos) = rest.find(['\\', '%']) {
+        let tail = &rest[pos..];
+        if tail.starts_with('%') || find_verb_end(tail, 0).is_some() {
+            return true;
+        }
+        let Some((after, token)) = super::split_token(tail) else {
+            return false; // A final lone backslash.
+        };
+        let name = &token[1..];
+        if is_expansion_primitive(name) || packages::is_builtin_macro_name(name) {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
 /// Locate expandable words and strip comments in one traversal. Only allocate
 /// a replacement string if a real comment, outside a verbatim block, is found.
 fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool, bool) {
@@ -230,32 +284,9 @@ fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool
             let name = &token[1..];
             if !needs_expansion {
                 fenced_matrix |= name == "begin" && starts_fenced_smallmatrix(rest);
-                needs_expansion = matches!(
-                    name,
-                    "newcommand"
-                        | "renewcommand"
-                        | "providecommand"
-                        | "def"
-                        | "gdef"
-                        | "edef"
-                        | "xdef"
-                        | "let"
-                        | "futurelet"
-                        | "begingroup"
-                        | "endgroup"
-                        | "expandafter"
-                        | "noexpand"
-                        | "global"
-                        | "long"
-                        | "protected"
-                        | "@firstoftwo"
-                        | "@secondoftwo"
-                        | "@ifstar"
-                        | "@ifnextchar"
-                        | "TextOrMath"
-                        | "newenvironment"
-                ) || (!(direct_leading_plim && start == 0 && name == "plim")
-                    && packages::is_builtin_macro_name(name));
+                needs_expansion = is_expansion_primitive(name)
+                    || (!(direct_leading_plim && start == 0 && name == "plim")
+                        && packages::is_builtin_macro_name(name));
             }
             offset = input.len() - rest.len();
         } else {

@@ -5175,3 +5175,14 @@ fn color_with_an_unresolved_model_resolves_like_a_named_color() {
         assert_eq!(first, second, "{input}");
     }
 }
+
+#[test]
+fn box_color_with_verbatim_comment_round_trips() {
+    // Fuzz-found: the `%` inside `\verb` hid the frame color, and writing
+    // the background alone exposed `\newcommand` to the preprocessor.
+    let input = r"\fcolorbox{\verb|%}{\newcommand\left}{x}";
+    let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX)
+        .unwrap_or_else(|e| panic!("{first:?} does not re-parse: {e}"));
+    assert_eq!(first, second, "{input}");
+}

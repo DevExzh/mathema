@@ -1098,10 +1098,15 @@ fn latex_color(name: &str) -> Option<ColorArgument<'_>> {
 }
 
 /// A `\colorbox`/`\fcolorbox` color is written verbatim inside braces, so it
-/// must read back as one braced argument: balanced braces, no unescaped `%`
-/// (a comment) and no trailing unpaired backslash (which would escape the
-/// closing `}`). Any other spec is returned as `""`, meaning "no color".
+/// must read back as one braced argument: balanced braces, no trailing
+/// unpaired backslash (which would escape the closing `}`), and nothing the
+/// preprocessor rewrites before parsing (a `%` comment, `\verb`, a definition
+/// or expansion primitive, a builtin macro). Any other spec is returned as
+/// `""`, meaning "no color".
 fn box_color_argument(spec: &str) -> &str {
+    if crate::latex::preprocess::acts_on(spec) {
+        return "";
+    }
     let mut depth = 0usize;
     let mut escaped = false;
     for b in spec.bytes() {
@@ -1116,7 +1121,6 @@ fn box_color_argument(spec: &str) -> &str {
                 Some(d) => depth = d,
                 None => return "",
             },
-            b'%' => return "",
             _ => {},
         }
     }
@@ -3590,6 +3594,18 @@ mod tests {
             (Some("red"), Some(r"b\"), r"\colorbox{red}{x}"),
             (Some(r"r\"), Some("blue"), r"\boxed{x}"),
             (Some("red"), Some("blue"), r"\fcolorbox{blue}{red}{x}"),
+            // Text the preprocessor rewrites is not inert, so it is dropped.
+            (Some(r"\def\ "), None, r"\boxed{x}"),
+            (Some(r"\newcommand\left"), None, r"\boxed{x}"),
+            (Some(r"\verb|%"), Some("red"), r"\boxed{x}"),
+            (Some("red"), Some(r"\verb|%"), r"\colorbox{red}{x}"),
+            (Some(r"\global"), None, r"\boxed{x}"),
+            // A multi-byte control symbol is stepped over whole.
+            (Some("\\\u{e9}"), None, "\\colorbox{\\\u{e9}}{x}"),
+            (Some("a\\\u{e9}\\"), None, r"\boxed{x}"),
+            // `\defx` and `\%` are not acted on by the preprocessor.
+            (Some(r"\defx"), None, r"\colorbox{\defx}{x}"),
+            (Some(r"a\%b"), None, r"\colorbox{a\%b}{x}"),
         ] {
             let out = boxed(bg, border);
             assert_eq!(out, want, "{bg:?} {border:?}");
