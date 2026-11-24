@@ -42,7 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `x{}_{1}`, and so on; MathML keeps `<mi>x</mi><msub><mrow></mrow><mn>1</mn></msub>`.
   A script after white space (`x '`) still attaches to the atom before it,
   as in TeX, and an empty-base script before a node (`{}_1 x`) is still its
-  leading script.
+  leading script. One exception remains, unlike TeX: after a big operator or
+  a function name that takes limits, such a script is still its limit or
+  script (`\lim{}_x`, `\max{}_x` and `\operatorname{f}{}_1` become
+  `\lim_x`, `\max_x` and `\operatorname{f}_1`, in normalization and in the
+  MTEF writer), so that MathML such as `<mo>∫</mo><msub><mrow/><mi>C</mi></msub>`
+  keeps its limit. The UnicodeMath writer spells an empty base as the empty
+  invisible group `〖〗` (it wrote `()`, which reads back as visible
+  parentheses), and the reader reads `x〖〗_1` back as `x{}_1`.
 
 - `\big`, `\Big`, `\bigg` and `\Bigg` delimiters render with the OpenType
   MATH table's pre-designed size variants (or an extensible assembly) at TeX's

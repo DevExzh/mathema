@@ -561,7 +561,10 @@ impl<'a> Encoder<'a> {
     }
 
     /// Whether normalization attaches the empty-base script at `i` to the
-    /// node before it: as a limit of a big operator or function name.
+    /// node before it: as a limit of a big operator or function name. As in
+    /// `normalize_compact_span` this departs from TeX for `\lim{}_x` and
+    /// `\operatorname{f}{}_1` (TeX sets the script on an empty atom); every
+    /// other empty-base script keeps its empty base.
     fn attaches_to_previous(&self, ids: &[NodeId], i: usize) -> bool {
         i.checked_sub(1)
             .and_then(|p| ids.get(p))

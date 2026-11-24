@@ -129,8 +129,9 @@ fn normalize_nodes_depth_with_identifiers(
         final_nodes
     };
 
-    // Phase 4: an empty-base script is a limit of a big operator before it,
-    // else a leading script of the next node (see `normalize_compact_span`).
+    // Phase 4: an empty-base script is a limit of a big operator before it
+    // (unlike TeX, also for `\lim{}_x`), else a leading script of the next
+    // node (see `normalize_compact_span`).
     let mut with_limits: Vec<MathNode> = Vec::with_capacity(merged_ids.len());
     for node in merged_ids {
         if is_empty_base_script_math(&node) && with_limits.last().is_some_and(takes_limits_math) {
@@ -768,7 +769,11 @@ fn normalize_span_keeping_breaks(
     // attached to the preceding atom by the parser itself. After a big
     // operator or a function that takes limits the script is its limit
     // (`<mo>∫</mo><msub><mrow/><mi>C</mi></msub>`, as TeX-to-MathML
-    // converters write `\int_C`).
+    // converters write `\int_C`). This is the one place an empty-base script
+    // joins the node before it, and it departs from TeX: `\lim{}_x`,
+    // `\max{}_x` and `\operatorname{f}{}_1` also become `\lim_x`, … (TeX
+    // sets x after an empty atom). Any other script keeps its empty base
+    // (`x{}_1`); the MTEF writer's `attaches_to_previous` mirrors this.
     let mut with_limits: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in &merged_ids {
         if is_empty_base_script(arena, id)

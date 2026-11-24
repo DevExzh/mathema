@@ -170,7 +170,9 @@ fn write_sequence(
         // `x_1`. The standalone branch above writes it so. Two bases need
         // the pair written together: the parser would take the `{}` after an
         // operator with an empty body as its body, and a bare `\middle|`
-        // would take the script.
+        // would take the script. (Normalization still makes such a script
+        // the limit of a function name or big operator before it, unlike
+        // TeX: `\lim{}_x` is written `\lim_x`.)
         let middle = matches!(*arena.node(id), CompactNode::Middle(_));
         if i + 1 < children.len()
             && is_script_with_empty_base(arena, children[i + 1])

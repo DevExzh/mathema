@@ -99,8 +99,25 @@ fn every_format_keeps_the_empty_base() {
             _ => false,
         })
     }
-    for input in [r"x{}_1", r"x{}^2", r"x{}'", r"x {}_1^2"] {
-        for format in [Format::MathML, Format::Omml, Format::Mtef] {
+    for input in [
+        r"x{}_1",
+        r"x{}^2",
+        r"x{}'",
+        r"x {}_1^2",
+        r"\ell{}^2",
+        r"a+{}_1",
+    ] {
+        for format in [
+            Format::MathML,
+            Format::Omml,
+            Format::Mtef,
+            Format::UnicodeMath,
+        ] {
+            // The UnicodeMath reader reads no prime script back, with or
+            // without an empty base (`x^′` is text, as `x'` is).
+            if format == Format::UnicodeMath && input.contains('\'') {
+                continue;
+            }
             let written = convert(input, Format::LaTeX, format).unwrap();
             let back = convert(&written, format, Format::LaTeX).unwrap();
             assert_eq!(back, latex(input), "{input} via {format:?}");
@@ -116,14 +133,44 @@ fn every_format_keeps_the_empty_base() {
 fn a_script_without_a_group_still_attaches() {
     assert_eq!(latex(r"x_1"), r"x_{1}");
     assert_eq!(latex(r"x '"), r"x^{\prime}");
-    assert_eq!(latex(r"x{}_1 y"), r"x {{}_{1}y}");
 }
 
 #[test]
 fn leading_scripts_still_lead_the_next_node() {
     assert_eq!(latex(r"{}_1 x"), r"{{}_{1}x}");
+    // After a node and before another, the script leads the one after it.
+    assert_eq!(latex(r"x{}_1 y"), r"x {{}_{1}y}");
     assert!(mathml_body(r"{}_1 x").starts_with("<mmultiscripts><mi>x</mi><mprescripts/>"));
     assert_eq!(latex(r"x={}^{14}_{6}C"), r"x= {{}_{6}^{14}C}");
+}
+
+/// The UnicodeMath spelling of an empty base is an empty invisible group;
+/// `()` would read back as visible parentheses.
+#[test]
+fn unicode_math_writes_the_empty_base_as_an_invisible_group() {
+    for (input, expected) in [
+        (r"x{}_1", "x〖〗_1"),
+        (r"\ell{}^2", "ℓ〖〗^2"),
+        (r"a+{}_1", "a+〖〗_1"),
+        (r"x {}_1^2", "x〖〗_1^2"),
+    ] {
+        let written = convert(input, Format::LaTeX, Format::UnicodeMath).unwrap();
+        assert_eq!(written, expected, "{input}");
+        let back = convert(&written, Format::UnicodeMath, Format::LaTeX).unwrap();
+        assert_eq!(mathml_body(&back), mathml_body(input), "{input}");
+    }
+}
+
+/// A function name or big operator takes a script after an empty group as
+/// its limit or script, unlike TeX (where `\lim{}_x` sets x as a detached
+/// subscript): this keeps MathML such as `<mo>lim</mo><msub><mrow/>…` and
+/// `<mo>∫</mo><msub><mrow/>…`, as TeX-to-MathML converters write limits,
+/// attached to the operator.
+#[test]
+fn operators_still_take_a_script_after_an_empty_group_as_limit() {
+    assert_eq!(latex(r"\lim{}_x"), r"\lim_x");
+    assert_eq!(latex(r"\max{}_x"), r"\max_x");
+    assert_eq!(latex(r"\operatorname{f}{}_1"), latex(r"\operatorname{f}_1"));
 }
 
 #[cfg(feature = "render")]

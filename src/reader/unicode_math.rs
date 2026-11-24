@@ -871,6 +871,12 @@ impl CompactParser {
     fn parse_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         if input.starts_with('〖') {
             let (rest, children) = self.parse_delimited(input, '〖', '〗')?;
+            // An empty invisible group before a script is the script's empty
+            // base (`x〖〗_1`, LaTeX `x{}_1`): x and an empty atom carrying
+            // the subscript, not a subscript on x.
+            if children.is_empty() && rest.starts_with(['_', '^']) {
+                return Ok((rest, self.push_node(CompactNode::Row(NodeSpan::EMPTY))));
+            }
             let base = self.flatten_single(&children);
             // A subscript on an explicitly grouped named function belongs at
             // the side, even when its ungrouped name would take display

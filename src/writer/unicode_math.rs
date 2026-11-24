@@ -874,6 +874,9 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push('〗');
         },
+        // An empty base is an empty invisible group: `()` would read back as
+        // visible parentheses (`x〖〗_1` is LaTeX `x{}_1`).
+        MathNode::Row(children) if children.is_empty() => out.push_str("〖〗"),
         MathNode::Row(_) | MathNode::Fraction { .. } => {
             out.push('(');
             write_node(out, node, style);
@@ -1787,6 +1790,9 @@ fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             write_node_c(out, arena, id, style);
             out.push('〗');
         },
+        // An empty base is an empty invisible group: `()` would read back as
+        // visible parentheses (`x〖〗_1` is LaTeX `x{}_1`).
+        CompactNode::Row(span) if arena.children(span).is_empty() => out.push_str("〖〗"),
         CompactNode::Row(_) | CompactNode::Fraction { .. } => {
             out.push('(');
             write_node_c(out, arena, id, style);
