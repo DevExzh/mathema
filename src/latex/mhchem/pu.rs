@@ -228,9 +228,16 @@ fn pu_output(
         pu(&mut den, &q, depth + 1);
         if double_slash {
             let frac = format!("\\frac{{{}}}{{{}}}", num.text, den.text);
-            out.item(&format!(
-                "\\mathchoice{{\\textstyle{frac}}}{{{frac}}}{{{frac}}}{{{frac}}}"
-            ));
+            // mhchem writes the fraction four times, once per style; a
+            // fraction already holding such a choice is written once, so
+            // nested `//` stays linear instead of growing fourfold a level.
+            if frac.contains("\\mathchoice") {
+                out.item(&frac);
+            } else {
+                out.item(&format!(
+                    "\\mathchoice{{\\textstyle{frac}}}{{{frac}}}{{{frac}}}{{{frac}}}"
+                ));
+            }
         } else {
             let spaced = num.items > 1 || den.items > 1;
             out.append(num);
@@ -788,6 +795,9 @@ mod tests {
         assert!(!pu_to_latex(&deep).is_empty());
         let slashes = "m/".repeat(5000);
         assert!(!pu_to_latex(&slashes).is_empty());
+        // Found by fuzzing: each `//` level wrote its fraction four times.
+        let fractions = "m//".repeat(40);
+        assert!(pu_to_latex(&fractions).len() < 20_000);
         let spaces = format!("1{}x m", " ".repeat(100_000));
         assert!(!pu_to_latex(&spaces).is_empty());
         let open = format!("m{}", "{".repeat(100_000));
