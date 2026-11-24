@@ -2711,10 +2711,13 @@ impl LatexCompactParser {
                         // math symbol (e.g. \langle, \Vert). Unknown command
                         // names are not valid delimiters and would produce
                         // unparseable output when written back.
-                        let ch = if name == "backslash" {
-                            Some('\\')
-                        } else {
-                            latex_to_unicode(name).or_else(|| package_delimiter(name))
+                        let ch = match name {
+                            "backslash" => Some('\\'),
+                            // TeX's extensible pieces, spelled as MathJax does.
+                            "arrowvert" => Some('\u{23D0}'),
+                            "Arrowvert" => Some('\u{2016}'),
+                            "bracevert" => Some('\u{23AA}'),
+                            _ => latex_to_unicode(name).or_else(|| package_delimiter(name)),
                         }
                         .ok_or_else(|| {
                             nom::Err::Error(nom::error::Error::new(
@@ -5705,8 +5708,8 @@ impl LatexCompactParser {
         };
         let factor = crate::ast::BIG_DELIM_SIZES
             .iter()
-            .find(|&&(_, cmd, _)| cmd == size)
-            .map_or(Rational::new(6, 5), |&(scale, ..)| scale);
+            .find(|big| big.command == size)
+            .map_or(Rational::new(6, 5), |big| big.scale);
         let atom_type = match class {
             "l" => Some(MathAtomType::Open),
             "r" => Some(MathAtomType::Close),
@@ -5739,7 +5742,24 @@ impl LatexCompactParser {
     /// `\lvert` stays an opening bar.
     #[inline(never)]
     fn parse_big_delim_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (rest, sid) = match self.parse_delimiter_into(input) {
+        let parsed = self.parse_delimiter_into(input).and_then(|(rest, sid)| {
+            let mut chars = self.arena.str_val(sid).chars();
+            let delimiter = match (chars.next(), chars.next()) {
+                (None, _) => true,
+                (Some(ch), None) => crate::unicode::symbols::is_tex_delimiter(ch),
+                _ => false,
+            };
+            if delimiter {
+                Ok((rest, sid))
+            } else {
+                // TeX and MathJax reject `\big+`, `\big&` or `\big\alpha`.
+                Err(nom::Err::Error(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Char,
+                )))
+            }
+        });
+        let (rest, sid) = match parsed {
             Ok(parsed) => parsed,
             // TeX rejects a command that is not a delimiter here. Keep reading
             // it as an ordinary element instead; the writer then drops the
@@ -5765,9 +5785,6 @@ impl LatexCompactParser {
             }
         });
         let kind = match (named_kind, delim.chars().next()) {
-            // `\big\int` is not a TeX delimiter either; read the operator
-            // with its scripts and body, as the fallback above does.
-            (Some(SymbolKind::LargeOp), _) => return self.parse_element(input),
             (Some(kind), _) => kind,
             (None, Some('(' | '[' | '{')) => SymbolKind::Open,
             (None, Some(')' | ']' | '}')) => SymbolKind::Close,

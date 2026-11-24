@@ -65,6 +65,9 @@ fn every_big_command_accepts_every_left_delimiter() {
         r"\lgroup",
         r"\rmoustache",
         r"\ulcorner",
+        r"\Arrowvert",
+        r"\arrowvert",
+        r"\bracevert",
         "⟦",
         "⟧",
         "⦃",
@@ -129,6 +132,33 @@ fn class_suffix_survives_latex_and_mathml_round_trips() {
     for command in all_commands() {
         let input = format!("a{command}( b");
         assert_eq!(via_mathml(&input), latex(&input), "{input}");
+    }
+}
+
+#[test]
+fn invalid_or_mixed_inputs_round_trip_stably() {
+    for (input, expected) in [
+        (
+            "\\biggm\u{230A}\\bigm \\\\\u{2983}",
+            r"\biggm\lfloor\\ \lBrace",
+        ),
+        (r"\big\alpha \big\le", r"\alpha\leq"),
+        (
+            r"\left\ulcorner x\right\urcorner",
+            r"\left\ulcorner x \right\urcorner",
+        ),
+    ] {
+        let first = latex(input);
+        assert_eq!(first, expected, "{input}");
+        assert_eq!(latex(&first), first, "{input}");
+    }
+    for input in [
+        r"\big+", r"\big=", r"\big'", r"\big^2", r"x\big_1", r"\big~",
+    ] {
+        assert!(
+            convert(input, Format::LaTeX, Format::LaTeX).is_err(),
+            "{input}"
+        );
     }
 }
 

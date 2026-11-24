@@ -60,15 +60,16 @@ fn mathml_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
         CompactNode::Scaled { factor, content } if big_delim_fast(arena, factor, content).is_some() => {
             None
         },
-        CompactNode::MathAtom {
-            atom_type: MathAtomType::Rel,
-            content,
-        } if matches!(
-            *arena.node(content),
-            CompactNode::Scaled { factor, content } if big_delim_fast(arena, factor, content).is_some()
-        ) =>
+        // `\bigl`/`\bigr`/`\bigm` round-trip through MathJax's texclass.
+        CompactNode::MathAtom { atom_type, content }
+            if big_delim_class(atom_type).is_some()
+                && matches!(
+                    *arena.node(content),
+                    CompactNode::Scaled { factor, content }
+                        if big_delim_fast(arena, factor, content).is_some()
+                ) =>
         {
-            Some("MathML annotates the TeX fence spacing class. Native operator spacing can differ.".into())
+            None
         },
         CompactNode::MathChoice { .. } => {
             Some("MathML output keeps only the applicable branch of \\mathchoice".into())
@@ -1340,8 +1341,8 @@ struct BigDelim<'a> {
 fn big_delim_size(factor: Rational) -> Option<&'static str> {
     BIG_DELIM_SIZES
         .iter()
-        .find(|&&(scale, ..)| scale == factor)
-        .map(|&(.., size)| size)
+        .find(|big| big.scale == factor)
+        .map(|big| big.mathjax)
 }
 
 fn big_delim(factor: Rational, content: &MathNode) -> Option<BigDelim<'_>> {
@@ -4098,11 +4099,8 @@ mod tests {
         let parsed = crate::from_latex(r"a\bigl( b\bigr) \Bigm| \bigg\| \Biggl.").unwrap();
         let heap = MathmlWriter::write(&parsed.expr(), &Config::default()).unwrap();
         assert_eq!(heap, mathml);
-        // Sized delimiters are represented without a loss diagnostic.
+        // Sized delimiters and their classes round-trip without a loss diagnostic.
         let (_, diagnostics) = parsed.to_mathml_with_diagnostics().unwrap();
-        assert!(
-            diagnostics.iter().all(|d| !d.message.contains("scalebox")),
-            "{diagnostics:?}"
-        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }

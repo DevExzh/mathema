@@ -2521,8 +2521,8 @@ fn big_delim_command(arena: &AstArena, factor: Rational, content: NodeId) -> Opt
     }
     crate::ast::BIG_DELIM_SIZES
         .iter()
-        .find(|&&(scale, ..)| scale == factor)
-        .map(|&(_, cmd, _)| cmd)
+        .find(|big| big.scale == factor)
+        .map(|big| big.command)
 }
 
 /// The class suffix of `\bigl`/`\bigr`/`\bigm` for an atom type.
@@ -2535,45 +2535,59 @@ fn big_delim_suffix(atom_type: MathAtomType) -> Option<char> {
     }
 }
 
-/// Write the delimiter after a `\big`-family command in a form that the
-/// delimiter reader accepts: a named command when one spells the glyph with
-/// the symbol's class (`\lvert`, `\llbracket`), else the `\left` spelling.
+/// Write the delimiter after a `\big`-family command, preferring a named
+/// command with the symbol's own class (`\lvert`, `\llbracket`).
 fn write_big_delim(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     let CompactNode::Symbol(kind, sid) = *arena.node(content) else {
         return;
     };
-    let delim = arena.str_val(sid);
-    let mut chars = delim.chars();
-    if let (Some(ch), None) = (chars.next(), chars.next())
-        && !matches!(ch, '\\' | '{' | '}' | '<' | '>')
-    {
-        let named = match (ch, kind) {
-            ('|', SymbolKind::Open) => Some("lvert"),
-            ('|', SymbolKind::Close) => Some("rvert"),
-            ('\u{2016}', SymbolKind::Open) => Some("lVert"),
-            ('\u{2016}', SymbolKind::Close) => Some("rVert"),
-            _ if ch.is_ascii() || ch == '\u{2016}' => None,
-            _ => match crate::unicode::symbols::unicode_to_latex_entry(ch) {
-                Some((name, class)) if class == kind => Some(name),
-                canonical => crate::unicode::symbols::command_for_class(ch, kind)
-                    .or(canonical.map(|(name, _)| name)),
-            },
-        };
-        if let Some(name) = named.filter(|name| latex_to_unicode(name) == Some(ch)) {
-            buf.push('\\');
-            buf.push_str(name);
-            return;
-        }
-        if let Some(name) = crate::latex::packages::package_command_for_symbol(delim, kind) {
-            buf.push('\\');
-            buf.push_str(name);
-            return;
-        }
-    }
-    write_delim(buf, delim);
+    write_delim_with_class(buf, arena.str_val(sid), Some(kind));
 }
 
-fn write_delim(buf: &mut LatexBuffer, delim: &str) {
+/// The control word that the delimiter reader maps back to the glyph `ch`,
+/// with the class `kind` when one is known. ASCII glyphs (and the escaped
+/// `\|`) keep their short spelling.
+fn delimiter_command(ch: char, kind: Option<SymbolKind>) -> Option<&'static str> {
+    match (ch, kind) {
+        ('|', Some(SymbolKind::Open)) => return Some("lvert"),
+        ('|', Some(SymbolKind::Close)) => return Some("rvert"),
+        ('\u{2016}', Some(SymbolKind::Open)) => return Some("lVert"),
+        ('\u{2016}', Some(SymbolKind::Close)) => return Some("rVert"),
+        ('\u{23D0}', _) => return Some("arrowvert"),
+        ('\u{23AA}', _) => return Some("bracevert"),
+        _ if ch.is_ascii() || ch == '\u{2016}' => return None,
+        _ => {},
+    }
+    let canonical = crate::unicode::symbols::unicode_to_latex_entry(ch);
+    let named = match (canonical, kind) {
+        (Some((name, class)), Some(kind)) if class == kind => Some(name),
+        (_, Some(kind)) => crate::unicode::symbols::command_for_class(ch, kind),
+        _ => None,
+    }
+    .or(canonical.map(|(name, _)| name))
+    .filter(|name| latex_to_unicode(name) == Some(ch));
+    if named.is_some() {
+        return named;
+    }
+    let mut utf8 = [0; 4];
+    let glyph: &str = ch.encode_utf8(&mut utf8);
+    kind.into_iter()
+        .chain([SymbolKind::Open, SymbolKind::Close, SymbolKind::Fence])
+        .find_map(|class| crate::latex::packages::package_command_for_symbol(glyph, class))
+}
+
+fn write_delim_with_class(buf: &mut LatexBuffer, delim: &str, kind: Option<SymbolKind>) {
+    let mut chars = delim.chars();
+    // Only TeX delimiters get a command name; any other glyph that the lenient
+    // reader allowed keeps its literal spelling.
+    if let (Some(ch), None) = (chars.next(), chars.next())
+        && crate::unicode::symbols::is_tex_delimiter(ch)
+        && let Some(name) = delimiter_command(ch, kind)
+    {
+        buf.push('\\');
+        buf.push_str(name);
+        return;
+    }
     match delim {
         "" => buf.push('.'),
         "\\" => buf.push_str("\\backslash"),
@@ -2584,14 +2598,12 @@ fn write_delim(buf: &mut LatexBuffer, delim: &str) {
         "{" => buf.push_str("\\{"),
         "}" => buf.push_str("\\}"),
         "\u{2016}" => buf.push_str("\\|"),
-        "\u{27E8}" => buf.push_str("\\langle"),
-        "\u{27E9}" => buf.push_str("\\rangle"),
-        "\u{230A}" => buf.push_str("\\lfloor"),
-        "\u{230B}" => buf.push_str("\\rfloor"),
-        "\u{2308}" => buf.push_str("\\lceil"),
-        "\u{2309}" => buf.push_str("\\rceil"),
         s => buf.push_str(s),
     }
+}
+
+fn write_delim(buf: &mut LatexBuffer, delim: &str) {
+    write_delim_with_class(buf, delim, None);
 }
 
 /// A leading-script base that is a nonzero math space; its scripts are
@@ -5076,6 +5088,35 @@ mod tests {
             (r"\big\uparrow", r"\big\uparrow"),
             (r"\big<", r"\big\langle"),
             (r"\mathopen{\big(}x\mathclose{\big)}", r"\bigl(x\bigr)"),
+            (r"\big\Arrowvert\big\arrowvert", r"\big\|\big\arrowvert"),
+            (r"\Bigl\bracevert x", r"\Bigl\bracevert x"),
+            (
+                r"\big\ulcorner x\big\urcorner",
+                r"\big\ulcorner x\big\urcorner",
+            ),
+        ] {
+            let first = roundtrip(input);
+            assert_eq!(first, expected, "{input}");
+            assert_eq!(roundtrip(&first), first, "{input}");
+        }
+    }
+
+    #[test]
+    fn left_delimiters_use_their_command_names() {
+        for (input, expected) in [
+            (
+                r"\left\ulcorner x\right\urcorner",
+                r"\left\ulcorner x \right\urcorner",
+            ),
+            (r"\left⟦ a\right⟧x", r"\left\llbracket a \right\rrbracket x"),
+            (
+                r"\left\Arrowvert x\right\bracevert",
+                r"\left\| x \right\bracevert",
+            ),
+            (
+                r"\left\langle x\middle⦀ y\right.",
+                r"\left\langle x \middle⦀ y \right.",
+            ),
         ] {
             let first = roundtrip(input);
             assert_eq!(first, expected, "{input}");

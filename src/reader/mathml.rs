@@ -2243,11 +2243,10 @@ impl OperatorAttributes {
         }
         crate::ast::BIG_DELIM_SIZES
             .iter()
-            .find(|&&(scale, _, size)| {
-                let mathjax = size.trim_end_matches("em").parse::<f64>().unwrap_or(0.0);
-                (min - mathjax).abs() < 5e-3 || (min - scale.as_f64()).abs() < 5e-3
+            .find(|size| {
+                (min - size.mathjax_em).abs() < 5e-3 || (min - size.scale.as_f64()).abs() < 5e-3
             })
-            .map(|&(scale, ..)| scale)
+            .map(|size| size.scale)
     }
 
     fn fence_role(&self) -> FenceRole {
@@ -2271,18 +2270,15 @@ fn writable_middle(text: &str) -> bool {
     })
 }
 
-/// A glyph the LaTeX writer can spell after `\big`: a null delimiter or one
-/// symbol character. A literal `.`, `<` or `>` would read back as the null
-/// delimiter or an angle bracket, so those stay ordinary operators.
+/// A null delimiter or one glyph that TeX accepts after `\big`, the same set
+/// the LaTeX reader accepts. Any other sized operator stays an operator.
 fn big_delim_glyph(text: &str) -> bool {
     let mut chars = text.chars();
-    chars.next().is_none_or(|c| {
-        chars.as_str().is_empty()
-            && !c.is_ascii_alphanumeric()
-            && !c.is_whitespace()
-            && !c.is_control()
-            && !matches!(c, '.' | '<' | '>')
-    })
+    match (chars.next(), chars.next()) {
+        (None, _) => true,
+        (Some(ch), None) => crate::unicode::symbols::is_tex_delimiter(ch),
+        _ => false,
+    }
 }
 
 fn known_fence_endpoint(text: &str) -> bool {
@@ -4813,10 +4809,18 @@ mod tests {
             r#"<math><mo minsize="1.5em" maxsize="1.5em">(</mo></math>"#,
             r#"<math><mo minsize="1.2em" maxsize="1.2em">ab</mo></math>"#,
             r#"<math><mo minsize="1.2em" maxsize="1.2em">.</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="1.2em">=</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="1.2em">+</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="1.2em">&amp;</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="1.2em">~</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="1.2em">∑</mo><mi>x</mi></math>"#,
+            r#"<math><mo minsize="2.047em" maxsize="2.047em">∫</mo><msup><mo>|</mo><mn>2</mn></msup></math>"#,
         ] {
             let latex =
                 crate::convert(source, crate::Format::MathML, crate::Format::LaTeX).unwrap();
             assert!(!latex.contains(r"\big"), "{source} -> {latex}");
+            let again = crate::convert(&latex, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+            assert_eq!(again, latex, "{source} is not stable");
         }
         // REL without a sized delimiter adds no class wrapper.
         let rel = r#"<math><mrow data-mjx-texclass="REL"><mi>x</mi></mrow></math>"#;

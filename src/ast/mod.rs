@@ -640,14 +640,46 @@ pub enum PhantomKind {
     SmashTop,
 }
 
-/// The `\big` family as stored in a `Scaled` node: the scale factor, the
-/// LaTeX command, and the `minsize`/`maxsize` MathJax writes for it (TeX's
-/// 8.5pt, 11.5pt, 14.5pt and 17.5pt boxes, relative to `\big`).
-pub(crate) const BIG_DELIM_SIZES: [(Rational, &str, &str); 4] = [
-    (Rational { num: 6, den: 5 }, "big", "1.2em"),
-    (Rational { num: 9, den: 5 }, "Big", "1.623em"),
-    (Rational { num: 12, den: 5 }, "bigg", "2.047em"),
-    (Rational { num: 3, den: 1 }, "Bigg", "2.470em"),
+/// One size of the `\big` family as stored in a `Scaled` node.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BigDelimSize {
+    /// Scale factor of the `Scaled` node.
+    pub scale: Rational,
+    /// LaTeX command name without the class suffix.
+    pub command: &'static str,
+    /// The `minsize`/`maxsize` MathJax writes (TeX's 8.5pt, 11.5pt, 14.5pt
+    /// and 17.5pt boxes, relative to `\big`).
+    pub mathjax: &'static str,
+    /// `mathjax` as a number of em.
+    pub mathjax_em: f64,
+}
+
+/// `\big`, `\Big`, `\bigg` and `\Bigg`.
+pub(crate) const BIG_DELIM_SIZES: [BigDelimSize; 4] = [
+    BigDelimSize {
+        scale: Rational { num: 6, den: 5 },
+        command: "big",
+        mathjax: "1.2em",
+        mathjax_em: 1.2,
+    },
+    BigDelimSize {
+        scale: Rational { num: 9, den: 5 },
+        command: "Big",
+        mathjax: "1.623em",
+        mathjax_em: 1.623,
+    },
+    BigDelimSize {
+        scale: Rational { num: 12, den: 5 },
+        command: "bigg",
+        mathjax: "2.047em",
+        mathjax_em: 2.047,
+    },
+    BigDelimSize {
+        scale: Rational { num: 3, den: 1 },
+        command: "Bigg",
+        mathjax: "2.470em",
+        mathjax_em: 2.47,
+    },
 ];
 
 /// TeX atom type for spacing classification (\mathord, \mathop, etc.).

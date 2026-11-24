@@ -962,6 +962,30 @@ pub(crate) fn command_for_class(ch: char, kind: SymbolKind) -> Option<&'static s
     .copied()
 }
 
+/// Whether `ch` is a delimiter TeX accepts after `\left` or `\big`: an
+/// opening, closing or fence glyph, a slash or backslash, a vertical arrow, or
+/// one of the extensible pieces (`\arrowvert`, `\bracevert`) and corners.
+pub(crate) fn is_tex_delimiter(ch: char) -> bool {
+    matches!(
+        ch,
+        '(' | ')'
+            | '/'
+            | '\\'
+            | '|'
+            | '\u{2016}'
+            | '\u{2191}'
+            | '\u{2193}'
+            | '\u{2195}'
+            | '\u{21D1}'
+            | '\u{21D3}'
+            | '\u{21D5}'
+            | '\u{231C}'..='\u{231F}' | '\u{23AA}' | '\u{23D0}'
+    ) || matches!(
+        mapped_symbol_kind(ch),
+        Some(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence)
+    )
+}
+
 /// Look up the math symbol kind for a Unicode character.
 #[inline]
 pub fn symbol_kind(ch: char) -> SymbolKind {

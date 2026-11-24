@@ -589,6 +589,10 @@ mod tests {
             ("\\big\\{", "{", SymbolKind::Open),
             ("\\big\\lvert", "|", SymbolKind::Open),
             ("\\big\\ulcorner", "\u{231C}", SymbolKind::Open),
+            ("\\big\\Arrowvert", "\u{2016}", SymbolKind::Fence),
+            ("\\big\\arrowvert", "\u{23D0}", SymbolKind::Fence),
+            ("\\big\\bracevert", "\u{23AA}", SymbolKind::Fence),
+            ("\\big\\lt", "⟨", SymbolKind::Open),
         ] {
             let node = parse_one(source);
             let inner = match &node {
@@ -603,6 +607,43 @@ mod tests {
                 &MathNode::Symbol(kind, glyph.into()),
                 "{source}"
             );
+        }
+    }
+
+    #[test]
+    fn big_rejects_symbols_that_are_not_delimiters() {
+        // TeX and MathJax reject these; Strict mode keeps rejecting them.
+        for source in [
+            "\\big+",
+            "\\big=",
+            "\\big'",
+            "\\big^2",
+            "x\\big_1",
+            "\\big~",
+            "\\big\u{1}",
+            "\\big\u{2061}",
+            "\\big\u{FEFF}",
+            "\\big\u{301}",
+            "\\begin{array}{cc} a\\big& b \\end{array}",
+            "\\begin{aligned} a \\big&= b \\end{aligned}",
+        ] {
+            let result = LatexReader::parse(source, &Config::default());
+            assert!(result.is_err(), "{source} parsed: {result:?}");
+        }
+    }
+
+    #[test]
+    fn big_before_a_non_delimiter_command_writes_the_command_alone() {
+        for (source, expected) in [
+            ("\\big\\alpha", "\\alpha"),
+            ("\\big\\infty", "\\infty"),
+            ("\\big\\cdot", "\\cdot"),
+            ("\\big\\le", "\\leq"),
+            ("\\bigl\\alpha x", "\\alpha x"),
+        ] {
+            let config = Config::default();
+            let parsed = LatexReader::parse(source, &config).unwrap();
+            assert_eq!(LatexWriter::write(&parsed.expr, &config).unwrap(), expected);
         }
     }
 
