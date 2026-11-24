@@ -720,6 +720,18 @@ impl CompactParser {
             {
                 start = start.min(opener);
             }
+            // A zero-width space after other factors is an empty atom, not a
+            // null numerator.
+            if ids.len() - start > 1
+                && matches!(*self.arena.node(last), CompactNode::Row(span) if span.is_empty())
+            {
+                let atom = self.push_node(CompactNode::MathAtom {
+                    atom_type: MathAtomType::Ord,
+                    content: last,
+                });
+                ids.pop();
+                ids.push(atom);
+            }
             let num = if ids.len() - start == 1 {
                 self.unparenthesized(last)
             } else {
@@ -820,17 +832,22 @@ impl CompactParser {
             rest = after;
         }
         if factors.last().is_some_and(|&id| self.is_run_factor(id)) {
-            // Section 3.5: a function name is recognized as such, so it ends
-            // the run (`x^2sin x` is `x^2` and `sin x`), as it does inside
-            // parentheses.
-            while rest.starts_with(is_run_char)
-                && crate::unicode::symbols::unicode_math_operator_prefix(rest).is_none()
+            // UTN #28 does not say where a run meets a function name: section
+            // 2.2 takes the whole run and section 3.5 recognizes function
+            // names. Here the run ends before a maximal span of letters that
+            // is a function name in full (`x^2sin x`), and goes on through
+            // one that merely ends in a name (`x_kmax`, `x_basin`).
+            let read = &input[..input.len() - rest.len()];
+            let mut after_letter = read.chars().next_back().is_some_and(is_run_letter);
+            while let Some(c) = rest.chars().next().filter(|&c| is_run_char(c))
+                && (after_letter || !starts_function_span(rest))
             {
                 let (after, id) = self.parse_single_char_node(rest)?;
                 let (after, id) = self.with_accents(after, id);
                 self.tick(1);
                 factors.push(id);
                 rest = after;
+                after_letter = is_run_letter(c);
             }
         }
         Ok((rest, factors))
@@ -1219,7 +1236,7 @@ impl CompactParser {
             parse_symbol,
             parse_identifier,
             parse_prime,
-            parse_zero_width_space,
+            parse_zero_width_atom,
             parse_literal_solidus,
         );
         Err(nom::Err::Error(nom::error::Error::new(
@@ -1386,6 +1403,10 @@ impl CompactParser {
     fn is_plain_compound(&self, id: NodeId) -> bool {
         match *self.arena.node(id) {
             CompactNode::Fraction { .. } => true,
+            // An n-ary operator with its n-aryand (`〖∏ cos〗_i`).
+            CompactNode::Nary { body, .. } => {
+                !matches!(*self.arena.node(body), CompactNode::Row(span) if span.is_empty())
+            },
             CompactNode::Row(span) if span.is_empty() => false,
             CompactNode::Row(span) => !self.arena.children(span).iter().any(|&child| {
                 matches!(
@@ -2095,6 +2116,23 @@ impl CompactParser {
         Ok((rest, self.push_node(CompactNode::Row(NodeSpan::EMPTY))))
     }
 
+    /// A zero-width space outside a null argument: an empty ordinary atom
+    /// (LaTeX `\mathord{}`), which keeps the letters around it apart.
+    fn parse_zero_width_atom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, null) = self.parse_zero_width_space(input)?;
+        if starts_script(rest)
+            || rest.starts_with(['/', '\u{A6}', '┬', '┴'])
+            || unicode_accent_suffix(rest).is_some()
+        {
+            return Ok((rest, null));
+        }
+        let atom = CompactNode::MathAtom {
+            atom_type: MathAtomType::Ord,
+            content: null,
+        };
+        Ok((rest, self.push_node(atom)))
+    }
+
     fn parse_single_char_node<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         try_alt!(
             self,
@@ -2232,6 +2270,39 @@ pub(crate) fn breaks_naryand(c: char) -> bool {
 /// (UTN #28 section 2.2).
 pub(crate) fn is_run_char(c: char) -> bool {
     c.is_ascii_digit() || (c.is_alphabetic() && !is_math_symbol(c) && !is_nary_char(c))
+}
+
+fn is_run_letter(c: char) -> bool {
+    is_run_char(c) && !c.is_ascii_digit()
+}
+
+/// Whether the maximal span of letters at the start of `text` is the name of
+/// a function.
+fn starts_function_span(text: &str) -> bool {
+    let end = text.find(|c: char| !is_run_letter(c)).unwrap_or(text.len());
+    crate::unicode::symbols::unicode_math_operator_prefix(&text[..end])
+        .is_some_and(|(word, _)| word.len() == end)
+}
+
+/// Whether the reader takes `text` (letters and digits) as one script
+/// operand: it does not end at a function name in it, nor is it a function
+/// name itself. The writer decides by the same rule.
+pub(crate) fn reads_as_script_run(text: &str) -> bool {
+    let mut after_letter = false;
+    for (index, c) in text.char_indices() {
+        if !is_run_char(c) {
+            return false;
+        }
+        // At the start only a name with nothing after it is a function.
+        if !after_letter
+            && starts_function_span(&text[index..])
+            && (index > 0 || text.chars().all(is_run_letter))
+        {
+            return false;
+        }
+        after_letter = is_run_letter(c);
+    }
+    !text.is_empty()
 }
 
 /// Whether `c` starts the operand of a sign that begins a script operand

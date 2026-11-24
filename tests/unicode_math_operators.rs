@@ -17,6 +17,33 @@ fn mathml_body(input: &str, from: Format) -> String {
     mathml[start..end].to_owned()
 }
 
+fn expect(found: &str, wanted: &str) -> Result<(), String> {
+    if found == wanted {
+        Ok(())
+    } else {
+        Err(format!("found {found:?}, wanted {wanted:?}"))
+    }
+}
+
+/// Run `check_row` on every row and report all that fail.
+fn check<T: std::fmt::Debug>(rows: &[T], check_row: impl Fn(&T) -> Result<(), String>) {
+    let failures: Vec<String> = rows
+        .iter()
+        .filter_map(|row| {
+            check_row(row)
+                .err()
+                .map(|error| format!("{row:?}: {error}"))
+        })
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} of {} rows failed:\n{}",
+        failures.len(),
+        rows.len(),
+        failures.join("\n")
+    );
+}
+
 /// UnicodeMath input, its UnicodeMath spelling and its LaTeX.
 const READS: &[(&str, &str, &str)] = &[
     // Section 2.2: "A simple subscript operand consists of the string of
@@ -36,8 +63,14 @@ const READS: &[(&str, &str, &str)] = &[
     ("x^2sin x", "x^2 sin x", r"x^{2}\sin x"),
     ("x_1sin x", "x_1 sin x", r"x_{1}\sin x"),
     ("x_2cos θ", "x_2 cos θ", r"x_{2}\cos \theta"),
-    ("e^isin θ", "e^i sin θ", r"e^i\sin \theta"),
-    ("x_ilog n", "x_i log n", r"x_i\log n"),
+    // Only a whole span of letters is a function name.
+    ("e^isin θ", "e^isin θ", r"e^{isin}\theta"),
+    ("x_kmax", "x_kmax", r"x_{kmax}"),
+    ("x_rmin", "x_rmin", r"x_{rmin}"),
+    ("x_admin", "x_admin", r"x_{admin}"),
+    ("x_basin", "x_basin", r"x_{basin}"),
+    ("x_max1/y", "x_max1/y", r"\frac{x_{max1}}{y}"),
+    ("x^1sin1", "x^1 s in1", r"x^{1}sin1"),
     ("x_max", "x_max", r"x_{\max}"),
     // A run is one operand of a bound too.
     (
@@ -99,20 +132,18 @@ const READS: &[(&str, &str, &str)] = &[
 
 #[test]
 fn unicode_math_operands_read_and_write_back() {
-    for &(input, written, latex) in READS {
-        assert_eq!(unicode_math(input), written, "{input}");
-        assert_eq!(unicode_math(written), written, "{input}: {written}");
-        assert_eq!(
-            convert(input, Format::UnicodeMath, Format::LaTeX).unwrap(),
+    check(READS, |&(input, written, latex)| {
+        expect(&unicode_math(input), written)?;
+        expect(&unicode_math(written), written)?;
+        expect(
+            &convert(input, Format::UnicodeMath, Format::LaTeX).unwrap(),
             latex,
-            "{input}"
-        );
-        assert_eq!(
-            mathml_body(written, Format::UnicodeMath),
-            mathml_body(input, Format::UnicodeMath),
-            "{input}: {written}"
-        );
-    }
+        )?;
+        expect(
+            &mathml_body(written, Format::UnicodeMath),
+            &mathml_body(input, Format::UnicodeMath),
+        )
+    });
 }
 
 /// LaTeX whose UnicodeMath spelling reads back as the same MathML.
@@ -134,17 +165,15 @@ const LATEX: &[(&str, &str)] = &[
 
 #[test]
 fn latex_operands_survive_unicode_math() {
-    for &(input, written) in LATEX {
+    check(LATEX, |&(input, written)| {
         let unicode = convert(input, Format::LaTeX, Format::UnicodeMath).unwrap();
-        assert_eq!(unicode, written, "{input}");
-        assert_eq!(unicode_math(&unicode), unicode, "{input}");
-        let strip = |mathml: String| mathml.replacen(" display=\"block\"", "", 1);
-        assert_eq!(
-            mathml_body(&unicode, Format::UnicodeMath),
-            strip(mathml_body(input, Format::LaTeX)),
-            "{input}: {unicode}"
-        );
-    }
+        expect(&unicode, written)?;
+        expect(&unicode_math(&unicode), written)?;
+        expect(
+            &mathml_body(&unicode, Format::UnicodeMath),
+            &mathml_body(input, Format::LaTeX),
+        )
+    });
 }
 
 /// LaTeX `\int \sin x \, dx` keeps the thin space before `dx`, which would
@@ -152,8 +181,7 @@ fn latex_operands_survive_unicode_math() {
 #[test]
 fn a_thin_space_keeps_the_differential_apart() {
     let unicode = convert("\\int \\sin x \\, dx", Format::LaTeX, Format::UnicodeMath).unwrap();
-    // LaTeX's integrand is `\sin` alone; grouped, `x` stays after it.
-    assert_eq!(unicode, "∫ 〖sin〗 x\u{2009}dx");
+    assert_eq!(unicode, "∫ sin x\u{2009}dx");
     let mathml = mathml_body(&unicode, Format::UnicodeMath);
     assert!(mathml.contains("<mspace"), "{mathml}");
     assert!(!mathml.contains("xdx"), "{mathml}");
@@ -162,23 +190,95 @@ fn a_thin_space_keeps_the_differential_apart() {
 /// A script that is only a sign is set apart from an operand after it.
 #[test]
 fn a_sign_script_is_set_apart_from_an_operand() {
-    for (input, written) in [("x^-(y)", "x^− (y)"), ("x^- 1", "x^− 1")] {
-        let unicode = convert(input, Format::LaTeX, Format::UnicodeMath).unwrap();
-        assert_eq!(unicode, written, "{input}");
-        // The superscript is the sign alone.
-        let mathml = mathml_body(&unicode, Format::UnicodeMath);
-        let sup = &mathml[mathml.find("<msup>").unwrap()..mathml.find("</msup>").unwrap()];
-        assert!(!sup.contains("<mrow>"), "{input}: {mathml}");
-    }
+    check(
+        &[("x^-(y)", "x^− (y)"), ("x^- 1", "x^− 1")],
+        |&(input, written)| {
+            let unicode = convert(input, Format::LaTeX, Format::UnicodeMath).unwrap();
+            expect(&unicode, written)?;
+            // The superscript is the sign alone.
+            let mathml = mathml_body(&unicode, Format::UnicodeMath);
+            let sup = &mathml[mathml.find("<msup>").unwrap()..mathml.find("</msup>").unwrap()];
+            if sup.contains("<mrow>") {
+                return Err(mathml);
+            }
+            Ok(())
+        },
+    );
 }
 
-/// UnicodeMath has no negative space: LaTeX `\!` is dropped (an ASCII
-/// space only separates), not written as a positive thin space.
+/// UnicodeMath has no negative space: LaTeX `\!` is a zero-width space
+/// (section 3.16), which keeps the operands apart, or an empty operand.
 #[test]
 fn a_negative_space_is_dropped() {
-    let unicode = convert("x\\!y", Format::LaTeX, Format::UnicodeMath).unwrap();
-    assert_eq!(unicode, "x y");
-    assert!(!mathml_body(&unicode, Format::UnicodeMath).contains("mspace"));
+    check(
+        &[
+            ("x\\!y", "x\u{200B}y"),
+            ("\\frac{a\\!b}{c}", "(a\u{200B}b)/c"),
+            ("x_{a\\!b}", "x_(a\u{200B}b)"),
+            ("\\sqrt{a\\!b}", "√(a\u{200B}b)"),
+            ("x^{\\!}", "x^〖〗"),
+            ("\\sqrt{\\!}", "√〖〗"),
+        ],
+        |&(latex, written)| {
+            let unicode = convert(latex, Format::LaTeX, Format::UnicodeMath).unwrap();
+            let mathml = mathml_body(&unicode, Format::UnicodeMath);
+            expect(&unicode, written)?;
+            expect(&unicode_math(&unicode), written)?;
+            if mathml.contains("mspace") || mathml.contains("fence") || mathml.contains(">ab<") {
+                return Err(mathml);
+            }
+            Ok(())
+        },
+    );
+}
+
+/// LaTeX scripts that spell function names read back whole.
+#[test]
+fn latex_scripts_with_function_names_survive() {
+    check(
+        &[
+            ("x_{max1}", "x_max1"),
+            ("T_{min0}", "T_min0"),
+            ("a_{log10}", "a_log10"),
+            ("x_{sin2}y", "x_sin2 y"),
+            ("x_{kmax}", "x_kmax"),
+            ("x_{max}", "x_(m ax)"),
+            ("x_{1sin}", "x_(1s in)"),
+            ("x_{1sin1}", "x_(1s in1)"),
+            ("\\frac{kmax}{2}", "(km ax)/2"),
+            // A script before an empty group or in a prescripted base ends
+            // before the next letter.
+            ("\\sideset{_1}{}\\alpha_1^2z", "(_1)α_1^2 z"),
+            ("\\sum =^max", "∑ =^m ax"),
+        ],
+        |&(latex, written)| {
+            let unicode = convert(latex, Format::LaTeX, Format::UnicodeMath).unwrap();
+            expect(&unicode, written)?;
+            expect(&unicode_math(&unicode), written)?;
+            expect(
+                &mathml_body(&unicode, Format::UnicodeMath),
+                &mathml_body(latex, Format::LaTeX),
+            )
+        },
+    );
+}
+
+/// A function name ending an n-aryand is grouped only before a script that
+/// would otherwise join it.
+#[test]
+fn a_function_before_a_baseless_script_is_grouped() {
+    check(
+        &[
+            ("\\sum \\log k", "∑ log k"),
+            ("\\int \\sin x", "∫ sin x"),
+            ("\\prod\\cos{}_i", "∏ 〖cos〗 〖〗_i"),
+        ],
+        |&(latex, written)| {
+            let unicode = convert(latex, Format::LaTeX, Format::UnicodeMath).unwrap();
+            expect(&unicode, written)?;
+            expect(&unicode_math(&unicode), written)
+        },
+    );
 }
 
 /// A word that spells a function name is written so that it reads back as
@@ -186,9 +286,9 @@ fn a_negative_space_is_dropped() {
 #[test]
 fn a_word_is_not_written_as_a_function_name() {
     let mathml = |input: &str| mathml_body(input, Format::UnicodeMath);
-    for input in ["*i nf(x)", "x_(s in)"] {
+    check(&["*i nf(x)", "x_(s in)"], |&input| {
         let written = unicode_math(input);
-        assert_eq!(mathml(&written), mathml(input), "{input}: {written}");
-        assert_eq!(unicode_math(&written), written, "{input}");
-    }
+        expect(&mathml(&written), &mathml(input))?;
+        expect(&unicode_math(&written), &written)
+    });
 }

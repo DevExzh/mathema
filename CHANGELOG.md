@@ -50,11 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped outside brackets, so `x`, U+2009, `dx` read as the word `xdx`). The
   UnicodeMath writer writes such script operands without parentheses
   (`a_ij`, `e^-x`), writes LaTeX spaces with the character of their width
-  (`\;` is U+2005, `\:` U+205F; the negative `\!` is dropped, as
-  UnicodeMath has no negative space), keeps a sign-only script apart from
-  an operand after it (`x^- y`), groups an n-aryand that ends in a function
-  name (LaTeX `\sum \log k` is `∑ 〖log〗 k`, whose integrand is `\log`
-  alone), and breaks a word that spells a function name (`i nf`).
+  (`\;` is U+2005, `\:` U+205F; the negative `\!` is the zero-width space
+  U+200B, read back as an empty atom), keeps a sign-only script apart from
+  an operand after it (`x^- y`), and breaks a word that would read as a
+  function name (`i nf`). A script run goes on through a span of letters
+  that only ends in a function name (`x_kmax`, `x_max1`).
 
 - **Breaking (behavior):** `\above` and `\abovewithdelims` need a
   dimension, as in TeX ("Missing number") and MathJax ("Missing
