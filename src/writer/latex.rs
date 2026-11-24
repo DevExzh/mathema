@@ -1097,6 +1097,32 @@ fn latex_color(name: &str) -> Option<ColorArgument<'_>> {
     }
 }
 
+/// A `\colorbox`/`\fcolorbox` color is written verbatim inside braces, so it
+/// must read back as one braced argument: balanced braces, no unescaped `%`
+/// (a comment) and no trailing unpaired backslash (which would escape the
+/// closing `}`). Any other spec is returned as `""`, meaning "no color".
+fn box_color_argument(spec: &str) -> &str {
+    let mut depth = 0usize;
+    let mut escaped = false;
+    for b in spec.bytes() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match b {
+            b'\\' => escaped = true,
+            b'{' => depth += 1,
+            b'}' => match depth.checked_sub(1) {
+                Some(d) => depth = d,
+                None => return "",
+            },
+            b'%' => return "",
+            _ => {},
+        }
+    }
+    if escaped || depth != 0 { "" } else { spec }
+}
+
 fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(sid) => {
@@ -1809,8 +1835,10 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             bg_color,
             border_color,
         } => {
-            let bg = arena.str_val(bg_color);
-            let border = arena.str_val(border_color);
+            // A spec that would not read back as the same braced argument
+            // is dropped, so the box keeps whichever color still reads back.
+            let bg = box_color_argument(arena.str_val(bg_color));
+            let border = box_color_argument(arena.str_val(border_color));
             if !bg.is_empty() && !border.is_empty() {
                 // \fcolorbox{border}{bg}{content}
                 buf.push_str("\\fcolorbox{");
@@ -3533,6 +3561,41 @@ mod tests {
         let config = Config::default();
         let parsed = LatexReader::parse(input, &config).unwrap();
         LatexWriter::write(&parsed.expr, &config).unwrap()
+    }
+
+    #[test]
+    fn box_colors_that_would_not_read_back_are_dropped() {
+        // A box color is written verbatim, so one that would not read back
+        // as a single braced argument is left out; the box keeps any color
+        // that does, and every output re-parses.
+        let boxed = |bg: Option<&str>, border: Option<&str>| {
+            let expr = MathExpr::new(
+                vec![MathNode::Boxed {
+                    content: Box::new(MathNode::Identifier("x".into())),
+                    bg_color: bg.map(Into::into),
+                    border_color: border.map(Into::into),
+                }],
+                DisplayStyle::Inline,
+            );
+            LatexWriter::write(&expr, &Config::default()).unwrap()
+        };
+        for (bg, border, want) in [
+            (Some(r"a\"), None, r"\boxed{x}"),
+            (Some("a}"), None, r"\boxed{x}"),
+            (Some("{a"), None, r"\boxed{x}"),
+            (Some("a%b"), None, r"\boxed{x}"),
+            (Some(r"a\ "), None, r"\colorbox{a\ }{x}"),
+            (Some(r"a\%"), None, r"\colorbox{a\%}{x}"),
+            (Some("{red}"), None, r"\colorbox{{red}}{x}"),
+            (Some("red"), Some(r"b\"), r"\colorbox{red}{x}"),
+            (Some(r"r\"), Some("blue"), r"\boxed{x}"),
+            (Some("red"), Some("blue"), r"\fcolorbox{blue}{red}{x}"),
+        ] {
+            let out = boxed(bg, border);
+            assert_eq!(out, want, "{bg:?} {border:?}");
+            LatexReader::parse(&out, &Config::default())
+                .unwrap_or_else(|e| panic!("{out:?} does not re-parse: {e}"));
+        }
     }
 
     #[test]

@@ -5100,6 +5100,7 @@ fn color_spec_ending_in_control_space_round_trips() {
         (r"\fcolorbox{a\ }{\ }J", r"\fcolorbox{a\ }{\ }{J}"),
         ("\\colorbox{a\\\t}J", "\\colorbox{a\\\t}{J}"),
         (r"\colorbox{a\\ }J", r"\colorbox{a\\}{J}"),
+        ("\\colorbox{a\\\u{3000}}J", "\\colorbox{a\\\u{3000}}{J}"),
         (
             r"\begin{array}{c}\cellcolor{a\ }b\end{array}",
             r"\begin{array}{c} \colorbox{a\ }{b} \end{array}",
@@ -5126,5 +5127,51 @@ fn color_spec_ending_in_control_space_round_trips() {
         normalize_compact_expr(&mut r2.expr).unwrap();
         let out2 = LatexWriter::write_compact(&r2.expr, &config).unwrap();
         assert_eq!(out1, out2, "{input}");
+    }
+}
+
+#[test]
+fn color_names_with_a_control_space_are_defined_and_looked_up_alike() {
+    // A user color's name is stored with the same escape-aware trim its
+    // lookup uses, so `a\ ` names the defined color rather than itself.
+    for (input, expected) in [
+        (
+            r"\definecolor{a\ }{rgb}{1,0,0}\colorbox{a\ }{J}",
+            r"\colorbox{#ff0000}{J}",
+        ),
+        (
+            r"\colorlet{c\ }{red}\colorbox{c\ }{J}",
+            r"\colorbox{#ff0000}{J}",
+        ),
+        (
+            r"\colorlet{c\ }{red}\colorbox{c\ !50}{J}",
+            r"\colorbox{#ff8080}{J}",
+        ),
+        (
+            r"\definecolor{q}{rgb}{1,0,0}\colorbox{ q }{J}",
+            r"\colorbox{#ff0000}{J}",
+        ),
+    ] {
+        let out = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(out, expected, "{input}");
+    }
+}
+
+#[test]
+fn color_with_an_unresolved_model_resolves_like_a_named_color() {
+    // When `[model]{spec}` does not resolve, the spec is resolved as a plain
+    // color (mixing, hex case), so the written form reads back unchanged.
+    for (input, expected) in [
+        (r"\color[rgb]{#FF00aa}x", r"\textcolor[HTML]{ff00aa}{x}"),
+        (
+            r"\textcolor[gray]{blue!50}{x}",
+            r"\textcolor[HTML]{8080ff}{x}",
+        ),
+        (r"\color[foo]{red}x", r"\textcolor{red}{x}"),
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, expected, "{input}");
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{input}");
     }
 }

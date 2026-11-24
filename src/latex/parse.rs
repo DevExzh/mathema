@@ -1520,6 +1520,8 @@ fn braced_text(input: &str) -> IResult<&str, &str> {
 /// would skip it, but keep a whitespace character escaped by an odd run of
 /// backslashes: `a\ ` is a control space, and trimming it to `a\` would
 /// leave a dangling backslash that escapes the `}` written after it.
+/// Like the `str::trim` it replaces, it trims Unicode `White_Space`, while
+/// TeX itself skips only spaces, tabs and newlines.
 fn trim_tex_text(text: &str) -> &str {
     let text = text.trim_start();
     let trimmed = text.trim_end();
@@ -6219,7 +6221,7 @@ impl LatexCompactParser {
             let (input, spec) = braced_text(input)?;
             let resolved = crate::css_colors::resolve_color_model(model.trim(), spec.trim())
                 .map(crate::css_colors::rgb_to_hex)
-                .unwrap_or_else(|| trim_tex_text(spec).to_string());
+                .unwrap_or_else(|| self.resolve_color(spec));
             Ok((input, resolved))
         } else {
             let (input, name) = braced_text(input)?;
@@ -6257,7 +6259,7 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         let (input, spec) = braced_text(input)?;
         if let Some(rgb) = crate::css_colors::resolve_color_model(model.trim(), spec.trim()) {
-            self.colors.insert(name.trim().to_string(), rgb);
+            self.colors.insert(trim_tex_text(name).to_string(), rgb);
         }
         Ok((
             input,
@@ -6272,8 +6274,8 @@ impl LatexCompactParser {
         let (input, name) = braced_text(input)?;
         let (input, _) = ws(input)?;
         let (input, expr) = braced_text(input)?;
-        if let Some(rgb) = self.resolve_color_rgb(expr.trim()) {
-            self.colors.insert(name.trim().to_string(), rgb);
+        if let Some(rgb) = self.resolve_color_rgb(expr) {
+            self.colors.insert(trim_tex_text(name).to_string(), rgb);
         }
         Ok((
             input,
@@ -6309,7 +6311,7 @@ impl LatexCompactParser {
     /// Resolve a color token (xcolor expression, user color, named CSS color,
     /// hex, or `rgb(...)`) into RGB bytes.
     fn resolve_color_rgb(&self, token: &str) -> Option<[u8; 3]> {
-        let token = token.trim();
+        let token = trim_tex_text(token);
         if token.contains('!') {
             return self.resolve_color_expr(token);
         }
@@ -6318,7 +6320,7 @@ impl LatexCompactParser {
 
     /// Resolve a single (non-mixed) color reference to RGB bytes.
     fn resolve_color_base(&self, token: &str) -> Option<[u8; 3]> {
-        let token = token.trim();
+        let token = trim_tex_text(token);
         if let Some(rgb) = self.colors.get(token) {
             return Some(*rgb);
         }
@@ -6329,11 +6331,11 @@ impl LatexCompactParser {
     /// `a!p` is shorthand for `a!p!white`.
     fn resolve_color_expr(&self, expr: &str) -> Option<[u8; 3]> {
         let mut parts = expr.split('!');
-        let mut cur = self.resolve_color_base(parts.next()?.trim())?;
+        let mut cur = self.resolve_color_base(parts.next()?)?;
         while let Some(pct_s) = parts.next() {
             let pct: f64 = pct_s.trim().parse().ok()?;
             let other = match parts.next() {
-                Some(name) => self.resolve_color_base(name.trim())?,
+                Some(name) => self.resolve_color_base(name)?,
                 None => [255, 255, 255], // mix toward white
             };
             cur = crate::css_colors::mix_rgb(cur, other, pct);
