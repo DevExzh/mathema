@@ -2628,3 +2628,67 @@ fn text_svg_draws_large_big_delimiter_paths_at_their_chosen_size() {
     // i.e. the 16px em).
     assert_eq!(path_scale(r"\left( \frac{a}{b} \right)"), 16.0);
 }
+
+/// A leading script is placed by the nucleus, not by its trailing scripts.
+#[test]
+fn leading_scripts_ignore_trailing_ones() {
+    let id = |s: &str| Box::new(MathNode::Identifier(s.into()));
+    let scripted: Vec<MathNode> = vec![
+        MathNode::Identifier("t".into()),
+        MathNode::Subscript {
+            base: id("t"),
+            sub: id("m"),
+        },
+        MathNode::SubSup {
+            base: id("t"),
+            sub: Box::new(MathNode::Fraction {
+                kind: FractionKind::Normal,
+                num: id("a"),
+                den: id("b"),
+            }),
+            sup: id("n"),
+        },
+        MathNode::Subscript {
+            base: Box::new(MathNode::Superscript {
+                base: id("t"),
+                sup: id("n"),
+            }),
+            sub: id("m"),
+        },
+    ];
+    // The leading scripts come first in the box: their offsets.
+    let offsets = |base: &MathNode, sub: bool, sup: bool| -> Vec<f64> {
+        let expr = MathExpr::inline(vec![MathNode::PreScripts {
+            base: Box::new(base.clone()),
+            pre_sub: sub.then(|| id("d")),
+            pre_sup: sup.then(|| id("e")),
+        }]);
+        let root = layout_expr(&expr, MathStyle::Text, &default_options());
+        fn find(layout: &LayoutBox, count: usize) -> Option<Vec<f64>> {
+            let BoxKind::HBox { children } = &layout.kind else {
+                return None;
+            };
+            if children.len() == count + 1 {
+                return Some(children[..count].iter().map(|c| c.dy).collect());
+            }
+            children.iter().find_map(|c| find(&c.layout, count))
+        }
+        find(&root, usize::from(sub) + usize::from(sup)).unwrap()
+    };
+    for (sub, sup) in [(true, false), (false, true), (true, true)] {
+        let plain = offsets(&scripted[0], sub, sup);
+        for base in &scripted[1..] {
+            assert_eq!(offsets(base, sub, sup), plain, "{base:?}");
+        }
+    }
+    for latex in [
+        r"{}_a t_b",
+        r"{}_a^c t_b^d",
+        r"{}^c {t^n}_m",
+        r"{}_a \sum_i^n x",
+        r"{}_a \overbrace{xy}^n",
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        assert_arena_heap_equivalent(latex, MathStyle::Display);
+    }
+}

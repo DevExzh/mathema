@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Rendering: a leading script is placed by its nucleus alone, as TeX sets
+  `{}_a t_b`; trailing scripts pushed it further down or up.
+- MTEF writer: stretchy bar accents over several letters no longer warn as
+  narrow accents, and MTEF 5 writes a strike under an accent in its own
+  direction.
 - The MTEF writer writes an accent on one styled letter (`\tilde{\mathbf A}`,
   also over `\mathfrak`, `\mathcal` capitals and `\boldsymbol`) or on a struck
   letter as the character's embellishment, as on a plain letter; it came back

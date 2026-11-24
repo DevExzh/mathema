@@ -447,6 +447,65 @@ pub(super) fn layout_subsup_from_box_heap(
     }
 }
 
+/// The box of the nucleus a leading script belongs to: `base` without its
+/// trailing scripts, whose box is the first child of the scripted one. TeX
+/// sets `{}_a t_b` as two scripts, each placed by the nucleus alone.
+fn nucleus_box<'a>(base: &MathNode, base_box: &'a LayoutBox, ctx: &LayoutCtx) -> &'a LayoutBox {
+    let (mut node, mut current) = (base, base_box);
+    while let MathNode::Subscript { base: inner, .. }
+    | MathNode::Superscript { base: inner, .. }
+    | MathNode::SubSup { base: inner, .. } = node
+    {
+        // Limits and brace labels are stacked, not scripts beside the base.
+        if wants_limits_above_below(inner, ctx.branch_style())
+            || matches!(
+                **inner,
+                MathNode::Overscript { .. } | MathNode::Underscript { .. }
+            )
+        {
+            break;
+        }
+        let BoxKind::HBox { children } = &current.kind else {
+            break;
+        };
+        let Some(first) = children.first() else { break };
+        (node, current) = (inner, &first.layout);
+    }
+    current
+}
+
+/// Compact-AST version of `nucleus_box`.
+fn nucleus_box_arena(
+    ast: &AstArena,
+    base: NodeId,
+    base_id: LayoutBoxId,
+    arena: &LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
+    let (mut node, mut current) = (base, base_id);
+    while let CompactNode::Subscript { base: inner, .. }
+    | CompactNode::Superscript { base: inner, .. }
+    | CompactNode::SubSup { base: inner, .. } = *ast.node(node)
+    {
+        if wants_limits_above_below_c(ast, inner, ctx.branch_style())
+            || matches!(
+                *ast.node(inner),
+                CompactNode::Overscript { .. } | CompactNode::Underscript { .. }
+            )
+        {
+            break;
+        }
+        let ArenaBoxKind::HBox { children } = arena.get(current).kind else {
+            break;
+        };
+        let Some(first) = arena.children(children).first() else {
+            break;
+        };
+        (node, current) = (inner, first.id);
+    }
+    current
+}
+
 pub(super) fn layout_prescripts(
     base: &MathNode,
     pre_sub: &Option<Box<MathNode>>,
@@ -461,7 +520,9 @@ pub(super) fn layout_prescripts(
     let mut total_h = base_box.height;
     let mut total_d = base_box.depth;
 
-    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let nucleus = nucleus_box(base, &base_box, ctx);
+    let (nucleus_h, nucleus_d) = (nucleus.height, nucleus.depth);
+    let is_char_box = matches!(nucleus.kind, BoxKind::Glyph { .. });
     let has_both = pre_sup.is_some() && pre_sub.is_some();
 
     // Layout pre-superscript
@@ -473,7 +534,7 @@ pub(super) fn layout_prescripts(
         let sup_box = layout_node(sup, &sup_ctx);
         let mut shift_up = p.sup2 * size;
         if !is_char_box {
-            shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio * size);
+            shift_up = shift_up.max(nucleus_h - sup_params.sup_drop * sup_size_ratio * size);
         }
         pre_width = pre_width.max(sup_box.width);
         Some((sup_box, shift_up))
@@ -490,8 +551,7 @@ pub(super) fn layout_prescripts(
         let sub_box = layout_node(sub, &sub_ctx);
         let mut shift_down = if has_both { p.sub2 } else { p.sub1 } * size;
         if !is_char_box {
-            shift_down =
-                shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio * size);
+            shift_down = shift_down.max(nucleus_d + sub_params.sub_drop * sub_size_ratio * size);
         }
         pre_width = pre_width.max(sub_box.width);
         Some((sub_box, shift_down))
@@ -1105,7 +1165,9 @@ pub(super) fn layout_prescripts_arena(
     let mut total_h = base_h;
     let mut total_d = base_d;
 
-    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+    let nucleus = arena.get(nucleus_box_arena(ast, base, base_id, arena, ctx));
+    let (nucleus_h, nucleus_d) = (nucleus.height, nucleus.depth);
+    let is_char_box = matches!(nucleus.kind, ArenaBoxKind::Glyph { .. });
     let has_both = pre_sup.is_some() && pre_sub.is_some();
 
     // Layout pre-superscript
@@ -1118,7 +1180,7 @@ pub(super) fn layout_prescripts_arena(
         let b = arena.get(sid);
         let mut shift_up = p.sup2 * size;
         if !is_char_box {
-            shift_up = shift_up.max(base_h - sup_params.sup_drop * sup_size_ratio * size);
+            shift_up = shift_up.max(nucleus_h - sup_params.sup_drop * sup_size_ratio * size);
         }
         pre_width = pre_width.max(b.width);
         Some((sid, shift_up))
@@ -1136,7 +1198,7 @@ pub(super) fn layout_prescripts_arena(
         let b = arena.get(sid);
         let mut shift_down = if has_both { p.sub2 } else { p.sub1 } * size;
         if !is_char_box {
-            shift_down = shift_down.max(base_d + sub_params.sub_drop * sub_size_ratio * size);
+            shift_down = shift_down.max(nucleus_d + sub_params.sub_drop * sub_size_ratio * size);
         }
         pre_width = pre_width.max(b.width);
         Some((sid, shift_down))
