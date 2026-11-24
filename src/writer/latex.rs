@@ -1514,6 +1514,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     }
                     Some(start)
                 };
+                let cells_start = buf.len();
                 let mut col_idx = 0;
                 let mut emitted = false;
                 while col_idx < row.len() {
@@ -1580,6 +1581,19 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 }
                 if let Some(start) = row_start {
                     guard_row_break_argument(buf, start);
+                }
+                // A rule after the final `\\` with nothing else before
+                // `\end` is the bottom edge, not a row (see the reader). Mark
+                // a last empty one-column row with an empty group.
+                if row_idx > 0
+                    && row_idx + 1 == num_rows
+                    && row_idx < 32
+                    && row_seps & (1 << row_idx) != 0
+                    && !(num_rows < 32 && row_seps & (1 << num_rows) != 0)
+                    && buf[cells_start..].trim().is_empty()
+                {
+                    buf.truncate(cells_start);
+                    buf.push_str("{}");
                 }
             }
             if num_rows < 32 && (row_seps & (1 << num_rows)) != 0 {

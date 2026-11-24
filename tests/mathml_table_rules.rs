@@ -498,3 +498,40 @@ fn a_group_that_is_only_a_line_break_stays_in_its_cell() {
     assert_eq!(mathml.matches("<mtr>").count(), 1, "{mathml}");
     assert!(mathml.contains(r#"linebreak="newline""#), "{mathml}");
 }
+
+#[test]
+fn empty_last_row_under_a_rule_is_kept_as_a_row() {
+    for (source, expected) in [
+        (
+            r"\begin{array}{c}a\\ \hline {}\end{array}",
+            r"\begin{array}{c} a \\ \hline {} \end{array}",
+        ),
+        (
+            r"\begin{array}{c}a\\ \hdashline {}\end{array}",
+            r"\begin{array}{c} a \\ \hdashline {} \end{array}",
+        ),
+        // A bottom rule after it needs no marker.
+        (
+            r"\begin{array}{c}a\\ \hline {}\\ \hline\end{array}",
+            r"\begin{array}{c} a \\ \hline  \\ \hline \end{array}",
+        ),
+    ] {
+        assert_eq!(assert_latex_idempotent(source), expected);
+        let rows = match native_array(&mathema::from_latex(expected).unwrap().expr()) {
+            MathNode::NativeArray { rows, .. } => rows.len(),
+            other => panic!("expected NativeArray, got {other:?}"),
+        };
+        assert_eq!(rows, 2, "{expected}");
+    }
+    for style in ["solid", "dashed"] {
+        let xml = format!(
+            r#"<math><mtable rowlines="{style}"><mtr><mtd><mi>a</mi></mtd></mtr><mtr><mtd></mtd></mtr></mtable></math>"#
+        );
+        let latex =
+            mathema::convert(&xml, mathema::Format::MathML, mathema::Format::LaTeX).unwrap();
+        assert_eq!(assert_latex_idempotent(&latex), latex);
+        let mathml =
+            mathema::convert(&latex, mathema::Format::LaTeX, mathema::Format::MathML).unwrap();
+        assert_eq!(mathml.matches("<mtr>").count(), 2, "{mathml}");
+    }
+}
