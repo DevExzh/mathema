@@ -165,6 +165,29 @@ fn source_newline_is_hard_break(full_input: &str, newline_at: &str) -> bool {
         .is_some_and(|ch| matches!(ch, '=' | '<' | '>' | ':' | ';'))
 }
 
+/// Whether the next command is a text-size declaration.
+fn starts_size_declaration(input: &str) -> bool {
+    let Some(rest) = input.strip_prefix('\\') else {
+        return false;
+    };
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    matches!(
+        &rest[..end],
+        "tiny"
+            | "scriptsize"
+            | "footnotesize"
+            | "small"
+            | "normalsize"
+            | "large"
+            | "Large"
+            | "LARGE"
+            | "huge"
+            | "Huge"
+    )
+}
+
 #[inline]
 fn is_table_boundary(input: &str) -> bool {
     input.is_empty()
@@ -2138,12 +2161,24 @@ impl LatexCompactParser {
 
     /// If exactly one element, return it; otherwise wrap in a Row.
     fn flatten_single(&mut self, ids: &[NodeId]) -> NodeId {
-        if ids.len() == 1 {
-            ids[0]
+        // A lone size declaration keeps its group, or it would size what
+        // follows.
+        if let [id] = *ids
+            && !matches!(self.arena.node(id), CompactNode::SizeScale(_))
+        {
+            id
         } else {
             let span = self.arena.push_children_deferred(ids);
             self.arena.push_node(CompactNode::Row(span))
         }
+    }
+
+    /// A lone size declaration as an argument has nothing to size.
+    fn scope_lone_size(&mut self, id: NodeId) -> NodeId {
+        if matches!(self.arena.node(id), CompactNode::SizeScale(_)) {
+            return self.flatten_single(&[id]);
+        }
+        id
     }
 
     /// Check whether a node is a large-operator symbol (n-ary).
@@ -2903,7 +2938,9 @@ impl LatexCompactParser {
         // A fence separator in a `\left...\right` belongs to the fence, not
         // to the body (outside a fence `\middle` is a plain delimiter). An
         // infix fraction command divides the list the operator is in.
+        // A size declaration is no body: it sizes the rest of the list.
         let (input, body_id) = if is_nary_body_boundary(input)
+            || starts_size_declaration(input)
             || infix::starts_infix_command(input)
             || (self.in_left_right && strip_control_word(input, "middle").is_some())
         {
@@ -3019,6 +3056,7 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::TooLarge,
             )));
         }
+        let arg = self.scope_lone_size(arg);
         // An infix fraction command (`x^\over`) divides no list here.
         self.stray_infix_marker(input, arg)
     }
@@ -4417,6 +4455,7 @@ impl LatexCompactParser {
                 let parsed = self.parse_command(input);
                 self.single_token = outer;
                 let (rest, id) = parsed?;
+                let id = self.scope_lone_size(id);
                 // An infix fraction command (`\sqrt\over`) divides no list.
                 self.stray_infix_marker(rest, id)
             },
@@ -6711,6 +6750,10 @@ impl LatexCompactParser {
             {
                 self.flush_font_run(style, &mut run, &mut output);
                 output.push(self.font_node_outside_tables(style, child));
+            } else if matches!(self.arena.node(child), CompactNode::SizeScale(_)) {
+                // It applies to the tables and the later runs too.
+                self.flush_font_run(style, &mut run, &mut output);
+                output.push(child);
             } else {
                 run.push(child);
             }

@@ -2618,3 +2618,28 @@ fn sizes_reach_every_list() {
         assert!(!svg.contains(r#"font-size="16""#), "{latex}: {svg}");
     }
 }
+
+/// A group holding only a size sizes nothing after it, and a size after a big
+/// operator or before a table in a font command is in force after it.
+#[test]
+fn sizes_are_scoped_as_in_tex() {
+    let sizes = |latex: &str| -> Vec<String> {
+        let parsed = mathema::from_latex(latex).unwrap();
+        mathema::render::render_to_svg_compact(
+            parsed.compact_expr(),
+            &mathema::render::RenderOptions::default(),
+        )
+        .unwrap()
+        .split("font-size=\"")
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap().to_owned())
+        .collect()
+    };
+    assert_eq!(sizes(r"{\tiny}a"), ["16"]);
+    assert_eq!(sizes(r"\textcolor{red}{\tiny}a"), ["16"]);
+    assert_eq!(sizes(r"\int \tiny a").last().unwrap(), "8");
+    assert_eq!(
+        sizes(r"\mathbf{\tiny \begin{matrix}a\end{matrix}b}c"),
+        ["8", "8", "16"]
+    );
+}

@@ -34,7 +34,10 @@ impl MathReader for MathmlReader {
         }
         let parser_result = MathmlCompactParser::new(trimmed, config.display);
         let mut parser = match parser_result {
-            Ok(p) => p,
+            Ok(mut p) => {
+                p.lenient = config.strictness == Strictness::Lenient;
+                p
+            },
             Err(e) => {
                 if config.strictness == Strictness::Lenient {
                     return Ok(CompactParseResult::with_diagnostics(
@@ -135,6 +138,10 @@ struct MathmlCompactParser<'a> {
     /// Text size in force from enclosing `mathsize`, as a multiple of the
     /// normal size: MathML sizes are relative, `SizeScale` is not.
     text_size: f64,
+    /// Set for an element whose `mathsize` is already read.
+    size_checked: bool,
+    /// Whether to recover lengths that are not valid MathML.
+    lenient: bool,
     /// Rows read from an `mstyle` that only sets a size, to be spliced into
     /// the row around them (see [`Self::splice_size_runs`]).
     size_runs: SmallVec<[NodeId; 2]>,
@@ -177,6 +184,8 @@ impl<'a> MathmlCompactParser<'a> {
             fence_depth: None,
             fence_marks: SmallVec::new(),
             text_size: 1.0,
+            size_checked: false,
+            lenient: false,
             size_runs: SmallVec::new(),
             style_warnings: HashSet::new(),
         })
@@ -713,10 +722,20 @@ impl<'a> MathmlCompactParser<'a> {
         let Some(width) = attrs.width.as_deref() else {
             return self.arena.push_node(CompactNode::Space(Rational::zero()));
         };
-        if let Some(kern) = attrs.kern.as_deref().and_then(kern_length) {
+        let length = attrs.space_width(|value| self.length(value));
+        // The width counts where it was edited and is not the kern's.
+        if let Some(kern) = attrs.kern.as_deref().and_then(kern_length)
+            && let Some(MathLength::FontRelative(written)) = length
+            && self.is_physical_width(kern, written)
+        {
             return self.arena.push_space(kern, SpaceBasis::Physical);
         }
-        match attrs.space_width() {
+        if length.is_some() && parse_length(width).is_none() {
+            self.style_warning(format!(
+                "mspace width=\"{width}\" is not a valid length; it was recovered"
+            ));
+        }
+        match length {
             Some(MathLength::Absolute(width)) => self.arena.push_space(width, SpaceBasis::Physical),
             Some(MathLength::FontRelative(width)) => {
                 self.arena.push_node(CompactNode::Space(width))
@@ -747,7 +766,7 @@ impl<'a> MathmlCompactParser<'a> {
             "small" => 0.9,
             "normal" => return None,
             "big" => 1.2,
-            _ => match parse_length(value) {
+            _ => match self.length(value) {
                 Some(
                     MathLength::Percent(factor)
                     | MathLength::Multiple(factor)
@@ -793,6 +812,51 @@ impl<'a> MathmlCompactParser<'a> {
         ))
     }
 
+    /// Parse a length. Lenient reading also takes a `+`, a space before the
+    /// unit and, for `em`, an exponent.
+    fn length(&self, value: &str) -> Option<MathLength> {
+        parse_length(value).or_else(|| {
+            let value = value.trim();
+            if !self.lenient {
+                None
+            } else if let Some(number) = value.strip_suffix("em") {
+                Rational::from_scaled_decimal(number.trim(), Rational::one())
+                    .map(MathLength::FontRelative)
+            } else {
+                let value: String = value
+                    .strip_prefix('+')
+                    .unwrap_or(value)
+                    .split_ascii_whitespace()
+                    .collect();
+                parse_length(&value)
+            }
+        })
+    }
+
+    /// Whether `written`, in ems of the current font, is the width the writer
+    /// gives a physical space of `kern`.
+    fn is_physical_width(&self, kern: Rational, written: Rational) -> bool {
+        use crate::ast::style::MathStyle;
+        // Tables in a script set their cells at a larger size in the writer
+        // than by MathML's rules, so a larger size counts too.
+        [MathStyle::Text, MathStyle::Script, MathStyle::ScriptScript]
+            .into_iter()
+            .take_while(|style| style.size_class() as i64 <= self.style_level.max(0))
+            .any(|style| {
+                let physical = Some(SpaceBasis::Physical);
+                let expected = crate::ast::style::local_space_width(kern, physical, style).as_f64()
+                    / self.text_size;
+                (written.as_f64() - expected).abs() <= 1e-6 * expected.abs()
+            })
+    }
+
+    #[cold]
+    fn unsupported_size(&mut self, name: &str) {
+        self.style_warning(format!(
+            "mathsize on <{name}> is not supported; the size was dropped"
+        ));
+    }
+
     /// Report a presentation loss, once per message. A document can repeat
     /// one on every token, so at most 100 different ones are kept.
     #[cold]
@@ -818,7 +882,8 @@ impl<'a> MathmlCompactParser<'a> {
         start: &quick_xml::events::BytesStart<'_>,
         mathsize: &str,
     ) -> Result<NodeId> {
-        let id = self.parse_unsized_element(name, start)?;
+        self.size_checked = true;
+        let id = self.parse_element_by_name(name, start)?;
         let takes_size = match *self.arena.node(id) {
             CompactNode::Identifier(sid) => {
                 !crate::ast::normalize::is_function_name(self.arena.str_val(sid))
@@ -827,9 +892,7 @@ impl<'a> MathmlCompactParser<'a> {
             _ => false,
         };
         if !takes_size || !matches!(name, "mi" | "mn" | "mtext" | "ms") {
-            self.style_warning(format!(
-                "mathsize on <{name}> is not supported; the size was dropped"
-            ));
+            self.unsupported_size(name);
             return Ok(id);
         }
         let Some((Some(size), _)) = self.mathsize_scale(mathsize) else {
@@ -1005,6 +1068,14 @@ impl<'a> MathmlCompactParser<'a> {
             if let CompactNode::Row(span) = *self.arena.node(id)
                 && runs.next_if_eq(&&id).is_some()
             {
+                let first = self.arena.children(span).first().copied();
+                let has_size = first
+                    .is_some_and(|id| matches!(self.arena.node(id), CompactNode::SizeScale(_)));
+                // A run at the inherited size, after one of another size.
+                if !has_size && current != inherited {
+                    spliced.push(self.arena.push_node(CompactNode::SizeScale(inherited)));
+                    current = inherited;
+                }
                 let mut run = self.arena.children(span);
                 if let [first, rest @ ..] = run
                     && let CompactNode::SizeScale(size) = *self.arena.node(*first)
@@ -1097,6 +1168,9 @@ impl<'a> MathmlCompactParser<'a> {
         let mark_fences = self.fence_depth == Some(self.depth);
         let vertical_line = matches!(name, "|" | "‖");
         let attrs = operator_attributes(start, mark_fences || vertical_line);
+        if attrs.has_size {
+            self.unsupported_size("mo");
+        }
         // MathJax writes `\big(` as an `<mo>` fixed at one of the TeX sizes.
         if let Some(factor) = attrs.big_delim_factor()
             && big_delim_glyph(name)
@@ -1192,17 +1266,15 @@ impl<'a> MathmlCompactParser<'a> {
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
-        if let Some(mathsize) = element_mathsize(name, start) {
+        // Elements without attributes, most of them, stop at the length.
+        if start.len() != name.len()
+            && name != "mo"
+            && !std::mem::take(&mut self.size_checked)
+            && start.attributes_raw().contains('z')
+            && let Some(mathsize) = element_mathsize(name, start)
+        {
             return self.parse_sized_element(name, start, &mathsize);
         }
-        self.parse_unsized_element(name, start)
-    }
-
-    fn parse_unsized_element(
-        &mut self,
-        name: &str,
-        start: &quick_xml::events::BytesStart<'_>,
-    ) -> Result<NodeId> {
         match name {
             "mn" => {
                 let text = self.read_text_content(name)?;
@@ -1706,10 +1778,11 @@ impl<'a> MathmlCompactParser<'a> {
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
-        if element_mathsize(name, start).is_some() && name != "mrow" {
-            self.style_warning(format!(
-                "mathsize on <{name}> is not supported; the size was dropped"
-            ));
+        if name != "mo"
+            && start.attributes_raw().contains('z')
+            && element_mathsize(name, start).is_some()
+        {
+            self.unsupported_size(name);
         }
         match name {
             "mtable" => self.finish_table(start, MathmlTable::default()),
@@ -2663,6 +2736,7 @@ fn has_horizontal_reflection(style: &str) -> bool {
 #[derive(Default)]
 struct OperatorAttributes {
     movable_limits: Option<bool>,
+    has_size: bool,
     symbol_kind: Option<SymbolKind>,
     named_operator: bool,
     texclass_op: bool,
@@ -2818,8 +2892,12 @@ fn operator_attributes(
                 }
                 result.constrained |= inspect_fences;
             },
-            "style" | "mathsize" | "mathvariant" | "mathcolor" | "mathbackground" | "class"
-            | "displaystyle" | "scriptlevel"
+            "mathsize" => {
+                result.has_size = true;
+                result.constrained |= inspect_fences;
+            },
+            "style" | "mathvariant" | "mathcolor" | "mathbackground" | "class" | "displaystyle"
+            | "scriptlevel"
                 if inspect_fences =>
             {
                 result.constrained = true;
@@ -3271,15 +3349,15 @@ impl MspaceAttributes<'_> {
     /// The width; `None` when it is not a length. A zero width with a
     /// negative CSS `margin-inline-start` is the writer's spelling of a
     /// negative space.
-    fn space_width(&self) -> Option<MathLength> {
-        let width = parse_length(self.width.as_deref()?)?;
+    fn space_width(&self, length: impl Fn(&str) -> Option<MathLength>) -> Option<MathLength> {
+        let width = length(self.width.as_deref()?)?;
         if width.is_zero()
             && let Some(style) = self.style.as_deref()
             && let Some((key, value)) = style.trim().trim_end_matches(';').split_once(':')
             && key.trim().eq_ignore_ascii_case("margin-inline-start")
-            && let Some(margin @ (MathLength::FontRelative(length) | MathLength::Absolute(length))) =
-                parse_length(value)
-            && length.num < 0
+            && let Some(margin @ (MathLength::FontRelative(shift) | MathLength::Absolute(shift))) =
+                length(value)
+            && shift.num < 0
         {
             return Some(margin);
         }
@@ -3335,17 +3413,11 @@ fn attr_text(value: Cow<'_, str>) -> Cow<'_, str> {
 }
 
 /// The `mathsize` of an element other than `mstyle`, which reads its own.
-#[inline]
+#[cold]
 fn element_mathsize(name: &str, start: &quick_xml::events::BytesStart<'_>) -> Option<String> {
-    // Most elements have no attributes, and few attributes a `z`.
-    if start.len() == name.len() {
-        return None;
-    }
-    let attributes = start.attributes_raw();
-    if attributes.is_empty() || !attributes.contains('z') || name == "mstyle" {
-        return None;
-    }
-    get_attr(start, "mathsize")
+    (name != "mstyle")
+        .then(|| get_attr(start, "mathsize"))
+        .flatten()
 }
 
 /// The number syntax of MathML 3 (§2.1.5.1): an optional `-`, then digits
@@ -3833,6 +3905,78 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn a_run_at_the_inherited_size_follows_one_of_another_size() {
+        let latex = |input: &str| crate::from_mathml(input).unwrap().to_latex().unwrap();
+        assert_eq!(
+            latex(
+                r#"<math><mstyle mathsize="120%"><mi>x</mi></mstyle><mstyle mathsize="102%"><mi>y</mi><mstyle mathsize="50%"><mi>w</mi></mstyle></mstyle><mi>z</mi></math>"#
+            ),
+            r"\large x\normalsize y\tiny w\normalsize z"
+        );
+        assert_eq!(
+            latex(
+                r#"<math><mstyle mathsize="120%"><mi>x</mi></mstyle><mstyle mathsize="normal"><mi>y</mi><mstyle mathsize="50%"><mi>w</mi></mstyle></mstyle></math>"#
+            ),
+            r"\large x\normalsize y\tiny w"
+        );
+    }
+
+    #[test]
+    fn an_edited_width_replaces_the_kern() {
+        let kern = |width: &str| {
+            parse_one(&format!(
+                r#"<math><mspace width="{width}" data-mathema-kern="3pt"/></math>"#
+            ))
+        };
+        assert_eq!(
+            kern("0.3em"),
+            MathNode::ExplicitSpace {
+                width: Rational::new(3, 10),
+                basis: SpaceBasis::Physical,
+            }
+        );
+        assert_eq!(kern("5em"), MathNode::Space(Rational::new(5, 1)));
+        assert_eq!(kern("0.6em"), MathNode::Space(Rational::new(3, 5)));
+        for latex in [
+            r"a\kern3pt b",
+            r"a_{b\kern3pt c_{d\kern3pt e}}",
+            r"\large a\kern-3pt b",
+            r"\scriptstyle \begin{aligned} x & \kern3pt \end{aligned}",
+        ] {
+            let mathml = crate::from_latex(latex).unwrap().to_mathml().unwrap();
+            let reread = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(
+                reread.to_latex().unwrap().matches("3pt").count(),
+                latex.matches("3pt").count(),
+                "{mathml}"
+            );
+        }
+    }
+
+    #[test]
+    fn lenient_reading_recovers_lengths() {
+        let lenient = Config::default().with_strictness(Strictness::Lenient);
+        let read = |input: &str| MathmlReader::parse(input, &lenient).unwrap();
+        for (width, expected) in [
+            ("+1em", Rational::new(1, 1)),
+            ("1 em", Rational::new(1, 1)),
+            ("1e1em", Rational::new(10, 1)),
+            ("+9mu", Rational::new(1, 2)),
+        ] {
+            let result = read(&format!(r#"<math><mspace width="{width}"/></math>"#));
+            assert_eq!(result.expr.nodes, [MathNode::Space(expected)], "{width}");
+            assert!(
+                result.diagnostics[0].message.contains("recovered"),
+                "{width}"
+            );
+        }
+        let result = read(r#"<math><mspace width="wide"/></math>"#);
+        assert_eq!(result.expr.nodes, [MathNode::Space(Rational::zero())]);
+        let result = read(r#"<math><mstyle mathsize="+1.2 em"><mi>x</mi></mstyle></math>"#);
+        assert_eq!(result.expr.nodes[0], MathNode::SizeSwitch(5));
     }
 
     #[test]

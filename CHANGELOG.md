@@ -196,12 +196,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`mathsize="12pt"`), an invalid one, and one on another element are
   dropped with a warning.
 - A space that is a TeX length (`\kern3pt`) keeps it through MathML, in
-  `data-mathema-kern="3pt"` on its `mspace`; it read back as
-  `\hspace{0.3em}`.
+  `data-mathema-kern="3pt"` on its `mspace`, used as long as the `width`
+  is still the kern's; it read back as `\hspace{0.3em}`.
 - Rendering applies a size declaration inside `\left…\right`, inside font
   commands (`\mathbf{\large x}`) and after a line break, as KaTeX does.
 - The heap UnicodeMath writer brackets a physical space in a fraction as
   the compact one does.
+- The LaTeX reader scopes size declarations as TeX does: `{\large}a` sizes
+  nothing, `\int \large x` sizes `x` (the declaration was taken as the
+  integrand), and `\mathbf{\large \begin{matrix}…\end{matrix}b}` sizes the
+  table and `b`.
 - Normalization no longer opens a group holding a size declaration:
   `convert` read `{\large x}y` as `\large xy`.
 - Rendering a heap `MathExpr` applies size declarations and stacks the
@@ -213,7 +217,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and their `negative…` forms. Only `em` was read before; any other width
   became zero. A percentage or unitless width is, per MathML 3, a multiple
   of the default width 0; a width that is not a MathML length (`+1em`,
-  `1 em`, `wide`) is read as 0 with a warning.
+  `1 em`, `wide`) is read as 0 with a warning, and recovered where
+  possible under `Strictness::Lenient`.
 
 - A `\color` switch in a `\left…\right` list stays in force across
   `\middle` to the end of the fence, as in TeX and KaTeX:

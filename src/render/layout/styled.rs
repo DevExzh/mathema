@@ -369,7 +369,13 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
             let space =
                 spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
             if space > 0.0 {
-                cursor_x += space * current_ctx.size();
+                // A break has no size of its own.
+                let size = if matches!(node, MathNode::LineBreak) {
+                    ctx.size()
+                } else {
+                    current_ctx.size()
+                };
+                cursor_x += space * size;
             }
         }
 
@@ -772,7 +778,13 @@ pub(super) fn layout_styled_arena(
             let space =
                 spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
             if space > 0.0 {
-                cursor_x += space * current_ctx.size();
+                // A break has no size of its own.
+                let size = if matches!(*ast.node(id), CompactNode::Newline) {
+                    ctx.size()
+                } else {
+                    current_ctx.size()
+                };
+                cursor_x += space * size;
             }
         }
 

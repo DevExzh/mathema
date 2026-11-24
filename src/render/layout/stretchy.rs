@@ -500,7 +500,12 @@ pub(super) fn layout_fenced(
                     layout: child,
                     atom: spacing::classify_node_in(n, current_ctx.branch_style()),
                     style: current_ctx.effective_spacing_style(),
-                    size: current_ctx.size(),
+                    // A break has no size of its own.
+                    size: if matches!(n, MathNode::LineBreak) {
+                        ctx.size()
+                    } else {
+                        current_ctx.size()
+                    },
                 });
                 element_count += 1;
                 sole_nobar_frac = element_count == 1
@@ -711,7 +716,12 @@ pub(super) fn layout_fenced_arena(
                     layout: laid,
                     atom: spacing::classify_node_c_in(ast, child_id, current_ctx.branch_style()),
                     style: current_ctx.effective_spacing_style(),
-                    size: current_ctx.size(),
+                    // A break has no size of its own.
+                    size: if matches!(*ast.node(child_id), CompactNode::Newline) {
+                        ctx.size()
+                    } else {
+                        current_ctx.size()
+                    },
                 });
                 element_count += 1;
                 sole_nobar_frac = element_count == 1
