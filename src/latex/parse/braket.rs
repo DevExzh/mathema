@@ -39,7 +39,7 @@ impl LatexCompactParser {
             MAX_PARSE_DEPTH.saturating_sub(self.depth) as usize,
         )?;
         let (leftover, ids) = self
-            .parse_node_list(&expanded)
+            .parse_math_list(&expanded)
             .map_err(|err| err.map_input(|_| input))?;
         if !leftover.trim().is_empty() {
             return Err(nom::Err::Error(nom::error::Error::new(

@@ -1,6 +1,6 @@
 use crate::ast::compact::CompactNode;
 use crate::ast::normalize::{normalize_compact_expr, normalize_expr};
-use crate::ast::{DisplayStyle, MathNode, OperatorNameForm};
+use crate::ast::{DisplayStyle, MathExpr, MathNode, OperatorNameForm};
 use crate::error::{Config, Error, LimitKind, Strictness};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
@@ -5235,5 +5235,84 @@ fn binom_arguments_are_not_braced_twice() {
         let first = canonical_pass(input);
         assert_eq!(first, want, "{input}");
         assert_eq!(canonical_pass(&first), first, "not idempotent: {input}");
+    }
+}
+
+/// One canonical pass, and the tree it is written from.
+fn canonical_tree(input: &str) -> (MathExpr, String) {
+    let config = Config::default();
+    let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+    normalize_compact_expr(&mut parsed.expr).unwrap();
+    let written = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+    (parsed.expr.to_math_expr(), written)
+}
+
+#[test]
+fn decorated_named_operator_keeps_its_wrapper() {
+    // `\mathop{\lim}\limits^a` reads back as `\lim\limits^a`, so a decoration
+    // or `\overset` over `\mathop{\lim}` must not be written that way.
+    for (input, want) in [
+        (r"\overline{\mathop\lim}", r"\overline{\mathop{\lim}}"),
+        (r"\underbrace{\mathop{\max}}", r"\underbrace{\mathop{\max}}"),
+        (r"\overset{a}{\mathop{\lim}}", r"\overset{a}{\mathop{\lim}}"),
+        (
+            r"\underset{a}{\mathop{\operatorname*{x}}}",
+            r"\underset{a}{\mathop{\operatorname*{x}}}",
+        ),
+        (
+            r"=\lim{\overline{\bigr\mathop \lim}}'",
+            r"= \lim {\overline{\mathop{\lim}}}^{\prime}",
+        ),
+    ] {
+        let first = canonical_pass(input);
+        assert_eq!(first, want, "{input}");
+        assert_eq!(canonical_pass(&first), first, "not idempotent: {input}");
+    }
+}
+
+#[test]
+fn operator_limit_placement_survives_a_round_trip() {
+    // `\limits`, `\nolimits` and the default on `\mathop`, `\operatorname`,
+    // `\operatorname*` and big operators, alone and under decorations: the
+    // written LaTeX reads back as the same tree.
+    let operators = [
+        r"\mathop{x}",
+        r"\mathop{x+y}",
+        r"\mathop{\hat x}",
+        r"\mathop{\sum}",
+        r"\mathop{\lim}",
+        r"\mathop{\operatorname{x}}",
+        r"\mathop{\operatorname*{x}}",
+        r"\operatorname{x}",
+        r"\operatorname*{x}",
+        r"\operatorname{lim}",
+        r"\sum",
+        r"\int",
+        r"\lim",
+        r"\sin",
+    ];
+    let modifiers = ["", r"\limits", r"\nolimits", r"\displaylimits"];
+    let scripts = ["", "_a", "^b", "_a^b"];
+    let contexts = [
+        "X",
+        "{X}y",
+        r"\frac{X}{2}",
+        r"\overline{X}",
+        r"\underbrace{X}",
+        r"\overset{c}{X}",
+        r"\underset{c}{X}",
+    ];
+    for operator in operators {
+        for modifier in modifiers {
+            for script in scripts {
+                for context in contexts {
+                    let input = context.replace('X', &format!("{operator}{modifier}{script}"));
+                    let (tree, written) = canonical_tree(&input);
+                    let (again, rewritten) = canonical_tree(&written);
+                    assert_eq!(tree, again, "{input} → {written}");
+                    assert_eq!(written, rewritten, "not idempotent: {input}");
+                }
+            }
+        }
     }
 }

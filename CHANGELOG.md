@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (behavior):** `\above` and `\abovewithdelims` need a
+  dimension, as in TeX ("Missing number") and MathJax ("Missing
+  dimension"): `{a \above b}` is now an error under `Strictness::Strict`
+  ("missing dimension after \above"); `Strictness::Lenient` warns and draws
+  the default rule. A dimension register (`{a \abovewithdelims()\fboxrule
+  b}`) is a dimension: drawn at the default thickness with a warning, where
+  `\fboxrule` was left in the denominator. A missing `\…withdelims`
+  delimiter is a specific strict error ("missing delimiter after
+  \overwithdelims"); lenient, it is the null delimiter, as TeX inserts `.`.
+  An infix fraction command where one atom is required (`x^\over y`,
+  `\sqrt\over`, `\frac\over b`) is a strict error ("misplaced \over") and
+  a lenient warning; it was dropped silently.
+
 - **Breaking (behavior):** the LaTeX reader takes exactly one TeX token or
   one brace group as a script argument, as TeX, KaTeX and MathJax do. A
   number is no longer one token: `x^22` now reads as `x^{2}2` (was
@@ -61,6 +74,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Infix fraction commands (`\over`, `\atop`, `\above`, `\choose`,
+  `\brace`, `\brack`, `\…withdelims`) no longer leak an internal marker:
+  `\operatorname{a \over b}` was `<mi>__infix_over__</mi>` in MathML and
+  `\char`\_\char`\_infix…` in LaTeX; it is now a fraction, as in TeX and
+  MathJax. The reader records these commands in a parser-private table
+  instead of as identifiers, and every math list resolves them, including
+  `\operatorname` arguments, `CD` and `\xymatrix` cells, `\color`
+  scopes (`\color{red}a \over b` lost the fraction), `\ce`/`\pu`
+  rewrites and `\braket`. Scripts after one start the denominator
+  (`a \over^2 b` is `\frac{a}{{}^2 b}`; the fraction was lost), and a
+  large operator before one is the numerator (`\sum\over b`).
+- The LaTeX writer keeps `\overline`/`\overset`/`\underbrace`… around
+  `\mathop` of a named operator: `\overline{\mathop\lim}` was written
+  `\mathop{\lim}\limits^{‾}`, which reads back as `\lim\limits^{‾}`, so
+  the round trip was not stable.
 - A barless fraction no longer gains a bar. The LaTeX writer spelled
   `FractionKind::NoBar` as `\frac`: `{a \atop b}` now writes
   `\genfrac{}{}{0pt}{}{a}{b}`, `{a \brace b}` writes

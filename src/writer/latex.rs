@@ -582,6 +582,12 @@ fn write_compound_limits(
     else {
         return false;
     };
+    // The reader gives a named operator in `\mathop{\lim}\limits^a` its own
+    // placement (`\lim\limits^a`), a different tree. An explicit wrapper
+    // (`\overset{a}{\mathop{\lim}}`, `\overline{…}`) reads back as written.
+    if !movable && matches!(*arena.node(content), CompactNode::Operator { .. }) {
+        return false;
+    }
     write_math_atom_op(buf, arena, content);
     if !movable {
         buf.push_str("\\limits");

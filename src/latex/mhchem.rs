@@ -31,8 +31,6 @@
 //! geometry / Lewis structures. `\pu` is a full port of mhchem's unit
 //! grammar (see the `pu` submodule).
 
-pub(crate) use super::capture_braced;
-
 /// Translate a `\ce{...}` body into an equivalent standard-LaTeX math string.
 #[must_use]
 pub fn ce_to_latex(body: &str) -> String {

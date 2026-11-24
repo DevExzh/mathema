@@ -1,6 +1,7 @@
 mod braket;
 mod dimension;
 mod hbox;
+mod infix;
 mod text_accent;
 
 use nom::IResult;
@@ -1802,14 +1803,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             if let Some(error) = parser.abort.take() {
                 return Err(error);
             }
-            let ids = parser.resolve_infix_fraction(ids);
-            let ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
-                ids.into_iter()
-                    .map(|id| parser.cleanup_infix_markers(id))
-                    .collect()
-            } else {
-                ids
-            };
+            let ids = parser.finish_infix(ids);
             parser.check_node_limit();
             if let Some(error) = parser.abort.take() {
                 return Err(error);
@@ -1849,15 +1843,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                     return Err(error);
                 }
                 result_ids.extend(recovered);
-                let result_ids = parser.resolve_infix_fraction(result_ids);
-                let result_ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
-                    result_ids
-                        .into_iter()
-                        .map(|id| parser.cleanup_infix_markers(id))
-                        .collect()
-                } else {
-                    result_ids
-                };
+                let result_ids = parser.finish_infix(result_ids);
                 parser.check_node_limit();
                 if let Some(error) = parser.abort.take() {
                     return Err(error);
@@ -1890,13 +1876,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                     message: format!("parse error (recovered): {e}"),
                     span: None,
                 });
-                let ids: SmallVec<[NodeId; 8]> = if parser.infix_marker_seen {
-                    ids.into_iter()
-                        .map(|id| parser.cleanup_infix_markers(id))
-                        .collect()
-                } else {
-                    ids
-                };
+                let ids = parser.finish_infix(ids);
                 parser.check_node_limit();
                 if let Some(error) = parser.abort.take() {
                     return Err(error);
@@ -2010,15 +1990,10 @@ pub(crate) struct LatexCompactParser {
     last_unstarred_operator: Option<NodeId>,
     /// The literal math codes changed by amsmath inside an operator name.
     in_operator_name: bool,
-    /// Set to `true` the first time an infix-fraction marker (`\over`/`\atop`/
-    /// `\choose`/`\brace`/`\brack`/`\above`/`\…withdelims`) is produced. The vast majority of
-    /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
-    /// every braced group unless this flag is set.
-    infix_marker_seen: bool,
-    /// The rule and delimiters of each `\overwithdelims`/`\atopwithdelims`/
-    /// `\abovewithdelims`, indexed by the number in its
-    /// `__infix_delims_N__` marker: `(has_rule, open, close)`.
-    infix_delims: Vec<(bool, StrId, StrId)>,
+    /// The infix fraction commands (`\over`, `\atop`, `\…withdelims`, …)
+    /// read so far, sorted by the id of their placeholder node. Almost every
+    /// input has none, which lets list contexts skip looking for them.
+    infix_markers: Vec<infix::InfixFraction>,
     /// Set by `parse_element` to the script it parsed when that script had no
     /// base of its own (`^`, `_` or `'` after white space), which TeX attaches to the
     /// preceding atom.
@@ -2079,8 +2054,7 @@ impl LatexCompactParser {
             paired_delims: HashMap::new(),
             last_unstarred_operator: None,
             in_operator_name: false,
-            infix_marker_seen: false,
-            infix_delims: Vec::new(),
+            infix_markers: Vec::new(),
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
             in_left_right: false,
@@ -2154,555 +2128,6 @@ impl LatexCompactParser {
         } else {
             let span = self.arena.push_children_deferred(ids);
             self.arena.push_node(CompactNode::Row(span))
-        }
-    }
-
-    /// Check whether a parsed node list contains an infix fraction marker
-    /// (`\over`, `\atop`, `\choose`, `\brace`, `\brack`, `\…withdelims`). If found, split
-    /// into numerator/denominator and produce the appropriate node.
-    fn check_infix_fraction(&mut self, ids: &[NodeId]) -> Option<NodeId> {
-        // Fast path: if no infix-fraction marker was ever produced during this
-        // parse, there is nothing to find — skip the O(n) scan entirely. Infix
-        // operators (`\over`/`\atop`/…) are rare, so this short-circuits the
-        // common case (every braced group + the top-level list would otherwise
-        // be scanned).
-        if !self.infix_marker_seen {
-            return None;
-        }
-        // Scan for the first infix marker: its rule and delimiters.
-        let mut marker = None;
-        for (i, &id) in ids.iter().enumerate() {
-            if let CompactNode::Identifier(sid) = *self.arena.node(id) {
-                let s = self.arena.str_val(sid);
-                if s.starts_with("__infix_") && s.ends_with("__") {
-                    let (has_rule, open, close) = match s {
-                        "__infix_over__" => (true, "", ""),
-                        "__infix_atop__" => (false, "", ""),
-                        "__infix_choose__" => (false, "(", ")"),
-                        "__infix_brace__" => (false, "{", "}"),
-                        "__infix_brack__" => (false, "[", "]"),
-                        _ => {
-                            let Some(&delims) = s
-                                .strip_prefix("__infix_delims_")
-                                .and_then(|n| n.strip_suffix("__"))
-                                .and_then(|n| n.parse::<usize>().ok())
-                                .and_then(|n| self.infix_delims.get(n))
-                            else {
-                                continue;
-                            };
-                            marker = Some((i, delims));
-                            break;
-                        },
-                    };
-                    let open = self.arena.push_str(open);
-                    let close = self.arena.push_str(close);
-                    marker = Some((i, (has_rule, open, close)));
-                    break;
-                }
-            }
-        }
-        let (pos, (has_rule, open, close)) = marker?;
-
-        let num_ids: SmallVec<[NodeId; 8]> = ids[..pos].to_vec().into();
-        let den_ids: SmallVec<[NodeId; 8]> = ids[pos + 1..].to_vec().into();
-
-        // Recursively resolve further infix markers in each side so chained
-        // operators (e.g. `1 \over 2 \over 3`) never leak a `__infix_*__`
-        // sentinel into the numerator/denominator.
-        let num_ids = self.resolve_infix_fraction(num_ids);
-        let den_ids = self.resolve_infix_fraction(den_ids);
-
-        let num_id = self.flatten_single(&num_ids);
-        let den_id = self.flatten_single(&den_ids);
-
-        // The same nodes as the equivalent `\genfrac`: `\choose` is
-        // `\genfrac(){0pt}{}`, `\overwithdelims()` is `\genfrac(){}{}`.
-        let kind = if has_rule {
-            FractionKind::Normal
-        } else {
-            FractionKind::NoBar
-        };
-        let frac_id = self.arena.push_node(CompactNode::Fraction {
-            kind,
-            num: num_id,
-            den: den_id,
-        });
-        if self.arena.str_val(open).is_empty() && self.arena.str_val(close).is_empty() {
-            return Some(frac_id);
-        }
-        let content = self.arena.push_children_deferred(&[frac_id]);
-        Some(self.arena.push_node(CompactNode::Fenced {
-            open,
-            close,
-            content,
-        }))
-    }
-
-    /// A font declaration can produce multiple styled spans separated by an
-    /// infix marker. Real groups resolve their own fractions before returning,
-    /// so only the immediate row needs to be spliced into its enclosing list.
-    fn flatten_infix_marker_rows(&self, ids: SmallVec<[NodeId; 8]>) -> SmallVec<[NodeId; 8]> {
-        if !self.infix_marker_seen {
-            return ids;
-        }
-        let mut result = SmallVec::new();
-        for id in ids {
-            if let CompactNode::Row(span) = *self.arena.node(id) {
-                let children = self.arena.children(span);
-                if children.iter().any(|&child| self.is_infix_marker_id(child)) {
-                    result.extend_from_slice(children);
-                    continue;
-                }
-            }
-            result.push(id);
-        }
-        result
-    }
-
-    /// Resolve a top-level/group infix fraction operator into the corresponding node.
-    fn resolve_infix_fraction(&mut self, ids: SmallVec<[NodeId; 8]>) -> SmallVec<[NodeId; 8]> {
-        let ids = self.flatten_infix_marker_rows(ids);
-        match self.check_infix_fraction(&ids) {
-            Some(node) => {
-                let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
-                out.push(node);
-                out
-            },
-            None => ids,
-        }
-    }
-
-    /// True if `id` is an infix-fraction sentinel identifier (`__infix_*__`).
-    fn is_infix_marker_id(&self, id: NodeId) -> bool {
-        if let CompactNode::Identifier(sid) = *self.arena.node(id) {
-            let s = self.arena.str_val(sid);
-            s.starts_with("__infix_") && s.ends_with("__")
-        } else {
-            false
-        }
-    }
-
-    /// Replace a stray infix-fraction sentinel with an empty Row so it can be
-    /// used as a script base or argument without leaking the internal marker
-    /// string into output.
-    fn resolve_stray_infix_marker(&mut self, id: NodeId) -> NodeId {
-        if self.is_infix_marker_id(id) {
-            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
-        } else {
-            id
-        }
-    }
-
-    /// Recursively resolve any infix-fraction sentinels that leaked out of a
-    /// top-level/braced context (for example inside `\left...\right` fences or
-    /// nested rows).  Any remaining stray marker that is not part of a resolvable
-    /// fraction is replaced by an empty Row.
-    fn cleanup_infix_markers(&mut self, id: NodeId) -> NodeId {
-        if id == NodeId::NONE {
-            return id;
-        }
-        let new_id = self.cleanup_infix_markers_in_node(id);
-        if self.is_infix_marker_id(new_id) {
-            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
-        } else {
-            new_id
-        }
-    }
-
-    fn cleanup_infix_markers_in_node(&mut self, id: NodeId) -> NodeId {
-        let node = *self.arena.node(id);
-
-        let has_marker =
-            |this: &Self, ids: &[NodeId]| ids.iter().any(|&c| this.is_infix_marker_id(c));
-
-        let clean_list = |this: &mut Self, ids: &[NodeId]| {
-            let mut changed = false;
-            let mut out: SmallVec<[NodeId; 8]> = SmallVec::with_capacity(ids.len());
-            for &child in ids {
-                let cleaned = this.cleanup_infix_markers(child);
-                changed |= cleaned != child;
-                out.push(cleaned);
-            }
-            (out, changed)
-        };
-
-        match node {
-            CompactNode::Row(span) => {
-                let children: Vec<NodeId> = self.arena.children(span).to_vec();
-                let (cleaned, changed) = clean_list(self, &children);
-                if has_marker(self, &cleaned) {
-                    let resolved = self.resolve_infix_fraction(cleaned);
-                    debug_assert_eq!(resolved.len(), 1);
-                    resolved[0]
-                } else if changed {
-                    let new_span = self.arena.push_children_deferred(&cleaned);
-                    self.arena.push_node(CompactNode::Row(new_span))
-                } else {
-                    id
-                }
-            },
-            CompactNode::Fenced {
-                open,
-                close,
-                content,
-            } => {
-                let children: Vec<NodeId> = self.arena.children(content).to_vec();
-                let (cleaned, changed) = clean_list(self, &children);
-                let new_content = if has_marker(self, &cleaned) {
-                    let resolved = self.resolve_infix_fraction(cleaned);
-                    debug_assert_eq!(resolved.len(), 1);
-                    self.arena.push_children_deferred(&resolved)
-                } else if changed {
-                    self.arena.push_children_deferred(&cleaned)
-                } else {
-                    content
-                };
-                if new_content == content {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Fenced {
-                        open,
-                        close,
-                        content: new_content,
-                    })
-                }
-            },
-            CompactNode::Fraction { kind, num, den } => {
-                let new_num = self.cleanup_infix_markers(num);
-                let new_den = self.cleanup_infix_markers(den);
-                if new_num == num && new_den == den {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Fraction {
-                        kind,
-                        num: new_num,
-                        den: new_den,
-                    })
-                }
-            },
-            CompactNode::Subscript { base, sub } => {
-                let new_base = self.cleanup_infix_markers(base);
-                let new_sub = self.cleanup_infix_markers(sub);
-                if new_base == base && new_sub == sub {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Subscript {
-                        base: new_base,
-                        sub: new_sub,
-                    })
-                }
-            },
-            CompactNode::Superscript { base, sup } => {
-                let new_base = self.cleanup_infix_markers(base);
-                let new_sup = self.cleanup_infix_markers(sup);
-                if new_base == base && new_sup == sup {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Superscript {
-                        base: new_base,
-                        sup: new_sup,
-                    })
-                }
-            },
-            CompactNode::SubSup { base, sub, sup } => {
-                let new_base = self.cleanup_infix_markers(base);
-                let new_sub = self.cleanup_infix_markers(sub);
-                let new_sup = self.cleanup_infix_markers(sup);
-                if new_base == base && new_sub == sub && new_sup == sup {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::SubSup {
-                        base: new_base,
-                        sub: new_sub,
-                        sup: new_sup,
-                    })
-                }
-            },
-            CompactNode::PreScripts {
-                base,
-                pre_sub,
-                pre_sup,
-            } => {
-                let new_base = self.cleanup_infix_markers(base);
-                let new_pre_sub = self.cleanup_infix_markers(pre_sub);
-                let new_pre_sup = self.cleanup_infix_markers(pre_sup);
-                if new_base == base && new_pre_sub == pre_sub && new_pre_sup == pre_sup {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::PreScripts {
-                        base: new_base,
-                        pre_sub: new_pre_sub,
-                        pre_sup: new_pre_sup,
-                    })
-                }
-            },
-            CompactNode::Overscript {
-                base,
-                over,
-                movable_limits,
-            } => {
-                let new_base = self.cleanup_infix_markers(base);
-                let new_over = self.cleanup_infix_markers(over);
-                if new_base == base && new_over == over {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Overscript {
-                        base: new_base,
-                        over: new_over,
-                        movable_limits,
-                    })
-                }
-            },
-            CompactNode::Underscript {
-                base,
-                under,
-                movable_limits,
-            } => {
-                let new_base = self.cleanup_infix_markers(base);
-                let new_under = self.cleanup_infix_markers(under);
-                if new_base == base && new_under == under {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Underscript {
-                        base: new_base,
-                        under: new_under,
-                        movable_limits,
-                    })
-                }
-            },
-            CompactNode::UnderOver {
-                base,
-                under,
-                over,
-                movable_limits,
-            } => {
-                let new_base = self.cleanup_infix_markers(base);
-                let new_under = self.cleanup_infix_markers(under);
-                let new_over = self.cleanup_infix_markers(over);
-                if new_base == base && new_under == under && new_over == over {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::UnderOver {
-                        base: new_base,
-                        under: new_under,
-                        over: new_over,
-                        movable_limits,
-                    })
-                }
-            },
-            CompactNode::Sqrt(inner) => {
-                let new_inner = self.cleanup_infix_markers(inner);
-                if new_inner == inner {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Sqrt(new_inner))
-                }
-            },
-            CompactNode::Root { index, radicand } => {
-                let new_index = self.cleanup_infix_markers(index);
-                let new_radicand = self.cleanup_infix_markers(radicand);
-                if new_index == index && new_radicand == radicand {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Root {
-                        index: new_index,
-                        radicand: new_radicand,
-                    })
-                }
-            },
-            CompactNode::Nary {
-                op,
-                sub,
-                sup,
-                body,
-                limits,
-            } => {
-                let new_sub = self.cleanup_infix_markers(sub);
-                let new_sup = self.cleanup_infix_markers(sup);
-                let new_body = self.cleanup_infix_markers(body);
-                if new_sub == sub && new_sup == sup && new_body == body {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Nary {
-                        op,
-                        sub: new_sub,
-                        sup: new_sup,
-                        body: new_body,
-                        limits,
-                    })
-                }
-            },
-            CompactNode::Accent {
-                base,
-                accent,
-                position,
-                wide,
-            } => {
-                let new_base = self.cleanup_infix_markers(base);
-                if new_base == base {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Accent {
-                        base: new_base,
-                        accent,
-                        position,
-                        wide,
-                    })
-                }
-            },
-            CompactNode::Array {
-                col_aligns,
-                cells,
-                num_cols,
-                arraystretch_pct,
-                add_jot,
-                array_style,
-                col_seps,
-                row_seps,
-            } => {
-                let cell_ids: Vec<NodeId> = self.arena.children(cells).to_vec();
-                let (cleaned, changed) = clean_list(self, &cell_ids);
-                if changed {
-                    let new_cells = self.arena.push_children_deferred(&cleaned);
-                    self.arena.push_node(CompactNode::Array {
-                        col_aligns,
-                        cells: new_cells,
-                        num_cols,
-                        arraystretch_pct,
-                        add_jot,
-                        array_style,
-                        col_seps,
-                        row_seps,
-                    })
-                } else {
-                    id
-                }
-            },
-            CompactNode::Phantom(inner, kind) => {
-                let new_inner = self.cleanup_infix_markers(inner);
-                if new_inner == inner {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Phantom(new_inner, kind))
-                }
-            },
-            CompactNode::Boxed {
-                content,
-                bg_color,
-                border_color,
-            } => {
-                let new_content = self.cleanup_infix_markers(content);
-                if new_content == content {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Boxed {
-                        content: new_content,
-                        bg_color,
-                        border_color,
-                    })
-                }
-            },
-            CompactNode::Cancel { stroke, content } => {
-                let new_content = self.cleanup_infix_markers(content);
-                if new_content == content {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Cancel {
-                        stroke,
-                        content: new_content,
-                    })
-                }
-            },
-            CompactNode::Scaled { factor, content } => {
-                let new_content = self.cleanup_infix_markers(content);
-                if new_content == content {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Scaled {
-                        factor,
-                        content: new_content,
-                    })
-                }
-            },
-            CompactNode::RaiseBox {
-                shift,
-                height,
-                depth,
-                extents,
-                content,
-            } => {
-                let new_content = self.cleanup_infix_markers(content);
-                if new_content == content {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::RaiseBox {
-                        shift,
-                        height,
-                        depth,
-                        extents,
-                        content: new_content,
-                    })
-                }
-            },
-            CompactNode::Styled(style, span) => {
-                let children: Vec<NodeId> = self.arena.children(span).to_vec();
-                let (cleaned, changed) = clean_list(self, &children);
-                if changed {
-                    let new_span = self.arena.push_children_deferred(&cleaned);
-                    self.arena.push_node(CompactNode::Styled(style, new_span))
-                } else {
-                    id
-                }
-            },
-            CompactNode::MathChoice {
-                display,
-                text,
-                script,
-                script_script,
-            } => {
-                let new_display = self.cleanup_infix_markers(display);
-                let new_text = self.cleanup_infix_markers(text);
-                let new_script = self.cleanup_infix_markers(script);
-                let new_script_script = self.cleanup_infix_markers(script_script);
-                if new_display == display
-                    && new_text == text
-                    && new_script == script
-                    && new_script_script == script_script
-                {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::MathChoice {
-                        display: new_display,
-                        text: new_text,
-                        script: new_script,
-                        script_script: new_script_script,
-                    })
-                }
-            },
-            CompactNode::Color { color, content } => {
-                let new_content = self.cleanup_infix_markers(content);
-                if new_content == content {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::Color {
-                        color,
-                        content: new_content,
-                    })
-                }
-            },
-            CompactNode::MathAtom { atom_type, content } => {
-                let new_content = self.cleanup_infix_markers(content);
-                if new_content == content {
-                    id
-                } else {
-                    self.arena.push_node(CompactNode::MathAtom {
-                        atom_type,
-                        content: new_content,
-                    })
-                }
-            },
-            // Leaves and helper nodes never contain children.
-            _ => id,
         }
     }
 
@@ -3038,6 +2463,7 @@ impl LatexCompactParser {
         if implicit
             && let Some(&prev) = ids.last()
             && crate::ast::normalize::can_carry_script(*self.arena.node(prev))
+            && !self.is_infix_marker_id(prev)
         {
             ids.pop();
             ids.push(crate::ast::normalize::make_script_with_base(
@@ -3079,6 +2505,11 @@ impl LatexCompactParser {
         }
         let grouped = input.starts_with('{');
         let (input, base) = self.parse_atom(input)?;
+        // An infix fraction command is no atom: scripts after it begin the
+        // next one, the denominator's first (`a \over^2 b`).
+        if self.is_infix_marker_id(base) {
+            return Ok((input, base));
+        }
         if grouped
             && matches!(
                 *self.arena.node(base),
@@ -3304,7 +2735,8 @@ impl LatexCompactParser {
         if self.script_marker_at(start).is_none() {
             return Ok((start, base));
         };
-        let base = self.resolve_stray_infix_marker(base);
+        // `parse_element` returns an infix fraction command before its scripts.
+        debug_assert!(!self.is_infix_marker_id(base));
         let (rest, (sub, sup)) = self.script_fields(start, false, self.is_empty_row(base), None)?;
         let node = match (sub.is_some(), sup.is_some()) {
             (true, true) => CompactNode::SubSup { base, sub, sup },
@@ -3452,8 +2884,10 @@ impl LatexCompactParser {
         // Inside a `\left...\right` fence the body must not consume the closing
         // `\right`; treat it as an empty body so the fence parser can terminate.
         // A fence separator in a `\left...\right` belongs to the fence, not
-        // to the body (outside a fence `\middle` is a plain delimiter).
+        // to the body (outside a fence `\middle` is a plain delimiter). An
+        // infix fraction command divides the list the operator is in.
         let (input, body_id) = if is_nary_body_boundary(input)
+            || infix::starts_infix_command(input)
             || (self.in_left_right && strip_control_word(input, "middle").is_some())
         {
             let row_id = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
@@ -3549,11 +2983,8 @@ impl LatexCompactParser {
                 nom::error::ErrorKind::TooLarge,
             )));
         }
-        // A bare infix-fraction primitive (`\over`, `\atop`, ...) cannot be a
-        // valid script argument on its own. Treat it as empty so the script
-        // marker is omitted and the `__infix_*__` sentinel never leaks into
-        // output.
-        Ok((input, self.resolve_stray_infix_marker(arg)))
+        // An infix fraction command (`x^\over`) divides no list here.
+        self.stray_infix_marker(input, arg)
     }
 
     /// Report a script argument that is the first digit of a longer number
@@ -4205,18 +3636,9 @@ impl LatexCompactParser {
             // --- Negation ---
             "not" => self.parse_not(input),
 
-            // --- Infix fraction operators (produce markers; resolved by parse_braced_group) ---
-            "over" | "atop" | "choose" | "brace" | "brack" => {
-                let sid = self.arena.push_str(match name {
-                    "over" => "__infix_over__",
-                    "atop" => "__infix_atop__",
-                    "choose" => "__infix_choose__",
-                    "brace" => "__infix_brace__",
-                    "brack" => "__infix_brack__",
-                    _ => unreachable!(),
-                });
-                self.infix_marker_seen = true;
-                Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+            // --- Infix fraction operators (placeholders; see `infix`) ---
+            "over" | "atop" | "choose" | "brace" | "brack" | "above" => {
+                self.parse_infix_command(input, name)
             },
 
             // --- Mod operators ---
@@ -4531,20 +3953,6 @@ impl LatexCompactParser {
             // --- Old-style font switches (TeX declarations) ---
             "rm" | "it" | "bf" | "sf" | "tt" | "cal" => self.parse_old_font_switch(input, name),
 
-            // --- Above (infix with dimension) ---
-            "above" => {
-                // \above <dimen> — like \over but with specified bar
-                // thickness. The AST has no thickness: a zero one reads as
-                // \atop, any other as \over.
-                let (input, has_rule) = self.parse_infix_rule(input, name)?;
-                let sid = self.arena.push_str(if has_rule {
-                    "__infix_over__"
-                } else {
-                    "__infix_atop__"
-                });
-                self.infix_marker_seen = true;
-                Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
-            },
             "overwithdelims" | "atopwithdelims" | "abovewithdelims" => {
                 self.parse_infix_withdelims(input, name)
             },
@@ -4972,7 +4380,9 @@ impl LatexCompactParser {
                 let outer = self.single_token.replace(name);
                 let parsed = self.parse_command(input);
                 self.single_token = outer;
-                parsed
+                let (rest, id) = parsed?;
+                // An infix fraction command (`\sqrt\over`) divides no list.
+                self.stray_infix_marker(rest, id)
             },
             Some(&b) if b.is_ascii_alphabetic() => {
                 let sid = self.arena.push_str(&input[..1]);
@@ -5145,7 +4555,7 @@ impl LatexCompactParser {
     ) -> IResult<&'a str, NodeId> {
         let (rest, latex) = match name {
             "ce" | "pu" => {
-                let Some((rest, body)) = super::mhchem::capture_braced(input) else {
+                let Some((rest, body)) = super::capture_braced(input) else {
                     return Ok((
                         input,
                         self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -5165,7 +4575,7 @@ impl LatexCompactParser {
             self.abort = Some(expansion_error(failure));
             nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
         })?;
-        let failure = match self.parse_node_list(&processed) {
+        let failure = match self.parse_math_list(&processed) {
             Ok(("", ids)) => return Ok((rest, self.flatten_single(&ids))),
             Ok((unread, _)) => nom_err_to_latex_error(
                 &nom::Err::Error(nom::error::Error::new(
@@ -5328,49 +4738,6 @@ impl LatexCompactParser {
             node = self.arena.push_node(CompactNode::Row(span));
         }
         Ok((input, node))
-    }
-
-    /// `\overwithdelims<delim><delim>`, `\atopwithdelims<delim><delim>` and
-    /// `\abovewithdelims<delim><delim><dimen>`: infix `\over`/`\atop`/`\above`
-    /// with fences, read as the equivalent `\genfrac`. A `.` delimiter is
-    /// empty, as with `\left.`.
-    fn parse_infix_withdelims<'a>(
-        &mut self,
-        input: &'a str,
-        name: &str,
-    ) -> IResult<&'a str, NodeId> {
-        let (input, _) = ws(input)?;
-        let (input, open) = self.parse_delimiter_into(input)?;
-        let (input, _) = ws(input)?;
-        let (input, close) = self.parse_delimiter_into(input)?;
-        let (input, has_rule) = match name {
-            "overwithdelims" => (input, true),
-            "atopwithdelims" => (input, false),
-            _ => self.parse_infix_rule(input, name)?,
-        };
-        let index = self.infix_delims.len();
-        self.infix_delims.push((has_rule, open, close));
-        let sid = self.arena.push_str(&format!("__infix_delims_{index}__"));
-        self.infix_marker_seen = true;
-        Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
-    }
-
-    /// The `<dimen>` of `\above`/`\abovewithdelims`: whether the fraction
-    /// has a rule. As with `\genfrac`, a zero thickness drops the rule and
-    /// any other is drawn at the default thickness, with a warning.
-    fn parse_infix_rule<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, bool> {
-        let (input, _) = ws(input)?;
-        match dimension::width(input) {
-            Ok((rest, width)) if width.num == 0 => Ok((rest, false)),
-            Ok((rest, _)) => {
-                let text = input[..input.len() - rest.len()].trim();
-                self.warn(format!(
-                    "\\{name} rule thickness `{text}` is drawn at the default thickness"
-                ));
-                Ok((rest, true))
-            },
-            Err(_) => Ok((input, true)),
-        }
     }
 
     /// Read an argument as source text: a brace group's body, or one
@@ -6013,7 +5380,7 @@ impl LatexCompactParser {
             .any(|b| matches!(b, b'\\' | b'{' | b'}' | b'_' | b'^'));
         let node = if !literal && operator_name_needs_math(raw) {
             let outer = std::mem::replace(&mut self.in_operator_name, true);
-            let parsed = self.parse_node_list(raw);
+            let parsed = self.parse_math_list(raw);
             self.in_operator_name = outer;
             let (rest, items) = parsed?;
             if !rest.trim().is_empty() {
@@ -6493,6 +5860,9 @@ impl LatexCompactParser {
                     Err(_) => break,
                 }
             }
+            // `\color` scopes the rest of the list, which an infix
+            // fraction command then divides, as in MathJax.
+            let ids = self.resolve_infix_fraction(ids);
             let content_id = self.flatten_single(&ids);
             Ok((
                 rest,
@@ -7178,7 +6548,7 @@ impl LatexCompactParser {
                 if previous_arrays != self.arrays_built {
                     self.flush_font_run(style, &mut run, &mut ids);
                     ids.push(self.font_argument_with_table(style, id));
-                } else if self.infix_marker_seen && self.is_infix_marker_id(id) {
+                } else if self.is_infix_marker_id(id) {
                     // The fraction belongs to the enclosing list; the font
                     // remains in force for the denominator after the marker.
                     self.flush_font_run(style, &mut run, &mut ids);
@@ -7617,7 +6987,7 @@ impl LatexCompactParser {
         if let Some(conn) = tok.text.strip_prefix('@') {
             self.parse_cd_connector(conn)
         } else {
-            match self.parse_node_list(tok.text) {
+            match self.parse_math_list(tok.text) {
                 Ok((_, ids)) => ids,
                 Err(_) => {
                     self.check_node_limit();
@@ -7694,7 +7064,7 @@ impl LatexCompactParser {
         if seg.is_empty() {
             return None;
         }
-        match self.parse_node_list(seg) {
+        match self.parse_math_list(seg) {
             Ok((_, ids)) if !ids.is_empty() => Some(self.flatten_single(&ids)),
             Err(_) => {
                 self.check_node_limit();
@@ -8068,7 +7438,7 @@ impl LatexCompactParser {
             }
             return Ok(node);
         }
-        match self.parse_node_list(s) {
+        match self.parse_math_list(s) {
             Ok((_, ids)) => {
                 if !ids.is_empty() {
                     let node = self.flatten_single(&ids);
@@ -8293,7 +7663,7 @@ impl LatexCompactParser {
         if let Some(error) = self.take_resource_error() {
             return Err(error);
         }
-        Ok(out)
+        Ok(self.resolve_infix_fraction(out))
     }
 
     /// Parse an arrow label into a single node, or `None` when empty.
@@ -8302,7 +7672,7 @@ impl LatexCompactParser {
         if s.is_empty() {
             return Ok(None);
         }
-        match self.parse_node_list(s) {
+        match self.parse_math_list(s) {
             Ok((_, ids)) => {
                 if ids.is_empty() {
                     Ok(None)
