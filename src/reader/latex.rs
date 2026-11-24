@@ -545,6 +545,81 @@ mod tests {
     }
 
     #[test]
+    fn big_suffix_sets_the_atom_class() {
+        for (suffix, class) in [
+            ("l", MathAtomType::Open),
+            ("r", MathAtomType::Close),
+            ("m", MathAtomType::Rel),
+        ] {
+            for (size, factor) in [
+                ("big", Rational::new(6, 5)),
+                ("Big", Rational::new(9, 5)),
+                ("bigg", Rational::new(12, 5)),
+                ("Bigg", Rational::new(3, 1)),
+            ] {
+                let source = format!("\\{size}{suffix}|");
+                let node = parse_one(&source);
+                let MathNode::MathAtom { atom_type, content } = &node else {
+                    panic!("{source}: expected MathAtom, got {node:?}");
+                };
+                assert_eq!(*atom_type, class, "{source}");
+                assert!(
+                    matches!(content.as_ref(), MathNode::Scaled { factor: f, .. } if *f == factor),
+                    "{source}: {content:?}"
+                );
+            }
+        }
+        // Plain `\big` has no class of its own: it stays a bare Scaled node.
+        assert!(matches!(parse_one("\\Big|"), MathNode::Scaled { .. }));
+    }
+
+    #[test]
+    fn big_accepts_every_left_delimiter() {
+        for (source, glyph, kind) in [
+            ("\\bigl⟦", "⟦", SymbolKind::Open),
+            ("\\bigr⟧", "⟧", SymbolKind::Close),
+            ("\\Bigl⦃", "⦃", SymbolKind::Open),
+            ("\\big⌊", "⌊", SymbolKind::Open),
+            ("\\big.", "", SymbolKind::Fence),
+            ("\\big/", "/", SymbolKind::Fence),
+            ("\\big\\|", "\u{2016}", SymbolKind::Fence),
+            ("\\big\\uparrow", "↑", SymbolKind::Fence),
+            ("\\big\\backslash", "\\", SymbolKind::Fence),
+            ("\\big<", "⟨", SymbolKind::Open),
+            ("\\big\\{", "{", SymbolKind::Open),
+            ("\\big\\lvert", "|", SymbolKind::Open),
+            ("\\big\\ulcorner", "\u{231C}", SymbolKind::Open),
+        ] {
+            let node = parse_one(source);
+            let inner = match &node {
+                MathNode::MathAtom { content, .. } => content.as_ref(),
+                other => other,
+            };
+            let MathNode::Scaled { content, .. } = inner else {
+                panic!("{source}: expected Scaled, got {node:?}");
+            };
+            assert_eq!(
+                content.as_ref(),
+                &MathNode::Symbol(kind, glyph.into()),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn big_before_a_large_operator_keeps_its_body() {
+        // `\big\int` is no delimiter; the operator still takes its body.
+        let node = parse_one("\\big\\int x");
+        let MathNode::Scaled { content, .. } = &node else {
+            panic!("expected Scaled, got {node:?}");
+        };
+        assert!(
+            matches!(content.as_ref(), MathNode::Nary { .. }),
+            "{content:?}"
+        );
+    }
+
+    #[test]
     fn pmod() {
         let node = parse_one("\\pmod{n}");
         assert!(matches!(node, MathNode::Fenced { .. }));

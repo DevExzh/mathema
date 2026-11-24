@@ -87,9 +87,10 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         MathNode::Reflect { .. } => AtomType::Ord,
         MathNode::Boxed { .. } | MathNode::Actuarial { .. } => AtomType::Inner,
         MathNode::Cancel { content, .. } => classify_node_depth(content, style, depth + 1),
-        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
-            classify_node_depth(content, style, depth + 1)
-        },
+        // TeX's `\big` boxes its delimiter, so the result is an ordinary
+        // atom; `\bigl`/`\bigr`/`\bigm` add an explicit MathAtom class.
+        MathNode::Scaled { .. } => AtomType::Ord,
+        MathNode::RaiseBox { content, .. } => classify_node_depth(content, style, depth + 1),
         MathNode::Styled(_, children) => {
             if let Some(first) = children.first() {
                 classify_node_depth(first, style, depth + 1)
@@ -180,9 +181,9 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
         CompactNode::Cancel { content, .. } => {
             classify_node_c_depth(arena, content, style, depth + 1)
         },
-        CompactNode::Scaled { content, .. } => {
-            classify_node_c_depth(arena, content, style, depth + 1)
-        },
+        // TeX's `\big` boxes its delimiter, so the result is an ordinary
+        // atom; `\bigl`/`\bigr`/`\bigm` add an explicit MathAtom class.
+        CompactNode::Scaled { .. } => AtomType::Ord,
         CompactNode::RaiseBox { content, .. } => {
             classify_node_c_depth(arena, content, style, depth + 1)
         },
@@ -702,5 +703,25 @@ mod tests {
             0.0,
             "Ord-Close should be zero"
         );
+    }
+
+    #[test]
+    fn big_delimiters_use_tex_atom_classes() {
+        // `\big` boxes its delimiter (Ord); `\bigl`/`\bigr`/`\bigm` are
+        // `\mathopen`/`\mathclose`/`\mathrel` around it.
+        for (source, class) in [
+            (r"\big(", AtomType::Ord),
+            (r"\Big)", AtomType::Ord),
+            (r"\bigl(", AtomType::Open),
+            (r"\biggr]", AtomType::Close),
+            (r"\Biggm|", AtomType::Rel),
+        ] {
+            let parsed = crate::from_latex(source).unwrap();
+            let expr = parsed.expr();
+            assert_eq!(classify_node(&expr.nodes[0]), class, "{source}");
+            let compact = crate::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+            let id = compact.arena.children(compact.roots)[0];
+            assert_eq!(classify_node_c(&compact.arena, id), class, "{source}");
+        }
     }
 }

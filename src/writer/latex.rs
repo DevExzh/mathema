@@ -3,7 +3,9 @@ use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan, StrI
 use crate::ast::*;
 use crate::error::{Config, Result};
 use crate::unicode::fonts::style_to_latex_font;
-use crate::unicode::symbols::{mapped_symbol_kind, nary_op_to_latex, unicode_to_latex};
+use crate::unicode::symbols::{
+    latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
+};
 use crate::writer::Writer;
 
 pub struct LatexWriter;
@@ -1679,23 +1681,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Scaled { factor, content } => {
-            let cmd = match factor {
-                r if r == Rational::new(6, 5) => "\\big",
-                r if r == Rational::new(9, 5) => "\\Big",
-                r if r == Rational::new(12, 5) => "\\bigg",
-                r if r == Rational::new(3, 1) => "\\Bigg",
-                _ => "",
-            };
             // Sizing commands only apply to delimiter symbols. If the parsed
             // content is not an Open/Close/Fence symbol, the original input was
             // invalid (e.g. \Big\mathrel{...}); emit the content alone so the
             // sizing command does not detach from its argument on re-parse.
-            if matches!(
-                *arena.node(content),
-                CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, ..)
-            ) {
+            if let Some(cmd) = big_delim_command(arena, factor, content) {
+                buf.push('\\');
                 buf.push_str(cmd);
-                write_node(buf, arena, content);
+                write_big_delim(buf, arena, content);
             } else {
                 write_node(buf, arena, content);
             }
@@ -1833,6 +1826,21 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
             if atom_type == MathAtomType::Op {
                 write_math_atom_op(buf, arena, content, true);
+                return;
+            }
+            // `\bigl`, `\bigr` and `\bigm` are TeX's `\mathopen`, `\mathclose`
+            // and `\mathrel` around `\big`, so spell the pair as one command.
+            if let Some(suffix) = big_delim_suffix(atom_type)
+                && let CompactNode::Scaled {
+                    factor,
+                    content: delim,
+                } = *arena.node(content)
+                && let Some(cmd) = big_delim_command(arena, factor, delim)
+            {
+                buf.push('\\');
+                buf.push_str(cmd);
+                buf.push(suffix);
+                write_big_delim(buf, arena, delim);
                 return;
             }
             let cmd = match atom_type {
@@ -2500,6 +2508,69 @@ fn write_space_with_basis(buf: &mut String, width: Rational, basis: Option<Space
     buf.push_str(cmd);
     width.write_scaled_decimal(buf, scale);
     buf.push_str(unit);
+}
+
+/// The `\big`-family command name for a scaled delimiter, or `None` when the
+/// factor is not one of the four TeX sizes or the content is not a delimiter.
+fn big_delim_command(arena: &AstArena, factor: Rational, content: NodeId) -> Option<&'static str> {
+    if !matches!(
+        *arena.node(content),
+        CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, ..)
+    ) {
+        return None;
+    }
+    crate::ast::BIG_DELIM_SIZES
+        .iter()
+        .find(|&&(scale, ..)| scale == factor)
+        .map(|&(_, cmd, _)| cmd)
+}
+
+/// The class suffix of `\bigl`/`\bigr`/`\bigm` for an atom type.
+fn big_delim_suffix(atom_type: MathAtomType) -> Option<char> {
+    match atom_type {
+        MathAtomType::Open => Some('l'),
+        MathAtomType::Close => Some('r'),
+        MathAtomType::Rel => Some('m'),
+        _ => None,
+    }
+}
+
+/// Write the delimiter after a `\big`-family command in a form that the
+/// delimiter reader accepts: a named command when one spells the glyph with
+/// the symbol's class (`\lvert`, `\llbracket`), else the `\left` spelling.
+fn write_big_delim(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
+    let CompactNode::Symbol(kind, sid) = *arena.node(content) else {
+        return;
+    };
+    let delim = arena.str_val(sid);
+    let mut chars = delim.chars();
+    if let (Some(ch), None) = (chars.next(), chars.next())
+        && !matches!(ch, '\\' | '{' | '}' | '<' | '>')
+    {
+        let named = match (ch, kind) {
+            ('|', SymbolKind::Open) => Some("lvert"),
+            ('|', SymbolKind::Close) => Some("rvert"),
+            ('\u{2016}', SymbolKind::Open) => Some("lVert"),
+            ('\u{2016}', SymbolKind::Close) => Some("rVert"),
+            _ if ch.is_ascii() || ch == '\u{2016}' => None,
+            _ => match crate::unicode::symbols::unicode_to_latex_entry(ch) {
+                Some((name, class)) if class == kind => Some(name),
+                canonical => crate::unicode::symbols::command_for_class(ch, kind)
+                    .or(canonical.map(|(name, _)| name)),
+            },
+        };
+        if let Some(name) = named.filter(|name| latex_to_unicode(name) == Some(ch)) {
+            buf.push('\\');
+            buf.push_str(name);
+            return;
+        }
+        if let Some(name) = crate::latex::packages::package_command_for_symbol(delim, kind) {
+            buf.push('\\');
+            buf.push_str(name);
+            return;
+        }
+    }
+    write_delim(buf, delim);
 }
 
 fn write_delim(buf: &mut LatexBuffer, delim: &str) {
@@ -4982,6 +5053,33 @@ mod tests {
                 !latex.contains(r"\bb") && !latex.contains(r"\text"),
                 "{latex}"
             );
+        }
+    }
+
+    #[test]
+    fn big_delimiters_keep_their_class_suffix() {
+        for (input, expected) in [
+            (
+                r"\bigl\llbracket a\bigr\rrbracket",
+                r"\bigl\llbracket a\bigr\rrbracket",
+            ),
+            (r"\Bigl\lBrace x\Bigr\rBrace", r"\Bigl\lBrace x\Bigr\rBrace"),
+            (r"\bigl⟦ a\bigr⟧", r"\bigl\llbracket a\bigr\rrbracket"),
+            (r"\biggl( x\biggr)", r"\biggl(x\biggr)"),
+            (r"a\bigm| b", r"a\bigm| b"),
+            (r"\Biggm\| x", r"\Biggm\| x"),
+            (r"\big( x\big)", r"\big(x\big)"),
+            (r"\bigl. x\bigr|", r"\bigl.x\bigr|"),
+            (r"\big\vert", r"\big|"),
+            (r"\big\lvert x\big\rvert", r"\big\lvert x\big\rvert"),
+            (r"\big\backslash", r"\big\backslash"),
+            (r"\big\uparrow", r"\big\uparrow"),
+            (r"\big<", r"\big\langle"),
+            (r"\mathopen{\big(}x\mathclose{\big)}", r"\bigl(x\bigr)"),
+        ] {
+            let first = roundtrip(input);
+            assert_eq!(first, expected, "{input}");
+            assert_eq!(roundtrip(&first), first, "{input}");
         }
     }
 }

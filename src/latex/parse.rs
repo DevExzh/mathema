@@ -230,6 +230,18 @@ pub(crate) fn ascii_ordinary_needs_char(ch: char) -> bool {
     !matches!(ch, '#' | '$' | '%' | '&' | '`')
 }
 
+/// A single-glyph delimiter contributed by a supported package, such as
+/// amsfonts' `\ulcorner`. Consulted only after the core table misses.
+#[cold]
+fn package_delimiter(name: &str) -> Option<char> {
+    let (text, _) = crate::latex::packages::lookup_package_symbol(name)?;
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(ch), None) if !ch.is_alphanumeric() => Some(ch),
+        _ => None,
+    }
+}
+
 fn classify_char(c: char) -> SymbolKind {
     match c {
         '+' | '-' | '*' => SymbolKind::BinaryOp,
@@ -2702,7 +2714,7 @@ impl LatexCompactParser {
                         let ch = if name == "backslash" {
                             Some('\\')
                         } else {
-                            latex_to_unicode(name)
+                            latex_to_unicode(name).or_else(|| package_delimiter(name))
                         }
                         .ok_or_else(|| {
                             nom::Err::Error(nom::error::Error::new(
@@ -5678,57 +5690,96 @@ impl LatexCompactParser {
         ))
     }
 
+    /// Parse `\big`, `\Bigl`, `\biggr`, `\Biggm`, and the rest of the family.
+    ///
+    /// The delimiter becomes a `Scaled` symbol. In TeX, `\bigl` is
+    /// `\mathopen{\big…}`, `\bigr` is `\mathclose`, and `\bigm` is
+    /// `\mathrel`, so those suffixes wrap the scaled symbol in the matching
+    /// `MathAtom`. Plain `\big` stays a bare `Scaled` node, which the renderer
+    /// treats as an ordinary atom, as TeX does.
+    #[inline(never)]
     fn parse_big_delim<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
-        let factor = match name {
-            "big" | "bigl" | "bigr" | "bigm" => Rational::new(6, 5),
-            "Big" | "Bigl" | "Bigr" | "Bigm" => Rational::new(9, 5),
-            "bigg" | "biggl" | "biggr" | "biggm" => Rational::new(12, 5),
-            "Bigg" | "Biggl" | "Biggr" | "Biggm" => Rational::new(3, 1),
-            _ => Rational::new(6, 5),
+        let (size, class) = match name.as_bytes().last() {
+            Some(b'l' | b'r' | b'm') => name.split_at(name.len() - 1),
+            _ => (name, ""),
+        };
+        let factor = crate::ast::BIG_DELIM_SIZES
+            .iter()
+            .find(|&&(_, cmd, _)| cmd == size)
+            .map_or(Rational::new(6, 5), |&(scale, ..)| scale);
+        let atom_type = match class {
+            "l" => Some(MathAtomType::Open),
+            "r" => Some(MathAtomType::Close),
+            "m" => Some(MathAtomType::Rel),
+            _ => None,
         };
         let (input, _) = ws(input)?;
         let (input, delim_id) = self.parse_big_delim_arg(input)?;
-        Ok((
-            input,
-            self.arena.push_node(CompactNode::Scaled {
-                factor,
-                content: delim_id,
+        let scaled = self.arena.push_node(CompactNode::Scaled {
+            factor,
+            content: delim_id,
+        });
+        let is_delim = matches!(
+            self.arena.node(delim_id),
+            CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, _)
+        );
+        let id = match atom_type {
+            Some(atom_type) if is_delim => self.arena.push_node(CompactNode::MathAtom {
+                atom_type,
+                content: scaled,
             }),
-        ))
+            _ => scaled,
+        };
+        Ok((input, id))
     }
 
+    /// Parse the delimiter after a `\big`-family command. It accepts exactly
+    /// what `\left` accepts, and records the delimiter as an opening, closing
+    /// or fence symbol. A named delimiter keeps the class of its command, so
+    /// `\lvert` stays an opening bar.
+    #[inline(never)]
     fn parse_big_delim_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        if let Some(c) = input.chars().next() {
-            let rest = &input[c.len_utf8()..];
-            let (kind, s) = match c {
-                '(' => (SymbolKind::Open, "("),
-                ')' => (SymbolKind::Close, ")"),
-                '[' => (SymbolKind::Open, "["),
-                ']' => (SymbolKind::Close, "]"),
-                '|' => (SymbolKind::Fence, "|"),
-                '/' => (SymbolKind::Fence, "/"),
-                _ => {
-                    if input.starts_with('\\') {
-                        // Use parse_element so that n-ary operators like \int get
-                        // their normal scripts/body consumed. parse_command alone
-                        // would return a bare LargeOp symbol, which then diverges
-                        // when the sizing wrapper is later dropped and the symbol
-                        // is re-parsed as a full n-ary (e.g. \big \int\ ).
-                        return self.parse_element(input);
-                    }
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::Char,
-                    )));
-                },
-            };
-            let sid = self.arena.push_str(s);
-            return Ok((rest, self.arena.push_node(CompactNode::Symbol(kind, sid))));
-        }
-        Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            nom::error::ErrorKind::Eof,
-        )))
+        let (rest, sid) = match self.parse_delimiter_into(input) {
+            Ok(parsed) => parsed,
+            // TeX rejects a command that is not a delimiter here. Keep reading
+            // it as an ordinary element instead; the writer then drops the
+            // sizing command. parse_element (not parse_command) consumes the
+            // scripts and body of an n-ary operator, so the element reparses
+            // to the same shape once the wrapper is gone.
+            Err(nom::Err::Error(_)) if input.starts_with('\\') => {
+                return self.parse_element(input);
+            },
+            Err(err) => return Err(err),
+        };
+        let delim = self.arena.str_val(sid);
+        let named_kind = input.strip_prefix('\\').and_then(|cmd| {
+            let end = cmd
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(cmd.len());
+            let name = &cmd[..end];
+            match lookup_command(name) {
+                Some((ch, kind)) => delim.starts_with(ch).then_some(kind),
+                None => crate::latex::packages::lookup_package_symbol(name)
+                    .filter(|&(text, _)| text == delim)
+                    .map(|(_, kind)| kind),
+            }
+        });
+        let kind = match (named_kind, delim.chars().next()) {
+            // `\big\int` is not a TeX delimiter either; read the operator
+            // with its scripts and body, as the fallback above does.
+            (Some(SymbolKind::LargeOp), _) => return self.parse_element(input),
+            (Some(kind), _) => kind,
+            (None, Some('(' | '[' | '{')) => SymbolKind::Open,
+            (None, Some(')' | ']' | '}')) => SymbolKind::Close,
+            // A raw bar is a fence, as in `\left|`, whatever its table class.
+            (None, Some('|' | '\u{2016}') | None) => SymbolKind::Fence,
+            (None, Some(ch)) => crate::unicode::symbols::symbol_kind(ch),
+        };
+        let kind = match kind {
+            SymbolKind::Open | SymbolKind::Close => kind,
+            _ => SymbolKind::Fence,
+        };
+        Ok((rest, self.arena.push_node(CompactNode::Symbol(kind, sid))))
     }
 
     fn parse_color_discard<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {

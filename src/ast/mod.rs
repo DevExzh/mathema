@@ -640,6 +640,16 @@ pub enum PhantomKind {
     SmashTop,
 }
 
+/// The `\big` family as stored in a `Scaled` node: the scale factor, the
+/// LaTeX command, and the `minsize`/`maxsize` MathJax writes for it (TeX's
+/// 8.5pt, 11.5pt, 14.5pt and 17.5pt boxes, relative to `\big`).
+pub(crate) const BIG_DELIM_SIZES: [(Rational, &str, &str); 4] = [
+    (Rational { num: 6, den: 5 }, "big", "1.2em"),
+    (Rational { num: 9, den: 5 }, "Big", "1.623em"),
+    (Rational { num: 12, den: 5 }, "bigg", "2.047em"),
+    (Rational { num: 3, den: 1 }, "Bigg", "2.470em"),
+];
+
 /// TeX atom type for spacing classification (\mathord, \mathop, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
