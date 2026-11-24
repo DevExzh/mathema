@@ -244,12 +244,8 @@ fn write_sequence(
                     // it elsewhere: the trailing script may have come from
                     // a token base taking its first script's markers on the
                     // previous write (`\{^{2}{}^{\prime}`), which reads back
-                    // as this node.
-                    if is_script_node(arena, id) {
-                        write_script_node_with_next(buf, arena, id, Some(script_id));
-                    } else {
-                        write_node(buf, arena, id);
-                    }
+                    // as this node. Any other node is written by `write_node`.
+                    write_script_node_with_next(buf, arena, id, Some(script_id));
                     write_standalone_empty_base_script(buf, arena, script_id, next);
                 }
             }

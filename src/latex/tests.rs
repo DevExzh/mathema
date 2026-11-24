@@ -2308,29 +2308,40 @@ fn malformed_color_brace_prime_script_is_idempotent() {
 }
 
 #[test]
-fn scripted_escaped_brace_before_a_script_without_a_base_is_idempotent() {
-    // Found by fuzzing: `\{` followed by two scripts without a base is
-    // written as `\{` taking the first script's markers, which reads back
-    // as a scripted brace followed by the second script. That node must be
-    // spelled with the same script-argument bracing on the next write.
-    let config = Config::default();
-    for (input, expected) in [
-        (r"\{ {}^2 '", r"\{^{2}{}^{\prime}"),
-        (r"\mathbf{\} {}^2 '}", r"\mathbf{\}^{2}{}^{\prime}}"),
+fn scripted_base_before_a_script_without_a_base_is_idempotent() {
+    // Found by fuzzing: a token followed by two scripts without a base is
+    // written as the token taking the first script's markers, which reads
+    // back as a scripted base followed by the second script. That node must
+    // be spelled with the same script-argument bracing on the next write.
+    let default = Config::default();
+    let keep = Config::default().with_undefined_commands(crate::UndefinedCommands::Keep);
+    for (config, input, expected) in [
+        (&default, r"\{ {}^2 '", r"\{^{2}{}^{\prime}"),
+        (&default, r"\{ {}_- {}_-", r"\{_-{}_{-}"),
         (
+            &default,
+            r"\mathbf{\} {}^2 '}",
+            r"\mathbf{\}^{2}{}^{\prime}}",
+        ),
+        // The original fuzz artifact.
+        (
+            &default,
             "2eg\\gg\\chooeHcu~\\{$_-_-",
             r"2eg\gg \mathord{\text{\textbackslash{}chooeHcu}}\ \{_-{}_{-}",
         ),
-        (r"\{^2 {}^3", r"\{^{2}{}^{3}"),
-        (r"x^2 {}^3", r"x^{2}{}^{3}"),
+        (&keep, r"\foo \{ {}^2 '", r"\foo\{^{2}{}^{\prime}"),
+        (&default, r"\{^2 {}^3", r"\{^{2}{}^{3}"),
+        (&default, r"x^2 {}^3", r"x^{2}{}^{3}"),
+        // `x_2^2.5` would read the `.5` outside the superscript.
+        (&default, r"x_2^{2.5} {}_n", r"x_{2}^{2.5}{}_{n}"),
     ] {
-        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        let mut parsed = LatexReader::parse_compact(input, config).unwrap();
         normalize_compact_expr(&mut parsed.expr).unwrap();
-        let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
+        let first = LatexWriter::write_compact(&parsed.expr, config).unwrap();
         assert_eq!(first, expected, "{input}");
-        let mut reparsed = LatexReader::parse_compact(&first, &config).unwrap();
+        let mut reparsed = LatexReader::parse_compact(&first, config).unwrap();
         normalize_compact_expr(&mut reparsed.expr).unwrap();
-        let second = LatexWriter::write_compact(&reparsed.expr, &config).unwrap();
+        let second = LatexWriter::write_compact(&reparsed.expr, config).unwrap();
         assert_eq!(first, second, "{input}");
     }
 }
