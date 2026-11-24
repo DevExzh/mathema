@@ -2622,6 +2622,15 @@ fn is_bare_space_prescript_base(arena: &AstArena, base: NodeId) -> bool {
 
 /// Write the (non-empty) body of an n-ary operator, after its separator.
 fn write_nary_body(buf: &mut LatexBuffer, arena: &AstArena, body: NodeId) {
+    // An unwritable color is transparent in the output, so choose the body's
+    // spelling from what the reader will see: `\int {c}` with a dropped color
+    // would reparse as a bare `c` body, and a number keeps its braces.
+    let mut body = body;
+    while let CompactNode::Color { color, content } = *arena.node(body)
+        && latex_color(arena.str_val(color)).is_none()
+    {
+        body = content;
+    }
     if let CompactNode::PreScripts { base, .. } = *arena.node(body)
         && has_visible_prescripts(arena, body)
         && !is_bare_space_prescript_base(arena, base)
@@ -3311,6 +3320,27 @@ mod tests {
         let config = Config::default();
         let parsed = LatexReader::parse(input, &config).unwrap();
         LatexWriter::write(&parsed.expr, &config).unwrap()
+    }
+
+    #[test]
+    fn unwritable_color_nary_body_is_spelled_as_it_reparses() {
+        use crate::{Format, convert};
+        // Fuzz-found: this reads a `{`-named color, which is invalid and
+        // written transparently, so its single-letter n-ary body must not
+        // keep braces that the reparse would drop.
+        // A numeric body keeps its braces whatever color it wears, and an
+        // unwritable `#f00` is dropped like any other.
+        for (src, want) in [
+            (r"{{\intop\color{{}c}}", r"\int c"),
+            (r"{{\intop\color{{}2}}", r"\int {2}"),
+            (r"\int \textcolor{#f00}{2}", r"\int {2}"),
+            (r"\sum_{i=1}^n \textcolor{#f00}{12}", r"\sum_{i= 1}^n {12}"),
+        ] {
+            let first = convert(src, Format::LaTeX, Format::LaTeX).unwrap();
+            let second = convert(&first, Format::LaTeX, Format::LaTeX).unwrap();
+            assert_eq!(first, second, "{src}");
+            assert_eq!(first, want, "{src}");
+        }
     }
 
     #[test]
