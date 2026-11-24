@@ -39,6 +39,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only the first. Rewriting MTEF no longer adds zero-width spaces before some
   leading scripts.
 
+- UnicodeMath: a bar pair, bra, ket or `⟨⟩ ⌈⌉ ⌊⌋` group is a whole operand
+  (`|x|/|y|`, `√|x|`, `x_|a|`, `∑|a+b|/c`); a bar that pairs with nothing is
+  a delimiter (`P(A|B/C)` is `A|\frac{B}{C}`); Unicode script characters are
+  scripts (`x²`, `a₁`, `10⁻³`), `'` is a prime, U+2061 binds a function's
+  argument, `½` is an operand, `√abc` takes the whole operand, and a point that is
+  not a decimal point is punctuation (`a.b`). `x_(a)b`
+  no longer takes `b` into the subscript. `■(@)` keeps an empty last row.
+- MathML: the leading scripts of a big operator are on the operator, not on
+  its operand.
 - UnicodeMath: every math character has its Unicode math class where no
   LaTeX command gives one (`a≉b/c` is `a≉\frac{b}{c}`); `\not` writes the
   struck character (`≉`, `≐̸`); fence content is separated like any list

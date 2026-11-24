@@ -554,10 +554,12 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             } else {
                 0
             };
+            let mut row_start = 0;
             for (i, row) in rows.iter().enumerate() {
                 if i > 0 {
                     out.push('@');
                 }
+                row_start = out.len();
                 let mut column = 0;
                 for cell in row {
                     if column != 0 {
@@ -572,6 +574,10 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                     '&',
                     width.saturating_sub(column.max(1)),
                 ));
+            }
+            // The reader drops an empty last row that no `@` ends.
+            if !rows.is_empty() && out.len() == row_start {
+                out.push('@');
             }
             out.push(')');
         },
@@ -1163,7 +1169,7 @@ fn write_script_base(out: &mut String, node: &MathNode, style: MathStyle) {
 
 use crate::reader::unicode_math::{
     breaks_naryand, breaks_operand_at, is_alphanumeric, is_nary_char, is_prime as is_prime_char,
-    is_run_char, opening_fence, pairs_bars, reads_as_script_run, separates_bars,
+    is_run_char, opening_fence, pair_bars_at, pairs_bars, reads_as_naryand, reads_as_script_run,
     starts_signed_script_operand, symbol_takes_prime,
 };
 
@@ -1189,6 +1195,10 @@ fn prime_superscript<'a>(
     sup: &'a MathNode,
 ) -> Option<(&'a [MathNode], Option<&'a MathNode>)> {
     let is_prime = |node: &MathNode| matches!(node, MathNode::Symbol(SymbolKind::Ordinary, glyph) if is_prime_glyph(glyph));
+    // Primes right after an n-ary operator are its limit.
+    if matches!(base, MathNode::Nary { .. }) {
+        return None;
+    }
     // The reader gives such a base the primes after it (not `′′` or `+′`).
     if matches!(base, MathNode::Symbol(_, glyph) if !symbol_takes_prime(glyph)) {
         return None;
@@ -1451,7 +1461,13 @@ fn is_bracket_pair(open: &str, close: &str) -> bool {
 fn needs_script_group(glyph: &str) -> bool {
     let mut chars = glyph.chars();
     match (chars.next(), chars.next()) {
-        (Some(c), None) => matches!(c, '/' | '√' | '∛' | '∜' | '▭' | '⟡') || is_nary_char(c),
+        (Some(c), None) => {
+            matches!(
+                c,
+                '/' | '√' | '∛' | '∜' | '▭' | '⟡' | '\u{2308}' | '\u{230A}'
+            ) || pairs_bars(c)
+                || is_nary_char(c)
+        },
         (first, _) => first.is_some(),
     }
 }
@@ -2010,23 +2026,36 @@ fn separate_following_operand(
         return;
     };
     let alphanumeric = is_alphanumeric(first);
-    let signed = !alphanumeric && starts_signed_script_operand(first);
-    let previous_operator = (alphanumeric || signed) && previous_operator();
+    let signed = !alphanumeric
+        && (starts_signed_script_operand(first)
+            || pairs_bars(first)
+            || matches!(first, '\u{2308}' | '\u{230A}'));
+    let previous_operator = (alphanumeric || signed || first == '.') && previous_operator();
     // Adjacent numbers would read as one (`1 12′` is not `112′`).
     let digits = first.is_ascii_digit() && out[..start].ends_with(|c: char| c.is_ascii_digit());
+    // A point would go on with the number that ends a script, a denominator
+    // or an n-aryand (`x^2 .5` is not `x^2.5`).
+    let point = first == '.';
     // A fraction's numerator and denominator are whole operands (UTN #28
     // section 2.1): a fraction after an operand (`a b/c`) and a factor
     // after a fraction (`a/b c`, `a/b (c)`) are set apart.
-    let fraction = (current == OperandEdge::Fraction && previous != OperandEdge::Break)
+    let fraction = (current == OperandEdge::Fraction
+        && (previous != OperandEdge::Break || out[..start].ends_with('.')))
         || (matches!(previous, OperandEdge::Fraction | OperandEdge::Naryand)
-            && (alphanumeric || matches!(first, '(' | '〖' | '!')))
+            && (alphanumeric || matches!(first, '(' | '〖' | '!' | '.')))
         // An n-aryand goes on at anything but an operator or a closing
         // fence (`∑ a [b]`, `∑ a/b ∞`).
         || (previous == OperandEdge::NaryandFunction && alphanumeric)
         || (previous == OperandEdge::Naryand
             && !first.is_whitespace()
-            && !breaks_naryand(first)
-            && !matches!(first, '"' | ')' | ']' | '}' | '|' | '\u{2016}' | '〗'));
+            && match first {
+                // An opening bar or bra goes on with it, a closing one does
+                // not (`|∑ a|`).
+                '|' | '\u{2016}' => !in_open_bar(&out[..start]),
+                '\u{27E8}' => true,
+                '"' | ')' | ']' | '}' | '〗' | '\u{27E9}' | '\u{2309}' | '\u{230B}' => false,
+                _ => !breaks_naryand(first),
+            });
     // A script that is only a sign takes an operand after it (`x^- y` is
     // not `x^-y`, UTN #28 appendix A `soperand`).
     let sign = previous_operator
@@ -2039,7 +2068,7 @@ fn separate_following_operand(
         && before.ends_with(['√', '∛', '∜', '▭', '⟡'])
         && !first.is_whitespace();
     let joins = prefix
-        || (previous_operator && alphanumeric)
+        || (previous_operator && (alphanumeric || point))
         || (takes_prime && is_prime_char(first))
         || digits
         || fraction
@@ -2050,27 +2079,48 @@ fn separate_following_operand(
 }
 
 /// Set the fence content at `out[start..]`, which starts with a fraction, apart
-/// from an opening bar that the reader may not pair with the closing one
-/// (`| a/b+|`): around operators that end it, other bars, relations and
-/// separators.
+/// from an opening bar that the reader would not pair with the closing one
+/// (`| a/b+|`, `|a| b/c||`).
 fn separate_bar_content(out: &mut String, start: usize) {
-    let content = &out[start..];
-    if out[..start].ends_with(['|', '\u{2016}'])
-        && (content.ends_with(|c| c == ' ' || breaks_operand_at(c))
-            || content.contains(|c| pairs_bars(c) || separates_bars(c))
-            || follows_open_bar(&out[..start]))
-    {
+    let Some(bar) = out[..start].chars().next_back().filter(|&c| is_bar(c)) else {
+        return;
+    };
+    let open = start - bar.len_utf8();
+    // Its bracket level up to it, or as much of it as is near.
+    let mut level = 0;
+    let mut depth = 0_usize;
+    for (read, (index, c)) in out[..open].char_indices().rev().enumerate() {
+        match c {
+            ')' | ']' | '}' | '〗' => depth += 1,
+            '(' | '[' | '{' | '〖' if depth == 0 => level = index + c.len_utf8(),
+            '(' | '[' | '{' | '〖' => depth -= 1,
+            _ if read == 128 => level = index,
+            _ => {},
+        }
+        if level > 0 {
+            break;
+        }
+    }
+    let written = &out[level..];
+    let pairs = |after: &str| {
+        let text = format!("{written}{bar}{after}");
+        pair_bars_at(&text, open - level) == Some(written.len())
+    };
+    if written.len() > 2048 || !pairs("") || !pairs("x") {
         out.insert(start, ' ');
     }
 }
 
-/// Whether another bar may be open where `before`, which ends with an opening
-/// bar, ends (`|a|b/c||`): an odd number of them at its bracket level. Looks
-/// only a little way back.
-fn follows_open_bar(before: &str) -> bool {
+fn is_bar(c: char) -> bool {
+    matches!(c, '|' | '\u{2016}')
+}
+
+/// Whether an odd number of bars are at the bracket level that `before` ends
+/// in.
+fn in_open_bar(before: &str) -> bool {
     let mut depth = 0_usize;
     let mut bars = 0_usize;
-    for c in before.chars().rev().skip(1).take(64) {
+    for c in before.chars().rev().take(64) {
         match c {
             ')' | ']' | '}' | '〗' => depth += 1,
             '(' | '[' | '{' | '〖' if depth == 0 => break,
@@ -2236,6 +2286,9 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle, grouped: b
         MathNode::Row(children) => children.iter().any(is_bars),
         node => is_bars(node),
     } && out[start..].contains(|c| c == ' ' || breaks_naryand(c));
+    if reads_whole_with_bars(out, start, grouped) {
+        return;
+    }
     if bars
         || !plain
         || (grouped && is_function_head(node))
@@ -2246,6 +2299,19 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle, grouped: b
         out.insert(start, '〖');
         out.push('〗');
     }
+}
+
+/// Whether the n-aryand written at `out[start..]` starts with a bar or a
+/// bracket that pairs and needs no group (`∑_n |n⟩⟨n|`): the reader takes it whole, and no bar around it
+/// pairs with its bars.
+fn reads_whole_with_bars(out: &str, start: usize, grouped: bool) -> bool {
+    let written = &out[start..];
+    !grouped
+        && written.starts_with(|c| pairs_bars(c) || matches!(c, '\u{2308}' | '\u{230A}'))
+        && written.len() > 4
+        && written.len() <= 256
+        && !in_open_bar(&out[..start])
+        && reads_as_naryand(written)
 }
 
 /// Compact counterpart of [`write_naryand`].
@@ -2299,6 +2365,9 @@ fn write_naryand_c(
         CompactNode::Row(span) => arena.children(span).iter().any(|&child| is_bars(child)),
         _ => is_bars(id),
     } && out[start..].contains(|c| c == ' ' || breaks_naryand(c));
+    if reads_whole_with_bars(out, start, grouped) {
+        return;
+    }
     if bars
         || !plain
         || (grouped && is_function_head_c(arena, id))
@@ -2329,6 +2398,10 @@ enum OperandEdge {
     /// An n-ary operator whose n-aryand ends in a function name: the reader
     /// gives it the operand after it, spaced or not.
     NaryandFunction,
+}
+
+fn is_bar_glyph(glyph: &str) -> bool {
+    matches!(glyph, "|" | "\u{2016}")
 }
 
 fn symbol_edge(glyph: &str) -> OperandEdge {
@@ -2392,6 +2465,17 @@ fn operand_edge(node: &MathNode) -> OperandEdge {
         | MathNode::SubSup { base, .. } => match operand_edge(base) {
             OperandEdge::Break => OperandEdge::Break,
             _ => OperandEdge::Operand,
+        },
+        // A bar it opens with goes on to its closing one (`∑ |a|`).
+        MathNode::Nary { body, .. } if matches!(&**body, MathNode::Symbol(_, glyph) if is_bar_glyph(glyph)) => {
+            OperandEdge::Operand
+        },
+        // A nested one ends as it does.
+        MathNode::Nary { body, .. } if matches!(&**body, MathNode::Nary { .. }) => {
+            match operand_edge(body) {
+                OperandEdge::Operand => OperandEdge::Operand,
+                _ => OperandEdge::Naryand,
+            }
         },
         // An n-ary operator ends with its n-aryand, a whole operand that a
         // factor after it would join (`∑_i a_i b`), like a denominator.
@@ -2467,6 +2551,20 @@ fn operand_edge_c(arena: &AstArena, id: NodeId) -> OperandEdge {
         // An n-ary operator ends with its n-aryand, a whole operand that a
         // factor after it would join (`∑_i a_i b`), like a denominator.
         // (A lone operator symbol body, as LaTeX `\sum (` gives, does not.)
+        // A bar it opens with goes on to its closing one (`∑ |a|`).
+        CompactNode::Nary { body, .. }
+            if matches!(*arena.node(body), CompactNode::Symbol(_, sid)
+                if is_bar_glyph(arena.str_val(sid))) =>
+        {
+            OperandEdge::Operand
+        },
+        // A nested one ends as it does.
+        CompactNode::Nary { body, .. } if matches!(*arena.node(body), CompactNode::Nary { .. }) => {
+            match operand_edge_c(arena, body) {
+                OperandEdge::Operand => OperandEdge::Operand,
+                _ => OperandEdge::Naryand,
+            }
+        },
         CompactNode::Nary { body, .. }
             if !matches!(*arena.node(body), CompactNode::Row(span) if span.is_empty())
                 && (operand_edge_c(arena, body) != OperandEdge::Break
@@ -2491,6 +2589,14 @@ fn is_unicode_function(name: &str) -> bool {
 fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
     match select_mathchoice(node, style) {
         MathNode::Operator(attr) => is_unicode_function(&attr.name),
+        // A radicand goes on through letters and digits (`√x y`).
+        MathNode::Root { index, .. } if !matches!(&**index, MathNode::Number(s) if s == "3" || s == "4") => {
+            false
+        },
+        MathNode::Sqrt(radicand) | MathNode::Root { radicand, .. } => matches!(
+            select_mathchoice(radicand, style),
+            MathNode::Identifier(_) | MathNode::Number(_)
+        ),
         MathNode::Subscript { .. }
         | MathNode::Superscript { .. }
         | MathNode::SubSup { .. }
@@ -2922,10 +3028,12 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             out.push('(');
             let cell_ids = arena.children(cells);
             let stride = usize::from(num_cols.max(1));
+            let mut row_start = 0;
             for (i, row) in cell_ids.chunks(stride).enumerate() {
                 if i > 0 {
                     out.push('@');
                 }
+                row_start = out.len();
                 for (j, &cell_id) in row.iter().enumerate() {
                     if j > 0 {
                         out.push('&');
@@ -2937,6 +3045,10 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
                     }
                 }
                 out.extend(std::iter::repeat_n('&', stride - row.len()));
+            }
+            // The reader drops an empty last row that no `@` ends.
+            if !cell_ids.is_empty() && out.len() == row_start {
+                out.push('@');
             }
             out.push(')');
         },
@@ -3427,6 +3539,10 @@ fn prime_superscript_c(
         matches!(*arena.node(id), CompactNode::Symbol(SymbolKind::Ordinary, sid)
             if is_prime_glyph(arena.str_val(sid)))
     };
+    // Primes right after an n-ary operator are its limit.
+    if matches!(*arena.node(base), CompactNode::Nary { .. }) {
+        return None;
+    }
     // The reader gives such a base the primes after it (not `′′` or `+′`).
     if matches!(*arena.node(base), CompactNode::Symbol(_, sid)
         if !symbol_takes_prime(arena.str_val(sid)))
@@ -3852,6 +3968,17 @@ fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -
     // Follows the node written last, so one path.
     match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Operator { name, .. } => is_unicode_function(arena.str_val(name)),
+        // A radicand goes on through letters and digits (`√x y`).
+        CompactNode::Root { index, .. }
+            if !matches!(*arena.node(index), CompactNode::Number(sid)
+                if matches!(arena.str_val(sid), "3" | "4")) =>
+        {
+            false
+        },
+        CompactNode::Sqrt(radicand) | CompactNode::Root { radicand, .. } => matches!(
+            *arena.node(select_mathchoice_c(arena, radicand, style)),
+            CompactNode::Identifier(_) | CompactNode::Number(_)
+        ),
         CompactNode::Subscript { .. }
         | CompactNode::Superscript { .. }
         | CompactNode::SubSup { .. }

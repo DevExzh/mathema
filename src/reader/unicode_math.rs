@@ -1,6 +1,8 @@
 mod bars;
 
-pub(crate) use bars::{pairs_bars, separates_bars};
+pub(crate) use bars::{pair_bars_at, pairs_bars, reads_as_naryand};
+
+use std::collections::BTreeSet;
 
 use nom::IResult;
 use nom::bytes::complete::take_while1;
@@ -171,8 +173,6 @@ struct OperandRun {
     /// The open bars of the list: the offset of the closing one, and where
     /// the operand around the pair starts.
     open: SmallVec<[(usize, usize); 2]>,
-    /// The list length after an unpaired bar.
-    divider: usize,
 }
 
 struct CompactParser {
@@ -204,8 +204,10 @@ struct CompactParser {
     failed: Vec<u8>,
     /// Bit per byte offset: a matrix content walk from there fails.
     dead_walk: Vec<u64>,
-    /// The paired bars, by offset (see [`bars`]).
-    bars: Vec<(usize, usize)>,
+    /// The paired bars and brackets (see [`bars`]).
+    pairs: bars::Pairs,
+    /// Offsets of pairs whose content does not parse.
+    failed_pairs: BTreeSet<usize>,
     /// Byte range of a run of `.` that is known not to start a number.
     dot_run: (usize, usize),
     /// Matrices of the result that skipped content (Lenient mode), in the
@@ -253,11 +255,8 @@ impl CompactParser {
         Self {
             arena: AstArena::new(),
             source_len: source.len(),
-            bars: if source.contains(['|', '\u{2016}']) {
-                bars::pair_bars(source)
-            } else {
-                Vec::new()
-            },
+            pairs: bars::pair_bars(source),
+            failed_pairs: BTreeSet::new(),
             lead,
             strictness: config.strictness,
             depth: 0,
@@ -583,10 +582,14 @@ impl CompactParser {
     /// they are anywhere else (`a/(b+c)^2`), and so is an invisible group
     /// (`a/〖〗_1`).
     fn parse_denominator<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let pair = self.pair_end(input).is_some();
         let (mut rest, den) = self.parse_grouped_operand(input)?;
         // UTN #28 section 2.1: the denominator is the whole operand, the
         // factors up to a space or an operator (`(−b±√(b^2−4ac))/2a`).
-        let mut factors = SmallVec::<[NodeId; 8]>::from_slice(&[den]);
+        let mut factors = match *self.arena.node(den) {
+            CompactNode::Row(span) if pair => SmallVec::from_slice(self.arena.children(span)),
+            _ => SmallVec::<[NodeId; 8]>::from_slice(&[den]),
+        };
         let ends_operand = |this: &Self, id: NodeId, read: &str| {
             this.breaks_operand(id) || read.ends_with(char::is_whitespace)
         };
@@ -711,9 +714,9 @@ impl CompactParser {
             | CompactNode::Subscript { base, .. }
             | CompactNode::Superscript { base, .. }
             | CompactNode::SubSup { base, .. } => self.breaks_operand(base),
-            CompactNode::Symbol(_, sid) => {
-                let mut chars = self.arena.str_val(sid).chars();
-                chars.next().is_some_and(breaks_operand_at) && chars.next().is_none()
+            // The kind is the character's class (see `breaks_operand_at`).
+            CompactNode::Symbol(kind, sid) => {
+                class_breaks_operand(kind) || self.arena.str_val(sid) == "?"
             },
             CompactNode::Nary { .. } | CompactNode::Space(_) | CompactNode::Text(..) => true,
             _ => false,
@@ -742,21 +745,26 @@ impl CompactParser {
         }
         let id = self.ungroup_after_leading_script(ids, id);
         ids.push(id);
+        let fraction = rest.starts_with(['/', '\u{A6}']);
         // A dagger right before a fraction bar is the adjoint's (`a†/b`), as
         // no operand follows it.
-        let adjoint = rest.starts_with(['/', '\u{A6}'])
+        let adjoint = fraction
             && matches!(*self.arena.node(id), CompactNode::Symbol(_, sid)
                 if matches!(self.arena.str_val(sid), "\u{2020}" | "\u{2021}"));
-        let fence = self.follow_fence(run, at, ids, rest);
+        let fence = !self.pairs.is_empty() && self.follow_fence(run, at, ids.len());
         if !fence {
             if self.breaks_operand(id) && !adjoint {
                 run.start = ids.len();
                 return Ok(rest);
             }
-            if matches!(*self.arena.node(id), CompactNode::Symbol(..))
-                && matches!(self.closing_fence(id), Some('|' | '\u{2016}'))
+            // UTN #28 section 3.1 and table 3.1: a bar that divides is a
+            // delimiter (`P(A|B/C)`).
+            if !fraction
+                && matches!(*self.arena.node(id), CompactNode::Symbol(SymbolKind::Fence, sid)
+                    if matches!(self.arena.str_val(sid), "|" | "\u{2016}"))
             {
-                run.divider = ids.len();
+                run.start = ids.len();
+                return Ok(rest);
             }
         }
         while rest.starts_with(['/', '\u{A6}']) && negated_operator(rest).is_none() {
@@ -806,24 +814,105 @@ impl CompactParser {
         Ok(rest)
     }
 
-    /// Follow a bar, bra or ket delimiter pushed as the last of `ids` (the
-    /// element at offset `at`): an opening one starts an operand (`|x/y|`), a
+    /// The offset of the closing delimiter of the bar pair, bra, ket or bracket
+    /// group that opens at `input`.
+    fn pair_end(&self, input: &str) -> Option<usize> {
+        if !input.starts_with(['|', '\u{2016}', '\u{27E8}', '\u{2308}', '\u{230A}']) {
+            return None;
+        }
+        let at = self.offset(input);
+        let find = |pairs: &[(usize, usize)]| {
+            let index = pairs.binary_search_by_key(&at, |&(open, _)| open).ok()?;
+            Some(pairs[index].1).filter(|&close| close > at)
+        };
+        find(&self.pairs.bars).or_else(|| find(&self.pairs.groups))
+    }
+
+    /// The bar pair or bracket group that opens at `input` as one operand
+    /// (appendix A `expBracket`), with the scripts of its closing delimiter
+    /// when `scripts`. `None` when none opens there or its content does not
+    /// parse.
+    fn parse_pair<'a>(
+        &mut self,
+        input: &'a str,
+        scripts: bool,
+    ) -> std::result::Result<Option<(&'a str, NodeId)>, nom::Err<nom::error::Error<&'a str>>> {
+        let Some(end) = self.pair_end(input) else {
+            return Ok(None);
+        };
+        let start = self.offset(input);
+        if self.failed_pairs.contains(&start) {
+            return Ok(None);
+        }
+        self.enter(input)?;
+        let parsed = self.parse_pair_content(input, end, scripts);
+        self.depth -= 1;
+        match parsed {
+            Ok((rest, ids)) => Ok(Some((rest, self.flatten_single(&ids)))),
+            Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
+            Err(_) => {
+                self.failed_pairs.insert(start);
+                Ok(None)
+            },
+        }
+    }
+
+    fn parse_pair_content<'a>(
+        &mut self,
+        input: &'a str,
+        end: usize,
+        scripts: bool,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        let mut ids = SmallVec::new();
+        let mut run = OperandRun::default();
+        let mut rest = input;
+        let mut spaced = false;
+        loop {
+            self.tick(1);
+            let trimmed = skip_blanks(rest);
+            spaced |= trimmed.len() != rest.len();
+            rest = trimmed;
+            let at = self.offset(rest);
+            if at >= end {
+                break;
+            }
+            if let Some((after, width)) = unicode_math_space(rest) {
+                let id = self.push_node(CompactNode::Space(width));
+                rest = self.push_operand(&mut ids, &mut run, true, at, id, after)?;
+                spaced = true;
+                continue;
+            }
+            self.baseless_ok = spaced;
+            let (after, id) = self.parse_element(rest)?;
+            let spaced = std::mem::take(&mut spaced);
+            rest = self.push_operand(&mut ids, &mut run, spaced, at, id, after)?;
+        }
+        if self.offset(rest) != end {
+            return Err(parse_error(rest, nom::error::ErrorKind::Verify));
+        }
+        let (rest, close) = if scripts {
+            self.parse_element(rest)?
+        } else {
+            self.parse_symbol_char(rest)?
+        };
+        ids.push(close);
+        Ok((rest, ids))
+    }
+
+    /// Follow a bar, bra or ket delimiter pushed as the last of `len` elements
+    /// (at offset `at`): an opening one starts an operand (`|x/y|`), a
     /// closing one goes on with the operand the opening one was in
     /// (`a|x|/y`). Returns whether it was one. See [`bars`].
-    fn follow_fence(&self, run: &mut OperandRun, at: usize, ids: &[NodeId], rest: &str) -> bool {
-        let Ok(index) = self.bars.binary_search_by_key(&at, |&(bar, _)| bar) else {
+    fn follow_fence(&self, run: &mut OperandRun, at: usize, len: usize) -> bool {
+        let find = |pairs: &[(usize, usize)]| {
+            let index = pairs.binary_search_by_key(&at, |&(bar, _)| bar).ok()?;
+            Some(pairs[index].1)
+        };
+        let Some(partner) = find(&self.pairs.bars).or_else(|| find(&self.pairs.groups)) else {
             return false;
         };
-        let (_, partner) = self.bars[index];
-        let len = ids.len();
         if partner > at {
-            // A divider right before it ends the operand (`{x||x|/2>0}`).
-            let outer = if run.divider + 1 == len {
-                len - 1
-            } else {
-                run.start
-            };
-            run.open.push((partner, outer));
+            run.open.push((partner, run.start));
             run.start = len;
             return true;
         }
@@ -835,14 +924,90 @@ impl CompactParser {
         {
             run.open.pop();
             run.start = outer;
-        } else if run.start + 1 == len
-            && !rest.starts_with('/')
-            && self.closing_fence(ids[len - 1]) == Some('\u{27E9}')
-        {
-            // The `⟩` of a ket that started in an n-aryand.
-            run.start = len;
         }
         true
+    }
+
+    /// The script at `input`: `mark` and its operand, or a span of Unicode
+    /// super- or subscript characters (UTN #28 section 3.12: `x²`, `a₁₂`).
+    fn parse_script<'a>(
+        &mut self,
+        input: &'a str,
+        mark: char,
+    ) -> std::result::Result<Option<(&'a str, NodeId)>, nom::Err<nom::error::Error<&'a str>>> {
+        if let Some(after) = input.strip_prefix(mark) {
+            return self.parse_script_chain(after, mark);
+        }
+        if !starts_script_character(input, mark) {
+            return Ok(None);
+        }
+        Ok(self.parse_script_characters(input, mark))
+    }
+
+    fn parse_script_characters<'a>(
+        &mut self,
+        mut input: &'a str,
+        mark: char,
+    ) -> Option<(&'a str, NodeId)> {
+        let mut factors = SmallVec::<[NodeId; 8]>::new();
+        // Factors before an open `⁽`, and the input from it.
+        let mut open: Option<(SmallVec<[NodeId; 8]>, &'a str)> = None;
+        let mut digits = String::new();
+        let mut buf = [0_u8; 4];
+        while let Some(c) = input.chars().next().filter(|c| !c.is_ascii())
+            && let Some((character, _)) = script_character(c).filter(|&(_, of)| of == mark)
+        {
+            self.tick(1);
+            if (character == '(' && open.is_some()) || (character == ')' && open.is_none()) {
+                break;
+            }
+            let at = input;
+            input = &input[c.len_utf8()..];
+            if character.is_ascii_digit() {
+                digits.push(character);
+                continue;
+            }
+            self.push_script_digits(&mut factors, &mut digits);
+            if character == '(' {
+                open = Some((std::mem::take(&mut factors), at));
+                continue;
+            }
+            let id = if character == ')' {
+                let content = self.flatten_single(&factors);
+                let (before, _) = open.take()?;
+                factors = before;
+                let content = self.arena.push_children_deferred(&[content]);
+                let (open, close) = (self.arena.push_str("("), self.arena.push_str(")"));
+                CompactNode::Fenced {
+                    open,
+                    close,
+                    content,
+                }
+            } else {
+                let sid = self.arena.push_str(character.encode_utf8(&mut buf));
+                if character.is_alphabetic() {
+                    CompactNode::Identifier(sid)
+                } else {
+                    CompactNode::Symbol(classify_unicode_symbol(character), sid)
+                }
+            };
+            factors.push(self.push_node(id));
+        }
+        self.push_script_digits(&mut factors, &mut digits);
+        // A `⁽` that nothing closes ends the span.
+        if let Some((before, at)) = open {
+            factors = before;
+            input = at;
+        }
+        (!factors.is_empty()).then(|| (input, self.flatten_single(&factors)))
+    }
+
+    fn push_script_digits(&mut self, factors: &mut SmallVec<[NodeId; 8]>, digits: &mut String) {
+        if !digits.is_empty() {
+            let sid = self.arena.push_str(digits);
+            factors.push(self.push_node(CompactNode::Number(sid)));
+            digits.clear();
+        }
     }
 
     /// A script argument at `input` (after `mark`), with the same scripts
@@ -853,26 +1018,36 @@ impl CompactParser {
         input: &'a str,
         mark: char,
     ) -> std::result::Result<Option<(&'a str, NodeId)>, nom::Err<nom::error::Error<&'a str>>> {
-        let (rest, mut factors) = match self.parse_script_factors(input) {
+        let (mut rest, mut factors) = match self.parse_script_factors(input) {
             Ok(found) => found,
             Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
             Err(_) => return Ok(None),
         };
-        if let Some(next) = rest.strip_prefix(mark) {
-            self.enter(next)?;
-            let nested = self.parse_script_chain(next, mark);
-            self.depth -= 1;
-            if let Some((after, script)) = nested? {
-                // The script nests on the last factor (`a_ij_k` is
-                // `a_(i j_k)`, as `ij_k` is `i j_k` outside a script).
-                let base = factors.pop().expect("a script operand has a factor");
-                factors.push(self.push_node(if mark == '_' {
-                    CompactNode::Subscript { base, sub: script }
-                } else {
-                    CompactNode::Superscript { base, sup: script }
-                }));
-                return Ok(Some((after, self.flatten_single(&factors))));
+        loop {
+            let characters = starts_script_character(rest, mark);
+            if !characters && !rest.starts_with(mark) {
+                break;
             }
+            self.enter(rest)?;
+            let nested = self.parse_script(rest, mark);
+            self.depth -= 1;
+            let Some((after, script)) = nested? else {
+                break;
+            };
+            // The script nests on the last factor (`a_ij_k` is
+            // `a_(i j_k)`, as `ij_k` is `i j_k` outside a script).
+            let base = factors.pop().expect("a script operand has a factor");
+            factors.push(self.push_node(if mark == '_' {
+                CompactNode::Subscript { base, sub: script }
+            } else {
+                CompactNode::Superscript { base, sup: script }
+            }));
+            rest = after;
+            if !characters {
+                break;
+            }
+            // Script characters end with their span (`W_δ₁ρ₁σ₂`).
+            rest = self.continue_run(false, rest, &mut factors)?;
         }
         Ok(Some((rest, self.flatten_single(&factors))))
     }
@@ -904,7 +1079,8 @@ impl CompactParser {
             .chars()
             .next()
             .filter(|c| matches!(c, '-' | '+' | '\u{2212}'))
-            && input[sign.len_utf8()..].starts_with(starts_signed_script_operand)
+            && let after = &input[sign.len_utf8()..]
+            && (after.starts_with(starts_signed_script_operand) || self.pair_end(after).is_some())
         {
             let (after, sign) = self.parse_symbol(input)?;
             factors.push(sign);
@@ -927,26 +1103,63 @@ impl CompactParser {
             factors.push(id);
             rest = after;
         }
-        if factors.last().is_some_and(|&id| self.is_run_factor(id)) {
-            // UTN #28 does not say where a run meets a function name: section
-            // 2.2 takes the whole run and section 3.5 recognizes function
-            // names. Here the run ends before a maximal span of letters that
-            // is a function name in full (`x^2sin x`), and goes on through
-            // one that merely ends in a name (`x_kmax`, `x_basin`).
-            let read = &input[..input.len() - rest.len()];
-            let mut after_letter = read.chars().next_back().is_some_and(is_run_letter);
-            while let Some(c) = rest.chars().next().filter(|&c| is_run_char(c))
-                && (after_letter || !starts_function_span(rest))
-            {
-                let (after, id) = self.parse_single_char_node(rest)?;
-                let (after, id) = self.with_accents(after, id);
-                self.tick(1);
-                factors.push(id);
-                rest = after;
-                after_letter = is_run_letter(c);
-            }
-        }
+        let rest = self.continue_operand(input, rest, &mut factors)?;
         Ok((rest, factors))
+    }
+
+    /// The letters and digits at `rest` that go on with the simple operand
+    /// `factors` (which ends in a letter when `after_letter`), and the input
+    /// after them.
+    fn continue_run<'a>(
+        &mut self,
+        mut after_letter: bool,
+        mut rest: &'a str,
+        factors: &mut SmallVec<[NodeId; 8]>,
+    ) -> std::result::Result<&'a str, nom::Err<nom::error::Error<&'a str>>> {
+        // UTN #28 does not say where a run meets a function name: section
+        // 2.2 takes the whole run and section 3.5 recognizes function
+        // names. Here the run ends before a maximal span of letters that
+        // is a function name in full (`x^2sin x`), and goes on through
+        // one that merely ends in a name (`x_kmax`, `x_basin`).
+        while let Some(c) = rest.chars().next().filter(|&c| is_run_char(c))
+            && (after_letter || !starts_function_span(rest))
+        {
+            let (after, id) = self.parse_single_char_node(rest)?;
+            let (after, id) = self.with_accents(after, id);
+            self.tick(1);
+            factors.push(id);
+            rest = after;
+            after_letter = is_run_letter(c);
+        }
+        Ok(rest)
+    }
+
+    /// [`Self::continue_run`] when the last of `factors`, read from `input`,
+    /// is a letter or a number.
+    fn continue_operand<'a>(
+        &mut self,
+        input: &'a str,
+        rest: &'a str,
+        factors: &mut SmallVec<[NodeId; 8]>,
+    ) -> std::result::Result<&'a str, nom::Err<nom::error::Error<&'a str>>> {
+        if factors.last().is_some_and(|&id| self.is_run_factor(id)) {
+            let read = &input[..input.len() - rest.len()];
+            // A group is an operand of its own (`√(x)y`, `x_(a)b`).
+            if read.ends_with([')', '〗']) {
+                return Ok(rest);
+            }
+            let after_letter = read.chars().next_back().is_some_and(is_run_letter);
+            return self.continue_run(after_letter, rest, factors);
+        }
+        Ok(rest)
+    }
+
+    /// The operand of a radical (UTN #28 section 3.6: `√abc`).
+    fn parse_radicand<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, first) = self.parse_script_arg(input)?;
+        let mut factors = SmallVec::from_slice(&[first]);
+        let rest = self.continue_operand(input, rest, &mut factors)?;
+        Ok((rest, self.flatten_single(&factors)))
     }
 
     /// The first atom of a script operand: a function name (`x_max`, read
@@ -976,6 +1189,27 @@ impl CompactParser {
         input: &'a str,
         base: NodeId,
     ) -> IResult<&'a str, NodeId> {
+        // Most atoms have none.
+        let mut input = input;
+        match input.as_bytes().first() {
+            None => return Ok((input, base)),
+            Some(b'_' | b'^' | b'\'') => {},
+            Some(b' ' | 0xE2) => {
+                // UTN #28 section 3.5: a script after function apply is the
+                // function name's (`sin⁡^2 x`).
+                let after = skip_blanks(input);
+                if after.len() < input.len()
+                    && starts_script(after)
+                    && input[..input.len() - after.len()].ends_with('\u{2061}')
+                {
+                    input = after;
+                } else if input.starts_with(' ') {
+                    return Ok((input, base));
+                }
+            },
+            Some(byte) if byte.is_ascii() => return Ok((input, base)),
+            Some(_) => {},
+        }
         if input.as_bytes().first().is_some_and(|byte| *byte >= 0x80)
             && let Some((rest, accent, position, wide)) = unicode_accent_suffix(input)
         {
@@ -1020,23 +1254,24 @@ impl CompactParser {
         if takes_prime && rest.starts_with(is_prime) {
             (rest, sup_parts) = self.parse_primes(rest);
         }
-        if let Some(after) = rest.strip_prefix('_')
-            && let Some((after, id)) = self.parse_script_chain(after, '_')?
-        {
+        if let Some((after, id)) = self.parse_script(rest, '_')? {
             sub = Some(id);
             rest = after;
             if takes_prime && sup_parts.is_empty() && rest.starts_with(is_prime) {
                 (rest, sup_parts) = self.parse_primes(rest);
             }
         }
-        if let Some(after) = rest.strip_prefix('^')
-            && let Some((after, id)) = self.parse_script_chain(after, '^')?
-        {
+        if let Some((after, id)) = self.parse_script(rest, '^')? {
             sup_parts.push(id);
             rest = after;
+            // Primes after it are the same superscript's (`f²′`).
+            if takes_prime && rest.starts_with(is_prime) {
+                let (after, primes) = self.parse_primes(rest);
+                sup_parts.extend(primes);
+                rest = after;
+            }
             if sub.is_none()
-                && let Some(after) = rest.strip_prefix('_')
-                && let Some((after, id)) = self.parse_script_chain(after, '_')?
+                && let Some((after, id)) = self.parse_script(rest, '_')?
             {
                 sub = Some(id);
                 rest = after;
@@ -1122,6 +1357,9 @@ impl CompactParser {
     }
 
     fn parse_script_arg<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        if let Some(found) = self.parse_pair(input, false)? {
+            return Ok(found);
+        }
         // Tables are single UnicodeMath atoms. They can therefore be used as
         // a script argument without an additional grouping pair, just like a
         // box or radical emitted by this writer.
@@ -1189,6 +1427,9 @@ impl CompactParser {
     /// its scripts, where parentheses before a script or an accent are
     /// visible (`a/(b+c)^2`).
     fn parse_grouped_operand<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        if let Some(found) = self.parse_pair(input, true)? {
+            return Ok(found);
+        }
         let grouping = input.starts_with('(')
             && matching_paren_end(input).is_some_and(|end| {
                 !starts_script(&input[end..]) && unicode_accent_suffix(&input[end..]).is_none()
@@ -1336,6 +1577,7 @@ impl CompactParser {
             parse_prime,
             parse_zero_width_atom,
             parse_literal_solidus,
+            parse_point,
         );
         Err(nom::Err::Error(nom::error::Error::new(
             input,
@@ -1357,6 +1599,17 @@ impl CompactParser {
             rest
         };
         Ok((rest, self.push_node(CompactNode::Symbol(kind, sid))))
+    }
+
+    /// A period that is not a decimal point: punctuation (UTN #28 section
+    /// 3.14).
+    fn parse_point<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let rest = input
+            .strip_prefix('.')
+            .ok_or_else(|| parse_error(input, nom::error::ErrorKind::Char))?;
+        let sid = self.arena.push_str(".");
+        let point = CompactNode::Symbol(SymbolKind::Punctuation, sid);
+        Ok((rest, self.push_node(point)))
     }
 
     /// UTN #28 sections 2.1 and 3.2: `\/` is a literal solidus (a binary
@@ -1614,14 +1867,14 @@ impl CompactParser {
             let id = self.push_node(CompactNode::Root { index, radicand });
             return Ok((rest, id));
         }
-        let (input, content) = self.parse_script_arg(input)?;
+        let (input, content) = self.parse_radicand(input)?;
         let id = self.push_node(CompactNode::Sqrt(content));
         Ok((input, id))
     }
 
     fn parse_cbrt<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, root) = satisfy(|c| matches!(c, '\u{221B}' | '\u{221C}'))(input)?; // ∛ ∜
-        let (input, content) = self.parse_script_arg(input)?;
+        let (input, content) = self.parse_radicand(input)?;
         let s = self
             .arena
             .push_str(if root == '\u{221B}' { "3" } else { "4" });
@@ -1948,13 +2201,31 @@ impl CompactParser {
         let mut spaced = false;
         // The input before the space skipped to a function's argument.
         let mut skipped = None;
+        // Where the bar pair or bracket group being read ends.
+        let mut until = None;
         loop {
+            let at = self.offset(rest);
+            if let Some(end) = until
+                && at <= end
+            {
+                let next = skip_blanks(rest);
+                spaced |= next.len() != rest.len();
+                rest = next;
+                if let Some((after, width)) = unicode_math_space(rest) {
+                    let id = self.push_node(CompactNode::Space(width));
+                    rest = self.push_operand(&mut ids, &mut run, true, at, id, after)?;
+                    spaced = true;
+                    continue;
+                }
+            } else {
+                until = None;
+            }
             // UTN #28 section 3.5: a function name and its argument are one
             // operand (`∑ log k`); the space after the name only delimits it
             // (section 2.3). The differential ⅆ (section 3.4: "automatically
             // introduces a small space") ends the integrand it follows, so a
             // space before it does not end the n-aryand (`∫ sin x ⅆx`).
-            if rest.starts_with(is_blank) && !ids.is_empty() {
+            if until.is_none() && rest.starts_with(is_blank) && !ids.is_empty() {
                 let next = skip_blanks(rest);
                 let goes_on = if next.starts_with(['\u{2145}', '\u{2146}']) {
                     true
@@ -1963,7 +2234,7 @@ impl CompactParser {
                         && next
                             .chars()
                             .next()
-                            .is_some_and(|c| !c.is_whitespace() && !self.ends_naryand(&ids, c))
+                            .is_some_and(|c| !c.is_whitespace() && !self.ends_naryand(&ids, next))
                 };
                 if goes_on {
                     skipped = Some(rest);
@@ -1976,8 +2247,11 @@ impl CompactParser {
             let Some(c) = rest.chars().next() else {
                 break;
             };
-            if c.is_whitespace() || self.ends_naryand(&ids, c) {
-                break;
+            if until.is_none() {
+                if c.is_whitespace() || self.ends_naryand(&ids, rest) {
+                    break;
+                }
+                until = self.pair_end(rest);
             }
             // An operand of the n-ary element, at its nesting level (as a
             // script argument is); a nested n-ary operator is one deeper.
@@ -2005,7 +2279,7 @@ impl CompactParser {
             rest = self.push_operand(&mut ids, &mut run, spaced, at, id, after)?;
             // A nested n-ary operator is the whole n-aryand, and so is a lone
             // operator symbol, as LaTeX reads `\sum \cdot y`.
-            if ids.len() == 1 && self.breaks_operand(id) {
+            if until.is_none() && ids.len() == 1 && self.breaks_operand(id) {
                 break;
             }
         }
@@ -2047,31 +2321,26 @@ impl CompactParser {
         }
     }
 
-    /// Whether an n-aryand `ids` ends before an element starting with `c`:
-    /// at quoted text, and once it has begun, at an operator, punctuation or
-    /// a big operator; at a closing fence it did not open, and at `|` or `‖`
-    /// unless it opens the n-aryand or closes one opened in it (`|∑ a|` ends
-    /// at `a`).
-    fn ends_naryand(&self, ids: &[NodeId], c: char) -> bool {
-        if c == '"' {
+    /// Whether an n-aryand `ids` ends before the element at `rest`: at quoted
+    /// text, and once it has begun, at an operator, punctuation, a divider or
+    /// a big operator; at the closing delimiter of a pair around it (`|∑ a|`),
+    /// but not at an opening bar (`∑ p|x|/2`).
+    fn ends_naryand(&self, ids: &[NodeId], rest: &str) -> bool {
+        let Some(c) = rest.chars().next() else {
             return true;
+        };
+        match c {
+            '"' => true,
+            '|' | '\u{2016}' | '\u{27E8}' | '\u{27E9}' => {
+                let at = self.offset(rest);
+                match self.pairs.bars.binary_search_by_key(&at, |&(bar, _)| bar) {
+                    Ok(index) => self.pairs.bars[index].1 < at,
+                    Err(_) => c == '\u{27E9}' || !ids.is_empty(),
+                }
+            },
+            _ if opening_fence(c).is_some() => true,
+            _ => breaks_naryand(c) && !ids.is_empty(),
         }
-        if let Some(open) = opening_fence(c) {
-            let count = |target: char| {
-                ids.iter()
-                    .filter(|&&id| {
-                        matches!(*self.arena.node(id), CompactNode::Symbol(_, sid)
-                            if self.arena.str_val(sid).chars().eq(std::iter::once(target)))
-                    })
-                    .count()
-            };
-            return if open == c {
-                !ids.is_empty() && count(c) % 2 == 0
-            } else {
-                count(open) <= count(c)
-            };
-        }
-        breaks_naryand(c) && !ids.is_empty()
     }
 
     fn parse_nary_op<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -2088,9 +2357,7 @@ impl CompactParser {
         // Scripts nest right to left, as on any base (`∑_a_b`, `∑^-1^′`).
         let mut rest = input;
         let mut sub = NodeId::NONE;
-        if let Some(after) = rest.strip_prefix('_')
-            && let Some((after, id)) = self.parse_script_chain(after, '_')?
-        {
+        if let Some((after, id)) = self.parse_script(rest, '_')? {
             sub = id;
             rest = after;
         }
@@ -2098,14 +2365,11 @@ impl CompactParser {
         if sub.is_some() && primes.is_empty() && rest.starts_with(is_prime) {
             (rest, primes) = self.parse_primes(rest);
         }
-        if let Some(after) = rest.strip_prefix('^')
-            && let Some((after, id)) = self.parse_script_chain(after, '^')?
-        {
+        if let Some((after, id)) = self.parse_script(rest, '^')? {
             primes.push(id);
             rest = after;
             if sub.is_none()
-                && let Some(after) = rest.strip_prefix('_')
-                && let Some((after, id)) = self.parse_script_chain(after, '_')?
+                && let Some((after, id)) = self.parse_script(rest, '_')?
             {
                 sub = id;
                 rest = after;
@@ -2137,6 +2401,20 @@ impl CompactParser {
     }
 
     fn parse_number<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        // Neither a digit nor a decimal point starts other ASCII input.
+        let first = *input
+            .as_bytes()
+            .first()
+            .ok_or_else(|| parse_error(input, nom::error::ErrorKind::Digit))?;
+        if first.is_ascii() {
+            if !matches!(first, b'0'..=b'9' | b'.') {
+                return Err(parse_error(input, nom::error::ErrorKind::Digit));
+            }
+        } else if let Some(c) = input.chars().next().filter(|&c| is_vulgar_fraction(c)) {
+            let (number, rest) = input.split_at(c.len_utf8());
+            let sid = self.arena.push_str(number);
+            return Ok((rest, self.push_node(CompactNode::Number(sid))));
+        }
         // Every suffix of a run of dots is also a run of dots, so once a run
         // is rejected its suffixes are rejected without rescanning it.
         let offset = self.offset(input);
@@ -2183,10 +2461,12 @@ impl CompactParser {
     }
 
     fn parse_identifier<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let (rest, ch) =
-            satisfy(|c| c.is_alphabetic() && !is_math_symbol(c) && !is_nary_char(c) && c != '"')(
-                input,
-            )?;
+        let (rest, ch) = satisfy(|c| {
+            c.is_alphabetic()
+                && !is_math_symbol(c)
+                && !is_nary_char(c)
+                && script_character(c).is_none()
+        })(input)?;
         let sid = self.arena.push_str(&ch.to_string());
         let id = self.push_node(CompactNode::Identifier(sid));
         Ok((rest, id))
@@ -2196,6 +2476,7 @@ impl CompactParser {
     /// reads.
     fn parse_prime<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (rest, ch) = satisfy(is_prime)(input)?;
+        let ch = if ch == '\'' { '\u{2032}' } else { ch };
         let mut buf = [0_u8; 4];
         let sid = self.arena.push_str(ch.encode_utf8(&mut buf));
         Ok((
@@ -2230,7 +2511,7 @@ impl CompactParser {
     /// (LaTeX `\mathord{}`), which keeps the letters around it apart.
     fn parse_zero_width_atom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (rest, null) = self.parse_zero_width_space(input)?;
-        if starts_script(rest)
+        if starts_script(rest.strip_prefix('\u{2061}').unwrap_or(rest))
             || rest.starts_with(['/', '\u{A6}', '┬', '┴'])
             || unicode_accent_suffix(rest).is_some()
         {
@@ -2252,6 +2533,7 @@ impl CompactParser {
             parse_identifier,
             parse_prime,
             parse_zero_width_space,
+            parse_point,
         );
         Err(nom::Err::Error(nom::error::Error::new(
             input,
@@ -2300,9 +2582,10 @@ fn negated_operator(input: &str) -> Option<(&str, char)> {
     Some((&rest[op.len_utf8()..], negated))
 }
 
-/// The primes UTN #28 superscripts automatically after a base (′ ″ ‴ ⁗).
+/// The primes UTN #28 superscripts automatically after a base (′ ″ ‴ ⁗), and
+/// the ASCII apostrophe that stands for ′ (section 3.10).
 pub(crate) fn is_prime(c: char) -> bool {
-    matches!(c, '\u{2032}'..='\u{2034}' | '\u{2057}')
+    matches!(c, '\'' | '\u{2032}'..='\u{2034}' | '\u{2057}')
 }
 
 /// The opening fence a closing fence `c` pairs with (`|` and `‖` pair
@@ -2345,15 +2628,18 @@ pub(crate) fn breaks_naryand(c: char) -> bool {
 /// Whether the symbol `c` ends an operand: the rule for numerators, n-aryands
 /// and primes, in the reader and the writer.
 pub(crate) fn breaks_operand_at(c: char) -> bool {
-    c == '?'
-        || matches!(
-            classify_unicode_symbol(c),
-            SymbolKind::BinaryOp
-                | SymbolKind::Relation
-                | SymbolKind::Punctuation
-                | SymbolKind::LargeOp
-                | SymbolKind::Open
-        )
+    matches!(c, '?' | '.') || class_breaks_operand(classify_unicode_symbol(c))
+}
+
+fn class_breaks_operand(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::BinaryOp
+            | SymbolKind::Relation
+            | SymbolKind::Punctuation
+            | SymbolKind::LargeOp
+            | SymbolKind::Open
+    )
 }
 
 /// A letter or decimal digit, which continues a simple script operand
@@ -2362,6 +2648,7 @@ pub(crate) fn is_run_char(c: char) -> bool {
     c.is_ascii_alphanumeric()
         || (!c.is_ascii()
             && is_alphanumeric(c)
+            && script_character(c).is_none()
             && !is_math_symbol(c)
             && !is_nary_char(c)
             && c.is_alphabetic())
@@ -2419,13 +2706,65 @@ pub(crate) fn reads_as_script_run(text: &str) -> bool {
 /// (`e^-x`, `x^-(a+b)`, `x^-∞`); otherwise the sign is the whole operand
 /// (`x^-` alone, `x^- y`).
 pub(crate) fn starts_signed_script_operand(c: char) -> bool {
-    is_run_char(c) || matches!(c, '(' | '[' | '{' | '〖' | '\u{221E}')
+    is_run_char(c) || is_vulgar_fraction(c) || matches!(c, '(' | '[' | '{' | '〖' | '\u{221E}')
 }
 
 /// Whether `rest` continues with a script of the atom before it: a
 /// subscript, a superscript or a prime.
 fn starts_script(rest: &str) -> bool {
-    rest.starts_with(['_', '^']) || rest.starts_with(is_prime)
+    rest.starts_with(['_', '^'])
+        || rest.starts_with(is_prime)
+        || rest.starts_with(|c| script_character(c).is_some())
+}
+
+/// Whether `input` starts with a script character of `mark`.
+fn starts_script_character(input: &str, mark: char) -> bool {
+    input.as_bytes().first().is_some_and(|byte| *byte >= 0x80)
+        && input
+            .chars()
+            .next()
+            .and_then(script_character)
+            .is_some_and(|(_, of)| of == mark)
+}
+
+/// The character that the super- or subscript character `c` is a script of,
+/// and the script mark (UTN #28 section 3.12).
+pub(crate) fn script_character(c: char) -> Option<(char, char)> {
+    const SIGNS: [char; 5] = ['+', '\u{2212}', '=', '(', ')'];
+    Some(match c {
+        '\u{B9}' => ('1', '^'),
+        '\u{B2}' => ('2', '^'),
+        '\u{B3}' => ('3', '^'),
+        '\u{2071}' => ('i', '^'),
+        '\u{207F}' => ('n', '^'),
+        '\u{2070}' | '\u{2074}'..='\u{208E}' => {
+            let (offset, mark) = match c as u32 {
+                code @ 0x2080.. => (code - 0x2080, '_'),
+                code => (code - 0x2070, '^'),
+            };
+            let character = match offset {
+                0..=9 => char::from_digit(offset, 10)?,
+                10..=14 => SIGNS[offset as usize - 10],
+                _ => return None,
+            };
+            (character, mark)
+        },
+        // The script letters Unicode has besides, as in LaTeX input (`xₖ`).
+        '\u{2B0}'..='\u{2E4}'
+        | '\u{1D2C}'..='\u{1DBF}'
+        | '\u{2090}'..='\u{209C}'
+        | '\u{2C7C}'..='\u{2C7D}' => {
+            let (sub, character) = crate::unicode::decode_script_scalar(c)
+                .filter(|(_, character)| character.is_alphabetic())?;
+            (character, if sub { '_' } else { '^' })
+        },
+        _ => return None,
+    })
+}
+
+/// A vulgar fraction (`½`), an operand of its own.
+fn is_vulgar_fraction(c: char) -> bool {
+    matches!(c, '\u{BC}'..='\u{BE}' | '\u{2150}'..='\u{215E}' | '\u{2189}')
 }
 
 fn is_integral(c: char) -> bool {
@@ -2471,7 +2810,9 @@ fn unicode_math_space(input: &str) -> Option<(&str, Rational)> {
 /// White space that only separates operands: any but the spaces of
 /// [`space_width`].
 fn is_blank(ch: char) -> bool {
-    ch.is_whitespace() && space_width(ch).is_none()
+    // Function apply only binds a function's argument (UTN #28 section 3.5),
+    // as a space after its name does.
+    ch == '\u{2061}' || ch.is_whitespace() && space_width(ch).is_none()
 }
 
 fn skip_blanks(input: &str) -> &str {

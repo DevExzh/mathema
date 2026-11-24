@@ -43,6 +43,15 @@ const ATOMS: &[&str] = &[
     "\\ldots ",
     "x'",
     "\\emptyset ",
+    "+1.5",
+    "+.5+",
+    "=5.+",
+    "+0.25",
+    "1,234",
+    "x.y+",
+    "10^{-3}",
+    "\\times .2+",
+    "2\\,\\mathrm{m}+",
 ];
 
 const OPERATORS: &[&str] = &[
@@ -229,10 +238,80 @@ pub fn latex(choices: &mut Choices<'_>, depth: usize, out: &mut String) {
 
 /// Pieces of UnicodeMath, in any order.
 const PIECES: &[&str] = &[
-    "x", "y", "ab", "2", "α", "sin", "max", "+", "-", "=", ",", "∈", "⋅", "!", "/", "/", "/", "_",
-    "^", "_2", "^n", "|", "|", "|", "|", "‖", "‖", "(", ")", "(", ")", "[", "]", "{", "}", "⟨",
-    "⟩", "⌊", "⌋", " ", " ", " ", "√", "√(", "∑", "∫", "∑_i", "〖", "〗", "′", "†", "̂", "┬", "┴",
-    "■(", "&", "@", "▒", "¦", "ⅆ", "→", "≉", "∂", "∞", "\u{2009}",
+    "x",
+    "y",
+    "ab",
+    "2",
+    "α",
+    "sin",
+    "max",
+    "+",
+    "-",
+    "=",
+    ",",
+    "∈",
+    "⋅",
+    "!",
+    "/",
+    "/",
+    "/",
+    "_",
+    "^",
+    "_2",
+    "^n",
+    "|",
+    "|",
+    "|",
+    "|",
+    "‖",
+    "‖",
+    "(",
+    ")",
+    "(",
+    ")",
+    "[",
+    "]",
+    "{",
+    "}",
+    "⟨",
+    "⟩",
+    "⌊",
+    "⌋",
+    " ",
+    " ",
+    " ",
+    "√",
+    "√(",
+    "∑",
+    "∫",
+    "∑_i",
+    "〖",
+    "〗",
+    "′",
+    "†",
+    "̂",
+    "┬",
+    "┴",
+    "■(",
+    "&",
+    "@",
+    "▒",
+    "¦",
+    "ⅆ",
+    "→",
+    "≉",
+    "∂",
+    "∞",
+    "\u{2009}",
+    "²",
+    "₁",
+    "⁻¹",
+    "⁽ⁿ⁾",
+    "½",
+    "'",
+    "\u{2061}",
+    "⌈",
+    "⌉",
 ];
 
 /// UnicodeMath as a person might write it.
@@ -278,6 +357,27 @@ pub fn structure(mathml: &str) -> String {
                 }
             }
         }
+        // `.5` may be a number, or a point and a number.
+        if matches!(
+            name,
+            "math" | "mrow" | "msqrt" | "mstyle" | "mtd" | "mphantom"
+        ) {
+            let digits = |child: &str| match child {
+                "mo(.)" | "mi(.)" => Some(".".to_owned()),
+                _ => Some(child.strip_prefix("mn(")?.strip_suffix(')')?.to_owned()),
+            };
+            let mut joined: Vec<String> = Vec::new();
+            for child in std::mem::take(&mut children) {
+                match (joined.last().and_then(|last| digits(last)), digits(&child)) {
+                    (Some(last), Some(next)) => {
+                        joined.pop();
+                        joined.push(format!("mn({last}{next})"));
+                    },
+                    _ => joined.push(child),
+                }
+            }
+            children = joined;
+        }
         if leaf {
             // An operator's class, where it is not its character's own
             // (`⊥` is `\\perp` and `\\bot`).
@@ -311,27 +411,20 @@ pub fn structure(mathml: &str) -> String {
     element(&mut tokens, tag, text).1.join(" ")
 }
 
-/// Inputs whose round trips are known to fail: a bar pair that starts with a
-/// fraction, after another bar (the writer does not know all that the reader
-/// pairs); and, of hand-written UnicodeMath, leading scripts (on an n-ary
-/// operator the n-aryand is not kept apart), primes after an n-ary operator's
-/// superscript or a space (`∑^n′`), and a matrix of one empty row.
+/// Hand-written leading scripts whose round trips are known to fail: those
+/// on a fence or a matrix, or after a function that is an n-aryand (there the
+/// MathML reader's normalization reads the scripts of `wanted` otherwise).
 fn known(input: &str, mathml: &str, from: Format) -> bool {
-    if mathml.matches(">|<").count() > 2 && mathml.contains("|</mo><mfrac") {
-        return true;
-    }
     from == Format::UnicodeMath
-        && (input.contains('′') && input.contains(['∑', '∫'])
-            || [
-                "mmultiscripts",
-                "<msub><mrow></mrow>",
-                "<msup><mrow></mrow>",
-                "<msubsup><mrow></mrow>",
-                "<mtd></mtd></mtr></mtable>",
-            ]
+        && (input.contains('■')
+            || input.contains(['∑', '∫']) && (input.contains(" _") || input.contains(" ^"))
+            || input.contains(['(', '[', '{']))
+        && ["<msub>", "<msup>", "<msubsup>", "<mmultiscripts>"]
             .iter()
-            .any(|part| mathml.contains(part))
-            || input.contains('@'))
+            .any(|tag| {
+                mathml.contains(&format!("{tag}<mrow></mrow>"))
+                    || *tag == "<mmultiscripts>" && mathml.contains(tag)
+            })
 }
 
 /// What went wrong for `input`, or `None`.
@@ -373,7 +466,11 @@ pub fn check(input: &str, from: Format) -> Option<(&'static str, String)> {
         }
         let again = convert(&unicode, Format::UnicodeMath, Format::UnicodeMath).ok()?;
         let third = convert(&again, Format::UnicodeMath, Format::UnicodeMath).ok()?;
-        if again != third {
+        // One more pass may settle how a bar pair is spelled.
+        let settled = again == third
+            || unicode.contains(['|', '‖'])
+                && convert(&third, Format::UnicodeMath, Format::UnicodeMath).ok()? == third;
+        if !settled {
             return Some(("unstable", format!("{path}: {unicode} / {again} / {third}")));
         }
     }

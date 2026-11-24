@@ -869,7 +869,12 @@ pub(crate) fn unicode_math_operator_prefix(input: &str) -> Option<(&str, LimitSt
         .take(9)
         .take_while(u8::is_ascii_alphabetic)
         .count();
-    let boundary = |rest: &str| rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric());
+    // Nor before a super- or subscript character (`sin²`).
+    let boundary = |rest: &str| {
+        rest.chars().next().is_none_or(|ch| {
+            !ch.is_alphanumeric() || crate::reader::unicode_math::script_character(ch).is_some()
+        })
+    };
     let (word, rest) = input.split_at(letters);
     if !(2..=8).contains(&letters) || !boundary(rest) {
         return None;

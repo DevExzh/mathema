@@ -830,6 +830,57 @@ fn write_node(w: &mut XmlWriter, node: &MathNode, display_style: MathStyle) -> R
     write_node_in(w, node, false, display_style)
 }
 
+/// An n-ary operator with its limits, without its n-aryand.
+fn write_nary_head(
+    w: &mut XmlWriter,
+    op: char,
+    sub: Option<&MathNode>,
+    sup: Option<&MathNode>,
+    limits: LimitStyle,
+    display_style: MathStyle,
+) -> Result<()> {
+    let Some((tag, movable)) = nary_script_tag(op, limits, sub.is_some(), sup.is_some()) else {
+        return write_mo_char(w, op, None);
+    };
+    w.write_event(Event::Start(BytesStart::new(tag)))
+        .map_err(to_err)?;
+    write_mo_char(w, op, Some(movable))?;
+    if let Some(lower) = sub {
+        write_argument(w, lower, display_style.sub())?;
+    }
+    if let Some(upper) = sup {
+        write_argument(w, upper, display_style.sup())?;
+    }
+    w.write_event(Event::End(BytesEnd::new(tag)))
+        .map_err(to_err)?;
+    Ok(())
+}
+
+/// Compact counterpart of [`write_nary_head`].
+fn write_nary_head_fast(
+    buf: &mut MathOutput<String>,
+    arena: &AstArena,
+    op: char,
+    sub: NodeId,
+    sup: NodeId,
+    limits: LimitStyle,
+    display_style: MathStyle,
+) {
+    let Some((tag, movable)) = nary_script_tag(op, limits, sub.is_some(), sup.is_some()) else {
+        write_mo_char_fast(buf, op, None);
+        return;
+    };
+    open_tag(buf, tag);
+    write_mo_char_fast(buf, op, Some(movable));
+    if sub.is_some() {
+        write_argument_fast(buf, arena, sub, display_style.sub());
+    }
+    if sup.is_some() {
+        write_argument_fast(buf, arena, sup, display_style.sup());
+    }
+    close_tag(buf, tag);
+}
+
 /// A positional MathML child must occupy exactly one element, even when it
 /// contains an operator followed by its operand.
 fn write_argument(w: &mut XmlWriter, node: &MathNode, display_style: MathStyle) -> Result<()> {
@@ -956,9 +1007,30 @@ fn write_node_in(
             pre_sub,
             pre_sup,
         } => {
+            // The scripts are the n-ary operator's, not its n-aryand's.
+            let nary = match &**base {
+                MathNode::Nary {
+                    op,
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                } if !is_empty_math_node(body) => Some((*op, sub, sup, body, *limits)),
+                _ => None,
+            };
+            let group = single_argument && nary.is_some();
+            if group {
+                w.write_event(Event::Start(BytesStart::new("mrow")))
+                    .map_err(to_err)?;
+            }
             w.write_event(Event::Start(BytesStart::new("mmultiscripts")))
                 .map_err(to_err)?;
-            write_argument(w, base, display_style)?;
+            match nary {
+                Some((op, sub, sup, _, limits)) => {
+                    write_nary_head(w, op, sub.as_deref(), sup.as_deref(), limits, display_style)?;
+                },
+                None => write_argument(w, base, display_style)?,
+            }
             w.write_event(Event::Empty(BytesStart::new("mprescripts")))
                 .map_err(to_err)?;
             match pre_sub {
@@ -977,6 +1049,13 @@ fn write_node_in(
             }
             w.write_event(Event::End(BytesEnd::new("mmultiscripts")))
                 .map_err(to_err)?;
+            if let Some((_, _, _, body, _)) = nary {
+                write_node(w, body, display_style)?;
+            }
+            if group {
+                w.write_event(Event::End(BytesEnd::new("mrow")))
+                    .map_err(to_err)?;
+            }
             Ok(())
         },
 
@@ -1072,23 +1151,14 @@ fn write_node_in(
                 w.write_event(Event::Start(BytesStart::new("mrow")))
                     .map_err(to_err)?;
             }
-            if let Some((tag, movable)) =
-                nary_script_tag(*op, *limits, sub.is_some(), sup.is_some())
-            {
-                w.write_event(Event::Start(BytesStart::new(tag)))
-                    .map_err(to_err)?;
-                write_mo_char(w, *op, Some(movable))?;
-                if let Some(lower) = sub {
-                    write_argument(w, lower, display_style.sub())?;
-                }
-                if let Some(upper) = sup {
-                    write_argument(w, upper, display_style.sup())?;
-                }
-                w.write_event(Event::End(BytesEnd::new(tag)))
-                    .map_err(to_err)?;
-            } else {
-                write_mo_char(w, *op, None)?;
-            }
+            write_nary_head(
+                w,
+                *op,
+                sub.as_deref(),
+                sup.as_deref(),
+                *limits,
+                display_style,
+            )?;
             if has_body {
                 write_node(w, body, display_style)?;
             }
@@ -2251,8 +2321,28 @@ fn write_node_fast_in(
             pre_sub,
             pre_sup,
         } => {
+            // The scripts are the n-ary operator's, not its n-aryand's.
+            let nary = match *arena.node(base) {
+                CompactNode::Nary {
+                    op,
+                    sub,
+                    sup,
+                    body,
+                    limits,
+                } if !is_empty_compact_node(arena, body) => Some((op, sub, sup, body, limits)),
+                _ => None,
+            };
+            let group = single_argument && nary.is_some();
+            if group {
+                open_tag(buf, "mrow");
+            }
             buf.push_str("<mmultiscripts>");
-            write_argument_fast(buf, arena, base, display_style);
+            match nary {
+                Some((op, sub, sup, _, limits)) => {
+                    write_nary_head_fast(buf, arena, op, sub, sup, limits, display_style);
+                },
+                None => write_argument_fast(buf, arena, base, display_style),
+            }
             buf.push_str("<mprescripts/>");
             if pre_sub.is_some() {
                 write_argument_fast(buf, arena, pre_sub, display_style.sub());
@@ -2265,6 +2355,12 @@ fn write_node_fast_in(
                 buf.push_str("<none/>");
             }
             buf.push_str("</mmultiscripts>");
+            if let Some((_, _, _, body, _)) = nary {
+                write_node_fast(buf, arena, body, display_style);
+            }
+            if group {
+                close_tag(buf, "mrow");
+            }
         },
 
         CompactNode::Overscript {
@@ -2352,20 +2448,7 @@ fn write_node_fast_in(
             if group {
                 open_tag(buf, "mrow");
             }
-            if let Some((tag, movable)) = nary_script_tag(op, limits, sub.is_some(), sup.is_some())
-            {
-                open_tag(buf, tag);
-                write_mo_char_fast(buf, op, Some(movable));
-                if sub.is_some() {
-                    write_argument_fast(buf, arena, sub, display_style.sub());
-                }
-                if sup.is_some() {
-                    write_argument_fast(buf, arena, sup, display_style.sup());
-                }
-                close_tag(buf, tag);
-            } else {
-                write_mo_char_fast(buf, op, None);
-            }
+            write_nary_head_fast(buf, arena, op, sub, sup, limits, display_style);
             if has_body {
                 write_node_fast(buf, arena, body, display_style);
             }

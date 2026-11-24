@@ -74,6 +74,8 @@ struct Scan {
     /// The kinds of the open brackets, by index in [`BRACKETS`].
     kinds: Vec<usize>,
     pairs: Vec<(usize, usize)>,
+    /// The matched `⟨⟩`, `⌈⌉` and `⌊⌋`.
+    groups: Vec<(usize, usize)>,
 }
 
 impl Scan {
@@ -138,7 +140,7 @@ impl Scan {
             // An angle bracket does not match across another bracket.
             if self.kinds.last() == Some(&ANGLE) {
                 let index = *self.brackets.last().expect("a bracket per kind");
-                self.unwind_matched(index);
+                self.unwind_matched(index, at);
             } else if let Some(&Entry::Bar {
                 fence: '|',
                 at: bar,
@@ -153,14 +155,20 @@ impl Scan {
             && let Some(position) = self.kinds.iter().rposition(|&open| open == kind)
         {
             let index = self.brackets[position];
-            self.unwind_matched(index);
+            self.unwind_matched(index, at);
         }
     }
 
-    /// Drop the entries from the bracket at `index`, which is matched.
-    fn unwind_matched(&mut self, index: usize) {
+    /// Drop the entries from the bracket at `index`, which the one at `close`
+    /// matches.
+    fn unwind_matched(&mut self, index: usize, close: usize) {
         self.unwind(index + 1);
-        self.stack.pop();
+        if let Some(Entry::Bracket { at, .. }) = self.stack.pop()
+            && self.kinds.last().is_some_and(|&kind| kind >= ANGLE)
+        {
+            self.groups.push((at, close));
+            self.groups.push((close, at));
+        }
         self.brackets.pop();
         let kind = self.kinds.pop().expect("a kind per bracket");
         self.counts[kind] -= 1;
@@ -209,6 +217,11 @@ impl Scan {
     }
 }
 
+/// Whether a script or an accent starts `rest`.
+fn is_decorated(rest: &str) -> bool {
+    rest.starts_with(['_', '^', '┬', '┴']) || super::unicode_accent_suffix(rest).is_some()
+}
+
 /// Whether an operand starts right at `rest`.
 fn starts_operand(rest: &str) -> bool {
     rest.chars().next().is_some_and(|c| {
@@ -231,22 +244,107 @@ fn may_open(rest: &str) -> bool {
 
 /// Whether `c` sets apart what a bar pair rarely spans: a relation, a
 /// separator or a logical operator.
-pub(crate) fn separates_bars(c: char) -> bool {
+fn separates_bars(c: char) -> bool {
     matches!(c, ',' | ';' | '∧' | '∨')
         || (!is_alphanumeric(c) && classify_unicode_symbol(c) == SymbolKind::Relation)
 }
 
-/// The partner of every paired bar (and of the `⟩` of a ket and the `⟨` of a
-/// bra) in `source`, by byte offset.
-pub(super) fn pair_bars(source: &str) -> Vec<(usize, usize)> {
+/// What pairs with what in a source, by byte offset, in order.
+#[derive(Default)]
+pub(super) struct Pairs {
+    /// The partner of every paired bar, of the `⟩` of a ket and of the `⟨` of
+    /// a bra.
+    pub(super) bars: Vec<(usize, usize)>,
+    /// The partner of every matched `⟨`, `⌈`, `⌊` and their closing brackets.
+    pub(super) groups: Vec<(usize, usize)>,
+}
+
+impl Pairs {
+    pub(super) fn is_empty(&self) -> bool {
+        self.bars.is_empty() && self.groups.is_empty()
+    }
+}
+
+/// What the bar at `at` in `source` pairs with.
+pub(crate) fn pair_bars_at(source: &str, at: usize) -> Option<usize> {
+    let Pairs { bars, .. } = pair_bars(source);
+    let index = bars.binary_search_by_key(&at, |&(bar, _)| bar).ok()?;
+    Some(bars[index].1)
+}
+
+/// Whether an n-aryand written `text` that has bars is read whole: outside its
+/// bar pairs and brackets it has nothing that ends one.
+pub(crate) fn reads_as_naryand(text: &str) -> bool {
+    let Pairs { bars, groups } = pair_bars(text);
+    let mut until = None;
+    let mut depth = 0_usize;
+    for (at, c) in text.char_indices() {
+        if until.is_some_and(|end| at <= end) {
+            continue;
+        }
+        match c {
+            '(' | '[' | '{' | '〖' => depth += 1,
+            ')' | ']' | '}' | '〗' if depth == 0 => return false,
+            ')' | ']' | '}' | '〗' => depth -= 1,
+            _ if depth > 0 => {},
+            _ if c.is_whitespace() || c == '"' => return false,
+            _ => {
+                let find = |pairs: &[(usize, usize)]| {
+                    let index = pairs.binary_search_by_key(&at, |&(open, _)| open).ok()?;
+                    Some(pairs[index].1)
+                };
+                let pair = find(&bars).or_else(|| find(&groups).filter(|_| at == 0));
+                if pair.is_some_and(|end| end > at) {
+                    until = pair;
+                } else if pairs_bars(c) || super::breaks_naryand(c) {
+                    return false;
+                }
+            },
+        }
+    }
+    depth == 0
+}
+
+/// Pair the bars and brackets of `source`.
+pub(super) fn pair_bars(source: &str) -> Pairs {
+    // `|`, or the UTF-8 of `‖`, `⟨`, `⌈` or `⌊`.
+    let bytes = source.as_bytes();
+    let pairable = |(index, &byte): (usize, &u8)| match byte {
+        b'|' => true,
+        0xE2 => matches!(
+            bytes.get(index + 1..index + 3),
+            Some([0x80, 0x96] | [0x9F, 0xA8] | [0x8C, 0x88 | 0x8A])
+        ),
+        _ => false,
+    };
+    if !bytes.iter().enumerate().any(pairable) {
+        return Pairs::default();
+    }
     let mut scan = Scan::default();
     let mut previous = Previous::Operator;
+    // Bracket depths at which an n-ary operator's n-aryand is still to come.
+    let mut naries: Vec<usize> = Vec::new();
     let mut rest = source;
     while let Some(c) = rest.chars().next() {
         let at = source.len() - rest.len();
         rest = &rest[c.len_utf8()..];
         previous = match c {
-            _ if is_blank(c) => previous,
+            // A space after an n-ary operator and its scripts starts the
+            // n-aryand (`∑_i |x|`).
+            _ if is_blank(c) => {
+                while naries
+                    .last()
+                    .is_some_and(|&depth| depth > scan.brackets.len())
+                {
+                    naries.pop();
+                }
+                if naries.last() == Some(&scan.brackets.len()) {
+                    naries.pop();
+                    Previous::Operator
+                } else {
+                    previous
+                }
+            },
             _ if c.is_ascii_alphanumeric() => Previous::Operand,
             '|' | '\u{2016}' => scan.bar(c, at, rest, previous),
             '"' => {
@@ -273,13 +371,21 @@ pub(super) fn pair_bars(source: &str) -> Vec<(usize, usize)> {
             // A postfix operator (`|A^†|`, `|A†|`).
             '\u{2020}' | '\u{2021}' => Previous::Operand,
             _ => {
-                if let Some(kind) = BRACKETS.iter().position(|pair| pair.0 == c) {
+                if c == '\u{27E8}' && is_decorated(rest) {
+                    // A base, not a delimiter (`⟨̂`).
+                    Previous::Operand
+                } else if let Some(kind) = BRACKETS.iter().position(|pair| pair.0 == c) {
                     scan.push_bracket(kind, at);
                     Previous::Operator
                 } else if let Some(kind) = BRACKETS.iter().position(|pair| pair.1 == c) {
                     scan.close_bracket(kind, at);
                     Previous::Operand
-                } else if is_nary_char(c) || breaks_operand_at(c) {
+                } else if is_nary_char(c) {
+                    if naries.last() != Some(&scan.brackets.len()) {
+                        naries.push(scan.brackets.len());
+                    }
+                    Previous::Operator
+                } else if breaks_operand_at(c) {
                     if separates_bars(c)
                         && let Some(Entry::Bar { separated, .. }) = scan.stack.last_mut()
                     {
@@ -293,7 +399,12 @@ pub(super) fn pair_bars(source: &str) -> Vec<(usize, usize)> {
         };
     }
     scan.unwind(0);
-    let mut pairs = scan.pairs;
-    pairs.sort_unstable();
-    pairs
+    let Scan {
+        pairs: mut bars,
+        mut groups,
+        ..
+    } = scan;
+    bars.sort_unstable();
+    groups.sort_unstable();
+    Pairs { bars, groups }
 }
