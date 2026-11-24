@@ -414,6 +414,57 @@ fn color_switch_does_not_scope_an_infix_fraction() {
     }
 }
 
+/// A `\color` switch in a `\left…\right` list stays in force across a
+/// `\middle` to the end of the fence, as in TeX and KaTeX; the delimiter
+/// stays the fence's own child.
+#[test]
+fn color_switch_continues_across_middle() {
+    for (input, equivalent) in [
+        (
+            r"\left( \color{red} a \middle| c \right)",
+            r"\left( \textcolor{red}{a} \middle| \textcolor{red}{c} \right)",
+        ),
+        (
+            r"\left( \color{red} a \atop b \middle| c \right)",
+            r"\left( \genfrac{}{}{0pt}{}{\textcolor{red}{a}}{\textcolor{red}{b}\middle|\textcolor{red}{c}} \right)",
+        ),
+        (
+            r"\left( \color{red} a \middle| b \over c \right)",
+            r"\left( \frac{\textcolor{red}{a}\middle|\textcolor{red}{b}}{\textcolor{red}{c}} \right)",
+        ),
+        (
+            r"\left( \color{red} a \middle| \color{blue} b \middle| c \right)",
+            r"\left( \textcolor{red}{a} \middle| \textcolor{red}{\textcolor{blue}{b}} \middle| \textcolor{blue}{c} \right)",
+        ),
+        // In a nested group the `\middle` is the group's, inside the color.
+        (
+            r"\left( {\color{red} a \middle| c} d \right)",
+            r"\left( {\textcolor{red}{a \middle| c}} d \right)",
+        ),
+        // Outside a fence `\middle` is a plain delimiter.
+        (r"\color{red} a \middle| c", r"\textcolor{red}{a|c}"),
+    ] {
+        let result = from_latex(input).unwrap();
+        assert_eq!(
+            result.expr(),
+            from_latex(equivalent).unwrap().expr(),
+            "{input}"
+        );
+        let written = result.to_latex().unwrap();
+        let again = from_latex(&written).unwrap();
+        assert_eq!(again.expr(), result.expr(), "{input}: {written}");
+        assert_eq!(again.to_latex().unwrap(), written, "unstable: {input}");
+    }
+    let ml = from_latex(r"\left( \color{red} a \atop b \middle| c \right)")
+        .unwrap()
+        .to_mathml()
+        .unwrap();
+    assert!(
+        ml.contains(r#"<mstyle mathcolor="red"><mi>c</mi></mstyle>"#),
+        "{ml}"
+    );
+}
+
 /// As in KaTeX and MathJax the `\above` dimension may be braced; a number
 /// without a unit is TeX's "Illegal unit of measure".
 #[test]

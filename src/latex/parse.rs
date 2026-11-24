@@ -2008,6 +2008,15 @@ pub(crate) struct LatexCompactParser {
     font_scope_preserve_breaks: bool,
     /// A middle delimiter can remain nested in a fraction within this fence.
     in_left_right: bool,
+    /// Whether the list being read is a `\left…\right` fence's own list,
+    /// whose `\middle` delimiters stay its direct children (a nested group
+    /// clears it). A `\color` switch read there stops at such a `\middle`.
+    fence_list: bool,
+    /// A `\color` switch read in a fence's own list that stopped at a
+    /// `\middle`: its color and the address of that `\middle`, so the fence
+    /// resumes the color after the delimiter, as the switch is in force to
+    /// the end of the fence.
+    color_at_middle: Option<(StrId, usize)>,
     /// Used to identify the rare font argument that opened an alignment.
     arrays_built: usize,
     /// Undefined control words met so far, each with whether it is a macro
@@ -2062,6 +2071,8 @@ impl LatexCompactParser {
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
             in_left_right: false,
+            fence_list: false,
+            color_at_middle: None,
             arrays_built: 0,
             undefined_commands: None,
             single_token: None,
@@ -2408,7 +2419,9 @@ impl LatexCompactParser {
             )));
         }
         self.depth += 1;
+        let fence_list = std::mem::replace(&mut self.fence_list, false);
         let result = self.parse_node_list_inner(input);
+        self.fence_list = fence_list;
         self.depth -= 1;
         result
     }
@@ -4978,8 +4991,20 @@ impl LatexCompactParser {
     }
 
     fn parse_until_right<'a>(&mut self, input: &'a str) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        let fence_list = std::mem::replace(&mut self.fence_list, true);
+        let result = self.parse_until_right_inner(input);
+        self.fence_list = fence_list;
+        result
+    }
+
+    fn parse_until_right_inner<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
         let mut ids = SmallVec::new();
         let mut rest = input;
+        // The color of a `\color` switch that stopped at the next `\middle`.
+        let mut color = None;
         loop {
             self.ensure_node_budget(rest)?;
             let (r, _) = ws(rest)?;
@@ -4994,6 +5019,17 @@ impl LatexCompactParser {
                 let (after_delim, sid) = self.parse_delimiter_into(after_mid)?;
                 ids.push(self.arena.push_node(CompactNode::Middle(sid)));
                 rest = after_delim;
+                // The delimiter stays a child of the fence; the color stays
+                // in force after it (TeX and KaTeX color the rest of the
+                // fence).
+                if let Some(color_sid) = color.take() {
+                    let (r, run) = self.color_switch_run(color_sid, rest)?;
+                    if !run.is_empty() {
+                        ids.push(self.color_switch_node(color_sid, &run));
+                    }
+                    rest = r;
+                    color = self.take_color_at_middle(rest);
+                }
                 continue;
             }
             if rest.is_empty() {
@@ -5005,6 +5041,16 @@ impl LatexCompactParser {
             let (r, id) = self.parse_element(rest)?;
             ids.push(id);
             rest = r;
+            color = self.take_color_at_middle(rest);
+        }
+    }
+
+    /// The color of a `\color` switch read in this fence's list that stopped
+    /// at the `\middle` starting `rest`, if any; clears the record.
+    fn take_color_at_middle(&mut self, rest: &str) -> Option<StrId> {
+        match self.color_at_middle.take() {
+            Some((color, at)) if at == rest.as_ptr() as usize => Some(color),
+            _ => None,
         }
     }
 
@@ -5858,44 +5904,70 @@ impl LatexCompactParser {
                 }),
             ))
         } else {
-            let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
-            let mut rest = input;
-            loop {
-                self.ensure_node_budget(rest)?;
-                let (r, _) = ws(rest)?;
-                rest = r;
-                if rest.is_empty()
-                    || rest.starts_with('&')
-                    || rest.starts_with("\\\\")
-                    || strip_control_word(rest, "end").is_some()
-                    || strip_control_word(rest, "right").is_some()
-                    || strip_control_word(rest, "middle").is_some()
-                    || rest.starts_with('}')
-                {
-                    break;
-                }
-                match self.parse_element(rest) {
-                    Ok((r, id)) => {
-                        self.push_element(&mut ids, id);
-                        rest = r;
-                    },
-                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                    Err(_) => break,
-                }
-            }
-            // `\color` opens no group: like a font declaration, it splits
-            // around an infix fraction command, which divides the enclosing
-            // list (`a \color{red} b \over c` is `\frac{a\color{red}b}{c}`,
-            // as in TeX and KaTeX), the color in force on both sides.
-            let node = self.split_scope_at_infix(&ids, |this, run| {
-                let content = this.flatten_single(run);
-                this.arena.push_node(CompactNode::Color {
-                    color: color_sid,
-                    content,
-                })
-            });
-            Ok((rest, node))
+            let (rest, ids) = self.color_switch_run(color_sid, input)?;
+            Ok((rest, self.color_switch_node(color_sid, &ids)))
         }
+    }
+
+    /// Read the elements a `\color` switch is in force over: the rest of the
+    /// list, up to a cell, row or environment boundary. In a fence's own list
+    /// it also stops at a `\middle`, which must stay the fence's child, and
+    /// records the color so that the fence resumes it after the delimiter.
+    fn color_switch_run<'a>(
+        &mut self,
+        color_sid: StrId,
+        input: &'a str,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut rest = input;
+        loop {
+            self.ensure_node_budget(rest)?;
+            let (r, _) = ws(rest)?;
+            rest = r;
+            if self.fence_list && strip_control_word(rest, "middle").is_some() {
+                // A switch read inside this one (`\color{red} a
+                // \color{blue} b \middle|`) stopped here first: it is the
+                // one in force.
+                let at = rest.as_ptr() as usize;
+                if self.color_at_middle.is_none_or(|(_, inner)| inner != at) {
+                    self.color_at_middle = Some((color_sid, at));
+                }
+                break;
+            }
+            if rest.is_empty()
+                || rest.starts_with('&')
+                || rest.starts_with("\\\\")
+                || strip_control_word(rest, "end").is_some()
+                || strip_control_word(rest, "right").is_some()
+                || rest.starts_with('}')
+            {
+                break;
+            }
+            match self.parse_element(rest) {
+                Ok((r, id)) => {
+                    self.push_element(&mut ids, id);
+                    rest = r;
+                },
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                Err(_) => break,
+            }
+        }
+        Ok((rest, ids))
+    }
+
+    /// The node for the elements `ids` of a `\color` switch.
+    fn color_switch_node(&mut self, color_sid: StrId, ids: &[NodeId]) -> NodeId {
+        // `\color` opens no group: like a font declaration, it splits
+        // around an infix fraction command, which divides the enclosing
+        // list (`a \color{red} b \over c` is `\frac{a\color{red}b}{c}`,
+        // as in TeX and KaTeX), the color in force on both sides.
+        self.split_scope_at_infix(ids, |this, run| {
+            let content = this.flatten_single(run);
+            this.arena.push_node(CompactNode::Color {
+                color: color_sid,
+                content,
+            })
+        })
     }
 
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
