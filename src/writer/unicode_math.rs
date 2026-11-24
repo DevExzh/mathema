@@ -1,6 +1,6 @@
-use crate::ast::arena::AstArena;
 use smallvec::SmallVec;
 
+use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::style::MathStyle;
 use crate::ast::*;
@@ -201,6 +201,9 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Number(s) => out.push_str(s),
         MathNode::Identifier(s) => out.push_str(s),
         MathNode::Operator(attr) => out.push_str(&attr.name),
+        // A literal solidus is quoted: `/` alone is the fraction operator
+        // (UTN #28 sections 2.1 and 3.2).
+        MathNode::Symbol(_, s) if s == "/" => out.push_str("\\/"),
         MathNode::Symbol(_, s) => out.push_str(s),
         MathNode::Text(_, s) => {
             out.push('"');
@@ -256,7 +259,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
 
         MathNode::Subscript { base, sub } => {
-            write_base(out, base, style);
+            write_script_base(out, base, style);
             if has_forced_operator_limits(base, style) {
                 out.push('┬');
             } else {
@@ -266,7 +269,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
 
         MathNode::Superscript { base, sup } => {
-            write_base(out, base, style);
+            write_script_base(out, base, style);
             if !has_forced_operator_limits(base, style)
                 && let Some((primes, rest)) = prime_superscript(base, sup)
             {
@@ -289,7 +292,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
 
         MathNode::SubSup { base, sub, sup } => {
-            write_base(out, base, style);
+            write_script_base(out, base, style);
             out.push(if has_forced_operator_limits(base, style) {
                 '┬'
             } else {
@@ -320,12 +323,14 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                 write_script_arg(out, sup, style.sup());
             }
             out.push(')');
-            // The reader takes one element as the base: group a word or a
-            // row (`(_1)〖xy〗`), and `(_1)` with nothing after it is not a
-            // prescript.
+            // The reader takes one operand as the base: group a word, a row
+            // or a fraction (`(_1)〖xy〗`), and `(_1)` with nothing after it
+            // is not a prescript.
             let grouped = match &**base {
                 MathNode::Identifier(name) => name.chars().nth(1).is_some(),
                 MathNode::Row(children) => !children.is_empty(),
+                // `(_1)a/b` is a fraction with a prescripted numerator.
+                MathNode::Fraction { .. } => true,
                 _ => false,
             };
             let start = out.len();
@@ -443,7 +448,11 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         },
 
         MathNode::Accent { base, accent, .. } => {
+            let start = out.len();
             write_node(out, base, style);
+            if out.len() == start {
+                out.push_str("〖〗");
+            }
             out.push(*accent);
         },
 
@@ -890,7 +899,12 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
             content,
         } => {
             out.push('〖');
-            write_structured_content(out, content, style);
+            // The group already keeps a word one operand: no quotes.
+            if let MathNode::Identifier(word) = &**content {
+                out.push_str(word);
+            } else {
+                write_structured_content(out, content, style);
+            }
             out.push('〗');
         },
         MathNode::Color { content, .. }
@@ -927,14 +941,8 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
         },
         // A compound base is an invisible group: `()` would read back as
         // visible parentheses (`〖a+b〗^2` is LaTeX `{a+b}^2`, `x〖〗_1` is
-        // `x{}_1`), and a word would leave all but its last letter out
-        // (`〖ab〗_1` is `{ab}_1`, `ab_1` is `a b_1`).
+        // `x{}_1`).
         MathNode::Row(_) | MathNode::Fraction { .. } => {
-            out.push('〖');
-            write_node(out, node, style);
-            out.push('〗');
-        },
-        MathNode::Identifier(name) if name.chars().nth(1).is_some() => {
             out.push('〖');
             write_node(out, node, style);
             out.push('〗');
@@ -943,10 +951,21 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
     }
 }
 
-/// Whether `c` is one of the primes UTN #28 superscripts after a base.
-fn is_prime_char(c: char) -> bool {
-    matches!(c, '\u{2032}'..='\u{2034}' | '\u{2057}')
+/// Write the base of a subscript or superscript. A word is grouped: the
+/// script would take only its last letter (`〖ab〗_1` is `{ab}_1`, `ab_1`
+/// is `a b_1`).
+fn write_script_base(out: &mut String, node: &MathNode, style: MathStyle) {
+    match select_mathchoice(node, style) {
+        MathNode::Identifier(name) if name.chars().nth(1).is_some() => {
+            out.push('〖');
+            write_node(out, node, style);
+            out.push('〗');
+        },
+        _ => write_base(out, node, style),
+    }
 }
+
+use crate::reader::unicode_math::{is_prime as is_prime_char, symbol_takes_prime};
 
 /// A symbol node that starts with a prime, which the reader never gives
 /// the primes after it as a superscript.
@@ -970,8 +989,8 @@ fn prime_superscript<'a>(
     sup: &'a MathNode,
 ) -> Option<(&'a [MathNode], Option<&'a MathNode>)> {
     let is_prime = |node: &MathNode| matches!(node, MathNode::Symbol(SymbolKind::Ordinary, glyph) if is_prime_glyph(glyph));
-    // A prime base does not take primes after it (`′′` is two primes).
-    if is_prime_symbol(base) {
+    // The reader gives such a base the primes after it (not `′′` or `+′`).
+    if matches!(base, MathNode::Symbol(_, glyph) if !symbol_takes_prime(glyph)) {
         return None;
     }
     if is_prime(sup) {
@@ -1035,7 +1054,12 @@ fn fraction_operator(kind: FractionKind) -> char {
     }
 }
 
+/// Write a fraction operand. The reader drops parentheses around one
+/// (UTN #28 section 2.1), so a compound operand is parenthesized and so is a
+/// parenthesized one (`((a+b))/c` keeps its parentheses); an operand that
+/// writes as nothing is an empty group (`〖〗/y`).
 fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
+    let start = out.len();
     match select_mathchoice(node, style) {
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
@@ -1047,12 +1071,36 @@ fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push(')');
         },
+        MathNode::Fenced { open, close, .. } if open == "(" && close == ")" => {
+            out.push('(');
+            write_node(out, node, style);
+            out.push(')');
+        },
         _ => write_node(out, node, style),
+    }
+    if out.len() == start {
+        out.push_str("〖〗");
     }
 }
 
+/// Write a radical or enclosure operand, parenthesized unless it is one
+/// letter or digit. One that writes as nothing is an empty group (`√〖〗`):
+/// `√()` reads back as visible parentheses.
 fn write_paren_if_complex(out: &mut String, node: &MathNode, style: MathStyle) {
+    let start = out.len();
+    write_paren_if_complex_unguarded(out, node, style);
+    if &out[start..] == "()" {
+        out.replace_range(start.., "〖〗");
+    }
+}
+
+fn write_paren_if_complex_unguarded(out: &mut String, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
+        // Already bracketed.
+        MathNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            ..
+        } => write_node(out, node, style),
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
             write_node(out, node, style);
@@ -1111,9 +1159,9 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
 
 /// Insert an ignored source separator where the reader would otherwise
 /// join the node written from `start` on to what precedes it: an operand
-/// after a named function, and a prime after a node that takes it as a
-/// superscript (UTN #28 reads `y′` as `y` primed, so the sibling prime of
-/// LaTeX `y{'}` is written `y ′`; only a prime does not take one).
+/// after a named function, a digit after a digit, and a prime after a node
+/// that takes it as a superscript (UTN #28 reads `y′` as `y` primed, so the
+/// sibling prime of LaTeX `y{'}` is written `y ′`).
 fn separate_following_operand(
     out: &mut String,
     start: usize,
@@ -1123,8 +1171,11 @@ fn separate_following_operand(
     let Some(first) = out[start..].chars().next() else {
         return;
     };
-    let joins =
-        (previous_operator && first.is_alphanumeric()) || (takes_prime && is_prime_char(first));
+    // Adjacent numbers would read as one (`1 12′` is not `112′`).
+    let digits = first.is_ascii_digit() && out[..start].ends_with(|c: char| c.is_ascii_digit());
+    let joins = (previous_operator && first.is_alphanumeric())
+        || (takes_prime && is_prime_char(first))
+        || digits;
     if joins && !out[..start].ends_with(' ') {
         out.insert(start, ' ');
     }
@@ -1156,6 +1207,8 @@ fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
         | MathNode::SpannedCell { content, .. } => needs_operator_terminator(content, style),
         // `(_1)lim b`: the prescripted base ends the written node.
         MathNode::PreScripts { base, .. } => needs_operator_terminator(base, style),
+        // A denominator would take a digit or letter after it (`x/y^3 2`).
+        MathNode::Fraction { .. } => true,
         _ => false,
     }
 }
@@ -1267,6 +1320,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Identifier(sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Operator { name, .. } => out.push_str(arena.str_val(name)),
+        // A literal solidus is quoted: `/` alone is the fraction operator
+        // (UTN #28 sections 2.1 and 3.2).
+        CompactNode::Symbol(_, sid) if arena.str_val(sid) == "/" => out.push_str("\\/"),
         CompactNode::Symbol(_, sid) => out.push_str(arena.str_val(sid)),
         CompactNode::Text(_, sid) => {
             out.push('"');
@@ -1321,7 +1377,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Subscript { base, sub } => {
-            write_base_c(out, arena, base, style);
+            write_script_base_c(out, arena, base, style);
             out.push(if has_forced_operator_limits_c(arena, base, style) {
                 '┬'
             } else {
@@ -1331,7 +1387,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Superscript { base, sup } => {
-            write_base_c(out, arena, base, style);
+            write_script_base_c(out, arena, base, style);
             if !has_forced_operator_limits_c(arena, base, style)
                 && let Some((primes, rest)) = prime_superscript_c(arena, base, sup)
             {
@@ -1354,7 +1410,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::SubSup { base, sub, sup } => {
-            write_base_c(out, arena, base, style);
+            write_script_base_c(out, arena, base, style);
             out.push(if has_forced_operator_limits_c(arena, base, style) {
                 '┬'
             } else {
@@ -1385,12 +1441,14 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
                 write_script_arg_c(out, arena, pre_sup, style.sup());
             }
             out.push(')');
-            // The reader takes one element as the base: group a word or a
-            // row (`(_1)〖xy〗`), and `(_1)` with nothing after it is not a
-            // prescript.
+            // The reader takes one operand as the base: group a word, a row
+            // or a fraction (`(_1)〖xy〗`), and `(_1)` with nothing after it
+            // is not a prescript.
             let grouped = match *arena.node(base) {
                 CompactNode::Identifier(sid) => arena.str_val(sid).chars().nth(1).is_some(),
                 CompactNode::Row(span) => !arena.children(span).is_empty(),
+                // `(_1)a/b` is a fraction with a prescripted numerator.
+                CompactNode::Fraction { .. } => true,
                 _ => false,
             };
             let start = out.len();
@@ -1507,7 +1565,11 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Accent { base, accent, .. } => {
+            let start = out.len();
             write_node_c(out, arena, base, style);
+            if out.len() == start {
+                out.push_str("〖〗");
+            }
             out.push(accent);
         },
 
@@ -1931,7 +1993,12 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
             content,
         } => {
             out.push('〖');
-            write_structured_content_c(out, arena, content, style);
+            // The group already keeps a word one operand: no quotes.
+            if let CompactNode::Identifier(word) = *arena.node(content) {
+                out.push_str(arena.str_val(word));
+            } else {
+                write_structured_content_c(out, arena, content, style);
+            }
             out.push('〗');
         },
         CompactNode::Color { content, .. }
@@ -1962,19 +2029,25 @@ fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
         // A compound base is an invisible group: `()` would read back as
         // visible parentheses (`〖a+b〗^2` is LaTeX `{a+b}^2`, `x〖〗_1` is
-        // `x{}_1`), and a word would leave all but its last letter out
-        // (`〖ab〗_1` is `{ab}_1`, `ab_1` is `a b_1`).
+        // `x{}_1`).
         CompactNode::Row(_) | CompactNode::Fraction { .. } => {
             out.push('〖');
             write_node_c(out, arena, id, style);
             out.push('〗');
         },
+        _ => write_node_c(out, arena, id, style),
+    }
+}
+
+/// Compact counterpart of [`write_script_base`].
+fn write_script_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Identifier(sid) if arena.str_val(sid).chars().nth(1).is_some() => {
             out.push('〖');
             write_node_c(out, arena, id, style);
             out.push('〗');
         },
-        _ => write_node_c(out, arena, id, style),
+        _ => write_base_c(out, arena, id, style),
     }
 }
 
@@ -1990,8 +2063,10 @@ fn prime_superscript_c(
         matches!(*arena.node(id), CompactNode::Symbol(SymbolKind::Ordinary, sid)
             if is_prime_glyph(arena.str_val(sid)))
     };
-    // A prime base does not take primes after it (`′′` is two primes).
-    if is_prime_symbol_c(arena, base) {
+    // The reader gives such a base the primes after it (not `′′` or `+′`).
+    if matches!(*arena.node(base), CompactNode::Symbol(_, sid)
+        if !symbol_takes_prime(arena.str_val(sid)))
+    {
         return None;
     }
     if is_prime(sup) {
@@ -2045,7 +2120,9 @@ fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, 
     }
 }
 
+/// Compact counterpart of [`write_fraction_arg`].
 fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    let start = out.len();
     match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
@@ -2057,12 +2134,41 @@ fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: M
             write_node_c(out, arena, id, style);
             out.push(')');
         },
+        CompactNode::Fenced { open, close, .. }
+            if arena.str_val(open) == "(" && arena.str_val(close) == ")" =>
+        {
+            out.push('(');
+            write_node_c(out, arena, id, style);
+            out.push(')');
+        },
         _ => write_node_c(out, arena, id, style),
+    }
+    if out.len() == start {
+        out.push_str("〖〗");
     }
 }
 
+/// Compact counterpart of [`write_paren_if_complex`].
 fn write_paren_if_complex_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    let start = out.len();
+    write_paren_if_complex_unguarded_c(out, arena, id, style);
+    if &out[start..] == "()" {
+        out.replace_range(start.., "〖〗");
+    }
+}
+
+fn write_paren_if_complex_unguarded_c(
+    out: &mut String,
+    arena: &AstArena,
+    id: NodeId,
+    style: MathStyle,
+) {
     match *arena.node(select_mathchoice_c(arena, id, style)) {
+        // Already bracketed.
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            ..
+        } => write_node_c(out, arena, id, style),
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
             write_node_c(out, arena, id, style);
@@ -2153,6 +2259,8 @@ fn compact_spacing_flags(arena: &AstArena, id: NodeId, style: MathStyle) -> (boo
         CompactNode::PreScripts { base, .. } => {
             (false, compact_spacing_flags(arena, base, style).1)
         },
+        // A denominator would take a digit or letter after it (`x/y^3 2`).
+        CompactNode::Fraction { .. } => (false, true),
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
             let mut current_style = style;
             for &child in arena.children(span) {
