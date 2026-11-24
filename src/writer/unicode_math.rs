@@ -362,7 +362,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Fraction { num, den, kind } => {
             let style = kind.forced_style().unwrap_or(style);
             write_fraction_arg(out, num, style.fracnum());
-            out.push('/');
+            out.push(fraction_operator(*kind));
             write_fraction_arg(out, den, style.fracden());
         },
 
@@ -921,6 +921,16 @@ fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
     }
 }
 
+/// The UnicodeMath operator between a fraction's numerator and denominator:
+/// `¦` stacks them without a bar (`\atop`).
+fn fraction_operator(kind: FractionKind) -> char {
+    if kind == FractionKind::NoBar {
+        '\u{A6}'
+    } else {
+        '/'
+    }
+}
+
 fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
         MathNode::Row(children) if children.len() > 1 => {
@@ -1295,7 +1305,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         CompactNode::Fraction { num, den, kind } => {
             let style = kind.forced_style().unwrap_or(style);
             write_fraction_arg_c(out, arena, num, style.fracnum());
-            out.push('/');
+            out.push(fraction_operator(kind));
             write_fraction_arg_c(out, arena, den, style.fracden());
         },
 

@@ -42,6 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A barless fraction no longer gains a bar. The LaTeX writer spelled
+  `FractionKind::NoBar` as `\frac`: `{a \atop b}` now writes
+  `\genfrac{}{}{0pt}{}{a}{b}`, `{a \brace b}` writes
+  `\genfrac\{\}{0pt}{}{a}{b}` and `{a \brack b}` writes
+  `\genfrac[]{0pt}{}{a}{b}` (`\binom` is unchanged), forms KaTeX and
+  MathJax both read and that cannot capture the rest of a row as a bare
+  `\atop` would. UnicodeMath writes and reads the barless stack as `a¦b`
+  (it wrote `a/b`). The LaTeX reader keeps `\genfrac`'s thickness and
+  style: a zero thickness in any unit (`0pt`, `0em`, `0`) is barless (its
+  MathML now has `linethickness="0"`), an empty one keeps the default rule,
+  and a style of `0`–`3` forces display/text/script/scriptscript style
+  (`\genfrac{}{}{}{0}{a}{b}` is `\dfrac{a}{b}`). A nonzero thickness such
+  as `2pt` is drawn at the default thickness, with a warning, as the AST
+  has no rule thickness. `\above 0pt` reads as `\atop`, and the MathML
+  reader reads any zero `linethickness` (`0px`, `0em`) as barless, not just
+  `0`.
 - The LaTeX writer keeps `\mathop{...}` around an accent: `\mathop{\hat x}`
   (a TeX Op atom) was written as `\hat{x}`, an ordinary atom, so the operator
   class was lost and nested `\mathop`s did not round-trip stably.

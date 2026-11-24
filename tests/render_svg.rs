@@ -1413,6 +1413,23 @@ fn svg_fraction_nobar_lacks_rect() {
 }
 
 #[test]
+fn svg_genfrac_zero_thickness_draws_no_bar() {
+    // `\genfrac` with a zero rule (the reader once dropped the thickness)
+    // draws no bar; an empty thickness keeps the default bar.
+    for input in [
+        r"\genfrac{}{}{0pt}{}{a}{b}",
+        r"\genfrac(){0pt}{}{a}{b}",
+        r"{a \brace b}",
+    ] {
+        let svg = render_latex(input);
+        assert_valid_svg(&svg, input);
+        assert!(!svg.contains("<rect"), "{input} should draw no bar: {svg}");
+    }
+    let svg = render_latex(r"\genfrac{}{}{}{}{a}{b}");
+    assert!(svg.contains("<rect"), "the default rule should draw a bar");
+}
+
+#[test]
 fn svg_sqrt_has_path() {
     // Square root must have an SVG path for the radical sign
     let svg = render_latex(r"\sqrt{x}");

@@ -4541,15 +4541,16 @@ impl LatexCompactParser {
 
             // --- Above (infix with dimension) ---
             "above" => {
-                // \above <dimen> — like \over but with specified bar thickness
-                // Consume optional dimension, produce infix marker (treated like \over)
+                // \above <dimen> — like \over but with specified bar
+                // thickness. The AST has no thickness: a zero one reads as
+                // \atop, any other as \over.
                 let (input, _) = ws(input)?;
-                // Try to consume a dimension
-                let input = match dimension::width(input) {
-                    Ok((rest, _)) => rest,
-                    Err(_) => input,
+                let (input, marker) = match dimension::width(input) {
+                    Ok((rest, width)) if width.num == 0 => (rest, "__infix_atop__"),
+                    Ok((rest, _)) => (rest, "__infix_over__"),
+                    Err(_) => (input, "__infix_over__"),
                 };
-                let sid = self.arena.push_str("__infix_over__");
+                let sid = self.arena.push_str(marker);
                 self.infix_marker_seen = true;
                 Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
             },
@@ -5204,39 +5205,95 @@ impl LatexCompactParser {
     }
 
     /// `\genfrac{left}{right}{thickness}{style}{num}{den}`
+    ///
+    /// A zero `thickness` drops the rule (`FractionKind::NoBar`); any other
+    /// dimension draws the default rule, since the AST has no rule
+    /// thickness (a warning says so). A `style` of `0`–`3` forces
+    /// display/text/script/scriptscript style on the fraction and its
+    /// delimiters, as `\dfrac`/`\tfrac`/`\dbinom` do.
     fn parse_genfrac<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         // Parse all 6 arguments (each can be braced or single token)
         let (input, left_id) = self.parse_required_group(input)?;
         let (input, right_id) = self.parse_required_group(input)?;
-        let (input, _thickness) = self.parse_required_group(input)?; // discard
-        let (input, _style) = self.parse_required_group(input)?; // discard
+        let (input, thickness) = self.parse_raw_argument(input)?;
+        let (input, style) = self.parse_raw_argument(input)?;
         let (input, num_id) = self.parse_required_group(input)?;
         let (input, den_id) = self.parse_required_group(input)?;
 
-        let frac_id = self.arena.push_node(CompactNode::Fraction {
-            kind: FractionKind::Normal,
-            num: num_id,
-            den: den_id,
-        });
+        // An empty thickness, or one the AST cannot carry, keeps the rule.
+        let no_rule = match thickness.map(str::trim) {
+            None | Some("") => false,
+            Some(text) => match dimension::width(text) {
+                Ok((rest, width)) if rest.trim().is_empty() && width.num == 0 => true,
+                _ => {
+                    self.warn(format!(
+                        "\\genfrac rule thickness `{text}` is drawn at the default thickness"
+                    ));
+                    false
+                },
+            },
+        };
+        let style = match style.map(str::trim) {
+            Some("0") => Some(0),
+            Some("1") => Some(1),
+            Some("2") => Some(2),
+            Some("3") => Some(3),
+            _ => None,
+        };
 
         // Extract delimiter strings from the parsed nodes
         let left_s = self.extract_delimiter_str(left_id);
         let right_s = self.extract_delimiter_str(right_id);
+        let fenced = !(left_s.is_empty() && right_s.is_empty());
 
-        if left_s.is_empty() && right_s.is_empty() {
-            Ok((input, frac_id))
-        } else {
+        // `\dfrac`/`\tfrac` are `\genfrac{}{}{}{0}`/`\genfrac{}{}{}{1}`.
+        let (kind, style) = match (no_rule, style, fenced) {
+            (true, _, _) => (FractionKind::NoBar, style),
+            (false, Some(0), false) => (FractionKind::Display, None),
+            (false, Some(1), false) => (FractionKind::Inline, None),
+            (false, _, _) => (FractionKind::Normal, style),
+        };
+        let mut node = self.arena.push_node(CompactNode::Fraction {
+            kind,
+            num: num_id,
+            den: den_id,
+        });
+
+        if fenced {
             let open = self.arena.push_str(&left_s);
             let close = self.arena.push_str(&right_s);
-            let content = self.arena.push_children_deferred(&[frac_id]);
-            Ok((
-                input,
-                self.arena.push_node(CompactNode::Fenced {
-                    open,
-                    close,
-                    content,
-                }),
-            ))
+            let content = self.arena.push_children_deferred(&[node]);
+            node = self.arena.push_node(CompactNode::Fenced {
+                open,
+                close,
+                content,
+            });
+        }
+        if let Some(style) = style {
+            let marker = self.arena.push_node(CompactNode::StyleSwitch(style));
+            let span = self.arena.push_children_deferred(&[marker, node]);
+            node = self.arena.push_node(CompactNode::Row(span));
+        }
+        Ok((input, node))
+    }
+
+    /// Read an argument as source text: a brace group's body, or one
+    /// character. A control sequence (a register such as `\fboxrule`) is
+    /// parsed and discarded, reading as `None`.
+    fn parse_raw_argument<'a>(&mut self, input: &'a str) -> IResult<&'a str, Option<&'a str>> {
+        let (input, _) = ws(input)?;
+        if let Some((rest, body)) = super::mhchem::capture_braced(input) {
+            return Ok((rest, Some(body)));
+        }
+        match input.chars().next() {
+            Some(c) if c != '\\' && c != '{' && c != '}' => {
+                let len = c.len_utf8();
+                Ok((&input[len..], Some(&input[..len])))
+            },
+            _ => {
+                let (rest, _) = self.parse_required_group(input)?;
+                Ok((rest, None))
+            },
         }
     }
 

@@ -1254,8 +1254,18 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             let close_str = arena.str_val(close);
             let content_ids = arena.children(content);
 
-            // Detect binom pattern
-            if open_str == "(" && close_str == ")" && content_ids.len() == 1 {
+            // A fenced barless fraction: `\binom`, or `\genfrac` with the
+            // `\brace`/`\brack` delimiters (both KaTeX and MathJax read
+            // these as `\genfrac` delimiters).
+            let command = match (open_str, close_str) {
+                ("(", ")") => Some("\\binom{"),
+                ("{", "}") => Some("\\genfrac\\{\\}{0pt}{}{"),
+                ("[", "]") => Some("\\genfrac[]{0pt}{}{"),
+                _ => None,
+            };
+            if let Some(command) = command
+                && content_ids.len() == 1
+            {
                 let child_id = content_ids[0];
                 if let CompactNode::Fraction {
                     kind: FractionKind::NoBar,
@@ -1265,7 +1275,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 {
                     // Like `\frac`, the argument braces already group each
                     // part; `write_node` would brace a multi-node row again.
-                    buf.push_str("\\binom{");
+                    buf.push_str(command);
                     write_wrapped_content(buf, arena, num);
                     buf.push_str("}{");
                     write_wrapped_content(buf, arena, den);
@@ -1467,16 +1477,16 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Fraction { kind, num, den } => {
+            // A barless fraction is `\genfrac` with a zero rule: unlike the
+            // infix `\atop`, it cannot capture the rest of its row.
             let cmd = match kind {
-                FractionKind::Normal => "frac",
-                FractionKind::Display => "dfrac",
-                FractionKind::Inline => "tfrac",
-                FractionKind::NoBar => "frac",
-                FractionKind::Skewed => "frac",
+                FractionKind::Normal => "\\frac{",
+                FractionKind::Display => "\\dfrac{",
+                FractionKind::Inline => "\\tfrac{",
+                FractionKind::NoBar => "\\genfrac{}{}{0pt}{}{",
+                FractionKind::Skewed => "\\frac{",
             };
-            buf.push('\\');
             buf.push_str(cmd);
-            buf.push('{');
             write_wrapped_content(buf, arena, num);
             buf.push_str("}{");
             write_wrapped_content(buf, arena, den);

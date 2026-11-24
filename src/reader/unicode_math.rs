@@ -522,12 +522,20 @@ impl CompactParser {
 
         match (sub, sup) {
             (None, None) => {
-                // Check for fraction: base / denominator
-                if let Some(rest) = input.strip_prefix('/') {
+                // Check for fraction: base / denominator, or the barless
+                // stack base ¦ denominator.
+                let fraction = if let Some(rest) = input.strip_prefix('/') {
+                    Some((rest, FractionKind::Normal))
+                } else {
+                    input
+                        .strip_prefix('\u{A6}')
+                        .map(|rest| (rest, FractionKind::NoBar))
+                };
+                if let Some((rest, kind)) = fraction {
                     match self.parse_script_arg(rest) {
                         Ok((rest, den)) => {
                             let id = self.push_node(CompactNode::Fraction {
-                                kind: FractionKind::Normal,
+                                kind,
                                 num: base,
                                 den,
                             });

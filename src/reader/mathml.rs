@@ -992,7 +992,7 @@ impl<'a> MathmlCompactParser<'a> {
             "mfrac" => {
                 let children = self.parse_children(name)?;
                 let (num, den) = self.two_child_ids(children);
-                let kind = if get_attr(start, "linethickness").as_deref() == Some("0") {
+                let kind = if get_attr(start, "linethickness").is_some_and(|t| is_zero_length(&t)) {
                     FractionKind::NoBar
                 } else {
                     FractionKind::Normal
