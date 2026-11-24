@@ -403,7 +403,7 @@ fn dropped_color_does_not_join_the_command_before() {
         color: "}{".into(),
         content: bx(id("x")),
     };
-    assert_eq!(write(vec![id("α"), colored]), r"\alpha x");
+    assert_eq!(write(vec![id("α"), colored]), r"\alpha\mathord{x}");
 }
 
 #[test]
@@ -542,9 +542,10 @@ fn color_arguments_are_inert() {
 fn dropped_colors_leave_a_stable_expression() {
     for (input, latex) in [
         (r"\color{}\int\\ x", r"\int{}\\ x"),
+        (r"a^'{\color{red_b}{}'}Ze", r"a^{\prime}{}^{\prime}Ze"),
         (r"1\textcolor{a=b}{2}3", "123"),
         (r"\alpha\textcolor{é}{x}", r"\alpha x"),
-        (r"a\textcolor{$}{b+}c", "ab+ c"),
+        (r"a\textcolor{$}{b+}c", "a{b+}c"),
         (r"x^\textcolor{a=b}{22}", r"x^{22}"),
         (r"\textcolor{a=b}{\lim}_x", r"{\mathord{\lim}}_x"),
         (
@@ -553,7 +554,7 @@ fn dropped_colors_leave_a_stable_expression() {
         ),
         (
             r"\textcolor{a=b}{\textcolor{red}{x}\textcolor{=}{y}}z",
-            r"\textcolor{red}{x}yz",
+            r"{\textcolor{red}{x}y}z",
         ),
         (r"\textcolor{a=b}{\scriptstyle x}y", r"{\scriptstyle x}y"),
         (
@@ -580,7 +581,7 @@ fn loss_reports_are_bounded() {
     let compact = mathema::CompactExpr::from_math_expr(&expr(colors)).unwrap();
     let (latex, lost) =
         LatexWriter::write_compact_with_diagnostics(&compact, &Config::default()).unwrap();
-    assert_eq!(latex, "x".repeat(1000));
+    assert_eq!(latex, r"\mathord{x}".repeat(1000));
     assert_eq!(lost.len(), 101);
     assert!(lost.iter().all(|d| d.message.len() < 120), "{lost:?}");
     assert!(lost[100].message.starts_with("900 more"), "{:?}", lost[100]);
@@ -934,4 +935,336 @@ proptest! {
             prop_assert!(mathema::from_latex(&again).is_ok(), "{:?} => {:?}", latex, again);
         }
     }
+}
+
+#[test]
+fn dropped_colors_under_leading_scripts_are_stable() {
+    for input in [
+        r"_.\color{}[D\atop",
+        r"\frac{_a\color{}bc}{2}",
+        r"_a\color{}+x",
+        r"_t\textcolor{\q}{}_dx",
+        r"_t\color{@}_dx",
+        r"''\textcolor{@}{'A}",
+    ] {
+        let latex =
+            mathema::convert(input, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap();
+        let again =
+            mathema::convert(&latex, mathema::Format::LaTeX, mathema::Format::LaTeX).unwrap();
+        assert_eq!(latex, again, "{input}");
+        // Normalized first, and written directly.
+        let direct = |source: &str| {
+            use mathema::reader::Reader;
+            let mut read =
+                mathema::reader::latex::LatexReader::parse_compact(source, &Config::default())
+                    .unwrap();
+            mathema::ast::normalize::normalize_compact_expr(&mut read.expr).unwrap();
+            LatexWriter::write_compact(&read.expr, &Config::default()).unwrap()
+        };
+        assert_eq!(direct(&direct(input)), direct(input), "{input}");
+    }
+}
+
+/// A line break inside a dropped color stays in its group: bare in a table
+/// cell, it would end the row. A declaration inside one ends with it.
+#[test]
+fn dropped_colors_keep_breaks_and_declarations_inside() {
+    use mathema::Format::{LaTeX, MathML};
+    use mathema::ast::normalize::normalize_compact_expr;
+    use mathema::reader::Reader;
+    use mathema::reader::latex::LatexReader;
+    let config = Config::default();
+    // Letters, cells, breaks, sizes and scripts; not how they are grouped.
+    let drawn = |latex: &str| {
+        let mathml = mathema::convert(latex, LaTeX, MathML).unwrap();
+        let mut out = String::new();
+        for part in mathml.split('<').skip(1) {
+            let (tag, text) = part.split_once('>').unwrap();
+            let name = tag
+                .trim_start_matches('/')
+                .split([' ', '/'])
+                .next()
+                .unwrap();
+            if matches!(name, "mtr" | "mtd" | "mspace" | "mstyle" | "mfrac") {
+                out.push_str(&format!("<{tag}>"));
+            }
+            out.push_str(text);
+        }
+        out
+    };
+    let plain = |wrapped: &str| {
+        // The same source with plain groups for the dropped colors.
+        let mut out = wrapped.to_string();
+        for color in [
+            r"\textcolor{a=b}",
+            r"\textcolor{$}",
+            r"\colorbox{a=b}",
+            r"\textcolor{é}",
+        ] {
+            out = out.replace(color, "");
+        }
+        out
+    };
+    for color in [
+        r"\textcolor{a=b}",
+        r"\textcolor{$}",
+        r"\colorbox{a=b}",
+        r"\textcolor{é}",
+    ] {
+        for body in [
+            // A whole cell, and part of one.
+            r"\begin{array}{cc}C{a\\b}&c\end{array}",
+            r"\begin{array}{cc}xC{a\\b}y&c\\d&C{e\\f}\end{array}",
+            r"\begin{matrix}C{a\\b}&c\end{matrix}",
+            r"\begin{pmatrix}c&xC{a\\b}\end{pmatrix}",
+            r"\begin{cases}C{a\\b}&c\\d&yC{e\\f}\end{cases}",
+            r"\begin{aligned}C{a\\b}&=c\\d&=xC{e\\f}\end{aligned}",
+            // Nested colors, all dropped or not.
+            r"\begin{array}{cc}C{C{a\\b}}&c\end{array}",
+            r"\begin{array}{cc}xC{yC{a\\b}z}&c\end{array}",
+            r"\begin{array}{cc}\textcolor{red}{C{a\\b}}&c\end{array}",
+            r"\begin{array}{cc}C{\textcolor{red}{a\\b}}&c\end{array}",
+            r"\begin{array}{cc}C{\\}&c\end{array}",
+            // Declarations.
+            r"C{\large x}y",
+            r"C{a\large x}y",
+            r"C{\scriptstyle a\\b}y",
+            r"\begin{array}{cc}C{\large a\\b}&c\end{array}",
+            r"\frac{C{\large x}}{C{a\\b}}",
+            r"\sum C{\large x}y",
+            r"_1C{\large x}y",
+            r"_1C{a\\b}y",
+            r"\left(C{a\\b}\right)",
+        ] {
+            let input = body.replace('C', color);
+            let expected = plain(&input);
+            // Heap and compact, as parsed and normalized.
+            let heap = |source: &str, normal: bool| {
+                let mut parsed = LatexReader::parse(source, &config).unwrap().expr;
+                if normal {
+                    normalize_expr(&mut parsed);
+                }
+                LatexWriter::write(&parsed, &config).unwrap()
+            };
+            let compact = |source: &str, normal: bool| {
+                let mut parsed = LatexReader::parse_compact(source, &config).unwrap().expr;
+                if normal {
+                    normalize_compact_expr(&mut parsed).unwrap();
+                }
+                LatexWriter::write_compact(&parsed, &config).unwrap()
+            };
+            for write in [&heap as &dyn Fn(&str, bool) -> String, &compact] {
+                for normal in [false, true] {
+                    // The reader unwraps a group that is only a break, so
+                    // without normalization that one is bare either way.
+                    if !normal && body.contains(r"{\\}") {
+                        continue;
+                    }
+                    let latex = write(&input, normal);
+                    assert!(balanced(&latex), "{input}: {latex}");
+                    assert_eq!(
+                        write(&latex, normal),
+                        latex,
+                        "{input}, normalized: {normal}"
+                    );
+                    // MathML writes a leading script after what it leads.
+                    if body.starts_with('_') {
+                        continue;
+                    }
+                    assert_eq!(
+                        drawn(&latex),
+                        drawn(&write(&expected, normal)),
+                        "{input}, normalized: {normal}: {latex}"
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        write(
+            LatexReader::parse(r"\begin{array}{c}\textcolor{$}{a\\b}&c\end{array}", &config)
+                .unwrap()
+                .expr
+                .nodes
+        ),
+        r"\begin{array}{c} \mathord{a\\ b} & c \end{array}"
+    );
+}
+
+/// The colors LaTeX cannot hold are lost in LaTeX only: the other formats (and
+/// the expression itself, however it was normalized) keep them.
+#[test]
+fn colors_stay_in_the_other_formats() {
+    use mathema::Format::{LaTeX, MathML, Mtef, Omml};
+    for color in [
+        "#f00",
+        "#ff000080",
+        "#f008",
+        "#ff0000",
+        "hsl(120,50%,50%)",
+        "hsl(120 50% 50%)",
+        "rgb(1, 2, 3)",
+        "rgba(255,0,0,.5)",
+        "rebeccapurple",
+        "var(--x_y)",
+    ] {
+        let mathml =
+            format!(r#"<math><mi>a</mi><mstyle mathcolor="{color}"><mi>x</mi></mstyle></math>"#);
+        let out = mathema::convert(&mathml, MathML, MathML).unwrap();
+        assert!(
+            out.contains(&format!(r#"mathcolor="{color}""#)),
+            "{color}: {out}"
+        );
+        reread(&mathema::convert(&mathml, MathML, LaTeX).unwrap());
+        for format in [Omml, Mtef] {
+            mathema::convert(&mathml, MathML, format).unwrap();
+        }
+        for node in [
+            MathNode::Color {
+                color: color.into(),
+                content: bx(id("x")),
+            },
+            MathNode::Boxed {
+                content: bx(id("x")),
+                bg_color: Some(color.into()),
+                border_color: None,
+            },
+        ] {
+            let mut normal = expr(vec![MathNode::Row(vec![id("α"), node.clone()])]);
+            normalize_expr(&mut normal);
+            assert_eq!(normal.nodes, [id("α"), node.clone()], "{color}");
+            let mut compact = mathema::CompactExpr::from_math_expr(&normal).unwrap();
+            mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+            assert_eq!(compact.to_math_expr(), normal, "{color}");
+            let mathml =
+                mathema::writer::mathml::MathmlWriter::write(&normal, &Config::default()).unwrap();
+            assert!(mathml.contains(color), "{color}: {mathml}");
+        }
+        let latex = format!(r"\textcolor{{{color}}}{{x}}");
+        if !color.contains(['%', '_'])
+            && let Ok(out) = mathema::convert(&latex, LaTeX, MathML)
+        {
+            assert!(
+                out.contains(&format!(r#"mathcolor="{color}""#)),
+                "{color}: {out}"
+            );
+        }
+    }
+    // OMML keeps a color in the host's run properties, MTEF in its color table.
+    let options = mathema::OmmlOptions::default()
+        .with_run_properties(mathema::OmmlRunProperties::WordprocessingMl);
+    for color in ["#f00", "#ff0000", "red"] {
+        let mathml = format!(r#"<math><mstyle mathcolor="{color}"><mi>x</mi></mstyle></math>"#);
+        let read = mathema::from_mathml(&mathml).unwrap();
+        let (omml, lost) = read.to_omml_with_options(&options).unwrap();
+        assert!(omml.contains("FF0000"), "{color}: {omml} {lost:?}");
+    }
+    for (color, hex) in [("#f00", "FF0000"), ("#ff0000", "FF0000")] {
+        let mathml = format!(r#"<math><mstyle mathcolor="{color}"><mi>x</mi></mstyle></math>"#);
+        let mtef = mathema::convert(&mathml, MathML, Mtef).unwrap();
+        let back = mathema::convert(&mtef, Mtef, MathML).unwrap();
+        assert!(
+            back.to_uppercase().contains(hex) || back.contains("red"),
+            "{color}: {back}"
+        );
+    }
+}
+
+/// A list the arena cannot hold is an error, never empty output.
+#[test]
+fn large_dropped_colors_are_written_or_refused() {
+    use mathema::Format::{LaTeX, MathML};
+    let run = "<mi>x</mi>".repeat(40_000);
+    let one = format!("<mstyle mathcolor='#f00'>{run}</mstyle>");
+    for input in [
+        format!("<math>{one}</math>"),
+        format!("<math>{one}{one}</math>"),
+    ] {
+        let read = mathema::from_mathml(&input).unwrap();
+        let colors = input.matches("mstyle").count() / 2;
+        for latex in [
+            Some(read.to_latex().unwrap()),
+            LatexWriter::write(&read.expr(), &Config::default()).ok(),
+            LatexWriter::write_compact(read.compact_expr(), &Config::default()).ok(),
+            mathema::convert(&input, MathML, LaTeX).ok(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert_eq!(latex.matches('x').count(), colors * 40_000);
+        }
+    }
+}
+
+/// What is dropped in an expression built in code stays a group: nothing
+/// leaks out of it, however it is written.
+#[test]
+fn dropped_colors_in_built_expressions() {
+    let colored = |node: MathNode| MathNode::Color {
+        color: "a&".into(),
+        content: bx(node),
+    };
+    let boxed = |node: MathNode| MathNode::Boxed {
+        content: bx(node),
+        bg_color: Some("a&".into()),
+        border_color: None,
+    };
+    for wrap in [&colored as &dyn Fn(MathNode) -> MathNode, &boxed] {
+        for node in [
+            MathNode::SizeSwitch(6),
+            MathNode::StyleSwitch(2),
+            MathNode::LineBreak,
+            MathNode::Row(vec![MathNode::SizeSwitch(6), id("a")]),
+            MathNode::Row(vec![id("a"), MathNode::LineBreak, id("b")]),
+            MathNode::Row(Vec::new()),
+            id("a"),
+        ] {
+            for nodes in [
+                vec![wrap(node.clone()), id("x")],
+                vec![id("y"), wrap(wrap(node.clone())), id("x")],
+                vec![MathNode::PreScripts {
+                    base: bx(wrap(node.clone())),
+                    pre_sub: Some(bx(id("p"))),
+                    pre_sup: None,
+                }],
+                vec![sub(wrap(node.clone()))],
+                vec![
+                    MathNode::Subscript {
+                        base: bx(wrap(node.clone())),
+                        sub: bx(id("s")),
+                    },
+                    id("x"),
+                ],
+            ] {
+                let mut normal = expr(nodes.clone());
+                normalize_expr(&mut normal);
+                let latex = write(normal.nodes);
+                // Read back and normalized, it is written the same.
+                let again =
+                    mathema::convert(&latex, mathema::Format::LaTeX, mathema::Format::LaTeX)
+                        .unwrap();
+                assert_eq!(again, latex, "{nodes:?}");
+                // A declaration and a break end with the group.
+                for mark in [r"\Large", r"\scriptstyle"] {
+                    assert!(!latex.starts_with(mark), "{nodes:?}: {latex}");
+                }
+            }
+        }
+    }
+}
+
+/// Deep nests of dropped and kept colors are written in linear time.
+#[test]
+fn nested_dropped_colors_are_linear() {
+    let mut node = id("x");
+    for depth in 0..60 {
+        node = MathNode::Color {
+            color: if depth % 2 == 0 { "a&" } else { "red" }.into(),
+            content: bx(MathNode::Row(vec![node, id("y")])),
+        };
+    }
+    let latex = write(vec![node]);
+    assert_eq!(latex.matches(r"\textcolor{red}").count(), 30);
+    assert_eq!(latex.matches('y').count(), 60);
+    reread(&latex);
 }

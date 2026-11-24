@@ -35,6 +35,10 @@
 //!   `\usepackage`, `\AtBeginDocument`, `\CatchFileDef`, …): every writer spells it as the inert
 //!   text above, and the LaTeX reader reports it as not allowed. The list
 //!   cannot be complete, so it is not a guarantee.
+//!   That includes some names a formula might use for its own macros:
+//!   `\par`, `\protect`, `\number`, `\the`, `\index`, `\foreach` and every
+//!   longer name that starts with `\pdf`, `\luatex` or `\XeTeX` (`\pdf`
+//!   itself is kept).
 //! - A writer writes the node live, and the MathML reader builds it from an
 //!   `<merror>`, only for a name the LaTeX reader itself keeps as undefined;
 //!   a node built through the API or serde with any other name (`\alpha`,

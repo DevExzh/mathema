@@ -17,29 +17,6 @@ pub fn normalize_expr(expr: &mut MathExpr) {
     normalize_nodes_depth(&mut expr.nodes, 0);
 }
 
-/// Match the compact normalizer when a row contains a color name that the
-/// LaTeX writer elides: its content joins the surrounding sequence.
-/// Every nested layer of such colors is peeled.
-fn push_row_child(children: &mut Vec<MathNode>, mut node: MathNode) {
-    let mut peeled = false;
-    loop {
-        node = match node {
-            MathNode::Color { color, content } if is_unwritable_color(&color) => *content,
-            MathNode::Boxed {
-                content,
-                bg_color: Some(color),
-                border_color: None,
-            } if is_unwritable_background(&color) => *content,
-            _ => break,
-        };
-        peeled = true;
-    }
-    match node {
-        MathNode::Row(inner) if peeled => children.extend(inner),
-        other => children.push(other),
-    }
-}
-
 fn normalize_nodes_depth(nodes: &mut Vec<MathNode>, depth: usize) {
     normalize_nodes_depth_with_identifiers(nodes, depth, true);
 }
@@ -102,10 +79,10 @@ fn normalize_nodes_keeping_breaks(
             MathNode::Row(children) => {
                 // Flatten
                 for child in children {
-                    push_row_child(&mut flattened, child);
+                    flattened.push(child);
                 }
             },
-            other => push_row_child(&mut flattened, other),
+            other => flattened.push(other),
         }
     }
 
@@ -312,9 +289,6 @@ fn is_empty_script_base_math(node: &MathNode) -> bool {
         MathNode::Scaled { content, .. } => is_empty_script_base_math(content),
         MathNode::Identifier(name) => name.is_empty(),
         MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } => width.num == 0,
-        MathNode::Color { color, content } => {
-            is_unwritable_color(color) && is_empty_script_base_math(content)
-        },
         _ => false,
     }
 }
@@ -763,36 +737,11 @@ fn normalize_span_keeping_breaks(
         }
     }
 
-    // Phase 2b: flatten Color wrappers whose color argument cannot be written
-    // back verbatim.  The LaTeX writer drops the \textcolor{...} wrapper for
-    // such colors and emits only the content, so keeping the wrapper in the
-    // AST hides the content's edges from the spacing logic and produces output
-    // like `m=m` instead of `m= m`.
-    // Nested unwritable colors (`\color{_}\color{_}x`) are all dropped by
-    // the writer, so peel every such layer here; otherwise the inner wrapper
-    // only disappears on the next parse.
-    let mut splayed: SmallVec<[NodeId; 8]> = SmallVec::new();
-    for &id in &flattened {
-        let mut node_id = id;
-        while let Some(content) = unwritable_color_content(arena, arena.node(node_id)) {
-            node_id = content;
-        }
-        if node_id == id {
-            splayed.push(id);
-        } else if let CompactNode::Row(inner) = *arena.node(node_id) {
-            for &inner_id in arena.children(inner) {
-                splayed.push(inner_id);
-            }
-        } else {
-            splayed.push(node_id);
-        }
-    }
-
-    // Phase 2c: drop zero-width spacing nodes. They produce no visible output
+    // Phase 2b: drop zero-width spacing nodes. They produce no visible output
     // (e.g. a malformed/empty `\kern` or `\hspace{}`) and their presence can
     // block merges, suppress script attachment, or create/destroy separator
     // spaces in the writer.
-    let splayed: SmallVec<[NodeId; 8]> = splayed
+    let splayed: SmallVec<[NodeId; 8]> = flattened
         .into_iter()
         .filter(|&id| !matches!(*arena.node(id), CompactNode::Space(r) if r == Rational::zero()))
         .collect();
@@ -1451,37 +1400,6 @@ fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::
     Ok(arena.push_node(CompactNode::Row(span)))
 }
 
-/// True for a color the LaTeX writer does not write, leaving the content
-/// alone. The normalizer flattens such a wrapper early so spacing decisions
-/// see the wrapped content.
-fn is_unwritable_color(color: &str) -> bool {
-    !crate::ast::color::is_text_color(color)
-}
-
-fn is_unwritable_background(color: &str) -> bool {
-    !color.is_empty() && !crate::ast::color::is_color(color)
-}
-
-/// The content of a node the LaTeX writer leaves out for its color: a color,
-/// or a box that is only that background.
-pub(crate) fn unwritable_color_content(arena: &AstArena, node: &CompactNode) -> Option<NodeId> {
-    match *node {
-        CompactNode::Color { color, content } => {
-            is_unwritable_color(arena.str_val(color)).then_some(content)
-        },
-        CompactNode::Boxed {
-            content,
-            bg_color,
-            border_color,
-        } => {
-            let background = arena.str_val(bg_color);
-            (is_unwritable_background(background) && arena.str_val(border_color).is_empty())
-                .then_some(content)
-        },
-        _ => None,
-    }
-}
-
 /// True if `id` is a script node whose base is effectively empty.  Such nodes
 /// arise when a sub/superscript marker is not attached to an explicit base
 /// during parsing (e.g. `sm\Big'` where `\Big` has no content).
@@ -1509,9 +1427,6 @@ fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
         // An empty `<mi/>` base writes nothing and reads back as `{}`.
         CompactNode::Identifier(sid) => arena.str_val(sid).is_empty(),
         CompactNode::Space(r) => r == Rational::zero(),
-        CompactNode::Color { color, content } => {
-            is_unwritable_color(arena.str_val(color)) && is_empty_script_base(arena, content)
-        },
         _ => false,
     }
 }

@@ -7,7 +7,6 @@
 
 /// Arena-backed storage for the compact AST representation.
 pub mod arena;
-pub(crate) mod color;
 /// Compact, `Copy`-able arena-indexed AST node representation.
 pub mod compact;
 mod dangerous;

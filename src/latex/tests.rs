@@ -612,8 +612,10 @@ fn script_attachment_and_scope_wrappers_are_canonical_on_first_write() {
             r"'\tbinom ab\middle'",
             r"{}^{\prime}{\textstyle \binom{a}{b}}{}^{\prime}",
         ),
-        // Nested colors that cannot be written are all dropped at once.
-        (r"A\color{_}\color{_}'x", r"A {{}^{\prime}x}"),
+        // Nested colors that cannot be written are all dropped at once. (The
+        // writer does not know the expression is normalized; `convert` drops
+        // the colors before it normalizes.)
+        (r"A\color{_}\color{_}'x", r"A\mathord{{{}^{\prime}x}}"),
         // A font command's braces already scope a style declaration.
         (r"\tt\dbinom ab", r"\mathtt{\displaystyle \binom{a}{b}}"),
         (r"\tt{\displaystyle a}", r"\mathtt{\displaystyle a}"),
@@ -4788,12 +4790,8 @@ fn trailing_empty_implicit_scripts_do_not_regroup_the_preceding_base() {
 
 #[test]
 fn omitted_color_on_a_prime_keeps_its_following_base() {
-    let config = Config::default();
-    let write = |input: &str| {
-        let mut expr = LatexReader::parse_compact(input, &config).unwrap().expr;
-        normalize_compact_expr(&mut expr).unwrap();
-        LatexWriter::write_compact(&expr, &config).unwrap()
-    };
+    let write =
+        |input: &str| crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
     for source in [r"a^'{\color{red_blue}{}'}Ze", r"a^'{\color{red\blue}{}'}Ze"] {
         let first = write(source);
         assert_eq!(first, write(&first), "{source}");
@@ -5112,15 +5110,15 @@ fn color_spec_ending_in_control_space_round_trips() {
         ("\\colorbox{a\\\u{3000}}J", "J"),
         (
             r"\begin{array}{c}\cellcolor{a\ }b\end{array}",
-            r"\begin{array}{c} b \end{array}",
+            r"\begin{array}{c} \mathord{b} \end{array}",
         ),
         (
             r"\begin{array}{c}\cellcolor[x]{a\ }b\end{array}",
-            r"\begin{array}{c} b \end{array}",
+            r"\begin{array}{c} \mathord{b} \end{array}",
         ),
         (
             r"\rowcolors{1}{a\ }{b}\begin{array}{c}b\\c\end{array}",
-            r"\begin{array}{c} b \\ \colorbox{b}{c} \end{array}",
+            r"\begin{array}{c} \mathord{b} \\ \colorbox{b}{c} \end{array}",
         ),
         ("\\colorbox{x\\colorbox{Zb%:\r\n[\u{c}1\\rm\t}*J\\\t}J", "J"),
     ] {

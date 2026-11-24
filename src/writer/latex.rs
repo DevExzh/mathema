@@ -9,7 +9,8 @@ use crate::unicode::symbols::{
 use crate::writer::Writer;
 use std::collections::HashSet;
 
-mod colors;
+mod color_spec;
+pub(crate) mod colors;
 mod escape;
 use escape::{
     Place, Spelling, ascii_needs_escape, is_no_token, needs_escape, write_char, write_char_code,
@@ -17,6 +18,28 @@ use escape::{
 };
 
 pub struct LatexWriter;
+
+impl LatexWriter {
+    /// Write an expression that was just read and not normalized, without the
+    /// colors LaTeX cannot hold (see [`colors`]).
+    pub(crate) fn write_read(expr: &CompactExpr, config: &Config) -> Result<String> {
+        let grouped = colors::grouped(expr);
+        let report = LossReport::default();
+        write_colored(grouped.as_ref().unwrap_or(expr), config, report).map(|(latex, _)| latex)
+    }
+
+    /// [`write_read`](Self::write_read) with loss diagnostics.
+    pub(crate) fn write_read_with_diagnostics(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
+        let mut report = LossReport::collecting();
+        colors::report_dropped(expr, &mut report);
+        let grouped = colors::grouped(expr);
+        let (latex, report) = write_colored(grouped.as_ref().unwrap_or(expr), config, report)?;
+        Ok((latex, report.finish()))
+    }
+}
 
 impl Writer for LatexWriter {
     fn write(expr: &MathExpr, config: &Config) -> Result<String> {
@@ -42,8 +65,17 @@ fn write_expr(
     config: &Config,
     mut report: LossReport,
 ) -> Result<(String, LossReport)> {
-    let without_colors = colors::without_dropped_colors(expr, &mut report);
-    let expr = without_colors.as_ref().unwrap_or(expr);
+    colors::report_dropped(expr, &mut report);
+    let with_atoms = colors::with_ordinary_atoms(expr);
+    write_colored(with_atoms.as_ref().unwrap_or(expr), config, report)
+}
+
+/// Write an expression whose colors can all be written.
+fn write_colored(
+    expr: &CompactExpr,
+    config: &Config,
+    report: LossReport,
+) -> Result<(String, LossReport)> {
     let mut buf = LatexBuffer {
         text: String::with_capacity(256),
         in_operator_name: false,
@@ -2011,8 +2043,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Color { color, content } => {
-            // `without_dropped_colors` left only colors that can be written.
-            let (model, spec) = colors::text_color(arena.str_val(color)).unwrap_or_default();
+            // `with_ordinary_atoms` left only colors that can be written.
+            let (model, spec) = colors::text_color(arena.str_val(color));
             buf.push_str(r"\textcolor");
             buf.push_str(model);
             buf.push('{');
@@ -3320,6 +3352,15 @@ fn write_styled_text(buf: &mut LatexBuffer, style: TextStyle, text: &str) {
         SansSerifItalic => &[r"\textsf{", r"\textit{"],
         SansSerifBoldItalic => &[r"\textsf{", r"\textbf{", r"\textit{"],
         _ => &[r"\text{"],
+    };
+    // Around no text, the reader does not combine nested faces.
+    let wrappers = if text
+        .chars()
+        .all(|ch| escape::spelling(ch, Place::Text) == Spelling::Dropped)
+    {
+        &wrappers[..1]
+    } else {
+        wrappers
     };
     for wrapper in wrappers {
         buf.push_str(wrapper);

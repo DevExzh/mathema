@@ -49,5 +49,17 @@ fuzz_target!(|data: &[u8]| {
              write1: {out1:?}\n\
              write2: {out2:?}"
         );
+
+        // The public conversion drops the colors LaTeX cannot hold before it
+        // normalizes.
+        if let Ok(out1) = mathema::convert(input, mathema::Format::LaTeX, mathema::Format::LaTeX) {
+            let out2 = mathema::convert(&out1, mathema::Format::LaTeX, mathema::Format::LaTeX);
+            assert_eq!(
+                out2.as_ref().ok(),
+                Some(&out1),
+                "LaTeX conversion not idempotent.\ninput: {input:?}\nerror: {:?}",
+                out2.as_ref().err()
+            );
+        }
     }
 });

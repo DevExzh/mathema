@@ -45,7 +45,12 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
 /// own: a run of variable-style letters is several italic variables, not
 /// one multi-letter identifier, so identifiers are merged neither on the
 /// way from MTEF nor on the way to it.
+///
+/// The colors LaTeX cannot hold go first, on the way to LaTeX only.
 fn normalize_for(expr: &mut CompactExpr, from: Format, to: Format) -> Result<()> {
+    if to == Format::LaTeX {
+        crate::writer::latex::colors::to_groups(expr);
+    }
     if from == Format::Mtef || to == Format::Mtef {
         normalize_compact_expr_keeping_identifiers(expr)
     } else {
@@ -104,7 +109,7 @@ pub struct ConvertResult {
 impl ConvertResult {
     /// Serialize the parsed expression to LaTeX.
     pub fn to_latex(&self) -> Result<String> {
-        LatexWriter::write_compact(&self.compact.expr, &self.config)
+        LatexWriter::write_read(&self.compact.expr, &self.config)
     }
 
     /// Serialize the parsed expression to Presentation MathML.
@@ -116,12 +121,12 @@ impl ConvertResult {
     /// that is no color in a color, control characters in text.
     /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
     pub fn to_latex_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
-        LatexWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+        LatexWriter::write_read_with_diagnostics(&self.compact.expr, &self.config)
     }
 
     /// Serialize to LaTeX using the given configuration.
     pub fn to_latex_with(&self, config: &Config) -> Result<String> {
-        LatexWriter::write_compact(&self.compact.expr, config)
+        LatexWriter::write_read(&self.compact.expr, config)
     }
 
     /// Serialize to Presentation MathML using the given configuration.

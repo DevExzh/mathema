@@ -79,8 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commands live. It is still not a sandbox.
 - **Breaking (behavior):** a color that is none is dropped from LaTeX output: a
   `\textcolor` or a box that only had that background becomes its content.
-  Braced names (`\colorbox{{red}}{x}`) count as none. `\verb` is written as
-  `\texttt` with character codes, since it is unsafe in an argument.
+  Braced names (`\colorbox{{red}}{x}`) count as none. The other formats keep
+  such colors: normalization no longer drops `#f00`, `#rrggbbaa`, `hsl(…%)`, ….
+- **Breaking (behavior):** `\verb` is written as `\texttt` with character codes,
+  since it is unsafe in an argument.
 - **Breaking (behavior):** characters that are LaTeX syntax are escaped
   everywhere in LaTeX output (large operators, numbers, delimiters, names).
   Control characters in text and function names are dropped, and
