@@ -22,11 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   braced form (`x^{22}`) for the whole number. `Strictness::Strict` still
   accepts `x^22` (it is valid TeX); `Strictness::Lenient` adds a warning
   such as "only the first digit `2` is the superscript; write `^{22}` to
-  raise the whole number". A `\sideset` group holding more than scripts
-  (`\sideset{_12}{}\sum`) is rejected like `\sideset{_a b}{}\sum`
-  already was. The mhchem (`\ce`, `\pu`) and siunitx rewrites already
-  brace the scripts they generate, so `\ce{C6H12O6}` and `\SI{3}{m^{22}}`
-  are unchanged.
+  raise the whole number" (at most 100, then a summary). A `\sideset`
+  group may hold material after its scripts: as in amsmath,
+  `\sideset{_12}{}\sum` is prescript `1`, then `2`, then the operator, and
+  the right group's leftover follows the operator (`\sideset{_a b}{}\sum`,
+  rejected before, now reads the same way). The mhchem and siunitx
+  rewrites brace the scripts they generate (`\ce{C6H12O6}`,
+  `\SI{3}{m^{22}}` are unchanged), and `\pu` now braces a `^(-?\d+)`
+  exponent as mhchem does: `\pu{123 m^22}` keeps `m^{22}`, and
+  `\pu{kJ mol^-1}` reads as `mol^{-1}` (it was `mol^{-}1`).
 
 - `\big`, `\Big`, `\bigg` and `\Bigg` delimiters render with the OpenType
   MATH table's pre-designed size variants (or an extensible assembly) at TeX's

@@ -92,11 +92,34 @@ pub fn pu_to_latex(body: &str) -> String {
             out.push_str(tok);
         } else {
             out.push_str("\\mathrm{");
-            push_escaped_text(&mut out, tok);
+            push_unit_token(&mut out, tok);
             out.push('}');
         }
     }
     out
+}
+
+/// Push one `\pu` unit token. mhchem reads an exponent as `^(-?\d+)` and
+/// writes it braced, so `m^22` and `mol^-1` raise the whole exponent; a bare
+/// `^22` would raise only the `2` (a TeX script argument is one token).
+fn push_unit_token(out: &mut String, tok: &str) {
+    let mut rest = tok;
+    while let Some(at) = rest.find('^') {
+        push_escaped_text(out, &rest[..at]);
+        let after = &rest[at + 1..];
+        let sign = usize::from(after.starts_with('-'));
+        let digits = after[sign..].bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 {
+            out.push_str("^{");
+            out.push_str(&after[..sign + digits]);
+            out.push('}');
+            rest = &after[sign + digits..];
+        } else {
+            out.push('^');
+            rest = after;
+        }
+    }
+    push_escaped_text(out, rest);
 }
 
 /// What the most recently emitted token was, for spacing / subscript decisions.

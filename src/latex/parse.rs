@@ -7,7 +7,7 @@ use nom::IResult;
 use nom::bytes::complete::{tag, take_while, take_while1};
 use nom::character::complete::char;
 use smallvec::SmallVec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
@@ -1808,7 +1808,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             }
             parser.arena.check_limits()?;
             let roots = parser.arena.push_children(&ids)?;
-            parser.finish_undefined_reports();
+            parser.finish_reports();
             let mut diagnostics = std::mem::take(&mut parser.diagnostics);
             if !diagnostics.is_empty() {
                 locate_undefined_commands(input, &mut diagnostics);
@@ -1856,7 +1856,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 }
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&result_ids)?;
-                parser.finish_undefined_reports();
+                parser.finish_reports();
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 if !diagnostics.is_empty() {
                     locate_undefined_commands(input, &mut diagnostics);
@@ -1895,7 +1895,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 }
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
-                parser.finish_undefined_reports();
+                parser.finish_reports();
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
                 if !diagnostics.is_empty() {
                     locate_undefined_commands(input, &mut diagnostics);
@@ -2038,6 +2038,12 @@ pub(crate) struct LatexCompactParser {
     /// `Strictness::Lenient`: also report valid TeX that is easily misread,
     /// such as a multi-digit number after a script marker (`x^22`).
     lenient: bool,
+    /// Script digits already reported as the start of a longer number
+    /// (`x^22`), keyed by their address in the text being parsed so a
+    /// re-read after backtracking is not reported twice, and the number of
+    /// occurrences left unreported once the report limit was reached.
+    /// Boxed: most parses meet none.
+    split_numbers: Option<Box<(HashSet<usize>, usize)>>,
 }
 
 impl LatexCompactParser {
@@ -2070,6 +2076,7 @@ impl LatexCompactParser {
             single_token: None,
             source: (0, 0),
             lenient: false,
+            split_numbers: None,
         }
     }
 
@@ -3590,30 +3597,53 @@ impl LatexCompactParser {
                 .take_while(|b| b.is_ascii_digit())
                 .count();
         }
+        /// Occurrences reported before one summary takes their place.
+        const REPORTED: usize = 100;
+        let (seen, unreported) = &mut **self.split_numbers.get_or_insert_with(Box::default);
+        if !seen.insert(digits.as_ptr() as usize) {
+            // The same text re-read after backtracking.
+            return;
+        }
+        if seen.len() > REPORTED {
+            *unreported += 1;
+            return;
+        }
         let number = &digits[..end];
         let (marker, role, verb) = if is_sub {
             ('_', "subscript", "lower")
         } else {
             ('^', "superscript", "raise")
         };
-        let message = format!(
-            "only the first digit `{}` is the {role}; write `{marker}{{{number}}}` to {verb} the whole number",
-            &number[..1]
-        );
+        let first = &number[..1];
         let span = self.source_span_of(number);
-        if self
-            .diagnostics
-            .iter()
-            .any(|d| d.span == span && d.message == message)
-        {
-            // The same text re-read after backtracking.
-            return;
-        }
+        let message = if span.is_some() {
+            format!(
+                "only the first digit `{first}` is the {role}; write `{marker}{{{number}}}` to {verb} the whole number"
+            )
+        } else {
+            // The text came from a macro expansion or a package rewrite,
+            // so the caller may not have written `^22` anywhere.
+            format!(
+                "after macro expansion, only the first digit `{first}` of `{number}` is the {role}; brace the number to {verb} all of it"
+            )
+        };
         self.diagnostics.push(Diagnostic {
             kind: DiagnosticKind::Warning,
             message,
             span,
         });
+    }
+
+    #[cold]
+    fn summarize_split_numbers(&mut self) {
+        if let Some(reports) = &self.split_numbers
+            && reports.1 > 0
+        {
+            self.warn(format!(
+                "{} more script arguments that split a number not listed",
+                reports.1
+            ));
+        }
     }
 
     /// The span of `text` in the caller's input, when it is a slice of that
@@ -4804,12 +4834,15 @@ impl LatexCompactParser {
         (end <= len).then(|| Span::new(backslash, end))
     }
 
-    /// Diagnostics owed at the end of a parse: the summary of unreported
-    /// undefined commands.
+    /// Diagnostics owed at the end of a parse: the summaries of unreported
+    /// undefined commands and split script numbers.
     #[inline]
-    fn finish_undefined_reports(&mut self) {
+    fn finish_reports(&mut self) {
         if self.undefined_commands.is_some() {
             self.summarize_undefined_commands();
+        }
+        if self.split_numbers.is_some() {
+            self.summarize_split_numbers();
         }
     }
 
@@ -5480,18 +5513,26 @@ impl LatexCompactParser {
     /// Renders the operator flanked by the left scripts (as prescripts) and the
     /// right scripts (as postscripts); the operator keeps its own \limits.
     fn parse_sideset<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        // Two brace groups whose contents are `_x^y`-style scripts.
-        let parse_side = |this: &mut Self, inp: &'a str| -> IResult<&'a str, (NodeId, NodeId)> {
+        // Two brace groups, each `_x^y`-style scripts and then any other
+        // material. amsmath sets the left group as `{}#1`, so in
+        // `\sideset{_12}{}\sum` the prescript is `1` and a plain `2` stands
+        // between it and the operator (a script argument is one token);
+        // the right group's leftover follows the postscripts. MathJax
+        // likewise keeps the leftover beside the operator.
+        type Side = (NodeId, NodeId, SmallVec<[NodeId; 8]>);
+        let parse_side = |this: &mut Self, inp: &'a str| -> IResult<&'a str, Side> {
             let (inp, _) = ws(inp)?;
             let (inp, _) = char('{')(inp)?;
             let (inp, _) = ws(inp)?;
             let (inp, (sub, sup)) = this.parse_optional_limits(inp)?;
+            let (inp, leftover) = this.parse_node_list(inp)?;
             let (inp, _) = ws(inp)?;
             let (inp, _) = char('}')(inp)?;
-            Ok((inp, (sub, sup)))
+            let leftover = this.resolve_infix_fraction(leftover);
+            Ok((inp, (sub, sup, leftover)))
         };
-        let (input, (l_sub, l_sup)) = parse_side(self, input)?;
-        let (input, (r_sub, r_sup)) = parse_side(self, input)?;
+        let (input, (l_sub, l_sup, l_rest)) = parse_side(self, input)?;
+        let (input, (r_sub, r_sup, r_rest)) = parse_side(self, input)?;
         let (input, _) = ws(input)?;
 
         // The operator (parsed as a full element so it keeps its \limits/body).
@@ -5534,7 +5575,29 @@ impl LatexCompactParser {
             ),
         };
 
-        // Left group → prescripts on the glyph.
+        let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
+        // Left group → prescripts on the glyph. Material after the left
+        // scripts separates them from the glyph: they become scripts on an
+        // empty base (`{}_1`), followed by that material.
+        let (l_sub, l_sup) = if l_rest.is_empty() {
+            (l_sub, l_sup)
+        } else {
+            if l_sub != NodeId::NONE || l_sup != NodeId::NONE {
+                let base = self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                let node = match (l_sub != NodeId::NONE, l_sup != NodeId::NONE) {
+                    (true, true) => CompactNode::SubSup {
+                        base,
+                        sub: l_sub,
+                        sup: l_sup,
+                    },
+                    (true, false) => CompactNode::Subscript { base, sub: l_sub },
+                    _ => CompactNode::Superscript { base, sup: l_sup },
+                };
+                items.push(self.arena.push_node(node));
+            }
+            items.extend(l_rest);
+            (NodeId::NONE, NodeId::NONE)
+        };
         let with_pre = if l_sub != NodeId::NONE || l_sup != NodeId::NONE {
             self.arena.push_node(CompactNode::PreScripts {
                 base: op_glyph,
@@ -5588,8 +5651,8 @@ impl LatexCompactParser {
             (false, false) => with_post,
         };
 
-        let mut items: SmallVec<[NodeId; 4]> = SmallVec::new();
         items.push(stacked);
+        items.extend(r_rest);
         if op_body != NodeId::NONE {
             items.push(op_body);
         }
