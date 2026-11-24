@@ -70,7 +70,9 @@ fn collect_chars_inner(node: &LayoutBox, chars: &mut HashSet<(FontId, char)>) {
         } => {
             collect_glyph(*ch, *italic, *font, chars);
         },
-        BoxKind::Delimiter { ch, target_height } => {
+        BoxKind::Delimiter {
+            ch, target_height, ..
+        } => {
             // Only collect the char if it won't be rendered as an SVG path
             // (i.e. we need the font glyph as a fallback)
             if super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0).is_none() {
@@ -138,7 +140,9 @@ fn collect_chars_arena_inner(
         } => {
             collect_glyph(*ch, *italic, *font, chars);
         },
-        ArenaBoxKind::Delimiter { ch, target_height } => {
+        ArenaBoxKind::Delimiter {
+            ch, target_height, ..
+        } => {
             if super::delimiter_paths::delimiter_path(*ch, *target_height, 1.0).is_none() {
                 chars.insert((FontId::Math, *ch));
             }
@@ -236,17 +240,21 @@ fn collect_variants_inner(node: &LayoutBox, ids: &mut HashSet<u16>) {
                 ids.insert(v.glyph_id);
             }
         },
-        BoxKind::Delimiter { ch, target_height } => {
-            if super::glyph_variants::delimiter_variant(*ch, *target_height).is_some() {
-                if let Some(v) = select_vertical_variant(*ch, *target_height) {
+        BoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
+            let target = *target_height / *scale;
+            if super::glyph_variants::delimiter_variant(*ch, target).is_some() {
+                if let Some(v) = select_vertical_variant(*ch, target) {
                     ids.insert(v.glyph_id);
                 }
-            } else if let Some(asm) = super::glyph_variants::vertical_assembly(*ch, *target_height)
-            {
+            } else if let Some(asm) = super::glyph_variants::vertical_assembly(*ch, target) {
                 for p in &asm.placements {
                     ids.insert(p.glyph_id);
                 }
-            } else if let Some(v) = select_vertical_variant(*ch, *target_height) {
+            } else if let Some(v) = select_vertical_variant(*ch, target) {
                 ids.insert(v.glyph_id);
             }
         },
@@ -289,17 +297,21 @@ fn collect_variants_arena_inner(arena: &LayoutArena, id: LayoutBoxId, ids: &mut 
                 ids.insert(v.glyph_id);
             }
         },
-        ArenaBoxKind::Delimiter { ch, target_height } => {
-            if super::glyph_variants::delimiter_variant(*ch, *target_height).is_some() {
-                if let Some(v) = select_vertical_variant(*ch, *target_height) {
+        ArenaBoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
+            let target = *target_height / *scale;
+            if super::glyph_variants::delimiter_variant(*ch, target).is_some() {
+                if let Some(v) = select_vertical_variant(*ch, target) {
                     ids.insert(v.glyph_id);
                 }
-            } else if let Some(asm) = super::glyph_variants::vertical_assembly(*ch, *target_height)
-            {
+            } else if let Some(asm) = super::glyph_variants::vertical_assembly(*ch, target) {
                 for p in &asm.placements {
                     ids.insert(p.glyph_id);
                 }
-            } else if let Some(v) = select_vertical_variant(*ch, *target_height) {
+            } else if let Some(v) = select_vertical_variant(*ch, target) {
                 ids.insert(v.glyph_id);
             }
         },
@@ -373,6 +385,7 @@ mod tests {
             kind: BoxKind::Delimiter {
                 ch: '(',
                 target_height: 0.3,
+                scale: 1.0,
             },
         };
         let delim_close = LayoutBox {
@@ -382,6 +395,7 @@ mod tests {
             kind: BoxKind::Delimiter {
                 ch: ')',
                 target_height: 0.3,
+                scale: 1.0,
             },
         };
         let root = LayoutBox {
@@ -412,6 +426,7 @@ mod tests {
             kind: BoxKind::Delimiter {
                 ch: '(',
                 target_height: 1.5,
+                scale: 1.0,
             },
         };
         let root = LayoutBox {

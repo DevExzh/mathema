@@ -286,6 +286,7 @@ pub(super) fn layout_sqrt(
             kind: BoxKind::Delimiter {
                 ch: '\u{221A}',
                 target_height: target,
+                scale: 1.0,
             },
         }
     } else {
@@ -404,6 +405,7 @@ pub(super) fn layout_sqrt_arena(
             kind: ArenaBoxKind::Delimiter {
                 ch: '\u{221A}',
                 target_height: target,
+                scale: 1.0,
             },
         })
     } else {

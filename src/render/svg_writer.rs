@@ -341,13 +341,16 @@ fn emit_vertical_assembly_embedded(
     glyphs: &GlyphSet,
     ch: char,
     fill_height_em: f64,
+    scale: f64,
     box_top: f64,
     x: f64,
     em: f64,
     upem: f64,
     color: &str,
 ) -> bool {
-    let Some(asm) = super::glyph_variants::vertical_assembly(ch, fill_height_em) else {
+    // Parts are chosen at the delimiter's own font size (see
+    // `BoxKind::Delimiter::scale`), then fitted to the fill height.
+    let Some(asm) = super::glyph_variants::vertical_assembly(ch, fill_height_em / scale) else {
         return false;
     };
     let h_nat = asm.ink_top_em - asm.ink_bottom_em;
@@ -472,9 +475,13 @@ fn emit_box_embedded(
 
         BoxKind::Kern => {},
 
-        BoxKind::Delimiter { ch, target_height } => {
+        BoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
             // Prefer a MATH-table variant glyph (matches the raster backend).
-            if let Some(v) = super::glyph_variants::delimiter_variant(*ch, *target_height)
+            if let Some(v) = super::glyph_variants::delimiter_variant(*ch, *target_height / *scale)
                 && glyphs.variants.contains_key(&v.glyph_id)
             {
                 let target_px = target_height * em;
@@ -501,6 +508,7 @@ fn emit_box_embedded(
                 glyphs,
                 *ch,
                 layout.height + layout.depth,
+                *scale,
                 y - layout.height * em,
                 x,
                 em,
@@ -865,9 +873,13 @@ fn emit_box_arena_embedded(
 
         ArenaBoxKind::Kern => {},
 
-        ArenaBoxKind::Delimiter { ch, target_height } => {
+        ArenaBoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
             // Prefer a MATH-table variant glyph (matches the raster backend).
-            if let Some(v) = super::glyph_variants::delimiter_variant(*ch, *target_height)
+            if let Some(v) = super::glyph_variants::delimiter_variant(*ch, *target_height / *scale)
                 && glyphs.variants.contains_key(&v.glyph_id)
             {
                 let target_px = target_height * em;
@@ -894,6 +906,7 @@ fn emit_box_arena_embedded(
                 glyphs,
                 *ch,
                 layout.height + layout.depth,
+                *scale,
                 y - layout.height * em,
                 x,
                 em,

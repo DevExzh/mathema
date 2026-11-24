@@ -63,8 +63,18 @@ pub enum BoxKind {
     Rule { thickness: f64 },
     /// Invisible spacing.
     Kern,
-    /// A stretchy delimiter.
-    Delimiter { ch: char, target_height: f64 },
+    /// A stretchy delimiter `target_height` tall.
+    ///
+    /// `scale` is the font-size multiplier its MATH-table glyph is chosen at:
+    /// the outline emitters pick the size variant (or assembly) for
+    /// `target_height / scale` em and draw it `scale` times larger. It is 1
+    /// for `\left`/`\right` delimiters and radicals; a `\big` delimiter at
+    /// `\Huge` keeps the variant it has at normal size.
+    Delimiter {
+        ch: char,
+        target_height: f64,
+        scale: f64,
+    },
     /// SVG path data (radical signs, cancel lines).
     SvgPath(String),
     /// Color wrapper.
@@ -1120,9 +1130,14 @@ fn scale_box_kind(kind: BoxKind, f: f64) -> BoxKind {
         BoxKind::Rule { thickness } => BoxKind::Rule {
             thickness: thickness * f,
         },
-        BoxKind::Delimiter { ch, target_height } => BoxKind::Delimiter {
+        BoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => BoxKind::Delimiter {
             ch,
             target_height: target_height * f,
+            scale: scale * f,
         },
         // Kern, Phantom don't need child scaling.
         // SvgPath: scale all numeric coordinates in the path data.

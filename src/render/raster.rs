@@ -489,10 +489,14 @@ fn emit_raster_box(
             // Invisible — no output
         },
 
-        BoxKind::Delimiter { ch, target_height } => {
+        BoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
             // Try MATH table glyph variant first for better quality.
             let variant_rendered = if let Some(variant) =
-                super::glyph_variants::delimiter_variant(*ch, *target_height)
+                super::glyph_variants::delimiter_variant(*ch, *target_height / *scale)
             {
                 // Render the variant glyph scaled to match the layout's target height.
                 // font_size_px = target_height_pixels / advance_em
@@ -515,7 +519,7 @@ fn emit_raster_box(
                 let box_top = y - layout.height * em;
                 let fill_h = layout.height + layout.depth;
                 let assembled =
-                    draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em, xform);
+                    draw_vertical_assembly(pixmap, fg, *ch, fill_h, *scale, box_top, x, em, xform);
                 if assembled {
                     // rendered from assembly parts
                 } else if let Some(dp) =
@@ -807,10 +811,14 @@ fn emit_raster_box_arena(
             // Invisible — no output
         },
 
-        ArenaBoxKind::Delimiter { ch, target_height } => {
+        ArenaBoxKind::Delimiter {
+            ch,
+            target_height,
+            scale,
+        } => {
             // Try MATH table glyph variant first for better quality.
             let variant_rendered = if let Some(variant) =
-                super::glyph_variants::delimiter_variant(*ch, *target_height)
+                super::glyph_variants::delimiter_variant(*ch, *target_height / *scale)
             {
                 // Render the variant glyph scaled to match the layout's target height.
                 // font_size_px = target_height_pixels / advance_em
@@ -833,7 +841,7 @@ fn emit_raster_box_arena(
                 let box_top = y - layout.height * em;
                 let fill_h = layout.height + layout.depth;
                 let assembled =
-                    draw_vertical_assembly(pixmap, fg, *ch, fill_h, box_top, x, em, xform);
+                    draw_vertical_assembly(pixmap, fg, *ch, fill_h, *scale, box_top, x, em, xform);
                 if assembled {
                     // rendered from assembly parts
                 } else if let Some(dp) =
@@ -1246,12 +1254,15 @@ fn draw_vertical_assembly(
     fg: [u8; 3],
     ch: char,
     fill_height_em: f64,
+    scale: f64,
     box_top: f64,
     x: f64,
     em: f64,
     xform: HorizontalTransform,
 ) -> bool {
-    let Some(asm) = super::glyph_variants::vertical_assembly(ch, fill_height_em) else {
+    // Parts are chosen at the delimiter's own font size (see
+    // `BoxKind::Delimiter::scale`), then fitted to the fill height.
+    let Some(asm) = super::glyph_variants::vertical_assembly(ch, fill_height_em / scale) else {
         return false;
     };
     let h_nat = asm.ink_top_em - asm.ink_bottom_em;

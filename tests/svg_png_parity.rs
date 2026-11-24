@@ -157,6 +157,11 @@ fn svg_matches_png_on_corpus() {
             r"\big| \Big\| \bigg/ \Bigg\backslash \big\uparrow \Bigg\uparrow \big.",
             false,
         ),
+        (
+            "big_family_sizes",
+            r"x_{\big( a \Big]} \bigl\lgroup y \bigr\rgroup \Huge \Bigg\langle \Bigg/ \Big\uparrow",
+            false,
+        ),
         ("actuarial", r"A_{\angl n}+B_{\angl g}", true),
         ("mirrored", r"\mathreflectbox{b+\frac{x}{y}}", true),
         ("middle", r"\left\langle x \middle| y \right\rangle", true),

@@ -469,7 +469,9 @@ fn emit_box(
             // Invisible — no output
         },
 
-        BoxKind::Delimiter { ch, target_height } => {
+        BoxKind::Delimiter {
+            ch, target_height, ..
+        } => {
             // The radical (√) renders from the synthetic path here (the text-based
             // SVG cannot embed font outlines); standalone SVG / raster use the
             // real MATH-table variant glyph.
@@ -519,23 +521,18 @@ fn emit_box(
                     );
                 }
             } else {
-                // Fallback: text element with font-size scaling, centered
-                // on the box like the outline backends' variant glyph.
-                let font_size = target_height * em;
-                let y = delimiter_text_baseline(*ch, y, layout.height, layout.depth, em, font_size);
-                svg.push_str(r#"<text x=""#);
-                push_f3(svg, x);
-                svg.push_str(r#"" y=""#);
-                push_f3(svg, y);
-                svg.push_str(r#"" font-size=""#);
-                push_f3(svg, font_size);
-                svg.push_str(r#"" font-family=""#);
-                svg.push_str(attrs.font_family);
-                svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
-                svg.push_str(r#"">"#);
-                write_escaped_char(svg, *ch);
-                svg.push_str("</text>");
+                // Fallback: the font glyph as `<text>` at the delimiter's height.
+                push_delimiter_text(
+                    svg,
+                    *ch,
+                    x,
+                    y,
+                    (layout.width, layout.height, layout.depth),
+                    em,
+                    target_height * em,
+                    attrs.font_family,
+                    &attrs.fg_color,
+                );
             }
         },
 
@@ -854,7 +851,9 @@ fn emit_box_arena(
             // Invisible — no output
         },
 
-        ArenaBoxKind::Delimiter { ch, target_height } => {
+        ArenaBoxKind::Delimiter {
+            ch, target_height, ..
+        } => {
             // See the heap `BoxKind::Delimiter` arm: √ uses the synthetic path here.
             if *ch == '\u{221A}' {
                 let tx = x;
@@ -902,23 +901,18 @@ fn emit_box_arena(
                     );
                 }
             } else {
-                // Fallback: text element with font-size scaling, centered
-                // on the box like the outline backends' variant glyph.
-                let font_size = target_height * em;
-                let y = delimiter_text_baseline(*ch, y, layout.height, layout.depth, em, font_size);
-                svg.push_str(r#"<text x=""#);
-                push_f3(svg, x);
-                svg.push_str(r#"" y=""#);
-                push_f3(svg, y);
-                svg.push_str(r#"" font-size=""#);
-                push_f3(svg, font_size);
-                svg.push_str(r#"" font-family=""#);
-                svg.push_str(attrs.font_family);
-                svg.push_str(r#"" fill=""#);
-                svg.push_str(&attrs.fg_color);
-                svg.push_str(r#"">"#);
-                write_escaped_char(svg, *ch);
-                svg.push_str("</text>");
+                // Fallback: the font glyph as `<text>` at the delimiter's height.
+                push_delimiter_text(
+                    svg,
+                    *ch,
+                    x,
+                    y,
+                    (layout.width, layout.height, layout.depth),
+                    em,
+                    target_height * em,
+                    attrs.font_family,
+                    &attrs.fg_color,
+                );
             }
         },
 
@@ -1029,23 +1023,61 @@ pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
     }
 }
 
-/// Baseline for a delimiter drawn as a `<text>` glyph at `font_size`: the
-/// glyph's ink is centered on the delimiter box, which the layout centers on
-/// the math axis, instead of hanging from the box baseline.
-#[cold]
+/// A delimiter drawn as a `<text>` glyph at `font_size`, for characters with
+/// no built-in path (the text SVG cannot embed MATH-table variants).
+///
+/// The glyph's ink is centered on the delimiter box, which the layout centers
+/// on the math axis, and the glyph is squeezed horizontally into the box when
+/// the scaled base glyph would be wider than the variant or assembly the
+/// layout reserved room for (`\Bigg\uparrow` is a 0.5em-wide assembly, but
+/// its base glyph at 3em is 1.5em wide).
+#[allow(clippy::too_many_arguments)]
 #[inline(never)]
-fn delimiter_text_baseline(
+fn push_delimiter_text(
+    svg: &mut String,
     ch: char,
+    x: f64,
     y: f64,
-    layout_height: f64,
-    layout_depth: f64,
+    (width, height, depth): (f64, f64, f64),
     em: f64,
     font_size: f64,
-) -> f64 {
+    font_family: &str,
+    fg_color: &str,
+) {
     let m = super::metrics::glyph_metrics(ch);
-    let box_center = (layout_height - layout_depth) / 2.0 * em;
+    let box_center = (height - depth) / 2.0 * em;
     let glyph_center = (m.height - m.depth) / 2.0 * font_size;
-    y - (box_center - glyph_center)
+    let y = y - (box_center - glyph_center);
+    let natural_width = m.width * font_size;
+    let squeeze = if natural_width > 0.0 {
+        width * em / natural_width
+    } else {
+        1.0
+    };
+    if squeeze < 0.99 {
+        svg.push_str(r#"<text transform="translate("#);
+        push_f3(svg, x);
+        svg.push(',');
+        push_f3(svg, y);
+        svg.push_str(") scale(");
+        push_f3(svg, squeeze);
+        svg.push_str(r#",1)""#);
+    } else {
+        svg.push_str(r#"<text x=""#);
+        push_f3(svg, x);
+        svg.push_str(r#"" y=""#);
+        push_f3(svg, y);
+        svg.push('"');
+    }
+    svg.push_str(r#" font-size=""#);
+    push_f3(svg, font_size);
+    svg.push_str(r#"" font-family=""#);
+    svg.push_str(font_family);
+    svg.push_str(r#"" fill=""#);
+    svg.push_str(fg_color);
+    svg.push_str(r#"">"#);
+    write_escaped_char(svg, ch);
+    svg.push_str("</text>");
 }
 
 #[cfg(test)]

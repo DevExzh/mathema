@@ -199,9 +199,9 @@ pub(super) fn layout_cancel(stroke: StrokeKind, content: &MathNode, ctx: &Layout
 
 pub(super) fn layout_scaled(factor: Rational, content: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
     if let MathNode::Symbol(_, s) = content
-        && let Some(b) = layout_big_delimiter(factor, s, ctx.size(), &ctx.params)
+        && let Some(b) = layout_big_delimiter(factor, s, ctx.size_scale, &ctx.params)
     {
-        return b.into_heap(ctx.size());
+        return b.into_heap();
     }
     let inner = layout_node(content, ctx);
     let f = factor.as_f64();
@@ -215,31 +215,33 @@ pub(super) fn layout_scaled(factor: Rational, content: &MathNode, ctx: &LayoutCt
 
 /// A `\big`-family delimiter laid out through the font's size variants.
 enum BigDelimLayout {
-    /// `\big.`: TeX's null delimiter space.
+    /// `\big.`: KaTeX's null delimiter space.
     Null(f64),
     Glyph(BigDelimiter),
 }
 
 impl BigDelimLayout {
     #[inline(never)]
-    fn into_heap(self, size: f64) -> LayoutBox {
+    fn into_heap(self) -> LayoutBox {
         match self {
             Self::Null(w) => LayoutBox::kern(w),
-            Self::Glyph(d) => big_delimiter_box(d, size),
+            Self::Glyph(d) => big_delimiter_box(d),
         }
     }
 
     #[inline(never)]
-    fn into_arena(self, arena: &mut LayoutArena, size: f64) -> LayoutBoxId {
+    fn into_arena(self, arena: &mut LayoutArena) -> LayoutBoxId {
         match self {
             Self::Null(w) => arena.alloc(ArenaLayoutBox::kern(w)),
-            Self::Glyph(d) => alloc_big_delimiter(arena, d, size),
+            Self::Glyph(d) => alloc_big_delimiter(arena, d),
         }
     }
 }
 
-/// The `\big`-family layout of a `Scaled` symbol `s`, or `None` when the
-/// node is not a `\big` delimiter the font can draw (it is then scaled).
+/// The `\big`-family layout of a `Scaled` symbol `s` at text-style font size
+/// `size` (TeX sets `\big` delimiters at text size even in scripts), or
+/// `None` when the node is not a `\big` delimiter the font can draw (it is
+/// then scaled).
 fn layout_big_delimiter(
     factor: Rational,
     s: &str,
@@ -616,9 +618,9 @@ pub(super) fn layout_scaled_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     if let CompactNode::Symbol(_, sid) = *ast.node(content)
-        && let Some(b) = layout_big_delimiter(factor, ast.str_val(sid), ctx.size(), &ctx.params)
+        && let Some(b) = layout_big_delimiter(factor, ast.str_val(sid), ctx.size_scale, &ctx.params)
     {
-        return b.into_arena(arena, ctx.size());
+        return b.into_arena(arena);
     }
     let inner_id = layout_node_arena(ast, content, arena, ctx);
     let f = factor.as_f64();
