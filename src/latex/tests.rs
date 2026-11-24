@@ -4992,6 +4992,9 @@ fn color_arguments_are_read_to_their_matching_brace() {
         r"{{\intop\color{{}c}}",
         r"{\textcolor{{}x}",
         r"{\colorbox{{}{x}",
+        r"{\hspace{{}1em}x",
+        r"{\raisebox{{}1em}{x}",
+        r"{\rule{{}1em}{2em}",
     ] {
         assert!(crate::from_latex(input).is_err(), "{input}");
     }
@@ -5002,5 +5005,19 @@ fn color_arguments_are_read_to_their_matching_brace() {
     ] {
         let out = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
         assert_eq!(out, expected, "{input}");
+    }
+    // Balanced arguments with nested groups keep converting idempotently,
+    // including a `\columncolor` inside an array column specification.
+    for input in [
+        r"\begin{array}{>{\columncolor{{}c}}c} a\end{array}",
+        r"\begin{array}{>{\columncolor[rgb]{{}1,0,0}}c} a\end{array}",
+        r"\begin{array}{>{\columncolor{yellow}}c} a\end{array}",
+        r"\hspace{1em}x\rule{1em}{2em}\raisebox{1pt}{y}",
+        r"\begin{alignedat}{2} a&=b & c&=d \end{alignedat}",
+        r"\begin{alignedat}{{2}} a&=b \end{alignedat}",
+    ] {
+        let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{input}");
     }
 }

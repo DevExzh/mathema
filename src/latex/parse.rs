@@ -5551,12 +5551,7 @@ impl LatexCompactParser {
         // Optional * after command name
         let input = input.strip_prefix('*').unwrap_or(input);
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let end = input.find('}').ok_or_else(|| {
-            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
-        })?;
-        let dim_str = &input[..end];
-        let rest = &input[end + 1..];
+        let (rest, dim_str) = braced_text(input)?;
         // Parse dimension
         if let Ok((_, r)) = dimension::width(dim_str) {
             return Ok((rest, self.arena.push_node(CompactNode::Space(r))));
@@ -5585,24 +5580,14 @@ impl LatexCompactParser {
         };
         // Required {width}
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let width_end = input.find('}').ok_or_else(|| {
-            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
-        })?;
-        let width_str = &input[..width_end];
-        let input = &input[width_end + 1..];
+        let (input, width_str) = braced_text(input)?;
         let width = dimension::width(width_str)
             .map(|(_, r)| r)
             .unwrap_or(Rational::zero());
 
         // Required {height}
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let height_end = input.find('}').ok_or_else(|| {
-            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
-        })?;
-        let height_str = &input[..height_end];
-        let input = &input[height_end + 1..];
+        let (input, height_str) = braced_text(input)?;
         let height = dimension::width(height_str)
             .map(|(_, r)| r)
             .unwrap_or(Rational::zero());
@@ -6175,9 +6160,7 @@ impl LatexCompactParser {
             (None, after)
         };
         let after = after.trim_start();
-        let rest = after.strip_prefix('{')?;
-        let end = rest.find('}')?;
-        let spec = &rest[..end];
+        let (_, spec) = super::mhchem::capture_braced(after)?;
         Some(self.resolve_box_color(model, spec))
     }
 
@@ -6385,15 +6368,10 @@ impl LatexCompactParser {
     /// `\raisebox{dimension}[height][depth]{content}` — shift content vertically.
     fn parse_raisebox<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let end = input.find('}').ok_or_else(|| {
-            nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
-        })?;
-        let dim_str = &input[..end];
+        let (rest, dim_str) = braced_text(input)?;
         let shift = dimension::width(dim_str)
             .map(|(_, r)| r)
             .unwrap_or_else(|_| Rational::zero());
-        let rest = &input[end + 1..];
 
         let (rest, _) = ws(rest)?;
         let (rest, height) = if rest.starts_with('[') {
@@ -8012,13 +7990,8 @@ impl LatexCompactParser {
         // We consume the mandatory argument but derive the actual column
         // count from the rows, same as parse_align_env.
         let (input, _) = ws(input)?;
-        let input = if let Ok((r, _)) = char::<_, nom::error::Error<&str>>('{')(input) {
-            let (r, _) = take_while1::<_, _, nom::error::Error<&str>>(|c: char| c != '}')(r)
-                .unwrap_or((r, ""));
-            let (r, _) = char::<_, nom::error::Error<&str>>('}')(r).map_err(|_| {
-                nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
-            })?;
-            r
+        let input = if input.starts_with('{') {
+            braced_text(input)?.0
         } else {
             input
         };
