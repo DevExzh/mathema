@@ -31,37 +31,7 @@
 //! geometry / Lewis structures. `\pu` is a full port of mhchem's unit
 //! grammar (see the `pu` submodule).
 
-/// Capture a balanced `{ ... }` group at the start of `input` (after optional
-/// leading whitespace).
-///
-/// Returns `(rest_after_close_brace, body_without_braces)` or `None` when the
-/// input does not begin with a brace group. Backslash escapes (`\{`, `\}`) are
-/// honored so escaped braces do not unbalance the scan.
-#[must_use]
-pub fn capture_braced(input: &str) -> Option<(&str, &str)> {
-    let trimmed = input.trim_start();
-    let rest = trimmed.strip_prefix('{')?;
-    let mut depth = 1usize;
-    let mut escaped = false;
-    for (i, &b) in rest.as_bytes().iter().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match b {
-            b'\\' => escaped = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some((&rest[i + 1..], &rest[..i]));
-                }
-            },
-            _ => {},
-        }
-    }
-    None
-}
+pub(crate) use super::capture_braced;
 
 /// Translate a `\ce{...}` body into an equivalent standard-LaTeX math string.
 #[must_use]

@@ -60,7 +60,7 @@ fn math_end<'a>(input: &'a str, close: &str) -> Parsed<'a, (&'a str, &'a str)> {
 pub(super) fn argument(input: &str) -> IResult<&str, &str> {
     let (input, _) = ws(input)?;
     if input.starts_with('{') {
-        crate::latex::mhchem::capture_braced(input)
+        crate::latex::capture_braced(input)
     } else {
         split_token(input).filter(|(_, token)| !token.starts_with(['}', '&', '#', '^', '_']))
     }

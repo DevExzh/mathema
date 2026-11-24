@@ -77,6 +77,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has no rule thickness. `\above 0pt` reads as `\atop`, and the MathML
   reader reads any zero `linethickness` (`0px`, `0em`) as barless, not just
   `0`.
+- `\genfrac` reads a `.` delimiter as the null delimiter, as `\left.` does:
+  `\genfrac.){}{}{a}{b}` is `\left. \frac{a}{b} \right)` and
+  `\genfrac{.}{.}{}{}{a}{b}` is `\frac{a}{b}` (it drew a literal period
+  fence). `\above` with a nonzero thickness (`{a \above 2pt b}`) now warns
+  that the rule is drawn at the default thickness, as `\genfrac` does.
 - The LaTeX writer keeps `\mathop{...}` around an accent: `\mathop{\hat x}`
   (a TeX Op atom) was written as `\hat{x}`, an ordinary atom, so the operator
   class was lost and nested `\mathop`s did not round-trip stably.
@@ -174,6 +179,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The TeX primitives `\overwithdelims`, `\atopwithdelims` and
+  `\abovewithdelims` (supported by MathJax; KaTeX 0.16 rejects them):
+  `{a \overwithdelims() b}`, `{a \atopwithdelims[] b}` and
+  `{a \abovewithdelims\{\} 0pt b}` read as the equivalent `\genfrac`
+  (fences around a fraction with or without its rule; `.` is the null
+  delimiter). They were undefined commands.
 - The LaTeX `\displaylimits` placement modifier.
 - LaTeX macro definitions take effect in source order. Group-local and global
   definitions, `\let`, `\futurelet`, expanded and protected definitions, and

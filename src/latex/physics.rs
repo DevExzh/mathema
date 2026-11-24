@@ -19,7 +19,7 @@
 //! * `\pdv{f}{x}{y}`   → `\frac{\partial^{2}f}{\partial x\partial y}`
 //! * `\fdv{F}{g}`      → `\frac{\delta F}{\delta g}`             (functional)
 
-use super::mhchem::capture_braced;
+use super::capture_braced;
 
 /// Maximum number of consecutive brace groups consumed by a derivative command.
 /// `\pdv` mixed partials want several denominators; `\dv`/`\fdv` cap at two.

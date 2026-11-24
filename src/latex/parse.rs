@@ -1285,7 +1285,7 @@ fn rat_em(em: f64) -> Rational {
 /// If the next non-whitespace char is `{`, consume a brace-balanced group and
 /// return `(rest_after, Some(inner))`; otherwise `(input, None)`.
 fn bussproofs_take_arg(input: &str) -> (&str, Option<&str>) {
-    match super::mhchem::capture_braced(input) {
+    match super::capture_braced(input) {
         Some((rest, inner)) => (rest, Some(inner)),
         None => (input, None),
     }
@@ -1453,7 +1453,7 @@ fn xy_skip_pair(s: &str, open: char, close: char) -> &str {
 /// token (one command or one character). Returns `(rest_after, content)`.
 fn xy_take_script(input: &str) -> (&str, &str) {
     let t = input.trim_start();
-    if let Some((rest, inner)) = super::mhchem::capture_braced(t) {
+    if let Some((rest, inner)) = super::capture_braced(t) {
         return (rest, inner);
     }
     if let Some(after_bs) = t.strip_prefix('\\') {
@@ -1507,7 +1507,7 @@ impl RowRules {
 /// TeX does: up to the matching `}`, so a nested group stays inside the
 /// argument instead of ending it early and unbalancing the input.
 fn braced_text(input: &str) -> IResult<&str, &str> {
-    match super::mhchem::capture_braced(input) {
+    match super::capture_braced(input) {
         Some((rest, body)) => Ok((rest, body)),
         None => Err(nom::Err::Error(nom::error::Error::new(
             input,
@@ -1545,7 +1545,7 @@ fn trim_tex_text(text: &str) -> &str {
 /// `\cline{1-5}` (or `\cline{1-99999999999}`) in a two-column table is a full
 /// rule; a range that starts past column 64 is unreadable.
 fn take_cline_range(input: &str) -> (&str, Option<u64>) {
-    let Some((rest, body)) = super::mhchem::capture_braced(input) else {
+    let Some((rest, body)) = super::capture_braced(input) else {
         return (input, None);
     };
     let bound = |text: &str| -> Option<u32> {
@@ -1743,7 +1743,7 @@ fn text_regions(input: &str) -> Vec<(usize, usize)> {
                     }
                 } else if super::text_style(name).is_some() || name == "emph" {
                     let open = after + skip_ws_bytes(&bytes[after..]);
-                    if let Some((rest, _)) = super::mhchem::capture_braced(&input[open..]) {
+                    if let Some((rest, _)) = super::capture_braced(&input[open..]) {
                         let end = bytes.len() - rest.len();
                         regions.push((open, end));
                         i = end;
@@ -2011,10 +2011,14 @@ pub(crate) struct LatexCompactParser {
     /// The literal math codes changed by amsmath inside an operator name.
     in_operator_name: bool,
     /// Set to `true` the first time an infix-fraction marker (`\over`/`\atop`/
-    /// `\choose`/`\brace`/`\brack`/`\above`) is produced. The vast majority of
+    /// `\choose`/`\brace`/`\brack`/`\above`/`\…withdelims`) is produced. The vast majority of
     /// inputs contain none, so `check_infix_fraction` can skip its O(n) scan of
     /// every braced group unless this flag is set.
     infix_marker_seen: bool,
+    /// The rule and delimiters of each `\overwithdelims`/`\atopwithdelims`/
+    /// `\abovewithdelims`, indexed by the number in its
+    /// `__infix_delims_N__` marker: `(has_rule, open, close)`.
+    infix_delims: Vec<(bool, StrId, StrId)>,
     /// Set by `parse_element` to the script it parsed when that script had no
     /// base of its own (`^`, `_` or `'` after white space), which TeX attaches to the
     /// preceding atom.
@@ -2076,6 +2080,7 @@ impl LatexCompactParser {
             last_unstarred_operator: None,
             in_operator_name: false,
             infix_marker_seen: false,
+            infix_delims: Vec::new(),
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
             in_left_right: false,
@@ -2153,7 +2158,7 @@ impl LatexCompactParser {
     }
 
     /// Check whether a parsed node list contains an infix fraction marker
-    /// (`\over`, `\atop`, `\choose`, `\brace`, `\brack`). If found, split
+    /// (`\over`, `\atop`, `\choose`, `\brace`, `\brack`, `\…withdelims`). If found, split
     /// into numerator/denominator and produce the appropriate node.
     fn check_infix_fraction(&mut self, ids: &[NodeId]) -> Option<NodeId> {
         // Fast path: if no infix-fraction marker was ever produced during this
@@ -2164,27 +2169,39 @@ impl LatexCompactParser {
         if !self.infix_marker_seen {
             return None;
         }
-        // Scan for the first infix marker
-        let mut marker_pos = None;
-        let mut marker_kind = "";
+        // Scan for the first infix marker: its rule and delimiters.
+        let mut marker = None;
         for (i, &id) in ids.iter().enumerate() {
             if let CompactNode::Identifier(sid) = *self.arena.node(id) {
                 let s = self.arena.str_val(sid);
                 if s.starts_with("__infix_") && s.ends_with("__") {
-                    marker_kind = match s {
-                        "__infix_over__" => "over",
-                        "__infix_atop__" => "atop",
-                        "__infix_choose__" => "choose",
-                        "__infix_brace__" => "brace",
-                        "__infix_brack__" => "brack",
-                        _ => continue,
+                    let (has_rule, open, close) = match s {
+                        "__infix_over__" => (true, "", ""),
+                        "__infix_atop__" => (false, "", ""),
+                        "__infix_choose__" => (false, "(", ")"),
+                        "__infix_brace__" => (false, "{", "}"),
+                        "__infix_brack__" => (false, "[", "]"),
+                        _ => {
+                            let Some(&delims) = s
+                                .strip_prefix("__infix_delims_")
+                                .and_then(|n| n.strip_suffix("__"))
+                                .and_then(|n| n.parse::<usize>().ok())
+                                .and_then(|n| self.infix_delims.get(n))
+                            else {
+                                continue;
+                            };
+                            marker = Some((i, delims));
+                            break;
+                        },
                     };
-                    marker_pos = Some(i);
+                    let open = self.arena.push_str(open);
+                    let close = self.arena.push_str(close);
+                    marker = Some((i, (has_rule, open, close)));
                     break;
                 }
             }
         }
-        let pos = marker_pos?;
+        let (pos, (has_rule, open, close)) = marker?;
 
         let num_ids: SmallVec<[NodeId; 8]> = ids[..pos].to_vec().into();
         let den_ids: SmallVec<[NodeId; 8]> = ids[pos + 1..].to_vec().into();
@@ -2198,73 +2215,27 @@ impl LatexCompactParser {
         let num_id = self.flatten_single(&num_ids);
         let den_id = self.flatten_single(&den_ids);
 
-        match marker_kind {
-            "over" => {
-                // \over → normal fraction with bar
-                Some(self.arena.push_node(CompactNode::Fraction {
-                    kind: FractionKind::Normal,
-                    num: num_id,
-                    den: den_id,
-                }))
-            },
-            "atop" => {
-                // \atop → fraction with no bar
-                Some(self.arena.push_node(CompactNode::Fraction {
-                    kind: FractionKind::NoBar,
-                    num: num_id,
-                    den: den_id,
-                }))
-            },
-            "choose" => {
-                // \choose → binom (no bar, parenthesized)
-                let frac_id = self.arena.push_node(CompactNode::Fraction {
-                    kind: FractionKind::NoBar,
-                    num: num_id,
-                    den: den_id,
-                });
-                let open = self.arena.push_str("(");
-                let close = self.arena.push_str(")");
-                let content = self.arena.push_children_deferred(&[frac_id]);
-                Some(self.arena.push_node(CompactNode::Fenced {
-                    open,
-                    close,
-                    content,
-                }))
-            },
-            "brace" => {
-                // \brace → curly braces
-                let frac_id = self.arena.push_node(CompactNode::Fraction {
-                    kind: FractionKind::NoBar,
-                    num: num_id,
-                    den: den_id,
-                });
-                let open = self.arena.push_str("{");
-                let close = self.arena.push_str("}");
-                let content = self.arena.push_children_deferred(&[frac_id]);
-                Some(self.arena.push_node(CompactNode::Fenced {
-                    open,
-                    close,
-                    content,
-                }))
-            },
-            "brack" => {
-                // \brack → square brackets
-                let frac_id = self.arena.push_node(CompactNode::Fraction {
-                    kind: FractionKind::NoBar,
-                    num: num_id,
-                    den: den_id,
-                });
-                let open = self.arena.push_str("[");
-                let close = self.arena.push_str("]");
-                let content = self.arena.push_children_deferred(&[frac_id]);
-                Some(self.arena.push_node(CompactNode::Fenced {
-                    open,
-                    close,
-                    content,
-                }))
-            },
-            _ => None,
+        // The same nodes as the equivalent `\genfrac`: `\choose` is
+        // `\genfrac(){0pt}{}`, `\overwithdelims()` is `\genfrac(){}{}`.
+        let kind = if has_rule {
+            FractionKind::Normal
+        } else {
+            FractionKind::NoBar
+        };
+        let frac_id = self.arena.push_node(CompactNode::Fraction {
+            kind,
+            num: num_id,
+            den: den_id,
+        });
+        if self.arena.str_val(open).is_empty() && self.arena.str_val(close).is_empty() {
+            return Some(frac_id);
         }
+        let content = self.arena.push_children_deferred(&[frac_id]);
+        Some(self.arena.push_node(CompactNode::Fenced {
+            open,
+            close,
+            content,
+        }))
     }
 
     /// A font declaration can produce multiple styled spans separated by an
@@ -4364,7 +4335,7 @@ impl LatexCompactParser {
             // `\empheqset{...}` — global empheq option setup; accepted/ignored.
             "empheqset" => {
                 let (input, _) = ws(input)?;
-                let input = match super::mhchem::capture_braced(input) {
+                let input = match super::capture_braced(input) {
                     Some((rest, _)) => rest,
                     None => input,
                 };
@@ -4565,15 +4536,17 @@ impl LatexCompactParser {
                 // \above <dimen> — like \over but with specified bar
                 // thickness. The AST has no thickness: a zero one reads as
                 // \atop, any other as \over.
-                let (input, _) = ws(input)?;
-                let (input, marker) = match dimension::width(input) {
-                    Ok((rest, width)) if width.num == 0 => (rest, "__infix_atop__"),
-                    Ok((rest, _)) => (rest, "__infix_over__"),
-                    Err(_) => (input, "__infix_over__"),
-                };
-                let sid = self.arena.push_str(marker);
+                let (input, has_rule) = self.parse_infix_rule(input, name)?;
+                let sid = self.arena.push_str(if has_rule {
+                    "__infix_over__"
+                } else {
+                    "__infix_atop__"
+                });
                 self.infix_marker_seen = true;
                 Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+            },
+            "overwithdelims" | "atopwithdelims" | "abovewithdelims" => {
+                self.parse_infix_withdelims(input, name)
             },
 
             // --- Table directives (when encountered outside table context) ---
@@ -5357,12 +5330,55 @@ impl LatexCompactParser {
         Ok((input, node))
     }
 
+    /// `\overwithdelims<delim><delim>`, `\atopwithdelims<delim><delim>` and
+    /// `\abovewithdelims<delim><delim><dimen>`: infix `\over`/`\atop`/`\above`
+    /// with fences, read as the equivalent `\genfrac`. A `.` delimiter is
+    /// empty, as with `\left.`.
+    fn parse_infix_withdelims<'a>(
+        &mut self,
+        input: &'a str,
+        name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let (input, _) = ws(input)?;
+        let (input, open) = self.parse_delimiter_into(input)?;
+        let (input, _) = ws(input)?;
+        let (input, close) = self.parse_delimiter_into(input)?;
+        let (input, has_rule) = match name {
+            "overwithdelims" => (input, true),
+            "atopwithdelims" => (input, false),
+            _ => self.parse_infix_rule(input, name)?,
+        };
+        let index = self.infix_delims.len();
+        self.infix_delims.push((has_rule, open, close));
+        let sid = self.arena.push_str(&format!("__infix_delims_{index}__"));
+        self.infix_marker_seen = true;
+        Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+    }
+
+    /// The `<dimen>` of `\above`/`\abovewithdelims`: whether the fraction
+    /// has a rule. As with `\genfrac`, a zero thickness drops the rule and
+    /// any other is drawn at the default thickness, with a warning.
+    fn parse_infix_rule<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, bool> {
+        let (input, _) = ws(input)?;
+        match dimension::width(input) {
+            Ok((rest, width)) if width.num == 0 => Ok((rest, false)),
+            Ok((rest, _)) => {
+                let text = input[..input.len() - rest.len()].trim();
+                self.warn(format!(
+                    "\\{name} rule thickness `{text}` is drawn at the default thickness"
+                ));
+                Ok((rest, true))
+            },
+            Err(_) => Ok((input, true)),
+        }
+    }
+
     /// Read an argument as source text: a brace group's body, or one
     /// character. A control sequence (a register such as `\fboxrule`) is
     /// parsed and discarded, reading as `None`.
     fn parse_raw_argument<'a>(&mut self, input: &'a str) -> IResult<&'a str, Option<&'a str>> {
         let (input, _) = ws(input)?;
-        if let Some((rest, body)) = super::mhchem::capture_braced(input) {
+        if let Some((rest, body)) = super::capture_braced(input) {
             return Ok((rest, Some(body)));
         }
         match input.chars().next() {
@@ -5386,6 +5402,8 @@ impl LatexCompactParser {
             CompactNode::Symbol(_, sid) => match self.arena.str_val(*sid) {
                 "<" => "\u{27E8}".to_string(),
                 ">" => "\u{27E9}".to_string(),
+                // The null delimiter, as with `\left.`.
+                "." => String::new(),
                 s => s.to_string(),
             },
             CompactNode::Row(span) if span.is_empty() => String::new(),
@@ -5892,7 +5910,7 @@ impl LatexCompactParser {
         ),
     > {
         let (input, _) = ws(input)?;
-        let Some((input, span_count)) = super::mhchem::capture_braced(input) else {
+        let Some((input, span_count)) = super::capture_braced(input) else {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Char,
@@ -5914,7 +5932,7 @@ impl LatexCompactParser {
             },
         };
         let (input, _) = ws(input)?;
-        let Some((input, spec)) = super::mhchem::capture_braced(input) else {
+        let Some((input, spec)) = super::capture_braced(input) else {
             return Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Char,
@@ -5975,7 +5993,7 @@ impl LatexCompactParser {
         let starred = input.starts_with('*');
         let (input, _) = ws(input.strip_prefix('*').unwrap_or(input))?;
         let (input, raw) = if input.starts_with('{') {
-            super::mhchem::capture_braced(input)
+            super::capture_braced(input)
         } else {
             super::split_token(input).filter(|(_, token)| !matches!(*token, "}" | "_" | "^"))
         }
@@ -6107,7 +6125,7 @@ impl LatexCompactParser {
     fn parse_kern<'a>(&mut self, input: &'a str, name: &str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
         let group = if input.starts_with('{') {
-            Some(super::mhchem::capture_braced(input).ok_or_else(|| {
+            Some(super::capture_braced(input).ok_or_else(|| {
                 nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Char))
             })?)
         } else {
@@ -6804,7 +6822,7 @@ impl LatexCompactParser {
             (None, after)
         };
         let after = after.trim_start();
-        let (_, spec) = super::mhchem::capture_braced(after)?;
+        let (_, spec) = super::capture_braced(after)?;
         Some(self.resolve_box_color(model, spec))
     }
 
@@ -6918,7 +6936,7 @@ impl LatexCompactParser {
         let mut rest = input.trim_start();
         // Command name: `{\name}` or `\name`.
         let name = if rest.starts_with('{') {
-            match super::mhchem::capture_braced(rest) {
+            match super::capture_braced(rest) {
                 Some((r, inner)) => {
                     rest = r;
                     inner.trim().trim_start_matches('\\').to_string()
@@ -6951,10 +6969,10 @@ impl LatexCompactParser {
             }
         }
         // `{open}{close}` delimiter groups.
-        let Some((rest, open)) = super::mhchem::capture_braced(rest) else {
+        let Some((rest, open)) = super::capture_braced(rest) else {
             return Ok((rest, empty(self)));
         };
-        let Some((rest, close)) = super::mhchem::capture_braced(rest) else {
+        let Some((rest, close)) = super::capture_braced(rest) else {
             return Ok((rest, empty(self)));
         };
         self.paired_delims
@@ -8120,7 +8138,7 @@ impl LatexCompactParser {
     /// grid. Inline options (e.g. `@C=1pc`) before the body are skipped.
     fn parse_xymatrix_cmd<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let start = input.find('{').unwrap_or(input.len());
-        let Some((rest, body)) = super::mhchem::capture_braced(&input[start..]) else {
+        let Some((rest, body)) = super::capture_braced(&input[start..]) else {
             return Ok((
                 input,
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
@@ -8156,7 +8174,7 @@ impl LatexCompactParser {
         let node = if let Some(pos) = body.find("\\xymatrix") {
             let after = &body[pos + "\\xymatrix".len()..];
             let start = after.find('{').unwrap_or(after.len());
-            match super::mhchem::capture_braced(&after[start..]) {
+            match super::capture_braced(&after[start..]) {
                 Some((_, inner)) => match self.build_xymatrix(inner) {
                     Ok(node) => node,
                     Err(error) => {

@@ -58,7 +58,7 @@
 //! exponents, per-mode reciprocals, unit `\tothe`/`\raisetothe`, complex
 //! list/range phrasing, and tabular `S`-columns are out of scope.
 
-use super::mhchem::capture_braced;
+use super::capture_braced;
 
 /// Translate a siunitx command (already matched by `name`, with `input`
 /// positioned right after the command name) into standard LaTeX.
