@@ -447,31 +447,43 @@ pub(super) fn layout_subsup_from_box_heap(
     }
 }
 
-/// The box of the nucleus a leading script belongs to: `base` without its
-/// trailing scripts, whose box is the first child of the scripted one. TeX
-/// sets `{}_a t_b` as two scripts, each placed by the nucleus alone.
+/// The box of the nucleus a leading script belongs to: `base` without the
+/// trailing scripts beside it, whose box is the first child of the scripted
+/// one. TeX sets `{}_a t_b` as two scripts, each placed by its own nucleus
+/// alone. That holds for both shifts: where the trailing scripts of `t_b^c`
+/// push each other apart, the leading one keeps its place, as in TeX, and is
+/// not level with them.
 fn nucleus_box<'a>(base: &MathNode, base_box: &'a LayoutBox, ctx: &LayoutCtx) -> &'a LayoutBox {
     let (mut node, mut current) = (base, base_box);
-    while let MathNode::Subscript { base: inner, .. }
-    | MathNode::Superscript { base: inner, .. }
-    | MathNode::SubSup { base: inner, .. } = node
-    {
+    loop {
         // Limits and brace labels are stacked, not scripts beside the base.
-        if wants_limits_above_below(inner, ctx.branch_style())
-            || matches!(
-                **inner,
-                MathNode::Overscript { .. } | MathNode::Underscript { .. }
-            )
-        {
-            break;
+        let inner = match node {
+            MathNode::Subscript { base, .. }
+                if !matches!(&**base, MathNode::Underscript { under, .. }
+                    if node_is_underbrace(under)) =>
+            {
+                base
+            },
+            MathNode::Superscript { base, .. }
+                if !matches!(&**base, MathNode::Overscript { over, .. }
+                    if node_is_overbrace(over)) =>
+            {
+                base
+            },
+            MathNode::SubSup { base, .. } => base,
+            _ => return current,
+        };
+        if wants_limits_above_below(inner, ctx.branch_style()) {
+            return current;
         }
         let BoxKind::HBox { children } = &current.kind else {
-            break;
+            return current;
         };
-        let Some(first) = children.first() else { break };
+        let Some(first) = children.first() else {
+            return current;
+        };
         (node, current) = (inner, &first.layout);
     }
-    current
 }
 
 /// Compact-AST version of `nucleus_box`.
@@ -483,27 +495,34 @@ fn nucleus_box_arena(
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
     let (mut node, mut current) = (base, base_id);
-    while let CompactNode::Subscript { base: inner, .. }
-    | CompactNode::Superscript { base: inner, .. }
-    | CompactNode::SubSup { base: inner, .. } = *ast.node(node)
-    {
-        if wants_limits_above_below_c(ast, inner, ctx.branch_style())
-            || matches!(
-                *ast.node(inner),
-                CompactNode::Overscript { .. } | CompactNode::Underscript { .. }
-            )
-        {
-            break;
+    loop {
+        let inner = match *ast.node(node) {
+            CompactNode::Subscript { base, .. }
+                if !matches!(*ast.node(base), CompactNode::Underscript { under, .. }
+                    if node_is_underbrace_c(ast, under)) =>
+            {
+                base
+            },
+            CompactNode::Superscript { base, .. }
+                if !matches!(*ast.node(base), CompactNode::Overscript { over, .. }
+                    if node_is_overbrace_c(ast, over)) =>
+            {
+                base
+            },
+            CompactNode::SubSup { base, .. } => base,
+            _ => return current,
+        };
+        if wants_limits_above_below_c(ast, inner, ctx.branch_style()) {
+            return current;
         }
         let ArenaBoxKind::HBox { children } = arena.get(current).kind else {
-            break;
+            return current;
         };
         let Some(first) = arena.children(children).first() else {
-            break;
+            return current;
         };
         (node, current) = (inner, first.id);
     }
-    current
 }
 
 pub(super) fn layout_prescripts(

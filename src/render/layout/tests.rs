@@ -2629,66 +2629,119 @@ fn text_svg_draws_large_big_delimiter_paths_at_their_chosen_size() {
     assert_eq!(path_scale(r"\left( \frac{a}{b} \right)"), 16.0);
 }
 
-/// A leading script is placed by the nucleus, not by its trailing scripts.
+/// A leading script is placed by its nucleus, not by the trailing scripts
+/// beside it, on the heap and the arena path.
 #[test]
 fn leading_scripts_ignore_trailing_ones() {
+    use crate::render::arena::{ArenaBoxKind, LayoutArena, LayoutBoxId};
+    use crate::render::emit::{emit_svg, emit_svg_arena};
+
+    let options = default_options();
     let id = |s: &str| Box::new(MathNode::Identifier(s.into()));
-    let scripted: Vec<MathNode> = vec![
-        MathNode::Identifier("t".into()),
-        MathNode::Subscript {
-            base: id("t"),
-            sub: id("m"),
-        },
-        MathNode::SubSup {
-            base: id("t"),
-            sub: Box::new(MathNode::Fraction {
-                kind: FractionKind::Normal,
-                num: id("a"),
-                den: id("b"),
-            }),
-            sup: id("n"),
-        },
-        MathNode::Subscript {
-            base: Box::new(MathNode::Superscript {
-                base: id("t"),
-                sup: id("n"),
-            }),
-            sub: id("m"),
-        },
-    ];
-    // The leading scripts come first in the box: their offsets.
-    let offsets = |base: &MathNode, sub: bool, sup: bool| -> Vec<f64> {
+    let symbol = |s: &str| Box::new(MathNode::Symbol(SymbolKind::Ordinary, s.into()));
+    // The offsets of the leading scripts, which come first in their box, on
+    // each path; the two paths must also draw the same.
+    let offsets = |base: &MathNode, sub: bool, sup: bool| -> [Vec<f64>; 2] {
+        let count = usize::from(sub) + usize::from(sup);
         let expr = MathExpr::inline(vec![MathNode::PreScripts {
             base: Box::new(base.clone()),
             pre_sub: sub.then(|| id("d")),
             pre_sup: sup.then(|| id("e")),
         }]);
-        let root = layout_expr(&expr, MathStyle::Text, &default_options());
-        fn find(layout: &LayoutBox, count: usize) -> Option<Vec<f64>> {
+        fn on_heap(layout: &LayoutBox, count: usize) -> Option<Vec<f64>> {
             let BoxKind::HBox { children } = &layout.kind else {
                 return None;
             };
             if children.len() == count + 1 {
                 return Some(children[..count].iter().map(|c| c.dy).collect());
             }
-            children.iter().find_map(|c| find(&c.layout, count))
+            children.iter().find_map(|c| on_heap(&c.layout, count))
         }
-        find(&root, usize::from(sub) + usize::from(sup)).unwrap()
+        fn on_arena(arena: &LayoutArena, id: LayoutBoxId, count: usize) -> Option<Vec<f64>> {
+            let ArenaBoxKind::HBox { children } = arena.get(id).kind else {
+                return None;
+            };
+            let children = arena.children(children);
+            if children.len() == count + 1 {
+                return Some(children[..count].iter().map(|c| c.dy).collect());
+            }
+            children.iter().find_map(|c| on_arena(arena, c.id, count))
+        }
+        let heap_root = layout_expr(&expr, MathStyle::Text, &options);
+        let compact = crate::CompactExpr::from_math_expr(&expr).unwrap();
+        let mut arena = LayoutArena::new();
+        let arena_root = LayoutBuilder::new(MathStyle::Text, &options).layout(&mut arena, &compact);
+        assert_eq!(
+            emit_svg(&heap_root, &options),
+            emit_svg_arena(&arena, arena_root, &options),
+            "{base:?}"
+        );
+        [
+            on_heap(&heap_root, count).unwrap(),
+            on_arena(&arena, arena_root, count).unwrap(),
+        ]
     };
-    for (sub, sup) in [(true, false), (false, true), (true, true)] {
-        let plain = offsets(&scripted[0], sub, sup);
-        for base in &scripted[1..] {
-            assert_eq!(offsets(base, sub, sup), plain, "{base:?}");
+    let nuclei = [
+        MathNode::Identifier("t".into()),
+        // Accents and bars: their scripts are beside them.
+        MathNode::Accent {
+            base: id("T"),
+            accent: '\u{302}',
+            position: crate::ast::AccentPosition::Above,
+            wide: false,
+        },
+        MathNode::Overscript {
+            base: id("T"),
+            over: symbol("\u{203E}"),
+            movable_limits: false,
+        },
+        MathNode::Underscript {
+            base: id("T"),
+            under: symbol("\u{203E}"),
+            movable_limits: false,
+        },
+    ];
+    for nucleus in nuclei {
+        let nucleus = Box::new(nucleus);
+        let scripted = [
+            MathNode::Subscript {
+                base: nucleus.clone(),
+                sub: id("m"),
+            },
+            MathNode::SubSup {
+                base: nucleus.clone(),
+                sub: Box::new(MathNode::Fraction {
+                    kind: FractionKind::Normal,
+                    num: id("a"),
+                    den: id("b"),
+                }),
+                sup: id("n"),
+            },
+            MathNode::Subscript {
+                base: Box::new(MathNode::Superscript {
+                    base: nucleus.clone(),
+                    sup: id("n"),
+                }),
+                sub: id("m"),
+            },
+        ];
+        for (sub, sup) in [(true, false), (false, true), (true, true)] {
+            let [heap, arena] = offsets(&nucleus, sub, sup);
+            for base in &scripted {
+                let [on_heap, on_arena] = offsets(base, sub, sup);
+                assert_eq!(on_heap, heap, "heap {base:?}");
+                assert_eq!(on_arena, arena, "arena {base:?}");
+            }
         }
     }
-    for latex in [
-        r"{}_a t_b",
-        r"{}_a^c t_b^d",
-        r"{}^c {t^n}_m",
-        r"{}_a \sum_i^n x",
-        r"{}_a \overbrace{xy}^n",
-    ] {
-        assert_arena_heap_equivalent(latex, MathStyle::Text);
-        assert_arena_heap_equivalent(latex, MathStyle::Display);
-    }
+    // A brace label is stacked: the whole labelled brace is the nucleus.
+    let braced = MathNode::Superscript {
+        base: Box::new(MathNode::Overscript {
+            base: id("x"),
+            over: symbol("\u{23DE}"),
+            movable_limits: false,
+        }),
+        sup: id("n"),
+    };
+    offsets(&braced, false, true);
 }
