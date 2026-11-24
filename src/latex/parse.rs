@@ -1484,20 +1484,26 @@ impl RowRules {
     }
 }
 
-/// Read the `{i-j}` argument of `\cline` into a column mask, consuming a
-/// braced argument even when its range cannot be read.
+/// Read the `{i-j}` argument of `\cline` into a column mask. A balanced
+/// braced argument is consumed even when its range cannot be read; an
+/// unbalanced one is left for the cell parser, as before `\cline` was read.
+/// The range may brace its bounds (`{{1}-2}`), as TeX's delimited arguments
+/// allow. A range past the last column still covers every column, so
+/// `\cline{1-5}` in a two-column table is a full rule.
 fn take_cline_range(input: &str) -> (&str, Option<u64>) {
-    let trimmed = input.trim_start();
-    let Some(body) = trimmed.strip_prefix('{') else {
+    let Some((rest, body)) = super::mhchem::capture_braced(input) else {
         return (input, None);
     };
-    let Some(end) = body.find('}') else {
-        return (input, None);
+    let bound = |text: &str| -> Option<u32> {
+        let text = text.trim();
+        let text = text
+            .strip_prefix('{')
+            .and_then(|inner| inner.strip_suffix('}'))
+            .unwrap_or(text);
+        text.trim().parse().ok()
     };
-    let rest = &body[end + 1..];
-    let range = body[..end].split_once('-').and_then(|(from, to)| {
-        let from: u32 = from.trim().parse().ok()?;
-        let to: u32 = to.trim().parse().ok()?;
+    let range = body.split_once('-').and_then(|(from, to)| {
+        let (from, to) = (bound(from)?, bound(to)?);
         (1 <= from && from <= to && to <= 64)
             .then(|| (u64::MAX >> (64 - (to - from + 1))) << (from - 1))
     });
@@ -8116,6 +8122,7 @@ impl LatexCompactParser {
         // `\cline` rules that together underline every column are one
         // full-width rule. A partial rule has no AST form.
         let mut partial_cline = false;
+        let mut unreadable_cline = false;
         for (boundary, rules) in clines {
             if rules.hline {
                 // An `\hline` at this boundary already covers every column.
@@ -8124,6 +8131,8 @@ impl LatexCompactParser {
                     row_seps |= 1 << boundary;
                     dashed_rows &= !(1 << boundary);
                 }
+            } else if rules.cline_unreadable {
+                unreadable_cline = true;
             } else {
                 partial_cline = true;
             }
@@ -8132,6 +8141,9 @@ impl LatexCompactParser {
             self.warn(
                 "\\cline over only some columns was dropped; only full-width horizontal rules are representable",
             );
+        }
+        if unreadable_cline {
+            self.warn("\\cline without a readable column range was dropped");
         }
         // Drop a trailing rule recorded against a phantom empty row: if the last
         // row is entirely empty it was produced by a trailing `\\`; move its rule

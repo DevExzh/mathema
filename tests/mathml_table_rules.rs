@@ -535,3 +535,45 @@ fn empty_last_row_under_a_rule_is_kept_as_a_row() {
         assert_eq!(mathml.matches("<mtr>").count(), 2, "{mathml}");
     }
 }
+
+#[test]
+fn cline_ranges_are_read_as_balanced_groups() {
+    let lenient = Config::default().with_strictness(mathema::Strictness::Lenient);
+    for config in [Config::default(), lenient] {
+        for (source, expected, warns) in [
+            // Braced bounds, as TeX's delimited arguments allow.
+            (
+                r"\begin{array}{cc}a&b\\\cline{{1}-2}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ \hline c & d \end{array}",
+                false,
+            ),
+            // A range past the last column still covers every column.
+            (
+                r"\begin{array}{cc}a&b\\\cline{1-5}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ \hline c & d \end{array}",
+                false,
+            ),
+            // A balanced but unreadable argument is consumed and reported.
+            (
+                r"\begin{array}{cc}a&b\\\cline{{x}}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ c & d \end{array}",
+                true,
+            ),
+        ] {
+            let parsed = mathema::from_latex_with(source, &config).unwrap();
+            assert_eq!(parsed.to_latex().unwrap(), expected, "{source}");
+            assert_eq!(
+                parsed
+                    .diagnostics()
+                    .iter()
+                    .any(|diag| diag.message.contains(r"\cline")),
+                warns,
+                "{source}: {:?}",
+                parsed.diagnostics()
+            );
+        }
+    }
+    // An unbalanced argument is not scanned into `\end{array}`: Strict mode
+    // rejects the input as before, rather than reading a table.
+    assert!(mathema::from_latex(r"\begin{array}{cc}a&b\\\cline{1-2c&d\end{array}").is_err());
+}
