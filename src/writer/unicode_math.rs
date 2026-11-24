@@ -1,4 +1,6 @@
 use crate::ast::arena::AstArena;
+use smallvec::SmallVec;
+
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId};
 use crate::ast::style::MathStyle;
 use crate::ast::*;
@@ -265,6 +267,19 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::Superscript { base, sup } => {
             write_base(out, base, style);
+            if !has_forced_operator_limits(base, style)
+                && let Some((primes, rest)) = prime_superscript(base, sup)
+            {
+                // UTN #28 section 3.10: `x′`, `x′′`, `x′^c` (LaTeX `x'^c`).
+                for prime in primes {
+                    write_node(out, prime, style.sup());
+                }
+                if let Some(rest) = rest {
+                    out.push('^');
+                    write_script_arg(out, rest, style.sup());
+                }
+                return;
+            }
             out.push(if has_forced_operator_limits(base, style) {
                 '┴'
             } else {
@@ -305,7 +320,24 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                 write_script_arg(out, sup, style.sup());
             }
             out.push(')');
+            // The reader takes one element as the base: group a word or a
+            // row (`(_1)〖xy〗`), and `(_1)` with nothing after it is not a
+            // prescript.
+            let grouped = match &**base {
+                MathNode::Identifier(name) => name.chars().nth(1).is_some(),
+                MathNode::Row(children) => !children.is_empty(),
+                _ => false,
+            };
+            let start = out.len();
+            if grouped {
+                out.push('〖');
+            }
             write_node(out, base, style);
+            if grouped {
+                out.push('〗');
+            } else if out.len() == start {
+                out.push_str("〖〗");
+            }
         },
 
         MathNode::Overscript {
@@ -516,6 +548,21 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             let branch = style.choose(display, text, script, script_script);
             write_node(out, branch, style);
         },
+        // An explicit invisible group reads back as an inner atom; without
+        // its brackets the content would merge into what is around it
+        // (`〖〖〗_1〗y` is not `〖〗_1 y`, a leading script of y).
+        MathNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            content,
+        } => {
+            out.push('〖');
+            if grouped_content_needs_structured(content) {
+                write_structured_content(out, content, style);
+            } else {
+                write_node(out, content, style);
+            }
+            out.push('〗');
+        },
         MathNode::MathAtom { content, .. } => write_node(out, content, style),
         MathNode::AlignedCell { content, .. } | MathNode::SpannedCell { content, .. } => {
             write_node(out, content, style)
@@ -593,6 +640,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
     let mut current_style = style;
     let mut wrote_node = false;
     let mut previous_operator = false;
+    let mut takes_prime = false;
     let mut identifier_run = String::new();
     for node in nodes {
         if let MathNode::StyleSwitch(value) = node {
@@ -601,6 +649,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
                 identifier_run.clear();
                 wrote_node = true;
                 previous_operator = false;
+                takes_prime = true;
             }
             current_style = MathStyle::branch_from_switch(*value);
             continue;
@@ -614,6 +663,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
             identifier_run.clear();
             wrote_node = true;
             previous_operator = false;
+            takes_prime = true;
         }
         if wrote_node
             && !matches!(node, MathNode::Text(_, _))
@@ -623,8 +673,9 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
         }
         let start = out.len();
         write_structured_content(out, node, current_style);
-        separate_following_operand(out, start, previous_operator);
+        separate_following_operand(out, start, previous_operator, takes_prime);
         previous_operator = needs_operator_terminator(node, current_style);
+        takes_prime = !is_prime_symbol(node);
         wrote_node = true;
     }
     if !identifier_run.is_empty() {
@@ -874,31 +925,79 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push('〗');
         },
-        // An empty base is an empty invisible group: `()` would read back as
-        // visible parentheses (`x〖〗_1` is LaTeX `x{}_1`).
-        MathNode::Row(children) if children.is_empty() => out.push_str("〖〗"),
+        // A compound base is an invisible group: `()` would read back as
+        // visible parentheses (`〖a+b〗^2` is LaTeX `{a+b}^2`, `x〖〗_1` is
+        // `x{}_1`), and a word would leave all but its last letter out
+        // (`〖ab〗_1` is `{ab}_1`, `ab_1` is `a b_1`).
         MathNode::Row(_) | MathNode::Fraction { .. } => {
-            out.push('(');
-            write_node(out, node, style);
-            out.push(')');
-        },
-        MathNode::MathAtom {
-            atom_type: MathAtomType::Inner,
-            content,
-        } => {
             out.push('〖');
-            if grouped_content_needs_structured(content) {
-                write_structured_content(out, content, style);
-            } else {
-                write_node(out, content, style);
-            }
+            write_node(out, node, style);
+            out.push('〗');
+        },
+        MathNode::Identifier(name) if name.chars().nth(1).is_some() => {
+            out.push('〖');
+            write_node(out, node, style);
             out.push('〗');
         },
         _ => write_node(out, node, style),
     }
 }
 
+/// Whether `c` is one of the primes UTN #28 superscripts after a base.
+fn is_prime_char(c: char) -> bool {
+    matches!(c, '\u{2032}'..='\u{2034}' | '\u{2057}')
+}
+
+/// A symbol node that starts with a prime, which the reader never gives
+/// the primes after it as a superscript.
+fn is_prime_symbol(node: &MathNode) -> bool {
+    matches!(node, MathNode::Symbol(_, glyph) if glyph.starts_with(is_prime_char))
+}
+
+fn is_prime_symbol_c(arena: &AstArena, id: NodeId) -> bool {
+    matches!(*arena.node(id), CompactNode::Symbol(_, sid)
+        if arena.str_val(sid).starts_with(is_prime_char))
+}
+
+fn is_prime_glyph(glyph: &str) -> bool {
+    let mut chars = glyph.chars();
+    chars.next().is_some_and(is_prime_char) && chars.next().is_none()
+}
+
+/// Heap counterpart of [`prime_superscript_c`].
+fn prime_superscript<'a>(
+    base: &MathNode,
+    sup: &'a MathNode,
+) -> Option<(&'a [MathNode], Option<&'a MathNode>)> {
+    let is_prime = |node: &MathNode| matches!(node, MathNode::Symbol(SymbolKind::Ordinary, glyph) if is_prime_glyph(glyph));
+    // A prime base does not take primes after it (`′′` is two primes).
+    if is_prime_symbol(base) {
+        return None;
+    }
+    if is_prime(sup) {
+        return Some((std::slice::from_ref(sup), None));
+    }
+    let MathNode::Row(children) = sup else {
+        return None;
+    };
+    let primes = children.iter().take_while(|node| is_prime(node)).count();
+    match &children[primes..] {
+        _ if primes == 0 => None,
+        [] => Some((children, None)),
+        [rest] => Some((&children[..primes], Some(rest))),
+        _ => None,
+    }
+}
+
 fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
+    let start = out.len();
+    write_script_arg_inner(out, node, style);
+    if out.len() == start {
+        out.push_str("〖〗");
+    }
+}
+
+fn write_script_arg_inner(out: &mut String, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
@@ -990,6 +1089,7 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
     let mut current_style = style;
     let mut wrote_node = false;
     let mut previous_operator = false;
+    let mut takes_prime = false;
     for node in nodes {
         if let MathNode::StyleSwitch(value) = node {
             current_style = MathStyle::branch_from_switch(*value);
@@ -1000,22 +1100,30 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
         }
         let start = out.len();
         write_node(out, node, current_style);
-        separate_following_operand(out, start, previous_operator);
+        separate_following_operand(out, start, previous_operator, takes_prime);
         previous_operator = needs_operator_terminator(node, current_style);
+        takes_prime = !is_prime_symbol(node);
         wrote_node = true;
     }
 }
 
-/// Insert an ignored source separator only when the next emitted token
-/// would otherwise be consumed as part of a named function.
-fn separate_following_operand(out: &mut String, start: usize, previous_operator: bool) {
-    if previous_operator
-        && !out[..start].ends_with(' ')
-        && out[start..]
-            .chars()
-            .next()
-            .is_some_and(char::is_alphanumeric)
-    {
+/// Insert an ignored source separator where the reader would otherwise
+/// join the node written from `start` on to what precedes it: an operand
+/// after a named function, and a prime after a node that takes it as a
+/// superscript (UTN #28 reads `y′` as `y` primed, so the sibling prime of
+/// LaTeX `y{'}` is written `y ′`; only a prime does not take one).
+fn separate_following_operand(
+    out: &mut String,
+    start: usize,
+    previous_operator: bool,
+    takes_prime: bool,
+) {
+    let Some(first) = out[start..].chars().next() else {
+        return;
+    };
+    let joins =
+        (previous_operator && first.is_alphanumeric()) || (takes_prime && is_prime_char(first));
+    if joins && !out[..start].ends_with(' ') {
         out.insert(start, ' ');
     }
 }
@@ -1034,11 +1142,18 @@ fn needs_operator_terminator(node: &MathNode, style: MathStyle) -> bool {
         | MathNode::Underscript { .. }
         | MathNode::Overscript { .. }
         | MathNode::UnderOver { .. } => true,
+        // An inner atom is bracketed: nothing joins it.
+        MathNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            ..
+        } => false,
         MathNode::Color { content, .. }
         | MathNode::MathAtom { content, .. }
         | MathNode::StructuredOperator { content, .. }
         | MathNode::AlignedCell { content, .. }
         | MathNode::SpannedCell { content, .. } => needs_operator_terminator(content, style),
+        // `(_1)lim b`: the prescripted base ends the written node.
+        MathNode::PreScripts { base, .. } => needs_operator_terminator(base, style),
         _ => false,
     }
 }
@@ -1068,6 +1183,10 @@ fn needs_space_before_with_style(node: &MathNode, style: MathStyle) -> bool {
             }
             false
         },
+        MathNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            ..
+        } => false,
         MathNode::MathAtom { content, .. } => needs_space_before_with_style(content, style),
         MathNode::StructuredOperator { .. } => true,
         _ => false,
@@ -1211,6 +1330,19 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::Superscript { base, sup } => {
             write_base_c(out, arena, base, style);
+            if !has_forced_operator_limits_c(arena, base, style)
+                && let Some((primes, rest)) = prime_superscript_c(arena, base, sup)
+            {
+                // UTN #28 section 3.10: `x′`, `x′′`, `x′^c` (LaTeX `x'^c`).
+                for &prime in &primes {
+                    write_node_c(out, arena, prime, style.sup());
+                }
+                if let Some(rest) = rest {
+                    out.push('^');
+                    write_script_arg_c(out, arena, rest, style.sup());
+                }
+                return;
+            }
             out.push(if has_forced_operator_limits_c(arena, base, style) {
                 '┴'
             } else {
@@ -1251,7 +1383,24 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
                 write_script_arg_c(out, arena, pre_sup, style.sup());
             }
             out.push(')');
+            // The reader takes one element as the base: group a word or a
+            // row (`(_1)〖xy〗`), and `(_1)` with nothing after it is not a
+            // prescript.
+            let grouped = match *arena.node(base) {
+                CompactNode::Identifier(sid) => arena.str_val(sid).chars().nth(1).is_some(),
+                CompactNode::Row(span) => !arena.children(span).is_empty(),
+                _ => false,
+            };
+            let start = out.len();
+            if grouped {
+                out.push('〖');
+            }
             write_node_c(out, arena, base, style);
+            if grouped {
+                out.push('〗');
+            } else if out.len() == start {
+                out.push_str("〖〗");
+            }
         },
 
         CompactNode::Overscript {
@@ -1448,6 +1597,21 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             write_node_c(out, arena, select_mathchoice_c(arena, id, style), style);
         },
 
+        // An explicit invisible group reads back as an inner atom; without
+        // its brackets the content would merge into what is around it
+        // (`〖〖〗_1〗y` is not `〖〗_1 y`, a leading script of y).
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            content,
+        } => {
+            out.push('〖');
+            if grouped_content_needs_structured_c(arena, content) {
+                write_structured_content_c(out, arena, content, style);
+            } else {
+                write_node_c(out, arena, content, style);
+            }
+            out.push('〗');
+        },
         CompactNode::MathAtom { content, .. } => {
             write_node_c(out, arena, content, style);
         },
@@ -1547,6 +1711,7 @@ fn write_structured_nodes_c_with_style(
     let mut current_style = style;
     let mut wrote_node = false;
     let mut previous_operator = false;
+    let mut takes_prime = false;
     let mut identifier_run = String::new();
     for &id in arena.children(span) {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
@@ -1555,6 +1720,7 @@ fn write_structured_nodes_c_with_style(
                 identifier_run.clear();
                 wrote_node = true;
                 previous_operator = false;
+                takes_prime = true;
             }
             current_style = MathStyle::branch_from_switch(value);
             continue;
@@ -1568,6 +1734,7 @@ fn write_structured_nodes_c_with_style(
             identifier_run.clear();
             wrote_node = true;
             previous_operator = false;
+            takes_prime = true;
         }
         if wrote_node
             && !matches!(*arena.node(id), CompactNode::Text(_, _))
@@ -1577,8 +1744,9 @@ fn write_structured_nodes_c_with_style(
         }
         let start = out.len();
         write_structured_content_c(out, arena, id, current_style);
-        separate_following_operand(out, start, previous_operator);
+        separate_following_operand(out, start, previous_operator, takes_prime);
         previous_operator = needs_operator_terminator_c(arena, id, current_style);
+        takes_prime = !is_prime_symbol_c(arena, id);
         wrote_node = true;
     }
     if !identifier_run.is_empty() {
@@ -1790,31 +1958,65 @@ fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             write_node_c(out, arena, id, style);
             out.push('〗');
         },
-        // An empty base is an empty invisible group: `()` would read back as
-        // visible parentheses (`x〖〗_1` is LaTeX `x{}_1`).
-        CompactNode::Row(span) if arena.children(span).is_empty() => out.push_str("〖〗"),
+        // A compound base is an invisible group: `()` would read back as
+        // visible parentheses (`〖a+b〗^2` is LaTeX `{a+b}^2`, `x〖〗_1` is
+        // `x{}_1`), and a word would leave all but its last letter out
+        // (`〖ab〗_1` is `{ab}_1`, `ab_1` is `a b_1`).
         CompactNode::Row(_) | CompactNode::Fraction { .. } => {
-            out.push('(');
-            write_node_c(out, arena, id, style);
-            out.push(')');
-        },
-        CompactNode::MathAtom {
-            atom_type: MathAtomType::Inner,
-            content,
-        } => {
             out.push('〖');
-            if grouped_content_needs_structured_c(arena, content) {
-                write_structured_content_c(out, arena, content, style);
-            } else {
-                write_node_c(out, arena, content, style);
-            }
+            write_node_c(out, arena, id, style);
+            out.push('〗');
+        },
+        CompactNode::Identifier(sid) if arena.str_val(sid).chars().nth(1).is_some() => {
+            out.push('〖');
+            write_node_c(out, arena, id, style);
             out.push('〗');
         },
         _ => write_node_c(out, arena, id, style),
     }
 }
 
+/// A superscript UTN #28 writes as primes after its base: a run of primes
+/// (LaTeX `x''`), optionally followed by one more superscript atom (LaTeX
+/// `x'^2`, which the reader merges back into the same superscript).
+fn prime_superscript_c(
+    arena: &AstArena,
+    base: NodeId,
+    sup: NodeId,
+) -> Option<(SmallVec<[NodeId; 4]>, Option<NodeId>)> {
+    let is_prime = |id: NodeId| {
+        matches!(*arena.node(id), CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            if is_prime_glyph(arena.str_val(sid)))
+    };
+    // A prime base does not take primes after it (`′′` is two primes).
+    if is_prime_symbol_c(arena, base) {
+        return None;
+    }
+    if is_prime(sup) {
+        return Some((SmallVec::from_slice(&[sup]), None));
+    }
+    let CompactNode::Row(span) = *arena.node(sup) else {
+        return None;
+    };
+    let children = arena.children(span);
+    let primes = children.iter().take_while(|&&id| is_prime(id)).count();
+    match &children[primes..] {
+        _ if primes == 0 => None,
+        [] => Some((SmallVec::from_slice(children), None)),
+        [rest] => Some((SmallVec::from_slice(&children[..primes]), Some(*rest))),
+        _ => None,
+    }
+}
+
 fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    let start = out.len();
+    write_script_arg_inner_c(out, arena, id, style);
+    if out.len() == start {
+        out.push_str("〖〗");
+    }
+}
+
+fn write_script_arg_inner_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
@@ -1901,6 +2103,7 @@ fn write_nodes_c_with_style(
     let mut current_style = style;
     let mut wrote_node = false;
     let mut previous_operator = false;
+    let mut takes_prime = false;
     let children = arena.children(span);
     for &id in children {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
@@ -1913,8 +2116,9 @@ fn write_nodes_c_with_style(
         }
         let start = out.len();
         write_node_c(out, arena, id, current_style);
-        separate_following_operand(out, start, previous_operator);
+        separate_following_operand(out, start, previous_operator, takes_prime);
         previous_operator = terminates_operator;
+        takes_prime = !is_prime_symbol_c(arena, id);
         wrote_node = true;
     }
 }
@@ -1934,8 +2138,17 @@ fn compact_spacing_flags(arena: &AstArena, id: NodeId, style: MathStyle) -> (boo
         | CompactNode::Color { content, .. } => {
             (false, compact_spacing_flags(arena, content, style).1)
         },
+        // An inner atom is bracketed: nothing joins it.
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            ..
+        } => (false, false),
         CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
             compact_spacing_flags(arena, content, style)
+        },
+        // `(_1)lim b`: the prescripted base ends the written node.
+        CompactNode::PreScripts { base, .. } => {
+            (false, compact_spacing_flags(arena, base, style).1)
         },
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
             let mut current_style = style;

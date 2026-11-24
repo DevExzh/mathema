@@ -413,6 +413,17 @@ impl CompactParser {
             {
                 return Ok(found);
             }
+            // UTN #28 section 3.3: a script with no base before it (`_1 F`,
+            // TeX's `{}_1 F`) is a script on an empty base; normalization
+            // makes it a leading script of what follows.
+            if input.starts_with(['_', '^']) {
+                let empty = self.push_node(CompactNode::Row(NodeSpan::EMPTY));
+                let (rest, id) = self.parse_scripts(input, empty)?;
+                if rest.len() == input.len() {
+                    return Err(parse_error(input, nom::error::ErrorKind::Char));
+                }
+                return Ok((rest, id));
+            }
             let (input, base) = self.parse_atom(input)?;
             self.parse_scripts(input, base)
         })();
@@ -456,7 +467,17 @@ impl CompactParser {
         if pre_sub.is_none() && pre_sup.is_none() {
             return Err(fail(input));
         }
-        let (rest, base) = self.parse_element(rest)?;
+        let (rest, mut base) = self.parse_element(rest)?;
+        // A plain group is the base itself (`(_1)〖a+b〗`), as before a
+        // script.
+        if let CompactNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            content,
+        } = *self.arena.node(base)
+            && self.is_plain_compound(content)
+        {
+            base = content;
+        }
         let id = self.arena.push_node(CompactNode::PreScripts {
             base,
             pre_sub,
@@ -465,7 +486,69 @@ impl CompactParser {
         Ok((rest, id))
     }
 
+    /// The atom `base` with the scripts that follow it, as the numerator of
+    /// a fraction that follows them: scripts bind tighter than `/` and `¦`
+    /// (UTN #28 section 2), so `x^2/y` is `\frac{x^2}{y}`.
     fn parse_scripts<'a>(&mut self, input: &'a str, base: NodeId) -> IResult<&'a str, NodeId> {
+        let (input, num) = self.parse_attached_scripts(input, base)?;
+        // A fraction: numerator / denominator, or the barless stack
+        // numerator ¦ denominator.
+        let fraction = if let Some(rest) = input.strip_prefix('/') {
+            Some((rest, FractionKind::Normal))
+        } else {
+            input
+                .strip_prefix('\u{A6}')
+                .map(|rest| (rest, FractionKind::NoBar))
+        };
+        let Some((rest, kind)) = fraction else {
+            return Ok((input, num));
+        };
+        match self.parse_denominator(rest) {
+            Ok((rest, den)) => {
+                let id = self.push_node(CompactNode::Fraction { kind, num, den });
+                Ok((rest, id))
+            },
+            Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
+            Err(_) => Ok((input, num)),
+        }
+    }
+
+    /// A fraction's denominator: an operand with its scripts (`a/b^2` is
+    /// `\frac{a}{b^2}`). Parentheses around the whole denominator group it
+    /// (`a/(b+c)`); before a script they are the script's visible base, as
+    /// they are anywhere else (`a/(b+c)^2`), and so is an invisible group
+    /// (`a/〖〗_1`).
+    fn parse_denominator<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, den) = if input.starts_with('〖')
+            || input.starts_with('(')
+                && matching_paren_end(input).is_some_and(|end| starts_script(&input[end..]))
+        {
+            self.parse_atom(input)?
+        } else {
+            self.parse_script_arg(input)?
+        };
+        if starts_script(rest) {
+            self.enter(rest)?;
+            let result = self.parse_attached_scripts(rest, den);
+            self.depth -= 1;
+            result
+        } else {
+            Ok((rest, den))
+        }
+    }
+
+    /// Whether `id` is a prime symbol, which does not take the primes after
+    /// it as its superscript (`′′` is two primes).
+    fn is_prime_symbol(&self, id: NodeId) -> bool {
+        matches!(*self.arena.node(id), CompactNode::Symbol(_, sid)
+            if self.arena.str_val(sid).chars().next().is_some_and(is_prime))
+    }
+
+    fn parse_attached_scripts<'a>(
+        &mut self,
+        input: &'a str,
+        base: NodeId,
+    ) -> IResult<&'a str, NodeId> {
         if input.as_bytes().first().is_some_and(|byte| *byte >= 0x80)
             && let Some((rest, accent, position, wide)) = unicode_accent_suffix(input)
         {
@@ -475,7 +558,7 @@ impl CompactParser {
                 position,
                 wide,
             });
-            return self.parse_scripts(rest, id);
+            return self.parse_attached_scripts(rest, id);
         }
 
         // UTN #28 uses ┬ (U+252C) and ┴ (U+2534) for explicitly forced
@@ -495,7 +578,40 @@ impl CompactParser {
                 rest = tail;
             }
             let id = self.apply_forced_bounds(base, &forced);
-            return self.parse_scripts(rest, id);
+            return self.parse_attached_scripts(rest, id);
+        }
+
+        // UTN #28 section 3.10: primes after a base are its superscript
+        // (`x′`, LaTeX `x'`), merged with a superscript that follows
+        // (`x′^c` is `x^{′c}`, LaTeX `x'^c`). A subscript may follow the
+        // primes (`x′_1`, LaTeX `x'_1`).
+        if input.starts_with(is_prime) && !self.is_prime_symbol(base) {
+            let (rest, mut primes) = self.parse_primes(input);
+            let (rest, sub) = match rest.strip_prefix('_') {
+                Some(after) => match self.parse_script_arg(after) {
+                    Ok((after, id)) => (after, Some(id)),
+                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                    Err(_) => (rest, None),
+                },
+                None => (rest, None),
+            };
+            let rest = match rest.strip_prefix('^') {
+                Some(after) => match self.parse_script_arg(after) {
+                    Ok((after, id)) => {
+                        primes.push(id);
+                        after
+                    },
+                    Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                    Err(_) => rest,
+                },
+                None => rest,
+            };
+            let sup = self.flatten_single(&primes);
+            let id = self.push_node(match sub {
+                Some(sub) => CompactNode::SubSup { base, sub, sup },
+                None => CompactNode::Superscript { base, sup },
+            });
+            return Ok((rest, id));
         }
 
         // Try subscript
@@ -521,33 +637,7 @@ impl CompactParser {
         };
 
         match (sub, sup) {
-            (None, None) => {
-                // Check for fraction: base / denominator, or the barless
-                // stack base ¦ denominator.
-                let fraction = if let Some(rest) = input.strip_prefix('/') {
-                    Some((rest, FractionKind::Normal))
-                } else {
-                    input
-                        .strip_prefix('\u{A6}')
-                        .map(|rest| (rest, FractionKind::NoBar))
-                };
-                if let Some((rest, kind)) = fraction {
-                    match self.parse_script_arg(rest) {
-                        Ok((rest, den)) => {
-                            let id = self.push_node(CompactNode::Fraction {
-                                kind,
-                                num: base,
-                                den,
-                            });
-                            Ok((rest, id))
-                        },
-                        Err(nom::Err::Failure(e)) => Err(nom::Err::Failure(e)),
-                        Err(_) => Ok((input, base)),
-                    }
-                } else {
-                    Ok((input, base))
-                }
-            },
+            (None, None) => Ok((input, base)),
             (Some(sub), None) => {
                 let id = self.push_node(CompactNode::Subscript { base, sub });
                 Ok((input, id))
@@ -656,7 +746,12 @@ impl CompactParser {
         if input.starts_with(['▭', '⟡']) {
             return self.parse_box_phantom(input);
         }
-        match self.parse_group(input) {
+        // A run of primes is one argument (`x^′′`), as after a base.
+        if input.starts_with(is_prime) {
+            let (rest, primes) = self.parse_primes(input);
+            return Ok((rest, self.flatten_single(&primes)));
+        }
+        match self.parse_group_as(input, false) {
             Ok(result) => return Ok(result),
             Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
             Err(_) => {},
@@ -797,6 +892,8 @@ impl CompactParser {
             parse_operator_word,
             parse_symbol,
             parse_identifier,
+            parse_prime,
+            parse_zero_width_space,
         );
         Err(nom::Err::Error(nom::error::Error::new(
             input,
@@ -868,13 +965,21 @@ impl CompactParser {
         Ok((rest, self.push_node(node)))
     }
 
+    /// A bracket group as an atom, which may be the base of a script.
     fn parse_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        self.parse_group_as(input, true)
+    }
+
+    /// A bracket group as an operand (`is_base` false: a script argument,
+    /// which never takes the script after it).
+    fn parse_group_as<'a>(&mut self, input: &'a str, is_base: bool) -> IResult<&'a str, NodeId> {
         if input.starts_with('〖') {
             let (rest, children) = self.parse_delimited(input, '〖', '〗')?;
+            let is_base = is_base && starts_script(rest);
             // An empty invisible group before a script is the script's empty
             // base (`x〖〗_1`, LaTeX `x{}_1`): x and an empty atom carrying
             // the subscript, not a subscript on x.
-            if children.is_empty() && rest.starts_with(['_', '^']) {
+            if children.is_empty() && is_base {
                 return Ok((rest, self.push_node(CompactNode::Row(NodeSpan::EMPTY))));
             }
             let base = self.flatten_single(&children);
@@ -882,9 +987,7 @@ impl CompactParser {
             // the side, even when its ungrouped name would take display
             // limits. Preserve this long-standing ordinary UnicodeMath rule;
             // decorated structured bodies are retained below as Inner atoms.
-            if rest.starts_with(['_', '^'])
-                && let CompactNode::Operator { name, .. } = *self.arena.node(base)
-            {
+            if is_base && let CompactNode::Operator { name, .. } = *self.arena.node(base) {
                 return Ok((
                     rest,
                     self.push_node(CompactNode::Operator {
@@ -892,6 +995,12 @@ impl CompactParser {
                         limits: LimitStyle::SubSup,
                     }),
                 ));
+            }
+            // A fraction or a plain row is the base of the script itself
+            // (`〖a+b〗^2` is LaTeX `{a+b}^2`): the writer groups such a base
+            // because it has no other spelling.
+            if is_base && self.is_plain_compound(base) {
+                return Ok((rest, base));
             }
             // Retain explicit UnicodeMath invisible grouping as an inner
             // atom. This gives a later script a stable base without adding a
@@ -913,6 +1022,27 @@ impl CompactParser {
             input,
             nom::error::ErrorKind::Alt,
         )))
+    }
+
+    /// A fraction, or a row of atoms none of which is decorated (a
+    /// decorated structured body keeps its group as an inner atom, and so
+    /// does an empty group).
+    fn is_plain_compound(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Fraction { .. } => true,
+            CompactNode::Row(span) if span.is_empty() => false,
+            CompactNode::Row(span) => !self.arena.children(span).iter().any(|&child| {
+                matches!(
+                    *self.arena.node(child),
+                    CompactNode::Accent { .. }
+                        | CompactNode::Overscript { .. }
+                        | CompactNode::Underscript { .. }
+                        | CompactNode::UnderOver { .. }
+                        | CompactNode::StructuredOperator { .. }
+                )
+            }),
+            _ => false,
+        }
     }
 
     /// Flatten a single-element slice into its element, or wrap in Row.
@@ -1373,8 +1503,50 @@ impl CompactParser {
         Ok((rest, id))
     }
 
+    /// A prime with no base before it: an ordinary symbol, as LaTeX `'`
+    /// reads.
+    fn parse_prime<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, ch) = satisfy(is_prime)(input)?;
+        let mut buf = [0_u8; 4];
+        let sid = self.arena.push_str(ch.encode_utf8(&mut buf));
+        Ok((
+            rest,
+            self.push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
+        ))
+    }
+
+    /// The run of primes at the start of `input` (which starts with one),
+    /// one ordinary symbol each.
+    fn parse_primes<'a>(&mut self, mut input: &'a str) -> (&'a str, SmallVec<[NodeId; 8]>) {
+        let mut primes = SmallVec::new();
+        while let Ok((rest, id)) = self.parse_prime(input) {
+            self.tick(1);
+            primes.push(id);
+            input = rest;
+        }
+        (input, primes)
+    }
+
+    /// UTN #28 section 3.16: the zero-width space is an operand character
+    /// that fills a null argument (`x​_1` is `x〖〗_1`, LaTeX `x{}_1`): an
+    /// empty atom.
+    fn parse_zero_width_space<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let rest = input
+            .strip_prefix('\u{200B}')
+            .ok_or_else(|| parse_error(input, nom::error::ErrorKind::Char))?;
+        Ok((rest, self.push_node(CompactNode::Row(NodeSpan::EMPTY))))
+    }
+
     fn parse_single_char_node<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        try_alt!(self, input, parse_number, parse_symbol, parse_identifier);
+        try_alt!(
+            self,
+            input,
+            parse_number,
+            parse_symbol,
+            parse_identifier,
+            parse_prime,
+            parse_zero_width_space,
+        );
         Err(nom::Err::Error(nom::error::Error::new(
             input,
             nom::error::ErrorKind::Alt,
@@ -1402,6 +1574,17 @@ fn is_nary_char(c: char) -> bool {
         | '\u{2A01}' // big circled plus
         | '\u{2A02}' // big circled times
     )
+}
+
+/// The primes UTN #28 superscripts automatically after a base (′ ″ ‴ ⁗).
+fn is_prime(c: char) -> bool {
+    matches!(c, '\u{2032}'..='\u{2034}' | '\u{2057}')
+}
+
+/// Whether `rest` continues with a script of the atom before it: a
+/// subscript, a superscript or a prime.
+fn starts_script(rest: &str) -> bool {
+    rest.starts_with(['_', '^']) || rest.starts_with(is_prime)
 }
 
 fn is_integral(c: char) -> bool {
