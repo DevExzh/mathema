@@ -80,6 +80,43 @@ const READS: &[(&str, &str, &str)] = &[
     ("x/y^3 2", "x/y^3 2", r"\frac{x}{y^{3}}2"),
     // `\/` is a literal solidus.
     ("x\\/y", "x\\/y", r"x/ y"),
+    // A numerator or denominator is the whole operand (section 2.1), so a
+    // function or product keeps its parentheses before `/`.
+    ("f(x)/2", "(f(x))/2", r"\frac{f\left( x \right)}{2}"),
+    (
+        "P(A)/P(B)",
+        "(P(A))/(P(B))",
+        r"\frac{P\left( A \right)}{P\left( B \right)}",
+    ),
+    ("n(n+1)/2", "(n(n+1))/2", r"\frac{n\left( n+1 \right)}{2}"),
+    ("sin(x)/x", "(sin(x))/x", r"\frac{\sin \left( x \right)}{x}"),
+    (
+        "Γ(n)/n!",
+        "(Γ(n))/(n!)",
+        r"\frac{\Gamma\left( n \right)}{n!}",
+    ),
+    ("2(a+b)/c", "(2(a+b))/c", r"\frac{2\left( a+b \right)}{c}"),
+    (
+        "f′(x)/2",
+        "(f′(x))/2",
+        r"\frac{f^{\prime}\left( x \right)}{2}",
+    ),
+    ("abc/d", "abc/d", r"\frac{abc}{d}"),
+    ("a+(b)/c", "a+b/c", r"a+ \frac{b}{c}"),
+    ("a+b/c d", "a+b/c d", r"a+ \frac{b}{c}d"),
+    ("a/b/c", "(a/b)/c", r"\frac{\frac{a}{b}}{c}"),
+    ("∑ a/b", "∑ a/b", r"\sum\limits {\frac{a}{b}}"),
+    // A prescript is an operand wherever one is read.
+    (
+        "∫_0^1 (_1)F_1",
+        "∫_0^1 (_1)F_1",
+        r"\int\nolimits_{0}^{1} {{}_{1}F_{1}}",
+    ),
+    ("√(_1)F", "√((_1)F)", r"\sqrt{{{}_{1}F}}"),
+    ("x/(_1)F", "x/(_1)F", r"\frac{x}{{{}_{1}F}}"),
+    ("▭(_1)F", "▭((_1)F)", r"\boxed{{{}_{1}F}}"),
+    // A quote in text is `\"` (section 3.15).
+    ("\"a\\\"b\"", "\"a\\\"b\"", r#"\text{a"b}"#),
     // A word in a decorated group stays unquoted.
     (
         "〖〖ab〗┬n〗^2",
@@ -131,6 +168,9 @@ const LATEX: &[&str] = &[
     "\\frac{\\left(a+b\\right)}{c}",
     "x/{ab}",
     "+'",
+    "\\frac{a}{b}c",
+    "a\\frac{b}{c}",
+    "\\text{a\"b}",
 ];
 
 /// LaTeX whose UnicodeMath spelling writes back the same.
@@ -141,6 +181,10 @@ const LATEX_STABLE: &[&str] = &[
     "x/{ab}",
     "x^{2^3}",
     "a_{b_c}",
+    "\\frac{f(x)}{2}",
+    "\\frac{a}{b}c",
+    "a\\frac{b}{c}",
+    "\\text{a\"b}",
 ];
 
 #[test]

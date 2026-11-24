@@ -196,6 +196,18 @@ fn write_undefined_command_name(out: &mut String, name: &str) {
     out.push('"');
 }
 
+/// Quoted text, with `\"` for a quote in it (UTN #28 section 3.15).
+fn write_quoted_text(out: &mut String, text: &str) {
+    out.push('"');
+    for (index, piece) in text.split('"').enumerate() {
+        if index > 0 {
+            out.push_str("\\\"");
+        }
+        out.push_str(piece);
+    }
+    out.push('"');
+}
+
 fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Number(s) => out.push_str(s),
@@ -205,11 +217,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         // (UTN #28 sections 2.1 and 3.2).
         MathNode::Symbol(_, s) if s == "/" => out.push_str("\\/"),
         MathNode::Symbol(_, s) => out.push_str(s),
-        MathNode::Text(_, s) => {
-            out.push('"');
-            out.push_str(s);
-            out.push('"');
-        },
+        MathNode::Text(_, s) => write_quoted_text(out, s),
         MathNode::StyleSwitch(_) => {},
         MathNode::Space(r) => {
             write_unicode_space(out, r.as_f64());
@@ -650,6 +658,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
     let mut wrote_node = false;
     let mut previous_operator = false;
     let mut takes_prime = false;
+    let mut edge = OperandEdge::Break;
     let mut identifier_run = String::new();
     for node in nodes {
         if let MathNode::StyleSwitch(value) = node {
@@ -659,6 +668,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
                 wrote_node = true;
                 previous_operator = false;
                 takes_prime = true;
+                edge = OperandEdge::Operand;
             }
             current_style = MathStyle::branch_from_switch(*value);
             continue;
@@ -673,6 +683,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
             wrote_node = true;
             previous_operator = false;
             takes_prime = true;
+            edge = OperandEdge::Operand;
         }
         if wrote_node
             && !matches!(node, MathNode::Text(_, _))
@@ -682,9 +693,11 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
         }
         let start = out.len();
         write_structured_content(out, node, current_style);
-        separate_following_operand(out, start, previous_operator, takes_prime);
+        let current = operand_edge(select_mathchoice(node, current_style));
+        separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
         previous_operator = needs_operator_terminator(node, current_style);
         takes_prime = !is_prime_symbol(node);
+        edge = current;
         wrote_node = true;
     }
     if !identifier_run.is_empty() {
@@ -1076,6 +1089,12 @@ fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push(')');
         },
+        // An operator alone is not an operand (`(+)/2`).
+        _ if operand_edge(node) == OperandEdge::Break => {
+            out.push('(');
+            write_node(out, node, style);
+            out.push(')');
+        },
         _ => write_node(out, node, style),
     }
     if out.len() == start {
@@ -1140,6 +1159,7 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
     let mut wrote_node = false;
     let mut previous_operator = false;
     let mut takes_prime = false;
+    let mut edge = OperandEdge::Break;
     for node in nodes {
         if let MathNode::StyleSwitch(value) = node {
             current_style = MathStyle::branch_from_switch(*value);
@@ -1150,9 +1170,11 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
         }
         let start = out.len();
         write_node(out, node, current_style);
-        separate_following_operand(out, start, previous_operator, takes_prime);
+        let current = operand_edge(select_mathchoice(node, current_style));
+        separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
         previous_operator = needs_operator_terminator(node, current_style);
         takes_prime = !is_prime_symbol(node);
+        edge = current;
         wrote_node = true;
     }
 }
@@ -1167,17 +1189,101 @@ fn separate_following_operand(
     start: usize,
     previous_operator: bool,
     takes_prime: bool,
+    previous: OperandEdge,
+    current: OperandEdge,
 ) {
     let Some(first) = out[start..].chars().next() else {
         return;
     };
     // Adjacent numbers would read as one (`1 12′` is not `112′`).
     let digits = first.is_ascii_digit() && out[..start].ends_with(|c: char| c.is_ascii_digit());
+    // A fraction's numerator and denominator are whole operands (UTN #28
+    // section 2.1): a fraction after an operand (`a b/c`) and a factor
+    // after a fraction (`a/b c`, `a/b (c)`) are set apart.
+    let fraction = (current == OperandEdge::Fraction && previous != OperandEdge::Break)
+        || (previous == OperandEdge::Fraction
+            && (first.is_alphanumeric() || matches!(first, '(' | '〖' | '!')));
     let joins = (previous_operator && first.is_alphanumeric())
         || (takes_prime && is_prime_char(first))
-        || digits;
+        || digits
+        || fraction;
     if joins && !out[..start].ends_with(' ') {
         out.insert(start, ' ');
+    }
+}
+
+/// How a written node meets the operand around it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OperandEdge {
+    /// An operator, punctuation, an opening delimiter, a big operator or a
+    /// space: it ends the operand before it (as the reader's
+    /// `breaks_operand`).
+    Break,
+    /// A factor of an operand.
+    Operand,
+    /// A fraction, which is not a factor of the operand around it.
+    Fraction,
+}
+
+fn symbol_edge(kind: SymbolKind, glyph: &str) -> OperandEdge {
+    if matches!(
+        kind,
+        SymbolKind::BinaryOp
+            | SymbolKind::Relation
+            | SymbolKind::Punctuation
+            | SymbolKind::LargeOp
+            | SymbolKind::Open
+    ) || matches!(glyph, "," | ";" | ":" | "?")
+    {
+        OperandEdge::Break
+    } else {
+        OperandEdge::Operand
+    }
+}
+
+fn operand_edge(node: &MathNode) -> OperandEdge {
+    match node {
+        MathNode::Fraction { .. } => OperandEdge::Fraction,
+        MathNode::Symbol(kind, glyph) => symbol_edge(*kind, glyph),
+        // A scripted operator is still an operator, as in the reader.
+        MathNode::PreScripts { base, .. }
+        | MathNode::Subscript { base, .. }
+        | MathNode::Superscript { base, .. }
+        | MathNode::SubSup { base, .. } => match operand_edge(base) {
+            OperandEdge::Break => OperandEdge::Break,
+            _ => OperandEdge::Operand,
+        },
+        // An n-ary operator ends with its n-aryand, maybe a fraction.
+        MathNode::Nary { body, .. } if matches!(**body, MathNode::Fraction { .. }) => {
+            OperandEdge::Fraction
+        },
+        MathNode::Nary { .. } | MathNode::Space(_) | MathNode::Text(..) => OperandEdge::Break,
+        _ => OperandEdge::Operand,
+    }
+}
+
+fn operand_edge_c(arena: &AstArena, id: NodeId) -> OperandEdge {
+    match *arena.node(id) {
+        CompactNode::Fraction { .. } => OperandEdge::Fraction,
+        CompactNode::Symbol(kind, sid) => symbol_edge(kind, arena.str_val(sid)),
+        // A scripted operator is still an operator, as in the reader.
+        CompactNode::PreScripts { base, .. }
+        | CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. } => match operand_edge_c(arena, base) {
+            OperandEdge::Break => OperandEdge::Break,
+            _ => OperandEdge::Operand,
+        },
+        // An n-ary operator ends with its n-aryand, maybe a fraction.
+        CompactNode::Nary { body, .. }
+            if matches!(*arena.node(body), CompactNode::Fraction { .. }) =>
+        {
+            OperandEdge::Fraction
+        },
+        CompactNode::Nary { .. } | CompactNode::Space(_) | CompactNode::Text(..) => {
+            OperandEdge::Break
+        },
+        _ => OperandEdge::Operand,
     }
 }
 
@@ -1324,11 +1430,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         // (UTN #28 sections 2.1 and 3.2).
         CompactNode::Symbol(_, sid) if arena.str_val(sid) == "/" => out.push_str("\\/"),
         CompactNode::Symbol(_, sid) => out.push_str(arena.str_val(sid)),
-        CompactNode::Text(_, sid) => {
-            out.push('"');
-            out.push_str(arena.str_val(sid));
-            out.push('"');
-        },
+        CompactNode::Text(_, sid) => write_quoted_text(out, arena.str_val(sid)),
         CompactNode::Space(r) => {
             let basis = arena.space_basis(id);
             write_unicode_space(
@@ -1776,6 +1878,7 @@ fn write_structured_nodes_c_with_style(
     let mut wrote_node = false;
     let mut previous_operator = false;
     let mut takes_prime = false;
+    let mut edge = OperandEdge::Break;
     let mut identifier_run = String::new();
     for &id in arena.children(span) {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
@@ -1785,6 +1888,7 @@ fn write_structured_nodes_c_with_style(
                 wrote_node = true;
                 previous_operator = false;
                 takes_prime = true;
+                edge = OperandEdge::Operand;
             }
             current_style = MathStyle::branch_from_switch(value);
             continue;
@@ -1799,6 +1903,7 @@ fn write_structured_nodes_c_with_style(
             wrote_node = true;
             previous_operator = false;
             takes_prime = true;
+            edge = OperandEdge::Operand;
         }
         if wrote_node
             && !matches!(*arena.node(id), CompactNode::Text(_, _))
@@ -1808,9 +1913,11 @@ fn write_structured_nodes_c_with_style(
         }
         let start = out.len();
         write_structured_content_c(out, arena, id, current_style);
-        separate_following_operand(out, start, previous_operator, takes_prime);
+        let current = operand_edge_c(arena, select_mathchoice_c(arena, id, current_style));
+        separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
         previous_operator = needs_operator_terminator_c(arena, id, current_style);
         takes_prime = !is_prime_symbol_c(arena, id);
+        edge = current;
         wrote_node = true;
     }
     if !identifier_run.is_empty() {
@@ -2141,6 +2248,12 @@ fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: M
             write_node_c(out, arena, id, style);
             out.push(')');
         },
+        // An operator alone is not an operand (`(+)/2`).
+        _ if operand_edge_c(arena, id) == OperandEdge::Break => {
+            out.push('(');
+            write_node_c(out, arena, id, style);
+            out.push(')');
+        },
         _ => write_node_c(out, arena, id, style),
     }
     if out.len() == start {
@@ -2213,6 +2326,7 @@ fn write_nodes_c_with_style(
     let mut wrote_node = false;
     let mut previous_operator = false;
     let mut takes_prime = false;
+    let mut edge = OperandEdge::Break;
     let children = arena.children(span);
     for &id in children {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
@@ -2225,9 +2339,11 @@ fn write_nodes_c_with_style(
         }
         let start = out.len();
         write_node_c(out, arena, id, current_style);
-        separate_following_operand(out, start, previous_operator, takes_prime);
+        let current = operand_edge_c(arena, select_mathchoice_c(arena, id, current_style));
+        separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
         previous_operator = terminates_operator;
         takes_prime = !is_prime_symbol_c(arena, id);
+        edge = current;
         wrote_node = true;
     }
 }
