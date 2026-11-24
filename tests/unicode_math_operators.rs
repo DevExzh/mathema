@@ -70,8 +70,37 @@ const READS: &[(&str, &str, &str)] = &[
     ("x_admin", "x_admin", r"x_{admin}"),
     ("x_basin", "x_basin", r"x_{basin}"),
     ("x_max1/y", "x_max1/y", r"\frac{x_{max1}}{y}"),
-    ("x^1sin1", "x^1 s in1", r"x^{1}sin1"),
+    ("x^1sin1", "x^1 sin1", r"x^{1}sin1"),
     ("x_max", "x_max", r"x_{\max}"),
+    // Accents, primes and scripts on a function name in a script.
+    ("x_max̅ y", "x_max̅ y", r"x_{\overset{̅}{\max}}y"),
+    ("x_min̅^2", "x_min̅^2", r"x_{\overset{̅}{\min}}^{2}"),
+    ("x_max̂/2", "x_max̂/2", r"\frac{x_{\hat{\max}}}{2}"),
+    ("x_max̂!", "x_max̂!", r"x_{\hat{\max}}!"),
+    ("x_max̂′", "x_max̂^′", r"x_{\hat{\max}}^{\prime}"),
+    ("x_max̂_i", "x_(max̂_i)", r"x_{{\hat{\max}}_i}"),
+    ("x_-max̂", "x_(-max̂)", r"x_{- \hat{\max}}"),
+    ("(_max̂)F", "(_max̂)F", r"{{}_{\hat{\max}}F}"),
+    ("x┬max̂", "x┬max̂", r"\underset{\hat{\max}}{x}"),
+    ("∑ x_max̂", "∑ x_max̂", r"\sum\limits {x_{\hat{\max}}}"),
+    (
+        "∑_i x_max̂ y",
+        "∑_i x_max̂ y",
+        r"\sum\limits_i {x_{\hat{\max}}}y",
+    ),
+    (
+        "∑_max̂^min̂ x",
+        "∑_max̂^min̂ x",
+        r"\sum\limits_{\hat{\max}}^{\hat{\min}} x",
+    ),
+    (
+        "∑ −inf!^loĝ(x)",
+        "∑ 〖− inf!^loĝ(x)〗",
+        r"\sum\limits {\mathord{-}\inf !^{\hat{\log}}\left( x \right)}",
+    ),
+    // The sign keeps the operand after it; the function's argument is
+    // outside the script, which the space ends (appendix A, section 2.3).
+    ("e^-sin x", "e^(- sin) x", r"e^{- \sin}x"),
     // A run is one operand of a bound too.
     (
         "a+′┴nⅆx^′′",
@@ -244,8 +273,14 @@ fn latex_scripts_with_function_names_survive() {
             ("x_{kmax}", "x_kmax"),
             ("x_{max}", "x_(m ax)"),
             ("x_{1sin}", "x_(1s in)"),
-            ("x_{1sin1}", "x_(1s in1)"),
+            ("x_{1sin1}", "x_(1sin1)"),
             ("\\frac{kmax}{2}", "(km ax)/2"),
+            ("x_{\\hat{\\log}}y", "x_loĝ y"),
+            ("x_{\\hat{\\log}}^2", "x_loĝ^2"),
+            ("x_{k\\hat\\log}", "x_(kloĝ)"),
+            ("x_{\\hat{\\log}_i}", "x_(loĝ_i)"),
+            ("x_{\\hat{max}}", "x_〖m ax〗̂"),
+            ("max1", "max1"),
             // A script before an empty group or in a prescripted base ends
             // before the next letter.
             ("\\sideset{_1}{}\\alpha_1^2z", "(_1)α_1^2 z"),

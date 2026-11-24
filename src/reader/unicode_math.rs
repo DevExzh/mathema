@@ -795,6 +795,9 @@ impl CompactParser {
     /// characters with the Unicode General Categories Lx (alphabetic) and Nd
     /// (decimal digits)" (`δ_μν`, `a_ij`, `x^2y`; `a_i+1` stops at `+`).
     /// Appendix A, `soperand ← operand | '∞' | '-' operand | "-∞"`, and
+    /// a sign belongs to the operand after it, which for a function name is
+    /// the name alone (`e^-sin x` is `e^{-\sin}x`: section 2.3 ends the script
+    /// at the space, before the argument);
     /// section 3.22 ("math minus (U+2212) or plus if either starts a
     /// sub/superscript operand"): a sign before an operand is part of it
     /// (`e^-x`, `x^-1`); parentheses after the sign are visible (`x^-(a+b)`).
@@ -857,7 +860,8 @@ impl CompactParser {
     /// as in `x_(max)`) or a script argument.
     fn parse_script_atom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         match self.parse_operator_word(input) {
-            Ok(found) => Ok(found),
+            // Its accents are part of it, as of any operand (`x_max̅`).
+            Ok((rest, id)) => Ok(self.with_accents(rest, id)),
             Err(_) => self.parse_script_arg(input),
         }
     }
@@ -2269,7 +2273,21 @@ pub(crate) fn breaks_naryand(c: char) -> bool {
 /// A letter or decimal digit, which continues a simple script operand
 /// (UTN #28 section 2.2).
 pub(crate) fn is_run_char(c: char) -> bool {
-    c.is_ascii_digit() || (c.is_alphabetic() && !is_math_symbol(c) && !is_nary_char(c))
+    c.is_ascii_alphanumeric()
+        || (!c.is_ascii()
+            && is_alphanumeric(c)
+            && !is_math_symbol(c)
+            && !is_nary_char(c)
+            && c.is_alphabetic())
+}
+
+/// [`char::is_alphanumeric`], without its table search for the spaces, arrows
+/// and operators that make up most other characters of a formula.
+pub(crate) fn is_alphanumeric(c: char) -> bool {
+    match c {
+        '\u{2000}'..='\u{206F}' | '\u{2190}'..='\u{23FF}' | '\u{27C0}'..='\u{2AFF}' => false,
+        _ => c.is_alphanumeric(),
+    }
 }
 
 fn is_run_letter(c: char) -> bool {
@@ -2291,6 +2309,11 @@ pub(crate) fn reads_as_script_run(text: &str) -> bool {
     let mut after_letter = false;
     for (index, c) in text.char_indices() {
         if !is_run_char(c) {
+            // The decimal point of a number.
+            if c == '.' && text[..index].ends_with(|c: char| c.is_ascii_digit()) {
+                after_letter = false;
+                continue;
+            }
             return false;
         }
         // At the start only a name with nothing after it is a function.
@@ -3160,6 +3183,13 @@ mod tests {
             })
         ));
         assert!(UnicodeMathReader::parse(&input, &Config::default()).is_ok());
+    }
+
+    #[test]
+    fn fast_alphanumeric_matches_std() {
+        for c in '\0'..=char::MAX {
+            assert_eq!(is_alphanumeric(c), c.is_alphanumeric(), "{c:?}");
+        }
     }
 
     #[test]

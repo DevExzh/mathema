@@ -862,23 +862,36 @@ pub(crate) fn unicode_math_operator_prefix(input: &str) -> Option<(&str, LimitSt
     {
         return None;
     }
+    // A name ends before a character that is not alphanumeric, so it is the
+    // whole run of ASCII letters at the start; no name is longer than 8.
+    let letters = input
+        .bytes()
+        .take(9)
+        .take_while(u8::is_ascii_alphabetic)
+        .count();
     let boundary = |rest: &str| rest.chars().next().is_none_or(|ch| !ch.is_alphanumeric());
-    for &(_, label) in COMPOUND_LIMIT_NAMES {
-        let (left, right) = label.split_once('\u{2009}')?;
-        if let Some(rest) = input
-            .strip_prefix(left)
-            .and_then(|s| s.strip_prefix(['\u{2009}', '\u{00a0}']))
-            .and_then(|s| s.strip_prefix(right))
-            && boundary(rest)
-        {
-            return Some((&input[..input.len() - rest.len()], LimitStyle::Default));
+    let (word, rest) = input.split_at(letters);
+    if !(2..=8).contains(&letters) || !boundary(rest) {
+        return None;
+    }
+    if rest.starts_with(['\u{2009}', '\u{00a0}']) {
+        for &(_, label) in COMPOUND_LIMIT_NAMES {
+            let (left, right) = label.split_once('\u{2009}')?;
+            if word == left
+                && let Some(rest) = rest
+                    .strip_prefix(['\u{2009}', '\u{00a0}'])
+                    .and_then(|s| s.strip_prefix(right))
+                && boundary(rest)
+            {
+                return Some((&input[..input.len() - rest.len()], LimitStyle::Default));
+            }
         }
     }
-    let command = OPERATOR_COMMANDS
-        .iter()
-        .copied()
-        .chain(std::iter::once("plim"))
-        .find(|name| input.strip_prefix(name).is_some_and(boundary))?;
+    let command = if word == "plim" {
+        "plim"
+    } else {
+        OPERATOR_COMMANDS.get_key(word).copied()?
+    };
     let limits = if command == "plim" {
         LimitStyle::AboveBelow
     } else if operator_has_limits(command) {

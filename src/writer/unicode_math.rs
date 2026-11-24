@@ -495,7 +495,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::Accent { base, accent, .. } => {
             let start = out.len();
-            write_node(out, base, style);
+            write_accent_base(out, base, style);
             if out.len() == start {
                 out.push_str("〖〗");
             }
@@ -744,7 +744,7 @@ fn write_structured_nodes_with_style(out: &mut String, nodes: &[MathNode], style
         let start = out.len();
         write_structured_content(out, node, current_style);
         let current = operand_edge(select_mathchoice(node, current_style));
-        separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
+        separate_following_operand(out, start, || previous_operator, takes_prime, edge, current);
         previous_operator = needs_operator_terminator(node, current_style);
         takes_prime = !is_prime_symbol(node);
         edge = current;
@@ -853,7 +853,7 @@ fn write_structured_decorated_base(out: &mut String, node: &MathNode, style: Mat
 fn write_structured_bound(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Identifier(name) if reads_as_script_run(name) => out.push_str(name),
-        MathNode::Row(children) if is_simple_script(children) => write_script_run(out, children),
+        MathNode::Row(children) if write_simple_script(out, script_items(children)) => {},
         MathNode::Row(children) if children.len() > 1 => write_script_arg(out, node, style),
         MathNode::Subscript { .. }
         | MathNode::Superscript { .. }
@@ -871,9 +871,7 @@ fn write_structured_bound_c(out: &mut String, arena: &AstArena, id: NodeId, styl
         CompactNode::Identifier(sid) if reads_as_script_run(arena.str_val(sid)) => {
             out.push_str(arena.str_val(sid));
         },
-        CompactNode::Row(span) if is_simple_script_c(arena, arena.children(span)) => {
-            write_script_run_c(out, arena, span);
-        },
+        CompactNode::Row(span) if write_simple_script(out, script_items_c(arena, span)) => {},
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             write_script_arg_c(out, arena, id, style);
         },
@@ -1061,6 +1059,29 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
     }
 }
 
+/// Write the base of a combining accent. A word or an n-ary operator is
+/// grouped: the accent would take only the last letter or the n-aryand.
+fn write_accent_base(out: &mut String, node: &MathNode, style: MathStyle) {
+    match select_mathchoice(node, style) {
+        MathNode::Nary { .. } => write_base(out, node, style),
+        MathNode::Identifier(name) if name.chars().nth(1).is_some() => {
+            write_script_base(out, node, style);
+        },
+        _ => write_node(out, node, style),
+    }
+}
+
+/// Compact counterpart of [`write_accent_base`].
+fn write_accent_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    match *arena.node(select_mathchoice_c(arena, id, style)) {
+        CompactNode::Nary { .. } => write_base_c(out, arena, id, style),
+        CompactNode::Identifier(sid) if arena.str_val(sid).chars().nth(1).is_some() => {
+            write_script_base_c(out, arena, id, style);
+        },
+        _ => write_node_c(out, arena, id, style),
+    }
+}
+
 /// Write the base of a subscript or superscript. A word is grouped: the
 /// script would take only its last letter (`〖ab〗_1` is `{ab}_1`, `ab_1`
 /// is `a b_1`).
@@ -1076,7 +1097,7 @@ fn write_script_base(out: &mut String, node: &MathNode, style: MathStyle) {
 }
 
 use crate::reader::unicode_math::{
-    breaks_naryand, is_prime as is_prime_char, is_run_char, reads_as_script_run,
+    breaks_naryand, is_alphanumeric, is_prime as is_prime_char, is_run_char, reads_as_script_run,
     starts_signed_script_operand, symbol_takes_prime,
 };
 
@@ -1126,6 +1147,7 @@ fn prime_superscript<'a>(
 fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
     let start = out.len();
     write_script_arg_unguarded(out, node, style);
+    group_spaced_script(out, start);
     let fenced = matches!(select_mathchoice(node, style), MathNode::Fenced { .. });
     group_null_operand(out, start, !fenced);
 }
@@ -1139,7 +1161,7 @@ fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyl
             write_node(out, node, style);
             out.push(')');
         },
-        MathNode::Row(children) if is_simple_script(children) => write_script_run(out, children),
+        MathNode::Row(children) if write_simple_script(out, script_items(children)) => {},
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
             write_node(out, node, style);
@@ -1169,76 +1191,91 @@ fn is_script_sign(glyph: &str) -> bool {
     matches!(glyph, "-" | "+" | "\u{2212}")
 }
 
-/// A letter or a number the reader continues a script operand with
-/// (`a_ij`, `x_2n`); `after_number` when a number comes before it, which
-/// it would join (`12` is one number).
-fn is_run_atom(identifier: Option<&str>, number: Option<&str>, after_number: bool) -> bool {
-    // A word is letters that normalization joined (`aaa`).
-    if let Some(name) = identifier {
-        return !name.is_empty() && name.chars().all(|c| is_run_char(c) && !c.is_ascii_digit());
-    }
-    number.is_some_and(|digits| {
-        !after_number
-            && digits.starts_with(|c: char| c.is_ascii_digit())
-            && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+/// A child of a script argument row, as [`write_simple_script`] sees it.
+enum ScriptItem<'a> {
+    Word(&'a str),
+    Number(&'a str),
+    Symbol(&'a str),
+    Other,
+}
+
+fn script_items(children: &[MathNode]) -> impl Iterator<Item = ScriptItem<'_>> {
+    children.iter().map(|child| match child {
+        MathNode::Identifier(name) => ScriptItem::Word(name),
+        MathNode::Number(digits) => ScriptItem::Number(digits),
+        MathNode::Symbol(_, glyph) => ScriptItem::Symbol(glyph),
+        _ => ScriptItem::Other,
     })
 }
 
-/// Whether a script argument row of `children` is an operand the reader
-/// takes whole without parentheses (UTN #28 section 2.2, appendix A
-/// `soperand`): letters and digits (`a_ij`, `x^2y`), possibly after a
-/// sign (`e^-x`, `x^-1`), or a signed infinity (`∑_(n=-∞)`, `x^-∞`).
-fn is_simple_script(children: &[MathNode]) -> bool {
-    let run = match children {
-        [MathNode::Symbol(_, sign), rest @ ..] if is_script_sign(sign) => {
-            if matches!(rest, [MathNode::Symbol(_, glyph)] if glyph == "\u{221E}") {
-                return true;
-            }
-            rest
-        },
-        _ => children,
-    };
-    let mut text = String::new();
-    !run.is_empty()
-        && run.iter().enumerate().all(|(index, node)| {
-            let after_number = index > 0 && matches!(run[index - 1], MathNode::Number(_));
-            match node {
-                MathNode::Identifier(name) => {
-                    text.push_str(name);
-                    is_run_atom(Some(name), None, after_number)
-                },
-                MathNode::Number(digits) => {
-                    text.push_str(if digits.contains('.') { "0" } else { digits });
-                    is_run_atom(None, Some(digits), after_number)
-                },
-                _ => false,
-            }
+/// Compact counterpart of [`script_items`].
+fn script_items_c(
+    arena: &AstArena,
+    span: crate::ast::compact::NodeSpan,
+) -> impl Iterator<Item = ScriptItem<'_>> {
+    arena
+        .children(span)
+        .iter()
+        .map(|&child| match *arena.node(child) {
+            CompactNode::Identifier(sid) => ScriptItem::Word(arena.str_val(sid)),
+            CompactNode::Number(sid) => ScriptItem::Number(arena.str_val(sid)),
+            CompactNode::Symbol(_, sid) => ScriptItem::Symbol(arena.str_val(sid)),
+            _ => ScriptItem::Other,
         })
-        && reads_as_script_run(&text)
 }
 
-/// Write the children of a simple script ([`is_simple_script`]) as they are:
-/// no space may end the run.
-fn write_script_run(out: &mut String, children: &[MathNode]) {
-    for child in children {
-        if let MathNode::Identifier(text) | MathNode::Number(text) | MathNode::Symbol(_, text) =
-            child
-        {
-            out.push_str(text);
+/// Write a script argument row if it is an operand the reader takes whole
+/// without parentheses (UTN #28 section 2.2, appendix A `soperand`): letters
+/// and digits (`a_ij`, `x^2y`), possibly after a sign (`e^-x`, `x^-1`), or a
+/// signed infinity (`∑_(n=-∞)`, `x^-∞`). Otherwise nothing is written.
+fn write_simple_script<'a>(out: &mut String, items: impl Iterator<Item = ScriptItem<'a>>) -> bool {
+    let start = out.len();
+    let mut run = start;
+    let mut after_number = false;
+    let mut items = items.enumerate().peekable();
+    let mut simple = true;
+    let mut infinity = false;
+    while let Some((index, item)) = items.next() {
+        match item {
+            ScriptItem::Symbol(sign) if index == 0 && is_script_sign(sign) => {
+                out.push_str(sign);
+                run = out.len();
+                continue;
+            },
+            ScriptItem::Symbol("\u{221E}")
+                if index == 1 && run > start && items.peek().is_none() =>
+            {
+                out.push('\u{221E}');
+                infinity = true;
+            },
+            // A word is letters that normalization joined (`aaa`).
+            ScriptItem::Word(name)
+                if !name.is_empty()
+                    && name.chars().all(|c| is_run_char(c) && !c.is_ascii_digit()) =>
+            {
+                out.push_str(name);
+                after_number = false;
+            },
+            // Adjacent numbers would read as one.
+            ScriptItem::Number(digits)
+                if !after_number
+                    && digits.starts_with(|c: char| c.is_ascii_digit())
+                    && digits.chars().all(|c| c.is_ascii_digit() || c == '.') =>
+            {
+                out.push_str(digits);
+                after_number = true;
+            },
+            _ => {
+                simple = false;
+                break;
+            },
         }
     }
-}
-
-/// Compact counterpart of [`write_script_run`].
-fn write_script_run_c(out: &mut String, arena: &AstArena, span: crate::ast::compact::NodeSpan) {
-    for &child in arena.children(span) {
-        if let CompactNode::Identifier(sid)
-        | CompactNode::Number(sid)
-        | CompactNode::Symbol(_, sid) = *arena.node(child)
-        {
-            out.push_str(arena.str_val(sid));
-        }
+    simple &= infinity || reads_as_script_run(&out[run..]);
+    if !simple {
+        out.truncate(start);
     }
+    simple
 }
 
 /// Write a word as a script operand: as it is when the reader takes it
@@ -1270,52 +1307,18 @@ fn group_null_operand(out: &mut String, start: usize, grouping: bool) {
     }
 }
 
+/// Parenthesize a script operand written with a space outside brackets,
+/// which would end it (`x_(∑ a)`).
+fn group_spaced_script(out: &mut String, start: usize) {
+    if out[start..].contains(' ') && !continues_naryand(out, start, &[]) {
+        out.insert(start, '(');
+        out.push(')');
+    }
+}
+
 /// Whether `written` is only the zero-width spaces of dropped spaces.
 fn is_null_operand(written: &str) -> bool {
     !written.is_empty() && written.chars().all(|c| c == ZERO_WIDTH_SPACE)
-}
-
-/// Compact counterpart of [`is_simple_script`].
-fn is_simple_script_c(arena: &AstArena, children: &[NodeId]) -> bool {
-    let run = match children.split_first() {
-        Some((&first, rest))
-            if matches!(*arena.node(first), CompactNode::Symbol(_, sid)
-                if is_script_sign(arena.str_val(sid))) =>
-        {
-            if let [only] = rest
-                && matches!(*arena.node(*only), CompactNode::Symbol(_, sid)
-                    if arena.str_val(sid) == "\u{221E}")
-            {
-                return true;
-            }
-            rest
-        },
-        _ => children,
-    };
-    let mut text = String::new();
-    !run.is_empty()
-        && run.iter().enumerate().all(|(index, &id)| {
-            let after_number =
-                index > 0 && matches!(*arena.node(run[index - 1]), CompactNode::Number(_));
-            match *arena.node(id) {
-                CompactNode::Identifier(sid) => text.push_str(arena.str_val(sid)),
-                CompactNode::Number(sid) => {
-                    let digits = arena.str_val(sid);
-                    text.push_str(if digits.contains('.') { "0" } else { digits });
-                },
-                _ => {},
-            }
-            match *arena.node(id) {
-                CompactNode::Identifier(sid) => {
-                    is_run_atom(Some(arena.str_val(sid)), None, after_number)
-                },
-                CompactNode::Number(sid) => {
-                    is_run_atom(None, Some(arena.str_val(sid)), after_number)
-                },
-                _ => false,
-            }
-        })
-        && reads_as_script_run(&text)
 }
 
 /// Write a word, broken by a space where it would read as a function name
@@ -1480,7 +1483,7 @@ fn write_nodes_tracking(
 ) {
     let mut current_style = style;
     let mut wrote_node = false;
-    let mut previous_operator = false;
+    let mut previous = None;
     let mut takes_prime = false;
     let mut function = false;
     let mut edge = OperandEdge::Break;
@@ -1491,29 +1494,38 @@ fn write_nodes_tracking(
             current_style = MathStyle::branch_from_switch(*value);
             continue;
         }
+        let selected = select_mathchoice(node, current_style);
         let before = out.len();
         if wrote_node && needs_space_before_with_style(node, current_style) {
             out.push(' ');
         }
         let start = out.len();
-        let next = nodes[index + 1..].iter().find(|node| match node {
-            MathNode::StyleSwitch(_) => false,
-            MathNode::Row(children) => !children.is_empty(),
-            _ => true,
-        });
+        let next = || {
+            nodes[index + 1..].iter().find(|node| match node {
+                MathNode::StyleSwitch(_) => false,
+                MathNode::Row(children) => !children.is_empty(),
+                _ => true,
+            })
+        };
         let open = matches!(node, MathNode::Nary { .. }) && ends_in_function(node, current_style);
-        let grouped = open && next.is_some_and(|next| splits_naryand(next, current_style));
-        if grouped {
+        let grouped = open && next().is_some_and(|next| splits_naryand(next, current_style));
+        // Within a list a word is broken once what follows it is written.
+        if let MathNode::Identifier(name) = selected {
+            out.push_str(name);
+        } else if grouped {
             write_nary(out, node, current_style, true);
         } else {
             write_node(out, node, current_style);
         }
-        let current = operand_edge(select_mathchoice(node, current_style));
+        let current = operand_edge(selected);
         let current = if open && !grouped && current == OperandEdge::Naryand {
             OperandEdge::NaryandFunction
         } else {
             current
         };
+        // Asked only where it matters: it follows the previous node down.
+        let previous_operator =
+            || previous.is_some_and(|(node, style)| needs_operator_terminator(node, style));
         separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
         if let Some(applied) = applied.as_deref_mut() {
             record_applied_space(applied, out, before, function);
@@ -1522,10 +1534,7 @@ fn write_nodes_tracking(
         if out.len() == before {
             continue;
         }
-        let identifier = matches!(
-            select_mathchoice(node, current_style),
-            MathNode::Identifier(_)
-        );
+        let identifier = matches!(selected, MathNode::Identifier(_));
         if let Some(from) = word
             && !identifier
         {
@@ -1536,9 +1545,9 @@ fn write_nodes_tracking(
         } else {
             None
         };
-        previous_operator = needs_operator_terminator(node, current_style);
+        previous = Some((node, current_style));
         takes_prime = !is_prime_symbol(node);
-        function = is_function_head(select_mathchoice(node, current_style));
+        function = applied.is_some() && is_function_head(selected);
         edge = current;
         wrote_node = true;
     }
@@ -1641,7 +1650,7 @@ fn continues_naryand(out: &str, start: usize, applied: &[usize]) -> bool {
 fn separate_following_operand(
     out: &mut String,
     start: usize,
-    previous_operator: bool,
+    previous_operator: impl FnOnce() -> bool,
     takes_prime: bool,
     previous: OperandEdge,
     current: OperandEdge,
@@ -1649,6 +1658,9 @@ fn separate_following_operand(
     let Some(first) = out[start..].chars().next() else {
         return;
     };
+    let alphanumeric = is_alphanumeric(first);
+    let signed = !alphanumeric && starts_signed_script_operand(first);
+    let previous_operator = (alphanumeric || signed) && previous_operator();
     // Adjacent numbers would read as one (`1 12′` is not `112′`).
     let digits = first.is_ascii_digit() && out[..start].ends_with(|c: char| c.is_ascii_digit());
     // A fraction's numerator and denominator are whole operands (UTN #28
@@ -1656,10 +1668,10 @@ fn separate_following_operand(
     // after a fraction (`a/b c`, `a/b (c)`) are set apart.
     let fraction = (current == OperandEdge::Fraction && previous != OperandEdge::Break)
         || (matches!(previous, OperandEdge::Fraction | OperandEdge::Naryand)
-            && (first.is_alphanumeric() || matches!(first, '(' | '〖' | '!')))
+            && (alphanumeric || matches!(first, '(' | '〖' | '!')))
         // An n-aryand goes on at anything but an operator or a closing
         // fence (`∑ a [b]`, `∑ a/b ∞`).
-        || (previous == OperandEdge::NaryandFunction && first.is_alphanumeric())
+        || (previous == OperandEdge::NaryandFunction && alphanumeric)
         || (previous == OperandEdge::Naryand
             && !first.is_whitespace()
             && !breaks_naryand(first)
@@ -1667,13 +1679,13 @@ fn separate_following_operand(
     // A script that is only a sign takes an operand after it (`x^- y` is
     // not `x^-y`, UTN #28 appendix A `soperand`).
     let sign = previous_operator
-        && starts_signed_script_operand(first)
+        && (signed || starts_signed_script_operand(first))
         && ends_with_script_sign(&out[..start]);
     // A radical or box sign written alone (not a radical, which writes its
     // radicand) would take the operand after it (`√ y` is not `√y`).
     let prefix = !first.is_whitespace() && out[..start].ends_with(['√', '∛', '∜', '▭', '⟡']);
     let joins = prefix
-        || (previous_operator && first.is_alphanumeric())
+        || (previous_operator && alphanumeric)
         || (takes_prime && is_prime_char(first))
         || digits
         || fraction
@@ -1690,7 +1702,7 @@ fn separate_after_script(out: &mut String, start: usize, previous_operator: bool
     separate_following_operand(
         out,
         start,
-        previous_operator,
+        || previous_operator,
         false,
         OperandEdge::Break,
         OperandEdge::Break,
@@ -2399,7 +2411,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::Accent { base, accent, .. } => {
             let start = out.len();
-            write_node_c(out, arena, base, style);
+            write_accent_base_c(out, arena, base, style);
             if out.len() == start {
                 out.push_str("〖〗");
             }
@@ -2655,7 +2667,7 @@ fn write_structured_nodes_c_with_style(
         let start = out.len();
         write_structured_content_c(out, arena, id, current_style);
         let current = operand_edge_c(arena, select_mathchoice_c(arena, id, current_style));
-        separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
+        separate_following_operand(out, start, || previous_operator, takes_prime, edge, current);
         previous_operator = needs_operator_terminator_c(arena, id, current_style);
         takes_prime = !is_prime_symbol_c(arena, id);
         edge = current;
@@ -2944,6 +2956,7 @@ fn prime_superscript_c(
 fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     let start = out.len();
     write_script_arg_unguarded_c(out, arena, id, style);
+    group_spaced_script(out, start);
     let fenced = matches!(
         *arena.node(select_mathchoice_c(arena, id, style)),
         CompactNode::Fenced { .. }
@@ -2960,9 +2973,7 @@ fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, 
             out.push(')');
         },
         CompactNode::Identifier(sid) => write_script_word(out, arena.str_val(sid)),
-        CompactNode::Row(span) if is_simple_script_c(arena, arena.children(span)) => {
-            write_script_run_c(out, arena, span);
-        },
+        CompactNode::Row(span) if write_simple_script(out, script_items_c(arena, span)) => {},
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
             write_node_c(out, arena, id, style);
@@ -3104,7 +3115,7 @@ fn write_nodes_c_tracking(
 ) {
     let mut current_style = style;
     let mut wrote_node = false;
-    let mut previous_operator = false;
+    let mut previous = None;
     let mut takes_prime = false;
     let mut function = false;
     let mut edge = OperandEdge::Break;
@@ -3116,34 +3127,42 @@ fn write_nodes_c_tracking(
             current_style = MathStyle::branch_from_switch(value);
             continue;
         }
-        let (needs_space, terminates_operator) = compact_spacing_flags(arena, id, current_style);
+        let selected = select_mathchoice_c(arena, id, current_style);
         let before = out.len();
-        if wrote_node && needs_space {
+        if wrote_node && needs_space_before_c_with_style(arena, id, current_style) {
             out.push(' ');
         }
         let start = out.len();
-        let next = children[index + 1..]
-            .iter()
-            .find(|&&next| match *arena.node(next) {
-                CompactNode::StyleSwitch(_) => false,
-                CompactNode::Row(span) => !span.is_empty(),
-                _ => true,
-            });
+        let next = || {
+            children[index + 1..]
+                .iter()
+                .find(|&&next| match *arena.node(next) {
+                    CompactNode::StyleSwitch(_) => false,
+                    CompactNode::Row(span) => !span.is_empty(),
+                    _ => true,
+                })
+        };
         let open = matches!(*arena.node(id), CompactNode::Nary { .. })
             && ends_in_function_c(arena, id, current_style);
         let grouped =
-            open && next.is_some_and(|&next| splits_naryand_c(arena, next, current_style));
-        if grouped {
+            open && next().is_some_and(|&next| splits_naryand_c(arena, next, current_style));
+        // Within a list a word is broken once what follows it is written.
+        if let CompactNode::Identifier(sid) = *arena.node(selected) {
+            out.push_str(arena.str_val(sid));
+        } else if grouped {
             write_nary_c(out, arena, id, current_style, true);
         } else {
             write_node_c(out, arena, id, current_style);
         }
-        let selected = select_mathchoice_c(arena, id, current_style);
         let current = operand_edge_c(arena, selected);
         let current = if open && !grouped && current == OperandEdge::Naryand {
             OperandEdge::NaryandFunction
         } else {
             current
+        };
+        // Asked only where it matters: it follows the previous node down.
+        let previous_operator = || {
+            previous.is_some_and(|(node, style)| needs_operator_terminator_c(arena, node, style))
         };
         separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
         if let Some(applied) = applied.as_deref_mut() {
@@ -3164,9 +3183,9 @@ fn write_nodes_c_tracking(
         } else {
             None
         };
-        previous_operator = terminates_operator;
+        previous = Some((id, current_style));
         takes_prime = !is_prime_symbol_c(arena, id);
-        function = is_function_head_c(arena, selected);
+        function = applied.is_some() && is_function_head_c(arena, selected);
         edge = current;
         wrote_node = true;
     }
@@ -3175,73 +3194,70 @@ fn write_nodes_c_tracking(
     }
 }
 
-fn compact_spacing_flags(arena: &AstArena, id: NodeId, style: MathStyle) -> (bool, bool) {
+fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+    // Follows the node written last, so one path.
     match *arena.node(select_mathchoice_c(arena, id, style)) {
-        CompactNode::Operator { name, .. } => (true, is_unicode_function(arena.str_val(name))),
-        CompactNode::Text(_, _) => (true, false),
+        CompactNode::Operator { name, .. } => is_unicode_function(arena.str_val(name)),
         CompactNode::Subscript { .. }
         | CompactNode::Superscript { .. }
         | CompactNode::SubSup { .. }
         | CompactNode::Underscript { .. }
         | CompactNode::Overscript { .. }
-        | CompactNode::UnderOver { .. } => (false, true),
-        // Its n-aryand ends it (`∑ =^m a`).
-        CompactNode::Nary { body, .. } => (false, compact_spacing_flags(arena, body, style).1),
-        CompactNode::Cancel { content, .. }
-        | CompactNode::Scaled { content, .. }
-        | CompactNode::RaiseBox { content, .. }
-        | CompactNode::Reflect { content, .. } => {
-            (false, compact_spacing_flags(arena, content, style).1)
-        },
-        CompactNode::AlignedCell { content, .. }
-        | CompactNode::SpannedCell { content, .. }
-        | CompactNode::Color { content, .. } => {
-            (false, compact_spacing_flags(arena, content, style).1)
-        },
+        | CompactNode::UnderOver { .. } => true,
+        // A denominator would take a digit or letter after it (`x/y^3 2`).
+        CompactNode::Fraction { .. } => true,
         // An inner atom is bracketed: nothing joins it.
         CompactNode::MathAtom {
             atom_type: MathAtomType::Inner,
             ..
-        } => (false, false),
+        } => false,
+        // An n-ary operator ends with its n-aryand (`∑ =^m a`), and a
+        // prescript with its base (`(_1)lim b`).
+        CompactNode::Nary { body: content, .. }
+        | CompactNode::PreScripts { base: content, .. }
+        | CompactNode::Cancel { content, .. }
+        | CompactNode::Scaled { content, .. }
+        | CompactNode::RaiseBox { content, .. }
+        | CompactNode::Reflect { content, .. }
+        | CompactNode::AlignedCell { content, .. }
+        | CompactNode::SpannedCell { content, .. }
+        | CompactNode::Color { content, .. }
+        | CompactNode::MathAtom { content, .. }
+        | CompactNode::StructuredOperator { content, .. } => {
+            needs_operator_terminator_c(arena, content, style)
+        },
+        CompactNode::Row(span) | CompactNode::Styled(_, span) => arena
+            .children(span)
+            .last()
+            .is_some_and(|&last| needs_operator_terminator_c(arena, last, style)),
+        _ => false,
+    }
+}
+
+fn needs_space_before_c_with_style(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
+    // Follows the node written first, so one path.
+    match *arena.node(select_mathchoice_c(arena, id, style)) {
+        CompactNode::Operator { .. } | CompactNode::Text(_, _) => true,
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Inner,
+            ..
+        } => false,
         CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
-            compact_spacing_flags(arena, content, style)
+            needs_space_before_c_with_style(arena, content, style)
         },
-        // `(_1)lim b`: the prescripted base ends the written node.
-        CompactNode::PreScripts { base, .. } => {
-            (false, compact_spacing_flags(arena, base, style).1)
-        },
-        // A denominator would take a digit or letter after it (`x/y^3 2`).
-        CompactNode::Fraction { .. } => (false, true),
         CompactNode::Row(span) | CompactNode::Styled(_, span) => {
-            let terminates = arena
-                .children(span)
-                .last()
-                .is_some_and(|&last| compact_spacing_flags(arena, last, style).1);
             let mut current_style = style;
             for &child in arena.children(span) {
                 if let CompactNode::StyleSwitch(value) = *arena.node(child) {
                     current_style = MathStyle::branch_from_switch(value);
                     continue;
                 }
-                return (
-                    compact_spacing_flags(arena, child, current_style).0,
-                    terminates,
-                );
+                return needs_space_before_c_with_style(arena, child, current_style);
             }
-            (false, false)
+            false
         },
-        _ => (false, false),
+        _ => false,
     }
-}
-
-#[inline]
-fn needs_operator_terminator_c(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
-    compact_spacing_flags(arena, id, style).1
-}
-
-#[inline]
-fn needs_space_before_c_with_style(arena: &AstArena, id: NodeId, style: MathStyle) -> bool {
-    compact_spacing_flags(arena, id, style).0
 }
 
 #[cfg(test)]
