@@ -118,6 +118,7 @@ impl StrId {
 /// each other via `NodeId` and store strings via `StrId`, both indexing into
 /// the parent `AstArena`.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum CompactNode {
     // ── Leaf nodes ─────────────────────────────────────────────────
     /// A numeric literal; the string is interned in the arena's string pool.
@@ -137,7 +138,8 @@ pub enum CompactNode {
     Text(TextStyle, StrId),
     /// Explicit horizontal space of the given width.
     Space(Rational),
-    /// A line break (e.g. `\\` inside an environment).
+    /// A line break (e.g. `\\` inside an environment). The heap form is
+    /// [`MathNode::LineBreak`].
     Newline,
 
     // ── Grouping ───────────────────────────────────────────────────
@@ -421,7 +423,8 @@ pub enum CompactNode {
     /// scriptscript optical sizes respectively.
     StyleSwitch(u8),
 
-    /// Font size scale: 0=tiny..9=Huge. See SIZE_SCALE_TABLE in layout.rs.
+    /// Font size scale: 0=tiny..9=Huge; the factors are `SIZE_SCALE_PER_MILLE`
+    /// in `ast/mod.rs`. The heap form is [`MathNode::SizeSwitch`].
     SizeScale(u8),
 
     /// A structured operatorname/operatorname-star whose content remains an
@@ -454,6 +457,7 @@ const _: () = assert!(
 
 /// A complete math expression stored in a compact arena.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CompactExpr {
     /// The arena owning all node, child, and string data.
     pub arena: AstArena,
@@ -880,6 +884,8 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
             })
         },
         MathNode::StyleSwitch(style) => arena.push_node(CompactNode::StyleSwitch(*style)),
+        MathNode::SizeSwitch(scale) => arena.push_node(CompactNode::SizeScale(*scale)),
+        MathNode::LineBreak => arena.push_node(CompactNode::Newline),
         MathNode::MathAtom { atom_type, content } => {
             let inner = push_math_node(arena, content);
             arena.push_node(CompactNode::MathAtom {
@@ -1402,14 +1408,8 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
             lift,
         },
         CompactNode::StyleSwitch(style) => MathNode::StyleSwitch(style),
-        CompactNode::SizeScale(_) => {
-            // Size scale nodes are layout-only directives; reconstruct as empty row
-            MathNode::Row(Vec::new())
-        },
-        CompactNode::Newline => {
-            // Newlines are layout-only directives; reconstruct as zero-width space
-            MathNode::Space(Rational::zero())
-        },
+        CompactNode::SizeScale(scale) => MathNode::SizeSwitch(scale),
+        CompactNode::Newline => MathNode::LineBreak,
     }
 }
 

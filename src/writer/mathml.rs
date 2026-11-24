@@ -160,6 +160,9 @@ impl MathWriter for MathmlWriter {
 struct MathOutput<T> {
     target: T,
     operator_font: Option<TextStyle>,
+    /// Text size in force from enclosing `mathsize`, in thousandths of the
+    /// normal size. MathML sizes are relative to it, TeX's are not.
+    size_per_mille: u16,
 }
 
 impl<T> MathOutput<T> {
@@ -167,8 +170,35 @@ impl<T> MathOutput<T> {
         Self {
             target,
             operator_font: None,
+            size_per_mille: 1000,
         }
     }
+    /// Enter the size a declaration selects, returning the previous one for
+    /// the caller to restore.
+    fn enter_size(&mut self, scale: Option<u8>) -> u16 {
+        let previous = self.size_per_mille;
+        if let Some(scale) = scale {
+            self.size_per_mille = size_per_mille(scale);
+        }
+        previous
+    }
+
+    /// A space's width in ems of the current font. Only a physical length is
+    /// unaffected by the text size in force.
+    fn space_width(
+        &self,
+        width: Rational,
+        basis: Option<SpaceBasis>,
+        style: MathStyle,
+    ) -> Rational {
+        let width = crate::ast::style::local_space_width(width, basis, style);
+        if basis == Some(SpaceBasis::Physical) && self.size_per_mille != 1000 {
+            width.scaled_by(1000, u32::from(self.size_per_mille))
+        } else {
+            width
+        }
+    }
+
     fn with_operator_font<R>(
         &mut self,
         font: Option<TextStyle>,
@@ -246,14 +276,73 @@ fn marker_attrs(marker: u8) -> (&'static str, &'static str) {
     )
 }
 
-fn start_math_style_marker(w: &mut XmlWriter, marker: u8) -> Result<MathStyle> {
-    open_math_style(w, marker_attrs(marker))?;
-    Ok(MathStyle::branch_from_switch(marker))
+/// The size of a `\tiny` … `\Huge` declaration. Like the LaTeX writer, read
+/// an index past the last one as `\Huge`.
+fn size_per_mille(scale: u8) -> u16 {
+    let sizes = crate::ast::SIZE_SCALE_PER_MILLE;
+    sizes[usize::from(scale).min(sizes.len() - 1)]
 }
 
-fn start_math_style_marker_fast(buf: &mut XmlBuffer, marker: u8) -> MathStyle {
-    open_math_style_fast(buf, marker_attrs(marker));
-    MathStyle::branch_from_switch(marker)
+/// The `mathsize` percentage that takes the size `from` to the size `to`:
+/// `120%` for `\large` at the normal size.
+fn mathsize_percent(from: u16, to: u16) -> String {
+    use std::fmt::Write as _;
+    let mut value = String::new();
+    // Thousandths of a percent, rounded.
+    let (to, from) = (u32::from(to), u32::from(from));
+    let thousandths = (to * 100_000 + from / 2) / from;
+    let _ = write!(value, "{}.{:03}", thousandths / 1000, thousandths % 1000);
+    let trimmed = value.trim_end_matches('0').trim_end_matches('.').len();
+    value.truncate(trimmed);
+    value.push('%');
+    value
+}
+
+/// Open the `mstyle` of one declaration run and return the style its
+/// content is written in.
+fn start_declared_style(
+    w: &mut XmlWriter,
+    decls: RunDeclarations,
+    inherited: MathStyle,
+) -> Result<MathStyle> {
+    let mut tag = BytesStart::new("mstyle");
+    if let Some(marker) = decls.style {
+        let (display, depth) = marker_attrs(marker);
+        tag.push_attribute(("displaystyle", display));
+        tag.push_attribute(("scriptlevel", depth));
+    }
+    if let Some(scale) = decls.size {
+        tag.push_attribute((
+            "mathsize",
+            mathsize_percent(w.size_per_mille, size_per_mille(scale)).as_str(),
+        ));
+    }
+    w.write_event(Event::Start(tag)).map_err(to_err)?;
+    Ok(decls.style.map_or(inherited, MathStyle::branch_from_switch))
+}
+
+fn start_declared_style_fast(
+    buf: &mut XmlBuffer,
+    decls: RunDeclarations,
+    inherited: MathStyle,
+) -> MathStyle {
+    buf.push_str("<mstyle");
+    if let Some(marker) = decls.style {
+        let (display, depth) = marker_attrs(marker);
+        buf.push_str(" displaystyle=\"");
+        buf.push_str(display);
+        buf.push_str("\" scriptlevel=\"");
+        buf.push_str(depth);
+        buf.push('"');
+    }
+    if let Some(scale) = decls.size {
+        buf.push_str(" mathsize=\"");
+        let percent = mathsize_percent(buf.size_per_mille, size_per_mille(scale));
+        buf.push_str(&percent);
+        buf.push('"');
+    }
+    buf.push('>');
+    decls.style.map_or(inherited, MathStyle::branch_from_switch)
 }
 
 /// If every cell starts in the same style, a nested table can keep its
@@ -282,18 +371,59 @@ fn inherited_table_marker(
     all_start_with(marker).then_some(marker)
 }
 
-/// Consecutive declarations replace one another and a trailing declaration
-/// contributes no content. Keep the runs borrowed from their original row.
+/// A declaration that applies to the rest of its row: a math-style switch
+/// (`\scriptstyle`) or a text-size switch (`\large`).
+#[derive(Clone, Copy)]
+enum Declaration {
+    Style(u8),
+    Size(u8),
+}
+
+/// The declarations in force for one run of a row.
+#[derive(Clone, Copy, Default)]
+struct RunDeclarations {
+    style: Option<u8>,
+    size: Option<u8>,
+}
+
+impl RunDeclarations {
+    fn is_some(self) -> bool {
+        self.style.is_some() || self.size.is_some()
+    }
+}
+
+fn node_declaration(node: &MathNode) -> Option<Declaration> {
+    match node {
+        MathNode::StyleSwitch(value) => Some(Declaration::Style(*value)),
+        MathNode::SizeSwitch(value) => Some(Declaration::Size(*value)),
+        _ => None,
+    }
+}
+
+fn compact_declaration(node: CompactNode) -> Option<Declaration> {
+    match node {
+        CompactNode::StyleSwitch(value) => Some(Declaration::Style(value)),
+        CompactNode::SizeScale(value) => Some(Declaration::Size(value)),
+        _ => None,
+    }
+}
+
+/// Consecutive declarations of one kind replace one another, a style and a
+/// size accumulate, and a trailing declaration contributes no content. Keep
+/// the runs borrowed from their original row.
 fn style_runs<T>(
     mut nodes: &[T],
-    switch: impl Fn(&T) -> Option<u8>,
-) -> impl Iterator<Item = (Option<u8>, &[T])> {
-    let mut style = None;
+    switch: impl Fn(&T) -> Option<Declaration>,
+) -> impl Iterator<Item = (RunDeclarations, &[T])> {
+    let mut decls = RunDeclarations::default();
     std::iter::from_fn(move || {
         while let Some((node, rest)) = nodes.split_first()
-            && let Some(value) = switch(node)
+            && let Some(decl) = switch(node)
         {
-            style = Some(value);
+            match decl {
+                Declaration::Style(value) => decls.style = Some(value),
+                Declaration::Size(value) => decls.size = Some(value),
+            }
             nodes = rest;
         }
         let (_, tail) = nodes.split_first()?;
@@ -303,13 +433,13 @@ fn style_runs<T>(
             .unwrap_or(tail.len());
         let (run, rest) = nodes.split_at(n);
         nodes = rest;
-        Some((style, run))
+        Some((decls, run))
     })
 }
 
 /// A single styled run supplies its own grouping via mstyle. All other
 /// explicit rows still need mrow, especially in fixed-arity elements.
-fn needs_mrow<T>(nodes: &[T], switch: impl Fn(&T) -> Option<u8>) -> bool {
+fn needs_mrow<T>(nodes: &[T], switch: impl Fn(&T) -> Option<Declaration>) -> bool {
     let mut iter = nodes.iter();
     if !iter.next().is_some_and(|node| switch(node).is_some()) {
         return true;
@@ -325,7 +455,7 @@ fn write_sequence<T>(
     nodes: &[T],
     inherited: MathStyle,
     explicit_row: bool,
-    switch: impl Fn(&T) -> Option<u8>,
+    switch: impl Fn(&T) -> Option<Declaration>,
     emit: impl Fn(&mut XmlWriter, &T, MathStyle) -> Result<()>,
 ) -> Result<()> {
     let grouped = explicit_row && needs_mrow(nodes, &switch);
@@ -333,16 +463,18 @@ fn write_sequence<T>(
         w.write_event(Event::Start(BytesStart::new("mrow")))
             .map_err(to_err)?;
     }
-    for (style, run) in style_runs(nodes, switch) {
-        let active_style = if let Some(marker) = style {
-            start_math_style_marker(w, marker)?
+    for (decls, run) in style_runs(nodes, switch) {
+        let active_style = if decls.is_some() {
+            start_declared_style(w, decls, inherited)?
         } else {
             inherited
         };
+        let outer_size = w.enter_size(decls.size);
         for node in run {
             emit(w, node, active_style)?;
         }
-        if style.is_some() {
+        w.size_per_mille = outer_size;
+        if decls.is_some() {
             w.write_event(Event::End(BytesEnd::new("mstyle")))
                 .map_err(to_err)?;
         }
@@ -365,13 +497,7 @@ fn write_nodes(
         nodes,
         inherited,
         explicit_row,
-        |node| {
-            if let MathNode::StyleSwitch(value) = node {
-                Some(*value)
-            } else {
-                None
-            }
-        },
+        node_declaration,
         write_node,
     )
 }
@@ -394,27 +520,23 @@ fn write_style_sequence_fast(
     explicit_row: bool,
     emit: impl Fn(&mut XmlBuffer, &AstArena, NodeId, MathStyle),
 ) {
-    let switch = |&id: &NodeId| {
-        if let CompactNode::StyleSwitch(value) = *arena.node(id) {
-            Some(value)
-        } else {
-            None
-        }
-    };
+    let switch = |&id: &NodeId| compact_declaration(*arena.node(id));
     let grouped = explicit_row && needs_mrow(nodes, switch);
     if grouped {
         open_tag(buf, "mrow");
     }
-    for (style, run) in style_runs(nodes, switch) {
-        let active_style = if let Some(marker) = style {
-            start_math_style_marker_fast(buf, marker)
+    for (decls, run) in style_runs(nodes, switch) {
+        let active_style = if decls.is_some() {
+            start_declared_style_fast(buf, decls, inherited)
         } else {
             inherited
         };
+        let outer_size = buf.enter_size(decls.size);
         for &id in run {
             emit(buf, arena, id, active_style);
         }
-        if style.is_some() {
+        buf.size_per_mille = outer_size;
+        if decls.is_some() {
             close_tag(buf, "mstyle");
         }
     }
@@ -446,10 +568,9 @@ fn write_node_in(
         MathNode::Symbol(kind, s) => write_symbol_node(w, *kind, s),
         MathNode::Text(style, s) => write_text(w, *style, s),
         MathNode::Space(r) => write_mspace(w, *r),
-        MathNode::ExplicitSpace { width, basis } => write_mspace(
-            w,
-            crate::ast::style::local_space_width(*width, Some(*basis), display_style),
-        ),
+        MathNode::ExplicitSpace { width, basis } => {
+            write_mspace(w, w.space_width(*width, Some(*basis), display_style))
+        },
         MathNode::Rule {
             width,
             height,
@@ -502,8 +623,8 @@ fn write_node_in(
                     display_style,
                     false,
                     |item| match item {
-                        FencedItem::Element(MathNode::StyleSwitch(value)) => Some(*value),
-                        _ => None,
+                        FencedItem::Element(node) => node_declaration(node),
+                        FencedItem::Middle(_) => None,
                     },
                     |w, item, style| match item {
                         FencedItem::Element(MathNode::Symbol(SymbolKind::Fence, text))
@@ -1043,12 +1164,17 @@ fn write_node_in(
             let branch = display_style.choose(display, text, script, script_script);
             write_node_in(w, branch, single_argument, display_style)
         },
-        MathNode::StyleSwitch(_) => {
+        MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_) => {
             if single_argument {
                 w.write_event(Event::Empty(BytesStart::new("mrow")))
                     .map_err(to_err)?;
             }
             Ok(())
+        },
+        MathNode::LineBreak => {
+            let mut tag = BytesStart::new("mspace");
+            tag.push_attribute(("linebreak", "newline"));
+            w.write_event(Event::Empty(tag)).map_err(to_err)
         },
         MathNode::MathAtom { atom_type, content } => {
             if let Some(class) = big_delim_class(*atom_type)
@@ -1742,8 +1868,7 @@ fn write_node_fast_in(
         },
         CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
-            let width =
-                crate::ast::style::local_space_width(r, arena.space_basis(id), display_style);
+            let width = buf.space_width(r, arena.space_basis(id), display_style);
             if width.num < 0 {
                 buf.push_str("<mspace width=\"0em\" style=\"margin-inline-start:");
             } else {
@@ -2261,12 +2386,11 @@ fn write_node_fast_in(
             let _ = write!(buf, " depth=\"{}em\"", (-lift.as_f64()).max(0.0));
             buf.push_str("/>");
         },
-        CompactNode::StyleSwitch(_) => {
+        CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {
             if single_argument {
                 buf.push_str("<mrow/>");
             }
         },
-        CompactNode::SizeScale(_) => {},
         CompactNode::Newline => buf.push_str(r#"<mspace linebreak="newline"/>"#),
         CompactNode::MathChoice {
             display,

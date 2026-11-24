@@ -2578,3 +2578,23 @@ fn dashed_table_rules_are_drawn_as_dashes() {
         }
     }
 }
+
+/// Size declarations and line breaks draw alike from the heap and the
+/// compact AST.
+#[test]
+fn heap_and_compact_draw_sizes_and_line_breaks_alike() {
+    for latex in [
+        r"a \\ b",
+        r"\large a b",
+        r"a{\Huge b \\ c}d",
+        r"\frac{{\tiny x \\ y}}{z}",
+    ] {
+        let parsed = mathema::from_latex(latex).unwrap();
+        let options = mathema::render::RenderOptions::default();
+        assert_eq!(
+            mathema::render::render_to_svg(&parsed.expr(), &options).unwrap(),
+            mathema::render::render_to_svg_compact(parsed.compact_expr(), &options).unwrap(),
+            "{latex}"
+        );
+    }
+}

@@ -45,6 +45,27 @@ fn normalize_nodes_depth_with_identifiers(
     depth: usize,
     merge_identifiers: bool,
 ) {
+    normalize_nodes_keeping_breaks(nodes, depth, merge_identifiers, false);
+}
+
+/// Normalize a heap table cell. A line break in it stays inside a group, as a
+/// bare `\\` would end the table row when written (see
+/// [`normalize_array_cell`]).
+fn normalize_array_cell_math(cell: &mut Vec<MathNode>, depth: usize, merge_identifiers: bool) {
+    normalize_nodes_keeping_breaks(cell, depth, merge_identifiers, true);
+    for node in cell {
+        if matches!(node, MathNode::LineBreak) {
+            *node = MathNode::Row(vec![MathNode::LineBreak]);
+        }
+    }
+}
+
+fn normalize_nodes_keeping_breaks(
+    nodes: &mut Vec<MathNode>,
+    depth: usize,
+    merge_identifiers: bool,
+    keep_break_groups: bool,
+) {
     // Phase 1: recursively normalize each child
     for node in nodes.iter_mut() {
         normalize_node_depth_with_identifiers(node, depth, merge_identifiers);
@@ -58,9 +79,8 @@ fn normalize_nodes_depth_with_identifiers(
                 // Phase 4: remove empty Rows
             },
             MathNode::Row(children)
-                if children
-                    .iter()
-                    .any(|child| matches!(child, MathNode::StyleSwitch(_))) =>
+                if children.iter().any(is_declaration_math)
+                    || keep_break_groups && children.contains(&MathNode::LineBreak) =>
             {
                 // Explicit groups containing a direct style declaration must
                 // remain grouped so the declaration cannot leak to siblings.
@@ -351,10 +371,10 @@ fn can_take_prescripts_math(node: &MathNode) -> bool {
         MathNode::PreScripts { .. }
         | MathNode::Space(_)
         | MathNode::ExplicitSpace { .. }
-        | MathNode::StyleSwitch(_) => false,
-        MathNode::Row(children) => !children
-            .iter()
-            .any(|n| matches!(n, MathNode::StyleSwitch(_))),
+        | MathNode::StyleSwitch(_)
+        | MathNode::SizeSwitch(_)
+        | MathNode::LineBreak => false,
+        MathNode::Row(children) => !children.iter().any(is_declaration_math),
         _ => true,
     }
 }
@@ -390,7 +410,7 @@ fn normalize_node_depth_with_identifiers(
             // Unwrap single-child Row, except for an empty declaration group:
             // `{"\scriptstyle"}` must not leak into the following sibling.
             if children.len() == 1
-                && !matches!(children.first(), Some(MathNode::StyleSwitch(_)))
+                && !children.first().is_some_and(is_declaration_math)
                 && let Some(child) = children.pop()
             {
                 *node = child;
@@ -518,7 +538,7 @@ fn normalize_node_depth_with_identifiers(
         | MathNode::NativeArray { rows, .. } => {
             for row in rows.iter_mut() {
                 for cell in row.iter_mut() {
-                    normalize_nodes_depth_with_identifiers(cell, d, merge_identifiers);
+                    normalize_array_cell_math(cell, d, merge_identifiers);
                 }
             }
         },
@@ -552,7 +572,7 @@ fn normalize_node_depth_with_identifiers(
             // The font command's braces scope a lone style group (see the
             // compact normalizer).
             if let [MathNode::Row(inner)] = children.as_mut_slice()
-                && inner.iter().any(|n| matches!(n, MathNode::StyleSwitch(_)))
+                && inner.iter().any(is_declaration_math)
             {
                 *children = std::mem::take(inner);
             }
@@ -591,7 +611,9 @@ fn normalize_node_depth_with_identifiers(
         | MathNode::Space(_)
         | MathNode::ExplicitSpace { .. }
         | MathNode::Rule { .. }
-        | MathNode::StyleSwitch(_) => {},
+        | MathNode::StyleSwitch(_)
+        | MathNode::SizeSwitch(_)
+        | MathNode::LineBreak => {},
     }
 }
 
@@ -687,7 +709,7 @@ fn normalize_span_keeping_breaks(
             CompactNode::Row(inner) if is_idotsint_row(arena, inner) => {
                 flattened.push(id);
             },
-            CompactNode::Row(inner) if has_direct_style_switch(arena, inner) => {
+            CompactNode::Row(inner) if has_direct_declaration(arena, inner) => {
                 // Explicit groups containing a style declaration must remain
                 // grouped so the declaration cannot leak into following
                 // siblings when LaTeX is written back.
@@ -867,7 +889,7 @@ fn leading_scripts_on(
         return Ok(Some(arena.push_node(CompactNode::Row(span))));
     }
     let takes = can_take_prescripts(*arena.node(next))
-        && !matches!(*arena.node(next), CompactNode::Row(span) if has_direct_style_switch(arena, span))
+        && !matches!(*arena.node(next), CompactNode::Row(span) if has_direct_declaration(arena, span))
         && !is_empty_base_script(arena, next);
     Ok(takes.then(|| {
         arena.push_node(CompactNode::PreScripts {
@@ -974,7 +996,7 @@ fn normalize_compact_node_with_identifiers(
             let children = arena.children(new_span);
             let new_span = match children {
                 [only] => match *arena.node(*only) {
-                    CompactNode::Row(inner) if has_direct_style_switch(arena, inner) => inner,
+                    CompactNode::Row(inner) if has_direct_declaration(arena, inner) => inner,
                     _ => new_span,
                 },
                 _ => new_span,
@@ -1305,11 +1327,25 @@ fn is_idotsint_row(arena: &AstArena, span: NodeSpan) -> bool {
     is_int(children[0]) && is_dots(children[1]) && is_int(children[2])
 }
 
-fn has_direct_style_switch(arena: &AstArena, span: NodeSpan) -> bool {
+fn has_direct_declaration(arena: &AstArena, span: NodeSpan) -> bool {
     arena
         .children(span)
         .iter()
-        .any(|&id| matches!(*arena.node(id), CompactNode::StyleSwitch(_)))
+        .any(|&id| is_declaration(*arena.node(id)))
+}
+
+/// A style or size switch, whose group must not be opened: it would apply to
+/// the siblings after the group.
+fn is_declaration(node: CompactNode) -> bool {
+    matches!(
+        node,
+        CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_)
+    )
+}
+
+/// Heap counterpart of [`is_declaration`].
+fn is_declaration_math(node: &MathNode) -> bool {
+    matches!(node, MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_))
 }
 
 /// Normalize a `Row` node in place: normalize its list, then unwrap a single
@@ -1327,7 +1363,7 @@ fn normalize_row_node(
         normalize_span_keeping_breaks(arena, span, depth, merge_identifiers, keep_break_groups)?;
     let children = arena.children(new_span);
     let keep_group = |child: NodeId| match *arena.node(child) {
-        CompactNode::StyleSwitch(_) => true,
+        CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => true,
         CompactNode::Row(inner) => keep_break_groups && has_direct_newline(arena, inner),
         _ => false,
     };

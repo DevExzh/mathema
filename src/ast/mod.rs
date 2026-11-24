@@ -24,6 +24,7 @@ use std::fmt;
 /// A complete math expression with display mode.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct MathExpr {
     /// Top-level sequence of nodes making up the expression, in reading order.
     pub nodes: Vec<MathNode>,
@@ -45,6 +46,7 @@ pub enum DisplayStyle {
 /// Unit basis for an explicitly sized horizontal math space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum SpaceBasis {
     /// An em of the text font at the current text size, including inside scripts.
     TextEm,
@@ -62,6 +64,7 @@ pub enum SpaceBasis {
 /// generic arrays continue to materialize as `Array`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum MatrixKind {
     /// A full-size `matrix` environment.
     Matrix,
@@ -519,11 +522,23 @@ pub enum MathNode {
         /// arguments; its arity is unknown. Each is one group's content.
         arguments: Vec<Vec<MathNode>>,
     },
+    /// Text-size declaration (`\tiny` … `\Huge`, MathML `mathsize="120%"`)
+    /// that scales the nodes after it in the same row. The compact
+    /// representation stores the same value in
+    /// [`compact::CompactNode::SizeScale`]: 0 = `\tiny`, 1 = `\scriptsize`,
+    /// 2 = `\footnotesize`, 3 = `\small`, 4 = `\normalsize`, 5 = `\large`,
+    /// 6 = `\Large`, 7 = `\LARGE`, 8 = `\huge`, 9 = `\Huge`.
+    SizeSwitch(u8),
+    /// A line break (`\\` in an environment or at the top level, MathML
+    /// `<mspace linebreak="newline"/>`). The compact representation is
+    /// [`compact::CompactNode::Newline`].
+    LineBreak,
 }
 
 /// TeX math class of a symbol, controlling spacing and stretchiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum SymbolKind {
     /// Ordinary symbol with no special spacing (e.g. `\partial`, `\infty`).
     Ordinary,
@@ -548,6 +563,7 @@ pub enum SymbolKind {
 /// Font variant (math alphabet) applied to text or symbols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum TextStyle {
     /// Upright (roman) normal weight, e.g. `\mathrm`.
     Normal,
@@ -582,6 +598,7 @@ pub enum TextStyle {
 /// Style of a fraction, controlling bar visibility and sizing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum FractionKind {
     /// Standard `\frac`: bar shown, size follows current style.
     Normal,
@@ -598,6 +615,7 @@ pub enum FractionKind {
 /// Horizontal alignment of an array/matrix column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum ColumnAlign {
     /// Left-aligned (`l`).
     Left,
@@ -620,6 +638,7 @@ pub enum AccentPosition {
 /// Direction/shape of a cancellation stroke.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum StrokeKind {
     /// Diagonal line from bottom-left to top-right (`\cancel`).
     Forward,
@@ -636,6 +655,7 @@ pub enum StrokeKind {
 /// Distinguishes `\phantom` from `\vphantom`, `\hphantom`, and `\smash`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum PhantomKind {
     /// `\phantom`: keep all dimensions (width, height, depth).
     #[default]
@@ -876,6 +896,32 @@ impl MathExpr {
     }
 }
 
+/// Scale factors, in thousandths of the normal size, of the text-size
+/// declarations stored in [`MathNode::SizeSwitch`] /
+/// [`compact::CompactNode::SizeScale`], indexed `\tiny` (0) … `\Huge` (9).
+pub(crate) const SIZE_SCALE_PER_MILLE: [u16; 10] =
+    [500, 700, 800, 900, 1000, 1200, 1440, 1728, 2074, 2488];
+
+/// The size declaration closest to `scale` (a multiple of the normal size)
+/// and whether it matches within 1%. `None` for a non-positive or non-finite
+/// scale.
+pub(crate) fn nearest_size_scale(scale: f64) -> Option<(u8, bool)> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let log = scale.ln();
+    let (index, per_mille) = SIZE_SCALE_PER_MILLE
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            let da = (f64::from(**a) / 1000.0).ln() - log;
+            let db = (f64::from(**b) / 1000.0).ln() - log;
+            da.abs().total_cmp(&db.abs())
+        })?;
+    let exact = (f64::from(*per_mille) / 1000.0 / scale - 1.0).abs() <= 0.01;
+    Some((index as u8, exact))
+}
+
 /// Maximum allowed AST nesting depth for safe recursive traversal.
 pub const MAX_AST_DEPTH: usize = 128;
 
@@ -1022,7 +1068,9 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         | MathNode::Space(_)
         | MathNode::ExplicitSpace { .. }
         | MathNode::Rule { .. }
-        | MathNode::StyleSwitch(_) => Ok(()),
+        | MathNode::StyleSwitch(_)
+        | MathNode::SizeSwitch(_)
+        | MathNode::LineBreak => Ok(()),
 
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {

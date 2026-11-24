@@ -152,6 +152,8 @@ fn arb_math_node() -> impl Strategy<Value = MathNode> {
             height: Rational::new(2, 1),
             lift: Rational::new(0, 1),
         }),
+        (0u8..=9).prop_map(MathNode::SizeSwitch),
+        Just(MathNode::LineBreak),
     ];
 
     // depth=3, desired_size=24, expected_branch_size=3
@@ -371,6 +373,108 @@ fn arb_roundtrip_node() -> impl Strategy<Value = MathNode> {
 
 fn arb_roundtrip_expr() -> impl Strategy<Value = MathExpr> {
     prop::collection::vec(arb_roundtrip_node(), 1..=3).prop_map(MathExpr::inline)
+}
+
+// =========================================================================
+// Property: heap <-> compact conversion is lossless
+// =========================================================================
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(500))]
+
+    /// `to_math_expr ∘ from_math_expr` is the identity on the heap AST,
+    /// including the size declarations and line breaks that once collapsed
+    /// to an empty row and a zero space.
+    #[test]
+    fn heap_compact_heap_is_identity(expr in arb_math_expr()) {
+        let compact = mathema::ast::compact::CompactExpr::from_math_expr(&expr).unwrap();
+        prop_assert_eq!(compact.to_math_expr(), expr);
+    }
+
+    /// `from_math_expr ∘ to_math_expr` is the identity on compact trees the
+    /// parser built, not only on ones that came from the heap.
+    #[test]
+    fn compact_heap_compact_is_identity(input in arb_declaration_latex()) {
+        use mathema::ast::compact::CompactExpr;
+        let parsed = mathema::from_latex(&input).unwrap();
+        let compact = parsed.compact_expr();
+        let rebuilt = CompactExpr::from_math_expr(&compact.to_math_expr()).unwrap();
+        prop_assert_eq!(rebuilt.display, compact.display);
+        prop_assert_eq!(dump(&rebuilt), dump(compact), "{}", input);
+    }
+}
+
+/// The subtree structure of a compact expression, independent of where the
+/// arena stores each node.
+fn dump(expr: &mathema::CompactExpr) -> String {
+    use mathema::ast::arena::AstArena;
+    use mathema::ast::compact::{CompactNode, NodeId};
+    fn node(arena: &AstArena, id: NodeId, out: &mut String) {
+        let mut list = |tag: &str, ids: &[NodeId]| {
+            out.push_str(tag);
+            out.push('(');
+            for &id in ids {
+                node(arena, id, out);
+                out.push(' ');
+            }
+            out.push(')');
+        };
+        match *arena.node(id) {
+            CompactNode::Row(span) => list("row", arena.children(span)),
+            CompactNode::Styled(style, span) => list(&format!("{style:?}"), arena.children(span)),
+            CompactNode::Fraction { num, den, .. } => list("frac", &[num, den]),
+            CompactNode::Superscript { base, sup } => list("sup", &[base, sup]),
+            CompactNode::Sqrt(inner) => list("sqrt", &[inner]),
+            CompactNode::Identifier(s) => out.push_str(arena.str_val(s)),
+            leaf @ (CompactNode::SizeScale(_)
+            | CompactNode::Newline
+            | CompactNode::StyleSwitch(_)) => {
+                out.push_str(&format!("{leaf:?}"));
+            },
+            other => panic!("the generator does not build {other:?}"),
+        }
+    }
+    let mut out = String::new();
+    for &id in expr.arena.children(expr.roots) {
+        node(&expr.arena, id, &mut out);
+        out.push(' ');
+    }
+    out
+}
+
+/// LaTeX whose parse holds size declarations, style switches and line breaks
+/// in every kind of list.
+fn arb_declaration_latex() -> impl Strategy<Value = String> {
+    let leaf = prop_oneof![
+        Just("x".to_string()),
+        Just("y".to_string()),
+        prop::sample::select(vec![
+            "tiny",
+            "scriptsize",
+            "footnotesize",
+            "small",
+            "normalsize",
+            "large",
+            "Large",
+            "LARGE",
+            "huge",
+            "Huge",
+            "scriptstyle",
+        ])
+        .prop_map(|name| format!("\\{name} ")),
+    ];
+    leaf.prop_recursive(4, 32, 4, |inner| {
+        let list = prop::collection::vec(inner, 1..=4).prop_map(|items| items.concat());
+        prop_oneof![
+            3 => list.clone(),
+            2 => list.clone().prop_map(|s| format!("{{{s}}}")),
+            1 => (list.clone(), list.clone()).prop_map(|(a, b)| format!("{a}\\\\ {b}")),
+            1 => (list.clone(), list.clone()).prop_map(|(a, b)| format!("\\frac{{{a}}}{{{b}}}")),
+            1 => list.clone().prop_map(|s| format!("z^{{{s}}}")),
+            1 => list.clone().prop_map(|s| format!("\\mathbf{{{s}}}")),
+            1 => list.prop_map(|s| format!("\\sqrt{{{s}}}")),
+        ]
+    })
 }
 
 // =========================================================================

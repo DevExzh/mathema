@@ -391,7 +391,12 @@ fn italic_correction(base: &LayoutBox) -> f64 {
 }
 
 /// Font size scale factors for LaTeX sizing commands (\tiny..\Huge).
-const SIZE_SCALE_TABLE: [f64; 10] = [0.5, 0.7, 0.8, 0.9, 1.0, 1.2, 1.44, 1.728, 2.074, 2.488];
+/// Scale factor of a `\tiny` … `\Huge` declaration (`SizeScale` index).
+fn size_scale_factor(idx: u8) -> f64 {
+    crate::ast::SIZE_SCALE_PER_MILLE
+        .get(usize::from(idx))
+        .map_or(1.0, |&per_mille| f64::from(per_mille) / 1000.0)
+}
 
 #[derive(Clone)]
 struct LayoutCtx<'a> {
@@ -497,6 +502,9 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     if nodes.is_empty() {
         return LayoutBox::kern(0.0);
     }
+    if nodes.contains(&MathNode::LineBreak) {
+        return layout_lines(nodes, ctx);
+    }
 
     let mut children = Vec::with_capacity(nodes.len() * 2);
     let mut cursor_x = 0.0;
@@ -508,6 +516,10 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     for node in nodes {
         if let MathNode::StyleSwitch(style) = node {
             current_ctx = current_ctx.with_switch(*style);
+            continue;
+        }
+        if let MathNode::SizeSwitch(idx) = node {
+            current_ctx.size_scale = size_scale_factor(*idx);
             continue;
         }
 
@@ -540,6 +552,35 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         height: max_height,
         depth: max_depth,
         kind: BoxKind::HBox { children },
+    }
+}
+
+/// Stack the lines of a row holding line breaks, as the arena layout does.
+fn layout_lines(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
+    let size = ctx.size();
+    let baselineskip = 1.2 * size;
+    let mut width: f64 = 0.0;
+    let mut cursor_y = 0.0;
+    let mut children = Vec::new();
+    for line in nodes.split(|node| matches!(node, MathNode::LineBreak)) {
+        let line = layout_row(line, ctx);
+        width = width.max(line.width);
+        cursor_y += line.height.max(0.7 * baselineskip);
+        let baseline = cursor_y;
+        cursor_y += line.depth.max(0.3 * baselineskip);
+        children.push(PositionedBox::new(0.0, baseline, line));
+    }
+    let half = cursor_y / 2.0;
+    let axis = ctx.params.axis_height * size;
+    let height = half + axis;
+    for child in &mut children {
+        child.dy = height - child.dy;
+    }
+    LayoutBox {
+        width,
+        height,
+        depth: half - axis,
+        kind: BoxKind::VBox { children },
     }
 }
 
@@ -824,7 +865,9 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             layout_node(content, &ctx.with_styled_face(TextStyle::Normal))
         },
         // A declaration controls its enclosing math list and has no box of its own.
-        MathNode::StyleSwitch(_) => LayoutBox::kern(0.0),
+        MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_) | MathNode::LineBreak => {
+            LayoutBox::kern(0.0)
+        },
     }
 }
 
@@ -1650,8 +1693,7 @@ fn layout_row_segment_arena(
 
         // Handle size scale switches — update scale for subsequent children
         if let CompactNode::SizeScale(idx) = *ast.node(id) {
-            let scale = SIZE_SCALE_TABLE.get(idx as usize).copied().unwrap_or(1.0);
-            current_ctx.size_scale = scale;
+            current_ctx.size_scale = size_scale_factor(idx);
             continue;
         }
 

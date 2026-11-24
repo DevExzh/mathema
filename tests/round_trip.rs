@@ -954,3 +954,77 @@ fn mathml_forced_line_break_is_a_line_break() {
         r"a\quad b"
     );
 }
+
+/// The heap AST keeps `\large`-style declarations and line breaks, so
+/// `expr()` (and serde) no longer turn them into an empty row and a zero
+/// space.
+#[test]
+fn heap_expr_keeps_size_declarations_and_line_breaks() {
+    use mathema::ast::MathNode;
+    let parsed = from_latex(r"a \\ \large b").unwrap();
+    let expr = parsed.expr();
+    assert!(expr.nodes.contains(&MathNode::LineBreak), "{expr:?}");
+    assert!(expr.nodes.contains(&MathNode::SizeSwitch(5)), "{expr:?}");
+    let config = Config::default();
+    assert_eq!(
+        LatexWriter::write(&expr, &config).unwrap(),
+        parsed.to_latex().unwrap()
+    );
+    assert_eq!(
+        MathmlWriter::write(&expr, &config).unwrap(),
+        parsed.to_mathml().unwrap()
+    );
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn size_declarations_and_line_breaks_survive_serde() {
+    let expr = from_latex(r"a \\ \large b").unwrap().expr();
+    let json = serde_json::to_string(&expr).unwrap();
+    assert_eq!(
+        serde_json::from_str::<mathema::MathExpr>(&json).unwrap(),
+        expr
+    );
+}
+
+/// The heap normalizer treats size declarations and line breaks as the
+/// compact one does: neither takes leading scripts, and a break in a table
+/// cell stays inside a group.
+#[test]
+fn heap_and_compact_normalize_declarations_alike() {
+    use mathema::ast::compact::CompactExpr;
+    use mathema::ast::normalize::{normalize_compact_expr, normalize_expr};
+    use mathema::ast::{MathExpr, MathNode};
+    let check = |mut heap: MathExpr| {
+        let mut compact = CompactExpr::from_math_expr(&heap).unwrap();
+        normalize_expr(&mut heap);
+        normalize_compact_expr(&mut compact).unwrap();
+        let config = Config::default();
+        let written = LatexWriter::write_compact(&compact, &config).unwrap();
+        assert_eq!(LatexWriter::write(&heap, &config).unwrap(), written);
+        written
+    };
+    for node in [MathNode::LineBreak, MathNode::SizeSwitch(5)] {
+        check(MathExpr::inline(vec![
+            MathNode::Superscript {
+                base: Box::new(MathNode::Row(vec![])),
+                sup: Box::new(MathNode::Number("2".into())),
+            },
+            node,
+            MathNode::Identifier("x".into()),
+        ]));
+    }
+    for latex in [
+        r"{\large x}y",
+        r"{\large}y",
+        r"\mathbf{{\large x}}y",
+        r"\begin{matrix}a{\\}b & {c\\d}e & {\\}\end{matrix}",
+    ] {
+        let written = check(from_latex(latex).unwrap().expr());
+        assert_eq!(
+            convert(&written, Format::LaTeX, Format::LaTeX).unwrap(),
+            written,
+            "{latex}"
+        );
+    }
+}

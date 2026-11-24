@@ -252,7 +252,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Symbol(_, s) if s == "/" => out.push_str("\\/"),
         MathNode::Symbol(_, s) => out.push_str(s),
         MathNode::Text(_, s) => write_quoted_text(out, s),
-        MathNode::StyleSwitch(_) => {},
+        MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_) | MathNode::LineBreak => {},
         MathNode::Space(r) => {
             write_unicode_space(out, r.as_f64());
         },

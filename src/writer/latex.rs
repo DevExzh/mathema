@@ -2994,7 +2994,7 @@ fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> 
         .children(span)
         .iter()
         .any(|&id| match *arena.node(id) {
-            CompactNode::StyleSwitch(_) => true,
+            CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => true,
             CompactNode::Row(inner) | CompactNode::Styled(_, inner) => {
                 row_contains_style_switch(arena, inner, depth + 1)
             },

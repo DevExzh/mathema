@@ -131,6 +131,9 @@ struct MathmlCompactParser<'a> {
     /// need to survive until its closing tag. Nested rows use their own slice.
     fence_depth: Option<u32>,
     fence_marks: SmallVec<[(NodeId, FenceRole); 4]>,
+    /// Text size in force from enclosing `mathsize`, as a multiple of the
+    /// normal size: MathML sizes are relative, `SizeScale` is not.
+    text_size: f64,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -167,6 +170,7 @@ impl<'a> MathmlCompactParser<'a> {
             mathvariant_style: None,
             fence_depth: None,
             fence_marks: SmallVec::new(),
+            text_size: 1.0,
         })
     }
 
@@ -630,12 +634,78 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn mspace(&mut self, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
-        let node = if is_mspace_newline(start) {
-            CompactNode::Newline
-        } else {
-            CompactNode::Space(mspace_width(start))
+        if is_mspace_newline(start) {
+            return self.arena.push_node(CompactNode::Newline);
+        }
+        match mspace_width(start) {
+            MathLength::Absolute(width) => self.arena.push_space(width, SpaceBasis::Physical),
+            MathLength::FontRelative(width) => self.arena.push_node(CompactNode::Space(width)),
+            // A percentage or unitless multiple of the default width, 0em.
+            MathLength::Percent(_) | MathLength::Multiple(_) => {
+                self.arena.push_node(CompactNode::Space(Rational::zero()))
+            },
+        }
+    }
+
+    /// The text size an `mstyle`'s `mathsize` selects, as a `SizeScale`
+    /// index and the multiple of the normal size it stands for. The value is
+    /// a percentage, unitless multiple or `em`/`ex` length of the inherited
+    /// size, or `small`/`normal`/`big` (read as 90%/100%/120%). An absolute
+    /// size has no AST form yet and is dropped with a warning; a size between
+    /// two declarations takes the nearer one with a warning.
+    fn mathsize_scale(&mut self, start: &quick_xml::events::BytesStart<'_>) -> Option<(u8, f64)> {
+        let value = get_attr(start, "mathsize")?;
+        let value = value.trim();
+        let factor = match value {
+            "small" => 0.9,
+            "normal" => 1.0,
+            "big" => 1.2,
+            _ => match parse_length(value) {
+                Some(
+                    MathLength::Percent(factor)
+                    | MathLength::Multiple(factor)
+                    | MathLength::FontRelative(factor),
+                ) => factor.as_f64(),
+                Some(MathLength::Absolute(_)) => {
+                    self.style_warning(format!(
+                        "mathsize=\"{value}\": absolute font sizes are not supported; the size was dropped"
+                    ));
+                    return None;
+                },
+                None => {
+                    self.style_warning(format!(
+                        "mathsize=\"{value}\" is not a valid size; it was ignored"
+                    ));
+                    return None;
+                },
+            },
         };
-        self.arena.push_node(node)
+        let size = self.text_size * factor;
+        let Some((index, exact)) = crate::ast::nearest_size_scale(size) else {
+            self.style_warning(format!(
+                "mathsize=\"{value}\" is not a positive size; it was ignored"
+            ));
+            return None;
+        };
+        let nearest = f64::from(crate::ast::SIZE_SCALE_PER_MILLE[usize::from(index)]) / 1000.0;
+        if exact {
+            // Drop the rounding of the percentages, which would add up in
+            // nested elements.
+            return Some((index, nearest));
+        }
+        self.style_warning(format!(
+            "mathsize=\"{value}\" was approximated by the nearest size, {:.1}% of the normal size",
+            nearest * 100.0
+        ));
+        Some((index, size))
+    }
+
+    fn style_warning(&mut self, message: String) {
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message,
+            span: None,
+        });
     }
 
     /// Resolve the supported absolute and relative `mstyle` attributes.
@@ -690,7 +760,13 @@ impl<'a> MathmlCompactParser<'a> {
             self.style_display = display;
             self.style_level = level;
         }
+        let size = self.mathsize_scale(start);
+        let previous_size = self.text_size;
+        if let Some((_, text_size)) = size {
+            self.text_size = text_size;
+        }
         let children = self.parse_children("mstyle")?;
+        self.text_size = previous_size;
         self.style_display = previous.0;
         self.style_level = previous.1;
         self.mathvariant_style = previous_variant;
@@ -710,6 +786,9 @@ impl<'a> MathmlCompactParser<'a> {
                 .arena
                 .push_node(CompactNode::StyleSwitch(self.style_marker_for(scoped)));
             scoped_children.push(marker);
+        }
+        if let Some((size, _)) = size {
+            scoped_children.push(self.arena.push_node(CompactNode::SizeScale(size)));
         }
         scoped_children.extend(children);
         let content = self.flatten_ids(&scoped_children);
@@ -2926,21 +3005,98 @@ fn is_mspace_newline(start: &quick_xml::events::BytesStart<'_>) -> bool {
         .all(|name| get_attr(start, name).is_none())
 }
 
-fn mspace_width(start: &quick_xml::events::BytesStart<'_>) -> Rational {
-    fn em_length(value: &str) -> Option<Rational> {
-        Rational::from_scaled_decimal(value.trim().strip_suffix("em")?.trim(), Rational::one())
+/// A MathML 3 length (§2.1.5.2), resolved at the converter's nominal
+/// ten-point text size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MathLength {
+    /// A length relative to the current font (`em`, `ex`, `mu`, a named
+    /// space), in ems of that font.
+    FontRelative(Rational),
+    /// An absolute length (`pt`, `px`, `pc`, `in`, `cm`, `mm`), in ems of the
+    /// nominal ten-point font. CSS units: `1in` = `72pt` = `96px`.
+    Absolute(Rational),
+    /// A percentage of the attribute's reference value, as a factor.
+    Percent(Rational),
+    /// A deprecated unitless multiple of the attribute's reference value.
+    Multiple(Rational),
+}
+
+impl MathLength {
+    fn is_zero(self) -> bool {
+        match self {
+            Self::FontRelative(r) | Self::Absolute(r) | Self::Percent(r) | Self::Multiple(r) => {
+                r.num == 0
+            },
+        }
     }
-    let width = get_attr(start, "width").as_deref().and_then(em_length);
-    if width == Some(Rational::zero())
+}
+
+/// The MathML 3 named spaces (§2.1.5.2), in eighteenths of an em.
+fn named_space(name: &str) -> Option<i32> {
+    let (negative, name) = match name.strip_prefix("negative") {
+        Some(rest) => (true, rest),
+        None => (false, name),
+    };
+    let eighteenths = match name {
+        "veryverythinmathspace" => 1,
+        "verythinmathspace" => 2,
+        "thinmathspace" => 3,
+        "mediummathspace" => 4,
+        "thickmathspace" => 5,
+        "verythickmathspace" => 6,
+        "veryverythickmathspace" => 7,
+        _ => return None,
+    };
+    Some(if negative { -eighteenths } else { eighteenths })
+}
+
+/// Parse a MathML length: a number with an optional unit, or a named space.
+/// The non-standard TeX unit `mu` (1/18 em) is accepted as well.
+fn parse_length(value: &str) -> Option<MathLength> {
+    let value = value.trim();
+    if let Some(eighteenths) = named_space(value) {
+        return Some(MathLength::FontRelative(Rational::new(eighteenths, 18)));
+    }
+    let split = value
+        .find(|c: char| c.is_ascii_alphabetic() || c == '%')
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number = number.trim_end();
+    let scaled =
+        |num: i32, den: u32| Rational::from_scaled_decimal(number, Rational::new(num, den));
+    Some(match unit.to_ascii_lowercase().as_str() {
+        "em" => MathLength::FontRelative(scaled(1, 1)?),
+        // KaTeX's x-height, as the LaTeX reader uses.
+        "ex" => MathLength::FontRelative(scaled(431, 1000)?),
+        "mu" => MathLength::FontRelative(scaled(1, 18)?),
+        // 1pt = 1/72in = 803/800 TeX points; 1em = 10 TeX points.
+        "pt" => MathLength::Absolute(scaled(803, 8000)?),
+        "px" => MathLength::Absolute(scaled(2409, 32000)?),
+        "pc" => MathLength::Absolute(scaled(2409, 2000)?),
+        "in" => MathLength::Absolute(scaled(7227, 1000)?),
+        "cm" => MathLength::Absolute(scaled(7227, 2540)?),
+        "mm" => MathLength::Absolute(scaled(7227, 25400)?),
+        "%" => MathLength::Percent(scaled(1, 100)?),
+        "" => MathLength::Multiple(scaled(1, 1)?),
+        _ => return None,
+    })
+}
+
+/// The `mspace` width. A zero width with a negative CSS
+/// `margin-inline-start` is the writer's spelling of a negative space.
+fn mspace_width(start: &quick_xml::events::BytesStart<'_>) -> MathLength {
+    let width = get_attr(start, "width").as_deref().and_then(parse_length);
+    if width.is_some_and(MathLength::is_zero)
         && let Some(style) = get_attr(start, "style")
         && let Some((key, value)) = style.trim().trim_end_matches(';').split_once(':')
         && key.trim().eq_ignore_ascii_case("margin-inline-start")
-        && let Some(margin) = em_length(value)
-        && margin.num < 0
+        && let Some(margin @ (MathLength::FontRelative(length) | MathLength::Absolute(length))) =
+            parse_length(value)
+        && length.num < 0
     {
         return margin;
     }
-    width.unwrap_or_else(Rational::zero)
+    width.unwrap_or(MathLength::FontRelative(Rational::zero()))
 }
 
 /// Apply MathML token whitespace rules to the four XML whitespace characters.
@@ -3027,6 +3183,220 @@ mod tests {
         } else {
             MathNode::Row(nodes)
         }
+    }
+
+    fn warnings(input: &str) -> Vec<String> {
+        MathmlReader::parse(input, &Config::default())
+            .unwrap()
+            .diagnostics
+            .into_iter()
+            .map(|d| d.message)
+            .collect()
+    }
+
+    #[test]
+    fn mspace_widths_resolve_every_mathml_unit_and_named_space() {
+        let em = |num, den| MathNode::Space(Rational::new(num, den));
+        let physical = |num, den| MathNode::ExplicitSpace {
+            width: Rational::new(num, den),
+            basis: SpaceBasis::Physical,
+        };
+        for (width, expected) in [
+            ("2em", em(2, 1)),
+            ("1ex", em(431, 1000)),
+            ("9mu", em(1, 2)),
+            ("10pt", physical(803, 800)),
+            ("4px", physical(2409, 8000)),
+            ("1pc", physical(2409, 2000)),
+            ("1in", physical(7227, 1000)),
+            ("1cm", physical(7227, 2540)),
+            ("10mm", physical(7227, 2540)),
+            ("veryverythinmathspace", em(1, 18)),
+            ("verythinmathspace", em(2, 18)),
+            ("thinmathspace", em(3, 18)),
+            ("mediummathspace", em(4, 18)),
+            ("thickmathspace", em(5, 18)),
+            ("verythickmathspace", em(6, 18)),
+            ("veryverythickmathspace", em(7, 18)),
+            ("negativeveryverythinmathspace", em(-1, 18)),
+            ("negativethinmathspace", em(-3, 18)),
+            ("negativeveryverythickmathspace", em(-7, 18)),
+            // A percentage or unitless multiple of the default width, 0em.
+            ("50%", em(0, 1)),
+            ("2", em(0, 1)),
+            // Not a length.
+            ("wide", em(0, 1)),
+        ] {
+            let input = format!(r#"<math><mspace width="{width}"/></math>"#);
+            assert_eq!(parse_one(&input), expected, "{width}");
+        }
+        // The writer's negative-space spelling accepts any unit too.
+        assert_eq!(
+            parse_one(r#"<math><mspace width="0pt" style="margin-inline-start:-1ex"/></math>"#),
+            em(-431, 1000)
+        );
+    }
+
+    #[test]
+    fn mstyle_mathsize_reads_as_a_size_declaration() {
+        for (size, scale) in [
+            ("120%", 5),
+            ("50%", 0),
+            ("248.8%", 9),
+            ("1.44", 6),
+            ("0.8em", 2),
+            ("small", 3),
+            ("normal", 4),
+            ("big", 5),
+        ] {
+            let input =
+                format!(r#"<math><mstyle mathsize="{size}"><mi>x</mi></mstyle><mi>y</mi></math>"#);
+            assert_eq!(
+                parse(&input),
+                vec![
+                    MathNode::Row(vec![
+                        MathNode::SizeSwitch(scale),
+                        MathNode::Identifier("x".into())
+                    ]),
+                    MathNode::Identifier("y".into()),
+                ],
+                "{size}"
+            );
+            assert!(warnings(&input).is_empty(), "{size}");
+        }
+    }
+
+    #[test]
+    fn mstyle_mathsize_combines_with_the_math_style() {
+        assert_eq!(
+            parse_one(
+                r#"<math><mstyle displaystyle="false" scriptlevel="1" mathsize="144%"><mi>x</mi></mstyle></math>"#
+            ),
+            MathNode::Row(vec![
+                MathNode::StyleSwitch(2),
+                MathNode::SizeSwitch(6),
+                MathNode::Identifier("x".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn nested_mathsize_is_relative_to_the_inherited_size() {
+        // TeX sizes are absolute, so \small inside \large is 90/120 = 75%.
+        for (latex, inner) in [
+            (r"{\large a{\small b}}", r#"mathsize="75%""#),
+            (r"{\large a{\normalsize b}}", r#"mathsize="83.333%""#),
+            (r"{\large a{\large b}}", r#"mathsize="100%""#),
+            (
+                r"{\Huge a\frac{\tiny b}{{\large c}d}}",
+                r#"mathsize="20.096%""#,
+            ),
+        ] {
+            let parsed = crate::from_latex(latex).unwrap();
+            let mathml = parsed.to_mathml().unwrap();
+            assert!(mathml.contains(inner), "{mathml}");
+            let config = Config::default();
+            assert_eq!(
+                crate::writer::mathml::MathmlWriter::write(&parsed.expr(), &config).unwrap(),
+                mathml
+            );
+            let reread = crate::from_mathml(&mathml).unwrap();
+            assert!(reread.diagnostics().is_empty());
+            assert_eq!(reread.to_mathml().unwrap(), mathml);
+            assert_eq!(reread.to_latex().unwrap(), parsed.to_latex().unwrap());
+        }
+        // Compounded foreign sizes.
+        assert_eq!(
+            crate::from_mathml(r#"<math><mstyle mathsize="1.2em"><mi>a</mi><mstyle mathsize="120%"><mi>b</mi></mstyle></mstyle></math>"#)
+                .unwrap().to_latex().unwrap(),
+            r"{\large a{\Large b}}"
+        );
+    }
+
+    #[test]
+    fn sizes_stay_in_their_group_through_normalization() {
+        use crate::Format::{LaTeX, MathML};
+        for latex in [
+            r"{\large x}y",
+            r"\frac{{\large x}y}{z}",
+            r"\mathbf{{\large x}y}",
+        ] {
+            assert_eq!(crate::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+            let mathml = crate::convert(latex, LaTeX, MathML).unwrap();
+            assert_eq!(crate::convert(&mathml, MathML, LaTeX).unwrap(), latex);
+            let mut heap = crate::from_latex(latex).unwrap().expr();
+            crate::ast::normalize::normalize_expr(&mut heap);
+            assert_eq!(
+                crate::writer::latex::LatexWriter::write(&heap, &Config::default()).unwrap(),
+                latex
+            );
+        }
+    }
+
+    #[test]
+    fn physical_spaces_keep_their_width_under_mathsize() {
+        // 10pt is one em of the normal size, 1/1.2 em of \large.
+        let parsed = crate::from_latex(r"\large a\kern10pt b\kern1em c").unwrap();
+        let mathml = parsed.to_mathml().unwrap();
+        assert!(
+            mathml.contains(r#"width="0.833"#) && mathml.contains(r#"width="1em""#),
+            "{mathml}"
+        );
+        assert_eq!(
+            crate::writer::mathml::MathmlWriter::write(&parsed.expr(), &Config::default()).unwrap(),
+            mathml
+        );
+    }
+
+    #[test]
+    fn unsupported_mathsize_values_warn() {
+        let absolute = r#"<math><mstyle mathsize="12pt"><mi>x</mi></mstyle></math>"#;
+        assert_eq!(parse_one(absolute), MathNode::Identifier("x".into()));
+        assert!(warnings(absolute)[0].contains("absolute font sizes"));
+
+        let between = r#"<math><mstyle mathsize="300%"><mi>x</mi></mstyle></math>"#;
+        assert_eq!(
+            parse_one(between),
+            MathNode::Row(vec![
+                MathNode::SizeSwitch(9),
+                MathNode::Identifier("x".into())
+            ])
+        );
+        assert!(warnings(between)[0].contains("nearest size, 248.8% of the normal size"));
+
+        for invalid in ["huge", "0%", "-120%"] {
+            let input = format!(r#"<math><mstyle mathsize="{invalid}"><mi>x</mi></mstyle></math>"#);
+            assert_eq!(
+                parse_one(&input),
+                MathNode::Identifier("x".into()),
+                "{invalid}"
+            );
+            assert_eq!(warnings(&input).len(), 1, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn latex_size_declarations_round_trip_through_mathml() {
+        for latex in [
+            r"{\large x}y",
+            r"a\Huge b",
+            r"\scriptstyle a\tiny b",
+            r"\frac{\small a}{b}",
+            r"x^{\footnotesize 2}",
+        ] {
+            let first = crate::from_latex(latex).unwrap();
+            let mathml = first.to_mathml().unwrap();
+            assert!(mathml.contains("mathsize="), "{latex}: {mathml}");
+            let second = crate::from_mathml(&mathml).unwrap();
+            assert_eq!(second.to_mathml().unwrap(), mathml, "{latex}");
+            // The mstyle scopes a trailing declaration as a group.
+            let third = crate::from_latex(&second.to_latex().unwrap()).unwrap();
+            assert_eq!(third.to_mathml().unwrap(), mathml, "{latex}");
+        }
+        let grouped = crate::from_latex(r"{\large x}y").unwrap();
+        let reread = crate::from_mathml(&grouped.to_mathml().unwrap()).unwrap();
+        assert_eq!(reread.expr(), grouped.expr());
+        assert_eq!(reread.to_latex().unwrap(), r"{\large x}y");
     }
 
     #[test]

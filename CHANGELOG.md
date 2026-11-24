@@ -82,6 +82,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them, and a script that is a radical or is parenthesized is written in
   parentheses.
 
+- **Breaking:** the public AST types `CompactNode`, `MathExpr`,
+  `CompactExpr`, `ColumnAlign`, `FractionKind`, `StrokeKind`, `PhantomKind`,
+  `SpaceBasis`, `MatrixKind`, `TextStyle` and `SymbolKind` are now
+  `#[non_exhaustive]`, so later releases can add variants and fields
+  without another break. Code outside the crate must add a wildcard arm
+  (`_ => …`) to a `match` on these enums, and build `MathExpr` /
+  `CompactExpr` with their constructors (`MathExpr::new`,
+  `MathExpr::inline`, `MathExpr::block`, `CompactExpr::new`,
+  `CompactExpr::from_math_expr`) instead of a struct literal; their fields
+  stay public to read, and a struct pattern needs `..`. `MathAtomType`,
+  `LimitStyle`, `DisplayStyle` and `AccentPosition` stay closed.
+- **Breaking (behavior):** `MathNode` has two new variants,
+  `MathNode::SizeSwitch(u8)` (`\tiny` … `\Huge`, MathML `mathsize`) and
+  `MathNode::LineBreak` (`\\`, `<mspace linebreak="newline"/>`).
+  `ConvertResult::expr()`, `into_expr()` and serde output now carry them
+  where they produced an empty `Row` and a zero-width `Space` before, so
+  the heap AST no longer loses text sizes and line breaks
+  (`CompactExpr::from_math_expr` and `to_math_expr` convert them both
+  ways).
 - **Breaking (behavior):** `\above` and `\abovewithdelims` need a
   dimension, as in TeX ("Missing number") and MathJax ("Missing
   dimension"): `{a \above b}` is now an error under `Strictness::Strict`
@@ -160,6 +179,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `..` or the field.
 
 ### Fixed
+
+- The MathML writer no longer drops size declarations: `\large` writes
+  `<mstyle mathsize="120%">` around the content it scales, combined with
+  `displaystyle`/`scriptlevel` when a math-style switch is also in force.
+  MathML sizes are relative to the inherited size and TeX's are not, so
+  `\small` inside `\large` is `75%`, and a physical kern (`\kern10pt`)
+  keeps its width. The MathML reader maps an `mstyle` `mathsize` given as
+  a percentage, a unitless multiple, an `em`/`ex` length or
+  `small`/`normal`/`big` back to the declaration. A size between two
+  declarations takes the nearer one with a warning; an absolute size
+  (`mathsize="12pt"`) is dropped with a warning.
+- Normalization no longer opens a group holding a size declaration:
+  `convert` read `{\large x}y` as `\large xy`.
+- Rendering a heap `MathExpr` applies size declarations and stacks the
+  lines of a row with line breaks, as rendering the compact AST does.
+- The MathML reader reads every `mspace` width unit: `ex`, the absolute
+  `pt`, `px`, `pc`, `in`, `cm` and `mm` (CSS units, kept as physical
+  widths that do not shrink in scripts), the TeX unit `mu`, and the MathML
+  3 named spaces from `veryverythinmathspace` to `veryverythickmathspace`
+  and their `negative…` forms. Only `em` was read before; any other width
+  became zero. A percentage or unitless width is, per MathML 3, a multiple
+  of the default width 0.
 
 - A `\color` switch in a `\left…\right` list stays in force across
   `\middle` to the end of the fence, as in TeX and KaTeX:
