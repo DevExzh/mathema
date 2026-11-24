@@ -1564,3 +1564,46 @@ fn a_prime_after_a_group_stays_inside_its_leading_scripts() {
         "{decoded:?}"
     );
 }
+
+#[test]
+fn only_arrow_pair_variations_are_drawn_with_two_characters() {
+    let arrow = |variation: u8, characters: &str| {
+        let mut template = vec![0x03, 0, 14, variation, 0];
+        template.extend(line5(&c5(0, 3, 'a')));
+        template.extend([0x01, 0x01]);
+        for ch in characters.chars() {
+            template.extend(c5(0, 22, ch));
+        }
+        template.push(0);
+        eq5(&template)
+    };
+    let drawn = |bytes: &[u8], config: &Config| {
+        let result = MtefReader::parse_bytes(bytes, config).unwrap();
+        (format!("{:?}", result.expr.nodes), result.has_warnings())
+    };
+    for (variation, characters, expected) in [
+        (0x05, "→←", "⇄"),
+        (0x06, "⇀↽", "⇌"),
+        (0x24, "→", "→"),
+        (0x24, "", "→"),
+        (0x05, "", "⇄"),
+    ] {
+        for config in [Config::default(), lenient()] {
+            let (nodes, warned) = drawn(&arrow(variation, characters), &config);
+            assert!(nodes.contains(expected) && !warned, "{characters}: {nodes}");
+        }
+    }
+    // More characters than the variation draws: refused, or the first.
+    for (variation, characters) in [
+        (0x00, "→←"),
+        (0x10, "→←"),
+        (0x24, "→←"),
+        (0x05, "→xy"),
+        (0x06, "→x"),
+    ] {
+        let bytes = arrow(variation, characters);
+        assert!(strict_error(&bytes).contains("arrow template holds"));
+        let (nodes, warned) = drawn(&bytes, &lenient());
+        assert!(nodes.contains('→') && warned, "{characters}: {nodes}");
+    }
+}

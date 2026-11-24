@@ -605,11 +605,31 @@ impl Decoder<'_> {
                 arrow,
                 v3_label_on_top,
             } => {
-                // A pair of arrows is drawn with two characters, which the
-                // variation names together.
+                // The double and harpoon variations are drawn with two arrow
+                // characters, which the variation names together. Any other
+                // template has one character, the arrow itself.
+                let is_pair = matches!(arrow, '\u{21C4}' | '\u{21CC}');
                 let arrow = match glyphs.as_slice() {
+                    [] => arrow,
                     [glyph] => glyph.ch,
-                    _ => arrow,
+                    [first, second]
+                        if is_pair
+                            && [first, second]
+                                .iter()
+                                .all(|g| ('\u{2190}'..='\u{21FF}').contains(&g.ch)) =>
+                    {
+                        arrow
+                    },
+                    [first, ..] => {
+                        self.recover(
+                            start,
+                            format!(
+                                "arrow template holds {} characters; the first was used",
+                                glyphs.len()
+                            ),
+                        )?;
+                        first.ch
+                    },
                 };
                 let base =
                     self.char_node(arrow, |s| CompactNode::Symbol(SymbolKind::Relation, s))?;
