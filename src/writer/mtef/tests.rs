@@ -1257,3 +1257,62 @@ fn primes_on_styled_letters_are_not_embellishments() {
     let bytes = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
     assert!(!bytes.windows(3).any(|w| w == [0x06, 0x00, 5]));
 }
+
+#[test]
+fn stretchy_bar_accents_over_several_letters_are_not_a_loss() {
+    for (tag, attribute, mark) in [
+        ("mover", "accent", "&#xAF;"),
+        ("mover", "accent", "&#x203E;"),
+        ("mover", "accent", "&#x305;"),
+        ("munder", "accentunder", "&#x203E;"),
+        ("munder", "accentunder", "&#x332;"),
+        ("munder", "accentunder", "_"),
+    ] {
+        let source = format!(
+            "<math><{tag} {attribute}=\"true\"><mrow><mi>x</mi><mi>y</mi></mrow>\
+             <mo>{mark}</mo></{tag}></math>"
+        );
+        let result = crate::from_mathml(&source).unwrap();
+        let (_, diagnostics) = result
+            .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::default())
+            .unwrap();
+        assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
+    }
+    // The combining macron is `\bar`, which does not stretch.
+    let (_, diagnostics) = mtef_round_trip(r"\bar{xy}", crate::MtefVersion::V5);
+    assert!(!diagnostics.is_empty());
+}
+
+#[test]
+fn strikes_under_an_accent_keep_their_direction() {
+    for (latex, kind) in [
+        (r"\hat{\cancel{E}}", 22),
+        (r"\hat{\bcancel{E}}", 23),
+        (r"\hat{\xcancel{E}}", 21),
+        (r"\hat{\sout{E}}", 16),
+    ] {
+        let result = crate::from_latex(latex).unwrap();
+        let bytes = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+        assert!(
+            bytes.windows(6).any(|w| w == [0x06, 0, kind, 0x06, 0, 9]),
+            "{latex}"
+        );
+        let (back, diagnostics) = mtef_round_trip(latex, crate::MtefVersion::V5);
+        assert_eq!(back, result.to_latex().unwrap());
+        assert!(diagnostics.is_empty(), "{latex}: {diagnostics:?}");
+    }
+}
+
+#[test]
+fn accents_around_styled_accents_are_byte_stable() {
+    for latex in [
+        r"\hat{\mathbf{\hat{\mathrm A}}}",
+        r"\underleftarrow{\mathbf{\hat{\mathrm A}}}",
+        r"\hat{\mathbf{\tilde{A}}}",
+    ] {
+        for version in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+            // Asserts that writing what was read gives the same bytes.
+            mtef_round_trip(latex, version);
+        }
+    }
+}
