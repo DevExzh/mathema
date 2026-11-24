@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `\big`, `\Big`, `\bigg` and `\Bigg` delimiters render with the OpenType
+  MATH table's pre-designed size variants (or an extensible assembly) at TeX's
+  1.2/1.8/2.4/3.0 em instead of a scaled base glyph, centred on the math axis,
+  and stay text-size inside scripts as in TeX and KaTeX. **Breaking:** the
+  public `render::layout::BoxKind::Delimiter` gains a `scale` field (the font
+  size its glyph is chosen at), so exhaustive pattern matches on it must add
+  `..` or the field.
+
 ### Fixed
 
 - Symbols missing from the bundled Latin Modern fonts no longer render as
