@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - In MTEF, leading scripts stay outside the trailing scripts of the same base
   (`{}_a b_c`), and limits that draw nothing are dropped at once, with a
   writer warning, instead of one nesting level per write.
+- MTEF labelled double arrows (`⇌`, `⇄`) keep both arrows; the reader kept
+  only the first. Rewriting MTEF no longer adds zero-width spaces before some
+  leading scripts.
 
 - **Breaking (behavior):** `\hbar`, `\hslash`, `\ell`, `\Re`, `\Im`, the
   Hebrew letters, `\imath`, `\jmath` and `\eth` are identifiers (MathML
