@@ -340,7 +340,9 @@ fn rule_path(width: f64, height: f64, dashed: bool, vertical: bool, size: f64) -
             width, width, height, height
         );
     }
-    let mut path = String::from("F:");
+    // One buffer and the fixed-point number writer: `format!` per dash
+    // dominated the layout of large dashed tables.
+    let mut path = crate::render::path_writer::PathWriter::with_prefix("F:");
     let mut start = 0.0;
     while start < length {
         let end = (start + dash).min(length);
@@ -349,12 +351,18 @@ fn rule_path(width: f64, height: f64, dashed: bool, vertical: bool, size: f64) -
         } else {
             (start, 0.0, end, height)
         };
-        path.push_str(&format!(
-            "M{x0:.4},{y0:.4} L{x1:.4},{y0:.4} L{x1:.4},{y1:.4} L{x0:.4},{y1:.4} Z"
-        ));
+        path.cmd(b'M');
+        path.push_f64(x0);
+        path.push_f64(y0);
+        path.cmd(b'L');
+        for (x, y) in [(x1, y0), (x1, y1), (x0, y1)] {
+            path.push_f64(x);
+            path.push_f64(y);
+        }
+        path.close();
         start += 2.0 * dash;
     }
-    path
+    path.finish()
 }
 
 /// Split a rule mask into its solid and dashed rules.
