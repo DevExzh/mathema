@@ -1496,6 +1496,19 @@ impl RowRules {
     }
 }
 
+/// Read a brace-delimited text argument (a color name, model or spec) as
+/// TeX does: up to the matching `}`, so a nested group stays inside the
+/// argument instead of ending it early and unbalancing the input.
+fn braced_text(input: &str) -> IResult<&str, &str> {
+    match super::mhchem::capture_braced(input) {
+        Some((rest, body)) => Ok((rest, body)),
+        None => Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Char,
+        ))),
+    }
+}
+
 /// Read the `{i-j}` argument of `\cline` into a column mask. A balanced
 /// braced argument is consumed even when its range cannot be read; an
 /// unbalanced one is left for the cell parser, as before `\cline` was read.
@@ -5877,17 +5890,13 @@ impl LatexCompactParser {
             let (input, model) = take_while(|c: char| c != ']')(input)?;
             let (input, _) = char(']')(input)?;
             let (input, _) = ws(input)?;
-            let (input, _) = char('{')(input)?;
-            let (input, spec) = take_while(|c: char| c != '}')(input)?;
-            let (input, _) = char('}')(input)?;
+            let (input, spec) = braced_text(input)?;
             let resolved = crate::css_colors::resolve_color_model(model.trim(), spec.trim())
                 .map(crate::css_colors::rgb_to_hex)
                 .unwrap_or_else(|| spec.trim().to_string());
             Ok((input, resolved))
         } else {
-            let (input, _) = char('{')(input)?;
-            let (input, name) = take_while(|c: char| c != '}')(input)?;
-            let (input, _) = char('}')(input)?;
+            let (input, name) = braced_text(input)?;
             Ok((input, self.resolve_color(name)))
         }
     }
@@ -5916,17 +5925,11 @@ impl LatexCompactParser {
     /// user-defined named color. Produces no visible output.
     fn parse_definecolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, name) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, name) = braced_text(input)?;
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, model) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, model) = braced_text(input)?;
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, spec) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, spec) = braced_text(input)?;
         if let Some(rgb) = crate::css_colors::resolve_color_model(model.trim(), spec.trim()) {
             self.colors.insert(name.trim().to_string(), rgb);
         }
@@ -5940,13 +5943,9 @@ impl LatexCompactParser {
     /// color expression. Produces no visible output.
     fn parse_colorlet<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, name) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, name) = braced_text(input)?;
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, expr) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, expr) = braced_text(input)?;
         if let Some(rgb) = self.resolve_color_rgb(expr.trim()) {
             self.colors.insert(name.trim().to_string(), rgb);
         }
@@ -6074,9 +6073,7 @@ impl LatexCompactParser {
             input
         };
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, start_s) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, start_s) = braced_text(input)?;
         let (input, odd) = self.parse_colortbl_color(input)?;
         let (input, even) = self.parse_colortbl_color(input)?;
         let start = start_s.trim().parse::<usize>().unwrap_or(1).max(1);
@@ -6345,9 +6342,7 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         let (input, model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, color) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, color) = braced_text(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
         let bg_color = self.resolve_box_color(model.as_deref(), color);
         let bg_sid = self.arena.push_str(&bg_color);
@@ -6369,13 +6364,9 @@ impl LatexCompactParser {
         let (input, _) = ws(input)?;
         let (input, model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, frame_color) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, frame_color) = braced_text(input)?;
         let (input, _) = ws(input)?;
-        let (input, _) = char('{')(input)?;
-        let (input, bg_color) = take_while(|c: char| c != '}')(input)?;
-        let (input, _) = char('}')(input)?;
+        let (input, bg_color) = braced_text(input)?;
         let (input, content_id) = self.parse_required_group(input)?;
         let bg = self.resolve_box_color(model.as_deref(), bg_color);
         let frame = self.resolve_box_color(model.as_deref(), frame_color);

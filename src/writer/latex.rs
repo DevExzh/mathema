@@ -3325,14 +3325,13 @@ mod tests {
     #[test]
     fn unwritable_color_nary_body_is_spelled_as_it_reparses() {
         use crate::{Format, convert};
-        // Fuzz-found: this reads a `{`-named color, which is invalid and
-        // written transparently, so its single-letter n-ary body must not
-        // keep braces that the reparse would drop.
+        // An unwritable color is written transparently, so a single-letter
+        // n-ary body must not keep braces that the reparse would drop.
         // A numeric body keeps its braces whatever color it wears, and an
         // unwritable `#f00` is dropped like any other.
         for (src, want) in [
-            (r"{{\intop\color{{}c}}", r"\int c"),
-            (r"{{\intop\color{{}2}}", r"\int {2}"),
+            (r"\int \textcolor{#f00}{c}", r"\int c"),
+            (r"\int \textcolor{a_b}{c}", r"\int c"),
             (r"\int \textcolor{#f00}{2}", r"\int {2}"),
             (r"\sum_{i=1}^n \textcolor{#f00}{12}", r"\sum_{i= 1}^n {12}"),
         ] {

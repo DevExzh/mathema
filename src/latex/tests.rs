@@ -2290,11 +2290,10 @@ fn round_trip_ascii_identifier_script_bases() {
 #[test]
 fn malformed_color_brace_prime_script_is_idempotent() {
     let config = Config::default();
-    for (input, expected) in [
-        (r"a^{\{\color{red]{cohor{red}{}'}+b", r"a^{\{^{\prime}}+ b"),
-        (r"\{^'", r"\{^{\prime}"),
-        (r"\}^{\prime}", r"\}^{\prime}"),
-    ] {
+    // The color argument is read to its matching brace, so this fuzz input
+    // is unbalanced and rejected rather than recovered.
+    assert!(LatexReader::parse_compact(r"a^{\{\color{red]{cohor{red}{}'}+b", &config).is_err());
+    for (input, expected) in [(r"\{^'", r"\{^{\prime}"), (r"\}^{\prime}", r"\}^{\prime}")] {
         let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
         normalize_compact_expr(&mut parsed.expr).unwrap();
         let first = LatexWriter::write_compact(&parsed.expr, &config).unwrap();
@@ -4840,11 +4839,18 @@ fn unicode_number_runs_have_the_same_node_budget_as_ascii_digits() {
 #[test]
 fn malformed_textcolor_recovery_is_latex_idempotent() {
     let input = "\\textcolor{rex\0olor{bcolo!r{bluaLTeXc}\\operatorname{f}_di^2 x";
-    let parsed = crate::from_latex(input).unwrap();
-    let first = parsed.to_latex().unwrap();
-    let reparsed = crate::from_latex(&first).unwrap();
-    let second = reparsed.to_latex().unwrap();
-    assert_eq!(first, r"{\mathord{\operatorname{f}}}_d{i}^{2}x");
+    // The color name is read to its matching brace, so the input is
+    // unbalanced: Strict rejects it and Lenient recovers idempotently.
+    assert!(crate::from_latex(input).is_err());
+    let lenient = Config::default().with_strictness(crate::error::Strictness::Lenient);
+    let first = crate::from_latex_with(input, &lenient)
+        .unwrap()
+        .to_latex()
+        .unwrap();
+    let second = crate::from_latex_with(&first, &lenient)
+        .unwrap()
+        .to_latex()
+        .unwrap();
     assert_eq!(first, second);
 }
 
@@ -4975,5 +4981,26 @@ fn unbalanced_accent_groups_in_split_text_runs_stay_linear() {
             "{mid}: {:?}",
             start.elapsed()
         );
+    }
+}
+
+#[test]
+fn color_arguments_are_read_to_their_matching_brace() {
+    // A nested group stays inside the color argument instead of ending it,
+    // so unbalanced input is rejected rather than silently rebalanced.
+    for input in [
+        r"{{\intop\color{{}c}}",
+        r"{\textcolor{{}x}",
+        r"{\colorbox{{}{x}",
+    ] {
+        assert!(crate::from_latex(input).is_err(), "{input}");
+    }
+    // Balanced nesting parses; the braced name is not a color.
+    for (input, expected) in [
+        (r"\textcolor{{red}}{x}", "x"),
+        (r"\colorbox{{red}}{x}", r"\colorbox{{red}}{x}"),
+    ] {
+        let out = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+        assert_eq!(out, expected, "{input}");
     }
 }
