@@ -2004,11 +2004,12 @@ pub(crate) struct LatexCompactParser {
     /// of names not reported because the report limit was reached. Boxed:
     /// most parses meet none.
     undefined_commands: Option<Box<(HashMap<String, UndefinedKind>, usize)>>,
-    /// Set while a command is read as a single-token argument
-    /// (`\frac\foo{a}{b}`): an undefined command there takes no groups, so
-    /// none is parsed and thrown away. Cleared by the command it is for and
-    /// by any group read inside a known one.
-    single_token: bool,
+    /// Address of the control-word name being read as a single-token
+    /// argument (`\frac\foo{a}{b}`): if that exact command is undefined it
+    /// takes no groups, so none is parsed and thrown away. Keyed by address
+    /// so commands nested inside a known single-token command (`\frac\left(
+    /// \foo{a}\right)`) still take theirs.
+    single_token: Option<usize>,
     /// Address and length of the caller's input, used only to give a
     /// diagnostic the span of a name that is a slice of it.
     source: (usize, usize),
@@ -2041,7 +2042,7 @@ impl LatexCompactParser {
             in_left_right: false,
             arrays_built: 0,
             undefined_commands: None,
-            single_token: false,
+            single_token: None,
             source: (0, 0),
         }
     }
@@ -3613,9 +3614,6 @@ impl LatexCompactParser {
     #[inline]
     fn parse_braced_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = char('{')(input)?;
-        // A group inside a single-token argument (`\frac\sqrt{…}`) is not
-        // itself one.
-        self.single_token = false;
         let (input, ids) = self.parse_node_list(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('}')(input)?;
@@ -4602,7 +4600,7 @@ impl LatexCompactParser {
         let mut spelling = String::with_capacity(name.len() + 1);
         spelling.push('\\');
         spelling.push_str(name);
-        let single_token = std::mem::take(&mut self.single_token);
+        let single_token = self.single_token == Some(name.as_ptr() as usize);
         match self.classify_undefined(name, &spelling) {
             // A macro the preprocessor expands (`\erf`) reaches this point
             // only inside text it did not preprocess, such as a rewritten
@@ -4828,9 +4826,10 @@ impl LatexCompactParser {
                 // TeX reads a command argument as one unexpanded token: an
                 // undefined command here takes no groups, which are the
                 // enclosing command's (see `undefined_command`).
-                self.single_token = true;
+                let name = input.as_ptr() as usize + 1;
+                let outer = self.single_token.replace(name);
                 let parsed = self.parse_command(input);
-                self.single_token = false;
+                self.single_token = outer;
                 parsed
             },
             Some(&b) if b.is_ascii_alphabetic() => {

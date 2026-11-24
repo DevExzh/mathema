@@ -697,3 +697,26 @@ fn escaped_groups_with_scripts_without_a_base_are_stable() {
         assert_eq!(latex_default(&first), first, "{input} is not stable");
     }
 }
+
+#[test]
+fn only_the_single_token_command_itself_skips_its_groups() {
+    // An undefined command read as an unbraced argument takes no groups,
+    // but one nested inside a known single-token command still does.
+    let keep = keep();
+    let write = |input: &str| {
+        mathema::from_latex_with(input, &keep)
+            .unwrap()
+            .to_latex()
+            .unwrap()
+    };
+    assert_eq!(write(r"\frac\foo{a}{b}"), r"\frac{\foo}{a}b");
+    for (input, inner) in [
+        (r"\frac\left(\foo{ab}\right)c", r"\foo{ab}"),
+        (r"\frac\begin{matrix}\foo{a}\end{matrix}b", r"\foo{a}"),
+        (r"\frac\sqrt[\foo{ab}]{x}{b}", r"\foo{ab}"),
+    ] {
+        let out = write(input);
+        assert!(out.contains(inner), "{input} -> {out}");
+        assert!(!out.contains(r"\relax"), "{input} -> {out}");
+    }
+}
