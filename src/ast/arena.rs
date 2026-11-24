@@ -622,6 +622,17 @@ impl Default for AstArena {
 }
 
 #[cfg(test)]
+impl AstArena {
+    /// An arena that holds at most `limit` entries.
+    pub(crate) fn with_entry_limit(limit: usize) -> Self {
+        Self {
+            entry_limit: limit,
+            ..Self::new()
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use crate::error::{Error, LimitKind};
 

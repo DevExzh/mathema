@@ -1994,6 +1994,9 @@ pub(crate) struct LatexCompactParser {
     /// read so far, sorted by the id of their placeholder node. Almost every
     /// input has none, which lets list contexts skip looking for them.
     infix_markers: Vec<infix::InfixFraction>,
+    /// The infix-fraction warnings given, by source address and message, so
+    /// that a speculative re-parse of the same source does not repeat one.
+    infix_reported: HashSet<(usize, String)>,
     /// Set by `parse_element` to the script it parsed when that script had no
     /// base of its own (`^`, `_` or `'` after white space), which TeX attaches to the
     /// preceding atom.
@@ -2055,6 +2058,7 @@ impl LatexCompactParser {
             last_unstarred_operator: None,
             in_operator_name: false,
             infix_markers: Vec::new(),
+            infix_reported: HashSet::new(),
             implicit_base_script: None,
             font_scope_preserve_breaks: false,
             in_left_right: false,
@@ -2895,17 +2899,36 @@ impl LatexCompactParser {
         } else {
             self.parse_element(input)?
         };
-
-        Ok((
-            input,
-            self.arena.push_node(CompactNode::Nary {
-                op: op_char,
-                sub: sub_id,
-                sup: sup_id,
-                body: body_id,
-                limits: limit_style,
-            }),
-        ))
+        // A declaration scoping the rest of the list (`\sum \bf a \over b`,
+        // `\sum \color{red} a \over b`) splits around an infix fraction
+        // command: that row divides the enclosing list, with the operator in
+        // the numerator, so it is no body.
+        let spliced = self.is_infix_marker_id(body_id) || self.row_holds_infix_marker(body_id);
+        let body = if spliced {
+            self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
+        } else {
+            body_id
+        };
+        let nary = self.arena.push_node(CompactNode::Nary {
+            op: op_char,
+            sub: sub_id,
+            sup: sup_id,
+            body,
+            limits: limit_style,
+        });
+        if !spliced {
+            return Ok((input, nary));
+        }
+        let mut parts: SmallVec<[NodeId; 8]> = SmallVec::new();
+        parts.push(nary);
+        match *self.arena.node(body_id) {
+            CompactNode::Row(span) if !self.is_infix_marker_id(body_id) => {
+                parts.extend_from_slice(self.arena.children(span));
+            },
+            _ => parts.push(body_id),
+        }
+        let span = self.arena.push_children_deferred(&parts);
+        Ok((input, self.arena.push_node(CompactNode::Row(span))))
     }
 
     /// Parse optional _{...} and ^{...} in any order, returning (sub, sup).
@@ -3954,7 +3977,7 @@ impl LatexCompactParser {
             "rm" | "it" | "bf" | "sf" | "tt" | "cal" => self.parse_old_font_switch(input, name),
 
             "overwithdelims" | "atopwithdelims" | "abovewithdelims" => {
-                self.parse_infix_withdelims(input, name)
+                self.parse_infix_command(input, name)
             },
 
             // --- Table directives (when encountered outside table context) ---
@@ -5860,17 +5883,18 @@ impl LatexCompactParser {
                     Err(_) => break,
                 }
             }
-            // `\color` scopes the rest of the list, which an infix
-            // fraction command then divides, as in MathJax.
-            let ids = self.resolve_infix_fraction(ids);
-            let content_id = self.flatten_single(&ids);
-            Ok((
-                rest,
-                self.arena.push_node(CompactNode::Color {
+            // `\color` opens no group: like a font declaration, it splits
+            // around an infix fraction command, which divides the enclosing
+            // list (`a \color{red} b \over c` is `\frac{a\color{red}b}{c}`,
+            // as in TeX and KaTeX), the color in force on both sides.
+            let node = self.split_scope_at_infix(&ids, |this, run| {
+                let content = this.flatten_single(run);
+                this.arena.push_node(CompactNode::Color {
                     color: color_sid,
-                    content: content_id,
-                }),
-            ))
+                    content,
+                })
+            });
+            Ok((rest, node))
         }
     }
 

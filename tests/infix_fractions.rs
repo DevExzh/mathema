@@ -2,6 +2,9 @@
 //! `\brace`, `\brack`, `\…withdelims`) divide the math list they are in, in
 //! every context that holds a math list, and never reach a writer as text.
 
+use mathema::ast::MathNode;
+use mathema::reader::Reader;
+use mathema::reader::latex::LatexReader;
 use mathema::{Config, Strictness, from_latex, from_latex_with};
 
 /// The strict parse error of `input`.
@@ -41,8 +44,6 @@ const LIST_CONTEXTS: &[&str] = &[
     r"\boldsymbol{X}",
     r"\boxed{X}",
     r"\textcolor{red}{X}",
-    r"{\color{red}X}",
-    r"\color{red}X",
     r"\overset{X}{y}",
     r"\underset{y}{X}",
     r"\begin{array}{c}X\end{array}",
@@ -312,4 +313,209 @@ fn infix_command_is_not_an_atom() {
             "{input} vs {equivalent}"
         );
     }
+}
+
+/// The warnings of a lenient parse that contain `text`.
+fn lenient_warnings(input: &str, text: &str) -> usize {
+    from_latex_with(input, &lenient())
+        .unwrap_or_else(|e| panic!("{input}: {e}"))
+        .diagnostics()
+        .iter()
+        .filter(|d| d.message.contains(text))
+        .count()
+}
+
+/// A structural command after `\above` is no dimension register: the
+/// dimension is missing, and the command keeps its meaning.
+#[test]
+fn structural_command_is_no_dimension() {
+    for (input, recovered) in [
+        (
+            r"\begin{matrix} a \above \end{matrix}",
+            r"\begin{matrix}\frac{a}{}\end{matrix}",
+        ),
+        (r"\left( a \above \right)", r"\left(\frac{a}{}\right)"),
+        (r"{a \above \\ b}", r"{\frac{a}{\\ b}}"),
+    ] {
+        let error = strict_error(input);
+        assert!(
+            error.contains(r"missing dimension after \above"),
+            "{input}: {error}"
+        );
+        assert_eq!(
+            from_latex_with(input, &lenient()).unwrap().expr(),
+            from_latex(recovered).unwrap().expr(),
+            "{input}"
+        );
+        assert_eq!(lenient_warnings(input, "missing dimension"), 1, "{input}");
+    }
+    let error = strict_error(r"{a \abovewithdelims() \end{x}}");
+    assert!(error.contains("missing dimension"), "{error}");
+    for register in [r"\fboxrule", r"\arrayrulewidth", r"\jot", r"\tabcolsep"] {
+        let input = format!(r"{{a \above{register} b}}");
+        assert_eq!(
+            from_latex(&input).unwrap().expr(),
+            from_latex(r"\frac{a}{b}").unwrap().expr(),
+            "{input}"
+        );
+    }
+}
+
+/// A declaration between a large operator and an infix command (`\sum \bf
+/// \over`) leaves the operator in the numerator, as in TeX and KaTeX.
+#[test]
+fn large_operator_before_a_declaration_and_infix_is_the_numerator() {
+    for (input, equivalent) in [
+        (r"\sum \bf \over", r"\frac{\sum}{}"),
+        (r"\int \bf \brace", r"\genfrac\{\}{0pt}{}{\int}{}"),
+        (r"\sum \rm \above 1pt", r"\frac{\sum}{}"),
+    ] {
+        assert_eq!(
+            from_latex(input)
+                .unwrap_or_else(|e| panic!("{input}: {e}"))
+                .expr(),
+            from_latex(equivalent).unwrap().expr(),
+            "{input}"
+        );
+    }
+    for input in [r"\sum_i \color{red} a \over b", r"\sum_i \bf a \over b"] {
+        let nodes = from_latex(input).unwrap().expr().nodes;
+        let [MathNode::Fraction { num, .. }] = nodes.as_slice() else {
+            panic!("{input}: {nodes:?}");
+        };
+        assert!(format!("{num:?}").contains("Nary"), "{input}: {num:?}");
+    }
+}
+
+/// `\color` opens no group, so a later infix command divides the whole
+/// enclosing list, the color in force on both sides.
+#[test]
+fn color_switch_does_not_scope_an_infix_fraction() {
+    for (input, equivalent) in [
+        (
+            r"a \color{red} b \over c",
+            r"\frac{a\textcolor{red}{b}}{\textcolor{red}{c}}",
+        ),
+        (
+            r"\color{red}a \over b",
+            r"\frac{\textcolor{red}{a}}{\textcolor{red}{b}}",
+        ),
+        (
+            r"{x\color{red}a \over b}+c",
+            r"\frac{x\textcolor{red}{a}}{\textcolor{red}{b}}+c",
+        ),
+        (r"\color{red}{a \over b}", r"\textcolor{red}{\frac{a}{b}}"),
+    ] {
+        assert_eq!(
+            from_latex(input).unwrap().expr(),
+            from_latex(equivalent).unwrap().expr(),
+            "{input}"
+        );
+    }
+}
+
+/// As in KaTeX and MathJax the `\above` dimension may be braced; a number
+/// without a unit is TeX's "Illegal unit of measure".
+#[test]
+fn above_dimension_forms() {
+    for input in [r"{a\above{1pt} b}", r"{a\abovewithdelims(){0pt} b}"] {
+        assert!(from_latex(input).is_ok(), "{input}");
+    }
+    assert_eq!(
+        from_latex(r"{a\above{0pt} b}").unwrap().expr(),
+        from_latex(r"{a\atop b}").unwrap().expr()
+    );
+    for input in [r"{a\above 1 b}", r"{a\above{2} b}"] {
+        let error = strict_error(input);
+        assert!(
+            error.contains("illegal unit of measure"),
+            "{input}: {error}"
+        );
+        assert_eq!(lenient_warnings(input, "illegal unit"), 1, "{input}");
+        assert_eq!(
+            from_latex_with(input, &lenient()).unwrap().expr(),
+            from_latex(r"\frac{a}{b}").unwrap().expr(),
+            "{input}"
+        );
+    }
+}
+
+/// A speculative re-parse of the same source gives each warning once.
+#[test]
+fn infix_warnings_are_not_repeated() {
+    for (input, text) in [
+        (r"\begin{matrix} a \above 2pt b \end{matrix}", "thickness"),
+        (
+            r"\begin{matrix} a \above b \end{matrix}",
+            "missing dimension",
+        ),
+        (r"\begin{matrix} x^\over \end{matrix}", "misplaced"),
+        (r"\left( a \over b \over c \right)", "ambiguous"),
+    ] {
+        assert_eq!(lenient_warnings(input, text), 1, "{input}");
+    }
+    // Two commands are two warnings.
+    assert_eq!(
+        lenient_warnings(r"{a \above 2pt b} + {c \above 2pt d}", "thickness"),
+        2
+    );
+}
+
+/// A barless fraction whose part holds a `\middle` keeps its `\left…\right`
+/// pair instead of becoming `\binom`.
+#[test]
+fn middle_keeps_the_fence_of_a_barless_fraction() {
+    for input in [
+        r"\left( a \atop b \middle| c \right)",
+        r"\left[ a \middle| b \atop c \right]",
+    ] {
+        let first = from_latex(input).unwrap().to_latex().unwrap();
+        assert!(first.starts_with(r"\left"), "{input}: {first}");
+        let again = from_latex(&first).unwrap();
+        assert_eq!(again.expr(), from_latex(input).unwrap().expr(), "{first}");
+        assert_eq!(again.to_latex().unwrap(), first, "unstable: {input}");
+    }
+}
+
+/// TeX and KaTeX allow one infix command per list: a second is an error
+/// when strict; lenient, it divides the denominator.
+#[test]
+fn second_infix_command_is_ambiguous() {
+    for input in [
+        r"a \over b \over c",
+        r"{a \atop b \choose c}",
+        r"x+{a\over b\above1pt c}",
+    ] {
+        let error = strict_error(input);
+        assert!(error.contains("ambiguous"), "{input}: {error}");
+    }
+    assert_eq!(
+        from_latex_with(r"a \over b \over c", &lenient())
+            .unwrap()
+            .expr(),
+        from_latex(r"\frac{a}{\frac{b}{c}}").unwrap().expr()
+    );
+}
+
+/// A long chain of infix commands is resolved without recursion: no stack
+/// overflow on a small thread stack.
+#[test]
+fn long_infix_chain_does_not_overflow_the_stack() {
+    let chain = "a \\over ".repeat(5000) + "a";
+    let inputs = [
+        chain.clone(),
+        format!("{{{chain}}}"),
+        format!("\\left({chain}\\right)"),
+    ];
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || {
+            for input in &inputs {
+                let _ = LatexReader::parse_compact(input, &lenient());
+                assert!(LatexReader::parse_compact(input, &Config::default()).is_err());
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }

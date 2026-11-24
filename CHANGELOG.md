@@ -13,14 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dimension, as in TeX ("Missing number") and MathJax ("Missing
   dimension"): `{a \above b}` is now an error under `Strictness::Strict`
   ("missing dimension after \above"); `Strictness::Lenient` warns and draws
-  the default rule. A dimension register (`{a \abovewithdelims()\fboxrule
-  b}`) is a dimension: drawn at the default thickness with a warning, where
-  `\fboxrule` was left in the denominator. A missing `\…withdelims`
-  delimiter is a specific strict error ("missing delimiter after
-  \overwithdelims"); lenient, it is the null delimiter, as TeX inserts `.`.
-  An infix fraction command where one atom is required (`x^\over y`,
-  `\sqrt\over`, `\frac\over b`) is a strict error ("misplaced \over") and
-  a lenient warning; it was dropped silently.
+  the default rule. As in KaTeX and MathJax the dimension may be braced
+  (`\above{1pt}`); a number without a unit (`\above 1`) is an error like
+  TeX's "Illegal unit of measure" (lenient: read as points). A length
+  register named like one (`\fboxrule`, `\arrayrulewidth`, `\jot`, …) is a
+  dimension: drawn at the default thickness with a warning, where it was
+  left in the denominator; a structural command (`\end`, `\right`, `\\`)
+  never is. A missing `\…withdelims` delimiter is a specific strict error
+  ("missing delimiter after \overwithdelims"); lenient, it is the null
+  delimiter, as TeX inserts `.`. An infix fraction command where one atom
+  is required (`x^\over y`, `\sqrt\over`, `\frac\over b`) is a strict error
+  ("misplaced \over") and a lenient warning; it was dropped silently. This
+  follows TeX: KaTeX accepts `\frac\over b`, reading its argument as a
+  group.
+- **Breaking (behavior):** a second infix fraction command in one list
+  (`a \over b \over c`) is a strict error ("ambiguous \over after \over:
+  you need another { and }"), as in TeX and KaTeX. Lenient warns and, as
+  before, lets it divide the denominator (`\frac{a}{\frac{b}{c}}`).
 
 - **Breaking (behavior):** the LaTeX reader takes exactly one TeX token or
   one brace group as a script argument, as TeX, KaTeX and MathJax do. A
@@ -80,11 +89,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `\char`\_\char`\_infix…` in LaTeX; it is now a fraction, as in TeX and
   MathJax. The reader records these commands in a parser-private table
   instead of as identifiers, and every math list resolves them, including
-  `\operatorname` arguments, `CD` and `\xymatrix` cells, `\color`
-  scopes (`\color{red}a \over b` lost the fraction), `\ce`/`\pu`
+  `\operatorname` arguments, `CD` and `\xymatrix` cells, after a
+  `\color` switch (`\color{red}a \over b` lost the fraction), `\ce`/`\pu`
   rewrites and `\braket`. Scripts after one start the denominator
   (`a \over^2 b` is `\frac{a}{{}^2 b}`; the fraction was lost), and a
-  large operator before one is the numerator (`\sum\over b`).
+  large operator before one is the numerator (`\sum\over b`,
+  `\sum \bf \over`, `\sum_i \color{red} a \over b`). `\color` opens no
+  group, so like an old-style font switch it no longer confines a later
+  infix command: `a \color{red} b \over c` is `\frac{a\color{red}b}{c}`, as
+  in TeX and KaTeX. Warnings about these commands are no longer repeated by
+  speculative re-parses, and a long chain of them cannot overflow the
+  stack.
+- The LaTeX writer no longer folds a barless fraction whose part holds a
+  `\middle` into `\binom`: `\left( a \atop b \middle| c \right)` keeps its
+  `\left…\right` pair (it was written `\binom{a}{b\middle|c}`, which did
+  not read back the same).
 - The LaTeX writer keeps `\overline`/`\overset`/`\underbrace`… around
   `\mathop` of a named operator: `\overline{\mathop\lim}` was written
   `\mathop{\lim}\limits^{‾}`, which reads back as `\lim\limits^{‾}`, so

@@ -1190,6 +1190,10 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     num,
                     den,
                 } = *arena.node(child_id)
+                    // A `\middle` belongs to the `\left…\right` pair, which
+                    // `\binom` would not write.
+                    && !holds_middle(arena, num)
+                    && !holds_middle(arena, den)
                 {
                     // Like `\frac`, the argument braces already group each
                     // part; `write_node` would brace a multi-node row again.
@@ -2990,6 +2994,22 @@ fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> 
 /// in TeX `\mathop{\hat x}` is an Op atom (operator spacing, movable
 /// limits) while a bare `\hat{x}` is an ordinary accent atom, so dropping
 /// the wrapper around an accent would change the class on the next read.
+/// Whether `id` is a `\middle`, or a row or styled run holding one outside
+/// any nested fence.
+fn holds_middle(arena: &AstArena, id: NodeId) -> bool {
+    let mut stack = vec![id];
+    while let Some(id) = stack.pop() {
+        match *arena.node(id) {
+            CompactNode::Middle(_) => return true,
+            CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+                stack.extend_from_slice(arena.children(span));
+            },
+            _ => {},
+        }
+    }
+    false
+}
+
 fn write_math_atom_op(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     buf.push_str("\\mathop{");
     write_wrapped_content(buf, arena, content);
