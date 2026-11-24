@@ -42,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The LaTeX writer keeps `\mathop{...}` around an accent: `\mathop{\hat x}`
+  (a TeX Op atom) was written as `\hat{x}`, an ordinary atom, so the operator
+  class was lost and nested `\mathop`s did not round-trip stably.
+- `\binom` arguments with several nodes are no longer wrapped in a second
+  brace pair (`\binom{Y+}{z}` was written `\binom{{Y+}}{z}`).
 - Symbols missing from the bundled Latin Modern fonts no longer render as
   silent gaps. The renderer substitutes equivalent in-font characters (MathML
   `&OverBar;`, presentation-form braces `︷︸︵︶`), draws from a Latin Modern

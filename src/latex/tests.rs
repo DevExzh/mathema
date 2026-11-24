@@ -5186,3 +5186,55 @@ fn box_color_with_verbatim_comment_round_trips() {
         .unwrap_or_else(|e| panic!("{first:?} does not re-parse: {e}"));
     assert_eq!(first, second, "{input}");
 }
+
+/// One fuzz-style canonical pass: parse → normalize → write.
+fn canonical_pass(input: &str) -> String {
+    let config = Config::default();
+    let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+    normalize_compact_expr(&mut parsed.expr).unwrap();
+    LatexWriter::write_compact(&parsed.expr, &config).unwrap()
+}
+
+#[test]
+fn mathop_around_an_accent_keeps_its_operator_class() {
+    // `\mathop{\hat x}` is a TeX Op atom (operator spacing, movable limits);
+    // a bare `\hat{x}` is an ordinary accent, so the wrapper must be written.
+    for (input, want) in [
+        (r"\mathop{\hat x}y", r"\mathop{\hat{x}}y"),
+        (r"\mathop{\overline{\lim}}", r"\mathop{\overline{\lim}}"),
+        (r"\mathop\mathop\dddot5", r"\mathop{\mathop{\dddot{5}}}"),
+        (r"\mathop\big\mathop\dddot5", r"\mathop{\mathop{\dddot{5}}}"),
+    ] {
+        let first = canonical_pass(input);
+        assert_eq!(first, want, "{input}");
+        assert_eq!(canonical_pass(&first), first, "not idempotent: {input}");
+        let parsed = LatexReader::parse(&first, &Config::default()).unwrap();
+        assert!(
+            matches!(
+                parsed.expr.nodes.first(),
+                Some(MathNode::MathAtom {
+                    atom_type: crate::ast::MathAtomType::Op,
+                    ..
+                })
+            ),
+            "{first} lost its Op class: {:?}",
+            parsed.expr.nodes
+        );
+    }
+}
+
+#[test]
+fn binom_arguments_are_not_braced_twice() {
+    // The `\binom` argument braces already group a multi-node row, like
+    // `\frac`'s; a dropped unwritable color must not change the spelling.
+    for (input, want) in [
+        (r"\binom{Y+}{z}", r"\binom{Y+}{z}"),
+        (r"\binom{\color{\c}Y@}z", r"\binom{Y@}{z}"),
+        (r"\binom\color{\c}Y@\\", r"\binom{Y@}{\\ }"),
+        (r"\binom{x}{\\}", r"\binom{x}{\\ }"),
+    ] {
+        let first = canonical_pass(input);
+        assert_eq!(first, want, "{input}");
+        assert_eq!(canonical_pass(&first), first, "not idempotent: {input}");
+    }
+}

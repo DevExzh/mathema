@@ -648,7 +648,7 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
             atom_type: MathAtomType::Op,
             content,
         } => {
-            write_math_atom_op(buf, arena, content, false);
+            write_math_atom_op(buf, arena, content);
             buf.push_str("\\nolimits");
         },
         _ => write_script_base(buf, arena, base),
@@ -670,7 +670,7 @@ fn write_compound_limits(
     else {
         return false;
     };
-    write_math_atom_op(buf, arena, content, false);
+    write_math_atom_op(buf, arena, content);
     if !movable {
         buf.push_str("\\limits");
     }
@@ -1263,10 +1263,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     den,
                 } = *arena.node(child_id)
                 {
+                    // Like `\frac`, the argument braces already group each
+                    // part; `write_node` would brace a multi-node row again.
                     buf.push_str("\\binom{");
-                    write_node(buf, arena, num);
+                    write_wrapped_content(buf, arena, num);
                     buf.push_str("}{");
-                    write_node(buf, arena, den);
+                    write_wrapped_content(buf, arena, den);
                     buf.push('}');
                     return;
                 }
@@ -2049,7 +2051,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 return;
             }
             if atom_type == MathAtomType::Op {
-                write_math_atom_op(buf, arena, content, true);
+                write_math_atom_op(buf, arena, content);
                 return;
             }
             // `\bigl`, `\bigr` and `\bigm` are TeX's `\mathopen`, `\mathclose`
@@ -3055,42 +3057,14 @@ fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> 
         })
 }
 
-/// Write a compound operator.  An accent is already fixed to its core
-/// operator by the LaTeX parser, so an unscripted `\mathop` around one can be
-/// serialized as the natural accent command.  Scripted compound operators use
-/// the raw `\mathop` form so their movable outer-limit behavior survives a
-/// LaTeX round-trip.
-fn write_math_atom_op(
-    buf: &mut LatexBuffer,
-    arena: &AstArena,
-    content: NodeId,
-    natural_accent: bool,
-) {
-    if natural_accent {
-        let mut id = content;
-        while let CompactNode::Row(span) = *arena.node(id) {
-            let &[only] = arena.children(span) else {
-                break;
-            };
-            id = only;
-        }
-        if is_natural_accent_node(arena, id) {
-            write_node(buf, arena, id);
-            return;
-        }
-    }
+/// Write a compound operator as `\mathop{...}`.  The wrapper is always kept:
+/// in TeX `\mathop{\hat x}` is an Op atom (operator spacing, movable
+/// limits) while a bare `\hat{x}` is an ordinary accent atom, so dropping
+/// the wrapper around an accent would change the class on the next read.
+fn write_math_atom_op(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     buf.push_str("\\mathop{");
     write_wrapped_content(buf, arena, content);
     buf.push('}');
-}
-
-fn is_natural_accent_node(arena: &AstArena, id: NodeId) -> bool {
-    match *arena.node(id) {
-        CompactNode::Accent { .. } => true,
-        CompactNode::Overscript { over, .. } => is_line_symbol(arena, over),
-        CompactNode::Underscript { under, .. } => is_line_symbol(arena, under),
-        _ => false,
-    }
 }
 
 /// Accent bases keep the accent attached to the core operator, so an
