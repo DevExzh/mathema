@@ -553,6 +553,23 @@ fn cline_ranges_are_read_as_balanced_groups() {
                 r"\begin{array}{cc} a & b \\ \hline c & d \end{array}",
                 false,
             ),
+            // ... however far past it, including past the 64-column mask.
+            (
+                r"\begin{array}{cc}a&b\\\cline{1-65}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ \hline c & d \end{array}",
+                false,
+            ),
+            (
+                r"\begin{array}{cc}a&b\\\cline{1-99999999999999999999999}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ \hline c & d \end{array}",
+                false,
+            ),
+            // A range starting past the mask cannot be placed.
+            (
+                r"\begin{array}{cc}a&b\\\cline{65-70}c&d\end{array}",
+                r"\begin{array}{cc} a & b \\ c & d \end{array}",
+                true,
+            ),
             // A balanced but unreadable argument is consumed and reported.
             (
                 r"\begin{array}{cc}a&b\\\cline{{x}}c&d\end{array}",

@@ -1466,7 +1466,7 @@ struct RowRules {
     hdashline: bool,
     /// Columns underlined by `\cline{i-j}`, bit `c - 1` for column `c`.
     cline: u64,
-    /// A `\cline` whose range is malformed or reaches past column 64.
+    /// A `\cline` whose range is malformed or starts past column 64.
     cline_unreadable: bool,
 }
 
@@ -1489,7 +1489,8 @@ impl RowRules {
 /// unbalanced one is left for the cell parser, as before `\cline` was read.
 /// The range may brace its bounds (`{{1}-2}`), as TeX's delimited arguments
 /// allow. A range past the last column still covers every column, so
-/// `\cline{1-5}` in a two-column table is a full rule.
+/// `\cline{1-5}` (or `\cline{1-99999999999}`) in a two-column table is a full
+/// rule; a range that starts past column 64 is unreadable.
 fn take_cline_range(input: &str) -> (&str, Option<u64>) {
     let Some((rest, body)) = super::mhchem::capture_braced(input) else {
         return (input, None);
@@ -1500,12 +1501,22 @@ fn take_cline_range(input: &str) -> (&str, Option<u64>) {
             .strip_prefix('{')
             .and_then(|inner| inner.strip_suffix('}'))
             .unwrap_or(text);
-        text.trim().parse().ok()
+        let text = text.trim();
+        match text.parse() {
+            Ok(n) => Some(n),
+            // An all-digit bound too large for `u32` is still a number.
+            Err(_) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
+                Some(u32::MAX)
+            },
+            Err(_) => None,
+        }
     };
     let range = body.split_once('-').and_then(|(from, to)| {
         let (from, to) = (bound(from)?, bound(to)?);
-        (1 <= from && from <= to && to <= 64)
-            .then(|| (u64::MAX >> (64 - (to - from + 1))) << (from - 1))
+        // Columns past 64 cannot be tracked, but a range that starts inside
+        // the mask still covers everything up to its (clamped) end.
+        let to = to.min(64);
+        (1 <= from && from <= to).then(|| (u64::MAX >> (64 - (to - from + 1))) << (from - 1))
     });
     (rest, range)
 }
