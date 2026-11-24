@@ -1,12 +1,18 @@
 use crate::ast::arena::{AstArena, RuleDashes};
 use crate::ast::compact::{self, CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
-use crate::error::{Config, Result};
+use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
 use crate::unicode::fonts::style_to_latex_font;
 use crate::unicode::symbols::{
     latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
 };
 use crate::writer::Writer;
+
+mod escape;
+use escape::{
+    Place, Spelling, ascii_needs_escape, is_no_token, needs_escape, write_char, write_char_code,
+    write_char_token,
+};
 
 pub struct LatexWriter;
 
@@ -17,20 +23,28 @@ impl Writer for LatexWriter {
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
+        Self::write_compact_with_diagnostics(expr, config).map(|(latex, _)| latex)
+    }
+
+    fn write_compact_with_diagnostics(
+        expr: &CompactExpr,
+        config: &Config,
+    ) -> Result<(String, Vec<Diagnostic>)> {
         let mut buf = LatexBuffer {
             text: String::with_capacity(256),
             in_operator_name: false,
             keep_undefined: config.undefined_commands == crate::UndefinedCommands::Keep,
             command_ends: Vec::new(),
+            diagnostics: Vec::new(),
         };
         write_sequence(
             &mut buf,
             &expr.arena,
             expr.arena.children(expr.roots),
             false,
-            true,
         );
-        Ok(buf.finish())
+        let diagnostics = std::mem::take(&mut buf.diagnostics);
+        Ok((buf.finish(), diagnostics))
     }
 }
 
@@ -46,6 +60,8 @@ struct LatexBuffer {
     /// puts next is only known at the end: a group there would read back as
     /// another argument of the command, and a letter would extend its name.
     command_ends: Vec<(usize, bool)>,
+    /// What the output does not keep.
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl LatexBuffer {
@@ -58,6 +74,31 @@ impl LatexBuffer {
                 *end += text.len();
             }
         }
+    }
+
+    /// Report content that is not written, once per kind of loss.
+    #[cold]
+    fn report_loss(&mut self, message: String) {
+        if !self
+            .diagnostics
+            .iter()
+            .any(|known| known.message == message)
+        {
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message,
+                span: None,
+            });
+        }
+    }
+
+    /// Report a character that cannot be written in text.
+    #[cold]
+    fn report_dropped_char(&mut self, ch: char) {
+        self.report_loss(format!(
+            "the control character U+{:04X} cannot be written in text; it was dropped",
+            ch as u32
+        ));
     }
 
     /// Cut the output back to `len` bytes.
@@ -112,7 +153,7 @@ fn write_node_slice(
     children: &[NodeId],
     ends_with_command: bool,
 ) {
-    write_sequence(buf, arena, children, ends_with_command, false);
+    write_sequence(buf, arena, children, ends_with_command);
 }
 
 fn write_sequence(
@@ -120,7 +161,6 @@ fn write_sequence(
     arena: &AstArena,
     mut children: &[NodeId],
     mut ends_with_command: bool,
-    top_level: bool,
 ) {
     // A trailing implicit script with no arguments emits nothing. Remove it
     // before deciding whether any preceding base needs grouping or a body.
@@ -262,11 +302,7 @@ fn write_sequence(
         if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
             write_script_node(buf, arena, id);
         } else {
-            // Verbatim delimiters are read directly from top-level input.
-            // Inside a macro argument, TeX has already tokenized the text.
-            if !top_level || !write_verbatim_node(buf, arena, id) {
-                write_node(buf, arena, id);
-            }
+            write_node(buf, arena, id);
             // An empty-body nary operator followed by another node needs an
             // explicit `{}` body, otherwise the next node would be re-parsed as
             // the operator's body.
@@ -459,7 +495,7 @@ fn adjacent_number_nodes_need_separator(
 fn ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
     matches!(
         *arena.node(id),
-        CompactNode::PreScripts { .. } | CompactNode::Nary { .. }
+        CompactNode::PreScripts { .. } | CompactNode::Nary { .. } | CompactNode::Color { .. }
     ) && output_ends_with_empty_body_nary(arena, id)
 }
 
@@ -473,6 +509,16 @@ fn output_ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
         CompactNode::Nary { op, body, .. } => {
             (is_bare_large_op(arena, body) || output_ends_with_empty_body_nary(arena, body))
                 && nary_op_to_latex(op).is_none()
+        },
+        // A color that cannot be written leaves only its content.
+        CompactNode::Color { color, content } if latex_color(arena.str_val(color)).is_none() => {
+            let last = match *arena.node(content) {
+                CompactNode::Row(span) => arena.children(span).last().copied(),
+                _ => Some(content),
+            };
+            last.is_some_and(|last| {
+                is_bare_large_op(arena, last) || output_ends_with_empty_body_nary(arena, last)
+            })
         },
         _ => false,
     }
@@ -767,7 +813,8 @@ fn is_one_tex_argument(text: &str) -> bool {
         Some('\\') => match chars.next() {
             None => false,
             Some(ch) if ch.is_ascii_alphabetic() => chars.all(|ch| ch.is_ascii_alphabetic()),
-            Some(_) => chars.next().is_none(),
+            // A space command is no argument in KaTeX.
+            Some(ch) => chars.next().is_none() && !matches!(ch, ',' | ':' | ';' | '!' | '>' | ' '),
         },
         Some(ch) => {
             chars.next().is_none()
@@ -1085,25 +1132,10 @@ fn write_math_leaf_segment(buf: &mut LatexBuffer, s: &str, kind: MathLeafKind) {
 }
 
 /// A number is written as it stands (`1.5`, `1,000`, `½`), except for
-/// characters that are not themselves in a math list: MathML's `<mn>` may
-/// hold any text, such as `50%`.
+/// characters that are not themselves in a math list.
 fn write_number_chars(buf: &mut String, s: &str) {
     for ch in s.chars() {
-        match ch {
-            '#' | '$' | '%' | '&' => {
-                buf.push('\\');
-                buf.push(ch);
-            },
-            '\'' | '"' | '\\' | '^' | '_' | '~' | '{' | '}' => write_math_char(buf, ch),
-            // White space in a math list is nothing; a blank line is an error.
-            _ if ch.is_ascii_whitespace() => buf.push(' '),
-            // A script glyph (`²`) would be the script of what precedes it,
-            // and an error after another one.
-            _ if ch.is_control() || math_literal_needs_char(ch) && !ch.is_ascii() => {
-                write_math_char(buf, ch)
-            },
-            _ => buf.push(ch),
-        }
+        write_char(buf, ch, Place::Number);
     }
 }
 
@@ -1138,56 +1170,48 @@ enum ColorArgument<'a> {
     Named(&'a str),
 }
 
-/// Colors containing TeX syntax cannot be emitted as a literal xcolor name.
-/// A hexadecimal RGB color has a separate, lossless xcolor spelling.
+/// The color as an xcolor argument. Text that is no color (see
+/// [`escape::is_color`]) is `None`, which leaves only the content, when it
+/// holds TeX syntax, and an empty argument otherwise: that keeps the group the
+/// color makes, with nothing TeX could expand. A hexadecimal RGB color has a
+/// separate, lossless xcolor spelling.
 fn latex_color(name: &str) -> Option<ColorArgument<'_>> {
     if let Some(hex) = name.strip_prefix('#')
         && hex.len() == 6
         && hex.bytes().all(|b| b.is_ascii_hexdigit())
     {
         Some(ColorArgument::Html(hex))
-    } else if name.contains(is_tex_special) {
+    } else if name.contains(escape::is_tex_special) {
         None
-    } else {
+    } else if escape::is_color(name) {
         Some(ColorArgument::Named(name))
+    } else {
+        Some(ColorArgument::Named(""))
     }
 }
 
-/// A `\colorbox`/`\fcolorbox` color is written verbatim inside braces, so it
-/// must read back as one braced argument: balanced braces, no trailing
-/// unpaired backslash (which would escape the closing `}`), and nothing the
-/// preprocessor rewrites before parsing (a `%` comment, `\verb`, a definition
-/// or expansion primitive, a builtin macro). Any other spec is returned as
-/// `""`, meaning "no color".
-fn box_color_argument(spec: &str) -> &str {
-    if crate::latex::preprocess::acts_on(spec) {
-        return "";
+/// The color of a box as the argument of `\colorbox`/`\fcolorbox`, `""` for
+/// none.
+fn box_color_argument<'a>(buf: &mut LatexBuffer, spec: &'a str) -> &'a str {
+    if spec.is_empty() || escape::is_color(spec) {
+        return spec;
     }
-    let mut depth = 0usize;
-    let mut escaped = false;
-    for b in spec.bytes() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match b {
-            b'\\' => escaped = true,
-            b'{' => depth += 1,
-            b'}' => match depth.checked_sub(1) {
-                Some(d) => depth = d,
-                None => return "",
-            },
-            _ => {},
-        }
+    report_dropped_color(buf, spec);
+    ""
+}
+
+#[cold]
+fn report_dropped_color(buf: &mut LatexBuffer, spec: &str) {
+    if !spec.is_empty() {
+        buf.report_loss(format!("{spec:?} is not a color; it was dropped"));
     }
-    if escaped || depth != 0 { "" } else { spec }
 }
 
 fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Number(sid) => {
             let s = arena.str_val(sid);
-            if s.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            if s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'.' | b',')) {
                 buf.push_str(s);
             } else if !write_leaf_with_math_spaces(buf, s, MathLeafKind::Number) {
                 write_number_chars(buf, s);
@@ -1633,7 +1657,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     AccentPosition::Above => "\\overset{",
                     AccentPosition::Below => "\\underset{",
                 });
-                write_accent_glyph(buf, accent);
+                write_char(buf, accent, Place::Accent);
                 buf.push_str("}{");
                 write_accent_base_content(buf, arena, base);
                 buf.push('}');
@@ -1878,8 +1902,8 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         } => {
             // A spec that would not read back as the same braced argument
             // is dropped, so the box keeps whichever color still reads back.
-            let bg = box_color_argument(arena.str_val(bg_color));
-            let border = box_color_argument(arena.str_val(border_color));
+            let bg = box_color_argument(buf, arena.str_val(bg_color));
+            let border = box_color_argument(buf, arena.str_val(border_color));
             if !bg.is_empty() && !border.is_empty() {
                 // \fcolorbox{border}{bg}{content}
                 buf.push_str("\\fcolorbox{");
@@ -1988,10 +2012,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     buf.push_str(hex);
                 },
                 Some(ColorArgument::Named(name)) => {
+                    if name.is_empty() {
+                        report_dropped_color(buf, arena.str_val(color));
+                    }
                     buf.push_str(r"\textcolor{");
                     buf.push_str(name);
                 },
                 None => {
+                    report_dropped_color(buf, arena.str_val(color));
                     write_wrapped_content(buf, arena, content);
                     return;
                 },
@@ -2079,7 +2107,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             if atom_type == MathAtomType::Ord
                 && let Some(text) = authored_math_space_symbol(arena, content)
             {
-                write_decimal_char(buf, text, " ");
+                write_char_code(buf, text, " ");
                 return;
             }
             if atom_type == MathAtomType::Op {
@@ -2113,7 +2141,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             };
             buf.push_str(cmd);
             buf.push('{');
-            write_wrapped_content(buf, arena, content);
+            write_atom_content(buf, arena, content);
             buf.push('}');
         },
         CompactNode::StructuredOperator { content, form } => {
@@ -2235,8 +2263,8 @@ fn write_aligned_cell_content(buf: &mut LatexBuffer, arena: &AstArena, nodes: &[
 fn write_identifier_text(buf: &mut String, s: &str) {
     if !s.chars().any(|ch| unicode_to_latex(ch).is_some()) {
         for ch in s.chars() {
-            if math_identifier_needs_char(ch) {
-                write_math_char(buf, ch);
+            if needs_escape(ch, Place::Identifier) {
+                write_char(buf, ch, Place::Identifier);
             } else {
                 buf.push(ch);
             }
@@ -2250,8 +2278,8 @@ fn write_identifier_text(buf: &mut String, s: &str) {
     // terminates a preceding command naturally.
     let mut previous_was_command = false;
     for ch in s.chars() {
-        if math_identifier_needs_char(ch) {
-            write_math_char(buf, ch);
+        if needs_escape(ch, Place::Identifier) {
+            write_char(buf, ch, Place::Identifier);
             previous_was_command = false;
         } else if let Some(cmd) = unicode_to_latex(ch) {
             buf.push('\\');
@@ -2267,16 +2295,6 @@ fn write_identifier_text(buf: &mut String, s: &str) {
     }
 }
 
-/// An identifier read from MathML may contain punctuation even though a normal
-/// LaTeX identifier is alphabetic.  Keep the same reserved-glyph protection as
-/// ordinary symbols, and add the four LaTeX parameter/comment characters and
-/// the double quote, none of which can appear literally in a math input stream.
-#[inline]
-fn math_identifier_needs_char(ch: char) -> bool {
-    math_literal_needs_char(ch) || matches!(ch, '#' | '$' | '%' | '&' | '"')
-}
-
-#[inline]
 /// The native command that reproduces this exact operator name.
 fn latex_operator_command(name: &str) -> Option<&str> {
     match name {
@@ -2292,7 +2310,7 @@ fn latex_operator_command(name: &str) -> Option<&str> {
 /// A function name: its LaTeX command when one exists, else
 /// `\operatorname{…}`, or `\operatorname*{…}` for one whose scripts are
 /// limits (`argmax`).
-fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
+fn write_operator_name(buf: &mut LatexBuffer, name: &str, limits: LimitStyle) {
     if let Some(command) = latex_operator_command(name)
         && !(limits == LimitStyle::Default && !crate::unicode::symbols::operator_has_limits(name))
     {
@@ -2332,27 +2350,14 @@ fn write_operator_name(buf: &mut String, name: &str, limits: LimitStyle) {
     }
 }
 
-fn write_operator_name_content(buf: &mut String, name: &str) {
+fn write_operator_name_content(buf: &mut LatexBuffer, name: &str) {
+    if name.is_ascii() && !name.bytes().any(|b| ascii_needs_escape(b, Place::Name)) {
+        buf.push_str(name);
+        return;
+    }
     for ch in name.chars() {
-        match ch {
-            '\u{2009}' => buf.push_str("\\,"),
-            '\u{205F}' => buf.push_str("\\:"),
-            '\u{2002}' => buf.push_str("\\enspace{}"),
-            // A space after a control word is literal name content to this
-            // reader. An empty group ends the command without growing the name.
-            '\u{2001}' => buf.push_str("\\quad{}"),
-            '\u{00A0}' => buf.push_str("\\ "),
-            '%' => buf.push_str("\\%"),
-            '#' => buf.push_str("\\#"),
-            '$' => buf.push_str("\\$"),
-            '&' => buf.push_str("\\&"),
-            '_' => buf.push_str("\\_"),
-            '^' => buf.push_str("\\textasciicircum{}"),
-            '{' => buf.push_str("\\{"),
-            '}' => buf.push_str("\\}"),
-            '~' => buf.push_str("\\textasciitilde{}"),
-            '\\' => buf.push_str("\\textbackslash{}"),
-            _ => buf.push(ch),
+        if !write_char(buf, ch, Place::Name) {
+            buf.report_dropped_char(ch);
         }
     }
 }
@@ -2382,7 +2387,7 @@ fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
                 return;
             },
             "−" => {
-                write_math_char(buf, '−');
+                write_char_token(buf, '−');
                 return;
             },
             _ => {},
@@ -2390,15 +2395,15 @@ fn write_symbol_text(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
     }
     if kind == SymbolKind::Ordinary
         && let [byte] = s.as_bytes()
-        && crate::latex::parse::ascii_ordinary_needs_char(char::from(*byte))
+        && needs_escape(char::from(*byte), Place::Ordinary)
     {
-        write_math_char(buf, char::from(*byte));
+        write_char(buf, char::from(*byte), Place::Ordinary);
         return;
     }
     write_symbol_spelling(buf, kind, s);
 }
 
-fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
+fn write_symbol_spelling(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
     let ch = s.chars().next().unwrap_or('?');
     let is_compound = s.len() > ch.len_utf8();
     // Invisible operators (U+2061 FUNCTION APPLICATION .. U+2064 INVISIBLE
@@ -2499,8 +2504,13 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     // form to emit the glyph without changing the public node shape.  Restrict
     // this to ordinary symbols: real binary and relation tokens must continue
     // using their canonical operators and spacing.
-    if kind == SymbolKind::Ordinary && s.chars().count() == 1 && math_literal_needs_char(ch) {
-        write_math_char(buf, ch);
+    if kind == SymbolKind::Ordinary && needs_escape(ch, Place::Identifier) {
+        write_char(buf, ch, Place::Identifier);
+        return;
+    }
+    // KaTeX's (and TeX's) spelling of the opening quote in math.
+    if ch == '\u{2018}' && kind == SymbolKind::Ordinary {
+        buf.push('`');
         return;
     }
     // Math minus sign → ASCII hyphen-minus for LaTeX output. A literal
@@ -2534,22 +2544,16 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
             // A literal dot after a digit must stay a separate atom even
             // when the following node starts with another digit.
             '.' if buf.as_bytes().last().is_some_and(u8::is_ascii_digit) => buf.push_str(" ."),
-            '{' => buf.push_str("\\{"),
-            '}' => buf.push_str("\\}"),
-            '#' => buf.push_str("\\#"),
-            '$' => buf.push_str("\\$"),
-            '%' => buf.push_str("\\%"),
             // `\&` is an ordinary atom; KaTeX's `\And` is its binary form.
             '&' if kind == SymbolKind::BinaryOp => buf.push_str("\\And"),
             // A full stop is ordinary in math; `\ldotp` is its punctuation form.
             '.' if kind == SymbolKind::Punctuation => buf.push_str("\\ldotp"),
-            '&' => buf.push_str("\\&"),
-            // In another class the characters that `math_literal_needs_char`
-            // escapes in an ordinary symbol are no safer.
-            '\'' | '"' | '\\' | '^' | '_' | '~' | '\0'..=' ' | '\u{7F}' => {
+            '\'' | '`' | '\\' | '^' | '_' | '~' | '\0'..=' ' | '\u{7F}' => {
                 write_class_char(buf, kind, ch)
             },
-            _ => buf.push(ch),
+            _ => {
+                write_char(buf, ch, Place::Class);
+            },
         }
         return;
     }
@@ -2619,7 +2623,7 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
         buf.push_str(cmd);
         return;
     }
-    if symbol_glyph_needs_char(ch) {
+    if needs_escape(ch, Place::Class) && !is_no_token(ch) {
         write_class_char(buf, kind, ch);
         return;
     }
@@ -2635,12 +2639,12 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
     match kind {
         SymbolKind::Relation => {
             buf.push_str("\\mathrel{");
-            buf.push_str(s);
+            write_char(buf, ch, Place::Class);
             buf.push('}');
         },
         SymbolKind::BinaryOp => {
             buf.push_str("\\mathbin{");
-            buf.push_str(s);
+            write_char(buf, ch, Place::Class);
             buf.push('}');
         },
         _ => buf.push_str(s),
@@ -2649,10 +2653,10 @@ fn write_symbol_spelling(buf: &mut String, kind: SymbolKind, s: &str) {
 
 /// The character token of `ch` in an atom of class `kind`.
 #[cold]
-fn write_class_char(buf: &mut String, kind: SymbolKind, ch: char) {
+fn write_class_char(buf: &mut LatexBuffer, kind: SymbolKind, ch: char) {
     let wrapper = explicit_class_wrapper(kind);
     buf.push_str(wrapper.unwrap_or_default());
-    write_math_char(buf, ch);
+    write_char(buf, ch, Place::Class);
     if wrapper.is_some() {
         buf.push('}');
     }
@@ -2676,7 +2680,7 @@ fn explicit_class_wrapper(kind: SymbolKind) -> Option<&'static str> {
 /// Write a multi-character symbol as one atom of class `kind` without losing
 /// any of its characters.
 #[cold]
-fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
+fn write_compound_symbol(buf: &mut LatexBuffer, kind: SymbolKind, s: &str) {
     let wrapper = match kind {
         SymbolKind::LargeOp => Some("\\mathop{"),
         SymbolKind::Ordinary | SymbolKind::Fence | SymbolKind::Alphabetic => {
@@ -2699,20 +2703,13 @@ fn write_compound_symbol(buf: &mut String, kind: SymbolKind, s: &str) {
         buf.push_str(wrapper);
     }
     for ch in s.chars() {
-        // ASCII source whitespace is discarded by the reader, so a plain space
-        // is written as a character token; Unicode spaces stay literal.
-        if ch.is_ascii_whitespace()
-            || math_literal_needs_char(ch)
-            || matches!(ch, '%' | '#' | '$' | '&' | '"')
-        {
-            write_math_char(buf, ch);
-        } else if let Some(cmd) = nary_op_to_latex(ch) {
+        if let Some(cmd) = nary_op_to_latex(ch) {
             // The reader would take what follows as the operator's body.
             buf.push_str("\\mathord{\\");
             buf.push_str(cmd);
             buf.push('}');
         } else {
-            buf.push(ch);
+            write_char(buf, ch, Place::Compound);
         }
     }
     if wrapper.is_some() {
@@ -2731,94 +2728,6 @@ fn is_combining_mark(ch: char) -> bool {
             | '\u{20D0}'..='\u{20FF}'
             | '\u{FE20}'..='\u{FE2F}'
     )
-}
-
-/// Whether a literal ASCII glyph would be reinterpreted by the math parser or
-/// by the TeX/KaTeX atom-class table if written directly.
-#[inline]
-fn math_literal_needs_char(ch: char) -> bool {
-    (!ch.is_ascii() && crate::unicode::decode_script_scalar(ch).is_some())
-        || ch.is_control()
-        || matches!(
-            ch,
-            '\'' | '<' | '>' | '\\' | '^' | '_' | '|' | '~' | '{' | '}'
-        )
-}
-
-/// Whether a glyph of an operator, delimiter or punctuation class has no
-/// literal or command spelling: the other special characters (`{`, `%`, …)
-/// have a control symbol, and `<`, `>` and `|` read as themselves.
-#[inline]
-fn symbol_glyph_needs_char(ch: char) -> bool {
-    matches!(ch, '\'' | '"' | '\\' | '^' | '_' | '~')
-        || ch.is_ascii_whitespace()
-        || ch.is_control()
-        || (!ch.is_ascii() && crate::unicode::decode_script_scalar(ch).is_some())
-}
-
-/// Emit one ordinary glyph with TeX's character-token primitive.  TeX
-/// control characters and comment characters are escaped inside the backtick
-/// token; the emitted form remains a single ordinary symbol to the reader.
-fn write_math_char(buf: &mut String, ch: char) {
-    if ch.is_ascii_whitespace() || ch.is_control() {
-        // A raw C0, C1, or DEL character is not a parseable LaTeX atom. Use
-        // decimal \\char syntax and retain a source-space terminator so a
-        // following digit cannot be consumed as part of the character code.
-        write_decimal_char(buf, ch, " ");
-        return;
-    }
-    buf.push_str(r"\char`");
-    if is_tex_special(ch) {
-        buf.push('\\');
-    }
-    buf.push(ch);
-}
-
-/// The characters TeX gives a special category code (escape, group,
-/// comment, parameter, math shift, alignment, scripts, active `~`). None of
-/// them can be written as itself to mean the glyph.
-fn is_tex_special(ch: char) -> bool {
-    matches!(
-        ch,
-        '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^' | '~'
-    )
-}
-
-/// Write an accent glyph that has no accent command, as the `\overset` /
-/// `\underset` annotation. A TeX special character takes its command
-/// spelling where LaTeX has one (`\{`, `\%`, `\backslash`, …), which every
-/// engine renders as the glyph, and its character token otherwise (`^`,
-/// `~`, and `_`, kept as its character token although the reader now also
-/// takes `\_` in math, so the spelling stays unchanged). A
-/// quote or a space would not read back as itself either, so it is a
-/// character token too.
-fn write_accent_glyph(buf: &mut String, ch: char) {
-    match ch {
-        '{' | '}' | '%' | '#' | '&' | '$' => {
-            buf.push('\\');
-            buf.push(ch);
-        },
-        '\\' => buf.push_str(r"\backslash"),
-        _ if is_tex_special(ch)
-            || matches!(ch, '"' | '\'')
-            || ch.is_whitespace()
-            || ch.is_control() =>
-        {
-            if ch.is_whitespace() || ch.is_control() {
-                write_decimal_char(buf, ch, " ");
-            } else {
-                write_math_char(buf, ch);
-            }
-        },
-        _ => buf.push(ch),
-    }
-}
-
-/// End the decimal character code before a following digit.
-fn write_decimal_char(buf: &mut String, ch: char, terminator: &str) {
-    buf.push_str(r"\char");
-    buf.push_str(&(ch as u32).to_string());
-    buf.push_str(terminator);
 }
 
 fn single_math_space(text: &str) -> Option<char> {
@@ -3000,18 +2909,11 @@ fn writes_as_delimiter(delim: &str) -> bool {
 #[cold]
 fn write_literal_delimiter(buf: &mut LatexBuffer, delim: &str, wrapper: &str) {
     buf.push_str(wrapper);
-    if let Some(ch) = single_char(delim) {
-        write_literal_glyph(buf, ch);
-    } else {
-        for ch in delim.chars() {
-            if ch.is_ascii_alphanumeric() {
-                buf.push(ch);
-            } else if crate::unicode::math_space_width(ch).is_some() {
-                write_decimal_char(buf, ch, " ");
-            } else {
-                write_symbol_text(buf, SymbolKind::Ordinary, ch.encode_utf8(&mut [0; 4]));
-            }
-        }
+    match single_char(delim) {
+        Some(ch) => write_literal_glyph(buf, ch),
+        None => delim.chars().for_each(|ch| {
+            write_char(buf, ch, Place::Delimiter);
+        }),
     }
     buf.push('}');
 }
@@ -3118,7 +3020,11 @@ fn write_unnamed_nary(
     {
         buf.push(' ');
     }
-    write_node_slice(buf, arena, &[body], false);
+    if matches!(*arena.node(body), CompactNode::Nary { .. }) {
+        write_node(buf, arena, body);
+    } else {
+        write_node_slice(buf, arena, &[body], false);
+    }
 }
 
 /// `ch` as one large-operator atom, for a glyph no command reads back as a
@@ -3136,20 +3042,12 @@ fn write_mathop_glyph(buf: &mut LatexBuffer, ch: char) {
 #[cold]
 fn write_literal_glyph(buf: &mut LatexBuffer, ch: char) {
     match ch {
-        '{' | '}' | '#' | '$' | '%' | '&' => {
-            buf.push('\\');
-            buf.push(ch);
+        _ if ch.is_ascii() || needs_escape(ch, Place::Atom) => {
+            write_char(buf, ch, Place::Atom);
         },
-        '\'' | '"' | '\\' | '^' | '_' | '~' => write_math_char(buf, ch),
-        _ if ch == ' ' || ch.is_control() || crate::unicode::math_space_width(ch).is_some() => {
-            write_decimal_char(buf, ch, " ")
-        },
-        _ if ch.is_ascii() => buf.push(ch),
-        _ if math_literal_needs_char(ch) => write_math_char(buf, ch),
         _ => match mapped_symbol_kind(ch) {
-            None | Some(SymbolKind::Alphabetic) if ch.is_alphabetic() => {
-                write_identifier_text(buf, ch.encode_utf8(&mut [0; 4]))
-            },
+            None if ch.is_alphabetic() => buf.push(ch),
+            Some(SymbolKind::Alphabetic) => write_identifier_text(buf, ch.encode_utf8(&mut [0; 4])),
             kind => write_symbol_text(
                 buf,
                 kind.unwrap_or(SymbolKind::Ordinary),
@@ -3302,8 +3200,21 @@ fn holds_middle(arena: &AstArena, id: NodeId) -> bool {
 /// the wrapper around an accent would change the class on the next read.
 fn write_math_atom_op(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     buf.push_str("\\mathop{");
-    write_wrapped_content(buf, arena, content);
+    write_atom_content(buf, arena, content);
     buf.push('}');
+}
+
+/// The content of a class command. A lone glyph right after its brace must be
+/// a token of its own.
+fn write_atom_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
+    if let CompactNode::Symbol(SymbolKind::Ordinary, sid) = *arena.node(content)
+        && let Some(ch) = single_char(arena.str_val(sid))
+        && is_no_token(ch)
+    {
+        write_char_code(buf, ch, " ");
+    } else {
+        write_wrapped_content(buf, arena, content);
+    }
 }
 
 /// Accent bases keep the accent attached to the core operator, so an
@@ -3413,30 +3324,7 @@ fn write_always_braced(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     buf.push('}');
 }
 
-/// Preserve a top-level literal when a single-line verbatim delimiter is available.
-fn write_verbatim_node(buf: &mut String, arena: &AstArena, id: NodeId) -> bool {
-    let CompactNode::Text(TextStyle::Monospace, sid) = *arena.node(id) else {
-        return false;
-    };
-    let content = arena.str_val(sid);
-    if !content.contains(['\\', '{', '}']) || content.chars().any(char::is_control) {
-        return false;
-    }
-    let Some(delim) = [
-        '|', '!', '@', '#', '%', '~', '`', ':', ';', '+', '=', '/', '?', '¶',
-    ]
-    .into_iter()
-    .find(|delim| !content.contains(*delim)) else {
-        return false;
-    };
-    buf.push_str(r"\verb");
-    buf.push(delim);
-    buf.push_str(content);
-    buf.push(delim);
-    true
-}
-
-fn write_styled_text(buf: &mut String, style: TextStyle, text: &str) {
+fn write_styled_text(buf: &mut LatexBuffer, style: TextStyle, text: &str) {
     use TextStyle::*;
     let wrappers: &[&str] = match style {
         Bold => &[r"\textbf{"],
@@ -3459,33 +3347,43 @@ fn write_styled_text(buf: &mut String, style: TextStyle, text: &str) {
 }
 
 /// Write decoded text so that text-mode syntax and ligatures cannot change it.
-fn write_text_content(buf: &mut String, text: &str, monospace: bool) {
+fn write_text_content(buf: &mut LatexBuffer, text: &str, monospace: bool) {
+    let place = if monospace {
+        Place::Monospace
+    } else {
+        Place::Text
+    };
+    let mut rest = text;
     let mut previous = None;
-    for ch in text.chars() {
+    loop {
+        let plain = rest
+            .bytes()
+            .position(|b| {
+                !b.is_ascii() || matches!(b, b'-' | b'`' | b'\'') || ascii_needs_escape(b, place)
+            })
+            .unwrap_or(rest.len());
+        let (run, after) = rest.split_at(plain);
+        buf.push_str(run);
+        // Only a ligature character can matter before the next one.
+        if !run.is_empty() {
+            previous = None;
+        }
+        let Some(ch) = after.chars().next() else {
+            break;
+        };
+        rest = &after[ch.len_utf8()..];
         if previous == Some(ch) && matches!(ch, '-' | '`' | '\'') {
             buf.push_str("{}");
         }
-        // The text symbol commands for braces and backslash can switch to
-        // the symbol font. A character number uses the selected typewriter
-        // face, just as a verbatim literal does.
-        if monospace && (ch.is_control() || is_tex_special(ch)) {
-            // An empty group terminates the number without introducing a
-            // text space in KaTeX. Adjacent control-spaces need their own
-            // groups for MathJax to keep each literal blank.
-            write_decimal_char(buf, ch, "{}");
-            previous = Some(ch);
+        // A combining mark would join the brace before it. In literal source
+        // text (what `\verb` reads) it is a character like any other.
+        if matches!(ch, '\u{0300}'..='\u{036F}')
+            && (buf.ends_with(['{', '}']) || monospace && text.contains(['\\', '{', '}']))
+        {
+            write_char_code(buf, ch, "{}");
+        } else if !write_char(buf, ch, place) {
+            buf.report_dropped_char(ch);
             continue;
-        }
-        match ch {
-            ' ' if monospace => buf.push_str(r"{\ }"),
-            '\\' => buf.push_str(r"\textbackslash{}"),
-            '~' => buf.push_str(r"\textasciitilde{}"),
-            '^' => buf.push_str(r"\textasciicircum{}"),
-            '%' | '#' | '$' | '&' | '_' | '{' | '}' => {
-                buf.push('\\');
-                buf.push(ch);
-            },
-            _ => buf.push(ch),
         }
         previous = Some(ch);
     }
@@ -3579,7 +3477,7 @@ fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Identifier(_) => script_base_char(arena, id).is_some_and(|ch| {
             (!ch.is_ascii() && !ch.is_alphabetic())
-                || (ch.is_ascii() && math_literal_needs_char(ch))
+                || (ch.is_ascii() && needs_escape(ch, Place::Identifier))
         }),
         CompactNode::Symbol(kind, _) => script_base_char(arena, id).is_some_and(|ch| {
             if kind == SymbolKind::LargeOp && nary_op_to_latex(ch).is_none() {
@@ -3587,7 +3485,12 @@ fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
                 return false;
             }
             (!ch.is_ascii() && !ch.is_alphabetic())
-                || (kind == SymbolKind::Ordinary && ch.is_ascii() && math_literal_needs_char(ch))
+                || (kind == SymbolKind::Ordinary
+                    && ch.is_ascii()
+                    && !matches!(
+                        escape::spelling(ch, Place::Identifier),
+                        Spelling::Raw | Spelling::Backslash
+                    ))
                 || symbol_is_class_atom(kind, ch)
         }),
         CompactNode::Scaled { content, .. } => script_base_needs_braces(arena, content),
@@ -3605,7 +3508,10 @@ fn symbol_is_class_atom(kind: SymbolKind, ch: char) -> bool {
         SymbolKind::Relation | SymbolKind::BinaryOp if !ch.is_ascii() => {
             mapped_symbol_kind(ch) != Some(kind)
         },
-        _ => symbol_glyph_needs_char(ch),
+        _ => matches!(
+            escape::spelling(ch, Place::Class),
+            Spelling::Token | Spelling::Code
+        ),
     }
 }
 
@@ -3833,10 +3739,9 @@ mod tests {
     }
 
     #[test]
-    fn box_colors_that_would_not_read_back_are_dropped() {
-        // A box color is written verbatim, so one that would not read back
-        // as a single braced argument is left out; the box keeps any color
-        // that does, and every output re-parses.
+    fn text_that_is_no_box_color_is_dropped() {
+        // A box color is an argument TeX expands, so text that is no color
+        // is left out; the box keeps a color that is one.
         let boxed = |bg: Option<&str>, border: Option<&str>| {
             let expr = MathExpr::new(
                 vec![MathNode::Boxed {
@@ -3853,24 +3758,31 @@ mod tests {
             (Some("a}"), None, r"\boxed{x}"),
             (Some("{a"), None, r"\boxed{x}"),
             (Some("a%b"), None, r"\boxed{x}"),
-            (Some(r"a\ "), None, r"\colorbox{a\ }{x}"),
-            (Some(r"a\%"), None, r"\colorbox{a\%}{x}"),
-            (Some("{red}"), None, r"\colorbox{{red}}{x}"),
+            (Some(r"a\ "), None, r"\boxed{x}"),
+            (Some(r"a\%"), None, r"\boxed{x}"),
+            (Some("{red}"), None, r"\boxed{x}"),
             (Some("red"), Some(r"b\"), r"\colorbox{red}{x}"),
             (Some(r"r\"), Some("blue"), r"\boxed{x}"),
             (Some("red"), Some("blue"), r"\fcolorbox{blue}{red}{x}"),
-            // Text the preprocessor rewrites is not inert, so it is dropped.
+            (
+                Some("#ff0000"),
+                Some("red!50!blue"),
+                r"\fcolorbox{red!50!blue}{#ff0000}{x}",
+            ),
+            (Some("rgb(1, 2, 3)"), None, r"\colorbox{rgb(1, 2, 3)}{x}"),
+            (Some(r"\input{pwn}"), Some("red"), r"\boxed{x}"),
+            (Some("red"), Some(r"\write18{ls}"), r"\colorbox{red}{x}"),
+            (Some("^^5cinput"), None, r"\boxed{x}"),
+            (Some("#1"), None, r"\boxed{x}"),
+            (Some("red\n\nblue"), None, r"\boxed{x}"),
             (Some(r"\def\ "), None, r"\boxed{x}"),
             (Some(r"\newcommand\left"), None, r"\boxed{x}"),
             (Some(r"\verb|%"), Some("red"), r"\boxed{x}"),
             (Some("red"), Some(r"\verb|%"), r"\colorbox{red}{x}"),
             (Some(r"\global"), None, r"\boxed{x}"),
-            // A multi-byte control symbol is stepped over whole.
-            (Some("\\\u{e9}"), None, "\\colorbox{\\\u{e9}}{x}"),
+            (Some("\\\u{e9}"), None, r"\boxed{x}"),
             (Some("a\\\u{e9}\\"), None, r"\boxed{x}"),
-            // `\defx` and `\%` are not acted on by the preprocessor.
-            (Some(r"\defx"), None, r"\colorbox{\defx}{x}"),
-            (Some(r"a\%b"), None, r"\colorbox{a\%b}{x}"),
+            (Some(r"\defx"), None, r"\boxed{x}"),
         ] {
             let out = boxed(bg, border);
             assert_eq!(out, want, "{bg:?} {border:?}");
@@ -5614,11 +5526,7 @@ mod tests {
                 "\u{2260}\u{2260}",
                 "a\\mathrel{\u{2260}\u{2260}} b",
             ),
-            (
-                "{&amp;}",
-                "{&amp;}",
-                r"a\mathopen{\char`\{\char`\&\char`\}}b",
-            ),
+            ("{&amp;}", "{&amp;}", r"a\mathopen{\{\&\}}b"),
         ] {
             let xml = format!("<math><mi>a</mi><mo>{mo}</mo><mi>b</mi></math>");
             let latex = crate::from_mathml(&xml).unwrap().to_latex().unwrap();

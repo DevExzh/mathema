@@ -130,7 +130,7 @@ fn special_accent_glyphs_are_spelled_as_glyphs() {
         ("^", r"\overset{\char`\^}{x}"),
         ("~", r"\overset{\char`\~}{x}"),
         ("_", r"\overset{\char`\_}{x}"),
-        ("\"", r#"\overset{\char`"}{x}"#),
+        ("\"", r#"\overset{"}{x}"#),
         ("\u{a0}", r"\overset{\char160 }{x}"),
         ("{", r"\overset{\{}{x}"),
         ("}", r"\overset{\}}{x}"),

@@ -112,6 +112,13 @@ impl ConvertResult {
         MathmlWriter::write_compact(&self.compact.expr, &self.config)
     }
 
+    /// Serialize to LaTeX, also returning writer-side loss diagnostics: text
+    /// that is no color in a color, control characters in text.
+    /// See [`to_mathml_with_diagnostics`](Self::to_mathml_with_diagnostics).
+    pub fn to_latex_with_diagnostics(&self) -> Result<(String, Vec<crate::error::Diagnostic>)> {
+        LatexWriter::write_compact_with_diagnostics(&self.compact.expr, &self.config)
+    }
+
     /// Serialize to LaTeX using the given configuration.
     pub fn to_latex_with(&self, config: &Config) -> Result<String> {
         LatexWriter::write_compact(&self.compact.expr, config)

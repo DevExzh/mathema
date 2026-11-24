@@ -249,16 +249,20 @@ fn is_nary_body_boundary(input: &str) -> bool {
 
 /// A bare character in the math parser would not reconstruct an ordinary
 /// symbol made by TeX's character primitive.
-pub(crate) fn ascii_ordinary_needs_char(ch: char) -> bool {
+pub(crate) const fn ascii_ordinary_needs_char(ch: char) -> bool {
     if !ch.is_ascii() {
         return false;
     }
-    if SYMBOL_BYTES.contains(&(ch as u8)) {
-        return classify_char(ch) != SymbolKind::Ordinary;
+    let mut i = 0;
+    while i < SYMBOL_BYTES.len() {
+        if SYMBOL_BYTES[i] == ch as u8 {
+            return !matches!(classify_char(ch), SymbolKind::Ordinary);
+        }
+        i += 1;
     }
     // The symbol writer already emits literal control symbols for these
-    // four, and the math reader accepts a backtick as an ordinary atom.
-    !matches!(ch, '#' | '$' | '%' | '&' | '`')
+    // four, and the math reader accepts a double quote as an ordinary atom.
+    !matches!(ch, '#' | '$' | '%' | '&' | '"')
 }
 
 /// A single-glyph delimiter contributed by a supported package, such as
@@ -273,7 +277,7 @@ fn package_delimiter(name: &str) -> Option<char> {
     }
 }
 
-fn classify_char(c: char) -> SymbolKind {
+const fn classify_char(c: char) -> SymbolKind {
     match c {
         '+' | '-' | '*' => SymbolKind::BinaryOp,
         '/' => SymbolKind::BinaryOp,
@@ -285,7 +289,7 @@ fn classify_char(c: char) -> SymbolKind {
         '(' | '[' => SymbolKind::Open,
         ')' | ']' => SymbolKind::Close,
         // All callers guard with SYMBOL_BYTES, so this arm is unreachable.
-        _ => unreachable!("classify_char called with non-symbol byte: {c:?}"),
+        _ => unreachable!(),
     }
 }
 
@@ -3188,9 +3192,12 @@ impl LatexCompactParser {
                 &input[1..],
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             )),
-            // Backtick ` → ordinary symbol (used in ``quotes'')
-            Some(b'`') => {
-                let sid = self.arena.push_str("`");
+            // A backtick is the opening quote ‘ and a double quote the closing
+            // quote glyph in TeX's math font (and in KaTeX).
+            Some(&quote @ (b'`' | b'"')) => {
+                let sid = self
+                    .arena
+                    .push_str(if quote == b'`' { "\u{2018}" } else { "\"" });
                 Ok((
                     &input[1..],
                     self.arena

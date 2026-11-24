@@ -236,29 +236,6 @@ pub(crate) fn is_expansion_primitive(name: &str) -> bool {
     )
 }
 
-/// Whether the preprocessor would rewrite any part of `text` read as LaTeX
-/// source: a `%` comment, a `\verb` segment, an expansion primitive or a
-/// builtin macro. Text for which this is false reaches the parser verbatim,
-/// so a writer can emit it as an inert argument.
-pub(crate) fn acts_on(text: &str) -> bool {
-    let mut rest = text;
-    while let Some(pos) = rest.find(['\\', '%']) {
-        let tail = &rest[pos..];
-        if tail.starts_with('%') || find_verb_end(tail, 0).is_some() {
-            return true;
-        }
-        let Some((after, token)) = super::split_token(tail) else {
-            return false; // A final lone backslash.
-        };
-        let name = &token[1..];
-        if is_expansion_primitive(name) || packages::is_builtin_macro_name(name) {
-            return true;
-        }
-        rest = after;
-    }
-    false
-}
-
 /// Locate expandable words and strip comments in one traversal. Only allocate
 /// a replacement string if a real comment, outside a verbatim block, is found.
 fn prepare_source(input: &str, direct_leading_plim: bool) -> (Cow<'_, str>, bool, bool) {

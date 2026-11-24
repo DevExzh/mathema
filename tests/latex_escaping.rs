@@ -162,6 +162,7 @@ fn drawn(text: &str) -> String {
             '\u{2032}' => '\'',
             '\u{27E8}' => '<',
             '\u{27E9}' => '>',
+            '\u{2018}' => '`',
             _ => ch,
         })
         .collect()
@@ -181,7 +182,7 @@ fn unnamed_large_operators_are_operator_atoms() {
         ('^', r"\mathop{\char`\^}"),
         ('_', r"\mathop{\char`\_}"),
         ('\'', r"\mathop{\char`'}"),
-        ('"', "\\mathop{\\char`\"}"),
+        ('"', r#"\mathop{"}"#),
         ('8', r"\mathop{8}"),
         ('x', r"\mathop{x}"),
         ('+', r"\mathop{+}"),
@@ -193,7 +194,10 @@ fn unnamed_large_operators_are_operator_atoms() {
         ('\u{85}', r"\mathop{\char133 }"),
         ('\u{2009}', r"\mathop{\char8201 }"),
         ('砀', r"\mathop{砀}"),
-        ('\u{E000}', "\\mathop{\u{E000}}"),
+        ('\u{E000}', r"\mathop{\char57344 }"),
+        ('\u{301}', r"\mathop{\char769 }"),
+        ('\u{20D7}', "\\mathop{\u{20D7}}"),
+        ('`', r"\mathop{\char``}"),
         ('≤', r"\mathop{\leq}"),
         ('α', r"\mathop{\alpha}"),
         ('²', r"\mathop{\char`²}"),
@@ -276,7 +280,7 @@ fn class_wrapped_glyphs_are_one_script_argument() {
         (SymbolKind::Open, "_", r"x_{\mathopen{\char`\_}}"),
         (SymbolKind::Close, "~", r"x_{\mathclose{\char`\~}}"),
         (SymbolKind::Punctuation, "'", r"x_{\mathpunct{\char`'}}"),
-        (SymbolKind::Fence, "\"", "x_{\\char`\"}"),
+        (SymbolKind::Fence, "\"", r#"x_""#),
         (SymbolKind::Relation, "\0", r"x_{\mathrel{\char0 }}"),
         (SymbolKind::Relation, " ", r"x_{\mathrel{\char32 }}"),
         (SymbolKind::Ordinary, " ", r"x_{\char32 }"),
@@ -308,7 +312,7 @@ fn numbers_and_identifiers_escape_syntax() {
         ("#1", r"\#1"),
         ("$5", r"\$5"),
         ("1&2", r"1\&2"),
-        ("}{", r"\char`\}\char`\{"),
+        ("}{", r"\}\{"),
         ("\\input", r"\char`\\input"),
         ("2^3_4", r"2\char`\^3\char`\_4"),
         ("1\n\n2", "1  2"),
@@ -317,14 +321,14 @@ fn numbers_and_identifiers_escape_syntax() {
         assert_eq!(write(vec![MathNode::Number(text.into())]), latex);
         reread(latex);
     }
-    assert_eq!(write(vec![id("\"")]), "\\char`\"");
-    assert_eq!(write(vec![sub(id("\""))]), "x_{\\char`\"}");
+    assert_eq!(write(vec![id("\"")]), r#"""#);
+    assert_eq!(write(vec![sub(id("\""))]), r#"x_""#);
     assert_eq!(write(vec![sub(id(" "))]), r"x_{\char32 }");
     let caret = MathNode::Operator(OperatorAttr {
         name: "a^b".into(),
         limit_style: LimitStyle::SubSup,
     });
-    assert_eq!(write(vec![caret]), r"\operatorname{a\textasciicircum{}b}");
+    assert_eq!(write(vec![caret]), r"\operatorname{a\char`\^b}");
     // Every character of a compound operator stays, and no large operator in
     // it takes the rest as its body.
     assert_eq!(
@@ -354,7 +358,7 @@ fn only_delimiters_follow_left_and_right() {
             "\0",
             r"\left. \mathopen{8}x\mathclose{\char0 } \right.",
         ),
-        ("(", "}{", r"\left( x\mathclose{\char`\}\char`\{} \right."),
+        ("(", "}{", r"\left( x\mathclose{\}\{} \right."),
         (
             "\\foo",
             "\u{2009}",
@@ -373,10 +377,7 @@ fn only_delimiters_follow_left_and_right() {
             FencedItem::Element(id("y")),
         ],
     };
-    assert_eq!(
-        write(vec![middle]),
-        r"\left( \sum{}\mathrel{a\char`\}}y \right)"
-    );
+    assert_eq!(write(vec![middle]), r"\left( \sum{}\mathrel{a\}}y \right)");
     // A sizing command is dropped from what is no delimiter.
     for (delim, latex) in [
         ("(", r"\big("),
@@ -458,7 +459,9 @@ fn every_character_survives_in_every_leaf() {
                 if nodes.len() > 1 || nodes[0] == leaf {
                     // Spaces and a lone script glyph are the exceptions: a
                     // space outside an operator atom is spacing.
-                    let spacing = ch.is_whitespace() && !matches!(leaf, MathNode::Nary { .. });
+                    // Names drop control characters.
+                    let spacing = ch.is_whitespace() && !matches!(leaf, MathNode::Nary { .. })
+                        || ch.is_control() && matches!(leaf, MathNode::Operator(_));
                     if !spacing {
                         let expected = drawn(&glyphs(&nodes)).replace('.', "");
                         let got = drawn(&glyphs(&read.expr().nodes)).replace('.', "");
@@ -473,6 +476,123 @@ fn every_character_survives_in_every_leaf() {
                 }
             }
         }
+    }
+}
+
+/// TeX expands a color argument: only a color may be one.
+#[test]
+fn color_arguments_are_inert() {
+    for spec in [
+        r"\input{pwn}",
+        r"\write18{ls}",
+        r"\csname input\endcsname",
+        "^^5cinput{pwn}",
+        "#1",
+        "red\n\n",
+        "a%",
+        "~",
+        "$x$",
+    ] {
+        let boxed = |bg: &str, border: Option<&str>| MathNode::Boxed {
+            content: bx(id("x")),
+            bg_color: Some(bg.into()),
+            border_color: border.map(String::from),
+        };
+        assert_eq!(write(vec![boxed(spec, None)]), r"\boxed{x}");
+        assert_eq!(write(vec![boxed("red", Some(spec))]), r"\colorbox{red}{x}");
+        assert_eq!(write(vec![boxed(spec, Some("red"))]), r"\boxed{x}");
+        let color = MathNode::Color {
+            color: spec.into(),
+            content: bx(id("x")),
+        };
+        // Without the color, the group it makes is kept where the spec is not
+        // TeX syntax.
+        let expected = if spec.starts_with("red") {
+            r"\textcolor{}{x}"
+        } else {
+            "x"
+        };
+        assert_eq!(write(vec![color]), expected);
+    }
+    for input in [
+        r"\colorbox{\input{pwn}}{x}",
+        r"\fcolorbox{\write18{ls}}{\input{pwn}}{x}",
+        r"\begin{array}{c}\cellcolor{\input{a}}x\end{array}",
+        r"\textcolor{\input{pwn}}{x}",
+        r"\color{\input{pwn}}x",
+        r"\definecolor{a}{rgb}{\input{pwn}}\colorbox{a}{x}",
+        r"\rowcolors{1}{\input{a}}{\input{a}}\begin{array}{c}x\end{array}",
+        r"\begin{array}{>{\columncolor{\input{a}}}c}x\end{array}",
+    ] {
+        let Ok(read) = mathema::from_latex(input) else {
+            continue;
+        };
+        let (latex, lost) = read.to_latex_with_diagnostics().unwrap();
+        for command in ["input", "write"] {
+            assert!(!latex.contains(command), "{input}: {latex}");
+        }
+        let defined = input.contains("definecolor");
+        assert!(defined || !lost.is_empty(), "{input}: {latex}");
+    }
+    let (latex, lost) = mathema::from_latex(r"\fcolorbox{red}{#ff0000}{x}")
+        .unwrap()
+        .to_latex_with_diagnostics()
+        .unwrap();
+    assert_eq!(latex, r"\fcolorbox{red}{#ff0000}{x}");
+    assert!(lost.is_empty());
+}
+
+#[test]
+fn text_is_inert() {
+    let text = |style, s: &str| write(vec![MathNode::Text(style, s.into())]);
+    for (s, latex) in [
+        (r"\input{a}", r"\text{\textbackslash{}input\{a\}}"),
+        ("a b", r"\text{a b}"),
+        ("a\nb\tc", "\\text{a b\tc}"),
+        ("a\n\0\nb", r"\text{a  b}"),
+        ("a\r\n\r\nb", r"\text{a    b}"),
+        ("a\x0Cb", r"\text{a b}"),
+        ("a\0\x1B\x07\u{85}b", r"\text{ab}"),
+        ("a-\0-b--c", r"\text{a-{}-b-{}-c}"),
+        ("}\u{301}a\u{301}", "\\text{\\}\\char769{}a\u{301}}"),
+    ] {
+        assert_eq!(text(TextStyle::Normal, s), latex);
+        assert_eq!(reread(latex).to_latex().unwrap(), latex);
+    }
+    // `\verb` cannot be used in the argument of a command.
+    assert_eq!(
+        text(TextStyle::Monospace, r"\input{a}"),
+        r"\texttt{\char92{}input\char123{}a\char125{}}"
+    );
+    let name = |s: &str| {
+        write(vec![MathNode::Operator(OperatorAttr {
+            name: s.into(),
+            limit_style: LimitStyle::SubSup,
+        })])
+    };
+    assert_eq!(name("a\n\n\x0C b\0\x1B"), r"\operatorname{a    b}");
+    assert_eq!(name(r"\~"), r"\operatorname{\char`\\\char`\~}");
+    // What is lost is reported.
+    let (latex, lost) = mathema::from_mathml("<math><mtext>a&#x7;b</mtext></math>")
+        .unwrap()
+        .to_latex_with_diagnostics()
+        .unwrap();
+    assert_eq!(latex, r"\text{ab}");
+    assert!(
+        lost.len() == 1 && lost[0].message.contains("U+0007"),
+        "{lost:?}"
+    );
+}
+
+#[test]
+fn space_commands_are_grouped_as_script_arguments() {
+    for (ch, latex) in [
+        ("\u{2009}", r"x_{\,}"),
+        ("\u{205F}", r"x_{\:}"),
+        ("\u{2001}", r"x_{\quad }"),
+    ] {
+        assert_eq!(write(vec![sub(sym(SymbolKind::LargeOp, ch))]), latex);
+        reread(latex);
     }
 }
 
@@ -649,6 +769,13 @@ fn arb_node() -> impl Strategy<Value = MathNode> {
         let first = arb_text().prop_map(|s| s.chars().next().unwrap()).boxed();
         prop_oneof![
             prop::collection::vec(inner.clone(), 0..4).prop_map(MathNode::Row),
+            (arb_text(), prop::option::of(arb_text()), inner.clone()).prop_map(
+                |(bg, border, x)| MathNode::Boxed {
+                    content: bx(x),
+                    bg_color: Some(bg),
+                    border_color: border
+                }
+            ),
             (
                 first.clone(),
                 opt.clone(),

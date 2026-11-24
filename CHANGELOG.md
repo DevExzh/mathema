@@ -70,6 +70,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written as combining marks in every context; `√(n&x)` no longer turns what follows into
   text, and `∜x` is read.
 
+- **Security:** LaTeX output writes a color argument only for text that is a
+  color (a name, `#hex`, a numeric list, an xcolor mix). `\colorbox{\input{a}}{x}`
+  was written back verbatim, and `\verb` is no longer written, since it is
+  unsafe in the argument of a command.
+- **Breaking (behavior):** characters that are LaTeX syntax are escaped
+  everywhere in LaTeX output (large operators, numbers, delimiters, names).
+  Control characters in text and function names are dropped, and
+  `ConvertResult::to_latex_with_diagnostics` reports them. A raw backtick in
+  LaTeX math is the opening quote `‘`, as in TeX and KaTeX, and a raw `"` is
+  read.
 - **Breaking (behavior):** `\hbar`, `\hslash`, `\ell`, `\Re`, `\Im`, the
   Hebrew letters, `\imath`, `\jmath` and `\eth` are identifiers (MathML
   `<mi>`, as KaTeX and MathJax write them) instead of ordinary symbols.

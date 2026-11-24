@@ -922,7 +922,7 @@ fn decimals_primes_and_quotes() {
     assert_eq!(latex5(&[&x, &f('~'), &x, &f('-'), &x]), r"x\sim x- x");
     // Text keeps its characters; a double quote may be a quotation mark.
     assert_eq!(latex5(&[&t('a'), &t('-'), &t('\'')]), r"\text{a-'}");
-    assert_eq!(latex5(&[&f('"'), &x, &f('"')]), "\\char`\"x\\char`\"");
+    assert_eq!(latex5(&[&f('"'), &x, &f('"')]), r#""x""#);
 }
 
 #[test]
