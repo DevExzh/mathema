@@ -969,8 +969,9 @@ pub(crate) fn operator_glyph_kind(ch: char) -> Option<SymbolKind> {
 /// but ordinary or alphabetic.
 ///
 /// In order: the canonical command's class, the class of any other command or
-/// package symbol spelling the glyph, the MathML operator dictionary's infix
-/// spacing, and a relation for an arrow (UTN #28 appendix B).
+/// package symbol spelling the glyph, the Unicode math class, the MathML
+/// operator dictionary's infix spacing, and a relation for an arrow (UTN #28
+/// appendix B).
 pub(crate) fn glyph_class(ch: char) -> Option<SymbolKind> {
     use crate::unicode::operators::{OperatorForm, lookup_operator};
     let class = match ch {
@@ -986,15 +987,18 @@ pub(crate) fn glyph_class(ch: char) -> Option<SymbolKind> {
             Some(kind) => kind,
             None => match other_glyph_classes().get(&ch) {
                 Some(&kind) => kind,
-                None => match lookup_operator(ch, OperatorForm::Infix) {
-                    Some(entry) if entry.lspace == 5 => SymbolKind::Relation,
-                    Some(entry) if entry.lspace == 4 => SymbolKind::BinaryOp,
-                    _ => match ch {
-                        '\u{2190}'..='\u{21FF}'
-                        | '\u{27F0}'..='\u{27FF}'
-                        | '\u{2900}'..='\u{297F}'
-                        | '\u{2B00}'..='\u{2B4F}' => SymbolKind::Relation,
-                        _ => return None,
+                None => match crate::unicode::math_class::math_class(ch) {
+                    Some(kind) => kind,
+                    None => match lookup_operator(ch, OperatorForm::Infix) {
+                        Some(entry) if entry.lspace == 5 => SymbolKind::Relation,
+                        Some(entry) if entry.lspace == 4 => SymbolKind::BinaryOp,
+                        _ => match ch {
+                            '\u{2190}'..='\u{21FF}'
+                            | '\u{27F0}'..='\u{27FF}'
+                            | '\u{2900}'..='\u{297F}'
+                            | '\u{2B00}'..='\u{2B4F}' => SymbolKind::Relation,
+                            _ => return None,
+                        },
                     },
                 },
             },
@@ -1058,9 +1062,65 @@ pub(crate) fn all_commands() -> Vec<(String, String, SymbolKind)> {
     all
 }
 
-/// Whether some command or package symbol spells `ch`.
+/// The character for `op` struck through, where Unicode has one: the table of
+/// UTN #28 section 4.1 and the other relations and arrows.
+#[rustfmt::skip]
+pub(crate) fn precomposed_negation(op: char) -> Option<char> {
+    Some(match op {
+        '<' => '\u{226E}', // < ≮
+        '=' => '\u{2260}', // = ≠
+        '>' => '\u{226F}', // > ≯
+        '\u{2190}' => '\u{219A}', // ← ↚
+        '\u{2192}' => '\u{219B}', // → ↛
+        '\u{2194}' => '\u{21AE}', // ↔ ↮
+        '\u{21D0}' => '\u{21CD}', // ⇐ ⇍
+        '\u{21D2}' => '\u{21CF}', // ⇒ ⇏
+        '\u{21D4}' => '\u{21CE}', // ⇔ ⇎
+        '\u{2203}' => '\u{2204}', // ∃ ∄
+        '\u{2208}' => '\u{2209}', // ∈ ∉
+        '\u{220B}' => '\u{220C}', // ∋ ∌
+        '\u{2223}' => '\u{2224}', // ∣ ∤
+        '\u{2225}' => '\u{2226}', // ∥ ∦
+        '\u{223C}' => '\u{2241}', // ∼ ≁
+        '\u{2243}' => '\u{2244}', // ≃ ≄
+        '\u{2245}' => '\u{2247}', // ≅ ≇
+        '\u{2248}' => '\u{2249}', // ≈ ≉
+        '\u{224D}' => '\u{226D}', // ≍ ≭
+        '\u{2261}' => '\u{2262}', // ≡ ≢
+        '\u{2264}' => '\u{2270}', // ≤ ≰
+        '\u{2265}' => '\u{2271}', // ≥ ≱
+        '\u{2272}' => '\u{2274}', // ≲ ≴
+        '\u{2273}' => '\u{2275}', // ≳ ≵
+        '\u{2276}' => '\u{2278}', // ≶ ≸
+        '\u{2277}' => '\u{2279}', // ≷ ≹
+        '\u{227A}' => '\u{2280}', // ≺ ⊀
+        '\u{227B}' => '\u{2281}', // ≻ ⊁
+        '\u{227C}' => '\u{22E0}', // ≼ ⋠
+        '\u{227D}' => '\u{22E1}', // ≽ ⋡
+        '\u{2282}' => '\u{2284}', // ⊂ ⊄
+        '\u{2283}' => '\u{2285}', // ⊃ ⊅
+        '\u{2286}' => '\u{2288}', // ⊆ ⊈
+        '\u{2287}' => '\u{2289}', // ⊇ ⊉
+        '\u{2291}' => '\u{22E2}', // ⊑ ⋢
+        '\u{2292}' => '\u{22E3}', // ⊒ ⋣
+        '\u{22A2}' => '\u{22AC}', // ⊢ ⊬
+        '\u{22A8}' => '\u{22AD}', // ⊨ ⊭
+        '\u{22A9}' => '\u{22AE}', // ⊩ ⊮
+        '\u{22AB}' => '\u{22AF}', // ⊫ ⊯
+        '\u{22B2}' => '\u{22EA}', // ⊲ ⋪
+        '\u{22B3}' => '\u{22EB}', // ⊳ ⋫
+        '\u{22B4}' => '\u{22EC}', // ⊴ ⋬
+        '\u{22B5}' => '\u{22ED}', // ⊵ ⋭
+        _ => return None,
+    })
+}
+
+/// Whether `ch` is a math symbol: some command or package symbol spells it,
+/// or it has a Unicode math class.
 pub(crate) fn is_symbol_glyph(ch: char) -> bool {
-    UNICODE_TO_LATEX.contains_key(&ch) || other_glyph_classes().contains_key(&ch)
+    UNICODE_TO_LATEX.contains_key(&ch)
+        || other_glyph_classes().contains_key(&ch)
+        || crate::unicode::math_class::math_class(ch).is_some()
 }
 
 /// Find a core command spelling `ch` with exactly the atom class `kind`.

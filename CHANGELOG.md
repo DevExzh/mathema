@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only the first. Rewriting MTEF no longer adds zero-width spaces before some
   leading scripts.
 
+- UnicodeMath: every math character has its Unicode math class where no
+  LaTeX command gives one (`a≉b/c` is `a≉\frac{b}{c}`); `\not` writes the
+  struck character (`≉`, `≐̸`); fence content is separated like any list
+  (`\left(a\frac{b}{c}\right)` read back as `(\frac{ab}{c})`); `|` and `‖`
+  open, close, divide or are script bases by UTN 28 section 3.1 (`|x/y|` is
+  `|\frac{x}{y}|`), and `|ψ⟩` and `⟨ψ|` are kets and bras; wide accents are
+  written as combining marks in every context; `√(n&x)` no longer turns what follows into
+  text, and `∜x` is read.
+
 - **Breaking (behavior):** `\hbar`, `\hslash`, `\ell`, `\Re`, `\Im`, the
   Hebrew letters, `\imath`, `\jmath` and `\eth` are identifiers (MathML
   `<mi>`, as KaTeX and MathJax write them) instead of ordinary symbols.

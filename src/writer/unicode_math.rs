@@ -281,36 +281,26 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             content,
         } => {
             out.push_str(open);
-            let mut current_style = style;
-            let mut previous_operator = false;
-            let mut word = None;
+            let start = out.len();
+            let mut segment: SmallVec<[&MathNode; 8]> = SmallVec::new();
             for item in content {
                 match item {
-                    FencedItem::Element(MathNode::StyleSwitch(value)) => {
-                        current_style = MathStyle::branch_from_switch(*value);
-                    },
-                    FencedItem::Element(node) => {
-                        let start = out.len();
-                        let selected = select_mathchoice(node, current_style);
-                        let identifier = is_word(selected);
-                        if identifier {
-                            write_word(out, selected);
-                        } else {
-                            write_node(out, node, current_style);
-                        }
-                        separate_after_script(out, start, previous_operator);
-                        track_word(out, &mut word, start, identifier);
-                        previous_operator = needs_operator_terminator(node, current_style);
-                    },
+                    FencedItem::Element(node) => segment.push(node),
+                    // A `\middle` delimiter starts a new segment, with the
+                    // fence's style.
                     FencedItem::Middle(delim) => {
-                        track_word(out, &mut word, out.len(), false);
+                        write_nodes_tracking(out, &segment, style, None);
+                        segment.clear();
                         out.push_str(delim);
-                        current_style = style;
-                        previous_operator = false;
                     },
                 }
             }
-            track_word(out, &mut word, out.len(), false);
+            write_nodes_tracking(out, &segment, style, None);
+            if let Some(FencedItem::Element(first)) = content.first()
+                && operand_edge(first) == OperandEdge::Fraction
+            {
+                separate_bar_content(out, start);
+            }
             out.push_str(close);
         },
 
@@ -481,7 +471,9 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             let style = kind.forced_style().unwrap_or(style);
             write_fraction_arg(out, num, style.fracnum());
             out.push(fraction_operator(*kind));
+            let start = out.len();
             write_fraction_arg(out, den, style.fracden());
+            group_negatable(out, start);
         },
 
         MathNode::Sqrt(inner) => {
@@ -504,9 +496,13 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                     // General nth root: √(n&radicand) notation
                     out.push('\u{221A}');
                     out.push('(');
+                    let start = out.len();
                     write_node(out, index, style.sup().sup());
+                    group_null_operand(out, start, false);
                     out.push('&');
+                    let start = out.len();
                     write_node(out, radicand, style.cramped());
+                    group_null_operand(out, start, false);
                     out.push(')');
                 },
             }
@@ -514,11 +510,22 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
 
         MathNode::Nary { .. } => write_nary(out, node, style, false),
 
-        MathNode::Accent { base, accent, .. } => {
+        MathNode::Accent {
+            base,
+            accent,
+            position,
+            ..
+        } => {
             let start = out.len();
             write_accent_base(out, base, style);
             if out.len() == start {
                 out.push_str("〖〗");
+            }
+            if !is_unicode_combining_accent(*accent) {
+                out.push(match position {
+                    AccentPosition::Above => '┴',
+                    AccentPosition::Below => '┬',
+                });
             }
             out.push(*accent);
         },
@@ -637,11 +644,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
             content,
         } => {
             out.push('〖');
-            if grouped_content_needs_structured(content) {
-                write_structured_content(out, content, style);
-            } else {
-                write_node(out, content, style);
-            }
+            write_node(out, content, style);
             out.push('〗');
         },
         MathNode::MathAtom { atom_type, content } => {
@@ -679,7 +682,7 @@ fn structured_content_needs_group(node: &MathNode) -> bool {
         MathNode::Color { content, .. }
         | MathNode::MathAtom { content, .. }
         | MathNode::StructuredOperator { content, .. } => structured_content_needs_group(content),
-        MathNode::Accent { accent, wide, .. } => *wide || !is_unicode_combining_accent(*accent),
+        MathNode::Accent { accent, .. } => !is_unicode_combining_accent(*accent),
         MathNode::Overscript {
             over,
             movable_limits,
@@ -695,31 +698,6 @@ fn structured_content_needs_group(node: &MathNode) -> bool {
         | MathNode::Subscript { .. }
         | MathNode::Superscript { .. }
         | MathNode::SubSup { .. } => false,
-        _ => false,
-    }
-}
-
-fn grouped_content_needs_structured(node: &MathNode) -> bool {
-    match node {
-        MathNode::Accent { .. }
-        | MathNode::Overscript { .. }
-        | MathNode::Underscript { .. }
-        | MathNode::UnderOver { .. }
-        | MathNode::StructuredOperator { .. } => true,
-        MathNode::Row(children) | MathNode::Styled(_, children) => {
-            children.iter().any(grouped_content_needs_structured)
-        },
-        MathNode::Color { content, .. } | MathNode::MathAtom { content, .. } => {
-            grouped_content_needs_structured(content)
-        },
-        MathNode::MathChoice {
-            display,
-            text,
-            script,
-            script_script,
-        } => [display, text, script, script_script]
-            .into_iter()
-            .any(|branch| grouped_content_needs_structured(branch)),
         _ => false,
     }
 }
@@ -807,10 +785,9 @@ fn write_accent(
     base: &MathNode,
     accent: char,
     position: AccentPosition,
-    wide: bool,
     style: MathStyle,
 ) {
-    if wide || !is_unicode_combining_accent(accent) {
+    if !is_unicode_combining_accent(accent) {
         write_structured_decorated_base(out, base, style);
         out.push(match position {
             AccentPosition::Above => '┴',
@@ -983,9 +960,9 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
             base,
             accent,
             position,
-            wide,
+            ..
         } => {
-            write_accent(out, base, *accent, *position, *wide, style);
+            write_accent(out, base, *accent, *position, style);
         },
         MathNode::Styled(text_style, children) => {
             let mut current_style = style;
@@ -1061,18 +1038,14 @@ fn write_base(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push('〗');
         },
-        // A prescripted base with scripts of its own would take this one too.
-        MathNode::PreScripts { base, .. }
-            if matches!(
-                select_mathchoice(base, style),
-                MathNode::Subscript { .. }
-                    | MathNode::Superscript { .. }
-                    | MathNode::SubSup { .. }
-                    | MathNode::Underscript { .. }
-                    | MathNode::Overscript { .. }
-                    | MathNode::UnderOver { .. }
-            ) =>
-        {
+        // The reader takes no other fence than brackets as one (`〖|x|〗^2`).
+        MathNode::Fenced { open, close, .. } if !is_bracket_pair(open, close) => {
+            out.push('〖');
+            write_node(out, node, style);
+            out.push('〗');
+        },
+        // A script after a prescripted base would be the base's own.
+        MathNode::PreScripts { .. } => {
             out.push('〖');
             write_node(out, node, style);
             out.push('〗');
@@ -1103,6 +1076,7 @@ fn write_accent_base(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Identifier(name) => name.chars().nth(1).is_some(),
         MathNode::Row(children) => !children.is_empty(),
         MathNode::Styled(_, children) => children.len() > 1,
+        MathNode::Space(_) | MathNode::ExplicitSpace { .. } => true,
         MathNode::Subscript { .. }
         | MathNode::Superscript { .. }
         | MathNode::SubSup { .. }
@@ -1111,7 +1085,12 @@ fn write_accent_base(out: &mut String, node: &MathNode, style: MathStyle) {
         | MathNode::UnderOver { .. }
         | MathNode::PreScripts { .. }
         | MathNode::Fraction { .. }
+        | MathNode::Sqrt(_)
+        | MathNode::Root { .. }
+        | MathNode::Boxed { .. }
+        | MathNode::Phantom(..)
         | MathNode::Nary { .. } => true,
+        MathNode::Fenced { open, close, .. } => !is_bracket_pair(open, close),
         _ => false,
     };
     if grouped {
@@ -1129,6 +1108,7 @@ fn write_accent_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: Ma
         CompactNode::Identifier(sid) => arena.str_val(sid).chars().nth(1).is_some(),
         CompactNode::Row(span) => !span.is_empty(),
         CompactNode::Styled(_, span) => arena.children(span).len() > 1,
+        CompactNode::Space(_) => true,
         CompactNode::Subscript { .. }
         | CompactNode::Superscript { .. }
         | CompactNode::SubSup { .. }
@@ -1137,7 +1117,14 @@ fn write_accent_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: Ma
         | CompactNode::UnderOver { .. }
         | CompactNode::PreScripts { .. }
         | CompactNode::Fraction { .. }
+        | CompactNode::Sqrt(_)
+        | CompactNode::Root { .. }
+        | CompactNode::Boxed { .. }
+        | CompactNode::Phantom(..)
         | CompactNode::Nary { .. } => true,
+        CompactNode::Fenced { open, close, .. } => {
+            !is_bracket_pair(arena.str_val(open), arena.str_val(close))
+        },
         _ => false,
     };
     if grouped {
@@ -1164,13 +1151,20 @@ fn write_script_base(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push('〗');
         },
+        // A space takes no script of its own (`〖\u{2009}〗′`).
+        MathNode::Space(_) | MathNode::ExplicitSpace { .. } => {
+            out.push('〖');
+            write_node(out, node, style);
+            out.push('〗');
+        },
         _ => write_base(out, node, style),
     }
 }
 
 use crate::reader::unicode_math::{
-    breaks_naryand, breaks_operand_at, is_alphanumeric, is_prime as is_prime_char, is_run_char,
-    opening_fence, reads_as_script_run, starts_signed_script_operand, symbol_takes_prime,
+    breaks_naryand, breaks_operand_at, is_alphanumeric, is_nary_char, is_prime as is_prime_char,
+    is_run_char, opening_fence, pairs_bars, reads_as_script_run, separates_bars,
+    starts_signed_script_operand, symbol_takes_prime,
 };
 
 /// A symbol node that starts with a prime, which the reader never gives
@@ -1238,8 +1232,41 @@ fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyl
             write_node(out, node, style);
             out.push(')');
         },
+        // The reader takes no other fence than brackets as one operand, and
+        // scripts after a prescripted operand as its own.
+        MathNode::Fenced { open, close, .. } if !is_bracket_pair(open, close) => {
+            out.push('(');
+            write_node(out, node, style);
+            out.push(')');
+        },
+        MathNode::PreScripts { .. } => {
+            out.push('(');
+            write_node(out, node, style);
+            out.push(')');
+        },
+        // An accent on more than an atom or a group: the script would end
+        // before it.
+        MathNode::Accent { base, .. }
+            if !(matches!(select_mathchoice(base, style),
+                MathNode::Symbol(_, glyph) if !needs_script_group(glyph))
+                || matches!(
+                    select_mathchoice(base, style),
+                    MathNode::Identifier(_)
+                        | MathNode::Number(_)
+                        | MathNode::Operator(_)
+                        | MathNode::MathAtom { .. }
+                        | MathNode::Accent { .. }
+                )) =>
+        {
+            let start = out.len();
+            write_node(out, node, style);
+            if !out[start..].starts_with('〖') {
+                out.insert(start, '(');
+                out.push(')');
+            }
+        },
         // A symbol of several characters, or a quoted solidus.
-        MathNode::Symbol(_, glyph) if glyph == "/" || glyph.chars().nth(1).is_some() => {
+        MathNode::Symbol(_, glyph) if needs_script_group(glyph) => {
             out.push('(');
             write_node(out, node, style);
             out.push(')');
@@ -1404,6 +1431,31 @@ fn group_null_operand(out: &mut String, start: usize, grouping: bool) {
     }
 }
 
+/// Parenthesize a denominator whose operator the fraction bar would negate
+/// (`x/(∣⃗)`).
+fn group_negatable(out: &mut String, start: usize) {
+    let first = out[start..].chars().next();
+    if first.is_some_and(|c| crate::unicode::symbols::precomposed_negation(c).is_some()) {
+        out.insert(start, '(');
+        out.push(')');
+    }
+}
+
+/// Whether the reader takes a fence of `open` and `close` as one group.
+fn is_bracket_pair(open: &str, close: &str) -> bool {
+    matches!((open, close), ("(", ")") | ("[", "]") | ("{", "}"))
+}
+
+/// A symbol that is no script operand by itself: of several characters, a
+/// quoted solidus, or one the reader takes an operand after.
+fn needs_script_group(glyph: &str) -> bool {
+    let mut chars = glyph.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) => matches!(c, '/' | '√' | '∛' | '∜' | '▭' | '⟡') || is_nary_char(c),
+        (first, _) => first.is_some(),
+    }
+}
+
 /// Parenthesize a script operand written with a space outside brackets,
 /// which would end it (`x_(∑ a)`).
 fn group_spaced_script(out: &mut String, start: usize) {
@@ -1470,6 +1522,19 @@ fn prescripted_letter_c(arena: &AstArena, id: NodeId, style: MathStyle) -> Optio
         },
         _ => None,
     }
+}
+
+/// A symbol struck through (LaTeX `\not`): one character where there is one,
+/// else with the combining solidus after it.
+fn negated_glyph(glyph: &str) -> Option<String> {
+    let mut chars = glyph.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        return None;
+    };
+    Some(match crate::unicode::symbols::precomposed_negation(c) {
+        Some(negated) => negated.to_string(),
+        None => format!("{c}\u{0338}"),
+    })
 }
 
 /// Follow the letters of adjacent words: `word` is where they start. The
@@ -1642,7 +1707,7 @@ fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push(')');
         },
-        MathNode::Fenced { open, close, .. } if open == "(" && close == ")" => {
+        MathNode::Fenced { open, close, .. } if open == "(" || !is_bracket_pair(open, close) => {
             out.push('(');
             write_node(out, node, style);
             out.push(')');
@@ -1741,9 +1806,9 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
 
 /// Write `nodes`; with `applied`, record the offsets of the spaces written
 /// between a function name and its argument (see [`continues_naryand`]).
-fn write_nodes_tracking(
+fn write_nodes_tracking<N: std::borrow::Borrow<MathNode>>(
     out: &mut String,
-    nodes: &[MathNode],
+    nodes: &[N],
     style: MathStyle,
     mut applied: Option<&mut SmallVec<[usize; 4]>>,
 ) {
@@ -1755,9 +1820,30 @@ fn write_nodes_tracking(
     let mut edge = OperandEdge::Break;
     // Start of the letters of the identifiers written last.
     let mut word = None;
+    let mut struck = false;
     for (index, node) in nodes.iter().enumerate() {
+        let node = node.borrow();
         if let MathNode::StyleSwitch(value) = node {
             current_style = MathStyle::branch_from_switch(*value);
+            continue;
+        }
+        if std::mem::take(&mut struck) {
+            continue;
+        }
+        if let MathNode::Symbol(_, glyph) = node
+            && glyph == "\u{0338}"
+            && let Some(next) = nodes.get(index + 1).map(std::borrow::Borrow::borrow)
+            && let MathNode::Symbol(_, next) = select_mathchoice(next, current_style)
+            && let Some(negated) = negated_glyph(next)
+        {
+            track_word(out, &mut word, out.len(), false);
+            out.push_str(&negated);
+            edge = symbol_edge(next);
+            previous = None;
+            takes_prime = true;
+            function = false;
+            wrote_node = true;
+            struck = true;
             continue;
         }
         let selected = select_mathchoice(node, current_style);
@@ -1768,11 +1854,14 @@ fn write_nodes_tracking(
         }
         let start = out.len();
         let next = || {
-            nodes[index + 1..].iter().find(|node| match node {
-                MathNode::StyleSwitch(_) => false,
-                MathNode::Row(children) => !children.is_empty(),
-                _ => true,
-            })
+            nodes[index + 1..]
+                .iter()
+                .map(std::borrow::Borrow::borrow)
+                .find(|node| match node {
+                    MathNode::StyleSwitch(_) => false,
+                    MathNode::Row(children) => !children.is_empty(),
+                    _ => true,
+                })
         };
         let open = matches!(node, MathNode::Nary { .. }) && ends_in_function(node, current_style);
         let grouped = open && next().is_some_and(|next| splits_naryand(next, current_style));
@@ -1960,6 +2049,39 @@ fn separate_following_operand(
     }
 }
 
+/// Set the fence content at `out[start..]`, which starts with a fraction, apart
+/// from an opening bar that the reader may not pair with the closing one
+/// (`| a/b+|`): around operators that end it, other bars, relations and
+/// separators.
+fn separate_bar_content(out: &mut String, start: usize) {
+    let content = &out[start..];
+    if out[..start].ends_with(['|', '\u{2016}'])
+        && (content.ends_with(|c| c == ' ' || breaks_operand_at(c))
+            || content.contains(|c| pairs_bars(c) || separates_bars(c))
+            || follows_open_bar(&out[..start]))
+    {
+        out.insert(start, ' ');
+    }
+}
+
+/// Whether another bar may be open where `before`, which ends with an opening
+/// bar, ends (`|a|b/c||`): an odd number of them at its bracket level. Looks
+/// only a little way back.
+fn follows_open_bar(before: &str) -> bool {
+    let mut depth = 0_usize;
+    let mut bars = 0_usize;
+    for c in before.chars().rev().skip(1).take(64) {
+        match c {
+            ')' | ']' | '}' | '〗' => depth += 1,
+            '(' | '[' | '{' | '〖' if depth == 0 => break,
+            '(' | '[' | '{' | '〖' => depth -= 1,
+            '|' | '\u{2016}' if depth == 0 => bars += 1,
+            _ => {},
+        }
+    }
+    bars % 2 == 1
+}
+
 /// Separate the sibling written from `start` on from a script before it
 /// that would take it (`x_i y`, not `x_iy`), in a list written without
 /// [`write_nodes_with_style`] (a fence or a styled run).
@@ -2104,7 +2226,18 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle, grouped: b
     }
     // A space would end the n-aryand early (`∑ 〖y′ sin x〗`), but for one
     // after a function name (`∑ log k`) or before a differential.
-    if !plain
+    // An operator in a fence the reader does not take as one ends the
+    // n-aryand (`∮ 〖|⋅|〗`).
+    let is_bars = |node: &MathNode| {
+        matches!(select_mathchoice(node, style), MathNode::Fenced { open, close, .. }
+            if !is_bracket_pair(open, close))
+    };
+    let bars = match node {
+        MathNode::Row(children) => children.iter().any(is_bars),
+        node => is_bars(node),
+    } && out[start..].contains(|c| c == ' ' || breaks_naryand(c));
+    if bars
+        || !plain
         || (grouped && is_function_head(node))
         || (matches!(node, MathNode::Row(_))
             && (!continues_naryand(out, start, &applied)
@@ -2144,7 +2277,7 @@ fn write_naryand_c(
     let start = out.len();
     let mut applied = SmallVec::new();
     let row = if let CompactNode::Row(span) = *arena.node(id) {
-        write_nodes_c_tracking(out, arena, span, style, Some(&mut applied));
+        write_nodes_c_tracking(out, arena, arena.children(span), style, Some(&mut applied));
         true
     } else if matches!(*arena.node(id), CompactNode::Nary { .. }) {
         write_nary_c(out, arena, id, style, grouped);
@@ -2155,7 +2288,19 @@ fn write_naryand_c(
     };
     // A space would end the n-aryand early (`∑ 〖y′ sin x〗`), but for one
     // after a function name (`∑ log k`) or before a differential.
-    if !plain
+    // An operator in a fence the reader does not take as one ends the
+    // n-aryand (`∮ 〖|⋅|〗`).
+    let is_bars = |id: NodeId| {
+        matches!(*arena.node(select_mathchoice_c(arena, id, style)),
+            CompactNode::Fenced { open, close, .. }
+                if !is_bracket_pair(arena.str_val(open), arena.str_val(close)))
+    };
+    let bars = match *arena.node(id) {
+        CompactNode::Row(span) => arena.children(span).iter().any(|&child| is_bars(child)),
+        _ => is_bars(id),
+    } && out[start..].contains(|c| c == ' ' || breaks_naryand(c));
+    if bars
+        || !plain
         || (grouped && is_function_head_c(arena, id))
         || (row
             && (!continues_naryand(out, start, &applied)
@@ -2205,6 +2350,42 @@ fn operand_edge(node: &MathNode) -> OperandEdge {
         MathNode::Symbol(_, glyph) => symbol_edge(glyph),
         // Leading scripts end where their base ends.
         MathNode::PreScripts { base, .. } => operand_edge(base),
+        // So is an n-ary operator with its n-aryand.
+        MathNode::Subscript { base, .. }
+        | MathNode::Superscript { base, .. }
+        | MathNode::SubSup { base, .. }
+            if matches!(select_mathchoice(base, MathStyle::Text), MathNode::Nary { body, .. }
+                if !matches!(&**body, MathNode::Row(children) if children.is_empty())) =>
+        {
+            OperandEdge::Operand
+        },
+        // So is a base with scripts of its own.
+        MathNode::Subscript { base, .. }
+        | MathNode::Superscript { base, .. }
+        | MathNode::SubSup { base, .. }
+            if matches!(
+                select_mathchoice(base, MathStyle::Text),
+                MathNode::Subscript { .. }
+                    | MathNode::Superscript { .. }
+                    | MathNode::SubSup { .. }
+                    | MathNode::Underscript { .. }
+                    | MathNode::Overscript { .. }
+                    | MathNode::UnderOver { .. }
+            ) =>
+        {
+            OperandEdge::Operand
+        },
+        // A space is grouped to take a script.
+        MathNode::Subscript { base, .. }
+        | MathNode::Superscript { base, .. }
+        | MathNode::SubSup { base, .. }
+            if matches!(
+                select_mathchoice(base, MathStyle::Text),
+                MathNode::Space(_) | MathNode::ExplicitSpace { .. }
+            ) =>
+        {
+            OperandEdge::Operand
+        },
         // A scripted operator is still an operator, as in the reader.
         MathNode::Subscript { base, .. }
         | MathNode::Superscript { base, .. }
@@ -2240,6 +2421,42 @@ fn operand_edge_c(arena: &AstArena, id: NodeId) -> OperandEdge {
         CompactNode::Symbol(_, sid) => symbol_edge(arena.str_val(sid)),
         // Leading scripts end where their base ends.
         CompactNode::PreScripts { base, .. } => operand_edge_c(arena, base),
+        // So is an n-ary operator with its n-aryand.
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. }
+            if matches!(*arena.node(select_mathchoice_c(arena, base, MathStyle::Text)), CompactNode::Nary { body, .. }
+                if !matches!(*arena.node(body), CompactNode::Row(span) if span.is_empty())) =>
+        {
+            OperandEdge::Operand
+        },
+        // So is a base with scripts of its own.
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. }
+            if matches!(
+                *arena.node(select_mathchoice_c(arena, base, MathStyle::Text)),
+                CompactNode::Subscript { .. }
+                    | CompactNode::Superscript { .. }
+                    | CompactNode::SubSup { .. }
+                    | CompactNode::Underscript { .. }
+                    | CompactNode::Overscript { .. }
+                    | CompactNode::UnderOver { .. }
+            ) =>
+        {
+            OperandEdge::Operand
+        },
+        // A space is grouped to take a script.
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. }
+            if matches!(
+                *arena.node(select_mathchoice_c(arena, base, MathStyle::Text)),
+                CompactNode::Space(_)
+            ) =>
+        {
+            OperandEdge::Operand
+        },
         // A scripted operator is still an operator, as in the reader.
         CompactNode::Subscript { base, .. }
         | CompactNode::Superscript { base, .. }
@@ -2447,39 +2664,29 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             content,
         } => {
             out.push_str(arena.str_val(open));
-            let mut current_style = style;
-            let mut previous_operator = false;
-            let mut word = None;
-            for &cid in arena.children(content) {
-                match *arena.node(cid) {
-                    CompactNode::StyleSwitch(value) => {
-                        current_style = MathStyle::branch_from_switch(value);
+            let start = out.len();
+            // A `\middle` delimiter starts a new segment, with the fence's
+            // style.
+            let children = arena.children(content);
+            let segments = children
+                .split_inclusive(|&child| matches!(*arena.node(child), CompactNode::Middle(_)));
+            for segment in segments {
+                let (nodes, middle) = match segment.split_last() {
+                    Some((&last, nodes)) if matches!(*arena.node(last), CompactNode::Middle(_)) => {
+                        (nodes, Some(last))
                     },
-                    CompactNode::Middle(sid) => {
-                        track_word(out, &mut word, out.len(), false);
-                        out.push_str(arena.str_val(sid));
-                        // A `\middle` delimiter starts a new fence segment.
-                        // Do not let a style declaration from the left side
-                        // leak into the segment on the right.
-                        current_style = style;
-                        previous_operator = false;
-                    },
-                    _ => {
-                        let start = out.len();
-                        let selected = select_mathchoice_c(arena, cid, current_style);
-                        let identifier = is_word_c(arena, selected);
-                        if identifier {
-                            write_word_c(out, arena, selected);
-                        } else {
-                            write_node_c(out, arena, cid, current_style);
-                        }
-                        separate_after_script(out, start, previous_operator);
-                        track_word(out, &mut word, start, identifier);
-                        previous_operator = needs_operator_terminator_c(arena, cid, current_style);
-                    },
+                    _ => (segment, None),
+                };
+                write_nodes_c_tracking(out, arena, nodes, style, None);
+                if let Some(CompactNode::Middle(sid)) = middle.map(|id| *arena.node(id)) {
+                    out.push_str(arena.str_val(sid));
                 }
             }
-            track_word(out, &mut word, out.len(), false);
+            if let Some(&first) = children.first()
+                && operand_edge_c(arena, first) == OperandEdge::Fraction
+            {
+                separate_bar_content(out, start);
+            }
             out.push_str(arena.str_val(close));
         },
 
@@ -2650,7 +2857,9 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             let style = kind.forced_style().unwrap_or(style);
             write_fraction_arg_c(out, arena, num, style.fracnum());
             out.push(fraction_operator(kind));
+            let start = out.len();
             write_fraction_arg_c(out, arena, den, style.fracden());
+            group_negatable(out, start);
         },
 
         CompactNode::Sqrt(inner) => {
@@ -2672,9 +2881,13 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
                 _ => {
                     out.push('\u{221A}');
                     out.push('(');
+                    let start = out.len();
                     write_node_c(out, arena, index, style.sup().sup());
+                    group_null_operand(out, start, false);
                     out.push('&');
+                    let start = out.len();
                     write_node_c(out, arena, radicand, style.cramped());
+                    group_null_operand(out, start, false);
                     out.push(')');
                 },
             }
@@ -2682,11 +2895,22 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::Nary { .. } => write_nary_c(out, arena, id, style, false),
 
-        CompactNode::Accent { base, accent, .. } => {
+        CompactNode::Accent {
+            base,
+            accent,
+            position,
+            ..
+        } => {
             let start = out.len();
             write_accent_base_c(out, arena, base, style);
             if out.len() == start {
                 out.push_str("〖〗");
+            }
+            if !is_unicode_combining_accent(accent) {
+                out.push(match position {
+                    AccentPosition::Above => '┴',
+                    AccentPosition::Below => '┬',
+                });
             }
             out.push(accent);
         },
@@ -2792,11 +3016,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             content,
         } => {
             out.push('〖');
-            if grouped_content_needs_structured_c(arena, content) {
-                write_structured_content_c(out, arena, content, style);
-            } else {
-                write_node_c(out, arena, content, style);
-            }
+            write_node_c(out, arena, content, style);
             out.push('〗');
         },
         CompactNode::MathAtom { atom_type, content } => {
@@ -2847,7 +3067,7 @@ fn structured_content_needs_group_c(arena: &AstArena, id: NodeId) -> bool {
         | CompactNode::StructuredOperator { content, .. } => {
             structured_content_needs_group_c(arena, content)
         },
-        CompactNode::Accent { accent, wide, .. } => wide || !is_unicode_combining_accent(accent),
+        CompactNode::Accent { accent, .. } => !is_unicode_combining_accent(accent),
         CompactNode::Overscript {
             over,
             movable_limits,
@@ -2863,33 +3083,6 @@ fn structured_content_needs_group_c(arena: &AstArena, id: NodeId) -> bool {
         | CompactNode::Subscript { .. }
         | CompactNode::Superscript { .. }
         | CompactNode::SubSup { .. } => false,
-        _ => false,
-    }
-}
-
-fn grouped_content_needs_structured_c(arena: &AstArena, id: NodeId) -> bool {
-    match *arena.node(id) {
-        CompactNode::Accent { .. }
-        | CompactNode::Overscript { .. }
-        | CompactNode::Underscript { .. }
-        | CompactNode::UnderOver { .. }
-        | CompactNode::StructuredOperator { .. } => true,
-        CompactNode::Row(span) | CompactNode::Styled(_, span) => arena
-            .children(span)
-            .iter()
-            .copied()
-            .any(|child| grouped_content_needs_structured_c(arena, child)),
-        CompactNode::Color { content, .. } | CompactNode::MathAtom { content, .. } => {
-            grouped_content_needs_structured_c(arena, content)
-        },
-        CompactNode::MathChoice {
-            display,
-            text,
-            script,
-            script_script,
-        } => [display, text, script, script_script]
-            .into_iter()
-            .any(|child| grouped_content_needs_structured_c(arena, child)),
         _ => false,
     }
 }
@@ -2957,10 +3150,9 @@ fn write_accent_c(
     base: NodeId,
     accent: char,
     position: AccentPosition,
-    wide: bool,
     style: MathStyle,
 ) {
-    if wide || !is_unicode_combining_accent(accent) {
+    if !is_unicode_combining_accent(accent) {
         write_structured_decorated_base_c(out, arena, base, style);
         out.push(match position {
             AccentPosition::Above => '┴',
@@ -3087,8 +3279,8 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
             base,
             accent,
             position,
-            wide,
-        } => write_accent_c(out, arena, base, accent, position, wide, style),
+            ..
+        } => write_accent_c(out, arena, base, accent, position, style),
         CompactNode::Styled(text_style, span) => {
             let mut current_style = style;
             for &child in arena.children(span) {
@@ -3160,18 +3352,16 @@ fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
             write_node_c(out, arena, id, style);
             out.push('〗');
         },
-        // A prescripted base with scripts of its own would take this one too.
-        CompactNode::PreScripts { base, .. }
-            if matches!(
-                *arena.node(select_mathchoice_c(arena, base, style)),
-                CompactNode::Subscript { .. }
-                    | CompactNode::Superscript { .. }
-                    | CompactNode::SubSup { .. }
-                    | CompactNode::Underscript { .. }
-                    | CompactNode::Overscript { .. }
-                    | CompactNode::UnderOver { .. }
-            ) =>
+        // The reader takes no other fence than brackets as one (`〖|x|〗^2`).
+        CompactNode::Fenced { open, close, .. }
+            if !is_bracket_pair(arena.str_val(open), arena.str_val(close)) =>
         {
+            out.push('〖');
+            write_node_c(out, arena, id, style);
+            out.push('〗');
+        },
+        // A script after a prescripted base would be the base's own.
+        CompactNode::PreScripts { .. } => {
             out.push('〖');
             write_node_c(out, arena, id, style);
             out.push('〗');
@@ -3211,6 +3401,12 @@ fn write_script_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: Ma
             out.push('〗');
         },
         CompactNode::Symbol(_, sid) if arena.str_val(sid).chars().nth(1).is_some() => {
+            out.push('〖');
+            write_node_c(out, arena, id, style);
+            out.push('〗');
+        },
+        // A space takes no script of its own (`〖\u{2009}〗′`).
+        CompactNode::Space(_) => {
             out.push('〖');
             write_node_c(out, arena, id, style);
             out.push('〗');
@@ -3286,10 +3482,43 @@ fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, 
             write_node_c(out, arena, id, style);
             out.push(')');
         },
-        // A symbol of several characters, or a quoted solidus.
-        CompactNode::Symbol(_, sid)
-            if arena.str_val(sid) == "/" || arena.str_val(sid).chars().nth(1).is_some() =>
+        // The reader takes no other fence than brackets as one operand, and
+        // scripts after a prescripted operand as its own.
+        CompactNode::Fenced { open, close, .. }
+            if !is_bracket_pair(arena.str_val(open), arena.str_val(close)) =>
         {
+            out.push('(');
+            write_node_c(out, arena, id, style);
+            out.push(')');
+        },
+        CompactNode::PreScripts { .. } => {
+            out.push('(');
+            write_node_c(out, arena, id, style);
+            out.push(')');
+        },
+        // An accent on more than an atom or a group: the script would end
+        // before it.
+        CompactNode::Accent { base, .. }
+            if !(matches!(*arena.node(select_mathchoice_c(arena, base, style)),
+                CompactNode::Symbol(_, sid) if !needs_script_group(arena.str_val(sid)))
+                || matches!(
+                    *arena.node(select_mathchoice_c(arena, base, style)),
+                    CompactNode::Identifier(_)
+                        | CompactNode::Number(_)
+                        | CompactNode::Operator { .. }
+                        | CompactNode::MathAtom { .. }
+                        | CompactNode::Accent { .. }
+                )) =>
+        {
+            let start = out.len();
+            write_node_c(out, arena, id, style);
+            if !out[start..].starts_with('〖') {
+                out.insert(start, '(');
+                out.push(')');
+            }
+        },
+        // A symbol of several characters, or a quoted solidus.
+        CompactNode::Symbol(_, sid) if needs_script_group(arena.str_val(sid)) => {
             out.push('(');
             write_node_c(out, arena, id, style);
             out.push(')');
@@ -3354,7 +3583,8 @@ fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: M
             out.push(')');
         },
         CompactNode::Fenced { open, close, .. }
-            if arena.str_val(open) == "(" && arena.str_val(close) == ")" =>
+            if arena.str_val(open) == "("
+                || !is_bracket_pair(arena.str_val(open), arena.str_val(close)) =>
         {
             out.push('(');
             write_node_c(out, arena, id, style);
@@ -3472,14 +3702,14 @@ fn write_nodes_c_with_style(
     span: crate::ast::compact::NodeSpan,
     style: MathStyle,
 ) {
-    write_nodes_c_tracking(out, arena, span, style, None);
+    write_nodes_c_tracking(out, arena, arena.children(span), style, None);
 }
 
 /// Compact counterpart of [`write_nodes_tracking`].
 fn write_nodes_c_tracking(
     out: &mut String,
     arena: &AstArena,
-    span: crate::ast::compact::NodeSpan,
+    children: &[NodeId],
     style: MathStyle,
     mut applied: Option<&mut SmallVec<[usize; 4]>>,
 ) {
@@ -3491,10 +3721,31 @@ fn write_nodes_c_tracking(
     let mut edge = OperandEdge::Break;
     // Start of the letters of the identifiers written last.
     let mut word = None;
-    let children = arena.children(span);
+    let mut struck = false;
     for (index, &id) in children.iter().enumerate() {
         if let CompactNode::StyleSwitch(value) = *arena.node(id) {
             current_style = MathStyle::branch_from_switch(value);
+            continue;
+        }
+        // LaTeX `\not` strikes the symbol after it: `≉`, or `≴`.
+        if std::mem::take(&mut struck) {
+            continue;
+        }
+        if let CompactNode::Symbol(_, sid) = *arena.node(id)
+            && arena.str_val(sid) == "\u{0338}"
+            && let Some(&next) = children.get(index + 1)
+            && let CompactNode::Symbol(_, next) =
+                *arena.node(select_mathchoice_c(arena, next, current_style))
+            && let Some(negated) = negated_glyph(arena.str_val(next))
+        {
+            track_word(out, &mut word, out.len(), false);
+            out.push_str(&negated);
+            edge = symbol_edge(arena.str_val(next));
+            previous = None;
+            takes_prime = true;
+            function = false;
+            wrote_node = true;
+            struck = true;
             continue;
         }
         // A letter after a letter: nothing comes between, and what both meet
@@ -3684,25 +3935,92 @@ mod tests {
         ])
     }
 
-    /// The structure of a formula: its MathML without rows and attributes.
+    /// A formula's MathML as a tree, with rows kept where they are arguments
+    /// (`\frac{a-b}{c}` is not `\frac{a}{-bc}`), no attributes, and rows
+    /// spliced where they only group (`\left`, an n-aryand).
     fn structure(input: &str, from: crate::Format) -> String {
         let mathml = crate::convert(input, from, crate::Format::MathML).unwrap();
-        let mut out = String::new();
-        let mut rest = mathml.as_str();
-        while let Some(open) = rest.find('<') {
-            out.push_str(&rest[..open]);
-            let close = open + rest[open..].find('>').unwrap();
-            let tag = &rest[open + 1..close];
+        let mut tokens = mathml
+            .split('<')
+            .skip(1)
+            .map(|token| token.split_once('>').unwrap());
+        fn element<'a>(
+            tokens: &mut impl Iterator<Item = (&'a str, &'a str)>,
+            tag: &str,
+            text: &str,
+        ) -> (String, Vec<String>) {
             let name = tag.split(' ').next().unwrap();
-            if !matches!(name, "mrow" | "/mrow" | "math" | "/math") {
-                out.push('<');
-                out.push_str(name);
-                out.push('>');
+            let name = name.trim_end_matches('/');
+            let mut children: Vec<String> = Vec::new();
+            let leaf = matches!(name, "mi" | "mn" | "mo" | "mtext");
+            if !tag.ends_with('/') {
+                while let Some((tag, text)) = tokens.next() {
+                    if tag.starts_with('/') {
+                        break;
+                    }
+                    let (name_inner, inner) = element(tokens, tag, text);
+                    // A row in a row is spliced; one that is an argument is
+                    // kept, with a single child as the child.
+                    let splices = matches!(name, "math" | "mrow" | "msqrt" | "mstyle" | "mtd")
+                        || name == "mphantom";
+                    if name_inner == "mrow" && (splices || inner.len() == 1) {
+                        children.extend(inner);
+                    } else {
+                        children.push(format!("{name_inner}({})", inner.join(" ")));
+                    }
+                }
             }
-            rest = &rest[close + 1..];
+            // A symbol of several characters reads back as one for each.
+            let mut joined: Vec<String> = Vec::new();
+            for child in children {
+                match joined.last_mut() {
+                    Some(last)
+                        if matches!(name, "math" | "mrow")
+                            && last.starts_with("mo(")
+                            && child.starts_with("mo(") =>
+                    {
+                        last.pop();
+                        last.push_str(&child[3..]);
+                    },
+                    _ => joined.push(child),
+                }
+            }
+            if leaf {
+                joined = vec![text.to_owned()];
+            }
+            (name.to_owned(), joined)
         }
-        // A symbol of several characters reads back as one for each.
-        out.replace("</mo><mo>", "")
+        let (tag, text) = tokens.next().unwrap();
+        element(&mut tokens, tag, text).1.join(" ")
+    }
+
+    /// The kinds of the symbols spelled `glyph` in a formula.
+    fn kinds(input: &str, from: crate::Format, glyph: &str) -> Vec<SymbolKind> {
+        use crate::reader::{Reader, latex::LatexReader, unicode_math::UnicodeMathReader};
+        struct Kinds<'a>(&'a str, Vec<SymbolKind>);
+        impl crate::ast::visit::Visitor for Kinds<'_> {
+            fn visit_node(&mut self, node: &MathNode) {
+                if let MathNode::Symbol(kind, text) = node
+                    && text == self.0
+                {
+                    self.1.push(*kind);
+                }
+                crate::ast::visit::walk_node(self, node);
+            }
+        }
+        let config = Config::default();
+        let expr = if from == crate::Format::LaTeX {
+            LatexReader::parse(input, &config)
+        } else {
+            UnicodeMathReader::parse(input, &config)
+        }
+        .unwrap()
+        .expr;
+        let mut kinds = Kinds(glyph, Vec::new());
+        for node in &expr.nodes {
+            crate::ast::visit::Visitor::visit_node(&mut kinds, node);
+        }
+        kinds.1
     }
 
     const TEMPLATES: &[&str] = &[
@@ -3731,40 +4049,32 @@ mod tests {
             if matches!(kind, SymbolKind::Alphabetic) || UNWRITABLE.contains(&name.as_str()) {
                 continue;
             }
-            let delimiter = matches!(
-                kind,
-                SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence
-            );
             for template in TEMPLATES {
-                // Delimiters pair up; alone they are tried where they can be.
-                if delimiter && *template != "a OP b" && *template != "a OP b^2" {
-                    continue;
-                }
                 let latex = template.replace("OP", &format!("\\{name} "));
                 let Some(written) = by_path(&latex) else {
                     continue;
                 };
                 let wanted = structure(&latex, LaTeX);
+                let wanted_kinds = kinds(&latex, LaTeX, &glyph);
                 for unicode in &written {
                     let found = structure(unicode, UnicodeMath);
                     if found != wanted {
-                        failures.push(format!("{latex}: {unicode}: {found} / {wanted}"));
+                        failures.push(format!(
+                            "STRUCTURE {name} {latex}: {unicode}: {found} / {wanted}"
+                        ));
+                        break;
+                    }
+                    let found_kinds = kinds(unicode, UnicodeMath, &glyph);
+                    if glyph.chars().nth(1).is_none()
+                        && found_kinds != wanted_kinds
+                        && !OTHER_CLASS.contains(&name.as_str())
+                    {
+                        failures.push(format!(
+                            "CLASS {name} {latex}: {unicode}: {found_kinds:?} / {wanted_kinds:?}"
+                        ));
                         break;
                     }
                 }
-            }
-            let mut chars = glyph.chars();
-            if let (Some(c), None) = (chars.next(), chars.next())
-                && matches!(kind, SymbolKind::BinaryOp | SymbolKind::Relation)
-                && !OTHER_CLASS.contains(&name.as_str())
-                && {
-                    use crate::reader::{Reader, unicode_math::UnicodeMathReader};
-                    let read = UnicodeMathReader::parse(&glyph, &Config::default()).unwrap();
-                    !matches!(&read.expr.nodes[..], [MathNode::Symbol(found, text)]
-                        if *found == kind && text.starts_with(c))
-                }
-            {
-                failures.push(format!("\\{name} {glyph}: class is not {kind:?}"));
             }
         }
         assert!(
@@ -3824,6 +4134,21 @@ mod tests {
         "dag",
         "ddag",
         "bot",
+        "textdagger",
+        "textdaggerdbl",
+        "triangledown",
+        "cdotp",
+        "colon",
+        "textgreater",
+        "textless",
+        // `|` and `‖` are fences, whichever side.
+        "Vert",
+        "vert",
+        "textbar",
+        "lVert",
+        "lvert",
+        "rVert",
+        "rvert",
     ];
 
     fn write(node: MathNode) -> String {

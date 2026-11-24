@@ -28,6 +28,7 @@ exclude = [
     "tests/fixtures/",
     "testsuite.zip",
     ".github/",
+    "scripts/",
     "CLAUDE.md",
 ]
 

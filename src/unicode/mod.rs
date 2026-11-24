@@ -1,5 +1,6 @@
 pub mod entities;
 pub mod fonts;
+pub(crate) mod math_class;
 pub mod operators;
 mod scripts;
 pub mod symbols;

@@ -107,4 +107,4 @@ The optional render pipeline applies core TeXBook typesetting rules (radicals â€
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details. `src/unicode/math_class.rs` is generated from Unicode data, used under the Unicode License V3; see [LICENSE-UNICODE](LICENSE-UNICODE).

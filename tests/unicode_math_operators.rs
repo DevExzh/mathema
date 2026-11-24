@@ -99,6 +99,15 @@ const READS: &[(&str, &str, &str)] = &[
         r"\sum\limits {-}\inf !^{\hat{\log}}\left( x \right)",
     ),
     // The minus sign is an operator as the hyphen is (table 3.1).
+    ("a/≈b/c", "a≉b/c", r"a\mathrel{≉} \frac{b}{c}"),
+    ("a≣b/c", "a≣b/c", r"a\mathrel{≣} \frac{b}{c}"),
+    ("a†/b", "(a†)/b", r"\frac{a\dagger}{b}"),
+    ("|x/y|", "| x/y|", r"|\frac{x}{y}|"),
+    (
+        "√(n&∑_i _1)x",
+        "√(n&∑_i _1)x",
+        r"\sqrt[n]{{\sum\limits_i}_{1}}x",
+    ),
     ("a≲b/c", "a≲b/c", r"a\lesssim \frac{b}{c}"),
     (
         "x〖∑ a〗^2/b",
@@ -346,6 +355,68 @@ fn a_word_is_not_written_as_a_function_name() {
 
 /// LaTeX, its UnicodeMath from every path, and the LaTeX that reads back as.
 const OPERANDS: &[(&str, &str, &str)] = &[
+    (
+        r"a\not\approx\frac{b}{c}",
+        "a≉b/c",
+        r"a\mathrel{≉} \frac{b}{c}",
+    ),
+    (
+        r"a\not\doteq\frac{b}{c}",
+        "a≐̸b/c",
+        r"a\overset{̸}{\doteq}\frac{b}{c}",
+    ),
+    (
+        r"\left(a\frac{b}{c}\right)",
+        "(a b/c)",
+        r"\left( a\frac{b}{c} \right)",
+    ),
+    (r"\left|\frac{a}{b}\right|", "|a/b|", r"|\frac{a}{b}|"),
+    // A wide combining accent follows its base like any other.
+    (r"\widehat{x}", "x̂", r"\hat{x}"),
+    (
+        r"a\widetilde{x}+\frac{b}{c}",
+        "ax̃+b/c",
+        r"a\tilde{x}+ \frac{b}{c}",
+    ),
+    // Bars that may not pair as written are set apart from a fraction.
+    (
+        r"\left|a\left|\frac{b}{c}\right|\right|",
+        "|a| b/c||",
+        r"|a|\frac{b}{c}||",
+    ),
+    (r"\left|\frac{a}{b}+\right|", "| a/b+|", r"|\frac{a}{b}+ |"),
+    (r"x_{\left|a\right|}", "x_(|a|)", r"x_{|a|}"),
+    (r"{\left|a\right|}_1", "〖|a|〗_1", r"{|a|}_{1}"),
+    (
+        r"\frac{\left|a\right|}{\left|b\right|}",
+        "(|a|)/(|b|)",
+        r"\frac{|a|}{|b|}",
+    ),
+    (r"\hat{\sqrt{x}}", "〖√x〗̂", r"\hat{\sqrt{x}}"),
+    (
+        r"\frac{x}{\vec{\mid}}a",
+        "x/(∣⃗) a",
+        r"\frac{x}{\vec{\mid}}a",
+    ),
+    (
+        r"x^{\hat{\left(a\right)}}",
+        "x^((a)̂)",
+        r"x^{\hat{\left( a \right)}}",
+    ),
+    (
+        r"\sqrt[n]{\sum_{i} a}xx",
+        "√(n&∑_i a)xx",
+        r"\sqrt[n]{\sum\limits_i a}xx",
+    ),
+    (r"\sqrt[4]{x}", "∜x", r"\sqrt[4]{x}"),
+    (
+        r"{\sideset{_1}{}{x}}_2",
+        "〖(_1)x〗_2",
+        r"{\mathinner{{{}_{1}x}}}_{2}",
+    ),
+    (r"\sqrt[n]{{}}", "√(n&〖〗)", r"\sqrt[n]{\mathinner{}}"),
+    (r"\hat{\,}", "〖 〗̂", r"\hat{\mathinner{\,}}"),
+    (r"\frac{a\dagger}{b}", "(a†)/b", r"\frac{a\dagger}{b}"),
     (r"\sideset{_1}{}{s}in", "(_1)s in", r"{{}_{1}s}in"),
     (r"a-\frac{b}{c}", "a−b/c", r"a- \frac{b}{c}"),
     (r"\frac{\mathord{-}}{b}", "(−)/b", r"\frac{-}{b}"),

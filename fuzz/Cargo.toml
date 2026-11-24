@@ -60,3 +60,8 @@ path = "fuzz_targets/fuzz_svg_embed.rs"
 doc = false
 
 [workspace]
+
+[[bin]]
+name = "fuzz_unicode_math_roundtrip"
+path = "fuzz_targets/fuzz_unicode_math_roundtrip.rs"
+doc = false
