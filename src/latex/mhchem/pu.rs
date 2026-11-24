@@ -294,6 +294,16 @@ fn pu2(out: &mut Out, input: &str, depth: usize) {
                     word + (after_word.len() - after_word.trim_start().len())
                 },
                 Some('_' | '&' | '{' | '}' | '%') => 1,
+                // mhchem copies the `\` and then the `#`/`$` as they are
+                // (`\#`): copied together, so the character is not escaped
+                // a second time.
+                Some(c @ ('#' | '$')) => {
+                    rm.push('\\');
+                    rm.push(c);
+                    rest = &after[1..];
+                    after_unit = true;
+                    continue;
+                },
                 _ => {
                     rm.push('\\');
                     rest = after;

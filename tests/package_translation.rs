@@ -356,3 +356,174 @@ fn pu_backslash_before_a_digit_reads_as_katex() {
         assert_reads_as(text, math);
     }
 }
+
+/// `\pu` with each ASCII punctuation character after a backslash: `(input,
+/// KaTeX 0.16.47's mhchem TeX, whether KaTeX reads it)`.
+const PU_BACKSLASH_PUNCTUATION: &[(&str, &str, bool)] = &[
+    (r##"\pu{\!}"##, r##"{\mathrm{\!}}"##, true),
+    (r##"\pu{m\!2}"##, r##"{\mathrm{m\!^{2}}}"##, true),
+    (r##"\pu{\!a}"##, r##"{\mathrm{\!a}}"##, true),
+    (r##"\pu{\"}"##, r##"{\mathrm{\"}}"##, false),
+    (r##"\pu{m\"2}"##, r##"{\mathrm{m\"^{2}}}"##, false),
+    (r##"\pu{\"a}"##, r##"{\mathrm{\"a}}"##, true),
+    (r##"\pu{\#}"##, r##"{\mathrm{\#}}"##, true),
+    (r##"\pu{m\#2}"##, r##"{\mathrm{m\#^{2}}}"##, true),
+    (r##"\pu{\#a}"##, r##"{\mathrm{\#a}}"##, true),
+    (r##"\pu{\$}"##, r##"{\mathrm{\$}}"##, true),
+    (r##"\pu{m\$2}"##, r##"{\mathrm{m\$^{2}}}"##, true),
+    (r##"\pu{\$a}"##, r##"{\mathrm{\$a}}"##, true),
+    (r##"\pu{\%}"##, r##"{\mathrm{\%}}"##, true),
+    (r##"\pu{m\%2}"##, r##"{\mathrm{m\%^{2}}}"##, true),
+    (r##"\pu{\%a}"##, r##"{\mathrm{\%a}}"##, true),
+    (r##"\pu{\&}"##, r##"{\mathrm{\&}}"##, true),
+    (r##"\pu{m\&2}"##, r##"{\mathrm{m\&^{2}}}"##, true),
+    (r##"\pu{\&a}"##, r##"{\mathrm{\&a}}"##, true),
+    (r##"\pu{\'}"##, r##"{\mathrm{\'}}"##, false),
+    (r##"\pu{m\'2}"##, r##"{\mathrm{m\'^{2}}}"##, false),
+    (r##"\pu{\'a}"##, r##"{\mathrm{\'a}}"##, true),
+    (r##"\pu{\(}"##, r##"{\mathrm{\(}}"##, false),
+    (r##"\pu{m\(2}"##, r##"{\mathrm{m\(^{2}}}"##, false),
+    (r##"\pu{\(a}"##, r##"{\mathrm{\(a}}"##, false),
+    (r##"\pu{\)}"##, r##"{\mathrm{\)}}"##, false),
+    (r##"\pu{m\)2}"##, r##"{\mathrm{m\)^{2}}}"##, false),
+    (r##"\pu{\)a}"##, r##"{\mathrm{\)a}}"##, false),
+    (
+        r##"\pu{\*}"##,
+        r##"{\mathrm{\}\mkern1mu{\cdot}\mkern1mu }"##,
+        false,
+    ),
+    (
+        r##"\pu{m\*2}"##,
+        r##"{\mathrm{m\}\mkern1mu{\cdot}\mkern1mu \mathrm{2}}"##,
+        false,
+    ),
+    (
+        r##"\pu{\*a}"##,
+        r##"{\mathrm{\}\mkern1mu{\cdot}\mkern1mu \mathrm{a}}"##,
+        false,
+    ),
+    (r##"\pu{\+}"##, r##"{\mathrm{\+}}"##, false),
+    (r##"\pu{m\+2}"##, r##"{\mathrm{m\^{+2}}}"##, true),
+    (r##"\pu{\+a}"##, r##"{\mathrm{\+a}}"##, false),
+    (r##"\pu{\,}"##, r##"{\mathrm{\,}}"##, true),
+    (r##"\pu{m\,2}"##, r##"{\mathrm{m\,^{2}}}"##, true),
+    (r##"\pu{\,a}"##, r##"{\mathrm{\,a}}"##, true),
+    (r##"\pu{\-}"##, r##"{\mathrm{\-}}"##, false),
+    (r##"\pu{m\-2}"##, r##"{\mathrm{m\^{-2}}}"##, true),
+    (r##"\pu{\-a}"##, r##"{\mathrm{\-a}}"##, false),
+    (
+        r##"\pu{\.}"##,
+        r##"{\mathrm{\}\mkern1mu{\cdot}\mkern1mu }"##,
+        false,
+    ),
+    (
+        r##"\pu{m\.2}"##,
+        r##"{\mathrm{m\}\mkern1mu{\cdot}\mkern1mu \mathrm{2}}"##,
+        false,
+    ),
+    (
+        r##"\pu{\.a}"##,
+        r##"{\mathrm{\}\mkern1mu{\cdot}\mkern1mu \mathrm{a}}"##,
+        false,
+    ),
+    (r##"\pu{\/}"##, r##"{\mathrm{\}}"##, false),
+    (r##"\pu{m\/2}"##, r##"{\mathrm{m\}/2}"##, false),
+    (r##"\pu{\/a}"##, r##"{\mathrm{\}/\mathrm{a}}"##, false),
+    (r##"\pu{\:}"##, r##"{\mathrm{\:}}"##, true),
+    (r##"\pu{m\:2}"##, r##"{\mathrm{m\:^{2}}}"##, true),
+    (r##"\pu{\:a}"##, r##"{\mathrm{\:a}}"##, true),
+    (r##"\pu{\;}"##, r##"{\mathrm{\;}}"##, true),
+    (r##"\pu{m\;2}"##, r##"{\mathrm{m\;^{2}}}"##, true),
+    (r##"\pu{\;a}"##, r##"{\mathrm{\;a}}"##, true),
+    (r##"\pu{\<}"##, r##"{\mathrm{\<}}"##, false),
+    (r##"\pu{m\<2}"##, r##"{\mathrm{m\<^{2}}}"##, false),
+    (r##"\pu{\<a}"##, r##"{\mathrm{\<a}}"##, false),
+    (r##"\pu{\=}"##, r##"{\mathrm{\=}}"##, false),
+    (r##"\pu{m\=2}"##, r##"{\mathrm{m\=^{2}}}"##, false),
+    (r##"\pu{\=a}"##, r##"{\mathrm{\=a}}"##, true),
+    (r##"\pu{\>}"##, r##"{\mathrm{\>}}"##, true),
+    (r##"\pu{m\>2}"##, r##"{\mathrm{m\>^{2}}}"##, true),
+    (r##"\pu{\>a}"##, r##"{\mathrm{\>a}}"##, true),
+    (r##"\pu{\?}"##, r##"{\mathrm{\?}}"##, false),
+    (r##"\pu{m\?2}"##, r##"{\mathrm{m\?^{2}}}"##, false),
+    (r##"\pu{\?a}"##, r##"{\mathrm{\?a}}"##, false),
+    (r##"\pu{\@}"##, r##"{\mathrm{\@}}"##, false),
+    (r##"\pu{m\@2}"##, r##"{\mathrm{m\@^{2}}}"##, false),
+    (r##"\pu{\@a}"##, r##"{\mathrm{\@a}}"##, false),
+    (r##"\pu{\[}"##, r##"{\mathrm{\[}}"##, false),
+    (r##"\pu{m\[2}"##, r##"{\mathrm{m\[^{2}}}"##, false),
+    (r##"\pu{\[a}"##, r##"{\mathrm{\[a}}"##, false),
+    (r##"\pu{\\}"##, r##"{\mathrm{\\}}"##, true),
+    (r##"\pu{m\\2}"##, r##"{\mathrm{m\\^{2}}}"##, true),
+    (r##"\pu{\\a}"##, r##"{\mathrm{\\a}}"##, true),
+    (r##"\pu{\]}"##, r##"{\mathrm{\]}}"##, false),
+    (r##"\pu{m\]2}"##, r##"{\mathrm{m\]^{2}}}"##, false),
+    (r##"\pu{\]a}"##, r##"{\mathrm{\]a}}"##, false),
+    (r##"\pu{\^}"##, r##"{\mathrm{\^}}"##, false),
+    (r##"\pu{m\^2}"##, r##"{\mathrm{m\^{2}}}"##, true),
+    (r##"\pu{\^a}"##, r##"{\mathrm{\^a}}"##, true),
+    (r##"\pu{\_}"##, r##"{\mathrm{\_}}"##, true),
+    (r##"\pu{m\_2}"##, r##"{\mathrm{m\_^{2}}}"##, true),
+    (r##"\pu{\_a}"##, r##"{\mathrm{\_a}}"##, true),
+    (r##"\pu{\`}"##, r##"{\mathrm{\`}}"##, false),
+    (r##"\pu{m\`2}"##, r##"{\mathrm{m\`^{2}}}"##, false),
+    (r##"\pu{\`a}"##, r##"{\mathrm{\`a}}"##, true),
+    (r##"\pu{\{}"##, r##"{\{}"##, true),
+    (r##"\pu{m\{2}"##, r##"{\mathrm{m\{^{2}}}"##, true),
+    (r##"\pu{\{a}"##, r##"{\{\mathrm{a}}"##, true),
+    (r##"\pu{\|}"##, r##"{\mathrm{\|}}"##, true),
+    (r##"\pu{m\|2}"##, r##"{\mathrm{m\|^{2}}}"##, true),
+    (r##"\pu{\|a}"##, r##"{\mathrm{\|a}}"##, true),
+    (r##"\pu{\}}"##, r##"{\}}"##, true),
+    (r##"\pu{m\}2}"##, r##"{\mathrm{m\}^{2}}}"##, true),
+    (r##"\pu{\}a}"##, r##"{\}\mathrm{a}}"##, true),
+    (r##"\pu{\~}"##, r##"{\mathrm{\~}}"##, false),
+    (r##"\pu{m\~2}"##, r##"{\mathrm{m\~^{2}}}"##, false),
+    (r##"\pu{\~a}"##, r##"{\mathrm{\~a}}"##, true),
+];
+
+/// A backslash before punctuation in `\pu` reads where KaTeX reads it, as
+/// what KaTeX's mhchem writes; `\#` and `\$` are copied once, not escaped
+/// again (`\mathrm{\\#}` was an error, `\mathrm{\\ }` lost the `$`).
+#[test]
+fn pu_backslash_before_punctuation_reads_as_katex() {
+    for &(input, katex, katex_reads) in PU_BACKSLASH_PUNCTUATION {
+        let strict = from_latex_with(input, &Config::default());
+        assert_eq!(strict.is_ok(), katex_reads, "{input}: {:?}", strict.err());
+        if katex_reads {
+            assert_reads_as(input, katex);
+        } else {
+            let lenient = from_latex_with(input, &lenient()).unwrap();
+            assert!(!lenient.to_latex().unwrap().is_empty(), "{input}");
+        }
+    }
+}
+
+/// The text accents KaTeX reads after mhchem copies them (`\~`, `\"`,
+/// `` \` ``, and `\.` before a digit) keep their backslash in `\ce` and
+/// accent the next token; `\~{n}` used to lose it and become a bond.
+#[test]
+fn ce_keeps_text_accents() {
+    for (input, katex) in [
+        (r"\ce{\~C}", r"{\~\mathrm{C}}"),
+        (r"\ce{\~{n}}", r"{\~{\mathrm{n}}}"),
+        (r"\ce{A\~2}", r"{\mathrm{A}\~2}"),
+        (r#"\ce{\"C}"#, r#"{\"\mathrm{C}}"#),
+        (r#"\ce{\"{n}}"#, r#"{\"{\mathrm{n}}}"#),
+        (r#"\ce{A\"2}"#, r#"{\mathrm{A}\"2}"#),
+        (r"\ce{\`C}", r"{\`\mathrm{C}}"),
+        (r"\ce{A\`2}", r"{\mathrm{A}\`2}"),
+        (r"\ce{A\.2}", r"{\mathrm{A}\.2}"),
+        // Before a script there is no token to accent: an empty one.
+        (r"\ce{\~^2}", r"{\~{}^{2}}"),
+    ] {
+        assert_reads_as(input, katex);
+    }
+    // With nothing after it, the accent fails, as in KaTeX.
+    for input in [r"\ce{\~}", r#"\ce{\"}"#, r"\ce{\`}"] {
+        assert!(
+            from_latex_with(input, &Config::default()).is_err(),
+            "{input}"
+        );
+    }
+}

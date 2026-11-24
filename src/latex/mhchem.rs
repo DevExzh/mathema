@@ -838,6 +838,27 @@ impl Translator {
                     };
                     self.had_space = false;
                 },
+                // A text accent KaTeX reads after mhchem's copy (`\~{n}`,
+                // `\"C`, `A\.2`; a `.` before anything else is an adduct
+                // dot): copied, so it accents the next token. An empty group
+                // stands in for a token when none follows.
+                Some(c)
+                    if matches!(c, '"' | '`' | '~')
+                        || (c == '.' && self.peek(2).is_some_and(|d| d.is_ascii_digit())) =>
+                {
+                    self.value_space();
+                    self.out.push('\\');
+                    self.out.push(c);
+                    self.i += 2;
+                    if self
+                        .peek(0)
+                        .is_some_and(|d| d.is_whitespace() || matches!(d, '^' | '_' | '}'))
+                    {
+                        self.out.push_str("{}");
+                    }
+                    self.last = Kind::Command;
+                    self.had_space = false;
+                },
                 // `\0`: mhchem copies it, and TeX has no such command, so
                 // it fails to read back, as in KaTeX.
                 Some(c) if c.is_ascii_digit() => {
