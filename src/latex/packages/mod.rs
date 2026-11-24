@@ -115,6 +115,32 @@ const PACKAGE_SYMBOLS: &[&[(&str, &str, SymbolClass)]] = &[
     upgreek::SYMBOLS,
 ];
 
+/// The package symbol tables whose commands the LaTeX writer may emit, in
+/// [`PACKAGE_SYMBOLS`] order (so first-table-wins matches the parser).
+///
+/// Only tables whose commands KaTeX defines in math mode are listed:
+/// textcomp's `\text…` names are text-mode only, and bboldx's `\bb…` names
+/// are unknown to KaTeX, so those glyphs stay raw Unicode. This is an explicit
+/// list rather than a pointer-identity filter over [`PACKAGE_SYMBOLS`]: `const`
+/// slices have no guaranteed address, so `ptr::eq` on them is unreliable.
+const WRITER_PACKAGE_SYMBOLS: &[&[(&str, &str, SymbolClass)]] = &[
+    amsbsy::SYMBOLS,
+    amsfonts::SYMBOLS,
+    amsmath::SYMBOLS,
+    amssymb::SYMBOLS,
+    bbm::SYMBOLS,
+    braket::SYMBOLS,
+    centernot::SYMBOLS,
+    dsfont::SYMBOLS,
+    extpfeil::SYMBOLS,
+    gensymb::SYMBOLS,
+    katex::SYMBOLS,
+    mathtools::SYMBOLS,
+    physics::SYMBOLS,
+    units::SYMBOLS,
+    upgreek::SYMBOLS,
+];
+
 /// Iterator over every builtin macro `(name, param_count, body)` contributed by
 /// all registered packages. Used to seed the preprocessor.
 pub fn builtin_macros() -> impl Iterator<Item = (&'static str, u8, &'static str)> {
@@ -162,18 +188,12 @@ fn package_symbol_map() -> &'static HashMap<&'static str, (&'static str, SymbolC
 /// The writer consults it only after the core tables miss, so compounds such
 /// as `∶≈` (`\colonapprox`) and package-only glyphs such as `Ⅎ` (`\Finv`) are
 /// written with the command KaTeX understands rather than as raw Unicode.
-/// Tables whose commands KaTeX lacks are excluded below.
+/// Only [`WRITER_PACKAGE_SYMBOLS`] contributes, so text-mode and non-KaTeX names stay out.
 fn package_symbol_reverse_map() -> &'static HashMap<(&'static str, SymbolClass), &'static str> {
     static MAP: OnceLock<HashMap<(&'static str, SymbolClass), &'static str>> = OnceLock::new();
     MAP.get_or_init(|| {
         let mut m = HashMap::new();
-        // Only emit commands KaTeX defines in math mode: textcomp's `\text…`
-        // names are text-mode only, and bboldx's `\bb…` names are unknown to
-        // KaTeX, so those glyphs stay raw Unicode.
-        let math_tables = PACKAGE_SYMBOLS.iter().filter(|table| {
-            !core::ptr::eq(**table, textcomp::SYMBOLS) && !core::ptr::eq(**table, bboldx::SYMBOLS)
-        });
-        for table in math_tables {
+        for table in WRITER_PACKAGE_SYMBOLS {
             for &(cmd, unicode, class) in *table {
                 let reachable = crate::unicode::symbols::lookup_command(cmd).is_none()
                     && !crate::unicode::symbols::is_operator_command(cmd)

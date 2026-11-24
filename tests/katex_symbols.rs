@@ -201,3 +201,22 @@ fn portable_spellings_are_preferred_over_katex_only_aliases() {
     assert_eq!(latex(r"\mathbf{\Alpha}"), "\\mathbf{\u{0391}}");
     assert_eq!(latex(r"\Diamond \lozenge"), r"\lozenge\lozenge");
 }
+
+#[test]
+fn text_mode_and_non_katex_package_names_are_never_written() {
+    // textcomp's `\text…` names are text-mode only and bboldx's `\bb…` names
+    // are unknown to KaTeX, so their glyphs must not be spelled with them in
+    // math (this once depended on `const` slice addresses).
+    for input in [
+        r"\P",
+        r"\textparagraph",
+        r"\textmu",
+        "\u{00B6}",
+        "\u{00B5}",
+        r"\bbone",
+    ] {
+        let out = from_latex(input).unwrap().to_latex().unwrap();
+        assert!(!out.contains(r"\text"), "{input:?} wrote {out:?}");
+        assert!(!out.contains(r"\bb"), "{input:?} wrote {out:?}");
+    }
+}
