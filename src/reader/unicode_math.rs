@@ -803,7 +803,7 @@ impl CompactParser {
             let operand = if after.starts_with('(') {
                 self.parse_group_as(after, false)
             } else {
-                self.parse_script_arg(after)
+                self.parse_script_atom(after)
             };
             match operand {
                 Ok((after, id)) => {
@@ -815,12 +815,17 @@ impl CompactParser {
             }
         }
         if factors.is_empty() {
-            let (after, id) = self.parse_script_arg(input)?;
+            let (after, id) = self.parse_script_atom(input)?;
             factors.push(id);
             rest = after;
         }
         if factors.last().is_some_and(|&id| self.is_run_factor(id)) {
-            while rest.starts_with(is_run_char) {
+            // Section 3.5: a function name is recognized as such, so it ends
+            // the run (`x^2sin x` is `x^2` and `sin x`), as it does inside
+            // parentheses.
+            while rest.starts_with(is_run_char)
+                && crate::unicode::symbols::unicode_math_operator_prefix(rest).is_none()
+            {
                 let (after, id) = self.parse_single_char_node(rest)?;
                 let (after, id) = self.with_accents(after, id);
                 self.tick(1);
@@ -829,6 +834,15 @@ impl CompactParser {
             }
         }
         Ok((rest, factors))
+    }
+
+    /// The first atom of a script operand: a function name (`x_max`, read
+    /// as in `x_(max)`) or a script argument.
+    fn parse_script_atom<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        match self.parse_operator_word(input) {
+            Ok(found) => Ok(found),
+            Err(_) => self.parse_script_arg(input),
+        }
     }
 
     /// Whether `id` is a letter or a number (possibly accented), which the
@@ -1803,6 +1817,8 @@ impl CompactParser {
         let mut ids = SmallVec::<[NodeId; 8]>::new();
         let mut run = 0;
         let mut spaced = false;
+        // The input before the space skipped to a function's argument.
+        let mut skipped = None;
         loop {
             // UTN #28 section 3.5: a function name and its argument are one
             // operand (`∑ log k`); the space after the name only delimits it
@@ -1821,6 +1837,7 @@ impl CompactParser {
                             .is_some_and(|c| !c.is_whitespace() && !self.ends_naryand(&ids, c))
                 };
                 if goes_on {
+                    skipped = Some(rest);
                     rest = next;
                     spaced = true;
                 }
@@ -1846,8 +1863,14 @@ impl CompactParser {
             let (after, id) = match operand {
                 Ok(found) => found,
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => break,
+                // No argument after the space: it ends the n-aryand, and a
+                // script after it has no base (`∑ sin _i`).
+                Err(_) => {
+                    rest = skipped.unwrap_or(rest);
+                    break;
+                },
             };
+            skipped = None;
             let spaced = std::mem::take(&mut spaced);
             rest = self.push_operand(&mut ids, &mut run, spaced, id, after)?;
             // A nested n-ary operator is the whole n-aryand, and so is a lone
@@ -1866,7 +1889,8 @@ impl CompactParser {
                 } if matches!(
                     *self.arena.node(content),
                     CompactNode::Row(span) if !span.is_empty()
-                ) || matches!(*self.arena.node(content), CompactNode::Text(..)) =>
+                ) || matches!(*self.arena.node(content), CompactNode::Text(..))
+                    || self.is_function_head(content) =>
                 {
                     content
                 },
@@ -2280,6 +2304,9 @@ fn is_math_symbol(c: char) -> bool {
         // UTN #28 table 3.1: `*`, `·` and `•` are operators with the
         // precedence of `+` (section 3.22: "explicit multiplication by
         // asterisk and raised dot has a precedence equal to that of plus").
+        // Section 3.10 displays a math-zone `*` as U+2217; the reader keeps
+        // the `*` glyph so that LaTeX `*`, which differs from `\ast` (∗),
+        // round-trips through UnicodeMath.
         '*' | '\u{00B7}' | '\u{2022}' |
         '\u{2200}'..='\u{22FF}' | // Mathematical Operators
         '\u{2190}'..='\u{21FF}' | // Arrows

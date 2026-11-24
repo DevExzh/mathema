@@ -60,6 +60,13 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
 pub struct UnicodeMathWriter;
 
 fn write_unicode_space(out: &mut String, em: f64) {
+    // UnicodeMath has no negative space (LaTeX `\!`): it is dropped rather
+    // than written as a positive one. An ASCII space, which is removed on
+    // build up (UTN #28 section 2.3), still keeps the operands apart.
+    if em <= 0.0 {
+        out.push(' ');
+        return;
+    }
     // UTN #28 section 3.16: the space characters with a width of 1, 3, 4,
     // 5, 6 or 9 eighteenths of an em, and the no-break space (the reader's
     // widths).
@@ -236,7 +243,7 @@ fn write_quoted_text(out: &mut String, text: &str) {
 fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Number(s) => out.push_str(s),
-        MathNode::Identifier(s) => out.push_str(s),
+        MathNode::Identifier(s) => write_identifier(out, s),
         MathNode::Operator(attr) => out.push_str(&attr.name),
         // A literal solidus is quoted: `/` alone is the fraction operator
         // (UTN #28 sections 2.1 and 3.2).
@@ -830,6 +837,39 @@ fn write_structured_decorated_base(out: &mut String, node: &MathNode, style: Mat
     }
 }
 
+/// Write a bound in a structured body. A run of letters and digits is one
+/// script operand (UTN #28 section 2.2) and is written as is (`┴nⅆx`), not
+/// quoted as text.
+fn write_structured_bound(out: &mut String, node: &MathNode, style: MathStyle) {
+    match node {
+        MathNode::Identifier(name) if is_plain_run(name) => out.push_str(name),
+        MathNode::Row(children) if is_simple_script(children) => write_node(out, node, style),
+        _ => write_structured_content(out, node, style),
+    }
+}
+
+/// Compact counterpart of [`write_structured_bound`].
+fn write_structured_bound_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    match *arena.node(id) {
+        CompactNode::Identifier(sid) if is_plain_run(arena.str_val(sid)) => {
+            out.push_str(arena.str_val(sid));
+        },
+        CompactNode::Row(span) if is_simple_script_c(arena, arena.children(span)) => {
+            write_node_c(out, arena, id, style);
+        },
+        _ => write_structured_content_c(out, arena, id, style),
+    }
+}
+
+/// Whether a word reads back as one script run: letters and digits that
+/// spell no function name.
+fn is_plain_run(name: &str) -> bool {
+    !name.is_empty()
+        && name.starts_with(|c: char| !c.is_ascii_digit())
+        && name.chars().all(is_run_char)
+        && !spells_function(name)
+}
+
 /// Write a structured operator's body without introducing the literal
 /// parentheses used by ordinary UnicodeMath grouping. Decorations and nested
 /// rows remain linear and can be recovered by the UnicodeMath parser.
@@ -853,7 +893,7 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
                 *movable_limits,
                 is_overunder_line_node(over),
                 |out| {
-                    write_structured_content(out, over, style.sup());
+                    write_structured_bound(out, over, style.sup());
                 },
             );
         },
@@ -873,7 +913,7 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
                 *movable_limits,
                 is_overunder_line_node(under),
                 |out| {
-                    write_structured_content(out, under, style.sub());
+                    write_structured_bound(out, under, style.sub());
                 },
             );
         },
@@ -890,7 +930,7 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
                 *movable_limits,
                 is_overunder_line_node(under),
                 |out| {
-                    write_structured_content(out, under, style.sub());
+                    write_structured_bound(out, under, style.sub());
                 },
             );
             write_bound(
@@ -899,7 +939,7 @@ fn write_structured_content(out: &mut String, node: &MathNode, style: MathStyle)
                 *movable_limits,
                 is_overunder_line_node(over),
                 |out| {
-                    write_structured_content(out, over, style.sup());
+                    write_structured_bound(out, over, style.sup());
                 },
             );
         },
@@ -1069,6 +1109,18 @@ fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
 
 fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
+        // The reader skips a space after `^`; in parentheses it is content.
+        // A word broken around a function name (`i nf`) is grouped too.
+        MathNode::Identifier(name) if spells_function(name) => {
+            out.push('(');
+            write_node(out, node, style);
+            out.push(')');
+        },
+        MathNode::Space(_) | MathNode::ExplicitSpace { .. } => {
+            out.push('(');
+            write_node(out, node, style);
+            out.push(')');
+        },
         MathNode::Row(children) if is_simple_script(children) => write_node(out, node, style),
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
@@ -1103,9 +1155,9 @@ fn is_script_sign(glyph: &str) -> bool {
 /// (`a_ij`, `x_2n`); `after_number` when a number comes before it, which
 /// it would join (`12` is one number).
 fn is_run_atom(identifier: Option<&str>, number: Option<&str>, after_number: bool) -> bool {
+    // A word is letters that normalization joined (`aaa`).
     if let Some(name) = identifier {
-        let mut chars = name.chars();
-        return chars.next().is_some_and(is_run_char) && chars.next().is_none();
+        return !name.is_empty() && name.chars().all(|c| is_run_char(c) && !c.is_ascii_digit());
     }
     number.is_some_and(|digits| {
         !after_number
@@ -1128,15 +1180,31 @@ fn is_simple_script(children: &[MathNode]) -> bool {
         },
         _ => children,
     };
+    let mut text = String::new();
     !run.is_empty()
         && run.iter().enumerate().all(|(index, node)| {
             let after_number = index > 0 && matches!(run[index - 1], MathNode::Number(_));
             match node {
-                MathNode::Identifier(name) => is_run_atom(Some(name), None, after_number),
-                MathNode::Number(digits) => is_run_atom(None, Some(digits), after_number),
+                MathNode::Identifier(name) => {
+                    text.push_str(name);
+                    is_run_atom(Some(name), None, after_number)
+                },
+                MathNode::Number(digits) => {
+                    text.push_str(digits);
+                    is_run_atom(None, Some(digits), after_number)
+                },
                 _ => false,
             }
         })
+        && !spells_function(&text)
+}
+
+/// Whether a function name starts anywhere in the script run `text`, where
+/// the reader would end the run (`1sin` is not one run).
+fn spells_function(text: &str) -> bool {
+    text.char_indices().any(|(index, _)| {
+        crate::unicode::symbols::unicode_math_operator_prefix(&text[index..]).is_some()
+    })
 }
 
 /// Compact counterpart of [`is_simple_script`].
@@ -1156,10 +1224,14 @@ fn is_simple_script_c(arena: &AstArena, children: &[NodeId]) -> bool {
         },
         _ => children,
     };
+    let mut text = String::new();
     !run.is_empty()
         && run.iter().enumerate().all(|(index, &id)| {
             let after_number =
                 index > 0 && matches!(*arena.node(run[index - 1]), CompactNode::Number(_));
+            if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = *arena.node(id) {
+                text.push_str(arena.str_val(sid));
+            }
             match *arena.node(id) {
                 CompactNode::Identifier(sid) => {
                     is_run_atom(Some(arena.str_val(sid)), None, after_number)
@@ -1170,6 +1242,22 @@ fn is_simple_script_c(arena: &AstArena, children: &[NodeId]) -> bool {
                 _ => false,
             }
         })
+        && !spells_function(&text)
+}
+
+/// Write a word, broken by a space where it would read as a function name
+/// (the word `inf` is `i nf`, not the function inf). The reader joins the
+/// letters into one word again.
+fn write_identifier(out: &mut String, name: &str) {
+    let mut chars = name.char_indices().peekable();
+    while let Some((index, c)) = chars.next() {
+        out.push(c);
+        if chars.peek().is_some()
+            && crate::unicode::symbols::unicode_math_operator_prefix(&name[index..]).is_some()
+        {
+            out.push(' ');
+        }
+    }
 }
 
 /// Whether `written` ends with a script that is only a sign (`x^-`), which
@@ -1445,7 +1533,11 @@ fn separate_following_operand(
     let sign = previous_operator
         && starts_signed_script_operand(first)
         && ends_with_script_sign(&out[..start]);
-    let joins = (previous_operator && first.is_alphanumeric())
+    // A radical or box sign written alone (not a radical, which writes its
+    // radicand) would take the operand after it (`√ y` is not `√y`).
+    let prefix = !first.is_whitespace() && out[..start].ends_with(['√', '∛', '∜', '▭', '⟡']);
+    let joins = prefix
+        || (previous_operator && first.is_alphanumeric())
         || (takes_prime && is_prime_char(first))
         || digits
         || fraction
@@ -1500,7 +1592,18 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
     }
     // A space would end the n-aryand early (`∑ 〖y′ sin x〗`), but for one
     // after a function name (`∑ log k`) or before a differential.
-    if !plain || (matches!(node, MathNode::Row(_)) && !continues_naryand(out, start, &applied)) {
+    // An n-aryand ending in a function name is grouped: the reader would
+    // take an operand after it as the function's argument (`∑ 〖sin〗 x`).
+    let open_function = match node {
+        MathNode::Row(children) => children
+            .last()
+            .is_some_and(|last| is_function_head(select_mathchoice(last, style))),
+        _ => is_function_head(node),
+    };
+    if !plain
+        || open_function
+        || (matches!(node, MathNode::Row(_)) && !continues_naryand(out, start, &applied))
+    {
         out.insert(start, '〖');
         out.push('〗');
     }
@@ -1533,9 +1636,17 @@ fn write_naryand_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathSt
         write_node_c(out, arena, id, style);
         false
     };
+    // An n-aryand ending in a function name is grouped: the reader would
+    // take an operand after it as the function's argument (`∑ 〖sin〗 x`).
+    let open_function = match *arena.node(id) {
+        CompactNode::Row(span) => arena.children(span).last().is_some_and(|&last| {
+            is_function_head_c(arena, select_mathchoice_c(arena, last, style))
+        }),
+        _ => is_function_head_c(arena, id),
+    };
     // A space would end the n-aryand early (`∑ 〖y′ sin x〗`), but for one
     // after a function name (`∑ log k`) or before a differential.
-    if !plain || (row && !continues_naryand(out, start, &applied)) {
+    if !plain || open_function || (row && !continues_naryand(out, start, &applied)) {
         out.insert(start, '〖');
         out.push('〗');
     }
@@ -1767,7 +1878,7 @@ fn has_forced_operator_limits_c(arena: &AstArena, id: NodeId, style: MathStyle) 
 fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(id) {
         CompactNode::Number(sid) => out.push_str(arena.str_val(sid)),
-        CompactNode::Identifier(sid) => out.push_str(arena.str_val(sid)),
+        CompactNode::Identifier(sid) => write_identifier(out, arena.str_val(sid)),
         CompactNode::Operator { name, .. } => out.push_str(arena.str_val(name)),
         // A literal solidus is quoted: `/` alone is the fraction operator
         // (UTN #28 sections 2.1 and 3.2).
@@ -2369,7 +2480,7 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
                 AccentPosition::Above,
                 movable_limits,
                 is_overunder_line(arena, over),
-                |out| write_structured_content_c(out, arena, over, style.sup()),
+                |out| write_structured_bound_c(out, arena, over, style.sup()),
             );
         },
         CompactNode::Underscript {
@@ -2387,7 +2498,7 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
                 AccentPosition::Below,
                 movable_limits,
                 is_overunder_line(arena, under),
-                |out| write_structured_content_c(out, arena, under, style.sub()),
+                |out| write_structured_bound_c(out, arena, under, style.sub()),
             );
         },
         CompactNode::UnderOver {
@@ -2402,14 +2513,14 @@ fn write_structured_content_c(out: &mut String, arena: &AstArena, id: NodeId, st
                 AccentPosition::Below,
                 movable_limits,
                 is_overunder_line(arena, under),
-                |out| write_structured_content_c(out, arena, under, style.sub()),
+                |out| write_structured_bound_c(out, arena, under, style.sub()),
             );
             write_bound(
                 out,
                 AccentPosition::Above,
                 movable_limits,
                 is_overunder_line(arena, over),
-                |out| write_structured_content_c(out, arena, over, style.sup()),
+                |out| write_structured_bound_c(out, arena, over, style.sup()),
             );
         },
         CompactNode::Accent {
@@ -2558,6 +2669,18 @@ fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: Mat
 
 fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(select_mathchoice_c(arena, id, style)) {
+        // The reader skips a space after `^`; in parentheses it is content.
+        // A word broken around a function name (`i nf`) is grouped too.
+        CompactNode::Space(_) => {
+            out.push('(');
+            write_node_c(out, arena, id, style);
+            out.push(')');
+        },
+        CompactNode::Identifier(sid) if spells_function(arena.str_val(sid)) => {
+            out.push('(');
+            write_node_c(out, arena, id, style);
+            out.push(')');
+        },
         CompactNode::Row(span) if is_simple_script_c(arena, arena.children(span)) => {
             write_node_c(out, arena, id, style);
         },

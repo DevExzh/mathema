@@ -30,8 +30,21 @@ const READS: &[(&str, &str, &str)] = &[
     ("x_ij^2", "x_ij^2", r"x_{ij}^{2}"),
     ("∑_ij a_ij", "∑_ij a_ij", r"\sum\limits_{ij} {a_{ij}}"),
     ("(_ij)F", "(_ij)F", r"{{}_{ij}F}"),
-    // An operator ends it.
+    // An operator ends it, and so does a function name (section 3.5:
+    // function names "should be recognized as such").
     ("a_i+1", "a_i+1", r"a_i+ 1"),
+    ("x^2sin x", "x^2 sin x", r"x^{2}\sin x"),
+    ("x_1sin x", "x_1 sin x", r"x_{1}\sin x"),
+    ("x_2cos θ", "x_2 cos θ", r"x_{2}\cos \theta"),
+    ("e^isin θ", "e^i sin θ", r"e^i\sin \theta"),
+    ("x_ilog n", "x_i log n", r"x_i\log n"),
+    ("x_max", "x_max", r"x_{\max}"),
+    // A run is one operand of a bound too.
+    (
+        "a+′┴nⅆx^′′",
+        "a+〖′┴nⅆx〗′′",
+        r"a+ {\overset{nⅆx}{\prime}}^{\prime\prime}",
+    ),
     // A nested script takes the last letter as its base.
     ("a_ij_k", "a_(ij_k)", r"a_{i{j}_k}"),
     // Appendix A, `soperand ← '-' operand`: a sign starts a script operand.
@@ -67,6 +80,8 @@ const READS: &[(&str, &str, &str)] = &[
         "∫_0^1 x^2 ⅆx",
         r"\int\nolimits_{0}^{1} {x^{2}ⅆx}",
     ),
+    // A script after the space has no base: it is not the argument.
+    ("∑ sin _i", "∑ 〖sin〗 〖〗_i", r"\sum\limits {\sin}{}_{i}"),
     // A space after the argument still ends the n-aryand.
     ("∫ sin x dx", "∫ sin x dx", r"\int\nolimits {\sin x}dx"),
     // The argument of a function outside an n-aryand is unchanged.
@@ -137,7 +152,8 @@ fn latex_operands_survive_unicode_math() {
 #[test]
 fn a_thin_space_keeps_the_differential_apart() {
     let unicode = convert("\\int \\sin x \\, dx", Format::LaTeX, Format::UnicodeMath).unwrap();
-    assert_eq!(unicode, "∫ sin x\u{2009}dx");
+    // LaTeX's integrand is `\sin` alone; grouped, `x` stays after it.
+    assert_eq!(unicode, "∫ 〖sin〗 x\u{2009}dx");
     let mathml = mathml_body(&unicode, Format::UnicodeMath);
     assert!(mathml.contains("<mspace"), "{mathml}");
     assert!(!mathml.contains("xdx"), "{mathml}");
@@ -153,5 +169,26 @@ fn a_sign_script_is_set_apart_from_an_operand() {
         let mathml = mathml_body(&unicode, Format::UnicodeMath);
         let sup = &mathml[mathml.find("<msup>").unwrap()..mathml.find("</msup>").unwrap()];
         assert!(!sup.contains("<mrow>"), "{input}: {mathml}");
+    }
+}
+
+/// UnicodeMath has no negative space: LaTeX `\!` is dropped (an ASCII
+/// space only separates), not written as a positive thin space.
+#[test]
+fn a_negative_space_is_dropped() {
+    let unicode = convert("x\\!y", Format::LaTeX, Format::UnicodeMath).unwrap();
+    assert_eq!(unicode, "x y");
+    assert!(!mathml_body(&unicode, Format::UnicodeMath).contains("mspace"));
+}
+
+/// A word that spells a function name is written so that it reads back as
+/// a word (`i nf`, not the function inf).
+#[test]
+fn a_word_is_not_written_as_a_function_name() {
+    let mathml = |input: &str| mathml_body(input, Format::UnicodeMath);
+    for input in ["*i nf(x)", "x_(s in)"] {
+        let written = unicode_math(input);
+        assert_eq!(mathml(&written), mathml(input), "{input}: {written}");
+        assert_eq!(unicode_math(&written), written, "{input}");
     }
 }

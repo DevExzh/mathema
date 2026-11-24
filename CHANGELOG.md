@@ -37,7 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking (behavior):** the UnicodeMath reader follows more of Unicode
   Technical Note 28. A script operand is the whole run of letters and
   digits (section 2.2): `a_ij` is `a_{ij}` (was `a_i j`) and `x^2y` is
-  `x^{2y}`; a sign starts one (appendix A `soperand`): `e^-x` is
+  `x^{2y}`, ending at a function name (`x^2sin x` is `x^{2}\sin x`, and
+  `x_max` is `x_{\max}`); a sign starts one (appendix A `soperand`): `e^-x` is
   `e^{-x}` (was `e^{-}x`) and `x^-1` is `x^{-1}`. `·` (U+00B7), `•` and
   `*` are binary operators (table 3.1), so `a·b/c` and `a*b/c` no longer
   fall back to text. `/` before an operator negates it (section 4.1):
@@ -49,8 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped outside brackets, so `x`, U+2009, `dx` read as the word `xdx`). The
   UnicodeMath writer writes such script operands without parentheses
   (`a_ij`, `e^-x`), writes LaTeX spaces with the character of their width
-  (`\;` is U+2005, `\:` U+205F), and keeps a sign-only script apart from
-  an operand after it (`x^- y`).
+  (`\;` is U+2005, `\:` U+205F; the negative `\!` is dropped, as
+  UnicodeMath has no negative space), keeps a sign-only script apart from
+  an operand after it (`x^- y`), groups an n-aryand that ends in a function
+  name (LaTeX `\sum \log k` is `∑ 〖log〗 k`, whose integrand is `\log`
+  alone), and breaks a word that spells a function name (`i nf`).
 
 - **Breaking (behavior):** `\above` and `\abovewithdelims` need a
   dimension, as in TeX ("Missing number") and MathJax ("Missing
