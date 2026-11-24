@@ -3,7 +3,7 @@
 
 use crate::ast::MathExpr;
 use crate::ast::compact::CompactExpr;
-use crate::ast::normalize::normalize_compact_expr;
+use crate::ast::normalize::{normalize_compact_expr, normalize_compact_expr_keeping_identifiers};
 use crate::error::{CompactParseResult, Config, Format, Result};
 use crate::reader::Reader;
 use crate::reader::latex::LatexReader;
@@ -37,8 +37,18 @@ pub fn convert_with(input: &str, from: Format, to: Format, config: &Config) -> R
         compact.expr.roots,
         config.effective_max_depth(),
     )?;
-    normalize_compact_expr(&mut compact.expr)?;
+    normalize_for(&mut compact.expr, from)?;
     write_compact(&compact.expr, to, config)
+}
+
+/// Normalize a freshly read expression. MTEF characters are atoms of their
+/// own: a run of variable-style letters is several italic variables, not
+/// one multi-letter identifier, so its identifiers are not merged.
+fn normalize_for(expr: &mut CompactExpr, from: Format) -> Result<()> {
+    match from {
+        Format::Mtef => normalize_compact_expr_keeping_identifiers(expr),
+        _ => normalize_compact_expr(expr),
+    }
 }
 
 fn parse_compact(input: &str, format: Format, config: &Config) -> Result<CompactParseResult> {
@@ -454,7 +464,7 @@ fn finish_mtef(
     config: &Config,
 ) -> Result<ConvertResult> {
     check_depth(&compact, config)?;
-    normalize_compact_expr(&mut compact.expr)?;
+    normalize_for(&mut compact.expr, Format::Mtef)?;
     Ok(ConvertResult {
         compact,
         config: *config,

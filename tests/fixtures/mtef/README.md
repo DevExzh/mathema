@@ -36,6 +36,20 @@ a PDF rendering of the same document.
 | `v5-nested-fractions.bin` | `ObjectPool/_1234567972` | 5 | fractions inside fractions |
 | `v5-plus-minus.bin` | `ObjectPool/_1234567915` | 5 | Symbol-style operators |
 
+## From govdocs1
+
+`Equation Native` streams of documents in the govdocs1 corpus (Digital
+Corpora; documents of the U.S. government, public domain). Each file is one
+unmodified stream; the table names the corpus archive and its member.
+
+| File | Archive | Member | MTEF | Exercises |
+| --- | --- | --- | --- | --- |
+| `v3-govdocs-decimal.bin` (OLE) | `zipfiles/424.zip` | `424/424693.ppt` | 3 | number with a function-style decimal point |
+| `v3-govdocs-tilde.bin` (OLE) | `zipfiles/868.zip` | `868/868817.doc` | 3 | ASCII tilde as the similarity relation |
+| `v3-govdocs-prime.bin` (OLE) | `zipfiles/090.zip` | `090/090099.doc` | 3 | apostrophe as a prime |
+| `v3-govdocs-leading-script.bin` (OLE) | `zipfiles/321.zip` | `321/321609.ppt` | 3 | leading-script template with nothing to lead |
+| `v5-govdocs-colour.bin` (OLE) | `zipfiles/700.zip` | `700/700515.ppt` | 5 | COLOR_DEF and COLOR records |
+
 ## From MIT-licensed test suites
 
 The `upstream-*` files cover structures the document above does not use. They

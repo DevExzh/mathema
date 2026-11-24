@@ -78,7 +78,31 @@ fn fixtures_convert_between_versions() {
 /// MTEF has no place for an operator's limit style, for the default limit
 /// placement of a big operator (it is written as the operator's usual one),
 /// or for array stretch and jot; drop them before comparing.
+/// Split a run of letters into one identifier per letter: the LaTeX side is
+/// normalized with its letter runs merged, while every MTEF character is an
+/// identifier of its own.
+fn split_letters(nodes: &mut Vec<MathNode>) {
+    *nodes = std::mem::take(nodes)
+        .into_iter()
+        .flat_map(|node| match node {
+            MathNode::Row(children) => children,
+            node => vec![node],
+        })
+        .collect();
+}
+
 fn canonical(node: &mut MathNode) {
+    if let MathNode::Identifier(name) = node
+        && name.len() > 1
+        && name.bytes().all(|b| b.is_ascii_alphabetic())
+    {
+        *node = MathNode::Row(
+            name.chars()
+                .map(|c| MathNode::Identifier(c.to_string()))
+                .collect(),
+        );
+        return;
+    }
     // MTEF stores the table cells and alignments in the same MATRIX record
     // for a TeX matrix, smallmatrix, or array.
     if let MathNode::Matrix {
@@ -145,6 +169,7 @@ fn canonical(node: &mut MathNode) {
         },
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             children.iter_mut().for_each(canonical);
+            split_letters(children);
         },
         MathNode::Fenced { content, .. } => {
             for item in content {
@@ -195,6 +220,7 @@ fn canonical(node: &mut MathNode) {
 
 fn canonical_expr(mut expr: MathExpr) -> MathExpr {
     expr.nodes.iter_mut().for_each(canonical);
+    split_letters(&mut expr.nodes);
     expr
 }
 

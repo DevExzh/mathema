@@ -563,6 +563,14 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
             write_math_atom_op(buf, arena, content);
             buf.push_str("\\nolimits");
         },
+        // A font command is one atom already: `\mathbf{F}_{x}`.
+        _ if matches!(
+            *arena.node(written_script_content(arena, base)),
+            CompactNode::Styled(..)
+        ) =>
+        {
+            write_node(buf, arena, written_script_content(arena, base));
+        },
         _ => write_script_base(buf, arena, base),
     }
 }

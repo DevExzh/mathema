@@ -17,10 +17,20 @@
 //! The AST has no place for MathType's typesetting data, which is read and
 //! dropped without a diagnostic: nudges, type sizes, explicit fonts (only
 //! their bold/italic style is kept), line spacing, tab stops (rulers), the
-//! equation preferences, template options (fence alignment, expanding
-//! integrals) and partition line styles (dashed and dotted rules become solid
-//! ones). Colours are dropped with an informational diagnostic. Operator and
+//! equation preferences and template options (fence alignment, expanding
+//! integrals). Dotted partition lines become dashed ones. Operator and
 //! decimal-point column alignment become left and right alignment.
+//!
+//! # Conventions
+//!
+//! Colours become colour nodes. Every variable-style letter is an identifier
+//! of its own. Outside the text styles the ASCII hyphen, tilde, apostrophe
+//! and backslash are read as `−`, `∼`, a prime and `∖`, a point between
+//! digits is part of the number, and empty script and limit lines, which
+//! draw nothing, are dropped. A leading-script template (`tvSU_PRECEDES`)
+//! before an operator, punctuation, a fence or the end of its line cannot
+//! lead anything there; it becomes a script of the item before it, where it
+//! is drawn.
 //!
 //! # Strictness
 //!

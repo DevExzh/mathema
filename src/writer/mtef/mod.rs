@@ -16,12 +16,13 @@
 //! reader turns back into that node; see the encoder for the mapping.
 //!
 //! The AST holds no typesetting data, so none is written: no nudges, rulers,
-//! line spacing, explicit point sizes or colours. Typesize records are
+//! line spacing, or explicit point sizes. Typesize records are
 //! written where scripts, limits and operator signs change the size, as the
-//! applications do. Nodes MTEF cannot represent (colours, phantoms, rules,
+//! applications do. Nodes MTEF cannot represent (phantoms, rules,
 //! scaling, raised boxes, style switches and math choices) are written as their content or
 //! dropped, and each such loss is reported by
-//! [`MtefWriter::write_bytes_with_diagnostics`].
+//! [`MtefWriter::write_bytes_with_diagnostics`]. MTEF 5 colours are written as
+//! COLOR_DEF and COLOR records; MTEF 3 has none.
 
 mod chars;
 mod encode;

@@ -39,6 +39,10 @@ const MATRIX: u8 = 5;
 const EMBELL: u8 = 6;
 /// FONT in MTEF 3, FONT_STYLE_DEF in MTEF 5.
 const FONT: u8 = 8;
+const COLOR: u8 = 15;
+const COLOR_DEF: u8 = 16;
+/// Distinct colours written before further ones are dropped.
+const MAX_COLORS: usize = 4096;
 /// The typesize records FULL (10) to SUBSYM (14) are 10 + the typesize.
 const TYPESIZE_BASE: u8 = 10;
 
@@ -148,6 +152,10 @@ pub(super) struct Encoder<'a> {
     styled_start: Option<usize>,
     /// The style of an enclosing `Styled` node.
     style: Option<TextStyle>,
+    /// MTEF 5 COLOR_DEF records written so far, as RGB components.
+    colors: Vec<[u8; 3]>,
+    /// The COLOR_DEF index in effect (`None` until a colour is written).
+    color: Option<u16>,
     /// Effective TeX math style used to select lossy style-choice branches.
     /// MTEF has no mathchoice record, so the encoder must resolve each choice
     /// using the style of its position before writing the selected branch.
@@ -182,6 +190,8 @@ impl<'a> Encoder<'a> {
             far_east: false,
             styled_start: None,
             style: None,
+            colors: Vec::new(),
+            color: None,
             math_style: display.into(),
         }
     }
@@ -798,11 +808,41 @@ impl<'a> Encoder<'a> {
                 let branch = self.math_style.choose(display, text, script, script_script);
                 self.node(branch, size)
             },
-            CompactNode::Color { content, .. } => {
-                self.lose(
-                    "colours are not written to MTEF; the content was written without colour",
-                );
-                self.node(content, size)
+            CompactNode::Color { color, content } => {
+                let rgb = crate::css_colors::resolve_named_or_hex(self.arena.str_val(color));
+                match rgb {
+                    // Leave room for black in the 16-bit definition indices.
+                    Some(rgb)
+                        if self.v5
+                            && (self.colors.len() < MAX_COLORS || self.colors.contains(&rgb)) =>
+                    {
+                        let outer = self.color;
+                        let index = self.color_index(rgb);
+                        self.set_color(Some(index));
+                        self.node(content, size)?;
+                        // Black is the colour outside every colour node.
+                        let outer = match outer {
+                            Some(index) => index,
+                            None => self.color_index([0, 0, 0]),
+                        };
+                        self.set_color(Some(outer));
+                        Ok(())
+                    },
+                    Some(_) => {
+                        self.lose(if self.v5 {
+                            "too many distinct colours; the content was written without colour"
+                        } else {
+                            "MTEF 3 has no colours; the content was written without colour"
+                        });
+                        self.node(content, size)
+                    },
+                    None => {
+                        self.lose(
+                            "the colour value could not be resolved; the content was written without colour",
+                        );
+                        self.node(content, size)
+                    },
+                }
             },
             CompactNode::MathAtom { content, .. } => {
                 self.lose("MTEF does not keep math atom classes; the content was written as is");
@@ -911,6 +951,39 @@ impl<'a> Encoder<'a> {
         };
         let typeface = self.explicit_font(style_bits);
         Ok((Glyph::new(typeface, ch), Some(Run::Styled(typeface))))
+    }
+
+    /// The COLOR_DEF index of `rgb`, writing its definition before its first
+    /// use (MTEFv5.md "COLOR_DEF records": components from 0 to 1000).
+    fn color_index(&mut self, rgb: [u8; 3]) -> u16 {
+        if let Some(i) = self.colors.iter().position(|&c| c == rgb) {
+            return i as u16 + 1;
+        }
+        self.out.push(COLOR_DEF);
+        // Options: an unnamed RGB process colour.
+        self.out.push(0);
+        for component in rgb {
+            self.u16(((u32::from(component) * 1000 + 127) / 255) as u16);
+        }
+        self.colors.push(rgb);
+        self.colors.len() as u16
+    }
+
+    /// A COLOR record selecting the colour `index` when it is not in effect.
+    fn set_color(&mut self, index: Option<u16>) {
+        if self.color == index {
+            return;
+        }
+        if let Some(index) = index {
+            self.tag(COLOR, 0);
+            if index < 255 {
+                self.out.push(index as u8);
+            } else {
+                self.out.push(255);
+                self.u16(index);
+            }
+        }
+        self.color = index;
     }
 
     /// The typeface value of an explicit font with the given style bits,
@@ -2085,11 +2158,13 @@ impl<'a> Encoder<'a> {
         self.out.push(1);
         self.out.push(rows_u8);
         self.out.push(cols_u8);
+        let dashes = self.arena.rule_dashes(id);
         self.partition_lines(
             crate::reader::mtef::PartitionMask::from_low(row_seps),
+            dashes.rows,
             rows + 1,
         );
-        self.partition_lines(column_rules, cols + 1);
+        self.partition_lines(column_rules, dashes.cols, cols + 1);
         for row in cells.chunks(cols) {
             for (column, &cell) in row.iter().enumerate() {
                 self.note_cell_alignment(row, column, exported, true);
@@ -2257,11 +2332,24 @@ impl<'a> Encoder<'a> {
 
     /// Two bits per partition line (solid when drawn), low bits first,
     /// padded to whole bytes (MTEFv5.md "MATRIX record").
-    fn partition_lines(&mut self, mask: crate::reader::mtef::PartitionMask, lines: usize) {
+    /// Two bits per boundary, least significant first: 1 for a solid line,
+    /// 2 for a dashed one (`dashed` covers the first 32 boundaries).
+    fn partition_lines(
+        &mut self,
+        mask: crate::reader::mtef::PartitionMask,
+        dashed: u32,
+        lines: usize,
+    ) {
         for start in (0..lines).step_by(4) {
             let mut byte = 0u8;
             for k in 0..(lines - start).min(4) {
-                byte |= u8::from(mask.get(start + k)) << (2 * k);
+                let line = start + k;
+                let style = match (mask.get(line), line < 32 && dashed & (1 << line) != 0) {
+                    (false, _) => 0,
+                    (true, false) => 1,
+                    (true, true) => 2,
+                };
+                byte |= style << (2 * k);
             }
             self.out.push(byte);
         }

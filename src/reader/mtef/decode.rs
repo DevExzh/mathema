@@ -11,6 +11,8 @@
 //! input, and the number of records and AST nodes is bounded by
 //! [`Config::max_nodes`].
 
+use std::collections::{HashMap, VecDeque};
+
 use smallvec::SmallVec;
 
 use super::chars::{self, Encoding};
@@ -78,6 +80,8 @@ pub(super) struct Glyph {
     pub(super) embells: SmallVec<[(u8, usize); 1]>,
     /// Offset of the CHAR record, for diagnostics.
     pub(super) offset: usize,
+    /// The COLOR_DEF index the character is drawn in; `None` for black.
+    pub(super) color: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +95,9 @@ pub(super) struct FontStyle {
 pub(super) struct ScriptSlots {
     pub(super) sub: Option<NodeId>,
     pub(super) sup: Option<NodeId>,
+    /// The colour the slots are drawn in, and relative to which runs inside
+    /// them are already wrapped.
+    pub(super) color: Option<u16>,
 }
 
 /// One entry of a decoded object list.
@@ -160,9 +167,16 @@ pub(super) struct Decoder<'a> {
     font_styles: Vec<(u16, FontStyle)>,
     /// MTEF 5 EQN_PREFS style definitions: font_def index per typeface style.
     style_fonts: Vec<u16>,
-    /// MTEF 5 COLOR_DEF records: whether each colour is black.
-    color_is_black: Vec<bool>,
-    color_noted: bool,
+    /// MTEF 5 COLOR_DEF records: each colour as `#rrggbb`, `None` for black.
+    colors: Vec<Option<String>>,
+    /// The COLOR_DEF index of the current colour (MTEF 5 COLOR record);
+    /// `None` while it is black.
+    color: Option<u16>,
+    /// The colour of the structure whose lines are being assembled: a run
+    /// in another colour is wrapped in a colour node.
+    color_context: Option<u16>,
+    /// The colour of each coloured node a line is assembled from.
+    node_colors: HashMap<NodeId, u16>,
 }
 
 impl<'a> Decoder<'a> {
@@ -186,8 +200,10 @@ impl<'a> Decoder<'a> {
             font_defs: Vec::new(),
             font_styles: Vec::new(),
             style_fonts: Vec::new(),
-            color_is_black: Vec::new(),
-            color_noted: false,
+            colors: Vec::new(),
+            color: None,
+            color_context: None,
+            node_colors: HashMap::new(),
         }
     }
 
@@ -618,11 +634,19 @@ impl<'a> Decoder<'a> {
             },
             TMPL => self.parse_template(start, options, items)?,
             PILE => {
+                let color = self.color;
+                let outer = std::mem::replace(&mut self.color_context, color);
                 let id = self.parse_pile(options)?;
+                self.color_context = outer;
+                self.set_color(id, color);
                 items.push(Item::Node(id));
             },
             MATRIX => {
+                let color = self.color;
+                let outer = std::mem::replace(&mut self.color_context, color);
                 let id = self.parse_matrix(start, options)?;
+                self.color_context = outer;
+                self.set_color(id, color);
                 items.push(Item::Node(id));
             },
             EMBELL => {
@@ -762,6 +786,9 @@ impl<'a> Decoder<'a> {
             None
         };
         let mut ch = chars::normalize_code_point(ch);
+        if !matches!(typeface, chars::FN_TEXT | chars::FN_TEXT_FE) {
+            ch = chars::math_ascii(ch);
+        }
         if ch.is_control() && !ch.is_whitespace() {
             self.recover(
                 start,
@@ -802,6 +829,7 @@ impl<'a> Decoder<'a> {
             explicit,
             embells,
             offset: start,
+            color: self.color,
         })
     }
 
@@ -957,7 +985,12 @@ impl<'a> Decoder<'a> {
             u16::from(first)
         };
         let _template_options = self.u8()?;
-        let list = self.parse_list()?;
+        // The lines of a template are assembled relative to its colour.
+        let color = self.color;
+        let outer = std::mem::replace(&mut self.color_context, color);
+        let list = self.parse_list();
+        self.color_context = outer;
+        let list = list?;
         let mut slots = Vec::new();
         let mut glyphs = Vec::new();
         for item in list {
@@ -968,7 +1001,16 @@ impl<'a> Decoder<'a> {
                 other => self.unexpected(&other, "a template", start)?,
             }
         }
-        self.build_template(start, selector, variation, slots, glyphs, items)
+        let first = items.len();
+        self.build_template(start, selector, variation, slots, glyphs, items)?;
+        for item in &mut items[first..] {
+            match item {
+                Item::Node(id) => self.set_color(*id, color),
+                Item::Script(slots) | Item::PreScript(slots) => slots.color = color,
+                _ => {},
+            }
+        }
+        Ok(())
     }
 
     fn parse_pile(&mut self, options: u8) -> Result<NodeId> {
@@ -1019,7 +1061,7 @@ impl<'a> Decoder<'a> {
         let cols = usize::from(self.u8()?);
         // Partition line styles: two bits per line, one more line than rows
         // (columns), low bits first, padded to whole bytes.
-        let row_rules = self.partition_lines(rows + 1)?;
+        let (row_rules, row_dashes) = self.partition_lines(rows + 1)?;
         let row_seps = row_rules.low();
         if row_rules.extended_count() > 0 {
             self.warn(
@@ -1030,7 +1072,7 @@ impl<'a> Decoder<'a> {
                 ),
             );
         }
-        let column_rules = self.partition_lines(cols + 1)?;
+        let (column_rules, col_dashes) = self.partition_lines(cols + 1)?;
         let col_seps = column_rules.low();
         let list = self.parse_list()?;
         // Cells are only allocated for LINE records actually read, so the
@@ -1098,7 +1140,7 @@ impl<'a> Decoder<'a> {
         let col_aligns = self.children(&aligns)?;
         let cells = self.children(&cells)?;
         let array_style = column_rules.any() || row_seps != 0;
-        self.node(CompactNode::Array {
+        let id = self.node(CompactNode::Array {
             col_aligns,
             cells,
             num_cols: u16::try_from(num_cols).unwrap_or(u16::MAX),
@@ -1109,25 +1151,41 @@ impl<'a> Decoder<'a> {
             array_style,
             col_seps,
             row_seps,
-        })
+        })?;
+        // Dashed and dotted partition lines are drawn dashed (the AST has
+        // no dotted rule).
+        let dashes = crate::ast::arena::RuleDashes {
+            cols: col_dashes & col_seps,
+            rows: row_dashes & row_seps,
+        };
+        if dashes != crate::ast::arena::RuleDashes::default() {
+            self.arena.mark_native_array(id, dashes);
+        }
+        Ok(id)
     }
 
-    /// Each boundary occupies two bits, least significant first. The
-    /// MathType reader historically projects each visible stroke to solid.
-    fn partition_lines(&mut self, lines: usize) -> Result<super::PartitionMask> {
+    /// Each boundary occupies two bits, least significant first: 0 none,
+    /// 1 solid, 2 dashed, 3 dotted. Returns the boundaries with a line, and
+    /// the first 32 of them drawn dashed or dotted.
+    fn partition_lines(&mut self, lines: usize) -> Result<(super::PartitionMask, u32)> {
         let mut mask = super::PartitionMask::default();
+        let mut dashed = 0u32;
         for offset in (0..lines).step_by(4) {
             let byte = self.u8()?;
             if byte == 0 {
                 continue;
             }
             for k in 0..(lines - offset).min(4) {
-                if (byte >> (2 * k)) & 3 != 0 {
+                let style = (byte >> (2 * k)) & 3;
+                if style != 0 {
                     mask.set(offset + k, true);
+                }
+                if style >= 2 && offset + k < 32 {
+                    dashed |= 1 << (offset + k);
                 }
             }
         }
-        Ok(mask)
+        Ok((mask, dashed))
     }
 
     // ── Non-structural records ─────────────────────────────────────────
@@ -1176,13 +1234,14 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    /// COLOR: the following records are drawn in the given colour.
     fn color(&mut self) -> Result<()> {
-        let index = usize::from(self.uint()?);
-        let black = index == 0 || self.color_is_black.get(index - 1).copied().unwrap_or(true);
-        if !black && !self.color_noted {
-            self.color_noted = true;
-            self.note("MTEF colour records are not represented in the AST; the equation was read without colour");
-        }
+        let index = self.uint()?;
+        let defined = usize::from(index)
+            .checked_sub(1)
+            .and_then(|i| self.colors.get(i))
+            .is_some_and(Option::is_some);
+        self.color = defined.then_some(index);
         Ok(())
     }
 
@@ -1195,12 +1254,18 @@ impl<'a> Decoder<'a> {
         if options & COLOR_NAME != 0 {
             self.cstr()?;
         }
-        let black = if components == 4 {
-            values[3] >= 1000 || values[..3].iter().all(|&v| v >= 1000)
+        // Components range from 0 to 1000.
+        let unit = |v: u16| f64::from(v.min(1000)) / 1000.0;
+        let rgb = if components == 4 {
+            let k = 1.0 - unit(values[3]);
+            [0, 1, 2].map(|i| (1.0 - unit(values[i])) * k)
         } else {
-            values[..3].iter().all(|&v| v == 0)
+            [0, 1, 2].map(|i| unit(values[i]))
         };
-        self.color_is_black.push(black);
+        let rgb = rgb.map(|v| (v * 255.0).round() as u8);
+        self.colors.push(
+            (rgb != [0, 0, 0]).then(|| format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])),
+        );
         Ok(())
     }
 
@@ -1262,8 +1327,8 @@ impl<'a> Decoder<'a> {
     pub(super) fn assemble_line(&mut self, items: Vec<Item>) -> Result<SmallVec<[NodeId; 8]>> {
         let mut out: SmallVec<[NodeId; 8]> = SmallVec::new();
         let mut pending: Option<ScriptSlots> = None;
-        let mut items = items.into_iter().peekable();
-        while let Some(item) = items.next() {
+        let mut items: VecDeque<Item> = items.into();
+        while let Some(item) = items.pop_front() {
             match item {
                 Item::Glyph(glyph) => {
                     let class = classify(&glyph);
@@ -1283,7 +1348,31 @@ impl<'a> Decoder<'a> {
                         for &(kind, offset) in &glyph.embells {
                             id = self.embellish(id, kind, offset)?;
                         }
+                        self.set_color(id, glyph.color);
                         self.emit(&mut out, &mut pending, id)?;
+                        continue;
+                    }
+                    if chars::is_prime(glyph.ch)
+                        && pending.is_none()
+                        && let Some(&base) = out.last()
+                        && self.node_colors.get(&base).copied() == glyph.color
+                        && self.takes_prime(base)
+                    {
+                        let mut marks: SmallVec<[NodeId; 3]> = SmallVec::new();
+                        marks.push(self.glyph_node(&glyph, class)?);
+                        while let Some(Item::Glyph(next)) = items.front()
+                            && next.embells.is_empty()
+                            && next.color == glyph.color
+                            && chars::is_prime(next.ch)
+                        {
+                            let next = next.clone();
+                            items.pop_front();
+                            marks.push(self.glyph_node(&next, classify(&next))?);
+                        }
+                        out.pop();
+                        let id = self.prime(base, &marks)?;
+                        self.set_color(id, glyph.color);
+                        out.push(id);
                         continue;
                     }
                     let id = match class {
@@ -1291,25 +1380,27 @@ impl<'a> Decoder<'a> {
                         Class::Text => {
                             let mut text = String::new();
                             text.push(glyph.ch);
-                            while let Some(Item::Glyph(next)) = items.peek()
+                            while let Some(Item::Glyph(next)) = items.front()
                                 && next.embells.is_empty()
+                                && next.color == glyph.color
                                 && classify(next) == Class::Text
                             {
                                 text.push(next.ch);
-                                items.next();
+                                items.pop_front();
                             }
                             self.str_node(&text, |s| CompactNode::Text(TextStyle::Normal, s))?
                         },
                         Class::Function => {
                             let mut name = String::new();
                             name.push(glyph.ch);
-                            while let Some(Item::Glyph(next)) = items.peek()
+                            while let Some(Item::Glyph(next)) = items.front()
                                 && next.embells.is_empty()
+                                && next.color == glyph.color
                                 && classify(next) == Class::Function
                                 && !next.func_start
                             {
                                 name.push(next.ch);
-                                items.next();
+                                items.pop_front();
                             }
                             self.str_node(&name, |s| CompactNode::Operator {
                                 name: s,
@@ -1327,26 +1418,47 @@ impl<'a> Decoder<'a> {
                         Class::Number => {
                             let mut digits = String::new();
                             digits.push(glyph.ch);
-                            while let Some(Item::Glyph(next)) = items.peek()
-                                && next.embells.is_empty()
-                                && next.typeface == glyph.typeface
-                                && classify(next) == Class::Number
-                            {
-                                digits.push(next.ch);
-                                items.next();
+                            loop {
+                                if let Some(Item::Glyph(next)) = items.front()
+                                    && next.embells.is_empty()
+                                    && next.color == glyph.color
+                                    && next.typeface == glyph.typeface
+                                    && classify(next) == Class::Number
+                                {
+                                    digits.push(next.ch);
+                                    items.pop_front();
+                                } else if !digits.contains('.')
+                                    && let Some(Item::Glyph(point)) = items.front()
+                                    && is_decimal_point(point)
+                                    && point.color == glyph.color
+                                    && let Some(Item::Glyph(next)) = items.get(1)
+                                    && next.color == glyph.color
+                                    && next.embells.is_empty()
+                                    && next.ch.is_ascii_digit()
+                                    && classify(next) == Class::Number
+                                {
+                                    // Equation Editor sets the point of a
+                                    // decimal in the function style and the
+                                    // digits in the number style.
+                                    digits.push('.');
+                                    items.pop_front();
+                                } else {
+                                    break;
+                                }
                             }
                             self.str_node(&digits, CompactNode::Number)?
                         },
                         Class::Styled(style) => {
                             let mut run: SmallVec<[NodeId; 8]> = SmallVec::new();
                             run.push(self.plain_char_node(glyph.ch)?);
-                            while let Some(Item::Glyph(next)) = items.peek()
+                            while let Some(Item::Glyph(next)) = items.front()
                                 && next.embells.is_empty()
+                                && next.color == glyph.color
                                 && next.typeface == glyph.typeface
                                 && classify(next) == class
                             {
                                 let ch = next.ch;
-                                items.next();
+                                items.pop_front();
                                 run.push(self.plain_char_node(ch)?);
                             }
                             let span = self.children(&run)?;
@@ -1354,6 +1466,7 @@ impl<'a> Decoder<'a> {
                         },
                         _ => self.glyph_node(&glyph, class)?,
                     };
+                    self.set_color(id, glyph.color);
                     self.emit(&mut out, &mut pending, id)?;
                 },
                 Item::Node(id) => self.emit(&mut out, &mut pending, id)?,
@@ -1390,11 +1503,21 @@ impl<'a> Decoder<'a> {
             }
         }
         if let Some(slots) = pending.take() {
-            let base = self.empty_row()?;
-            let id = self.prescript_node(base, slots)?;
+            // A leading script at the end of a line has nothing to lead: it
+            // follows the item before it, as it is drawn.
+            let id = match out.pop() {
+                Some(previous) if self.carries_script(previous) => {
+                    self.script_node(previous, slots)?
+                },
+                previous => {
+                    out.extend(previous);
+                    let base = self.empty_row()?;
+                    self.prescript_node(base, slots)?
+                },
+            };
             out.push(id);
         }
-        Ok(out)
+        self.wrap_colors(out)
     }
 
     fn emit(
@@ -1404,11 +1527,118 @@ impl<'a> Decoder<'a> {
         id: NodeId,
     ) -> Result<()> {
         let id = match pending.take() {
+            // MathType draws a leading script (`tvSU_PRECEDES`) between the
+            // items around it. Before an operator, a relation, punctuation or
+            // a fence it cannot lead that item; it was typed for the item
+            // before it (`E {}_k +`), so it becomes that item's script.
+            Some(slots) if !self.takes_leading_script(id) => {
+                match out.pop() {
+                    Some(previous) if self.carries_script(previous) => {
+                        let scripted = self.script_node(previous, slots)?;
+                        out.push(scripted);
+                    },
+                    previous => {
+                        out.extend(previous);
+                        let base = self.empty_row()?;
+                        let script = self.prescript_node(base, slots)?;
+                        out.push(script);
+                    },
+                }
+                id
+            },
             Some(slots) => self.prescript_node(id, slots)?,
             None => id,
         };
         out.push(id);
         Ok(())
+    }
+
+    /// Whether a leading script may lead `id`: not an operator, relation,
+    /// punctuation, fence or space. A zero space keeps it as a script on
+    /// nothing (how the MTEF writer spells `x{}_1`).
+    fn takes_leading_script(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Symbol(kind, _) => !matches!(
+                kind,
+                SymbolKind::BinaryOp
+                    | SymbolKind::Relation
+                    | SymbolKind::Punctuation
+                    | SymbolKind::Open
+                    | SymbolKind::Close
+                    | SymbolKind::Fence
+            ),
+            CompactNode::Space(width) => width == Rational::zero(),
+            _ => true,
+        }
+    }
+
+    /// Whether `id` can be the base of a script that follows it.
+    fn carries_script(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Symbol(kind, _) => !matches!(
+                kind,
+                SymbolKind::BinaryOp
+                    | SymbolKind::Relation
+                    | SymbolKind::Punctuation
+                    | SymbolKind::Open
+            ),
+            CompactNode::Space(_) | CompactNode::Text(..) | CompactNode::PreScripts { .. } => false,
+            CompactNode::Row(span) => !span.is_empty(),
+            _ => true,
+        }
+    }
+
+    /// Whether a prime typed after `id` is its superscript.
+    fn takes_prime(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Symbol(kind, s) => {
+                matches!(kind, SymbolKind::Ordinary | SymbolKind::Close)
+                    && !self.arena.str_val(s).chars().all(chars::is_prime)
+            },
+            // A big operator's node includes its body.
+            CompactNode::Nary { .. } => false,
+            CompactNode::Space(_) | CompactNode::Text(..) | CompactNode::Row(_) => false,
+            _ => true,
+        }
+    }
+
+    /// `base` with the prime marks `marks` as its superscript; primes after a
+    /// primed base join its primes.
+    fn prime(&mut self, base: NodeId, marks: &[NodeId]) -> Result<NodeId> {
+        if let CompactNode::PreScripts {
+            base: inner,
+            pre_sub,
+            pre_sup,
+        } = *self.arena.node(base)
+        {
+            // `{}_a^b z′`: the prime is the base's, after the leading scripts.
+            let base = self.prime(inner, marks)?;
+            return self.node(CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            });
+        }
+        if let CompactNode::Superscript { base: inner, sup } = *self.arena.node(base)
+            && self.all_primes(sup)
+        {
+            let mut all: SmallVec<[NodeId; 4]> = self.children_of(sup).into_iter().collect();
+            all.extend_from_slice(marks);
+            let sup = self.wrap(&all)?;
+            return self.node(CompactNode::Superscript { base: inner, sup });
+        }
+        let sup = self.wrap(marks)?;
+        self.node(CompactNode::Superscript { base, sup })
+    }
+
+    /// Whether `id` is a prime mark or a row of them.
+    fn all_primes(&self, id: NodeId) -> bool {
+        let ids = self.children_of(id);
+        !ids.is_empty()
+            && ids.iter().all(|&id| {
+                matches!(*self.arena.node(id), CompactNode::Symbol(_, s)
+                    if self.arena.str_val(s).chars().all(chars::is_prime))
+            })
     }
 
     /// A native script or limit template determines the placement of its
@@ -1433,12 +1663,30 @@ impl<'a> Decoder<'a> {
     }
 
     fn script_node(&mut self, base: NodeId, slots: ScriptSlots) -> Result<NodeId> {
+        let (base, slots, color) = self.paint_scripts(base, slots)?;
+        let id = self.script_node_inner(base, slots)?;
+        self.set_color(id, color);
+        Ok(id)
+    }
+
+    fn script_node_inner(&mut self, base: NodeId, slots: ScriptSlots) -> Result<NodeId> {
         let base = if slots.sub.is_some() || slots.sup.is_some() {
             self.named_with_limits(base, LimitStyle::SubSup)
                 .unwrap_or(base)
         } else {
             base
         };
+        if let (Some(sub), None) = (slots.sub, slots.sup)
+            && let CompactNode::Superscript { base: inner, sup } = *self.arena.node(base)
+            && self.all_primes(sup)
+        {
+            // `y′` then a subscript: the subscript is the primed letter's.
+            return self.node(CompactNode::SubSup {
+                base: inner,
+                sub,
+                sup,
+            });
+        }
         match (slots.sub, slots.sup) {
             (Some(sub), Some(sup)) => self.node(CompactNode::SubSup { base, sub, sup }),
             (Some(sub), None) => self.node(CompactNode::Subscript { base, sub }),
@@ -1451,11 +1699,116 @@ impl<'a> Decoder<'a> {
         if slots.sub.is_none() && slots.sup.is_none() {
             return Ok(base);
         }
-        self.node(CompactNode::PreScripts {
+        let (base, slots, color) = self.paint_scripts(base, slots)?;
+        let id = self.node(CompactNode::PreScripts {
             base,
             pre_sub: slots.sub.unwrap_or(NodeId::NONE),
             pre_sup: slots.sup.unwrap_or(NodeId::NONE),
-        })
+        })?;
+        self.set_color(id, color);
+        Ok(id)
+    }
+
+    // ── Colour ─────────────────────────────────────────────────────────
+
+    fn set_color(&mut self, id: NodeId, color: Option<u16>) {
+        if let Some(color) = color {
+            self.node_colors.insert(id, color);
+        }
+    }
+
+    fn color_name(&self, color: Option<u16>) -> &str {
+        color
+            .and_then(|c| self.colors.get(usize::from(c).checked_sub(1)?))
+            .and_then(Option::as_deref)
+            .unwrap_or("#000000")
+    }
+
+    /// `id`, drawn in `color`, wrapped in a colour node where that differs
+    /// from the colour around the line.
+    fn paint(&mut self, id: NodeId, color: Option<u16>) -> Result<NodeId> {
+        if color == self.color_context {
+            return Ok(id);
+        }
+        // Content painted as a whole shows none of the colour around it.
+        if let [only] = self.children_of(id)[..]
+            && let CompactNode::Color {
+                color: inner,
+                content,
+            } = *self.arena.node(only)
+        {
+            let around = self.color_name(self.color_context);
+            return Ok(if self.arena.str_val(inner) == around {
+                content
+            } else {
+                only
+            });
+        }
+        let name = self.color_name(color).to_owned();
+        let wrapped = self.str_node(&name, |color| CompactNode::Color { color, content: id })?;
+        self.set_color(wrapped, self.color_context);
+        Ok(wrapped)
+    }
+
+    /// The parts of a script node and the node's colour: the colour its base
+    /// and scripts share, else each part is painted on its own (a black
+    /// script of a red letter stays black).
+    fn paint_scripts(
+        &mut self,
+        base: NodeId,
+        mut slots: ScriptSlots,
+    ) -> Result<(NodeId, ScriptSlots, Option<u16>)> {
+        let color = self.node_colors.get(&base).copied();
+        // An empty base draws nothing, in any colour.
+        if color == slots.color || self.is_empty_row(base) {
+            return Ok((base, slots, slots.color));
+        }
+        // A function name keeps its limits only as the direct base: colour
+        // the whole node, and each script back to its own colour.
+        if matches!(*self.arena.node(base), CompactNode::Operator { .. }) {
+            let around = std::mem::replace(&mut self.color_context, color);
+            for slot in [&mut slots.sub, &mut slots.sup] {
+                if let Some(id) = *slot {
+                    *slot = Some(self.paint(id, slots.color)?);
+                }
+            }
+            self.color_context = around;
+            return Ok((base, slots, color));
+        }
+        let base = self.paint(base, color)?;
+        for slot in [&mut slots.sub, &mut slots.sup] {
+            if let Some(id) = *slot {
+                *slot = Some(self.paint(id, slots.color)?);
+            }
+        }
+        Ok((base, slots, self.color_context))
+    }
+
+    /// Wrap each run of a line's nodes drawn in another colour than the
+    /// structure around the line in a colour node.
+    fn wrap_colors(&mut self, out: SmallVec<[NodeId; 8]>) -> Result<SmallVec<[NodeId; 8]>> {
+        let context = self.color_context;
+        let color_of = |d: &Self, id: NodeId| d.node_colors.get(&id).copied();
+        if out.iter().all(|&id| color_of(self, id) == context) {
+            return Ok(out);
+        }
+        let mut wrapped: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut i = 0;
+        while i < out.len() {
+            let color = color_of(self, out[i]);
+            let mut end = i + 1;
+            while end < out.len() && color_of(self, out[end]) == color {
+                end += 1;
+            }
+            if color == context {
+                wrapped.extend_from_slice(&out[i..end]);
+            } else {
+                let content = self.wrap(&out[i..end])?;
+                wrapped.push(self.paint(content, color)?);
+            }
+            i = end;
+        }
+        Ok(wrapped)
     }
 
     /// The node for a single character of an upright or bold run.
@@ -1591,6 +1944,14 @@ impl<'a> Decoder<'a> {
             },
         }
     }
+}
+
+/// Whether a glyph is the point of a decimal number: a full stop outside the
+/// text styles.
+fn is_decimal_point(glyph: &Glyph) -> bool {
+    glyph.ch == '.'
+        && glyph.embells.is_empty()
+        && !matches!(glyph.typeface, chars::FN_TEXT | chars::FN_TEXT_FE)
 }
 
 /// How a character takes part in its line, from its typeface and value.

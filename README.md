@@ -36,7 +36,7 @@ let umath  = result.to_unicode_math().unwrap();
 > **MTEF note:** `from_mtef_bytes` reads Equation Editor 3 (MTEF 3) and MathType 4+
 > (MTEF 5) equations, with or without the OLE `Equation Native` header, and
 > `ConvertResult::mtef_info` reports which one the input was. MathType's
-> typesetting data (fonts, sizes, nudges, colours, tab stops) has no place in
+> typesetting data (fonts, sizes, nudges, tab stops) has no place in
 > the AST and is not kept. `ConvertResult::to_mtef_bytes` writes MTEF 5 or
 > MTEF 3; `MtefWriteOptions::from_info(result.mtef_info())` writes an
 > equation back as the same kind of object it was read from.

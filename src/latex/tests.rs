@@ -1253,7 +1253,7 @@ fn legacy_font_scope_preserves_tables_in_compounds() {
         ),
         (
             r"\bf x^{\begin{matrix}u&v\end{matrix}}t",
-            r"{\mathbf{x}}^{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
+            r"\mathbf{x}^{\begin{matrix} u & v \end{matrix}}\mathbf{t}",
         ),
         (
             r"\bf x\sum_{\begin{matrix}u&v\end{matrix}}t",

@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (behavior):** `\hbar`, `\hslash`, `\ell`, `\Re`, `\Im`, the
+  Hebrew letters, `\imath`, `\jmath` and `\eth` are identifiers (MathML
+  `<mi>`, as KaTeX and MathJax write them) instead of ordinary symbols.
+- **Breaking (behavior):** MTEF equations convert more faithfully. Each
+  variable-style letter is its own identifier (`dt` was one upright `<mi>`);
+  decimals are one number; the ASCII hyphen, tilde, apostrophe and backslash
+  become `−`, `∼`, a prime and `∖` outside text; empty scripts and limits are
+  dropped; a leading script with nothing to lead becomes a script of the item
+  before it. Colours (MTEF 5) and dashed partition lines are read and
+  written; dotted lines are read as dashed.
+- The LaTeX writer no longer braces a font command that carries a script
+  (`\mathbf{F}_{x}`).
 - **Breaking (behavior):** `\above` and `\abovewithdelims` need a
   dimension, as in TeX ("Missing number") and MathJax ("Missing
   dimension"): `{a \above b}` is now an error under `Strictness::Strict`

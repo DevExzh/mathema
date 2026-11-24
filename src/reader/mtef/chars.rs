@@ -327,6 +327,26 @@ pub(super) fn normalize_code_point(ch: char) -> char {
     }
 }
 
+/// The mathematical character an ASCII character stands for outside the text
+/// styles: the hyphen is the minus sign, the tilde the similarity relation,
+/// the apostrophe a prime and the backslash the set difference. The double
+/// quote is left alone: authors type it both as a double prime and as a
+/// quotation mark.
+pub(super) fn math_ascii(ch: char) -> char {
+    match ch {
+        '-' => '\u{2212}',
+        '~' => '\u{223C}',
+        '\'' => '\u{2032}',
+        '\\' => '\u{2216}',
+        _ => ch,
+    }
+}
+
+/// Whether `ch` is a prime mark, which follows its base as a superscript.
+pub(super) fn is_prime(ch: char) -> bool {
+    matches!(ch, '\u{2032}' | '\u{2033}' | '\u{2034}' | '\u{2057}')
+}
+
 /// Whether `ch` lies in the Unicode private use area (MathType's own MTCode
 /// characters live there).
 pub(super) fn is_private_use(ch: char) -> bool {

@@ -8,11 +8,16 @@ use crate::writer::Writer;
 #[test]
 fn write_emits_warning_for_dropped_nodes() {
     let config = Config::default();
-    // \color{red}{x} lowers to a Color node, which the MTEF writer drops.
+    // \color{red}{x} lowers to a Color node, which MTEF 3 cannot hold.
     let result =
         crate::reader::latex::LatexReader::parse_compact("\\color{red}{x}", &config).unwrap();
-    let (hex, diags) = MtefWriter::write_compact_with_diagnostics(&result.expr, &config).unwrap();
-    assert!(!hex.is_empty());
+    let (bytes, diags) = MtefWriter::write_bytes_with_diagnostics(
+        &result.expr,
+        &config,
+        &MtefWriteOptions::new(crate::MtefVersion::V3),
+    )
+    .unwrap();
+    assert!(!bytes.is_empty());
     assert!(
         diags
             .iter()
@@ -268,14 +273,35 @@ fn prescripts_roundtrip_preserves_content() {
 #[test]
 fn color_preserves_inner_content() {
     let config = Config::default();
-    // `\textcolor{red}{x}` lowers to a Color node; MTEF drops the color but
-    // must preserve the inner `x` (verified by a write→read round-trip).
+    // `\textcolor{red}{x}` lowers to a Color node; MTEF 5 writes it with
+    // COLOR_DEF and COLOR records (verified by a write→read round-trip).
     let result =
         crate::reader::latex::LatexReader::parse_compact("\\textcolor{red}{x}", &config).unwrap();
     let hex = MtefWriter::write_compact(&result.expr, &config).unwrap();
     let expr = MtefReader::parse(&hex, &config).unwrap().expr;
-    let flat = format!("{:?}", expr.nodes);
-    assert!(flat.contains("\"x\""), "lost colored content: {flat}");
+    assert_eq!(
+        expr.nodes,
+        [MathNode::Color {
+            color: "#ff0000".into(),
+            content: Box::new(MathNode::Identifier("x".into())),
+        }]
+    );
+}
+
+#[test]
+fn colour_round_trips_and_restores_black() {
+    // The content after a colour node is drawn in black again.
+    let result = crate::from_latex(r"a\textcolor{blue}{b+c}d").unwrap();
+    let bytes = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    let back = crate::from_mtef_bytes(&bytes).unwrap();
+    assert_eq!(
+        back.to_latex().unwrap(),
+        r"a\textcolor[HTML]{0000ff}{b+ c}d"
+    );
+    assert_eq!(
+        back.to_mtef_bytes(&MtefWriteOptions::default()).unwrap(),
+        bytes
+    );
 }
 
 fn bytes(latex: &str, options: &MtefWriteOptions) -> Vec<u8> {
@@ -921,5 +947,33 @@ fn unruled_native_matrix_and_pile_report_padding_loss() {
             diags.iter().any(|d| d.message.contains("outer padding")),
             "{input}: {diags:?}"
         );
+    }
+}
+
+#[test]
+fn dashed_partition_lines_round_trip() {
+    let result =
+        crate::from_latex(r"\begin{array}{l:l|l} a & b & c \\ \hdashline d & e & f \end{array}")
+            .unwrap();
+    for version in [crate::MtefVersion::V3, crate::MtefVersion::V5] {
+        let bytes = result
+            .to_mtef_bytes(&MtefWriteOptions::new(version))
+            .unwrap();
+        let back = crate::from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(back.to_latex().unwrap(), result.to_latex().unwrap());
+    }
+}
+
+#[test]
+fn partly_coloured_scripts_round_trip() {
+    for latex in [
+        r"{\textcolor[HTML]{ff0000}{x}}_{i}y",
+        r"x_{\textcolor[HTML]{ff0000}{i}}y",
+        r"\textcolor[HTML]{ff0000}{\frac{a}{\textcolor[HTML]{000000}{b}}}",
+    ] {
+        let first = crate::from_latex(latex).unwrap();
+        let bytes = first.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+        let back = crate::from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(back.to_mathml().unwrap(), first.to_mathml().unwrap());
     }
 }

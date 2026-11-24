@@ -615,6 +615,18 @@ pub fn normalize_compact_expr(expr: &mut CompactExpr) -> crate::error::Result<()
     expr.arena.check_limits()
 }
 
+/// [`normalize_compact_expr`] without merging adjacent ASCII identifiers.
+///
+/// For readers whose identifiers are atoms of their own, such as MTEF, where
+/// each character of a variable-style run is a separate italic variable: a
+/// merged run would become one multi-letter (upright) identifier.
+pub(crate) fn normalize_compact_expr_keeping_identifiers(
+    expr: &mut CompactExpr,
+) -> crate::error::Result<()> {
+    expr.roots = normalize_compact_span_with_identifiers(&mut expr.arena, expr.roots, 0, false)?;
+    expr.arena.check_limits()
+}
+
 /// Normalize a span of child nodes. Returns a (possibly new) span.
 fn normalize_compact_span(
     arena: &mut AstArena,

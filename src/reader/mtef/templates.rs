@@ -379,6 +379,18 @@ pub(super) fn describe_v5(selector: u8, variation: u16) -> Option<Desc> {
 }
 
 /// `tmSTRIKE` variation bits (`tvST_HORIZ`, `tvST_UP`, `tvST_DOWN`).
+/// The accent a lone character in an upper limit slot draws.
+fn limit_accent(ch: char) -> Option<char> {
+    Some(match ch {
+        '~' | '\u{223C}' | '\u{02DC}' => '\u{0303}',
+        '^' | '\u{02C6}' => '\u{0302}',
+        '\u{2192}' => '\u{20D7}',
+        '.' | '\u{22C5}' | '\u{02D9}' => '\u{0307}',
+        '\u{00AF}' | '_' | '\u{2212}' => '\u{0304}',
+        _ => return None,
+    })
+}
+
 fn strike_stroke(variation: u16) -> StrokeKind {
     let horizontal = variation & 0x1 != 0;
     let up = variation & 0x2 != 0;
@@ -603,8 +615,9 @@ impl Decoder<'_> {
             },
             Desc::BigOp { op, limits } => {
                 let body = self.take_or_empty(&mut slots, 0)?;
-                let sub = Self::take(&mut slots, 1);
-                let sup = Self::take(&mut slots, 2);
+                // An empty limit line draws nothing.
+                let sub = self.take_filled(&mut slots, 1);
+                let sup = self.take_filled(&mut slots, 2);
                 // INTOP / SUMOP: the operator is the fourth slot (a line) or,
                 // in MTEF 3, the template's character.
                 let op_slot = if op.is_none() {
@@ -633,8 +646,18 @@ impl Decoder<'_> {
                         body,
                         limits,
                     })?),
+                    // Without limits the operator slot is drawn as it is.
+                    (None, Some(base)) if sub.is_none() && sup.is_none() => {
+                        let mut ids = self.children_of(base);
+                        ids.extend(self.children_of(body));
+                        Item::Node(self.wrap(&ids)?)
+                    },
                     (None, Some(base)) => {
-                        let slots = ScriptSlots { sub, sup };
+                        let slots = ScriptSlots {
+                            sub,
+                            sup,
+                            color: None,
+                        };
                         let id = if let Some(name) = self.named_with_limits(base, limits) {
                             self.scripts(name, slots)?
                         } else {
@@ -686,8 +709,24 @@ impl Decoder<'_> {
                         ScriptSlots {
                             sub: lower,
                             sup: upper,
+                            color: None,
                         },
                     )?
+                } else if lower.is_none()
+                    && self.single_char(base).is_some()
+                    && let Some(accent) = upper
+                        .and_then(|id| self.single_char(id))
+                        .and_then(limit_accent)
+                {
+                    // A tilde, caret, dot or arrow alone above a character
+                    // is that character's accent, typed with the limit
+                    // template.
+                    self.node(CompactNode::Accent {
+                        base,
+                        accent,
+                        position: AccentPosition::Above,
+                        wide: false,
+                    })?
                 } else {
                     self.over_under(base, upper, lower)?
                 };
@@ -737,10 +776,19 @@ impl Decoder<'_> {
                 Item::Node(self.over_under(base, quotient, None)?)
             },
             Desc::Script { pre } => {
+                // An empty script line draws nothing.
                 let slots = ScriptSlots {
-                    sub: Self::take(&mut slots, 0),
-                    sup: Self::take(&mut slots, 1),
+                    sub: self.take_filled(&mut slots, 0),
+                    sup: self.take_filled(&mut slots, 1),
+                    color: None,
                 };
+                if slots.sub.is_none() && slots.sup.is_none() {
+                    if !extra.is_empty() {
+                        let id = self.wrap(&extra)?;
+                        items.push(Item::Node(id));
+                    }
+                    return Ok(());
+                }
                 if pre {
                     Item::PreScript(slots)
                 } else {

@@ -157,11 +157,12 @@ fn special_accent_glyphs_are_spelled_as_glyphs() {
 #[test]
 fn root_index_starting_and_ending_with_a_brace_is_grouped() {
     let cases = [
-        (
-            r"\sqrt[\mathcal{L}^{10}]{y}",
-            r"\sqrt[{{\mathcal{L}}^{10}}]{y}",
-        ),
-        (r"\sqrt[\mathbf{v}_1]{y}", r"\sqrt[{{\mathbf{v}}_{1}}]{y}"),
+        // A font command base is one atom, so these indices do not start
+        // with `{`.
+        (r"\sqrt[\mathcal{L}^{10}]{y}", r"\sqrt[\mathcal{L}^{10}]{y}"),
+        (r"\sqrt[\mathbf{v}_1]{y}", r"\sqrt[\mathbf{v}_{1}]{y}"),
+        (r"\sqrt[{x}_1]{y}", r"\sqrt[x_{1}]{y}"),
+        (r"\sqrt[{a+b}_1]{y}", r"\sqrt[{{a+ b}_{1}}]{y}"),
         (r"\sqrt[{a}]{y}", r"\sqrt[a]{y}"),
         (r"\sqrt[x^2]{y}", r"\sqrt[x^{2}]{y}"),
     ];

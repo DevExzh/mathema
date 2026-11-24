@@ -13,7 +13,7 @@
 //! binary operators.
 
 use super::SymbolClass;
-use SymbolClass::{BinaryOp, Ordinary, Relation};
+use SymbolClass::{Alphabetic, BinaryOp, Ordinary, Relation};
 
 /// Builtin macros contributed by this package: `(name, param_count, body)`.
 ///
@@ -70,7 +70,7 @@ pub const SYMBOLS: &[(&str, &str, SymbolClass)] = &[
     // === Miscellaneous ordinary symbols ============================
     ("bigstar", "\u{2605}", Ordinary),        // ★ BLACK STAR
     ("lozenge", "\u{25CA}", Ordinary),        // ◊ LOZENGE
-    ("hslash", "\u{210F}", Ordinary),         // ℏ PLANCK CONSTANT OVER TWO PI
+    ("hslash", "\u{210F}", Alphabetic),       // ℏ PLANCK CONSTANT OVER TWO PI
     ("Bbbk", "\u{1D55C}", Ordinary),          // 𝕜 MATHEMATICAL DOUBLE-STRUCK SMALL K
     ("circledR", "\u{00AE}", Ordinary),       // ® REGISTERED SIGN
     ("circledS", "\u{24C8}", Ordinary),       // Ⓢ CIRCLED LATIN CAPITAL LETTER S

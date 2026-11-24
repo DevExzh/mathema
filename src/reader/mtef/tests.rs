@@ -613,17 +613,126 @@ fn v5_size_color_ruler_and_future_records_are_consumed() {
     body.extend_from_slice(&content);
     body.extend_from_slice(&[0, 0]);
     let result = MtefReader::parse_bytes(&v5(&body), &Config::default()).unwrap();
-    assert!(
-        matches!(&result.expr.nodes[..], [MathNode::Identifier(x)] if x == "x"),
-        "{:?}",
-        result.expr.nodes
+    assert_eq!(
+        result.expr.nodes,
+        [MathNode::Color {
+            color: "#ff0000".into(),
+            content: Box::new(MathNode::Identifier("x".into())),
+        }]
     );
     let infos: Vec<_> = result
         .diagnostics
         .iter()
         .filter(|d| d.kind == DiagnosticKind::Info)
         .collect();
-    assert_eq!(infos.len(), 2, "{infos:?}");
+    // The future-expansion record only.
+    assert_eq!(infos.len(), 1, "{infos:?}");
+}
+
+/// COLOR_DEF (RGB red) as definition 1, then `content` in one line.
+fn coloured(content: &[&[u8]]) -> crate::ast::MathExpr {
+    let mut body = vec![0x10, 0, 0xE8, 0x03, 0, 0, 0, 0, 0x0A, 1, 0];
+    body.extend(cat(content));
+    body.extend_from_slice(&[0, 0]);
+    MtefReader::parse_bytes(&v5(&body), &Config::default())
+        .unwrap()
+        .expr
+}
+
+fn red(content: MathNode) -> MathNode {
+    MathNode::Color {
+        color: "#ff0000".into(),
+        content: Box::new(content),
+    }
+}
+
+/// tmSUB (27) holding one character, with `before` just inside the template.
+fn sub5(before: &[u8], ch: char) -> Vec<u8> {
+    cat(&[
+        &[3, 0, 27, 0, 0, 1, 0],
+        before,
+        &c5(0, 3, ch),
+        &[0, 1, 1, 0],
+    ])
+}
+
+#[test]
+fn a_script_keeps_its_own_colour() {
+    const RED: &[u8] = &[0x0F, 1];
+    const BLACK: &[u8] = &[0x0F, 0];
+    let id = |s: &str| MathNode::Identifier(s.into());
+    let sub = |base, sub| MathNode::Subscript {
+        base: Box::new(base),
+        sub: Box::new(sub),
+    };
+    let row = |n| MathNode::Row(vec![n]);
+    let x = c5(0, 3, 'x');
+    // Black script on a red base, and red script on a black one.
+    let expr = coloured(&[RED, &x, BLACK, &sub5(&[], 'i')]);
+    assert_eq!(expr.nodes, [sub(red(id("x")), row(id("i")))]);
+    let expr = coloured(&[&x, RED, &sub5(&[], 'i'), BLACK]);
+    assert_eq!(expr.nodes, [sub(id("x"), red(row(id("i"))))]);
+    // The colour changes inside the slot.
+    let expr = coloured(&[&x, &sub5(RED, 'i'), BLACK]);
+    assert_eq!(expr.nodes, [sub(id("x"), row(red(id("i"))))]);
+    // One colour for both is one colour node.
+    let expr = coloured(&[RED, &x, &sub5(&[], 'i'), BLACK, &c5(0, 3, 'y')]);
+    assert_eq!(expr.nodes, [red(sub(id("x"), row(id("i")))), id("y")]);
+}
+
+fn latex5(content: &[&[u8]]) -> String {
+    let mut body = vec![0x0A, 1, 0];
+    body.extend(cat(content));
+    body.extend_from_slice(&[0, 0]);
+    crate::from_mtef_bytes(&v5(&body))
+        .unwrap()
+        .to_latex()
+        .unwrap()
+}
+
+/// tmSUP (28) with `tvSU_PRECEDES`, holding one character.
+fn pre_sup5(ch: char) -> Vec<u8> {
+    cat(&[&[3, 0, 28, 1, 0, 1, 1, 1, 0], &c5(0, 8, ch), &[0, 0]])
+}
+
+#[test]
+fn leading_scripts_lead_letters_and_follow_otherwise() {
+    let (x, c) = (c5(0, 3, 'x'), c5(0, 3, 'C'));
+    let plus = c5(0, 6, '+');
+    assert_eq!(latex5(&[&pre_sup5('2'), &c]), "{{}^{2}C}");
+    assert_eq!(latex5(&[&plus, &pre_sup5('2'), &c]), "+ {{}^{2}C}");
+    assert_eq!(latex5(&[&x, &pre_sup5('2'), &plus, &c]), "x^{2}+ C");
+    assert_eq!(latex5(&[&x, &pre_sup5('2')]), "x^{2}");
+    // An operator before it carries no script.
+    assert_eq!(latex5(&[&x, &plus, &pre_sup5('2')]), "x+{}^{2}");
+}
+
+#[test]
+fn decimals_primes_and_quotes() {
+    let n = |ch| c5(0, 8, ch);
+    let f = |ch| c5(0, 2, ch);
+    let t = |ch| c5(0, 1, ch);
+    let x = c5(0, 3, 'x');
+    assert_eq!(latex5(&[&n('3'), &f('.'), &n('6')]), "3.6");
+    // Not a decimal: no digit follows, or the number has a point already.
+    assert_eq!(latex5(&[&n('3'), &f('.')]), "3 .");
+    let result = latex5(&[&n('1'), &f('.'), &n('2'), &f('.'), &n('3')]);
+    assert!(result.starts_with("1.2"), "{result}");
+    assert_eq!(latex5(&[&x, &f('\''), &f('\'')]), r"x^{\prime\prime}");
+    assert_eq!(latex5(&[&x, &f('\''), &sub5(&[], 'i')]), r"x_i^{\prime}");
+    assert_eq!(latex5(&[&x, &f('~'), &x, &f('-'), &x]), r"x\sim x- x");
+    // Text keeps its characters; a double quote may be a quotation mark.
+    assert_eq!(latex5(&[&t('a'), &t('-'), &t('\'')]), r"\text{a-'}");
+    assert_eq!(latex5(&[&f('"'), &x, &f('"')]), "\\char`\"x\\char`\"");
+}
+
+#[test]
+fn letters_stay_separate_identifiers() {
+    let mut body = vec![0x0A, 1, 0];
+    body.extend(cat(&[&c5(0, 3, 'd'), &c5(0, 3, 't')]));
+    body.extend_from_slice(&[0, 0]);
+    let result = crate::from_mtef_bytes(&v5(&body)).unwrap();
+    assert!(result.to_mathml().unwrap().contains("<mi>d</mi><mi>t</mi>"));
 }
 
 // ── Headers ───────────────────────────────────────────────────────────────
