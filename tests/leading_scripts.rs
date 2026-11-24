@@ -434,3 +434,35 @@ fn latex_leading_scripts_around_operators_are_stable() {
         "sec {{}^{\\prime}e}"
     );
 }
+
+/// In a table cell a group holding a line break stays a group; a leading
+/// script before it leads the group's first node, as before any other group,
+/// so that writing it and reading it back gives the same LaTeX.
+#[test]
+fn leading_script_before_a_cell_group_with_a_break_is_stable() {
+    for (input, want) in [
+        (
+            r"\begin{array}{c}d{}'{9\\x}\end{array}",
+            r"\begin{array}{c} d{{{}^{\prime}9}\\ x} \end{array}",
+        ),
+        (
+            r"\begin{array}{c}{}_1{9\\x}y\end{array}",
+            r"\begin{array}{c} {{{}_{1}9}\\ x}y \end{array}",
+        ),
+        // No first node to lead: the script stays before the group.
+        (
+            r"\begin{array}{c}{}'{\\x}\end{array}",
+            r"\begin{array}{c} {}^{\prime}{\\ x} \end{array}",
+        ),
+        // Found by fuzz_latex_roundtrip (an `\xymatrix` cell).
+        (
+            "\\xymatrix{dd$' {9*~S\\\\x}}",
+            r"\begin{array}{c} dd{{{}^{\prime}9}*\ S\\ x} \end{array}",
+        ),
+    ] {
+        let first = convert(input, Format::LaTeX, Format::LaTeX).unwrap();
+        assert_eq!(first, want, "{input}");
+        let second = convert(&first, Format::LaTeX, Format::LaTeX).unwrap();
+        assert_eq!(first, second, "{input}");
+    }
+}

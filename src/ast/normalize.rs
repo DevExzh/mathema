@@ -837,10 +837,10 @@ fn normalize_span_keeping_breaks(
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in with_limits.iter().rev() {
         if let Some(&next_id) = coalesced.last()
-            && let Some(prescripts) = leading_scripts_on(arena, id, next_id)
+            && let Some(prescripts) = leading_scripts_on(arena, id, next_id)?
         {
             coalesced.pop();
-            coalesced.push(arena.push_node(prescripts));
+            coalesced.push(prescripts);
             continue;
         }
         coalesced.push(id);
@@ -865,29 +865,58 @@ fn normalize_span_keeping_breaks(
         // group does not, so the next parse (where the parser already joined
         // the trailing script) would attach them. Attach them now as well.
         if content_end >= 3
-            && let Some(prescripts) = leading_scripts_on(arena, coalesced[content_end - 3], joined)
+            && let Some(prescripts) = leading_scripts_on(arena, coalesced[content_end - 3], joined)?
         {
             coalesced.remove(content_end - 2);
-            coalesced[content_end - 3] = arena.push_node(prescripts);
+            coalesced[content_end - 3] = prescripts;
         }
     }
 
     arena.push_children(&coalesced)
 }
 
-/// The `PreScripts` node that results from attaching the empty-base script
-/// `script` to the following node `next`, or `None` when `next` cannot take
-/// leading scripts.
-fn leading_scripts_on(arena: &AstArena, script: NodeId, next: NodeId) -> Option<CompactNode> {
-    let (pre_sub, pre_sup) = empty_base_scripts(arena, script)?;
+/// The node that results from attaching the empty-base script `script` to
+/// the following node `next`, or `None` when `next` cannot take leading
+/// scripts.
+///
+/// A group holding a line break stays a group in a table cell list (see
+/// `normalize_span_keeping_breaks`), where any other group is flattened and
+/// the scripts lead its first node. They lead that first node of the kept
+/// group too (`{}^{a}{b\\c}` is `{{}^{a}b\\c}`): a group is transparent to
+/// a leading script, and as the base of one the group would be written
+/// inside the script's own group, where it is flattened on reading back.
+fn leading_scripts_on(
+    arena: &mut AstArena,
+    script: NodeId,
+    next: NodeId,
+) -> crate::error::Result<Option<NodeId>> {
+    let Some((pre_sub, pre_sup)) = empty_base_scripts(arena, script) else {
+        return Ok(None);
+    };
+    if let CompactNode::Row(span) = *arena.node(next)
+        && has_direct_newline(arena, span)
+    {
+        let mut children: SmallVec<[NodeId; 8]> = arena.children(span).into();
+        let Some(&first) = children.first() else {
+            return Ok(None);
+        };
+        let Some(led) = leading_scripts_on(arena, script, first)? else {
+            return Ok(None);
+        };
+        children[0] = led;
+        let span = arena.push_children(&children)?;
+        return Ok(Some(arena.push_node(CompactNode::Row(span))));
+    }
     let takes = can_take_prescripts(*arena.node(next))
         && !matches!(*arena.node(next), CompactNode::Row(span) if has_direct_style_switch(arena, span))
         && !is_empty_base_script(arena, next);
-    takes.then_some(CompactNode::PreScripts {
-        base: next,
-        pre_sub,
-        pre_sup,
-    })
+    Ok(takes.then(|| {
+        arena.push_node(CompactNode::PreScripts {
+            base: next,
+            pre_sub,
+            pre_sup,
+        })
+    }))
 }
 
 /// The node kinds whose adjacent runs normalization merges.
