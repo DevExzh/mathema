@@ -1019,7 +1019,7 @@ fn v5_header_fields_are_reported() {
 
 #[test]
 fn unsupported_versions_are_refused() {
-    assert!(strict_error(&[4, 1, 0, 3, 5, 0x0A]).contains("version 4 is not supported"));
+    assert!(strict_error(&[1, 0x0A]).contains("version 1 is not supported"));
     assert!(strict_error(&[0x41, 0x42]).contains("not MTEF data"));
 }
 

@@ -314,6 +314,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The MTEF reader reads MTEF 2 (Equation Editor 1.x and 2.x, MathType 3.0) and
+  MTEF 4 (MathType 3.5), which were errors before. New variants
+  `MtefVersion::V2` and `MtefVersion::V4` (the enum is `#[non_exhaustive]`, so
+  this is not a breaking change). The writer still writes only MTEF 3 and 5:
+  `MtefWriteOptions::from_info` maps an MTEF 2 or 4 equation to MTEF 3
+  (Equation Editor 3.0) when Equation Editor generated it, else to MTEF 5
+  (MathType 6). `docs/mtef-legacy.md` lists what the reading rests on.
 - The TeX primitives `\overwithdelims`, `\atopwithdelims` and
   `\abovewithdelims` (supported by MathJax; KaTeX 0.16 rejects them):
   `{a \overwithdelims() b}`, `{a \atopwithdelims[] b}` and

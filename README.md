@@ -25,7 +25,7 @@ let umath  = result.to_unicode_math().unwrap();
 | MathML | Yes (Presentation + Content) | Yes (Presentation only) |
 | Office MathML (OMML) | Yes | Yes |
 | UnicodeMath | Yes | Yes |
-| MathType (MTEF 3 and 5) | Yes (binary or hex; bare or OLE `Equation Native`) | Yes (MTEF 3 or 5; binary or hex; bare or OLE `Equation Native`) |
+| MathType (MTEF 2 to 5) | Yes (MTEF 2, 3, 4 or 5; binary or hex; bare or OLE `Equation Native`) | Yes (MTEF 3 or 5; binary or hex; bare or OLE `Equation Native`) |
 | SVG | -- | Yes (`render`) |
 | PNG | -- | Yes (`raster`) |
 | JPEG | -- | Yes (`raster`) |

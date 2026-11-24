@@ -11,6 +11,8 @@
 //! input, and the number of records and AST nodes is bounded by
 //! [`Config::max_nodes`].
 
+mod legacy;
+
 use std::collections::{HashMap, VecDeque};
 
 use smallvec::SmallVec;
@@ -150,6 +152,9 @@ pub(super) struct Decoder<'a> {
     /// End of the MTEF data (the OLE header can declare a shorter length).
     end: usize,
     pub(super) v5: bool,
+    /// MTEF 2 or 4: laid out like MTEF 3, with 8-bit character values (see
+    /// the `legacy` module).
+    legacy: bool,
     mac: bool,
     strict: bool,
     max_depth: usize,
@@ -191,6 +196,7 @@ impl<'a> Decoder<'a> {
             pos: 0,
             end: data.len(),
             v5: false,
+            legacy: false,
             mac: false,
             strict: config.strictness == Strictness::Strict,
             max_depth: config.effective_max_depth(),
@@ -522,12 +528,14 @@ impl<'a> Decoder<'a> {
         let start = self.pos;
         let version = self.u8()?;
         let version = match version {
+            2 => MtefVersion::V2,
             3 => MtefVersion::V3,
+            4 => MtefVersion::V4,
             5 => MtefVersion::V5,
-            1 | 101 | 2 | 4 => {
+            1 | 101 => {
                 return Err(self.error_at(
                     start,
-                    format!("MTEF version {version} is not supported (only versions 3 and 5 are)"),
+                    format!("MTEF version {version} is not supported (only versions 2 to 5 are)"),
                 ));
             },
             _ => {
@@ -558,6 +566,7 @@ impl<'a> Decoder<'a> {
             (None, None)
         };
         self.v5 = version == MtefVersion::V5;
+        self.legacy = matches!(version, MtefVersion::V2 | MtefVersion::V4);
         self.mac = platform == 0;
         self.info = Some(MtefInfo {
             version,
@@ -593,7 +602,8 @@ impl<'a> Decoder<'a> {
                 .as_ref()
                 .and_then(|info| info.ole_header)
                 .is_some_and(|header| {
-                    header.object_size.is_multiple_of(4) && (len < 8 || header.object_size == 400)
+                    header.object_size.is_multiple_of(4)
+                        && (len < 8 || header.object_size == 400 || self.legacy_slack(len))
                 });
         if is_slack {
             self.note(format!(
@@ -632,6 +642,7 @@ impl<'a> Decoder<'a> {
             trial.pos = self.pos + skip;
             trial.end = self.end;
             trial.v5 = self.v5;
+            trial.legacy = self.legacy;
             trial.mac = self.mac;
             trial.v3_fonts = self.v3_fonts.clone();
             trial.encodings = self.encodings.clone();
@@ -790,10 +801,11 @@ impl<'a> Decoder<'a> {
                     self.nudge()?;
                 }
                 let kind = self.u8()?;
-                if !self.v5 {
+                if !self.v5 && !self.legacy {
                     // Equation Editor 3 writes a zero byte after the type; the
                     // MTEF 3 description omits it, but every reader of real
-                    // files has to consume it to stay in step.
+                    // files has to consume it to stay in step. MTEF 2 and 4
+                    // files do not have it.
                     self.u8()?;
                 }
                 items.push(Item::Embell(kind, start));
@@ -819,7 +831,7 @@ impl<'a> Decoder<'a> {
                 ));
             },
             t => {
-                let version = if self.v5 { 5 } else { 3 };
+                let version = self.info.as_ref().map_or(3, |info| info.version.number());
                 return Err(self.error_at(start, format!("unknown MTEF {version} record type {t}")));
             },
         }
@@ -925,8 +937,13 @@ impl<'a> Decoder<'a> {
             )
         } else {
             let typeface = i32::from(self.u8()?) - 128;
-            let code = self.u16()?;
-            let ch = self.v3_char(start, typeface, code)?;
+            let (typeface, ch) = if self.legacy {
+                let code = self.u8()?;
+                self.legacy_char(start, typeface, code)?
+            } else {
+                let code = self.u16()?;
+                (typeface, self.v3_char(start, typeface, code)?)
+            };
             (typeface, ch, options & V3_CHAR_EMBELL != 0, false, None)
         };
         let explicit = if typeface < 0 {
@@ -1149,6 +1166,7 @@ impl<'a> Decoder<'a> {
             self.nudge()?;
         }
         let selector = self.u8()?;
+        self.check_v2_selector(start, selector)?;
         let first = self.u8()?;
         // MTEF 5 writes a two-byte variation when the high bit is set.
         let variation = if self.v5 && first & 0x80 != 0 {
@@ -2122,6 +2140,7 @@ impl<'a> Decoder<'a> {
     /// Apply one embellishment (MTEFv5.md "EMBELL record"; MTEF 3 defines
     /// types 2 to 20 with the same meaning).
     fn embellish(&mut self, base: NodeId, kind: u8, offset: usize) -> Result<NodeId> {
+        self.check_v2_embellishment(offset, kind)?;
         if !self.v5 && kind > 20 {
             self.recover(
                 offset,

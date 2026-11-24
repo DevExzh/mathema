@@ -30,7 +30,7 @@ fn fixtures() -> Vec<(String, Vec<u8>)> {
 
 /// Every fixture, written with the version and product it declares, reads
 /// back to the same AST and header identity, and writing it again gives the
-/// same bytes.
+/// same bytes. MTEF 2 and 4 fixtures are written as MTEF 3 or 5.
 #[test]
 fn fixtures_round_trip_as_the_same_kind_of_object() {
     for (name, bytes) in fixtures() {
@@ -41,6 +41,20 @@ fn fixtures_round_trip_as_the_same_kind_of_object() {
         let back = from_mtef_bytes(&written).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(back.expr(), original.expr(), "{name}");
         let back_info = back.mtef_info().unwrap();
+        if matches!(info.version, MtefVersion::V2 | MtefVersion::V4) {
+            // MTEF 2 and 4 are not written: Equation Editor equations become
+            // Equation Editor 3 ones, MathType equations MathType 6 ones.
+            let expected = if info.product == mathema::MtefProduct::EquationEditor {
+                MtefVersion::V3
+            } else {
+                MtefVersion::V5
+            };
+            assert_eq!(back_info.version, expected, "{name}");
+            assert_eq!(back_info.product, options.product, "{name}");
+            assert_eq!(back_info.ole_header.is_some(), info.ole_header.is_some());
+            assert_eq!(back.to_mtef_bytes(&options).unwrap(), written, "{name}");
+            continue;
+        }
         assert_eq!(back_info.version, info.version, "{name}");
         assert_eq!(back_info.product, info.product, "{name}");
         assert_eq!(back_info.product_version, info.product_version, "{name}");

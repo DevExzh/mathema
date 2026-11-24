@@ -52,6 +52,9 @@ pub struct MtefWriter;
 /// an equation that was read from MTEF, so that an updated OLE object keeps
 /// its kind.
 ///
+/// Only MTEF 3 and 5 are written. MTEF 2 and 4 are read only: options for
+/// either write MTEF 5.
+///
 /// ```
 /// use mathema::{MtefVersion, MtefWriteOptions};
 ///
@@ -67,7 +70,8 @@ pub struct MtefWriter;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct MtefWriteOptions {
-    /// The MTEF version to write.
+    /// The MTEF version to write: [`MtefVersion::V3`] writes MTEF 3, any
+    /// other version MTEF 5.
     pub version: MtefVersion,
     /// Whether to precede the MTEF data with the `EQNOLEFILEHDR` of an OLE
     /// `Equation Native` stream.
@@ -91,7 +95,8 @@ impl Default for MtefWriteOptions {
 impl MtefWriteOptions {
     /// Options for `version` with the product identity the applications
     /// write: MathType 6.0 (`DSMT6`) for MTEF 5, Equation Editor 3.0 (header
-    /// version 3, subversion 10) for MTEF 3. No OLE header.
+    /// version 3, subversion 10) for MTEF 3. No OLE header. MTEF 2 and 4,
+    /// which are not written, get the MTEF 5 options.
     #[must_use]
     pub fn new(version: MtefVersion) -> Self {
         match version {
@@ -119,6 +124,11 @@ impl MtefWriteOptions {
     /// key, and an OLE header when the input had one. The platform is always
     /// written as Windows, whose character encoding the writer uses.
     ///
+    /// MTEF 2 and 4 are not written: an equation read from either is written
+    /// as an Equation Editor 3.0 equation (MTEF 3) when Equation Editor
+    /// generated it, else as a MathType 6 equation (MTEF 5), with the OLE
+    /// header kept as above.
+    ///
     /// ```
     /// use mathema::{MtefVersion, MtefWriteOptions};
     ///
@@ -132,6 +142,14 @@ impl MtefWriteOptions {
     /// ```
     #[must_use]
     pub fn from_info(info: &MtefInfo) -> Self {
+        if matches!(info.version, MtefVersion::V2 | MtefVersion::V4) {
+            let version = if info.product == MtefProduct::EquationEditor {
+                MtefVersion::V3
+            } else {
+                MtefVersion::V5
+            };
+            return Self::new(version).with_ole_header(info.ole_header.is_some());
+        }
         let defaults = Self::new(info.version);
         Self {
             version: defaults.version,

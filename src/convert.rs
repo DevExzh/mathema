@@ -424,8 +424,9 @@ pub fn from_mtef_with(input: &str, config: &Config) -> Result<ConvertResult> {
 
 /// Parse binary MTEF data into a reusable conversion result.
 ///
-/// Accepts bare MTEF 3 (Equation Editor 3.x) or MTEF 5 (MathType 4 and later)
-/// data, or the contents of an OLE `Equation Native` stream, whose 28-byte
+/// Accepts bare MTEF 2 (Equation Editor 1.x and 2.x, MathType 3.0), MTEF 3
+/// (Equation Editor 3.x), MTEF 4 (MathType 3.5) or MTEF 5 (MathType 4 and
+/// later) data, or the contents of an OLE `Equation Native` stream, whose 28-byte
 /// `EQNOLEFILEHDR` is detected and validated. The result is normalized and
 /// depth-checked exactly as [`convert`] does, and
 /// [`ConvertResult::mtef_info`] reports the version and product the input

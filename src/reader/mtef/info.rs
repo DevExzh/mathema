@@ -4,18 +4,26 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MtefVersion {
+    /// MTEF 2, written by Equation Editor 1.x and 2.x and by MathType 3.0.
+    /// Read only: the writer writes MTEF 3 or 5 instead.
+    V2,
     /// MTEF 3, written by Equation Editor 3.x.
     V3,
+    /// MTEF 4, written by MathType 3.5. Read only: the writer writes MTEF 3
+    /// or 5 instead.
+    V4,
     /// MTEF 5, written by MathType 4.0 and later.
     V5,
 }
 
 impl MtefVersion {
-    /// The version number as written in the MTEF header (3 or 5).
+    /// The version number as written in the MTEF header (2 to 5).
     #[must_use]
     pub fn number(self) -> u8 {
         match self {
+            MtefVersion::V2 => 2,
             MtefVersion::V3 => 3,
+            MtefVersion::V4 => 4,
             MtefVersion::V5 => 5,
         }
     }
@@ -112,7 +120,7 @@ pub struct MtefInfo {
     /// The application key of an MTEF 5 stream (for example `DSMT6`).
     pub application_key: Option<String>,
     /// Whether an MTEF 5 stream marks the equation as inline (`Some(true)`)
-    /// or display (`Some(false)`). MTEF 3 does not record this.
+    /// or display (`Some(false)`). MTEF 2 to 4 do not record this.
     pub inline: Option<bool>,
     /// The OLE header, when the input was an `Equation Native` stream.
     pub ole_header: Option<OleHeader>,

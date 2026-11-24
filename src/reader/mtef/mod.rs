@@ -1,6 +1,7 @@
 //! MTEF reader: MathType's binary equation format, versions 3 (Equation
 //! Editor 3.x) and 5 (MathType 4 and later), as specified in `MTEFv3.md` and
-//! `MTEFv5.md`.
+//! `MTEFv5.md`, and versions 2 (Equation Editor 1.x and 2.x, MathType 3.0)
+//! and 4 (MathType 3.5), which are MTEF 3 with 8-bit characters (`docs/mtef-legacy.md`).
 //!
 //! Input is either bare MTEF data or an OLE `Equation Native` stream, which
 //! starts with a 28-byte `EQNOLEFILEHDR`. The [`Reader`] implementation takes

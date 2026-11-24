@@ -64,6 +64,23 @@ unmodified stream; the table names the corpus archive and its member.
 | `v3-govdocs-leading-script.bin` (OLE) | `zipfiles/321.zip` | `321/321609.ppt` | 3 | leading-script template with nothing to lead |
 | `v5-govdocs-colour.bin` (OLE) | `zipfiles/700.zip` | `700/700515.ppt` | 5 | COLOR_DEF and COLOR records |
 
+## From govdocs1 (MTEF 2 and 4)
+
+More `Equation Native` streams (*OLE*) from govdocs1, copied byte for byte
+with the slack some have after the equation. All but
+`v2-win-matrix-slack.bin` were compared with the picture of the equation their
+document stores (a WMF for `v2-win-mt-extra-slack.bin`, showing
+`L_g = 0.2ℓ(ℓn 155ℓ/d)`).
+
+| File | Source zip | Member | Stream | Header | Exercises |
+| --- | --- | --- | --- | --- | --- |
+| `v2-mac-prime-integral.bin` | `zipfiles/822.zip` | `822/822775.ppt` | `Equation Native` (PowerPoint offset 563906) | 2, Mac, Equation Editor (product version 11.0) | primes written as 0xA9, integral with limits, fraction, fnSPACE spaces |
+| `v2-mac-roman-underbraces.bin` | `zipfiles/990.zip` | `990/990293.ppt` | `Equation Native` (PowerPoint offset 256272) | 2, Mac, Equation Editor (product version 10.0) | Mac OS Roman text (`é` as 0x8E; the source spells "Affvén"), underbraces with labels, vector-style run |
+| `v2-win-matrix-slack.bin` | `zipfiles/773.zip` | `773/773208.ppt` | `ObjectPool/_974258288/Equation Native` (PowerPoint offset 87810) | 2, Windows, Equation Editor 2.1 | fraction, bracketed matrix, slack after the final END |
+| `v2-win-mt-extra-slack.bin` | `zipfiles/127.zip` | `127/127720.doc` | `ObjectPool/_888210011/Equation Native` | 2, Windows, Equation Editor 2.0 | MT Extra `ℓ` (0x6C), subscript, fraction, 13 bytes of slack |
+| `v4-hbar-root.bin` | `zipfiles/802.zip` | `802/802062.ppt` | `Equation Native` (PowerPoint offset 460176) | 4, Mac, MathType 3.7 | MT Extra `ℏ` (0x68), root, fence, scripts |
+| `v4-embellishments.bin` | `zipfiles/983.zip` | `983/983458.ppt` | `Equation Native` (PowerPoint offset 244527) | 4, Mac, MathType 3.7 | dot, double-dot and bar embellishments without the MTEF 3 zero byte, angle brackets |
+
 ## From MIT-licensed test suites
 
 The `upstream-*` files cover structures the document above does not use. They

@@ -76,8 +76,12 @@ fn fixtures_report_their_version_and_header() {
     for (name, bytes) in fixtures() {
         let result = from_mtef_bytes(&bytes).unwrap();
         let info = result.mtef_info().unwrap();
-        let expected = if name.contains("v3-") {
+        let expected = if name.contains("v2-") {
+            MtefVersion::V2
+        } else if name.contains("v3-") {
             MtefVersion::V3
+        } else if name.contains("v4-") {
+            MtefVersion::V4
         } else {
             MtefVersion::V5
         };
@@ -243,23 +247,27 @@ fn corpus() {
         Path::new(&dir).display()
     );
     let mut failures = Vec::new();
-    let (mut v3, mut v5) = (0, 0);
+    let mut versions = [0usize; 6];
     for path in &files {
         let bytes = std::fs::read(path).unwrap();
         match from_mtef_bytes(&bytes) {
             Ok(result) if result.compact_expr().roots.is_empty() => {
                 failures.push(format!("{}: empty result", path.display()));
             },
-            Ok(result) => match result.mtef_info().map(|i| i.version) {
-                Some(MtefVersion::V3) => v3 += 1,
-                _ => v5 += 1,
+            Ok(result) => {
+                let version = result.mtef_info().map_or(0, |i| i.version.number());
+                versions[usize::from(version).min(5)] += 1;
             },
             Err(e) => failures.push(format!("{}: {e}", path.display())),
         }
     }
     eprintln!(
-        "MTEF corpus: {} files, {v3} MTEF 3, {v5} MTEF 5, {} failures",
+        "MTEF corpus: {} files, {} MTEF 2, {} MTEF 3, {} MTEF 4, {} MTEF 5, {} failures",
         files.len(),
+        versions[2],
+        versions[3],
+        versions[4],
+        versions[5],
         failures.len()
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
