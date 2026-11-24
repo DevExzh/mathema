@@ -407,7 +407,10 @@ impl LatexCompactParser {
     /// by an infix marker. Real groups resolve their own fractions before
     /// returning, so only the immediate row needs to be spliced into its
     /// enclosing list.
-    fn flatten_infix_marker_rows(&self, ids: SmallVec<[NodeId; 8]>) -> SmallVec<[NodeId; 8]> {
+    pub(super) fn flatten_infix_marker_rows(
+        &self,
+        ids: SmallVec<[NodeId; 8]>,
+    ) -> SmallVec<[NodeId; 8]> {
         if self.infix_markers.is_empty() {
             return ids;
         }

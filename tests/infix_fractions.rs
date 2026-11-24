@@ -416,7 +416,9 @@ fn color_switch_does_not_scope_an_infix_fraction() {
 
 /// A `\color` switch in a `\left…\right` list stays in force across a
 /// `\middle` to the end of the fence, as in TeX and KaTeX; the delimiter
-/// stays the fence's own child.
+/// stays the fence's own child (uncolored, unlike TeX and KaTeX: a known
+/// gap). Across an infix command the color stays in force on both sides, as
+/// in TeX; KaTeX colors only the numerator side.
 #[test]
 fn color_switch_continues_across_middle() {
     for (input, equivalent) in [
@@ -443,6 +445,25 @@ fn color_switch_continues_across_middle() {
         ),
         // Outside a fence `\middle` is a plain delimiter.
         (r"\color{red} a \middle| c", r"\textcolor{red}{a|c}"),
+        // A fraction after a resumed color divides the whole fence list,
+        // however the switches nest.
+        (
+            r"\left( \color{red} a \middle| \color{blue} b \over c \right)",
+            r"\left( \frac{\textcolor{red}{a}\middle|\textcolor{red}{\textcolor{blue}{b}}}{\textcolor{red}{\textcolor{blue}{c}}} \right)",
+        ),
+        (
+            r"\left( \color{red} a \middle| \bf b \over c \right)",
+            r"\left( \frac{\textcolor{red}{a}\middle|\textcolor{red}{\mathbf{b}}}{\textcolor{red}{\mathbf{c}}} \right)",
+        ),
+        (
+            r"x \color{red} a \color{blue} b \over c",
+            r"\frac{x\textcolor{red}{a\textcolor{blue}{b}}}{\textcolor{red}{\textcolor{blue}{c}}}",
+        ),
+        // A `\middle` in a colored part keeps the barless fraction's fence.
+        (
+            r"\left( {\color{red} a \middle| b} \atop c \right)",
+            r"\left( \genfrac{}{}{0pt}{}{\textcolor{red}{a\middle|b}}{c} \right)",
+        ),
     ] {
         let result = from_latex(input).unwrap();
         assert_eq!(
@@ -463,6 +484,19 @@ fn color_switch_continues_across_middle() {
         ml.contains(r#"<mstyle mathcolor="red"><mi>c</mi></mstyle>"#),
         "{ml}"
     );
+}
+
+/// One infix command per list holds across nested color switches and a
+/// `\middle`, as in TeX and KaTeX.
+#[test]
+fn second_infix_command_after_nested_color_is_ambiguous() {
+    for input in [
+        r"\color{red} a \over b \color{blue} c \over d",
+        r"\left( \color{red} a \over b \middle| \color{blue} c \over d \right)",
+    ] {
+        let message = strict_error(input);
+        assert!(message.contains("ambiguous"), "{input}: {message}");
+    }
 }
 
 /// As in KaTeX and MathJax the `\above` dimension may be braced; a number

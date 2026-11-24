@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`a \over b \over c`) is a strict error ("ambiguous \over after \over:
   you need another { and }"), as in TeX and KaTeX. Lenient warns and, as
   before, lets it divide the denominator (`\frac{a}{\frac{b}{c}}`).
+- **Breaking (behavior):** a second infix fraction command after a
+  `\color` switch read inside another is now also that error
+  (`\color{red} a \over b \color{blue} c \over d`, or one on each side
+  of a `\middle`), as in TeX and KaTeX; it was accepted silently as a
+  nested fraction.
 
 - **Breaking (behavior):** the LaTeX reader takes exactly one TeX token or
   one brace group as a script argument, as TeX, KaTeX and MathJax do. A
@@ -83,6 +88,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A `\color` switch in a `\left…\right` list stays in force across
+  `\middle` to the end of the fence, as in TeX and KaTeX:
+  `\left( \color{red} a \atop b \middle| c \right)` left `c` uncolored.
+  The `\middle` delimiter itself keeps the default color (TeX and KaTeX
+  color it). An infix command after nested color switches divides the
+  whole list, as in TeX: `x \color{red} a \color{blue} b \over c` left `x`
+  outside the fraction. The LaTeX writer keeps the `\left…\right` pair of
+  a barless fraction whose part holds a `\middle` inside a color, instead
+  of writing a `\binom` that does not read back.
 - Infix fraction commands (`\over`, `\atop`, `\above`, `\choose`,
   `\brace`, `\brack`, `\…withdelims`) no longer leak an internal marker:
   `\operatorname{a \over b}` was `<mi>__infix_over__</mi>` in MathML and

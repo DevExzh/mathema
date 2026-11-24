@@ -5020,8 +5020,9 @@ impl LatexCompactParser {
                 ids.push(self.arena.push_node(CompactNode::Middle(sid)));
                 rest = after_delim;
                 // The delimiter stays a child of the fence; the color stays
-                // in force after it (TeX and KaTeX color the rest of the
-                // fence).
+                // in force after it, to the end of the fence, as in TeX and
+                // KaTeX. (Both also color the delimiter itself, which here
+                // keeps the default color: a known gap.)
                 if let Some(color_sid) = color.take() {
                     let (r, run) = self.color_switch_run(color_sid, rest)?;
                     if !run.is_empty() {
@@ -5960,8 +5961,12 @@ impl LatexCompactParser {
         // `\color` opens no group: like a font declaration, it splits
         // around an infix fraction command, which divides the enclosing
         // list (`a \color{red} b \over c` is `\frac{a\color{red}b}{c}`,
-        // as in TeX and KaTeX), the color in force on both sides.
-        self.split_scope_at_infix(ids, |this, run| {
+        // as in TeX and KaTeX), the color in force on both sides as in TeX
+        // (KaTeX colors only the numerator side). A switch or declaration
+        // read inside this one has already split its own run: splice its
+        // row so the command divides this list, not that run alone.
+        let ids = self.flatten_infix_marker_rows(SmallVec::from_slice(ids));
+        self.split_scope_at_infix(&ids, |this, run| {
             let content = this.flatten_single(run);
             this.arena.push_node(CompactNode::Color {
                 color: color_sid,

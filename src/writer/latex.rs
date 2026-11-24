@@ -2990,8 +2990,8 @@ fn row_contains_style_switch(arena: &AstArena, span: NodeSpan, depth: usize) -> 
         })
 }
 
-/// Whether `id` is a `\middle`, or a row or styled run holding one outside
-/// any nested fence.
+/// Whether `id` is a `\middle`, or a row, styled run or color holding one
+/// outside any nested fence.
 fn holds_middle(arena: &AstArena, id: NodeId) -> bool {
     let mut stack = vec![id];
     while let Some(id) = stack.pop() {
@@ -3000,6 +3000,7 @@ fn holds_middle(arena: &AstArena, id: NodeId) -> bool {
             CompactNode::Row(span) | CompactNode::Styled(_, span) => {
                 stack.extend_from_slice(arena.children(span));
             },
+            CompactNode::Color { content, .. } => stack.push(content),
             _ => {},
         }
     }
