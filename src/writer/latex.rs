@@ -2633,7 +2633,8 @@ fn is_tex_special(ch: char) -> bool {
 /// `\underset` annotation. A TeX special character takes its command
 /// spelling where LaTeX has one (`\{`, `\%`, `\backslash`, …), which every
 /// engine renders as the glyph, and its character token otherwise (`^`,
-/// `~`, and `_`, whose `\_` the LaTeX reader does not take in math). A
+/// `~`, and `_`, kept as its character token although the reader now also
+/// takes `\_` in math, so the spelling stays unchanged). A
 /// quote or a space would not read back as itself either, so it is a
 /// character token too.
 fn write_accent_glyph(buf: &mut String, ch: char) {

@@ -1644,6 +1644,14 @@ fn nom_err_to_latex_error(
     }
 }
 
+/// At most 80 characters of `text` for a message, marked when cut.
+fn shorten(text: &str) -> std::borrow::Cow<'_, str> {
+    match text.char_indices().nth(80) {
+        Some((end, _)) => format!("{}…", &text[..end]).into(),
+        None => text.into(),
+    }
+}
+
 fn expansion_error(failure: ExpansionFailure) -> Error {
     Error::from(match failure {
         ExpansionFailure::OutputBytes { limit } => LatexParseError::ExpansionLimit { limit },
@@ -3943,6 +3951,12 @@ impl LatexCompactParser {
                 let sid = self.arena.push_str("&");
                 CompactNode::Symbol(SymbolKind::Ordinary, sid)
             },
+            // KaTeX (like LaTeX's `\_`) reads `\_` in math as an ordinary
+            // underscore glyph.
+            '_' => {
+                let sid = self.arena.push_str("_");
+                CompactNode::Symbol(SymbolKind::Ordinary, sid)
+            },
             _ => {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
@@ -5170,14 +5184,68 @@ impl LatexCompactParser {
             self.abort = Some(expansion_error(failure));
             nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
         })?;
-        let id = match self.parse_node_list(&processed) {
-            Ok((_, ids)) => self.flatten_single(&ids),
-            Err(_) => {
-                self.check_node_limit();
-                self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))
-            },
+        let failure = match self.parse_node_list(&processed) {
+            Ok(("", ids)) => return Ok((rest, self.flatten_single(&ids))),
+            Ok((unread, _)) => nom_err_to_latex_error(
+                &nom::Err::Error(nom::error::Error::new(
+                    unread,
+                    nom::error::ErrorKind::Verify,
+                )),
+                &processed,
+            ),
+            Err(error) => nom_err_to_latex_error(&error, &processed),
         };
-        Ok((rest, id))
+        if self.check_node_limit() {
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::TooLarge,
+            )));
+        }
+        let source = &input[..input.len() - rest.len()];
+        self.translation_failed(input, name, source, &processed, &failure)
+            .map(|id| (rest, id))
+    }
+
+    /// A package command whose rewrite does not read back (mhchem itself
+    /// writes `\pu{m_2}` as `\mathrm{m_^{2}}`, which TeX rejects): an error
+    /// when strict; otherwise a warning, and the command's source kept as
+    /// text so the input is never dropped silently.
+    #[cold]
+    #[inline(never)]
+    fn translation_failed<'a>(
+        &mut self,
+        input: &'a str,
+        name: &str,
+        source: &str,
+        translation: &str,
+        failure: &LatexParseError,
+    ) -> std::result::Result<NodeId, nom::Err<nom::error::Error<&'a str>>> {
+        let span = self
+            .source_span_of_command(name)
+            .zip(self.source_span_of(source))
+            .map(|(command, argument)| Span::new(command.start, argument.end));
+        let message = format!(
+            "\\{name}{} rewrites to `{}`, which does not parse: {failure}",
+            shorten(source),
+            shorten(translation)
+        );
+        if !self.lenient {
+            self.abort = Some(Error::LatexParse { message, span });
+            return Err(nom::Err::Failure(nom::error::Error::new(
+                input,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message: format!("{message}; kept the source as text"),
+            span,
+        });
+        let text = format!("\\{name}{source}");
+        let sid = self.arena.push_str(&text);
+        Ok(self
+            .arena
+            .push_node(CompactNode::Text(TextStyle::Normal, sid)))
     }
 
     fn parse_cancel<'a>(&mut self, input: &'a str, stroke: StrokeKind) -> IResult<&'a str, NodeId> {

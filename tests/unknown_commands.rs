@@ -247,8 +247,10 @@ fn macros_and_known_commands_are_not_reported() {
 fn a_macro_left_unexpanded_keeps_its_identifier_spelling() {
     // Found by fuzzing: text the preprocessor never sees (here behind a
     // `\verb` inside `\ce`) can hold a builtin macro. Written back as
-    // `\tr` it would expand on the next read, so it stays letters.
-    let input = r"\ce{KaTeX$$d$$\0\verb}$$$d\tr?$$?";
+    // `\tr` it would expand on the next read, so it stays letters. (The
+    // fuzzer's input had `\0` before `\verb`; a `\ce` whose rewrite does not
+    // read back is now an error, so it is left out.)
+    let input = r"\ce{KaTeX$$d$$\verb}$$$d\tr?$$?";
     let parsed = from_latex(input).unwrap();
     assert!(
         parsed
