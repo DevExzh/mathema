@@ -20,11 +20,22 @@ pub fn check_script_args(latex: &str) -> Result<(), String> {
                 // Skip the whole control sequence: a control word, or a
                 // control symbol such as the escaped marker `\_`.
                 i += 1;
+                let word_start = i;
                 if chars.get(i).is_some_and(char::is_ascii_alphabetic) {
                     while chars.get(i).is_some_and(char::is_ascii_alphabetic) {
                         i += 1;
                     }
                 } else {
+                    i += 1;
+                }
+                // `\verb` takes everything up to its delimiter literally.
+                if chars[word_start..i.min(chars.len())] == ['v', 'e', 'r', 'b']
+                    && let Some(&delim) = chars.get(i)
+                {
+                    i += 1;
+                    while chars.get(i).is_some_and(|&ch| ch != delim) {
+                        i += 1;
+                    }
                     i += 1;
                 }
             },
@@ -43,17 +54,24 @@ pub fn check_script_args(latex: &str) -> Result<(), String> {
                     Some('{') => {},
                     Some('\\') => {
                         let mut j = i + 1;
-                        if chars.get(j).is_some_and(char::is_ascii_alphabetic) {
+                        let is_word = chars.get(j).is_some_and(char::is_ascii_alphabetic);
+                        if is_word {
                             while chars.get(j).is_some_and(char::is_ascii_alphabetic) {
                                 j += 1;
                             }
                         } else {
                             j += 1;
                         }
-                        if chars.get(j) == Some(&'{') {
+                        let word: String = chars[i + 1..j.min(chars.len())].iter().collect();
+                        // TeX takes one token either way, but a command such as
+                        // `\mathrm` would take the following group as its
+                        // argument. A command without arguments (`\alpha`,
+                        // `\int`) or a control symbol (`\$`) is followed by
+                        // the next atom.
+                        if is_word && chars.get(j) == Some(&'{') && takes_an_argument(&word) {
                             return violation("control sequence with a group argument");
                         }
-                        if chars[i + 1..j].iter().collect::<String>() == "char" {
+                        if word == "char" {
                             return violation("`\\char` with its character code");
                         }
                     },
@@ -75,4 +93,51 @@ pub fn check_script_args(latex: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Commands the LaTeX writer emits that take a group argument.
+fn takes_an_argument(word: &str) -> bool {
+    word.starts_with("math")
+        || word.starts_with("text")
+        || word.starts_with("over")
+        || word.starts_with("under")
+        || word.starts_with("wide")
+        || matches!(
+            word,
+            "frac"
+                | "dfrac"
+                | "tfrac"
+                | "cfrac"
+                | "binom"
+                | "sqrt"
+                | "operatorname"
+                | "boldsymbol"
+                | "hat"
+                | "check"
+                | "breve"
+                | "acute"
+                | "grave"
+                | "bar"
+                | "vec"
+                | "dot"
+                | "ddot"
+                | "dddot"
+                | "tilde"
+                | "stackrel"
+                | "color"
+                | "colorbox"
+                | "fcolorbox"
+                | "boxed"
+                | "cancel"
+                | "bcancel"
+                | "xcancel"
+                | "phantom"
+                | "hphantom"
+                | "vphantom"
+                | "smash"
+                | "xrightarrow"
+                | "xleftarrow"
+                | "pmb"
+                | "bm"
+        )
 }

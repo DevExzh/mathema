@@ -36,6 +36,12 @@ fn checker_flags_multi_token_arguments() {
         r"\char`\^22",
         r"x^{\char`\^}",
         r"{}^{\prime}",
+        r"{}_\int{}x",
+        r"x_\${}",
+        r"0^\alpha{0^x}",
+        r"x^\xi{y}",
+        r"0^\alpha{\text{x}}^{0}",
+        r"\verb|x^22|",
     ] {
         assert!(check_script_args(good).is_ok(), "{good}");
     }
