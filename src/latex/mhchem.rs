@@ -28,7 +28,8 @@
 //!   true left super/subscripts (an `<mmultiscripts>`/`<mprescripts>`).
 //!
 //! Deferred (documented, not implemented): electron dots, complex bond
-//! geometry / Lewis structures, advanced `\pu` unit algebra.
+//! geometry / Lewis structures. `\pu` is a full port of mhchem's unit
+//! grammar (see the `pu` submodule).
 
 /// Capture a balanced `{ ... }` group at the start of `input` (after optional
 /// leading whitespace).
@@ -72,221 +73,16 @@ pub fn ce_to_latex(body: &str) -> String {
         out: String::with_capacity(body.len() * 4 + 8),
         had_space: false,
         last: Kind::Start,
+        scripts: Scripts::default(),
+        scripted: false,
     };
     t.run();
     t.out
 }
 
-/// Translate a `\pu{...}` physical-units body into standard LaTeX.
-///
-/// Best-effort: a leading numeric token stays normal size; remaining
-/// whitespace-separated tokens render upright with thin spaces between them.
-/// Inside a unit token the rules follow mhchem's `pu-2` grammar (see
-/// [`push_unit_token`]), including its failures: `\pu{m_2}` translates to
-/// `\mathrm{m_^{2}}` exactly as mhchem does, which neither TeX nor this
-/// reader accepts, so the caller reports it instead of rendering nothing.
-#[must_use]
-pub fn pu_to_latex(body: &str) -> String {
-    let mut out = String::with_capacity(body.len() * 3 + 4);
-    push_pu(&mut out, body, 0);
-    out
-}
+mod pu;
 
-/// How deeply `\pu{{{…}}}` unit groups are unwrapped (mhchem re-reads a unit
-/// that is one braced group as a `\pu` body); deeper groups are kept as they
-/// are, so adversarial nesting cannot exhaust the stack.
-const MAX_PU_GROUP_DEPTH: usize = 16;
-
-fn push_pu(out: &mut String, body: &str, depth: usize) {
-    for (idx, tok) in pu_tokens(body).enumerate() {
-        if idx > 0 {
-            out.push_str("\\,");
-        }
-        if is_number(tok) {
-            out.push_str(tok);
-        } else {
-            push_unit_token(out, tok, depth);
-        }
-    }
-}
-
-/// Split a `\pu` body at the whitespace outside braces, so a braced unit
-/// such as `{kg m}2` stays one token.
-fn pu_tokens(body: &str) -> impl Iterator<Item = &str> {
-    let mut rest = body;
-    std::iter::from_fn(move || {
-        rest = rest.trim_start();
-        if rest.is_empty() {
-            return None;
-        }
-        let mut depth = 0usize;
-        let mut escaped = false;
-        let mut end = rest.len();
-        for (i, c) in rest.char_indices() {
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match c {
-                '\\' => escaped = true,
-                '{' => depth += 1,
-                '}' => depth = depth.saturating_sub(1),
-                c if c.is_whitespace() && depth == 0 => {
-                    end = i;
-                    break;
-                },
-                _ => {},
-            }
-        }
-        let (tok, after) = rest.split_at(end);
-        rest = after;
-        Some(tok)
-    })
-}
-
-/// Push one `\pu` unit token, following mhchem's `pu-2` state machine:
-///
-/// * `*` and `.` multiply: `kg.m` is `\mathrm{kg}·\mathrm{m}`.
-/// * A number after unit text is its exponent, written braced (`m2`, `s-1`,
-///   `m^22`, `mol^-1` raise the whole number); `^{…}` there is copied
-///   braced. After a number (or at the start) a digit run stays literal.
-/// * Everything else, `_` and a `^` that starts no exponent included, is
-///   copied into the `\mathrm{}` as TeX, so `a_b` is a subscript and
-///   `m^2^3` is the double superscript mhchem writes too.
-///
-/// `°C`, `^oC` and `^{o}C` (and `F`) become `{}^{\circ}C`, as in mhchem.
-fn push_unit_token(out: &mut String, tok: &str, depth: usize) {
-    let degrees;
-    let tok = if tok.contains(['°', '^']) {
-        degrees = replace_degrees(tok);
-        degrees.as_str()
-    } else {
-        tok
-    };
-    let mut run = String::with_capacity(tok.len() + 8);
-    // `true` after unit text (mhchem's state `1`), where a number is an
-    // exponent; `false` at the start and after a number (state `0`).
-    let mut after_unit = false;
-    let mut rest = tok;
-    while let Some(c) = rest.chars().next() {
-        if matches!(c, '*' | '.') {
-            push_unit_run(out, &run, depth);
-            run.clear();
-            out.push_str("\\mkern1mu{\\cdot}\\mkern1mu ");
-            after_unit = false;
-            rest = &rest[1..];
-            continue;
-        }
-        if c == '\\' {
-            // A control word or symbol is copied whole and leaves the state
-            // as it was (`m\alpha2` raises the 2, `\alpha2` does not).
-            let after = &rest[1..];
-            let len = match after.chars().next() {
-                Some(n) if n.is_ascii_alphabetic() => {
-                    after.bytes().take_while(u8::is_ascii_alphabetic).count()
-                },
-                Some(n) => n.len_utf8(),
-                None => 0,
-            };
-            run.push_str(&rest[..=len]);
-            rest = &after[len..];
-            continue;
-        }
-        if after_unit && let Some(after) = rest.strip_prefix('^') {
-            if after.starts_with('{')
-                && let Some((tail, inner)) = capture_braced(after)
-            {
-                run.push_str("^{");
-                run.push_str(inner);
-                run.push('}');
-                rest = tail;
-                continue;
-            }
-            let sign = usize::from(after.starts_with('-'));
-            let digits = after[sign..].bytes().take_while(u8::is_ascii_digit).count();
-            if digits > 0 {
-                run.push_str("^{");
-                run.push_str(&after[..sign + digits]);
-                run.push('}');
-                rest = &after[sign + digits..];
-                continue;
-            }
-        }
-        if let Some(len) = number_len(rest) {
-            if after_unit {
-                run.push_str("^{");
-                run.push_str(&rest[..len]);
-                run.push('}');
-            } else {
-                run.push_str(&rest[..len]);
-            }
-            after_unit = false;
-            rest = &rest[len..];
-            continue;
-        }
-        if c == '{'
-            && let Some((tail, _)) = capture_braced(rest)
-        {
-            run.push_str(&rest[..rest.len() - tail.len()]);
-            rest = tail;
-        } else {
-            push_escaped_char(&mut run, c);
-            rest = &rest[c.len_utf8()..];
-        }
-        after_unit = true;
-    }
-    push_unit_run(out, &run, depth);
-}
-
-/// Write one run of unit text between multiplication dots: upright, or, when
-/// it is a single braced group, its content re-read as a `\pu` body (with no
-/// group of its own), as mhchem does.
-fn push_unit_run(out: &mut String, run: &str, depth: usize) {
-    if run.is_empty() {
-        return;
-    }
-    if depth < MAX_PU_GROUP_DEPTH
-        && let Some(("", inner)) = capture_braced(run)
-        && run.starts_with('{')
-    {
-        push_pu(out, inner, depth + 1);
-        return;
-    }
-    out.push_str("\\mathrm{");
-    out.push_str(run);
-    out.push('}');
-}
-
-/// mhchem's degree spellings, rewritten before a unit is read.
-fn replace_degrees(tok: &str) -> String {
-    let mut s = tok.to_owned();
-    for unit in ["C", "F"] {
-        for spelling in ["\u{00B0}", "^o", "^{o}"] {
-            s = s.replace(
-                &format!("{spelling}{unit}"),
-                &format!("{{}}^{{\\circ}}{unit}"),
-            );
-        }
-    }
-    s
-}
-
-/// The length of mhchem's `-9.,9` number at the start of `s`:
-/// `[+-]?(?:[0-9]+(?:[,.][0-9]+)?|[0-9]*\.[0-9]+)`.
-fn number_len(s: &str) -> Option<usize> {
-    let b = s.as_bytes();
-    let mut i = usize::from(matches!(b.first(), Some(b'+' | b'-')));
-    let digits = |from: usize| b[from..].iter().take_while(|c| c.is_ascii_digit()).count();
-    let int = digits(i);
-    i += int;
-    if matches!(b.get(i), Some(b',' | b'.')) && (b[i] == b'.' || int > 0) {
-        let frac = digits(i + 1);
-        if frac > 0 {
-            return Some(i + 1 + frac);
-        }
-    }
-    (int > 0).then_some(i)
-}
+pub use pu::pu_to_latex;
 
 /// What the most recently emitted token was, for spacing / subscript decisions.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -308,6 +104,32 @@ struct Translator {
     /// Whitespace was seen since the last emitted token.
     had_space: bool,
     last: Kind,
+    /// The scripts already on the current base.
+    scripts: Scripts,
+    /// The step just taken emitted a script (so the base is unchanged).
+    scripted: bool,
+}
+
+/// The scripts on the current base. TeX takes one subscript and one
+/// superscript per base, so a further one goes on a new empty base, as
+/// mhchem writes it (`H2_{(aq)}` is `H_{2}{\vphantom{X}}_{(aq)}`).
+#[derive(Clone, Copy, Default)]
+struct Scripts {
+    sub: bool,
+    sup: bool,
+    /// The output ends with a superscript, into which a following bare one
+    /// merges, as mhchem's charge does: `A^2^+` is `A^{2+}`, `Y^{99}+` is
+    /// `Y^{99+}` (a braced one starts a new group: `A^2^{+}`).
+    open_sup: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Script {
+    Sub,
+    /// A superscript written in braces: a new group, never merged.
+    BracedSup,
+    /// A bare superscript or charge: merged into a preceding superscript.
+    Sup,
 }
 
 impl Translator {
@@ -319,46 +141,94 @@ impl Translator {
                 self.i += 1;
                 continue;
             }
-            if self.try_arrow() {
-                continue;
+            self.scripted = false;
+            self.step(c);
+            if !self.scripted {
+                self.scripts = Scripts::default();
             }
-            // Isotope left pre-scripts: a `^`/`_` at the *start* of a species
-            // (before its element letters) is a mass/atomic-number pre-script,
-            // not a gas marker or empty-base subscript.
-            if matches!(c, '^' | '_') && self.try_prescript() {
-                continue;
-            }
-            match c {
-                '\\' => self.read_command(),
-                '$' => self.read_math(),
-                '(' | '[' => self.open_delim(c),
-                ')' | ']' => self.close_delim(c),
-                '{' | '}' => self.i += 1, // bare braces: ignore grouping hints
-                '+' => self.plus(),
-                '-' => self.minus(),
-                '=' => self.bond("="),
-                '#' => self.bond("\\equiv "),
-                '~' => self.bond("-"), // mhchem single bond variant
-                '^' => self.caret(),
-                '_' => self.underscore(),
-                'v' if self.standalone_marker() => self.gas_marker("\\downarrow "),
-                '*' | '.' => {
-                    // adduct dot (e.g. hydrate `*`); render as a centered dot
-                    self.out.push_str("{}\\cdot{}");
-                    self.last = Kind::Op;
-                    self.had_space = false;
-                    self.i += 1;
-                },
-                c if c.is_ascii_digit() => self.number(),
-                c if c.is_ascii_alphabetic() => self.letters(),
-                other => {
-                    self.value_space();
-                    push_escaped_char(&mut self.out, other);
-                    self.last = Kind::Atom;
-                    self.had_space = false;
-                    self.i += 1;
-                },
-            }
+        }
+    }
+
+    /// Start a script of `kind` on the current base, or on a new empty base
+    /// when the current one has that script already; a bare superscript
+    /// reopens the open one instead. [`Self::end_script`] closes it.
+    fn begin_script(&mut self, kind: Script) {
+        self.scripted = true;
+        if kind == Script::Sup && self.scripts.open_sup && self.out.ends_with('}') {
+            self.out.pop();
+            return;
+        }
+        let taken = if kind == Script::Sub {
+            self.scripts.sub
+        } else {
+            self.scripts.sup
+        };
+        if taken {
+            self.out.push_str("{\\vphantom{X}}");
+            self.scripts = Scripts::default();
+        }
+        if kind == Script::Sub {
+            self.scripts.sub = true;
+            self.out.push_str("_{");
+        } else {
+            self.scripts.sup = true;
+            self.out.push_str("^{");
+        }
+    }
+
+    /// Close the script [`Self::begin_script`] opened (or merged into).
+    fn end_script(&mut self, kind: Script) {
+        self.out.push('}');
+        self.scripts.open_sup = kind != Script::Sub;
+    }
+
+    /// Write a whole script `^{body}`/`_{body}`.
+    fn script(&mut self, kind: Script, body: &str) {
+        self.begin_script(kind);
+        self.out.push_str(body);
+        self.end_script(kind);
+    }
+
+    fn step(&mut self, c: char) {
+        if self.try_arrow() {
+            return;
+        }
+        // Isotope left pre-scripts: a `^`/`_` at the *start* of a species
+        // (before its element letters) is a mass/atomic-number pre-script,
+        // not a gas marker or empty-base subscript.
+        if matches!(c, '^' | '_') && self.try_prescript() {
+            return;
+        }
+        match c {
+            '\\' => self.read_command(),
+            '$' => self.read_math(),
+            '(' | '[' => self.open_delim(c),
+            ')' | ']' => self.close_delim(c),
+            '{' | '}' => self.i += 1, // bare braces: ignore grouping hints
+            '+' => self.plus(),
+            '-' => self.minus(),
+            '=' => self.bond("="),
+            '#' => self.bond("\\equiv "),
+            '~' => self.bond("-"), // mhchem single bond variant
+            '^' => self.caret(),
+            '_' => self.underscore(),
+            'v' if self.standalone_marker() => self.gas_marker("\\downarrow "),
+            '*' | '.' => {
+                // adduct dot (e.g. hydrate `*`); render as a centered dot
+                self.out.push_str("{}\\cdot{}");
+                self.last = Kind::Op;
+                self.had_space = false;
+                self.i += 1;
+            },
+            c if c.is_ascii_digit() => self.number(),
+            c if c.is_ascii_alphabetic() => self.letters(),
+            other => {
+                self.value_space();
+                push_escaped_char(&mut self.out, other);
+                self.last = Kind::Atom;
+                self.had_space = false;
+                self.i += 1;
+            },
         }
     }
 
@@ -417,9 +287,7 @@ impl Translator {
         if self.last == Kind::Atom && !self.had_space {
             // Count → subscript.
             let digits = self.read_digits();
-            self.out.push_str("_{");
-            self.out.push_str(&digits);
-            self.out.push('}');
+            self.script(Script::Sub, &digits);
             self.last = Kind::Atom;
             return;
         }
@@ -497,7 +365,7 @@ impl Translator {
 
     fn plus(&mut self) {
         if self.last == Kind::Atom && !self.had_space {
-            self.out.push_str("^{+}"); // trailing charge
+            self.script(Script::Sup, "+"); // trailing charge
             self.last = Kind::Atom;
         } else {
             self.out.push_str("{}+{}"); // binary operator between species
@@ -522,7 +390,7 @@ impl Translator {
                 self.out.push_str("{-}"); // bond
                 self.last = Kind::Start;
             } else {
-                self.out.push_str("^{-}"); // trailing charge
+                self.script(Script::Sup, "-"); // trailing charge
                 self.last = Kind::Atom;
             }
         } else {
@@ -656,8 +524,13 @@ impl Translator {
             return;
         }
         self.i += 1; // consume '^'
-        self.out.push_str("^{");
-        if self.peek(0) == Some('{') {
+        let kind = if self.peek(0) == Some('{') {
+            Script::BracedSup
+        } else {
+            Script::Sup
+        };
+        self.begin_script(kind);
+        if kind == Script::BracedSup {
             self.i += 1;
             self.copy_braced();
         } else {
@@ -672,14 +545,14 @@ impl Translator {
                 self.out.push(c);
             }
         }
-        self.out.push('}');
+        self.end_script(kind);
         self.last = Kind::Atom;
         self.had_space = false;
     }
 
     fn underscore(&mut self) {
         self.i += 1; // consume '_'
-        self.out.push_str("_{");
+        self.begin_script(Script::Sub);
         if self.peek(0) == Some('{') {
             self.i += 1;
             self.copy_braced();
@@ -687,7 +560,7 @@ impl Translator {
             let digits = self.read_digits();
             self.out.push_str(&digits);
         }
-        self.out.push('}');
+        self.end_script(Script::Sub);
         self.last = Kind::Atom;
         self.had_space = false;
     }
@@ -865,19 +738,6 @@ impl Translator {
         self.i = j + 1; // consume through ']'
         Some(label)
     }
-}
-
-#[inline]
-fn is_number(tok: &str) -> bool {
-    let mut seen_digit = false;
-    for c in tok.chars() {
-        match c {
-            '0'..='9' => seen_digit = true,
-            '.' | '+' | '-' | 'e' | 'E' => {},
-            _ => return false,
-        }
-    }
-    seen_digit
 }
 
 /// Push a single char into a `\mathrm{}` body, escaping the LaTeX specials

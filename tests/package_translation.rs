@@ -72,34 +72,114 @@ fn failed_rewrite_warning_spans_the_command() {
     assert_eq!(&input[span.start..span.end], r"\pu{m_2}");
 }
 
-/// mhchem's `pu-2` unit grammar, compared with its KaTeX output.
+/// Each `\pu` input reads as what KaTeX 0.16.47's mhchem writes for it
+/// (the second column, copied from KaTeX), with no diagnostics. The
+/// translation itself is compared byte for byte in `mhchem::pu`'s tests.
 #[test]
-fn pu_units_follow_mhchem() {
-    for (input, expected) in [
-        // `_` is a TeX subscript, as mhchem copies it.
-        (r"\pu{a_b}", r"\mathrm{a_{b}}"),
-        (r"\pu{m_{2}}", r"\mathrm{m_{2}}"),
-        // A number after unit text is its exponent.
-        (r"\pu{m2}", r"\mathrm{m^{2}}"),
+fn pu_reads_as_katex_mhchem_writes() {
+    for (input, katex) in [
+        // A number with a power or an exponent is read before the units.
+        (
+            r"\pu{3 \times 10^8 m s-1}",
+            r"{3\times 10^{8}~\mathrm{m}\mkern3mu \mathrm{s^{-1}}}",
+        ),
+        (
+            r"\pu{6.02 \times 10^23 mol-1}",
+            r"{6.02\times 10^{23}~\mathrm{mol^{-1}}}",
+        ),
+        (r"\pu{10^3 m}", r"{10^{3}~\mathrm{m}}"),
+        (r"\pu{1.2*10^3 m}", r"{1.2\cdot 10^{3}~\mathrm{m}}"),
+        (r"\pu{^2 H}", r"{^{2}~\mathrm{H}}"),
+        (r"\pu{10^{3}5}", r"{10^{{3}}~\mathrm{5}}"),
+        (r"\pu{2^{10} B}", r"{2^{{10}}~\mathrm{B}}"),
+        (r"\pu{1.2(3) m}", r"{1.2(3)~\mathrm{m}}"),
+        (r"\pu{1.2(3)e-4 m}", r"{1.2(3)\cdot 10^{-4}~\mathrm{m}}"),
+        (r"\pu{1E5 Pa}", r"{1\times 10^{5}~\mathrm{Pa}}"),
+        (
+            r"\pu{12345.67891 J}",
+            r"{12\mkern2mu 345.678\mkern2mu 91~\mathrm{J}}",
+        ),
+        (r"\pu{1 - 2 m}", r"{1-2~\mathrm{m}}"),
+        // Unit text: `_` is a subscript, a number after a unit its exponent.
+        (r"\pu{a_b}", r"{\mathrm{a_b}}"),
+        (r"\pu{x_a2}", r"{\mathrm{x_a^{2}}}"),
         (
             r"\pu{kg m2 s-2}",
-            r"\mathrm{kg}\,\mathrm{m^{2}}\,\mathrm{s^{- 2}}",
+            r"{\mathrm{kg}\mkern3mu \mathrm{m^{2}}\mkern3mu \mathrm{s^{-2}}}",
         ),
-        (r"\pu{x_a2}", r"\mathrm{x_{a}^{2}}"),
-        // An escaped underscore is a glyph; the digits after it still rise.
-        (r"\pu{m\_2}", r"\mathrm{m{\char`\_}^{2}}"),
-        (r"\pu{25 °C}", r"25\,\mathrm{{}^{\circ}C}"),
+        (r"\pu{m\_2}", r"{\mathrm{m\_^{2}}}"),
+        (
+            r"\pu{kg.m}",
+            r"{\mathrm{kg}\mkern1mu{\cdot}\mkern1mu \mathrm{m}}",
+        ),
+        (r"\pu{25 °C}", r"{25~\mathrm{{}^{\circ}C}}"),
+        (r"\pu{kJ/mol}", r"{\mathrm{kJ}/\mathrm{mol}}"),
+        (
+            r"\pu{J/(mol K)}",
+            r"{\mathrm{J}\,/\,(\mathrm{mol}\mkern3mu \mathrm{K)}}",
+        ),
     ] {
-        assert_eq!(latex(input), latex(expected), "{input}");
-        let result = from_latex_with(input, &lenient()).unwrap();
+        let result = from_latex_with(input, &Config::default())
+            .unwrap_or_else(|error| panic!("{input}: {error}"));
         assert!(
             result.diagnostics().is_empty(),
             "{input}: {:?}",
             result.diagnostics()
         );
+        assert_eq!(latex(input), latex(katex), "{input}");
     }
-    let math = mathml(r"\pu{kg.m}");
-    assert!(math.contains('⋅') || math.contains('·'), "{math}");
+}
+
+/// `\ce` gives a base at most one subscript and one superscript, as TeX
+/// requires: a further script goes on a new empty base (mhchem's
+/// `{\vphantom{X}}`), and a bare charge after a superscript joins it, as in
+/// mhchem. These used to render as nothing.
+#[test]
+fn ce_never_writes_a_double_script() {
+    for (input, expected) in [
+        (r"\ce{H2_{(aq)}}", r"{\mathrm{H}}_{2}{\vphantom{X}}_{(aq)}"),
+        (
+            r"\ce{C_6H_6_2}",
+            r"{\mathrm{C}}_{6}{\mathrm{H}}_{6}{\vphantom{X}}_{2}",
+        ),
+        (
+            r"\ce{CO3^2-_2}",
+            r"{\mathrm{CO}}_{3}^{2-}{\vphantom{X}}_{2}",
+        ),
+        (r"\ce{Y^{99}+}", r"{\mathrm{Y}}^{99+}"),
+        (r"\ce{H^+^+}", r"{\mathrm{H}}^{++}"),
+        (r"\ce{A^2^+}", r"{\mathrm{A}}^{2+}"),
+        (r"\ce{Cu^{2+}^{+}}", r"{\mathrm{Cu}}^{2+}{\vphantom{X}}^{+}"),
+        (r"\ce{X^{n}2+}", r"{\mathrm{X}}_{2}^{n}{\vphantom{X}}^{+}"),
+        (
+            r"\ce{A^{+}_22+}",
+            r"{\mathrm{A}}_{22}^{+}{\vphantom{X}}^{+}",
+        ),
+    ] {
+        let result = from_latex_with(input, &Config::default())
+            .unwrap_or_else(|error| panic!("{input}: {error}"));
+        assert!(result.diagnostics().is_empty(), "{input}");
+        assert_eq!(latex(input), latex(expected), "{input}");
+    }
+}
+
+/// A failing rewrite nested in another one reports the inner command.
+#[test]
+fn nested_failed_rewrite_reports_the_inner_command() {
+    let input = r"\dv{\pu{m_2}}{x}";
+    let Err(error) = from_latex_with(input, &Config::default()) else {
+        panic!("{input}: expected an error");
+    };
+    assert!(error.to_string().contains(r"\pu{m_2}"), "{error}");
+    let result = from_latex_with(input, &lenient()).unwrap();
+    let warnings: Vec<_> = result
+        .diagnostics()
+        .iter()
+        .filter(|d| d.message.contains("does not parse"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{:?}", result.diagnostics());
+    assert!(warnings[0].message.starts_with(r"\pu{m_2}"));
+    assert!(result.to_latex().unwrap().contains(r"\frac"));
 }
 
 /// siunitx and physics rewrites that fail to read back are reported too

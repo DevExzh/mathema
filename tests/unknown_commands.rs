@@ -247,11 +247,13 @@ fn macros_and_known_commands_are_not_reported() {
 fn a_macro_left_unexpanded_keeps_its_identifier_spelling() {
     // Found by fuzzing: text the preprocessor never sees (here behind a
     // `\verb` inside `\ce`) can hold a builtin macro. Written back as
-    // `\tr` it would expand on the next read, so it stays letters. (The
-    // fuzzer's input had `\0` before `\verb`; a `\ce` whose rewrite does not
-    // read back is now an error, so it is left out.)
-    let input = r"\ce{KaTeX$$d$$\verb}$$$d\tr?$$?";
-    let parsed = from_latex(input).unwrap();
+    // `\tr` it would expand on the next read, so it stays letters. The
+    // `\ce` rewrite (`…\0\verb`) does not read back, which is an error when
+    // strict, so this is read leniently.
+    let input = r"\ce{KaTeX$$d$$\0\verb}$$$d\tr?$$?";
+    let lenient = keep().with_strictness(Strictness::Lenient);
+    assert!(from_latex(input).is_err());
+    let parsed = from_latex_with(input, &lenient).unwrap();
     assert!(
         parsed
             .diagnostics()
@@ -260,7 +262,7 @@ fn a_macro_left_unexpanded_keeps_its_identifier_spelling() {
         "{:?}",
         parsed.diagnostics()
     );
-    let first = latex(input);
+    let first = convert_with(input, Format::LaTeX, Format::LaTeX, &lenient).unwrap();
     assert!(!first.contains(r"\tr"), "{first}");
     assert_eq!(latex(&first), first);
 }

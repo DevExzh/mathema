@@ -354,12 +354,16 @@ fn bare_ops(math: &str) -> String {
 /// `\pu` raises a whole `^(-?\d+)` exponent, as mhchem does.
 #[test]
 fn pu_exponents_are_braced() {
+    // The second column is what KaTeX's mhchem writes.
     for (input, expected) in [
-        (r"\pu{123 m^22}", r"123\,\mathrm{m^{22}}"),
-        (r"\pu{kJ mol^-1}", r"\mathrm{kJ}\,\mathrm{mo{l}^{- 1}}"),
-        (r"\pu{m^x}", r"\mathrm{m^x}"),
+        (r"\pu{123 m^22}", r"{123~\mathrm{m^{22}}}"),
+        (
+            r"\pu{kJ mol^-1}",
+            r"{\mathrm{kJ}\mkern3mu \mathrm{mol^{-1}}}",
+        ),
+        (r"\pu{m^x}", r"{\mathrm{m^x}}"),
     ] {
-        assert_eq!(latex(input), expected, "{input}");
+        assert_eq!(latex(input), latex(expected), "{input}");
         let result = from_latex_with(input, &lenient()).unwrap();
         assert!(
             result.diagnostics().is_empty(),

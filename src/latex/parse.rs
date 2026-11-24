@@ -5195,10 +5195,14 @@ impl LatexCompactParser {
             ),
             Err(error) => nom_err_to_latex_error(&error, &processed),
         };
-        if self.check_node_limit() {
+        // A pending error wins over this failure: a resource limit, or the
+        // strict error of a rewrite nested in this one (`\dv{\pu{m_2}}{x}`),
+        // which names the innermost command.
+        self.check_node_limit();
+        if self.abort.is_some() {
             return Err(nom::Err::Failure(nom::error::Error::new(
                 input,
-                nom::error::ErrorKind::TooLarge,
+                nom::error::ErrorKind::Verify,
             )));
         }
         let source = &input[..input.len() - rest.len()];
