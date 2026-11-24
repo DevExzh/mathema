@@ -66,8 +66,19 @@ pub fn capture_braced(input: &str) -> Option<(&str, &str)> {
 /// Translate a `\ce{...}` body into an equivalent standard-LaTeX math string.
 #[must_use]
 pub fn ce_to_latex(body: &str) -> String {
+    translate(body, 0)
+}
+
+/// How deeply `\ce`, `\frac`, `\overset` and `\underset` arguments are
+/// read as `\ce` bodies. mhchem recurses without a bound; past this depth
+/// the command is copied as it is, so adversarial input cannot exhaust the
+/// stack.
+const MAX_DEPTH: usize = 16;
+
+fn translate(body: &str, depth: usize) -> String {
     let chars: Vec<char> = body.chars().collect();
     let mut t = Translator {
+        depth,
         chars,
         i: 0,
         out: String::with_capacity(body.len() * 4 + 8),
@@ -75,6 +86,8 @@ pub fn ce_to_latex(body: &str) -> String {
         last: Kind::Start,
         scripts: Scripts::default(),
         scripted: false,
+        base_start: 0,
+        bare_word_end: None,
     };
     t.run();
     t.out
@@ -95,9 +108,16 @@ enum Kind {
     Atom,
     /// An operator / arrow / bond: manages its own spacing.
     Op,
+    /// A control sequence copied as an opaque TeX token (`\text{heat}`,
+    /// `\frac{1}{2}`, `\times`): mhchem's state `3`, where a following digit
+    /// run is an amount, `+` an operator and `-` a bond, but `^`/`_` still
+    /// script the token.
+    Command,
 }
 
 struct Translator {
+    /// How many `\ce` bodies enclose this one.
+    depth: usize,
     chars: Vec<char>,
     i: usize,
     out: String,
@@ -108,6 +128,12 @@ struct Translator {
     scripts: Scripts,
     /// The step just taken emitted a script (so the base is unchanged).
     scripted: bool,
+    /// Where the current base starts in `out`.
+    base_start: usize,
+    /// The end in `out` of a control word copied with no brace group and no
+    /// space after it (`\frac)`): TeX may take the next token as its
+    /// argument, so a script on that token goes on an empty group instead.
+    bare_word_end: Option<usize>,
 }
 
 /// The scripts on the current base. TeX takes one subscript and one
@@ -142,9 +168,11 @@ impl Translator {
                 continue;
             }
             self.scripted = false;
+            let start = self.out.len();
             self.step(c);
             if !self.scripted {
                 self.scripts = Scripts::default();
+                self.base_start = start;
             }
         }
     }
@@ -157,6 +185,12 @@ impl Translator {
         if kind == Script::Sup && self.scripts.open_sup && self.out.ends_with('}') {
             self.out.pop();
             return;
+        }
+        if self.bare_word_end.take() == Some(self.base_start) && self.out.len() > self.base_start {
+            // `\frac)_9` would read `_` as `\frac`'s argument: mhchem
+            // scripts an empty base (`{\vphantom{X}}`), so does this.
+            self.out.push_str("{}");
+            self.scripts = Scripts::default();
         }
         let taken = if kind == Script::Sub {
             self.scripts.sub
@@ -204,7 +238,20 @@ impl Translator {
             '$' => self.read_math(),
             '(' | '[' => self.open_delim(c),
             ')' | ']' => self.close_delim(c),
-            '{' | '}' => self.i += 1, // bare braces: ignore grouping hints
+            // `{}` ends a species (mhchem's `{}`): a number after it is an
+            // amount, not a count (`x1{}0`).
+            '{' if self.peek(1) == Some('}') => {
+                self.i += 2;
+                if self.last != Kind::Op {
+                    self.last = Kind::Start;
+                }
+            },
+            // Other bare braces are grouping hints: ignored, keeping the
+            // current base and its scripts.
+            '{' | '}' => {
+                self.i += 1;
+                self.scripted = true;
+            },
             '+' => self.plus(),
             '-' => self.minus(),
             '=' => self.bond("="),
@@ -225,7 +272,12 @@ impl Translator {
             other => {
                 self.value_space();
                 push_escaped_char(&mut self.out, other);
-                self.last = Kind::Atom;
+                // A Greek letter is element text (mhchem's `letters`); other
+                // characters, like `°` or `/`, are mhchem's `else2`/`others`,
+                // after which a number is an amount (state `3`).
+                let element =
+                    (other.is_ascii() && !matches!(other, '/' | '|')) || is_greek_char(other);
+                self.last = if element { Kind::Atom } else { Kind::Command };
                 self.had_space = false;
                 self.i += 1;
             },
@@ -240,7 +292,7 @@ impl Translator {
     /// Emit a thin space when a whitespace gap separates two formula values.
     #[inline]
     fn value_space(&mut self) {
-        if self.had_space && self.last == Kind::Atom {
+        if self.had_space && matches!(self.last, Kind::Atom | Kind::Command) {
             self.out.push_str("\\;");
         }
     }
@@ -249,7 +301,7 @@ impl Translator {
     /// to a preceding atom (i.e. at start, after an operator, or after a space).
     #[inline]
     fn standalone_marker(&self) -> bool {
-        self.had_space || self.last != Kind::Atom
+        self.had_space || !matches!(self.last, Kind::Atom | Kind::Command)
     }
 
     fn gas_marker(&mut self, arrow: &str) {
@@ -377,7 +429,10 @@ impl Translator {
 
     fn minus(&mut self) {
         let next = self.peek(1);
-        if self.last == Kind::Atom && !self.had_space {
+        if self.last == Kind::Command && !self.had_space {
+            self.out.push_str("{-}"); // bond after a token, as mhchem's state `3`
+            self.last = Kind::Start;
+        } else if self.last == Kind::Atom && !self.had_space {
             // A `-` glued to a preceding species is a *bond* only when it
             // directly joins it to another atom (`A-B`) or a bracket group
             // (`-[...]`). Otherwise the `-` *terminates* the species and is an
@@ -427,7 +482,7 @@ impl Translator {
         // Only meaningful where a `^`/`_` is NOT glued to a preceding atom,
         // i.e. at the very start of a species. A glued `^`/`_` is an ordinary
         // charge / subscript and must be left to `caret()` / `underscore()`.
-        if self.last == Kind::Atom && !self.had_space {
+        if matches!(self.last, Kind::Atom | Kind::Command) && !self.had_space {
             return false;
         }
         let mut j = self.i;
@@ -519,11 +574,19 @@ impl Translator {
     }
 
     fn caret(&mut self) {
-        if self.standalone_marker() {
+        // mhchem's `arrowUpDown`: a `^` not glued to a species, before a
+        // space, the end, or `,;)]}`, is the gas marker.
+        let ends = self
+            .peek(1)
+            .is_none_or(|c| c.is_whitespace() || matches!(c, ',' | ';' | ')' | ']' | '}'));
+        if self.standalone_marker() && ends {
             self.gas_marker("\\uparrow ");
             return;
         }
         self.i += 1; // consume '^'
+        if !self.has_script_arg('_') {
+            return;
+        }
         let kind = if self.peek(0) == Some('{') {
             Script::BracedSup
         } else {
@@ -533,16 +596,19 @@ impl Translator {
         if kind == Script::BracedSup {
             self.i += 1;
             self.copy_braced();
+        } else if self.peek(0) == Some('\\') {
+            self.script_command();
         } else {
             let start = self.i;
             while self.i < self.chars.len() && matches!(self.chars[self.i], '0'..='9' | '+' | '-') {
                 self.i += 1;
             }
-            if self.i == start && self.i < self.chars.len() {
-                self.i += 1; // at least one char
-            }
-            for &c in &self.chars[start..self.i] {
-                self.out.push(c);
+            if self.i == start {
+                // At least one char (`has_script_arg` saw one).
+                push_escaped_char(&mut self.out, self.chars[self.i]);
+                self.i += 1;
+            } else {
+                self.out.extend(&self.chars[start..self.i]);
             }
         }
         self.end_script(kind);
@@ -550,29 +616,86 @@ impl Translator {
         self.had_space = false;
     }
 
+    /// Whether the `^`/`_` just consumed has an argument. mhchem's `^_`
+    /// pattern drops a `^` before `_` (`_` before `^`) or at the end, and a
+    /// `}` or `^` is no argument here; a dropped script leaves the current
+    /// base and its scripts as they were.
+    fn has_script_arg(&mut self, other: char) -> bool {
+        let has = match self.peek(0) {
+            None | Some('}' | '^') => false,
+            Some(c) => c != other,
+        };
+        if !has {
+            self.scripted = true;
+        }
+        has
+    }
+
     fn underscore(&mut self) {
         self.i += 1; // consume '_'
+        if !self.has_script_arg('^') {
+            return;
+        }
         self.begin_script(Script::Sub);
-        if self.peek(0) == Some('{') {
-            self.i += 1;
-            self.copy_braced();
-        } else {
-            let digits = self.read_digits();
-            self.out.push_str(&digits);
+        match self.peek(0) {
+            Some('{') => {
+                self.i += 1;
+                self.copy_braced();
+            },
+            Some('\\') => self.script_command(),
+            _ => {
+                // mhchem's `_9`: a signed digit run, or one character.
+                let sign = usize::from(matches!(self.peek(0), Some('+' | '-')));
+                let mut end = self.i + sign;
+                while self.chars.get(end).is_some_and(char::is_ascii_digit) {
+                    end += 1;
+                }
+                if end > self.i + sign {
+                    self.out.extend(&self.chars[self.i..end]);
+                    self.i = end;
+                } else {
+                    push_escaped_char(&mut self.out, self.chars[self.i]);
+                    self.i += 1;
+                }
+            },
         }
         self.end_script(Script::Sub);
         self.last = Kind::Atom;
         self.had_space = false;
     }
 
+    /// A script argument that starts with `\`: a control word with its brace
+    /// groups, or a control symbol TeX reads (`\_`), is copied whole, as is
+    /// `\0`, which fails as in KaTeX; any other backslash is dropped and the
+    /// character after it is the argument.
+    fn script_command(&mut self) {
+        match self.peek(1) {
+            Some(c) if c.is_ascii_alphanumeric() || is_control_symbol(c) => {
+                self.copy_command_token();
+            },
+            Some('^') | None => self.i += 1,
+            Some(c) => {
+                push_escaped_char(&mut self.out, c);
+                self.i += 2;
+            },
+        }
+    }
+
     /// Copy characters up to a matching `}` (the opening `{` already consumed),
-    /// emitting them verbatim into `out`.
+    /// emitting them verbatim into `out`. Escaped braces (`\{`) do not count.
     fn copy_braced(&mut self) {
         let mut depth = 1usize;
         while self.i < self.chars.len() {
             let c = self.chars[self.i];
             self.i += 1;
             match c {
+                '\\' => {
+                    self.out.push(c);
+                    if let Some(&next) = self.chars.get(self.i) {
+                        self.out.push(next);
+                        self.i += 1;
+                    }
+                },
                 '{' => {
                     depth += 1;
                     self.out.push(c);
@@ -603,44 +726,184 @@ impl Translator {
         self.had_space = false;
     }
 
+    /// Scan the control sequence at `k` (a `\`) as mhchem's `\x{}{}`,
+    /// `\x{}` and `\x` patterns read it: a control word with up to two brace
+    /// groups directly after it, or, with no group, the word and the spaces
+    /// after it; else a control symbol. Returns the end of the control
+    /// word's name (just past the `\\` for a control symbol) and the end of
+    /// the token.
+    fn command_token(&self, k: usize) -> (usize, usize) {
+        let mut name_end = k + 1;
+        while self
+            .chars
+            .get(name_end)
+            .is_some_and(char::is_ascii_alphabetic)
+        {
+            name_end += 1;
+        }
+        if name_end == k + 1 {
+            // A control symbol (`\,`, `\_`), or a lone `\` at the end.
+            let end = if k + 1 < self.chars.len() {
+                k + 2
+            } else {
+                k + 1
+            };
+            return (k + 1, end);
+        }
+        let mut end = name_end;
+        for _ in 0..2 {
+            match self.group_end(end) {
+                Some(next) => end = next,
+                None => break,
+            }
+        }
+        if end == name_end {
+            while self.chars.get(end).is_some_and(|c| c.is_whitespace()) {
+                end += 1;
+            }
+        }
+        (name_end, end)
+    }
+
+    /// The index just past the balanced `{...}` group starting at `k`
+    /// (escaped braces do not count), or `None` when there is none.
+    fn group_end(&self, k: usize) -> Option<usize> {
+        if self.chars.get(k) != Some(&'{') {
+            return None;
+        }
+        let mut depth = 0usize;
+        let mut j = k;
+        while j < self.chars.len() {
+            match self.chars[j] {
+                '\\' => j += 1,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(j + 1);
+                    }
+                },
+                _ => {},
+            }
+            j += 1;
+        }
+        None
+    }
+
+    /// Copy the control sequence at the cursor (with its brace groups) into
+    /// the output unchanged, as one token.
+    fn copy_command_token(&mut self) {
+        let (name_end, end) = self.command_token(self.i);
+        if end == self.i + 1 {
+            // A lone `\` at the end of the body: nothing to copy.
+            self.i = end;
+            return;
+        }
+        self.out.extend(&self.chars[self.i..end]);
+        if end == name_end && self.chars[name_end - 1].is_ascii_alphabetic() {
+            // Keep a following letter from extending the control word.
+            self.out.push(' ');
+            self.bare_word_end = Some(self.out.len());
+        }
+        self.i = end;
+    }
+
+    /// The text of the brace group at `k` without its braces, and the index
+    /// past it.
+    fn group_body(&self, k: usize) -> Option<(String, usize)> {
+        let end = self.group_end(k)?;
+        Some((self.chars[k + 1..end - 1].iter().collect(), end))
+    }
+
+    /// A control sequence is one opaque token, as mhchem reads it: its brace
+    /// groups go with it, and it is never split into letters. `\ce{...}`,
+    /// `\frac`, `\overset` and `\underset` read their arguments as `\ce`
+    /// bodies; Greek letters are element letters; `\pm` is an operator.
     fn read_command(&mut self) {
         // self.chars[self.i] == '\\'
-        let start = self.i;
-        self.i += 1;
-        let name_start = self.i;
-        while self.i < self.chars.len() && self.chars[self.i].is_ascii_alphabetic() {
-            self.i += 1;
-        }
-        let name: String = self.chars[name_start..self.i].iter().collect();
-        if name == "ce" {
-            // Nested \ce{...}: translate its body recursively.
-            let tail: String = self.chars[self.i..].iter().collect();
-            if let Some((rest, body)) = capture_braced(&tail) {
-                let consumed = tail.len() - rest.len();
-                self.value_space();
-                self.out.push_str(&ce_to_latex(body));
-                // Advance index past what `capture_braced` consumed.
-                self.i += tail[..consumed].chars().count();
-                self.last = Kind::Atom;
-                self.had_space = false;
-                return;
-            }
-        }
+        let (name_end, end) = self.command_token(self.i);
+        let name: String = self.chars[self.i + 1..name_end].iter().collect();
         if name.is_empty() {
-            // Escaped single char (e.g. `\,`, `\{`): emit it verbatim.
-            if self.i < self.chars.len() {
-                self.out.push('\\');
-                self.out.push(self.chars[self.i]);
+            match self.peek(1) {
+                // A control symbol TeX reads (`\,`, `\{`, `\_`): copied
+                // verbatim. A spacing one is a space between species
+                // (mhchem's `\,`, state `1`); the others are tokens.
+                Some(c) if is_control_symbol(c) => {
+                    self.value_space();
+                    self.copy_command_token();
+                    self.last = if matches!(c, ',' | ';' | ':' | ' ' | '!' | '>') {
+                        Kind::Start
+                    } else {
+                        Kind::Command
+                    };
+                    self.had_space = false;
+                },
+                // `\0`: mhchem copies it, and TeX has no such command, so
+                // it fails to read back, as in KaTeX.
+                Some(c) if c.is_ascii_digit() => {
+                    self.copy_command_token();
+                    self.last = Kind::Command;
+                    self.had_space = false;
+                },
+                // Any other backslash (`\+`, `\*`, a trailing `\`) is no
+                // command TeX reads: it is dropped, but like mhchem, which
+                // copies it as a token of its own (state `3`), it ends the
+                // species, so `\+` is an operator.
+                _ => {
+                    self.i += 1;
+                    if self.last != Kind::Op {
+                        self.last = Kind::Command;
+                    }
+                },
+            }
+            return;
+        }
+        // mhchem's `pm-operator` matches `\pm` as a prefix (`\pmE` is `\pm E`).
+        if name.starts_with("pm") {
+            self.out.push_str("{}\\pm{}");
+            self.i += 3;
+            self.last = Kind::Op;
+            self.had_space = false;
+            return;
+        }
+        let nested = match name.as_str() {
+            _ if self.depth >= MAX_DEPTH => None,
+            "ce" => self
+                .group_body(name_end)
+                .map(|(body, next)| (translate(&body, self.depth + 1), next)),
+            "frac" | "overset" | "underset" => self.group_body(name_end).and_then(|(a, mid)| {
+                let (b, next) = self.group_body(mid)?;
+                let (a, b) = (translate(&a, self.depth + 1), translate(&b, self.depth + 1));
+                let tex = format!("\\{name}{{{a}}}{{{b}}}");
+                Some((tex, next))
+            }),
+            _ => None,
+        };
+        self.value_space();
+        if let Some((tex, next)) = nested {
+            self.out.push_str(&tex);
+            self.i = next;
+            self.last = if name == "ce" {
+                Kind::Atom
+            } else {
+                Kind::Command
+            };
+        } else if is_greek(&name) {
+            // A Greek letter is element text: a following count is its
+            // subscript (`\alpha2`).
+            self.out.push('\\');
+            self.out.push_str(&name);
+            self.out.push(' ');
+            self.i = name_end;
+            while self.peek(0).is_some_and(char::is_whitespace) {
                 self.i += 1;
             }
+            self.last = Kind::Atom;
         } else {
-            self.value_space();
-            for &c in &self.chars[start..self.i] {
-                self.out.push(c);
-            }
-            self.out.push(' ');
+            self.copy_command_token();
+            debug_assert_eq!(self.i, end);
+            self.last = Kind::Command;
         }
-        self.last = Kind::Atom;
         self.had_space = false;
     }
 
@@ -738,6 +1001,62 @@ impl Translator {
         self.i = j + 1; // consume through ']'
         Some(label)
     }
+}
+
+/// The characters after `\\` that make a control symbol TeX reads in math:
+/// spaces (`\,`), escaped specials (`\_`, `\{`), and `\\`.
+fn is_control_symbol(c: char) -> bool {
+    matches!(
+        c,
+        ',' | ';' | ':' | ' ' | '!' | '>' | '_' | '&' | '{' | '}' | '%' | '#' | '$' | '|' | '\\'
+    )
+}
+
+/// The Greek letters (`α`–`ω`, `Α`–`Ω`) mhchem reads as element letters.
+fn is_greek_char(c: char) -> bool {
+    matches!(c, '\u{3B1}'..='\u{3C9}' | '\u{391}'..='\u{3A9}')
+}
+
+/// The Greek letter names mhchem reads as element letters.
+fn is_greek(name: &str) -> bool {
+    matches!(
+        name,
+        "alpha"
+            | "beta"
+            | "gamma"
+            | "delta"
+            | "epsilon"
+            | "zeta"
+            | "eta"
+            | "theta"
+            | "iota"
+            | "kappa"
+            | "lambda"
+            | "mu"
+            | "nu"
+            | "xi"
+            | "omicron"
+            | "pi"
+            | "rho"
+            | "sigma"
+            | "tau"
+            | "upsilon"
+            | "phi"
+            | "chi"
+            | "psi"
+            | "omega"
+            | "Gamma"
+            | "Delta"
+            | "Theta"
+            | "Lambda"
+            | "Xi"
+            | "Pi"
+            | "Sigma"
+            | "Upsilon"
+            | "Phi"
+            | "Psi"
+            | "Omega"
+    )
 }
 
 /// Push a single char into a `\mathrm{}` body, escaping the LaTeX specials
@@ -958,5 +1277,16 @@ mod tests {
             ml.contains('-') || ml.contains('\u{2212}'),
             "expected bond glyph in {ml}"
         );
+    }
+
+    #[test]
+    fn deep_nesting_stays_bounded() {
+        // Nested `\ce`/`\frac` bodies are re-read only to a fixed depth, so
+        // deep input cannot overflow the stack.
+        for open in [r"\ce{", r"\frac{", r"\overset{"] {
+            let body = format!("{}x{}", open.repeat(20_000), "}{1}".repeat(20_000));
+            let out = super::ce_to_latex(&body);
+            assert!(out.len() < body.len() * 4, "{open}");
+        }
     }
 }

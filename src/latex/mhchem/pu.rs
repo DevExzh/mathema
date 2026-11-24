@@ -283,8 +283,9 @@ fn pu2(out: &mut Out, input: &str, depth: usize) {
             continue;
         }
         // `\x`: a control word (and the spaces after it), or `\_`, `\&`,
-        // `\{`, `\}`, `\%`. Any other control symbol is copied the same way:
-        // mhchem copies its two characters one by one.
+        // `\{`, `\}`, `\%`. Any other backslash is mhchem's `else`: copied
+        // alone as unit text, so a number after it is an exponent (`\1,5`
+        // is `\^{1,5}`, as KaTeX writes it).
         if let Some(after) = rest.strip_prefix('\\') {
             let len = match after.chars().next() {
                 Some(c) if c.is_ascii_alphabetic() => {
@@ -292,8 +293,13 @@ fn pu2(out: &mut Out, input: &str, depth: usize) {
                     let after_word = &after[word..];
                     word + (after_word.len() - after_word.trim_start().len())
                 },
-                Some(c) => c.len_utf8(),
-                None => 0,
+                Some('_' | '&' | '{' | '}' | '%') => 1,
+                _ => {
+                    rm.push('\\');
+                    rest = after;
+                    after_unit = true;
+                    continue;
+                },
             };
             rm.push_str(&rest[..=len]);
             rest = &after[len..];
@@ -761,6 +767,13 @@ mod tests {
         (r"m\_2", r"{\mathrm{m\_^{2}}}", true),
         (r"{m}2", r"{\mathrm{{m}^{2}}}", true),
         (r"m^{2}", r"{\mathrm{m^{2}}}", true),
+        // A backslash that starts no control sequence is unit text, so the
+        // number after it is an exponent: mhchem writes `\^{…}`, a circumflex.
+        (r"\1,5", r"{\mathrm{\^{1,5}}}", true),
+        (r"x\10^漢", r"{\mathrm{x\^{10}^漢}}", true),
+        (r"\text{a}\times\1", r"{\mathrm{\text{a}\times\^{1}}}", true),
+        (r"és\~e-1.2C", r"{\mathrm{és\~e^{-1.2}C}}", true),
+        (r"0 2\^°", r"{0~\mathrm{2\^°}}", true),
         (r"m_2", r"{\mathrm{m_^{2}}}", false),
         (r"m^2^3", r"{\mathrm{m^{2}^{3}}}", false),
         (r"m^-1^2", r"{\mathrm{m^{-1}^{2}}}", false),

@@ -3957,6 +3957,13 @@ impl LatexCompactParser {
                 let sid = self.arena.push_str("_");
                 CompactNode::Symbol(SymbolKind::Ordinary, sid)
             },
+            // LaTeX's text accents, which KaTeX also reads in math mode (with
+            // a strict-mode warning) as the matching math accent: `\^{x}` is
+            // `\hat{x}`, `\~{x}` is `\tilde{x}`.
+            '\'' | '`' | '^' | '~' | '"' | '=' | '.' => {
+                let mark = text_accent::accent_mark(&input[..1]).unwrap_or('\u{0302}');
+                return self.parse_accent(rest, mark, AccentPosition::Above);
+            },
             _ => {
                 return Err(nom::Err::Error(nom::error::Error::new(
                     input,
@@ -5006,7 +5013,8 @@ impl LatexCompactParser {
                 Ok((&input[1..], self.arena.push_node(CompactNode::Number(sid))))
             },
             Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
-            Some(&b) if !b.is_ascii() => self.parse_atom(input),
+            // `~` (a non-breaking space) is one token too: `\frac~x`.
+            Some(&b) if !b.is_ascii() || b == b'~' => self.parse_atom(input),
             _ => Err(nom::Err::Error(nom::error::Error::new(
                 input,
                 nom::error::ErrorKind::Alt,

@@ -224,3 +224,135 @@ fn escaped_underscore_in_math() {
         "{math}"
     );
 }
+
+/// Read `input` strictly, with no diagnostics, and check it writes as
+/// `expected` does.
+fn assert_reads_as(input: &str, expected: &str) {
+    let result = from_latex_with(input, &Config::default())
+        .unwrap_or_else(|error| panic!("{input}: {error}"));
+    assert!(
+        result.diagnostics().is_empty(),
+        "{input}: {:?}",
+        result.diagnostics()
+    );
+    assert_eq!(latex(input), latex(expected), "{input}");
+}
+
+/// A control sequence in `\ce` is one opaque TeX token, as in mhchem: its
+/// brace groups go with it and its name is never split into `\mathrm`
+/// letters (`\text{heat}` used to become `\text \mathrm{heat}`, an error).
+/// After it a number is an amount, not a count. The expected TeX is KaTeX's
+/// mhchem output without its `{\vphantom{X}}` script bases.
+#[test]
+fn ce_copies_text_commands_whole() {
+    for (input, expected) in [
+        (
+            r"\ce{A + \text{heat} -> B}",
+            r"{\mathrm{A}+ \text{heat}\;\xrightarrow{}\;\mathrm{B}}",
+        ),
+        (r"\ce{\text{Fe}^{2+}}", r"{\text{Fe}^{2+}}"),
+        (r"\ce{\text{a}2H}", r"{\text{a}2\mathrm{H}}"),
+        (r"\ce{\textbf{A} B}", r"{\textbf{A}\;\mathrm{B}}"),
+        (r"\ce{\mathbf{A}{B}C}", r"{\mathbf{A}{B}\mathrm{C}}"),
+        (
+            r"\ce{H2O \text{a}}",
+            r"{\mathrm{H}_{2}\mathrm{O}\;\text{a}}",
+        ),
+        (r"\ce{\text{a}-B}", r"{\text{a}{-}\mathrm{B}}"),
+        (r"\ce{\text{a}+}", r"{\text{a} {}+{} }"),
+        (r"\ce{A\times2}", r"{\mathrm{A}\times2}"),
+    ] {
+        assert_reads_as(input, expected);
+        assert!(!latex(input).contains(r"\mathrm{a}"), "{input}");
+    }
+}
+
+/// `^`/`_` followed by a control sequence script the whole token (with its
+/// groups), as mhchem's `^\x{}{}`/`_\x` read it; it used to be `^{\}`.
+#[test]
+fn ce_scripts_a_command() {
+    for (input, expected) in [
+        (r"\ce{A^\pm}", r"{\mathrm{A}^{\pm}}"),
+        (r"\ce{A^\alpha}", r"{\mathrm{A}^{\alpha}}"),
+        (r"\ce{A_\text{x}}", r"{\mathrm{A}_{\text{x}}}"),
+        (r"\ce{A^\frac{1}{2}}", r"{\mathrm{A}^{\frac{1}{2}}}"),
+        (r"\ce{k^\_}", r"{\mathrm{k}^\_}"),
+        // mhchem's `^_`: a `_` before `^`, or a script at the end, is dropped.
+        (r"\ce{C2_^\pm}", r"{\mathrm{C}_{2}^{\pm}}"),
+        (r"\ce{10^_}", r"{10}"),
+        (r"\ce{x10^_m}", r"{\mathrm{x}_{10}{\vphantom{X}}_{m}}"),
+    ] {
+        assert_reads_as(input, expected);
+    }
+}
+
+/// `\frac{..}{..}` reads both arguments as `\ce` bodies (mhchem's
+/// `frac-ce`); it used to be split into `\frac _{1}_{2}`. A `\frac` with no
+/// groups is copied as it is, and a script on the token TeX takes as its
+/// argument goes on an empty base, as mhchem's `{\vphantom{X}}`.
+#[test]
+fn ce_reads_frac_arguments() {
+    for (input, expected) in [
+        (
+            r"\ce{\frac{1}{2}H2O}",
+            r"{\frac{1}{2}\mathrm{H}_{2}\mathrm{O}}",
+        ),
+        (
+            r"\ce{\frac{H2O}{2}}",
+            r"{\frac{\mathrm{H}_{2}\mathrm{O}}{2}}",
+        ),
+        (r"\ce{\frac/1\,}", r"{\frac/1\,}"),
+        (r"\ce{\frac)91}", r"{\frac){}_{91}}"),
+    ] {
+        assert_reads_as(input, expected);
+    }
+}
+
+/// Other tokens as mhchem reads them: `{}` ends a species (`x1{}0` is
+/// `x_1 0`, not a double subscript), Greek letters are element letters,
+/// `\pm` is an operator (also as a prefix: `\pmE`), and a backslash that
+/// starts no control sequence ends the species.
+#[test]
+fn ce_reads_other_tokens_as_mhchem() {
+    for (input, expected) in [
+        (r"\ce{x1{}0}", r"{\mathrm{x}_{1}0}"),
+        (r"\ce{-x1{}0}", r"{{-}\mathrm{x}_{1}0}"),
+        (r"\ce{\alpha2}", r"{\alpha_{2}}"),
+        (r"\ce{\pm2}", r"{ {}\pm{} 2}"),
+        (r"\ce{\pmE}", r"{ {}\pm{} \mathrm{E}}"),
+        (r"\ce{A\,2}", r"{\mathrm{A}\,2}"),
+        (r"\ce{µ1\+2}", r"{µ1 {}+{} 2}"),
+    ] {
+        assert_reads_as(input, expected);
+    }
+}
+
+/// In `\pu`, a backslash that starts no control sequence is unit text, so
+/// mhchem writes the number after it as `\^{…}`: a circumflex accent, which
+/// KaTeX reads in math mode, as it does the other text accents.
+#[test]
+fn pu_backslash_before_a_digit_reads_as_katex() {
+    for (input, katex) in [
+        (r"\pu{\1,5}", r"{\mathrm{\^{1,5}}}"),
+        (r"\pu{x\10^漢}", r"{\mathrm{x\^{10}^漢}}"),
+        (r"\pu{és\~e-1.2C}", r"{\mathrm{és\~e^{-1.2}C}}"),
+        (r"\pu{0 2\^°}", r"{0~\mathrm{2\^°}}"),
+        (
+            r"\pu{Ω1.2*o\frac~)}",
+            r"{\mathrm{Ω^{1.2}}\mkern1mu{\cdot}\mkern1mu \mathrm{o\frac~)}}",
+        ),
+    ] {
+        assert_reads_as(input, katex);
+    }
+    for (text, math) in [
+        (r"\^{x}", r"\hat{x}"),
+        (r"\~x", r"\tilde{x}"),
+        (r"\'{e}", r"\acute{e}"),
+        (r"\`{e}", r"\grave{e}"),
+        (r#"\"{u}"#, r"\ddot{u}"),
+        (r"\={a}", r"\bar{a}"),
+        (r"\.{x}", r"\dot{x}"),
+    ] {
+        assert_reads_as(text, math);
+    }
+}
