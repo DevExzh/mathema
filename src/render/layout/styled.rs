@@ -357,6 +357,10 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
             current_ctx = current_ctx.with_switch(*value);
             continue;
         }
+        if let MathNode::SizeSwitch(idx) = node {
+            current_ctx.size_scale = size_scale_factor(*idx);
+            continue;
+        }
 
         let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
         let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
@@ -752,6 +756,10 @@ pub(super) fn layout_styled_arena(
     for &id in ids {
         if let CompactNode::StyleSwitch(value) = *ast.node(id) {
             current_ctx = current_ctx.with_switch(value);
+            continue;
+        }
+        if let CompactNode::SizeScale(idx) = *ast.node(id) {
+            current_ctx.size_scale = size_scale_factor(idx);
             continue;
         }
 

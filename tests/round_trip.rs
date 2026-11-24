@@ -1018,6 +1018,8 @@ fn heap_and_compact_normalize_declarations_alike() {
         r"{\large x}y",
         r"{\large}y",
         r"\mathbf{{\large x}}y",
+        r"\left[{a\\ b}\middle|c\right]",
+        r"\begin{matrix}{\small x}&y\end{matrix}",
         r"\begin{matrix}a{\\}b & {c\\d}e & {\\}\end{matrix}",
     ] {
         let written = check(from_latex(latex).unwrap().expr());

@@ -53,6 +53,15 @@ fn normalize_nodes_depth_with_identifiers(
 /// [`normalize_array_cell`]).
 fn normalize_array_cell_math(cell: &mut Vec<MathNode>, depth: usize, merge_identifiers: bool) {
     normalize_nodes_keeping_breaks(cell, depth, merge_identifiers, true);
+    // The cell already scopes a lone group's size.
+    if let [MathNode::Row(inner)] = cell.as_mut_slice()
+        && inner
+            .iter()
+            .any(|node| matches!(node, MathNode::SizeSwitch(_)))
+        && !inner.contains(&MathNode::LineBreak)
+    {
+        *cell = std::mem::take(inner);
+    }
     for node in cell {
         if matches!(node, MathNode::LineBreak) {
             *node = MathNode::Row(vec![MathNode::LineBreak]);
@@ -344,7 +353,7 @@ pub(crate) fn is_limit_function(name: &str) -> bool {
 }
 
 /// Whether a function name such as sin or lim is spelled `name`.
-fn is_function_name(name: &str) -> bool {
+pub(crate) fn is_function_name(name: &str) -> bool {
     is_limit_function(name) || crate::unicode::symbols::is_operator_command(name)
 }
 
@@ -362,6 +371,15 @@ fn takes_limits_math(node: &MathNode) -> bool {
         } => true,
         _ => false,
     }
+}
+
+fn is_break_group(item: &FencedItem) -> bool {
+    matches!(item, FencedItem::Element(MathNode::Row(nodes)) if is_break_group_row(nodes))
+}
+
+/// A group that holds a line break and no declaration to keep inside it.
+fn is_break_group_row(nodes: &[MathNode]) -> bool {
+    nodes.contains(&MathNode::LineBreak) && !nodes.iter().any(is_declaration_math)
 }
 
 /// Whether a node can be the base of leading scripts. Mirrors
@@ -422,6 +440,19 @@ fn normalize_node_depth_with_identifiers(
                 if let FencedItem::Element(n) = item {
                     normalize_node_depth_with_identifiers(n, d, merge_identifiers);
                 }
+            }
+            // As in the compact normalizer, a group's line break breaks the
+            // fenced row.
+            if content.iter().any(is_break_group) {
+                *content = std::mem::take(content)
+                    .into_iter()
+                    .flat_map(|item| match item {
+                        FencedItem::Element(MathNode::Row(nodes)) if is_break_group_row(&nodes) => {
+                            nodes.into_iter().map(FencedItem::Element).collect()
+                        },
+                        item => vec![item],
+                    })
+                    .collect();
             }
             // Empty-base scripts become leading scripts of the next element;
             // middle delimiters are not elements and break the sequence.

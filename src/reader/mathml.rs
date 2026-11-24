@@ -11,6 +11,7 @@ use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
 };
 use crate::reader::Reader as MathReader;
+use crate::writer::mathml::KERN_ATTRIBUTE;
 
 mod content;
 
@@ -134,6 +135,11 @@ struct MathmlCompactParser<'a> {
     /// Text size in force from enclosing `mathsize`, as a multiple of the
     /// normal size: MathML sizes are relative, `SizeScale` is not.
     text_size: f64,
+    /// Rows read from an `mstyle` that only sets a size, to be spliced into
+    /// the row around them (see [`Self::splice_size_runs`]).
+    size_runs: SmallVec<[NodeId; 2]>,
+    /// Messages [`Self::style_warning`] reported.
+    style_warnings: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -171,6 +177,8 @@ impl<'a> MathmlCompactParser<'a> {
             fence_depth: None,
             fence_marks: SmallVec::new(),
             text_size: 1.0,
+            size_runs: SmallVec::new(),
+            style_warnings: HashSet::new(),
         })
     }
 
@@ -190,6 +198,7 @@ impl<'a> MathmlCompactParser<'a> {
         };
         let name = element.local_name().into_inner();
         if name == "math" {
+            let mut size = None;
             for attr in element.attributes().flatten() {
                 if attr.key.as_ref() == "display" {
                     self.display = Some(if attr.value.as_ref() == "block" {
@@ -197,16 +206,24 @@ impl<'a> MathmlCompactParser<'a> {
                     } else {
                         DisplayStyle::Inline
                     });
+                } else if attr.key.as_ref() == "mathsize" {
+                    size = self.mathsize_scale(&attr_text(attr.value));
                 }
             }
             if let Some(display) = self.display {
                 self.style_display = display == DisplayStyle::Block;
             }
-            return if empty {
-                Ok(SmallVec::new())
-            } else {
-                self.parse_children("math")
-            };
+            if empty {
+                return Ok(SmallVec::new());
+            }
+            if let Some((_, text_size)) = size {
+                self.text_size = text_size;
+            }
+            let mut nodes = self.parse_children("math")?;
+            if let Some((Some(scale), _)) = size {
+                nodes.insert(0, self.arena.push_node(CompactNode::SizeScale(scale)));
+            }
+            return Ok(nodes);
         }
         let id = if empty {
             self.parse_empty_element(name, &element)?
@@ -261,7 +278,12 @@ impl<'a> MathmlCompactParser<'a> {
     /// Recover explicitly marked delimiters of a single MathML row. Interior
     /// brackets may belong to separate pairs; a prefix or postfix vertical
     /// bar inside parentheses is an ordinary child rather than a middle.
-    fn recover_fenced_row(&mut self, children: &mut [NodeId], start: usize) -> Option<NodeId> {
+    fn recover_fenced_row(
+        &mut self,
+        children: &mut [NodeId],
+        start: usize,
+        runs_start: usize,
+    ) -> Option<NodeId> {
         let [(first, open_role), interior @ .., (last, close_role)] = &self.fence_marks[start..]
         else {
             return None;
@@ -299,7 +321,16 @@ impl<'a> MathmlCompactParser<'a> {
                 // A literal closing delimiter can finish the first of two
                 // adjacent pairs even when only the outermost operators have
                 // attributes. Do not join those pairs into one fence.
-                if let Some(sid) = self.fence_delimiter(id) {
+                let run = match *self.arena.node(id) {
+                    CompactNode::Row(span) if self.size_runs[runs_start..].contains(&id) => {
+                        self.arena.children(span)
+                    },
+                    _ => std::slice::from_ref(&id),
+                };
+                for &id in run {
+                    let Some(sid) = self.fence_delimiter(id) else {
+                        continue;
+                    };
                     let glyph = self.arena.str_val(sid);
                     if let Some(partner) = crate::unicode::operators::closing_fence(glyph) {
                         inner_pairs.push(partner);
@@ -340,7 +371,13 @@ impl<'a> MathmlCompactParser<'a> {
         for (i, sid) in middles {
             content[i] = self.arena.push_node(CompactNode::Middle(sid));
         }
-        let content = self.arena.push_children_deferred(content);
+        let content = if self.size_runs.len() > runs_start {
+            let mut content = SmallVec::from_slice(content);
+            self.splice_size_runs(&mut content, runs_start);
+            self.arena.push_children_deferred(&content)
+        } else {
+            self.arena.push_children_deferred(content)
+        };
         Some(self.arena.push_node(CompactNode::Fenced {
             open,
             close,
@@ -402,6 +439,7 @@ impl<'a> MathmlCompactParser<'a> {
     ) -> Result<(SmallVec<[NodeId; 8]>, bool)> {
         let max_children = max_children.min(AstArena::MAX_CHILDREN);
         let mut body_in_text_style = false;
+        let runs_start = self.size_runs.len();
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
             return Err(Error::MathmlParse {
@@ -509,6 +547,23 @@ impl<'a> MathmlCompactParser<'a> {
             }
         }
         self.depth -= 1;
+        // The runs of an `mrow` are opened once its fences are known.
+        if self.size_runs.len() > runs_start && parent_tag != "mrow" {
+            if matches!(
+                parent_tag,
+                "math"
+                    | "mstyle"
+                    | "msqrt"
+                    | "mtd"
+                    | "mpadded"
+                    | "mphantom"
+                    | "menclose"
+                    | "merror"
+            ) {
+                self.splice_size_runs(&mut nodes, runs_start);
+            }
+            self.size_runs.truncate(runs_start);
+        }
         let sized = body_in_text_style && nodes.len() == 1;
         // A sole text-sized body is represented by the enclosure itself. With
         // siblings the style belongs only to the first child.
@@ -634,31 +689,63 @@ impl<'a> MathmlCompactParser<'a> {
     }
 
     fn mspace(&mut self, start: &quick_xml::events::BytesStart<'_>) -> NodeId {
-        if is_mspace_newline(start) {
+        let mut attrs = MspaceAttributes::default();
+        for attr in start.attributes().flatten() {
+            let slot = match attr.key.as_ref() {
+                "width" => &mut attrs.width,
+                "style" => &mut attrs.style,
+                "linebreak" => &mut attrs.linebreak,
+                KERN_ATTRIBUTE => &mut attrs.kern,
+                "height" | "depth" => {
+                    attrs.has_dimension = true;
+                    continue;
+                },
+                _ => continue,
+            };
+            // The first of a repeated attribute counts.
+            if slot.is_none() {
+                *slot = Some(attr_text(attr.value));
+            }
+        }
+        if attrs.is_newline() {
             return self.arena.push_node(CompactNode::Newline);
         }
-        match mspace_width(start) {
-            MathLength::Absolute(width) => self.arena.push_space(width, SpaceBasis::Physical),
-            MathLength::FontRelative(width) => self.arena.push_node(CompactNode::Space(width)),
+        let Some(width) = attrs.width.as_deref() else {
+            return self.arena.push_node(CompactNode::Space(Rational::zero()));
+        };
+        if let Some(kern) = attrs.kern.as_deref().and_then(kern_length) {
+            return self.arena.push_space(kern, SpaceBasis::Physical);
+        }
+        match attrs.space_width() {
+            Some(MathLength::Absolute(width)) => self.arena.push_space(width, SpaceBasis::Physical),
+            Some(MathLength::FontRelative(width)) => {
+                self.arena.push_node(CompactNode::Space(width))
+            },
             // A percentage or unitless multiple of the default width, 0em.
-            MathLength::Percent(_) | MathLength::Multiple(_) => {
+            Some(MathLength::Percent(_) | MathLength::Multiple(_)) => {
+                self.arena.push_node(CompactNode::Space(Rational::zero()))
+            },
+            None => {
+                self.style_warning(format!(
+                    "mspace width=\"{width}\" is not a valid length; it was read as 0"
+                ));
                 self.arena.push_node(CompactNode::Space(Rational::zero()))
             },
         }
     }
 
-    /// The text size an `mstyle`'s `mathsize` selects, as a `SizeScale`
-    /// index and the multiple of the normal size it stands for. The value is
+    /// The text size a `mathsize` selects: its `SizeScale` index, `None` when
+    /// that is the inherited one, and its multiple of the normal size. The value is
     /// a percentage, unitless multiple or `em`/`ex` length of the inherited
     /// size, or `small`/`normal`/`big` (read as 90%/100%/120%). An absolute
     /// size has no AST form yet and is dropped with a warning; a size between
     /// two declarations takes the nearer one with a warning.
-    fn mathsize_scale(&mut self, start: &quick_xml::events::BytesStart<'_>) -> Option<(u8, f64)> {
-        let value = get_attr(start, "mathsize")?;
+    #[cold]
+    fn mathsize_scale(&mut self, value: &str) -> Option<(Option<u8>, f64)> {
         let value = value.trim();
         let factor = match value {
             "small" => 0.9,
-            "normal" => 1.0,
+            "normal" => return None,
             "big" => 1.2,
             _ => match parse_length(value) {
                 Some(
@@ -680,7 +767,11 @@ impl<'a> MathmlCompactParser<'a> {
                 },
             },
         };
+        if factor == 1.0 {
+            return None;
+        }
         let size = self.text_size * factor;
+        let inherited = crate::ast::nearest_size_scale(self.text_size).map(|(index, _)| index);
         let Some((index, exact)) = crate::ast::nearest_size_scale(size) else {
             self.style_warning(format!(
                 "mathsize=\"{value}\" is not a positive size; it was ignored"
@@ -688,54 +779,93 @@ impl<'a> MathmlCompactParser<'a> {
             return None;
         };
         let nearest = f64::from(crate::ast::SIZE_SCALE_PER_MILLE[usize::from(index)]) / 1000.0;
-        if exact {
-            // Drop the rounding of the percentages, which would add up in
-            // nested elements.
-            return Some((index, nearest));
+        if !exact {
+            self.style_warning(format!(
+                "mathsize=\"{value}\" was approximated by the nearest size, {:.1}% of the normal size",
+                nearest * 100.0
+            ));
         }
-        self.style_warning(format!(
-            "mathsize=\"{value}\" was approximated by the nearest size, {:.1}% of the normal size",
-            nearest * 100.0
-        ));
-        Some((index, size))
+        // Dropping the rounding of the percentages of an exact size keeps it
+        // from adding up in nested elements.
+        Some((
+            (inherited != Some(index)).then_some(index),
+            if exact { nearest } else { size },
+        ))
     }
 
+    /// Report a presentation loss, once per message. A document can repeat
+    /// one on every token, so at most 100 different ones are kept.
+    #[cold]
     fn style_warning(&mut self, message: String) {
-        self.diagnostics.push(Diagnostic {
-            kind: DiagnosticKind::Warning,
-            message,
-            span: None,
-        });
+        if self.style_warnings.len() < 100 && self.style_warnings.insert(message.clone()) {
+            self.diagnostics.push(Diagnostic {
+                kind: DiagnosticKind::Warning,
+                message,
+                span: None,
+            });
+        }
+    }
+
+    /// Read an element other than `mstyle` and `math` that has a `mathsize`.
+    /// MathML 3 (§3.2.2) gives it to tokens. An operator cannot take it: a
+    /// group around it would hide its class, its fence role or the accent it
+    /// is; nor can a layout element or a function name, whose own node the
+    /// scripts around it look for.
+    #[cold]
+    fn parse_sized_element(
+        &mut self,
+        name: &str,
+        start: &quick_xml::events::BytesStart<'_>,
+        mathsize: &str,
+    ) -> Result<NodeId> {
+        let id = self.parse_unsized_element(name, start)?;
+        let takes_size = match *self.arena.node(id) {
+            CompactNode::Identifier(sid) => {
+                !crate::ast::normalize::is_function_name(self.arena.str_val(sid))
+            },
+            CompactNode::Number(_) | CompactNode::Text(..) | CompactNode::Styled(..) => true,
+            _ => false,
+        };
+        if !takes_size || !matches!(name, "mi" | "mn" | "mtext" | "ms") {
+            self.style_warning(format!(
+                "mathsize on <{name}> is not supported; the size was dropped"
+            ));
+            return Ok(id);
+        }
+        let Some((Some(size), _)) = self.mathsize_scale(mathsize) else {
+            return Ok(id);
+        };
+        let size = self.arena.push_node(CompactNode::SizeScale(size));
+        Ok(self.flatten_ids(&[size, id]))
     }
 
     /// Resolve the supported absolute and relative `mstyle` attributes.
     /// The AST has four TeX-style levels, so larger absolute levels clamp to
     /// scriptscript and mixed `displaystyle`/nonzero `scriptlevel` values use
     /// the script-level representation as the closest available style.
-    fn scoped_style(&self, start: &quick_xml::events::BytesStart<'_>) -> Option<(bool, i64)> {
-        let display_attr = get_attr(start, "displaystyle");
-        let level_attr = get_attr(start, "scriptlevel");
+    fn scoped_style(
+        &self,
+        display_attr: Option<&str>,
+        level_attr: Option<&str>,
+    ) -> Option<(bool, i64)> {
         if display_attr.is_none() && level_attr.is_none() {
             return None;
         }
         let mut display = self.style_display;
         let mut changed = false;
         if let Some(value) = display_attr {
-            match value.trim().to_ascii_lowercase().as_str() {
-                "true" => {
-                    display = true;
-                    changed = true;
-                },
-                "false" => {
-                    display = false;
-                    changed = true;
-                },
-                _ => {},
+            let value = value.trim();
+            if value.eq_ignore_ascii_case("true") {
+                display = true;
+                changed = true;
+            } else if value.eq_ignore_ascii_case("false") {
+                display = false;
+                changed = true;
             }
         }
         let mut level = self.style_level;
         if let Some(value) = level_attr
-            && let Some(parsed) = parse_scriptlevel(&value, self.style_level)
+            && let Some(parsed) = parse_scriptlevel(value, self.style_level)
         {
             level = parsed;
             changed = true;
@@ -750,23 +880,37 @@ impl<'a> MathmlCompactParser<'a> {
     ) -> Result<NodeId> {
         let previous = (self.style_display, self.style_level);
         let previous_variant = self.mathvariant_style;
-        if let Some(variant) =
-            get_attr(start, "mathvariant").and_then(|value| mathvariant_to_style(&value))
-        {
-            self.mathvariant_style = Some(variant);
+        let attrs = MstyleAttributes::read(start);
+        let variant = attrs.variant.as_deref().and_then(mathvariant_to_style);
+        if variant.is_some() {
+            self.mathvariant_style = variant;
         }
-        let scoped = self.scoped_style(start);
+        let scoped = self.scoped_style(attrs.display.as_deref(), attrs.level.as_deref());
         if let Some((display, level)) = scoped {
             self.style_display = display;
             self.style_level = level;
         }
-        let size = self.mathsize_scale(start);
+        let size = attrs
+            .size
+            .as_deref()
+            .and_then(|size| self.mathsize_scale(size));
         let previous_size = self.text_size;
         if let Some((_, text_size)) = size {
             self.text_size = text_size;
         }
-        let children = self.parse_children("mstyle")?;
+        let mut children = self.parse_children("mstyle")?;
         self.text_size = previous_size;
+        // A size that its whole content replaces has nothing to apply to, and
+        // neither has one that takes the content back to the size outside.
+        let replaced = children.first().and_then(|&id| match *self.arena.node(id) {
+            CompactNode::SizeScale(size) => Some(size),
+            _ => None,
+        });
+        if replaced.is_some()
+            && replaced == crate::ast::nearest_size_scale(self.text_size).map(|(index, _)| index)
+        {
+            children.remove(0);
+        }
         self.style_display = previous.0;
         self.style_level = previous.1;
         self.mathvariant_style = previous_variant;
@@ -774,7 +918,11 @@ impl<'a> MathmlCompactParser<'a> {
         // An empty style element has no descendant to which its attributes
         // can apply. Emitting a leading StyleSwitch here would incorrectly
         // style the next sibling when the compact AST is serialized.
-        if children.is_empty() || children.iter().all(|&id| self.is_empty_style_subtree(id)) {
+        // A size is restored after the element, so an empty group keeps it.
+        if children.is_empty()
+            || (scoped.is_some() || size.is_none())
+                && children.iter().all(|&id| self.is_empty_style_subtree(id))
+        {
             return Ok(self.flatten_ids(&children));
         }
 
@@ -787,26 +935,108 @@ impl<'a> MathmlCompactParser<'a> {
                 .push_node(CompactNode::StyleSwitch(self.style_marker_for(scoped)));
             scoped_children.push(marker);
         }
-        if let Some((size, _)) = size {
+        let size = size
+            .and_then(|(size, _)| size)
+            .filter(|_| replaced.is_none());
+        if let Some(size) = size {
             scoped_children.push(self.arena.push_node(CompactNode::SizeScale(size)));
         }
         scoped_children.extend(children);
         let content = self.flatten_ids(&scoped_children);
-        let content = if let Some(color) =
-            get_attr(start, "mathcolor").filter(|color| !color.trim().is_empty())
-        {
+        let content = if let Some(color) = attrs.color.filter(|color| !color.trim().is_empty()) {
             let color = self.arena.push_str(color.trim());
             self.arena.push_node(CompactNode::Color { color, content })
         } else {
             content
         };
-        if let Some(variant) = get_attr(start, "mathvariant")
-            && let Some(style) = mathvariant_to_style(&variant)
-        {
-            let span = self.arena.push_children_deferred(&[content]);
+        if let Some(style) = variant {
+            // The style's own group scopes a size, as `\mathbf{\large x}`.
+            let span = match *self.arena.node(content) {
+                CompactNode::Row(span)
+                    if scoped_children.len() > 1 && self.has_only_size_declarations(span) =>
+                {
+                    span
+                },
+                _ => self.arena.push_children_deferred(&[content]),
+            };
             return Ok(self.arena.push_node(CompactNode::Styled(style, span)));
         }
+        if scoped.is_none()
+            && attrs.size.is_some()
+            && let CompactNode::Row(span) = *self.arena.node(content)
+            && self.has_only_size_declarations(span)
+        {
+            self.size_runs.push(content);
+        }
         Ok(content)
+    }
+
+    /// Whether a row directly holds a size declaration and no style switch.
+    fn has_only_size_declarations(&self, span: NodeSpan) -> bool {
+        let mut found = false;
+        for &id in self.arena.children(span) {
+            match self.arena.node(id) {
+                CompactNode::SizeScale(_) => found = true,
+                CompactNode::StyleSwitch(_) => return false,
+                _ => {},
+            }
+        }
+        found
+    }
+
+    /// Open the rows of the `mstyle` children of a row that only set a size:
+    /// `mstyle` is no group to the operators in and beside it. The size in
+    /// force before one is restored after it. `runs_start` is where the runs
+    /// of this row start in [`Self::size_runs`].
+    fn splice_size_runs(&mut self, nodes: &mut SmallVec<[NodeId; 8]>, runs_start: usize) {
+        if self.size_runs.len() > runs_start {
+            self.splice_size_runs_slow(nodes, runs_start);
+        }
+    }
+
+    #[cold]
+    fn splice_size_runs_slow(&mut self, nodes: &mut SmallVec<[NodeId; 8]>, runs_start: usize) {
+        let inherited =
+            crate::ast::nearest_size_scale(self.text_size).map_or(4, |(index, _)| index);
+        let mut runs = self.size_runs[runs_start..].iter().peekable();
+        let mut spliced: SmallVec<[NodeId; 8]> = SmallVec::new();
+        let mut current = inherited;
+        for &id in nodes.iter() {
+            if let CompactNode::Row(span) = *self.arena.node(id)
+                && runs.next_if_eq(&&id).is_some()
+            {
+                let mut run = self.arena.children(span);
+                if let [first, rest @ ..] = run
+                    && let CompactNode::SizeScale(size) = *self.arena.node(*first)
+                {
+                    if size == current {
+                        run = rest;
+                    }
+                    current = size;
+                }
+                // Including one a nested run ends with.
+                for &id in run {
+                    if let CompactNode::SizeScale(size) = *self.arena.node(id) {
+                        current = size;
+                    }
+                }
+                spliced.extend_from_slice(run);
+                continue;
+            }
+            // Neither a break nor a delimiter takes the size, and a
+            // declaration lasts across both.
+            if current != inherited
+                && !matches!(
+                    self.arena.node(id),
+                    CompactNode::Newline | CompactNode::Middle(_)
+                )
+            {
+                spliced.push(self.arena.push_node(CompactNode::SizeScale(inherited)));
+                current = inherited;
+            }
+            spliced.push(id);
+        }
+        *nodes = spliced;
     }
 
     fn is_empty_style_subtree(&self, id: NodeId) -> bool {
@@ -962,6 +1192,17 @@ impl<'a> MathmlCompactParser<'a> {
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
+        if let Some(mathsize) = element_mathsize(name, start) {
+            return self.parse_sized_element(name, start, &mathsize);
+        }
+        self.parse_unsized_element(name, start)
+    }
+
+    fn parse_unsized_element(
+        &mut self,
+        name: &str,
+        start: &quick_xml::events::BytesStart<'_>,
+    ) -> Result<NodeId> {
         match name {
             "mn" => {
                 let text = self.read_text_content(name)?;
@@ -1031,6 +1272,7 @@ impl<'a> MathmlCompactParser<'a> {
                     None => matches!(attrs.reflect.as_deref(), Some("text" | "math")),
                 };
                 let mark_start = self.fence_marks.len();
+                let runs_start = self.size_runs.len();
                 let enclosing = self.fence_depth;
                 self.fence_depth = start
                     .attributes()
@@ -1046,11 +1288,14 @@ impl<'a> MathmlCompactParser<'a> {
                 self.mathvariant_style = previous_variant;
                 let (mut children, sized) = result?;
                 self.fence_depth = enclosing;
-                let fenced = self.recover_fenced_row(&mut children, mark_start);
+                let fenced = self.recover_fenced_row(&mut children, mark_start, runs_start);
                 self.fence_marks.truncate(mark_start);
                 if let Some(fenced) = fenced {
+                    self.size_runs.truncate(runs_start);
                     return Ok(fenced);
                 }
+                self.splice_size_runs(&mut children, runs_start);
+                self.size_runs.truncate(runs_start);
                 if reflected {
                     let content = self.flatten_ids(&children);
                     let text_mode = attrs.reflect.as_deref() == Some("text")
@@ -1461,6 +1706,11 @@ impl<'a> MathmlCompactParser<'a> {
         name: &str,
         start: &quick_xml::events::BytesStart<'_>,
     ) -> Result<NodeId> {
+        if element_mathsize(name, start).is_some() && name != "mrow" {
+            self.style_warning(format!(
+                "mathsize on <{name}> is not supported; the size was dropped"
+            ));
+        }
         match name {
             "mtable" => self.finish_table(start, MathmlTable::default()),
             "mrow" => {
@@ -1537,7 +1787,10 @@ impl<'a> MathmlCompactParser<'a> {
         if table_root {
             self.style_display = false;
         }
-        if let Some((display, level)) = self.scoped_style(start) {
+        if let Some((display, level)) = {
+            let attrs = MstyleAttributes::read(start);
+            self.scoped_style(attrs.display.as_deref(), attrs.level.as_deref())
+        } {
             self.style_display = display;
             self.style_level = level;
         }
@@ -2992,17 +3245,121 @@ fn single_accent_char(s: &str) -> Option<char> {
     chars.next().is_none().then_some(ch)
 }
 
-/// A forced MathML line break: `linebreak="newline"` (or
-/// `"indentingnewline"`, whose indentation has no AST form) on an `mspace`
-/// without dimensions. MathML 3 ignores the line-breaking attribute when a
-/// dimension is also given.
-fn is_mspace_newline(start: &quick_xml::events::BytesStart<'_>) -> bool {
-    matches!(
-        get_attr(start, "linebreak").as_deref().map(str::trim),
-        Some("newline" | "indentingnewline")
-    ) && ["width", "height", "depth"]
-        .iter()
-        .all(|name| get_attr(start, name).is_none())
+/// The attributes of an `mspace` that matter here.
+#[derive(Default)]
+struct MspaceAttributes<'a> {
+    width: Option<Cow<'a, str>>,
+    style: Option<Cow<'a, str>>,
+    linebreak: Option<Cow<'a, str>>,
+    kern: Option<Cow<'a, str>>,
+    has_dimension: bool,
+}
+
+impl MspaceAttributes<'_> {
+    /// A forced MathML line break: `linebreak="newline"` (or
+    /// `"indentingnewline"`, whose indentation has no AST form) on an
+    /// `mspace` without dimensions. MathML 3 ignores the line-breaking
+    /// attribute when a dimension is also given.
+    fn is_newline(&self) -> bool {
+        matches!(
+            self.linebreak.as_deref().map(str::trim),
+            Some("newline" | "indentingnewline")
+        ) && self.width.is_none()
+            && !self.has_dimension
+    }
+
+    /// The width; `None` when it is not a length. A zero width with a
+    /// negative CSS `margin-inline-start` is the writer's spelling of a
+    /// negative space.
+    fn space_width(&self) -> Option<MathLength> {
+        let width = parse_length(self.width.as_deref()?)?;
+        if width.is_zero()
+            && let Some(style) = self.style.as_deref()
+            && let Some((key, value)) = style.trim().trim_end_matches(';').split_once(':')
+            && key.trim().eq_ignore_ascii_case("margin-inline-start")
+            && let Some(margin @ (MathLength::FontRelative(length) | MathLength::Absolute(length))) =
+                parse_length(value)
+            && length.num < 0
+        {
+            return Some(margin);
+        }
+        Some(width)
+    }
+}
+
+/// The length of a [`KERN_ATTRIBUTE`], in nominal ten-point ems.
+fn kern_length(value: &str) -> Option<Rational> {
+    let number = value.strip_suffix("pt")?;
+    is_mathml_number(number)
+        .then(|| Rational::from_scaled_decimal(number, Rational::new(1, 10)))
+        .flatten()
+}
+
+/// The attributes of an `mstyle` that matter here.
+#[derive(Default)]
+struct MstyleAttributes<'a> {
+    display: Option<Cow<'a, str>>,
+    level: Option<Cow<'a, str>>,
+    variant: Option<Cow<'a, str>>,
+    color: Option<Cow<'a, str>>,
+    size: Option<Cow<'a, str>>,
+}
+
+impl<'a> MstyleAttributes<'a> {
+    fn read(start: &'a quick_xml::events::BytesStart<'_>) -> Self {
+        let mut attrs = Self::default();
+        for attr in start.attributes().flatten() {
+            let slot = match attr.key.as_ref() {
+                "displaystyle" => &mut attrs.display,
+                "scriptlevel" => &mut attrs.level,
+                "mathvariant" => &mut attrs.variant,
+                "mathcolor" => &mut attrs.color,
+                "mathsize" => &mut attrs.size,
+                _ => continue,
+            };
+            if slot.is_none() {
+                *slot = Some(attr_text(attr.value));
+            }
+        }
+        attrs
+    }
+}
+
+/// An attribute value with its character references resolved.
+fn attr_text(value: Cow<'_, str>) -> Cow<'_, str> {
+    if value.contains('&') {
+        Cow::Owned(unescape_attr(&value))
+    } else {
+        value
+    }
+}
+
+/// The `mathsize` of an element other than `mstyle`, which reads its own.
+#[inline]
+fn element_mathsize(name: &str, start: &quick_xml::events::BytesStart<'_>) -> Option<String> {
+    // Most elements have no attributes, and few attributes a `z`.
+    if start.len() == name.len() {
+        return None;
+    }
+    let attributes = start.attributes_raw();
+    if attributes.is_empty() || !attributes.contains('z') || name == "mstyle" {
+        return None;
+    }
+    get_attr(start, "mathsize")
+}
+
+/// The number syntax of MathML 3 (§2.1.5.1): an optional `-`, then digits
+/// with at most one decimal point. No `+`, exponent or space.
+fn is_mathml_number(text: &str) -> bool {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    let mut points = 0;
+    digits.bytes().all(|byte| match byte {
+        b'.' => {
+            points += 1;
+            points == 1
+        },
+        _ => byte.is_ascii_digit(),
+    }) && digits.len() > points
 }
 
 /// A MathML 3 length (§2.1.5.2), resolved at the converter's nominal
@@ -3054,6 +3411,12 @@ fn named_space(name: &str) -> Option<i32> {
 /// The non-standard TeX unit `mu` (1/18 em) is accepted as well.
 fn parse_length(value: &str) -> Option<MathLength> {
     let value = value.trim();
+    if let Some(number) = value.strip_suffix("em")
+        && is_mathml_number(number)
+    {
+        return Rational::from_scaled_decimal(number, Rational::one())
+            .map(MathLength::FontRelative);
+    }
     if let Some(eighteenths) = named_space(value) {
         return Some(MathLength::FontRelative(Rational::new(eighteenths, 18)));
     }
@@ -3061,7 +3424,9 @@ fn parse_length(value: &str) -> Option<MathLength> {
         .find(|c: char| c.is_ascii_alphabetic() || c == '%')
         .unwrap_or(value.len());
     let (number, unit) = value.split_at(split);
-    let number = number.trim_end();
+    if !is_mathml_number(number) {
+        return None;
+    }
     let scaled =
         |num: i32, den: u32| Rational::from_scaled_decimal(number, Rational::new(num, den));
     Some(match unit.to_ascii_lowercase().as_str() {
@@ -3080,23 +3445,6 @@ fn parse_length(value: &str) -> Option<MathLength> {
         "" => MathLength::Multiple(scaled(1, 1)?),
         _ => return None,
     })
-}
-
-/// The `mspace` width. A zero width with a negative CSS
-/// `margin-inline-start` is the writer's spelling of a negative space.
-fn mspace_width(start: &quick_xml::events::BytesStart<'_>) -> MathLength {
-    let width = get_attr(start, "width").as_deref().and_then(parse_length);
-    if width.is_some_and(MathLength::is_zero)
-        && let Some(style) = get_attr(start, "style")
-        && let Some((key, value)) = style.trim().trim_end_matches(';').split_once(':')
-        && key.trim().eq_ignore_ascii_case("margin-inline-start")
-        && let Some(margin @ (MathLength::FontRelative(length) | MathLength::Absolute(length))) =
-            parse_length(value)
-        && length.num < 0
-    {
-        return margin;
-    }
-    width.unwrap_or(MathLength::FontRelative(Rational::zero()))
 }
 
 /// Apply MathML token whitespace rules to the four XML whitespace characters.
@@ -3226,9 +3574,14 @@ mod tests {
             ("2", em(0, 1)),
             // Not a length.
             ("wide", em(0, 1)),
+            ("+1em", em(0, 1)),
+            ("1 em", em(0, 1)),
+            ("1e1em", em(0, 1)),
         ] {
             let input = format!(r#"<math><mspace width="{width}"/></math>"#);
             assert_eq!(parse_one(&input), expected, "{width}");
+            let malformed = ["wide", "+1em", "1 em", "1e1em"].contains(&width);
+            assert_eq!(warnings(&input).len(), usize::from(malformed), "{width}");
         }
         // The writer's negative-space spelling accepts any unit too.
         assert_eq!(
@@ -3246,7 +3599,6 @@ mod tests {
             ("1.44", 6),
             ("0.8em", 2),
             ("small", 3),
-            ("normal", 4),
             ("big", 5),
         ] {
             let input =
@@ -3254,10 +3606,10 @@ mod tests {
             assert_eq!(
                 parse(&input),
                 vec![
-                    MathNode::Row(vec![
-                        MathNode::SizeSwitch(scale),
-                        MathNode::Identifier("x".into())
-                    ]),
+                    MathNode::SizeSwitch(scale),
+                    MathNode::Identifier("x".into()),
+                    // The size in force before the element.
+                    MathNode::SizeSwitch(4),
                     MathNode::Identifier("y".into()),
                 ],
                 "{size}"
@@ -3286,7 +3638,6 @@ mod tests {
         for (latex, inner) in [
             (r"{\large a{\small b}}", r#"mathsize="75%""#),
             (r"{\large a{\normalsize b}}", r#"mathsize="83.333%""#),
-            (r"{\large a{\large b}}", r#"mathsize="100%""#),
             (
                 r"{\Huge a\frac{\tiny b}{{\large c}d}}",
                 r#"mathsize="20.096%""#,
@@ -3309,7 +3660,7 @@ mod tests {
         assert_eq!(
             crate::from_mathml(r#"<math><mstyle mathsize="1.2em"><mi>a</mi><mstyle mathsize="120%"><mi>b</mi></mstyle></mstyle></math>"#)
                 .unwrap().to_latex().unwrap(),
-            r"{\large a{\Large b}}"
+            r"\large a\Large b"
         );
     }
 
@@ -3348,6 +3699,142 @@ mod tests {
         );
     }
 
+    /// LaTeX and drawing survive MathML, and MathML a second pass.
+    fn assert_mathml_round_trip(latex: &str) {
+        let parsed = crate::from_latex(latex).unwrap();
+        let mathml = parsed.to_mathml().unwrap();
+        let heap = crate::writer::mathml::MathmlWriter::write(&parsed.expr(), &Config::default());
+        assert_eq!(heap.unwrap(), mathml, "{latex}");
+        let reread = crate::from_mathml(&mathml).unwrap();
+        assert!(reread.diagnostics().is_empty(), "{latex}");
+        assert_eq!(reread.to_mathml().unwrap(), mathml, "{latex}");
+        assert_eq!(
+            reread.to_latex().unwrap(),
+            parsed.to_latex().unwrap(),
+            "{mathml}"
+        );
+    }
+
+    #[test]
+    fn sized_rows_round_trip_exactly() {
+        for latex in [
+            r"a\Huge b",
+            r"a\Huge +b",
+            r"a+\Huge b+\tiny c",
+            r"{\large x}y",
+            r"a{\large +}b",
+            r"x=\tiny a\\ b",
+            r"\left(\large x\middle|y\right)",
+            r"\left(\large x\middle|\tiny y\right)z",
+            r"{\scriptstyle a\large b}",
+            r"\mathbf{\large x}y",
+            r"\mathbf{{\large x}}y",
+            r"\textcolor{red}{\large x}",
+            r"\frac{\large a}{{\small b}c}",
+            r"\sqrt{\large a{\small b}}",
+            r"\begin{matrix}\large a & b\end{matrix}",
+            r"a\kern3pt b\large\kern-2.5pt c",
+        ] {
+            assert_mathml_round_trip(latex);
+        }
+        // A break stays between the lines' own sizes.
+        let mathml = crate::from_latex(r"x=\tiny a\\ b")
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(
+            mathml.contains(r#"<mi>a</mi></mstyle><mspace linebreak="newline"/><mstyle mathsize="50%"><mi>b</mi>"#),
+            "{mathml}"
+        );
+        // The size lasts across \middle.
+        let mathml = crate::from_latex(r"\left(\large x\middle|y\right)")
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert_eq!(mathml.matches(r#"mathsize="120%""#).count(), 2, "{mathml}");
+        // Operators at the edge of a run stay infix; those of a group do not.
+        let mathml = crate::from_latex(r"a\Huge +b")
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(mathml.contains(r#"<mo form="infix">+</mo>"#), "{mathml}");
+        let mathml = crate::from_latex(r"a{\Huge +}b")
+            .unwrap()
+            .to_mathml()
+            .unwrap();
+        assert!(!mathml.contains("infix"), "{mathml}");
+        // The size in force needs no element.
+        for latex in [r"\normalsize x", r"\large x\large y"] {
+            let mathml = crate::from_latex(latex).unwrap().to_mathml().unwrap();
+            assert_eq!(
+                mathml.matches("mathsize").count(),
+                usize::from(latex.contains("large x")),
+                "{mathml}"
+            );
+        }
+    }
+
+    #[test]
+    fn size_stored_through_node_mut_is_written() {
+        let parsed = crate::from_latex(r"\scriptstyle x").unwrap();
+        let mut expr = parsed.compact_expr().clone();
+        let id = expr.arena.children(expr.roots)[0];
+        *expr.arena.node_mut(id) = CompactNode::SizeScale(5);
+        let mathml =
+            crate::writer::mathml::MathmlWriter::write_compact(&expr, &Config::default()).unwrap();
+        assert!(
+            mathml.contains(r#"<mstyle mathsize="120%"><mi>x</mi>"#),
+            "{mathml}"
+        );
+    }
+
+    #[test]
+    fn mathsize_on_other_elements() {
+        let sized = |token| vec![MathNode::Row(vec![MathNode::SizeSwitch(5), token])];
+        for (input, token) in [
+            (
+                r#"<mi mathsize="120%">x</mi>"#,
+                MathNode::Identifier("x".into()),
+            ),
+            (r#"<mn mathsize="big">2</mn>"#, MathNode::Number("2".into())),
+            (
+                r#"<mtext mathsize="1.2em">t</mtext>"#,
+                MathNode::Text(TextStyle::Normal, "t".into()),
+            ),
+        ] {
+            let input = format!("<math>{input}</math>");
+            assert_eq!(parse(&input), sized(token), "{input}");
+            assert!(warnings(&input).is_empty(), "{input}");
+        }
+        assert_eq!(
+            parse(r#"<math mathsize="120%"><mi>x</mi></math>"#),
+            vec![MathNode::SizeSwitch(5), MathNode::Identifier("x".into())]
+        );
+        for input in [
+            r#"<mo mathsize="120%">+</mo>"#,
+            r#"<mo mathsize="120%"/>"#,
+            r#"<mrow mathsize="120%"><mi>x</mi></mrow>"#,
+            r#"<mi mathsize="120%">sin</mi>"#,
+            r#"<mspace width="1em" mathsize="120%"/>"#,
+        ] {
+            let input = format!("<math>{input}{input}</math>");
+            assert_eq!(warnings(&input).len(), 1, "{input}");
+            assert!(warnings(&input)[0].contains("not supported"), "{input}");
+        }
+        // No change of size adds nothing.
+        for input in [
+            r#"<math><mstyle mathsize="normal"><mi>x</mi></mstyle></math>"#,
+            r#"<math><mstyle mathsize="100%"><mi>x</mi></mstyle></math>"#,
+            r#"<math><mi mathsize="1em">x</mi></math>"#,
+        ] {
+            assert_eq!(
+                parse(input),
+                vec![MathNode::Identifier("x".into())],
+                "{input}"
+            );
+        }
+    }
+
     #[test]
     fn unsupported_mathsize_values_warn() {
         let absolute = r#"<math><mstyle mathsize="12pt"><mi>x</mi></mstyle></math>"#;
@@ -3364,7 +3851,7 @@ mod tests {
         );
         assert!(warnings(between)[0].contains("nearest size, 248.8% of the normal size"));
 
-        for invalid in ["huge", "0%", "-120%"] {
+        for invalid in ["huge", "0%", "-120%", "+1em", "1 em"] {
             let input = format!(r#"<math><mstyle mathsize="{invalid}"><mi>x</mi></mstyle></math>"#);
             assert_eq!(
                 parse_one(&input),

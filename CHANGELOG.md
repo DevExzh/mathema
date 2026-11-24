@@ -82,17 +82,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them, and a script that is a radical or is parenthesized is written in
   parentheses.
 
-- **Breaking:** the public AST types `CompactNode`, `MathExpr`,
-  `CompactExpr`, `ColumnAlign`, `FractionKind`, `StrokeKind`, `PhantomKind`,
-  `SpaceBasis`, `MatrixKind`, `TextStyle` and `SymbolKind` are now
-  `#[non_exhaustive]`, so later releases can add variants and fields
-  without another break. Code outside the crate must add a wildcard arm
-  (`_ => …`) to a `match` on these enums, and build `MathExpr` /
-  `CompactExpr` with their constructors (`MathExpr::new`,
+- **Breaking:** the public AST enums `CompactNode`, `ColumnAlign`,
+  `FractionKind`, `StrokeKind`, `PhantomKind`, `SpaceBasis`, `MatrixKind`,
+  `TextStyle` and `SymbolKind` and the structs `MathExpr` and `CompactExpr`
+  are now `#[non_exhaustive]`, so later releases can add variants to these
+  enums and fields to these structs. Code outside the crate must add a
+  wildcard arm (`_ => …`) to a `match` on these enums, and build
+  `MathExpr` / `CompactExpr` with their constructors (`MathExpr::new`,
   `MathExpr::inline`, `MathExpr::block`, `CompactExpr::new`,
   `CompactExpr::from_math_expr`) instead of a struct literal; their fields
-  stay public to read, and a struct pattern needs `..`. `MathAtomType`,
-  `LimitStyle`, `DisplayStyle` and `AccentPosition` stay closed.
+  stay public to read, and a struct pattern needs `..`. The fields of each
+  variant, `FencedItem`, `OperatorAttr`, `OperatorNameForm`,
+  `MathAtomType`, `LimitStyle`, `DisplayStyle` and `AccentPosition` stay
+  exhaustive: a change to them is still breaking.
 - **Breaking (behavior):** `MathNode` has two new variants,
   `MathNode::SizeSwitch(u8)` (`\tiny` … `\Huge`, MathML `mathsize`) and
   `MathNode::LineBreak` (`\\`, `<mspace linebreak="newline"/>`).
@@ -181,15 +183,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The MathML writer no longer drops size declarations: `\large` writes
-  `<mstyle mathsize="120%">` around the content it scales, combined with
-  `displaystyle`/`scriptlevel` when a math-style switch is also in force.
-  MathML sizes are relative to the inherited size and TeX's are not, so
-  `\small` inside `\large` is `75%`, and a physical kern (`\kern10pt`)
-  keeps its width. The MathML reader maps an `mstyle` `mathsize` given as
-  a percentage, a unitless multiple, an `em`/`ex` length or
-  `small`/`normal`/`big` back to the declaration. A size between two
+  `<mstyle mathsize="120%">` around the content it scales, inside the
+  `mstyle` of a math-style switch, again after a line break and across a
+  `\middle`. MathML sizes are relative to the inherited size and TeX's are
+  not, so `\small` inside `\large` is `75%`, and a physical kern
+  (`\kern10pt`) keeps its width. An operator at the edge of the element
+  has `form="infix"`, and a group (`{\large +}`) an `mrow`. The MathML
+  reader maps the `mathsize` of `mstyle`, `math`, `mi`, `mn`, `mtext` and
+  `ms`, given as a percentage, a unitless multiple, an `em`/`ex` length or
+  `small`/`normal`/`big`, back to the declaration. A size between two
   declarations takes the nearer one with a warning; an absolute size
-  (`mathsize="12pt"`) is dropped with a warning.
+  (`mathsize="12pt"`), an invalid one, and one on another element are
+  dropped with a warning.
+- A space that is a TeX length (`\kern3pt`) keeps it through MathML, in
+  `data-mathema-kern="3pt"` on its `mspace`; it read back as
+  `\hspace{0.3em}`.
+- Rendering applies a size declaration inside `\left…\right`, inside font
+  commands (`\mathbf{\large x}`) and after a line break, as KaTeX does.
+- The heap UnicodeMath writer brackets a physical space in a fraction as
+  the compact one does.
 - Normalization no longer opens a group holding a size declaration:
   `convert` read `{\large x}y` as `\large xy`.
 - Rendering a heap `MathExpr` applies size declarations and stacks the
@@ -200,7 +212,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   3 named spaces from `veryverythinmathspace` to `veryverythickmathspace`
   and their `negative…` forms. Only `em` was read before; any other width
   became zero. A percentage or unitless width is, per MathML 3, a multiple
-  of the default width 0.
+  of the default width 0; a width that is not a MathML length (`+1em`,
+  `1 em`, `wide`) is read as 0 with a warning.
 
 - A `\color` switch in a `\left…\right` list stays in force across
   `\middle` to the end of the fence, as in TeX and KaTeX:

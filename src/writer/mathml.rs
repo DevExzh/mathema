@@ -133,26 +133,36 @@ impl MathWriter for MathmlWriter {
     }
 
     fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
-        let arena = &expr.arena;
-        let mut buf = MathOutput::new(String::with_capacity(512));
-
-        if expr.display == DisplayStyle::Block {
-            buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">");
-        } else {
-            buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">");
+        let buf = write_math_fast(expr, expr.arena.has_size_scale());
+        // A size declaration the arena did not count.
+        if buf.missed_size {
+            return Ok(write_math_fast(expr, true).target);
         }
-
-        write_nodes_fast(
-            &mut buf,
-            arena,
-            arena.children(expr.roots),
-            expr.display.into(),
-            false,
-        );
-
-        buf.push_str("</math>");
         Ok(buf.target)
     }
+}
+
+fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
+    let arena = &expr.arena;
+    let mut buf = MathOutput::new(String::with_capacity(512));
+    buf.has_sizes = has_sizes;
+
+    if expr.display == DisplayStyle::Block {
+        buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\">");
+    } else {
+        buf.push_str("<math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"inline\">");
+    }
+
+    write_nodes_fast(
+        &mut buf,
+        arena,
+        arena.children(expr.roots),
+        expr.display.into(),
+        false,
+    );
+
+    buf.push_str("</math>");
+    buf
 }
 
 /// MathML Core needs the upright variant on individual identifiers. Keep
@@ -163,6 +173,12 @@ struct MathOutput<T> {
     /// Text size in force from enclosing `mathsize`, in thousandths of the
     /// normal size. MathML sizes are relative to it, TeX's are not.
     size_per_mille: u16,
+    /// Whether the expression holds any size declaration, so that the rows
+    /// of one that does not skip the size handling. Set by the arena writer
+    /// only; the heap writer looks at each row.
+    has_sizes: bool,
+    /// Whether a size declaration was met with `has_sizes` unset.
+    missed_size: bool,
 }
 
 impl<T> MathOutput<T> {
@@ -171,18 +187,10 @@ impl<T> MathOutput<T> {
             target,
             operator_font: None,
             size_per_mille: 1000,
+            has_sizes: false,
+            missed_size: false,
         }
     }
-    /// Enter the size a declaration selects, returning the previous one for
-    /// the caller to restore.
-    fn enter_size(&mut self, scale: Option<u8>) -> u16 {
-        let previous = self.size_per_mille;
-        if let Some(scale) = scale {
-            self.size_per_mille = size_per_mille(scale);
-        }
-        previous
-    }
-
     /// A space's width in ems of the current font. Only a physical length is
     /// unaffected by the text size in force.
     fn space_width(
@@ -276,73 +284,14 @@ fn marker_attrs(marker: u8) -> (&'static str, &'static str) {
     )
 }
 
-/// The size of a `\tiny` … `\Huge` declaration. Like the LaTeX writer, read
-/// an index past the last one as `\Huge`.
-fn size_per_mille(scale: u8) -> u16 {
-    let sizes = crate::ast::SIZE_SCALE_PER_MILLE;
-    sizes[usize::from(scale).min(sizes.len() - 1)]
+fn start_math_style_marker(w: &mut XmlWriter, marker: u8) -> Result<MathStyle> {
+    open_math_style(w, marker_attrs(marker))?;
+    Ok(MathStyle::branch_from_switch(marker))
 }
 
-/// The `mathsize` percentage that takes the size `from` to the size `to`:
-/// `120%` for `\large` at the normal size.
-fn mathsize_percent(from: u16, to: u16) -> String {
-    use std::fmt::Write as _;
-    let mut value = String::new();
-    // Thousandths of a percent, rounded.
-    let (to, from) = (u32::from(to), u32::from(from));
-    let thousandths = (to * 100_000 + from / 2) / from;
-    let _ = write!(value, "{}.{:03}", thousandths / 1000, thousandths % 1000);
-    let trimmed = value.trim_end_matches('0').trim_end_matches('.').len();
-    value.truncate(trimmed);
-    value.push('%');
-    value
-}
-
-/// Open the `mstyle` of one declaration run and return the style its
-/// content is written in.
-fn start_declared_style(
-    w: &mut XmlWriter,
-    decls: RunDeclarations,
-    inherited: MathStyle,
-) -> Result<MathStyle> {
-    let mut tag = BytesStart::new("mstyle");
-    if let Some(marker) = decls.style {
-        let (display, depth) = marker_attrs(marker);
-        tag.push_attribute(("displaystyle", display));
-        tag.push_attribute(("scriptlevel", depth));
-    }
-    if let Some(scale) = decls.size {
-        tag.push_attribute((
-            "mathsize",
-            mathsize_percent(w.size_per_mille, size_per_mille(scale)).as_str(),
-        ));
-    }
-    w.write_event(Event::Start(tag)).map_err(to_err)?;
-    Ok(decls.style.map_or(inherited, MathStyle::branch_from_switch))
-}
-
-fn start_declared_style_fast(
-    buf: &mut XmlBuffer,
-    decls: RunDeclarations,
-    inherited: MathStyle,
-) -> MathStyle {
-    buf.push_str("<mstyle");
-    if let Some(marker) = decls.style {
-        let (display, depth) = marker_attrs(marker);
-        buf.push_str(" displaystyle=\"");
-        buf.push_str(display);
-        buf.push_str("\" scriptlevel=\"");
-        buf.push_str(depth);
-        buf.push('"');
-    }
-    if let Some(scale) = decls.size {
-        buf.push_str(" mathsize=\"");
-        let percent = mathsize_percent(buf.size_per_mille, size_per_mille(scale));
-        buf.push_str(&percent);
-        buf.push('"');
-    }
-    buf.push('>');
-    decls.style.map_or(inherited, MathStyle::branch_from_switch)
+fn start_math_style_marker_fast(buf: &mut XmlBuffer, marker: u8) -> MathStyle {
+    open_math_style_fast(buf, marker_attrs(marker));
+    MathStyle::branch_from_switch(marker)
 }
 
 /// If every cell starts in the same style, a nested table can keep its
@@ -371,59 +320,317 @@ fn inherited_table_marker(
     all_start_with(marker).then_some(marker)
 }
 
-/// A declaration that applies to the rest of its row: a math-style switch
-/// (`\scriptstyle`) or a text-size switch (`\large`).
+/// What one node of a row means to the declarations around it.
 #[derive(Clone, Copy)]
-enum Declaration {
+enum RowItem {
+    /// A math-style switch (`\scriptstyle`), in force to the end of its row.
     Style(u8),
+    /// A text-size switch (`\large`), likewise.
     Size(u8),
+    /// A line break.
+    Break,
+    /// A binary operator or relation, whose spacing depends on what precedes
+    /// and follows it.
+    Infix,
+    Other,
 }
 
-/// The declarations in force for one run of a row.
-#[derive(Clone, Copy, Default)]
-struct RunDeclarations {
-    style: Option<u8>,
+fn row_item(node: &MathNode) -> RowItem {
+    match node {
+        MathNode::StyleSwitch(value) => RowItem::Style(*value),
+        MathNode::SizeSwitch(value) => RowItem::Size(*value),
+        MathNode::LineBreak => RowItem::Break,
+        MathNode::Symbol(SymbolKind::BinaryOp | SymbolKind::Relation, _) => RowItem::Infix,
+        _ => RowItem::Other,
+    }
+}
+
+fn row_item_fast(arena: &AstArena, id: NodeId) -> RowItem {
+    match *arena.node(id) {
+        CompactNode::StyleSwitch(value) => RowItem::Style(value),
+        CompactNode::SizeScale(value) => RowItem::Size(value),
+        CompactNode::Newline => RowItem::Break,
+        CompactNode::Symbol(SymbolKind::BinaryOp | SymbolKind::Relation, _) => RowItem::Infix,
+        _ => RowItem::Other,
+    }
+}
+
+/// The size of a `\tiny` … `\Huge` declaration. Like the LaTeX writer, read
+/// an index past the last one as `\Huge`.
+fn size_per_mille(scale: u8) -> u16 {
+    let sizes = crate::ast::SIZE_SCALE_PER_MILLE;
+    sizes[usize::from(scale).min(sizes.len() - 1)]
+}
+
+/// The `mathsize` percentage that takes the size `from` to the size `to`:
+/// `120%` for `\large` at the normal size.
+fn mathsize_percent(from: u16, to: u16) -> String {
+    use std::fmt::Write as _;
+    // Thousandths of a percent, rounded.
+    let (to, from) = (u32::from(to), u32::from(from));
+    let thousandths = (to * 100_000 + from / 2) / from;
+    let mut value = String::new();
+    let _ = write!(value, "{}.{:03}", thousandths / 1000, thousandths % 1000);
+    let trimmed = value.trim_end_matches('0').trim_end_matches('.').len();
+    value.truncate(trimmed);
+    value.push('%');
+    value
+}
+
+/// The writer operations a sized row needs of either output.
+trait RowOutput {
+    fn open_mstyle(&mut self, style: Option<u8>, size: Option<&str>) -> Result<()>;
+    fn open_mrow(&mut self) -> Result<()>;
+    fn close(&mut self, tag: &str) -> Result<()>;
+    fn written(&self) -> usize;
+    /// Give the `<mo>` starting at byte `at` the infix form, which an
+    /// operator at the edge of an `mstyle` otherwise does not have.
+    fn force_infix(&mut self, at: usize);
+}
+
+/// Where to insert ` form="infix"` in output starting with an `<mo>` that
+/// has no form of its own.
+fn infix_insertion(element: &[u8]) -> Option<usize> {
+    let tag = element.strip_prefix(b"<mo")?;
+    let end = tag.iter().position(|&byte| byte == b'>')?;
+    let attributes = &tag[..end];
+    let plain = attributes.is_empty()
+        || attributes.starts_with(b" ") && !attributes.windows(6).any(|window| window == b" form=");
+    plain.then_some(b"<mo".len())
+}
+
+const INFIX_FORM: &str = " form=\"infix\"";
+
+impl RowOutput for XmlBuffer {
+    fn open_mstyle(&mut self, style: Option<u8>, size: Option<&str>) -> Result<()> {
+        self.push_str("<mstyle");
+        if let Some(marker) = style {
+            let (display, depth) = marker_attrs(marker);
+            self.push_str(" displaystyle=\"");
+            self.push_str(display);
+            self.push_str("\" scriptlevel=\"");
+            self.push_str(depth);
+            self.push('"');
+        }
+        if let Some(size) = size {
+            self.push_str(" mathsize=\"");
+            self.push_str(size);
+            self.push('"');
+        }
+        self.push('>');
+        Ok(())
+    }
+    fn open_mrow(&mut self) -> Result<()> {
+        self.push_str("<mrow>");
+        Ok(())
+    }
+    fn close(&mut self, tag: &str) -> Result<()> {
+        close_tag(self, tag);
+        Ok(())
+    }
+    fn written(&self) -> usize {
+        self.len()
+    }
+    fn force_infix(&mut self, at: usize) {
+        if let Some(offset) = infix_insertion(&self.as_bytes()[at..]) {
+            self.insert_str(at + offset, INFIX_FORM);
+        }
+    }
+}
+
+impl RowOutput for XmlWriter {
+    fn open_mstyle(&mut self, style: Option<u8>, size: Option<&str>) -> Result<()> {
+        let mut tag = BytesStart::new("mstyle");
+        if let Some(marker) = style {
+            let (display, depth) = marker_attrs(marker);
+            tag.push_attribute(("displaystyle", display));
+            tag.push_attribute(("scriptlevel", depth));
+        }
+        if let Some(size) = size {
+            tag.push_attribute(("mathsize", size));
+        }
+        self.write_event(Event::Start(tag)).map_err(to_err)
+    }
+    fn open_mrow(&mut self) -> Result<()> {
+        self.write_event(Event::Start(BytesStart::new("mrow")))
+            .map_err(to_err)
+    }
+    fn close(&mut self, tag: &str) -> Result<()> {
+        self.write_event(Event::End(BytesEnd::new(tag)))
+            .map_err(to_err)
+    }
+    fn written(&self) -> usize {
+        self.get_ref().get_ref().len()
+    }
+    fn force_infix(&mut self, at: usize) {
+        let cursor = self.get_mut();
+        if let Some(offset) = infix_insertion(&cursor.get_ref()[at..]) {
+            let at = at + offset;
+            cursor.get_mut().splice(at..at, INFIX_FORM.bytes());
+            cursor.set_position(cursor.get_ref().len() as u64);
+        }
+    }
+}
+
+fn item_size(item: RowItem) -> Option<u8> {
+    match item {
+        RowItem::Size(value) => Some(value),
+        _ => None,
+    }
+}
+
+/// A part of a sized row: nodes under the same declarations, or a line break
+/// between them.
+struct SizedRun<'a, T> {
+    /// The style switch in force, and which switch of the row it is.
+    style: Option<(usize, u8)>,
     size: Option<u8>,
+    nodes: &'a [T],
+    is_break: bool,
 }
 
-impl RunDeclarations {
-    fn is_some(self) -> bool {
-        self.style.is_some() || self.size.is_some()
+/// Write a row holding size declarations. The nodes under one style are an
+/// `mstyle`, as in any row, with an `mstyle` in it for each run of one size;
+/// a line break under a size is written between those. `carried` is the size
+/// in force where the row starts, and is set to the one in force at its end:
+/// a size, unlike a style, lasts across a `\middle`.
+///
+/// The reader takes an `mstyle` that only has a size for a run of the row
+/// around it, so that operators beside it keep their spacing; a row of its
+/// own has an `mrow` unless it is all under one style.
+#[cold]
+fn write_sized_sequence<T, W>(
+    w: &mut MathOutput<W>,
+    nodes: &[T],
+    inherited: MathStyle,
+    explicit_row: bool,
+    carried: &mut Option<u8>,
+    classify: impl Fn(&T) -> RowItem,
+    emit: impl Fn(&mut MathOutput<W>, &T, MathStyle) -> Result<()>,
+) -> Result<()>
+where
+    MathOutput<W>: RowOutput,
+{
+    let mut runs: Vec<SizedRun<'_, T>> = Vec::new();
+    let (mut style, mut size) = (None, *carried);
+    let mut start = 0;
+    for (index, node) in nodes.iter().enumerate() {
+        let item = classify(node);
+        // A repeated size does not end a run.
+        if start < index && size.is_some() && item_size(item) == size {
+            continue;
+        }
+        let is_break = size.is_some() && matches!(item, RowItem::Break);
+        if !is_break && !matches!(item, RowItem::Style(_) | RowItem::Size(_)) {
+            continue;
+        }
+        if start < index {
+            runs.push(SizedRun {
+                style,
+                size,
+                nodes: &nodes[start..index],
+                is_break: false,
+            });
+        }
+        match item {
+            RowItem::Style(value) => style = Some((index, value)),
+            RowItem::Size(value) => size = Some(value),
+            _ => runs.push(SizedRun {
+                style,
+                size,
+                nodes: &nodes[index..=index],
+                is_break: true,
+            }),
+        }
+        start = index + 1;
     }
-}
-
-fn node_declaration(node: &MathNode) -> Option<Declaration> {
-    match node {
-        MathNode::StyleSwitch(value) => Some(Declaration::Style(*value)),
-        MathNode::SizeSwitch(value) => Some(Declaration::Size(*value)),
-        _ => None,
+    if start < nodes.len() {
+        runs.push(SizedRun {
+            style,
+            size,
+            nodes: &nodes[start..],
+            is_break: false,
+        });
     }
-}
+    *carried = size;
 
-fn compact_declaration(node: CompactNode) -> Option<Declaration> {
-    match node {
-        CompactNode::StyleSwitch(value) => Some(Declaration::Style(value)),
-        CompactNode::SizeScale(value) => Some(Declaration::Size(value)),
-        _ => None,
+    let one_style = match runs.as_slice() {
+        [first, rest @ ..] => {
+            first.style.is_some() && rest.iter().all(|run| run.style == first.style)
+        },
+        [] => false,
+    };
+    let grouped = explicit_row && !one_style;
+    if grouped {
+        w.open_mrow()?;
     }
+    let outer = w.size_per_mille;
+    let mut open_style = None;
+    for (index, run) in runs.iter().enumerate() {
+        if run.style != open_style {
+            if open_style.is_some() {
+                w.close("mstyle")?;
+            }
+            if let Some((_, marker)) = run.style {
+                w.open_mstyle(Some(marker), None)?;
+            }
+            open_style = run.style;
+        }
+        let active = run.style.map_or(inherited, |(_, marker)| {
+            MathStyle::branch_from_switch(marker)
+        });
+        // A size the context already has needs no `mstyle`.
+        let size = run.size.map_or(outer, size_per_mille);
+        let sized = !run.is_break && size != outer;
+        if sized {
+            w.open_mstyle(None, Some(&mathsize_percent(outer, size)))?;
+        }
+        w.size_per_mille = size;
+        // Whether the run meets another node of its line at that edge.
+        let adjoins = |other: Option<&SizedRun<'_, T>>, node: fn(&[T]) -> Option<&T>| {
+            other.is_some_and(|other| {
+                // A style after it is an element beside it.
+                (run.style.is_none() || other.style == run.style)
+                    && node(other.nodes)
+                        .is_some_and(|node| !matches!(classify(node), RowItem::Break))
+            })
+        };
+        let leads = sized && adjoins(index.checked_sub(1).map(|index| &runs[index]), <[T]>::last);
+        let trails = sized && adjoins(runs.get(index + 1), <[T]>::first);
+        for (position, node) in run.nodes.iter().enumerate() {
+            let at = w.written();
+            emit(w, node, active)?;
+            let edge = position == 0 && leads || position + 1 == run.nodes.len() && trails;
+            if edge && matches!(classify(node), RowItem::Infix) {
+                w.force_infix(at);
+            }
+        }
+        w.size_per_mille = outer;
+        if sized {
+            w.close("mstyle")?;
+        }
+    }
+    if open_style.is_some() {
+        w.close("mstyle")?;
+    }
+    if grouped {
+        w.close("mrow")?;
+    }
+    Ok(())
 }
 
-/// Consecutive declarations of one kind replace one another, a style and a
-/// size accumulate, and a trailing declaration contributes no content. Keep
-/// the runs borrowed from their original row.
+/// Consecutive declarations replace one another and a trailing declaration
+/// contributes no content. Keep the runs borrowed from their original row.
 fn style_runs<T>(
     mut nodes: &[T],
-    switch: impl Fn(&T) -> Option<Declaration>,
-) -> impl Iterator<Item = (RunDeclarations, &[T])> {
-    let mut decls = RunDeclarations::default();
+    switch: impl Fn(&T) -> Option<u8>,
+) -> impl Iterator<Item = (Option<u8>, &[T])> {
+    let mut style = None;
     std::iter::from_fn(move || {
         while let Some((node, rest)) = nodes.split_first()
-            && let Some(decl) = switch(node)
+            && let Some(value) = switch(node)
         {
-            match decl {
-                Declaration::Style(value) => decls.style = Some(value),
-                Declaration::Size(value) => decls.size = Some(value),
-            }
+            style = Some(value);
             nodes = rest;
         }
         let (_, tail) = nodes.split_first()?;
@@ -433,13 +640,13 @@ fn style_runs<T>(
             .unwrap_or(tail.len());
         let (run, rest) = nodes.split_at(n);
         nodes = rest;
-        Some((decls, run))
+        Some((style, run))
     })
 }
 
 /// A single styled run supplies its own grouping via mstyle. All other
 /// explicit rows still need mrow, especially in fixed-arity elements.
-fn needs_mrow<T>(nodes: &[T], switch: impl Fn(&T) -> Option<Declaration>) -> bool {
+fn needs_mrow<T>(nodes: &[T], switch: impl Fn(&T) -> Option<u8>) -> bool {
     let mut iter = nodes.iter();
     if !iter.next().is_some_and(|node| switch(node).is_some()) {
         return true;
@@ -455,26 +662,45 @@ fn write_sequence<T>(
     nodes: &[T],
     inherited: MathStyle,
     explicit_row: bool,
-    switch: impl Fn(&T) -> Option<Declaration>,
+    carried: &mut Option<u8>,
+    classify: impl Fn(&T) -> RowItem,
     emit: impl Fn(&mut XmlWriter, &T, MathStyle) -> Result<()>,
 ) -> Result<()> {
-    let grouped = explicit_row && needs_mrow(nodes, &switch);
+    if carried.is_some()
+        || nodes
+            .iter()
+            .any(|node| matches!(classify(node), RowItem::Size(_)))
+    {
+        write_sized_sequence(
+            w,
+            nodes,
+            inherited,
+            explicit_row,
+            carried,
+            classify,
+            |w, node, style| emit(w, node, style),
+        )?;
+        return Ok(());
+    }
+    let switch = |node: &T| match classify(node) {
+        RowItem::Style(value) => Some(value),
+        _ => None,
+    };
+    let grouped = explicit_row && needs_mrow(nodes, switch);
     if grouped {
         w.write_event(Event::Start(BytesStart::new("mrow")))
             .map_err(to_err)?;
     }
-    for (decls, run) in style_runs(nodes, switch) {
-        let active_style = if decls.is_some() {
-            start_declared_style(w, decls, inherited)?
+    for (style, run) in style_runs(nodes, switch) {
+        let active_style = if let Some(marker) = style {
+            start_math_style_marker(w, marker)?
         } else {
             inherited
         };
-        let outer_size = w.enter_size(decls.size);
         for node in run {
             emit(w, node, active_style)?;
         }
-        w.size_per_mille = outer_size;
-        if decls.is_some() {
+        if style.is_some() {
             w.write_event(Event::End(BytesEnd::new("mstyle")))
                 .map_err(to_err)?;
         }
@@ -497,11 +723,13 @@ fn write_nodes(
         nodes,
         inherited,
         explicit_row,
-        node_declaration,
+        &mut None,
+        row_item,
         write_node,
     )
 }
 
+#[inline(always)]
 fn write_nodes_fast(
     buf: &mut XmlBuffer,
     arena: &AstArena,
@@ -509,9 +737,58 @@ fn write_nodes_fast(
     inherited: MathStyle,
     explicit_row: bool,
 ) {
+    if buf.has_sizes {
+        return write_sized_nodes_fast(buf, arena, nodes, inherited, explicit_row);
+    }
     write_style_sequence_fast(buf, arena, nodes, inherited, explicit_row, write_node_fast);
 }
 
+#[cold]
+#[inline(never)]
+fn write_sized_nodes_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    nodes: &[NodeId],
+    inherited: MathStyle,
+    explicit_row: bool,
+) {
+    write_sized_fast(
+        buf,
+        arena,
+        nodes,
+        inherited,
+        explicit_row,
+        &mut None,
+        write_node_fast,
+    );
+}
+
+#[cold]
+fn write_sized_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    nodes: &[NodeId],
+    inherited: MathStyle,
+    explicit_row: bool,
+    carried: &mut Option<u8>,
+    emit: impl Fn(&mut XmlBuffer, &AstArena, NodeId, MathStyle),
+) {
+    let written = write_sized_sequence(
+        buf,
+        nodes,
+        inherited,
+        explicit_row,
+        carried,
+        |&id| row_item_fast(arena, id),
+        |buf, &id, style| {
+            emit(buf, arena, id, style);
+            Ok(())
+        },
+    );
+    debug_assert!(written.is_ok(), "writing to a string cannot fail");
+}
+
+#[inline(always)]
 fn write_style_sequence_fast(
     buf: &mut XmlBuffer,
     arena: &AstArena,
@@ -520,23 +797,27 @@ fn write_style_sequence_fast(
     explicit_row: bool,
     emit: impl Fn(&mut XmlBuffer, &AstArena, NodeId, MathStyle),
 ) {
-    let switch = |&id: &NodeId| compact_declaration(*arena.node(id));
+    let switch = |&id: &NodeId| {
+        if let CompactNode::StyleSwitch(value) = *arena.node(id) {
+            Some(value)
+        } else {
+            None
+        }
+    };
     let grouped = explicit_row && needs_mrow(nodes, switch);
     if grouped {
         open_tag(buf, "mrow");
     }
-    for (decls, run) in style_runs(nodes, switch) {
-        let active_style = if decls.is_some() {
-            start_declared_style_fast(buf, decls, inherited)
+    for (style, run) in style_runs(nodes, switch) {
+        let active_style = if let Some(marker) = style {
+            start_math_style_marker_fast(buf, marker)
         } else {
             inherited
         };
-        let outer_size = buf.enter_size(decls.size);
         for &id in run {
             emit(buf, arena, id, active_style);
         }
-        buf.size_per_mille = outer_size;
-        if decls.is_some() {
+        if style.is_some() {
             close_tag(buf, "mstyle");
         }
     }
@@ -567,10 +848,12 @@ fn write_node_in(
         MathNode::Operator(attr) => write_named_operator(w, &attr.name, attr.limit_style, false),
         MathNode::Symbol(kind, s) => write_symbol_node(w, *kind, s),
         MathNode::Text(style, s) => write_text(w, *style, s),
-        MathNode::Space(r) => write_mspace(w, *r),
-        MathNode::ExplicitSpace { width, basis } => {
-            write_mspace(w, w.space_width(*width, Some(*basis), display_style))
-        },
+        MathNode::Space(r) => write_mspace(w, *r, None),
+        MathNode::ExplicitSpace { width, basis } => write_mspace(
+            w,
+            w.space_width(*width, Some(*basis), display_style),
+            (*basis == SpaceBasis::Physical).then_some(*width),
+        ),
         MathNode::Rule {
             width,
             height,
@@ -611,30 +894,34 @@ fn write_node_in(
                 stretch_endpoints,
             )?;
 
-            // Content
+            // Content. A size declaration lasts across a `\middle`.
+            let mut carried = None;
             for segment in content.split_inclusive(|item| matches!(item, FencedItem::Middle(_))) {
                 let (elements, middle) = match segment.split_last() {
                     Some((FencedItem::Middle(delim), prefix)) => (prefix, Some(delim)),
                     _ => (segment, None),
+                };
+                let classify = |item: &FencedItem| match item {
+                    FencedItem::Element(node) => row_item(node),
+                    FencedItem::Middle(_) => RowItem::Other,
+                };
+                let emit = |w: &mut XmlWriter, item: &FencedItem, style| match item {
+                    FencedItem::Element(MathNode::Symbol(SymbolKind::Fence, text))
+                        if is_literal_fence_glyph(text) =>
+                    {
+                        write_literal_fence(w, text)
+                    },
+                    FencedItem::Element(node) => write_node(w, node, style),
+                    FencedItem::Middle(_) => Ok(()),
                 };
                 write_sequence(
                     w,
                     elements,
                     display_style,
                     false,
-                    |item| match item {
-                        FencedItem::Element(node) => node_declaration(node),
-                        FencedItem::Middle(_) => None,
-                    },
-                    |w, item, style| match item {
-                        FencedItem::Element(MathNode::Symbol(SymbolKind::Fence, text))
-                            if is_literal_fence_glyph(text) =>
-                        {
-                            write_literal_fence(w, text)
-                        },
-                        FencedItem::Element(node) => write_node(w, node, style),
-                        FencedItem::Middle(_) => Ok(()),
-                    },
+                    &mut carried,
+                    classify,
+                    emit,
                 )?;
                 if let Some(delim) = middle {
                     write_mo_middle(w, delim)?;
@@ -1373,7 +1660,10 @@ fn write_text(w: &mut XmlWriter, style: TextStyle, text: &str) -> Result<()> {
 
 /// CSS width is nonnegative. A logical start margin gives a negative TeX
 /// space its signed advance in a MathML layout.
-fn write_mspace(w: &mut XmlWriter, width: Rational) -> Result<()> {
+/// `physical` is the full width of a space that is a TeX length, kept for the
+/// reader in [`KERN_ATTRIBUTE`]: `width` is relative to the current font, the
+/// only unit that follows the size a formula is shown at.
+fn write_mspace(w: &mut XmlWriter, width: Rational, physical: Option<Rational>) -> Result<()> {
     let mut tag = BytesStart::new("mspace");
     let mut value = String::new();
     if width.num < 0 {
@@ -1386,8 +1676,17 @@ fn write_mspace(w: &mut XmlWriter, width: Rational) -> Result<()> {
         if width.num < 0 { "style" } else { "width" },
         value.as_str(),
     ));
+    if let Some(physical) = physical {
+        let mut kern = String::new();
+        physical.write_scaled_decimal(&mut kern, 10);
+        kern.push_str("pt");
+        tag.push_attribute((KERN_ATTRIBUTE, kern.as_str()));
+    }
     w.write_event(Event::Empty(tag)).map_err(to_err)
 }
+
+/// The TeX length of a physical space on its `mspace`, in TeX points.
+pub(crate) const KERN_ATTRIBUTE: &str = "data-mathema-kern";
 
 fn identifier_variant(s: &str, font: Option<TextStyle>) -> Option<&'static str> {
     font.map(style_to_mathvariant)
@@ -1868,14 +2167,23 @@ fn write_node_fast_in(
         },
         CompactNode::Text(style, sid) => write_text_fast(buf, style, arena.str_val(sid)),
         CompactNode::Space(r) => {
-            let width = buf.space_width(r, arena.space_basis(id), display_style);
+            let basis = arena.space_basis(id);
+            let width = buf.space_width(r, basis, display_style);
             if width.num < 0 {
                 buf.push_str("<mspace width=\"0em\" style=\"margin-inline-start:");
             } else {
                 buf.push_str("<mspace width=\"");
             }
             width.write_scaled_decimal(buf, 1);
-            buf.push_str("em\"/>");
+            buf.push_str("em\"");
+            if basis == Some(SpaceBasis::Physical) {
+                buf.push(' ');
+                buf.push_str(KERN_ATTRIBUTE);
+                buf.push_str("=\"");
+                r.write_scaled_decimal(buf, 10);
+                buf.push_str("pt\"");
+            }
+            buf.push_str("/>");
         },
 
         CompactNode::Row(span) => {
@@ -1902,6 +2210,8 @@ fn write_node_fast_in(
                 stretch_endpoints,
             );
 
+            // A size declaration lasts across a `\middle`.
+            let mut carried = None;
             for segment in arena
                 .children(content)
                 .split_inclusive(|&id| matches!(arena.node(id), CompactNode::Middle(_)))
@@ -1909,10 +2219,10 @@ fn write_node_fast_in(
                 if let Some((&last, prefix)) = segment.split_last()
                     && let CompactNode::Middle(sid) = *arena.node(last)
                 {
-                    write_nodes_fenced_fast(buf, arena, prefix, display_style);
+                    write_nodes_fenced_fast(buf, arena, prefix, display_style, &mut carried);
                     write_mo_middle_fast(buf, arena.str_val(sid));
                 } else {
-                    write_nodes_fenced_fast(buf, arena, segment, display_style);
+                    write_nodes_fenced_fast(buf, arena, segment, display_style, &mut carried);
                 }
             }
 
@@ -2387,6 +2697,9 @@ fn write_node_fast_in(
             buf.push_str("/>");
         },
         CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_) => {
+            if !buf.has_sizes && matches!(*arena.node(id), CompactNode::SizeScale(_)) {
+                buf.missed_size = true;
+            }
             if single_argument {
                 buf.push_str("<mrow/>");
             }
@@ -3117,24 +3430,39 @@ fn write_nodes_fenced_fast(
     arena: &AstArena,
     nodes: &[NodeId],
     display_style: MathStyle,
+    carried: &mut Option<u8>,
 ) {
+    if buf.has_sizes {
+        return write_sized_fast(
+            buf,
+            arena,
+            nodes,
+            display_style,
+            false,
+            carried,
+            write_fenced_node_fast,
+        );
+    }
     write_style_sequence_fast(
         buf,
         arena,
         nodes,
         display_style,
         false,
-        |buf, arena, id, style| {
-            if let CompactNode::Symbol(SymbolKind::Fence, sid) = *arena.node(id) {
-                let text = arena.str_val(sid);
-                if is_literal_fence_glyph(text) {
-                    write_literal_fence_fast(buf, text);
-                    return;
-                }
-            }
-            write_node_fast(buf, arena, id, style);
-        },
+        write_fenced_node_fast,
     );
+}
+
+#[inline]
+fn write_fenced_node_fast(buf: &mut XmlBuffer, arena: &AstArena, id: NodeId, style: MathStyle) {
+    if let CompactNode::Symbol(SymbolKind::Fence, sid) = *arena.node(id) {
+        let text = arena.str_val(sid);
+        if is_literal_fence_glyph(text) {
+            write_literal_fence_fast(buf, text);
+            return;
+        }
+    }
+    write_node_fast(buf, arena, id, style);
 }
 
 fn compact_fenced_content_needs_stretch(arena: &AstArena, content: NodeSpan) -> bool {

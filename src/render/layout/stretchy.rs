@@ -484,7 +484,13 @@ pub(super) fn layout_fenced(
     for item in content {
         match item {
             FencedItem::Element(MathNode::StyleSwitch(value)) => {
+                // A size, unlike a style, lasts across a `\middle`.
+                let size_scale = current_ctx.size_scale;
                 current_ctx = ctx.with_switch(*value);
+                current_ctx.size_scale = size_scale;
+            },
+            FencedItem::Element(MathNode::SizeSwitch(idx)) => {
+                current_ctx.size_scale = size_scale_factor(*idx);
             },
             FencedItem::Element(n) => {
                 let child = layout_node(n, &current_ctx);
@@ -508,7 +514,9 @@ pub(super) fn layout_fenced(
             },
             FencedItem::Middle(delim) => {
                 laid_out.push(FencePart::Middle(delim.as_str()));
+                let size_scale = current_ctx.size_scale;
                 current_ctx = ctx.clone();
+                current_ctx.size_scale = size_scale;
             },
         }
     }
@@ -680,11 +688,19 @@ pub(super) fn layout_fenced_arena(
     for &child_id in content_children {
         match *ast.node(child_id) {
             CompactNode::StyleSwitch(value) => {
+                // A size, unlike a style, lasts across a `\middle`.
+                let size_scale = current_ctx.size_scale;
                 current_ctx = ctx.with_switch(value);
+                current_ctx.size_scale = size_scale;
+            },
+            CompactNode::SizeScale(idx) => {
+                current_ctx.size_scale = size_scale_factor(idx);
             },
             CompactNode::Middle(sid) => {
                 laid_out.push(FencePart::Middle(ast.str_val(sid)));
+                let size_scale = current_ctx.size_scale;
                 current_ctx = ctx.clone();
+                current_ctx.size_scale = size_scale;
             },
             _ => {
                 let laid = layout_node_arena(ast, child_id, arena, &current_ctx);

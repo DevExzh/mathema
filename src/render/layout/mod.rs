@@ -390,12 +390,11 @@ fn italic_correction(base: &LayoutBox) -> f64 {
     }
 }
 
-/// Font size scale factors for LaTeX sizing commands (\tiny..\Huge).
 /// Scale factor of a `\tiny` … `\Huge` declaration (`SizeScale` index).
+/// Like the writers, reads an index past the last one as `\Huge`.
 fn size_scale_factor(idx: u8) -> f64 {
-    crate::ast::SIZE_SCALE_PER_MILLE
-        .get(usize::from(idx))
-        .map_or(1.0, |&per_mille| f64::from(per_mille) / 1000.0)
+    let sizes = crate::ast::SIZE_SCALE_PER_MILLE;
+    f64::from(sizes[usize::from(idx).min(sizes.len() - 1)]) / 1000.0
 }
 
 #[derive(Clone)]
@@ -562,8 +561,15 @@ fn layout_lines(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     let mut width: f64 = 0.0;
     let mut cursor_y = 0.0;
     let mut children = Vec::new();
-    for line in nodes.split(|node| matches!(node, MathNode::LineBreak)) {
-        let line = layout_row(line, ctx);
+    // A size declaration lasts past the break.
+    let mut line_ctx = ctx.clone();
+    for nodes in nodes.split(|node| matches!(node, MathNode::LineBreak)) {
+        let line = layout_row(nodes, &line_ctx);
+        for node in nodes {
+            if let MathNode::SizeSwitch(idx) = node {
+                line_ctx.size_scale = size_scale_factor(*idx);
+            }
+        }
         width = width.max(line.width);
         cursor_y += line.height.max(0.7 * baselineskip);
         let baseline = cursor_y;
@@ -1605,16 +1611,23 @@ fn layout_row_arena(
     let baselineskip = 1.2 * size;
     let mut line_ids: Vec<LayoutBoxId> = Vec::new();
     let mut line_start = 0;
+    // A size declaration lasts past the break.
+    let mut line_ctx = ctx.clone();
 
     for i in 0..ids.len() {
         if matches!(*ast.node(ids[i]), CompactNode::Newline) {
-            let line = layout_row_segment_arena(ast, &ids[line_start..i], arena, ctx);
+            let line = layout_row_segment_arena(ast, &ids[line_start..i], arena, &line_ctx);
+            for &id in &ids[line_start..i] {
+                if let CompactNode::SizeScale(idx) = *ast.node(id) {
+                    line_ctx.size_scale = size_scale_factor(idx);
+                }
+            }
             line_ids.push(line);
             line_start = i + 1;
         }
     }
     // Last segment after final newline
-    let line = layout_row_segment_arena(ast, &ids[line_start..], arena, ctx);
+    let line = layout_row_segment_arena(ast, &ids[line_start..], arena, &line_ctx);
     line_ids.push(line);
 
     if line_ids.len() == 1 {

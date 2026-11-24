@@ -2598,3 +2598,23 @@ fn heap_and_compact_draw_sizes_and_line_breaks_alike() {
         );
     }
 }
+
+/// As in KaTeX, a size lasts past a line break and a `\middle`, and applies
+/// inside fences and font commands.
+#[test]
+fn sizes_reach_every_list() {
+    for latex in [
+        r"\tiny a \\ b",
+        r"\left(\tiny x\middle|y\right)",
+        r"\mathbf{\tiny x}",
+    ] {
+        let parsed = mathema::from_latex(latex).unwrap();
+        let svg = mathema::render::render_to_svg_compact(
+            parsed.compact_expr(),
+            &mathema::render::RenderOptions::default(),
+        )
+        .unwrap();
+        assert!(svg.contains(r#"font-size="8""#), "{svg}");
+        assert!(!svg.contains(r#"font-size="16""#), "{latex}: {svg}");
+    }
+}

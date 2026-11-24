@@ -112,6 +112,8 @@ pub struct AstArena {
     /// refused to grow past the 32-bit index space; reported by
     /// [`check_limits`](Self::check_limits).
     size_overflow: bool,
+    /// See [`has_size_scale`](Self::has_size_scale).
+    has_size_scale: bool,
     /// [`MAX_ENTRIES`](Self::MAX_ENTRIES), lowered by tests.
     entry_limit: usize,
 }
@@ -128,6 +130,7 @@ impl AstArena {
             str_starts: vec![0],
             list_overflow: false,
             size_overflow: false,
+            has_size_scale: false,
             entry_limit: Self::MAX_ENTRIES,
         }
     }
@@ -146,6 +149,7 @@ impl AstArena {
             str_starts,
             list_overflow: false,
             size_overflow: false,
+            has_size_scale: false,
             entry_limit: Self::MAX_ENTRIES,
         }
     }
@@ -168,8 +172,15 @@ impl AstArena {
             self.size_overflow = true;
             return NodeId::new((id - 1) as u32);
         }
+        self.has_size_scale |= matches!(node, CompactNode::SizeScale(_));
         self.nodes.push(node);
         NodeId::new(id as u32)
+    }
+
+    /// Whether a size declaration was pushed. One stored through
+    /// [`node_mut`](Self::node_mut) is not counted.
+    pub(crate) fn has_size_scale(&self) -> bool {
+        self.has_size_scale
     }
 
     /// Push a spacing node while retaining its source unit basis.
