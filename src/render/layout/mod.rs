@@ -404,6 +404,8 @@ struct LayoutCtx<'a> {
     options: &'a RenderOptions,
     depth: u32,
     size_scale: f64,
+    /// The size of ordinary text in points, for sizes in points.
+    base_pt: f32,
     /// When set, use this style for inter-atom spacing calculations instead of
     /// `self.style`.  This allows fraction numerators/denominators to preserve
     /// medium/thick spacing even when the layout style drops to Script or below.
@@ -433,6 +435,7 @@ impl<'a> LayoutCtx<'a> {
             options: self.options,
             depth: self.depth,
             size_scale: self.size_scale,
+            base_pt: self.base_pt,
             spacing_style: self.spacing_style,
             display_choice: false,
             styled_face: self.styled_face,
@@ -459,6 +462,16 @@ impl<'a> LayoutCtx<'a> {
         next
     }
 
+    /// The context of a node with attributes. A size is that of its text
+    /// whatever the style.
+    fn with_attrs(&self, attrs: &crate::ast::NodeAttrs) -> LayoutCtx<'a> {
+        let mut next = self.clone();
+        if let Some(size) = attrs.size {
+            next.size_scale = size.scale(f64::from(self.base_pt)) / self.style.size_multiplier();
+        }
+        next
+    }
+
     fn with_switch(&self, marker: u8) -> LayoutCtx<'a> {
         let mut next = self.with_style(MathStyle::from_switch(marker));
         next.display_choice = MathStyle::marker_is_display(marker);
@@ -473,6 +486,7 @@ impl<'a> LayoutCtx<'a> {
             options: self.options,
             depth: self.depth + 1,
             size_scale: self.size_scale,
+            base_pt: self.base_pt,
             spacing_style: self.spacing_style,
             display_choice: self.display_choice,
             styled_face: self.styled_face,
@@ -490,6 +504,7 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
         options,
         depth: 0,
         size_scale: 1.0,
+        base_pt: crate::ast::attrs::base_size_pt(Some(&expr.meta)) as f32,
         spacing_style: None,
         display_choice: false,
         styled_face: None,
@@ -874,6 +889,7 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
         MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_) | MathNode::LineBreak => {
             LayoutBox::kern(0.0)
         },
+        MathNode::Attributed { attrs, content } => layout_node(content, &ctx.with_attrs(attrs)),
     }
 }
 
@@ -1251,6 +1267,7 @@ impl<'a> LayoutBuilder<'a> {
             options: self.options,
             depth: 0,
             size_scale: 1.0,
+            base_pt: crate::ast::attrs::base_size_pt(expr.meta.as_deref()) as f32,
             spacing_style: None,
             display_choice: false,
             styled_face: None,
@@ -1266,6 +1283,8 @@ struct ArenaLayoutCtx<'a> {
     options: &'a RenderOptions,
     depth: u32,
     size_scale: f64,
+    /// The size of ordinary text in points, for sizes in points.
+    base_pt: f32,
     /// When set, use this style for inter-atom spacing calculations instead of
     /// `self.style`.  See `LayoutCtx::spacing_style` for rationale.
     spacing_style: Option<MathStyle>,
@@ -1290,6 +1309,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             options: self.options,
             depth: self.depth,
             size_scale: self.size_scale,
+            base_pt: self.base_pt,
             spacing_style: self.spacing_style,
             display_choice: false,
             styled_face: self.styled_face,
@@ -1316,6 +1336,16 @@ impl<'a> ArenaLayoutCtx<'a> {
         next
     }
 
+    /// The context of a node with attributes. A size is that of its text
+    /// whatever the style.
+    fn with_attrs(&self, attrs: &crate::ast::NodeAttrs) -> ArenaLayoutCtx<'a> {
+        let mut next = self.clone();
+        if let Some(size) = attrs.size {
+            next.size_scale = size.scale(f64::from(self.base_pt)) / self.style.size_multiplier();
+        }
+        next
+    }
+
     fn with_switch(&self, marker: u8) -> ArenaLayoutCtx<'a> {
         let mut next = self.with_style(MathStyle::from_switch(marker));
         next.display_choice = MathStyle::marker_is_display(marker);
@@ -1329,6 +1359,7 @@ impl<'a> ArenaLayoutCtx<'a> {
             options: self.options,
             depth: self.depth + 1,
             size_scale: self.size_scale,
+            base_pt: self.base_pt,
             spacing_style: self.spacing_style,
             display_choice: self.display_choice,
             styled_face: self.styled_face,
@@ -1761,6 +1792,14 @@ fn layout_node_arena(
     if ctx.depth >= MAX_LAYOUT_DEPTH {
         return arena.alloc(ArenaLayoutBox::kern(0.0));
     }
+    let sized;
+    let ctx = match ast.attrs(id) {
+        Some(attrs) => {
+            sized = ctx.with_attrs(attrs);
+            &sized
+        },
+        None => ctx,
+    };
     let ctx = &ctx.deeper();
     match *ast.node(id) {
         CompactNode::Number(sid) => match ctx.styled_face {

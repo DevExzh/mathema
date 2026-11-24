@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::attrs::NodeAttrs;
 use super::compact::{CompactNode, NodeId, NodeSpan, StrId};
 use super::{ColumnAlign, MatrixKind, SpaceBasis, SpanBoundary};
 
@@ -100,6 +101,8 @@ pub struct AstArena {
     nodes: Vec<CompactNode>,
     /// Sparse provenance for explicitly typed spaces and parsed table forms.
     provenance: ProvenanceStore,
+    /// Typesetting attributes of the nodes that have any.
+    attrs: Option<Box<HashMap<NodeId, NodeAttrs>>>,
     children: Vec<NodeId>,
     strings: String,
     /// Byte offsets into `strings`. String `i` spans `strings[str_starts[i]..str_starts[i+1]]`.
@@ -125,6 +128,7 @@ impl AstArena {
         Self {
             nodes: Vec::new(),
             provenance: ProvenanceStore::default(),
+            attrs: None,
             children: Vec::new(),
             strings: String::new(),
             str_starts: vec![0],
@@ -144,6 +148,7 @@ impl AstArena {
         Self {
             nodes: Vec::with_capacity(nodes),
             provenance: ProvenanceStore::default(),
+            attrs: None,
             children: Vec::with_capacity(children),
             strings: String::with_capacity(strings),
             str_starts,
@@ -354,6 +359,16 @@ impl AstArena {
             return;
         }
         self.nodes[destination.index()] = self.nodes[source.index()];
+        if self.attrs.is_some() {
+            // The wrapper's attributes applied to what it held.
+            let outer = self.attrs(destination).cloned();
+            let inner = self.attrs(source).cloned().unwrap_or_default();
+            let merged = inner.or(&outer.unwrap_or_default());
+            if let Some(store) = &mut self.attrs {
+                store.remove(&destination);
+            }
+            self.add_attrs(destination, &merged);
+        }
         if matches!(self.provenance, ProvenanceStore::Empty) {
             return;
         }
@@ -361,6 +376,70 @@ impl AstArena {
             self.provenance.insert(destination, provenance);
         } else {
             self.provenance.remove(destination);
+        }
+    }
+
+    // ── Typesetting attributes ─────────────────────────────────────────
+
+    /// Whether any node has typesetting attributes.
+    #[inline]
+    #[must_use]
+    pub fn has_attrs(&self) -> bool {
+        self.attrs.is_some()
+    }
+
+    /// The typesetting attributes of a node, if it has any of its own.
+    #[inline]
+    #[must_use]
+    pub fn attrs(&self, id: NodeId) -> Option<&NodeAttrs> {
+        self.attrs.as_ref()?.get(&id)
+    }
+
+    /// Give a node typesetting attributes; those it already has win. The
+    /// attributes of a `Row`, which is only a list, go to each of its
+    /// children, so that rows can be opened and unwrapped freely.
+    pub fn add_attrs(&mut self, id: NodeId, attrs: &NodeAttrs) {
+        // A refused push returns the last existing id (see `push_node`).
+        if attrs.is_empty() || self.size_overflow {
+            return;
+        }
+        let mut pending = vec![id];
+        while let Some(id) = pending.pop() {
+            match *self.node(id) {
+                CompactNode::Row(span) => pending.extend_from_slice(self.children(span)),
+                // These draw nothing and stand for no text.
+                CompactNode::StyleSwitch(_)
+                | CompactNode::SizeScale(_)
+                | CompactNode::Newline
+                | CompactNode::ColAlign(_)
+                | CompactNode::Middle(_) => {},
+                _ => {
+                    let store = self.attrs.get_or_insert_default();
+                    let own = store.remove(&id).unwrap_or_default();
+                    store.insert(id, own.or(attrs));
+                },
+            }
+        }
+    }
+
+    /// Move the attributes of a node that became a `Row` to its children.
+    pub(crate) fn settle_attrs(&mut self, id: NodeId) {
+        if let Some(store) = &mut self.attrs
+            && let Some(attrs) = store.remove(&id)
+        {
+            self.add_attrs(id, &attrs);
+        }
+    }
+
+    /// Remove every typesetting attribute.
+    pub(crate) fn clear_attrs(&mut self) {
+        self.attrs = None;
+    }
+
+    /// Give the nodes inside a wrapper about to be dropped its attributes.
+    pub(crate) fn move_attrs(&mut self, from: NodeId, to: NodeId) {
+        if let Some(attrs) = self.attrs(from).cloned() {
+            self.add_attrs(to, &attrs);
         }
     }
 
@@ -626,6 +705,10 @@ impl AstArena {
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<CompactNode>()
             + self.provenance.heap_bytes()
+            + self.attrs.as_ref().map_or(0, |attrs| {
+                size_of::<HashMap<NodeId, NodeAttrs>>()
+                    + attrs.capacity() * size_of::<(NodeId, NodeAttrs)>()
+            })
             + self.children.capacity() * size_of::<NodeId>()
             + self.strings.capacity()
             + self.str_starts.capacity() * size_of::<u32>()

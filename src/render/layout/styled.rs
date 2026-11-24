@@ -672,6 +672,15 @@ pub(super) fn layout_styled_node_arena(
 ) -> LayoutBoxId {
     use crate::unicode::fonts::styled_char;
 
+    let sized;
+    let ctx = match ast.attrs(id) {
+        Some(attrs) => {
+            sized = ctx.with_attrs(attrs);
+            &sized
+        },
+        None => ctx,
+    };
+
     match *ast.node(id) {
         CompactNode::Identifier(sid) => {
             let s = ast.str_val(sid);

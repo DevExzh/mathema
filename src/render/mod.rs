@@ -126,6 +126,10 @@ impl RenderOptions {
 pub fn render_to_svg(expr: &MathExpr, options: &RenderOptions) -> Result<String> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
+    // The arena layout looks at nodes, not at what carries their attributes.
+    if crate::ast::has_attributes(expr) {
+        return render_to_svg_compact(&CompactExpr::from_math_expr(expr)?, options);
+    }
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {
@@ -192,6 +196,9 @@ fn render_compact_svg(
 pub fn render_to_svg_standalone(expr: &MathExpr, options: &RenderOptions) -> Result<String> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
+    if crate::ast::has_attributes(expr) {
+        return render_to_svg_standalone_compact(&CompactExpr::from_math_expr(expr)?, options);
+    }
     let style = if options.is_display(expr) {
         style::MathStyle::Display
     } else {

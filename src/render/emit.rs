@@ -1147,10 +1147,7 @@ mod tests {
     }
 
     fn render_display(latex_nodes: Vec<MathNode>) -> String {
-        let expr = MathExpr {
-            nodes: latex_nodes,
-            display: crate::ast::DisplayStyle::Block,
-        };
+        let expr = MathExpr::block(latex_nodes);
         let options = RenderOptions::default();
         let root = layout_expr(&expr, MathStyle::Display, &options);
         emit_svg(&root, &options)

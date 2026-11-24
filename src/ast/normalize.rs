@@ -412,6 +412,10 @@ fn normalize_node_depth_with_identifiers(
     }
     let d = depth + 1;
     match node {
+        // What carries attributes stays apart from its neighbours.
+        MathNode::Attributed { content, .. } => {
+            normalize_node_depth_with_identifiers(content, d, merge_identifiers);
+        },
         MathNode::Row(children) => {
             normalize_nodes_depth_with_identifiers(children, d, merge_identifiers);
             // Unwrap single-child Row, except for an empty declaration group:
@@ -868,6 +872,9 @@ fn leading_scripts_on(
         && !matches!(*arena.node(next), CompactNode::Row(span) if has_direct_declaration(arena, span))
         && !is_empty_base_script(arena, next);
     Ok(takes.then(|| {
+        for part in [pre_sub, pre_sup].into_iter().filter(|part| part.is_some()) {
+            arena.move_attrs(script, part);
+        }
         arena.push_node(CompactNode::PreScripts {
             base: next,
             pre_sub,
@@ -908,7 +915,7 @@ fn merge_runs(
             let Some((next_kind, next_sid)) = key(arena, *arena.node(ids[end])) else {
                 break;
             };
-            if next_kind != kind {
+            if next_kind != kind || arena.attrs(ids[end]) != arena.attrs(first) {
                 break;
             }
             if kind == MergeKind::Number {
@@ -1168,6 +1175,7 @@ fn normalize_compact_node_with_identifiers(
                     let children: SmallVec<[NodeId; 8]> = arena.children(span).into();
                     let new_span = arena.push_children(&children)?;
                     *arena.node_mut(id) = CompactNode::Row(new_span);
+                    arena.settle_attrs(id);
                 },
                 _ => {
                     arena.replace_from(id, content);
@@ -1501,6 +1509,12 @@ pub(crate) fn make_script_with_base(
     base: NodeId,
     script_id: NodeId,
 ) -> NodeId {
+    // The base keeps its own size: the script's is its scripts'.
+    if let Some((sub, sup)) = empty_base_scripts(arena, script_id) {
+        for part in [sub, sup].into_iter().filter(|part| part.is_some()) {
+            arena.move_attrs(script_id, part);
+        }
+    }
     match *arena.node(script_id) {
         CompactNode::Subscript { sub, .. } => arena.push_node(CompactNode::Subscript { base, sub }),
         CompactNode::Superscript { sup, .. } => {

@@ -42,6 +42,7 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         return AtomType::Ord;
     }
     match node {
+        MathNode::Attributed { content, .. } => classify_node_depth(content, style, depth + 1),
         MathNode::Number(_) => AtomType::Ord,
         MathNode::Identifier(_) => AtomType::Ord,
         MathNode::Operator(_) | MathNode::StructuredOperator { .. } => AtomType::Op,

@@ -58,11 +58,7 @@ impl MathReader for MathmlReader {
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
                 Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr {
-                        arena: parser.arena,
-                        roots,
-                        display,
-                    },
+                    CompactExpr::new(parser.arena, roots, display),
                     parser.diagnostics,
                 ))
             },
@@ -76,11 +72,7 @@ impl MathReader for MathmlReader {
                         span: None,
                     });
                     Ok(CompactParseResult::with_diagnostics(
-                        CompactExpr {
-                            arena: parser.arena,
-                            roots: NodeSpan::EMPTY,
-                            display,
-                        },
+                        CompactExpr::new(parser.arena, NodeSpan::EMPTY, display),
                         diagnostics,
                     ))
                 } else {

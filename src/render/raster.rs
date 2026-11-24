@@ -107,6 +107,9 @@ impl RasterOptions {
 pub fn render_to_image(expr: &MathExpr, options: &RasterOptions) -> Result<Vec<u8>> {
     options.validate()?;
     crate::ast::validate_ast_depth(expr)?;
+    if crate::ast::has_attributes(expr) {
+        return render_to_image_compact(&CompactExpr::from_math_expr(expr)?, options);
+    }
     let style = if options.render.is_display(expr) {
         MathStyle::Display
     } else {

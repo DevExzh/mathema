@@ -172,11 +172,7 @@ impl MtefReader {
                 let mut arena = decoder.arena;
                 let roots = arena.push_children(&roots)?;
                 arena.check_limits()?;
-                let expr = CompactExpr {
-                    arena,
-                    roots,
-                    display,
-                };
+                let expr = CompactExpr::new(arena, roots, display);
                 Ok((
                     CompactParseResult::with_diagnostics(expr, decoder.diagnostics),
                     info,

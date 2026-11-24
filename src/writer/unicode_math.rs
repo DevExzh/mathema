@@ -105,6 +105,10 @@ fn write_unicode_space(out: &mut String, em: f64) {
 impl MathWriter for UnicodeMathWriter {
     fn write(expr: &MathExpr, _config: &Config) -> Result<String> {
         crate::ast::validate_ast_depth(expr)?;
+        // UnicodeMath has no font sizes: the compact writer looks past them.
+        if crate::ast::has_attributes(expr) {
+            return Self::write_compact(&CompactExpr::from_math_expr(expr)?, _config);
+        }
         let mut out = String::with_capacity(256);
         write_nodes_with_style(&mut out, &expr.nodes, MathStyle::from(expr.display));
         Ok(out)
@@ -253,6 +257,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Symbol(_, s) => out.push_str(s),
         MathNode::Text(_, s) => write_quoted_text(out, s),
         MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_) | MathNode::LineBreak => {},
+        MathNode::Attributed { content, .. } => write_node(out, content, style),
         MathNode::Space(r) => {
             write_unicode_space(out, r.as_f64());
         },

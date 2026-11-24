@@ -7,6 +7,8 @@
 
 /// Arena-backed storage for the compact AST representation.
 pub mod arena;
+/// Typesetting attributes of nodes and expressions.
+pub mod attrs;
 /// Compact, `Copy`-able arena-indexed AST node representation.
 pub mod compact;
 mod dangerous;
@@ -22,6 +24,8 @@ pub mod visit;
 
 use std::fmt;
 
+pub use attrs::{ExprMeta, FontSize, NodeAttrs, TypeSize};
+
 /// A complete math expression with display mode.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -31,6 +35,12 @@ pub struct MathExpr {
     pub nodes: Vec<MathNode>,
     /// Whether the expression renders as block (display) or inline math.
     pub display: DisplayStyle,
+    /// Facts about the expression as a whole.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "ExprMeta::is_empty")
+    )]
+    pub meta: ExprMeta,
 }
 
 /// Render mode of a math expression.
@@ -534,6 +544,16 @@ pub enum MathNode {
     /// `<mspace linebreak="newline"/>`). The compact representation is
     /// [`compact::CompactNode::Newline`].
     LineBreak,
+    /// A node with typesetting attributes, which the compact representation
+    /// keeps beside its nodes ([`arena::AstArena::attrs`]). Attributes of a
+    /// `Row` are those of its children there, so converting to the compact
+    /// representation and back moves them to each child.
+    Attributed {
+        /// The attributes.
+        attrs: NodeAttrs,
+        /// The node they apply to.
+        content: Box<MathNode>,
+    },
 }
 
 /// TeX math class of a symbol, controlling spacing and stretchiness.
@@ -875,7 +895,11 @@ impl MathExpr {
     /// Creates an expression from nodes with the given display mode.
     #[must_use]
     pub fn new(nodes: Vec<MathNode>, display: DisplayStyle) -> Self {
-        Self { nodes, display }
+        Self {
+            nodes,
+            display,
+            meta: ExprMeta::default(),
+        }
     }
 
     /// Creates an inline expression from the given nodes.
@@ -884,6 +908,7 @@ impl MathExpr {
         Self {
             nodes,
             display: DisplayStyle::Inline,
+            meta: ExprMeta::default(),
         }
     }
 
@@ -893,6 +918,7 @@ impl MathExpr {
         Self {
             nodes,
             display: DisplayStyle::Block,
+            meta: ExprMeta::default(),
         }
     }
 }
@@ -921,6 +947,24 @@ pub(crate) fn nearest_size_scale(scale: f64) -> Option<(u8, bool)> {
         })?;
     let exact = (f64::from(*per_mille) / 1000.0 / scale - 1.0).abs() <= 0.01;
     Some((index as u8, exact))
+}
+
+/// Whether any node of a heap tree has attributes.
+pub(crate) fn has_attributes(expr: &MathExpr) -> bool {
+    struct Finder(bool);
+    impl visit::Visitor for Finder {
+        fn visit_node(&mut self, node: &MathNode) {
+            if matches!(node, MathNode::Attributed { .. }) {
+                self.0 = true;
+            }
+            if !self.0 {
+                visit::walk_node(self, node);
+            }
+        }
+    }
+    let mut finder = Finder(false);
+    visit::Visitor::visit_expr(&mut finder, expr);
+    finder.0
 }
 
 /// Maximum allowed AST nesting depth for safe recursive traversal.
@@ -1100,6 +1144,12 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         | MathNode::StyleSwitch(_)
         | MathNode::SizeSwitch(_)
         | MathNode::LineBreak => Ok(()),
+        // Not a level of its own, as in the arena; only attributes nested
+        // directly, which no reader builds, count.
+        MathNode::Attributed { content, .. } => {
+            let nested = matches!(**content, MathNode::Attributed { .. });
+            check_node_depth(content, if nested { d } else { depth })
+        },
 
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {

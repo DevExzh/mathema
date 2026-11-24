@@ -291,6 +291,17 @@ fn arb_math_node() -> impl Strategy<Value = MathNode> {
                     atom_type,
                     content: Box::new(content),
                 }),
+            // Attributed: on a node of its own, not on a list or a declaration
+            1 => (inner.clone(), 1..=40i32).prop_map(|(n, points)| match n {
+                MathNode::Row(_)
+                | MathNode::Attributed { .. }
+                | MathNode::SizeSwitch(_)
+                | MathNode::LineBreak => n,
+                n => MathNode::Attributed {
+                    attrs: NodeAttrs::with_size(FontSize::Points(Rational::new(points, 1))),
+                    content: Box::new(n),
+                },
+            }),
             // Array (single cell, keeps the generator bounded)
             1 => inner.clone().prop_map(|n| MathNode::Array {
                 columns: vec![ColumnAlign::Center],

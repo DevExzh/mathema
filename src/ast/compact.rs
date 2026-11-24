@@ -465,6 +465,8 @@ pub struct CompactExpr {
     pub roots: NodeSpan,
     /// Display style (display vs. inline) of the whole expression.
     pub display: DisplayStyle,
+    /// Facts about the expression as a whole, if any are known.
+    pub meta: Option<Box<super::ExprMeta>>,
 }
 
 impl CompactExpr {
@@ -475,6 +477,7 @@ impl CompactExpr {
             arena,
             roots,
             display,
+            meta: None,
         }
     }
 
@@ -497,6 +500,7 @@ impl CompactExpr {
             arena,
             roots,
             display: expr.display,
+            meta: (!expr.meta.is_empty()).then(|| Box::new(expr.meta.clone())),
         })
     }
 
@@ -510,6 +514,7 @@ impl CompactExpr {
         MathExpr {
             nodes,
             display: self.display,
+            meta: self.meta.as_deref().cloned().unwrap_or_default(),
         }
     }
 }
@@ -886,6 +891,11 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
         MathNode::StyleSwitch(style) => arena.push_node(CompactNode::StyleSwitch(*style)),
         MathNode::SizeSwitch(scale) => arena.push_node(CompactNode::SizeScale(*scale)),
         MathNode::LineBreak => arena.push_node(CompactNode::Newline),
+        MathNode::Attributed { attrs, content } => {
+            let id = push_math_node(arena, content);
+            arena.add_attrs(id, attrs);
+            id
+        },
         MathNode::MathAtom { atom_type, content } => {
             let inner = push_math_node(arena, content);
             arena.push_node(CompactNode::MathAtom {
@@ -1044,6 +1054,17 @@ fn push_opt(arena: &mut AstArena, node: Option<&MathNode>) -> NodeId {
 // ── CompactNode → MathNode (arena reader) ──────────────────────────────
 
 fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
+    let node = reconstruct_bare_node(arena, id);
+    match arena.attrs(id) {
+        Some(attrs) => MathNode::Attributed {
+            attrs: attrs.clone(),
+            content: Box::new(node),
+        },
+        None => node,
+    }
+}
+
+fn reconstruct_bare_node(arena: &AstArena, id: NodeId) -> MathNode {
     match *arena.node(id) {
         CompactNode::Number(sid) => MathNode::Number(arena.str_val(sid).to_owned()),
         CompactNode::Identifier(sid) => MathNode::Identifier(arena.str_val(sid).to_owned()),

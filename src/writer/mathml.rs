@@ -112,6 +112,9 @@ impl MathWriter for MathmlWriter {
         writer.write_event(Event::Start(math)).map_err(to_err)?;
 
         write_nodes(&mut writer, &expr.nodes, expr.display.into(), false)?;
+        if writer.met_attributes {
+            return Self::write_compact(&CompactExpr::from_math_expr(expr)?, _config);
+        }
 
         writer
             .write_event(Event::End(BytesEnd::new("math")))
@@ -177,6 +180,10 @@ struct MathOutput<T> {
     /// of one that does not skip the size handling. Set by the arena writer
     /// only; the heap writer looks at each row.
     has_sizes: bool,
+    /// Whether the heap writer met a node with attributes: the expression is
+    /// then written from the compact representation, whose writer looks at
+    /// nodes rather than at what carries their attributes.
+    met_attributes: bool,
     /// Whether a size declaration was met with `has_sizes` unset.
     missed_size: bool,
 }
@@ -189,6 +196,7 @@ impl<T> MathOutput<T> {
             size_per_mille: 1000,
             has_sizes: false,
             missed_size: false,
+            met_attributes: false,
         }
     }
     /// A space's width in ems of the current font. Only a physical length is
@@ -1526,6 +1534,10 @@ fn write_node_in(
                 w.write_event(Event::Empty(BytesStart::new("mrow")))
                     .map_err(to_err)?;
             }
+            Ok(())
+        },
+        MathNode::Attributed { .. } => {
+            w.met_attributes = true;
             Ok(())
         },
         MathNode::LineBreak => {
