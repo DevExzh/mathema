@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The MTEF reader accepts more real MathType output in `Strictness::Strict`:
+  the short buffer slack after the final END of an `Equation Native` stream
+  (an error before; unless it decodes as equation content), MTEF 5 tab stops
+  written without a RULER tag, and Spacing-style characters written as bare
+  codes. In Lenient mode that slack is now an Info diagnostic instead of a
+  Warning.
+- The MTEF reader reads Fraktur letters and script capitals in Euclid Fraktur
+  and Euclid Math One, and Adobe's private-use Symbol pieces, as what they
+  are (kept as private-use characters with a warning before). The MTEF 5
+  writer writes `\mathfrak` letters and `\mathcal` capitals in those fonts
+  (written as plain variables before); small script letters and MTEF 3 stay
+  a reported loss.
+- In MTEF, leading scripts stay outside the trailing scripts of the same base
+  (`{}_a b_c`), and limits that draw nothing are dropped at once, with a
+  writer warning, instead of one nesting level per write.
+
 - **Breaking (behavior):** `\hbar`, `\hslash`, `\ell`, `\Re`, `\Im`, the
   Hebrew letters, `\imath`, `\jmath` and `\eth` are identifiers (MathML
   `<mi>`, as KaTeX and MathJax write them) instead of ordinary symbols.

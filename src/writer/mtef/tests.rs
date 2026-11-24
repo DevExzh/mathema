@@ -317,7 +317,7 @@ fn v3() -> MtefWriteOptions {
 fn v5_body(data: &[u8]) -> &[u8] {
     let key_end = 5 + data[5..].iter().position(|&b| b == 0).unwrap();
     let body = &data[key_end + 2..];
-    let prelude = [V5_DEFINITIONS, V5_PREFERENCES, far_east_style(false)].concat();
+    let prelude = [V5_DEFINITIONS, V5_PREFERENCES, far_east_style(false, false)].concat();
     assert_eq!(&body[..prelude.len()], prelude.as_slice());
     &body[prelude.len()..]
 }
@@ -866,7 +866,7 @@ fn far_east_text_uses_its_style_and_font() {
         V5_DEFINITIONS,
         V5_FAR_EAST_DEFINITIONS,
         V5_PREFERENCES,
-        far_east_style(true),
+        far_east_style(true, false),
     ]
     .concat();
     let key_end = 5 + data[5..].iter().position(|&b| b == 0).unwrap();
@@ -951,6 +951,92 @@ fn unruled_native_matrix_and_pile_report_padding_loss() {
 }
 
 #[test]
+fn fraktur_and_script_letters_use_the_euclid_fonts() {
+    let result = crate::from_latex(r"\mathfrak{Bg}+\mathcal{N}").unwrap();
+    let (data, diagnostics) = result
+        .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::default())
+        .unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    // MTCode U+F001 ('B') and U+F020 ('g') in Euclid Fraktur, U+F10D ('N')
+    // in Euclid Math One, each with its font position.
+    assert!(data.windows(4).any(|w| w == [0x01, 0xF0, b'B', 0x02]));
+    assert!(data.windows(3).any(|w| w == [0x20, 0xF0, b'g']));
+    assert!(data.windows(3).any(|w| w == [0x0D, 0xF1, b'N']));
+    assert!(data.windows(14).any(|w| w == b"Euclid Fraktur"));
+    let back = crate::from_mtef_bytes(&data).unwrap();
+    let nodes = format!("{:?}", back.expr().nodes);
+    assert!(
+        nodes.contains(r#"Styled(Fraktur, [Identifier("B"), Identifier("g")])"#)
+            && nodes.contains(r#"Styled(Script, [Identifier("N")])"#),
+        "{nodes}"
+    );
+    let again = back.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    assert_eq!(again, data);
+}
+
+#[test]
+fn alphabets_and_far_east_text_get_distinct_fonts() {
+    let result =
+        crate::from_mathml("<math><mi mathvariant=\"fraktur\">A</mi><mtext>中</mtext></math>")
+            .unwrap();
+    let data = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    let back = crate::from_mtef_bytes(&data).unwrap();
+    assert_eq!(back.to_mathml().unwrap(), result.to_mathml().unwrap());
+    // The Far East font (FONT_DEF 7) uses its own encoding (ENCODING_DEF 8).
+    assert!(data.windows(3).any(|w| w == [0x11, 8, b'S']));
+}
+
+#[test]
+fn small_script_letters_are_a_reported_loss() {
+    let result = crate::from_latex(r"\mathcal{n}").unwrap();
+    let (data, diagnostics) = result
+        .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::default())
+        .unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("math alphabet"))
+    );
+    assert_eq!(
+        crate::from_mtef_bytes(&data).unwrap().to_latex().unwrap(),
+        "n"
+    );
+}
+
+#[test]
+fn empty_limits_are_a_reported_loss() {
+    let result = crate::from_latex(r"\underset{\underset{}{}}{x}").unwrap();
+    let (data, diagnostics) = result
+        .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::default())
+        .unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("empty limits")),
+        "{diagnostics:?}"
+    );
+    let back = crate::from_mtef_bytes(&data).unwrap();
+    let again = back.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    let third = crate::from_mtef_bytes(&again).unwrap();
+    assert_eq!(
+        third.to_mtef_bytes(&MtefWriteOptions::default()).unwrap(),
+        again
+    );
+}
+
+#[test]
+fn mtef_3_has_no_math_alphabets() {
+    let result = crate::from_latex(r"\mathfrak{B}").unwrap();
+    let (_, diagnostics) = result
+        .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(MtefVersion::V3))
+        .unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("math alphabet"))
+    );
+}
+
 fn dashed_partition_lines_round_trip() {
     let result =
         crate::from_latex(r"\begin{array}{l:l|l} a & b & c \\ \hdashline d & e & f \end{array}")

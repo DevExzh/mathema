@@ -183,6 +183,46 @@ fn matrix_bomb_in_a_real_equation_stays_small() {
     assert!(result.compact_expr().arena.node_count() < 200);
 }
 
+#[test]
+fn equation_native_buffer_slack_is_noted_not_refused() {
+    // Equation Editor and MathType declare the whole buffer the equation was
+    // written into; the bytes after the final END are leftovers.
+    for name in ["govdocs-v3-buffer-slack", "govdocs-v5-buffer-slack"] {
+        let bytes = std::fs::read(fixture_dir().join(format!("{name}.bin"))).unwrap();
+        let result = from_mtef_bytes(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(
+            result
+                .diagnostics()
+                .iter()
+                .any(|d| d.kind == DiagnosticKind::Info && d.message.contains("slack")),
+            "{name}: {:?}",
+            result.diagnostics()
+        );
+    }
+    // The same bytes after bare MTEF data are still refused.
+    let bytes = std::fs::read(fixture_dir().join("govdocs-v3-buffer-slack.bin")).unwrap();
+    assert!(from_mtef_bytes(&bytes[28..]).is_err());
+}
+
+#[test]
+fn mathtype_alphabets_and_spaces_decode_without_private_use_or_replacement_characters() {
+    for name in [
+        "govdocs-v5-bare-space-codes",
+        "govdocs-v5-fraktur",
+        "govdocs-v5-script",
+        "govdocs-v5-symbol-arrow-extension",
+    ] {
+        let bytes = std::fs::read(fixture_dir().join(format!("{name}.bin"))).unwrap();
+        let mathml = from_mtef_bytes(&bytes).unwrap().to_mathml().unwrap();
+        assert!(
+            !mathml
+                .chars()
+                .any(|c| c == '\u{FFFD}' || ('\u{E000}'..='\u{F8FF}').contains(&c)),
+            "{name}: {mathml}"
+        );
+    }
+}
+
 /// Decode every `.bin` file of the directory named by `MATHEMA_MTEF_CORPUS`
 /// in Strict mode; none may fail or come out empty.
 #[test]

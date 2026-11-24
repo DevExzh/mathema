@@ -415,9 +415,11 @@ impl Decoder<'_> {
         }
     }
 
-    /// A slot that holds something (not null and not an empty line).
+    /// A slot that draws something (not null and not an empty line, also not
+    /// one holding only empty structures, which would become an empty line
+    /// when written again).
     fn take_filled(&mut self, slots: &mut [Option<NodeId>], index: usize) -> Option<NodeId> {
-        Self::take(slots, index).filter(|&id| !self.is_empty_row(id))
+        Self::take(slots, index).filter(|&id| !self.draws_nothing(id))
     }
 
     fn line_mark(&mut self) -> Result<NodeId> {

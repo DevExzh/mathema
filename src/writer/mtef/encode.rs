@@ -148,6 +148,12 @@ pub(super) struct Encoder<'a> {
     too_deep: bool,
     /// Set when Far East text was written (MTEF 5 then defines its font).
     pub(super) far_east: bool,
+    /// Set when a Fraktur or script letter was written (MTEF 5 then defines
+    /// the Euclid Fraktur and Euclid Math One fonts).
+    pub(super) alphabets: bool,
+    /// Typeface values of the explicit Euclid Fraktur and Euclid Math One
+    /// fonts, plain and bold, once defined.
+    alphabet_typefaces: [[Option<i32>; 2]; 2],
     /// The item count when the innermost `Styled` node began: its own
     /// letters continue one run and need no separator.
     styled_start: Option<usize>,
@@ -189,6 +195,8 @@ impl<'a> Encoder<'a> {
             open: Vec::new(),
             too_deep: false,
             far_east: false,
+            alphabets: false,
+            alphabet_typefaces: [[None; 2]; 2],
             styled_start: None,
             style: None,
             colors: Vec::new(),
@@ -973,6 +981,18 @@ impl<'a> Encoder<'a> {
             },
             Some(TextStyle::Normal) => 0,
             Some(TextStyle::BoldItalic) => 3,
+            Some(
+                style @ (TextStyle::Fraktur
+                | TextStyle::BoldFraktur
+                | TextStyle::Script
+                | TextStyle::BoldScript),
+            ) if self.v5
+                && (ch.is_ascii_uppercase()
+                    || ch.is_ascii_lowercase()
+                        && matches!(style, TextStyle::Fraktur | TextStyle::BoldFraktur)) =>
+            {
+                return Ok(self.alphabet_letter(style, ch));
+            },
             Some(_) => {
                 self.lose("MTEF has no equivalent of this math alphabet; the letters were written in the variable style");
                 return Ok((chars::identifier_glyph(ch), None));
@@ -980,6 +1000,44 @@ impl<'a> Encoder<'a> {
         };
         let typeface = self.explicit_font(style_bits);
         Ok((Glyph::new(typeface, ch), Some(Run::Styled(typeface))))
+    }
+
+    /// A Fraktur letter or script capital as MathType writes it: in the explicit
+    /// Euclid Fraktur or Euclid Math One font, with the letter's MTCode
+    /// private-use value (U+F000 or U+F100 plus its index in A–Z, a–z) and
+    /// the plain letter as its font position.
+    fn alphabet_letter(&mut self, style: TextStyle, ch: char) -> (Glyph, Option<Run>) {
+        let (family, bold, block) = match style {
+            TextStyle::BoldFraktur => (0, 1, 0xF000),
+            TextStyle::Script => (1, 0, 0xF100),
+            TextStyle::BoldScript => (1, 1, 0xF100),
+            _ => (0, 0, 0xF000),
+        };
+        let typeface = match self.alphabet_typefaces[family][bold] {
+            Some(typeface) => typeface,
+            None => {
+                self.alphabets = true;
+                self.explicit_count += 1;
+                // FONT_STYLE_DEF: the font definition and style (bit 0 bold).
+                self.out.push(FONT);
+                self.out.push(super::ALPHABET_FONT_DEFS[family]);
+                self.out.push(bold as u8);
+                let typeface = -self.explicit_count;
+                self.alphabet_typefaces[family][bold] = Some(typeface);
+                typeface
+            },
+        };
+        let letter = ch as u8;
+        let index = if letter.is_ascii_uppercase() {
+            letter - b'A'
+        } else {
+            letter - b'a' + 26
+        };
+        let code = char::from_u32(block + u32::from(index)).unwrap_or(ch);
+        (
+            Glyph::at(typeface, code, letter),
+            Some(Run::Styled(typeface)),
+        )
     }
 
     /// The COLOR_DEF index of `rgb`, writing its definition before its first
@@ -1460,6 +1518,18 @@ impl<'a> Encoder<'a> {
         lower: Option<NodeId>,
         upper: Option<NodeId>,
     ) -> Result<()> {
+        // The reader drops empty limit lines (MathType draws nothing there).
+        let filled = |id: &NodeId| !self.draws_nothing(*id);
+        let (lower, upper) = match (lower.filter(filled), upper.filter(filled)) {
+            kept if kept == (lower, upper) => kept,
+            kept => {
+                self.lose("MTEF does not keep empty limits; they were dropped");
+                if kept == (None, None) {
+                    return self.node(base, size);
+                }
+                kept
+            },
+        };
         let variation = if self.v5 {
             lower.map_or(0, |_| TV_LOWER) | upper.map_or(0, |_| TV_UPPER)
         } else {
@@ -2444,6 +2514,22 @@ impl<'a> Encoder<'a> {
             id = only;
         }
         id
+    }
+
+    /// Whether a node draws nothing, as the reader judges it.
+    fn draws_nothing(&self, id: NodeId) -> bool {
+        if id.is_none() {
+            return true;
+        }
+        match *self.arena.node(id) {
+            CompactNode::Row(span) => self
+                .arena
+                .children(span)
+                .iter()
+                .all(|&child| self.draws_nothing(child)),
+            CompactNode::Array { cells, .. } => cells.is_empty(),
+            _ => false,
+        }
     }
 
     fn is_empty(&self, id: NodeId) -> bool {

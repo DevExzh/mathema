@@ -583,6 +583,156 @@ fn v5_text_runs_and_spaces() {
 }
 
 #[test]
+fn v5_pile_ruler_has_no_tag_byte() {
+    // PILE with mtefOPT_LP_RULER: halign, valign, then one tab stop (count,
+    // type, 16-bit offset) directly, then the pile's lines.
+    let content = cat(&[
+        &[0x04, 0x02, 1, 1, 1, 0, 0x68, 0x0D],
+        &line5(&c5(0, 3, 'x')),
+        &line5(&c5(0, 3, 'y')),
+        &[0],
+    ]);
+    assert_eq!(
+        latex(&eq5(&content)),
+        latex(&eq5(&cat(&[
+            &[0x04, 0, 1, 1],
+            &line5(&c5(0, 3, 'x')),
+            &line5(&c5(0, 3, 'y')),
+            &[0]
+        ])))
+    );
+}
+
+#[test]
+fn v5_spacing_style_bare_space_codes() {
+    // MathType 5.0 writes Spacing-style characters as bare codes: 0x02 thin,
+    // 0x04 thick, 0x08 one-point, 0x06 two-em; they are spaces, not control
+    // characters.
+    let content = cat(&[
+        &c5(0, 3, 'x'),
+        &c5(0, 24, '\u{2}'),
+        &c5(0, 3, 'y'),
+        &c5(0, 24, '\u{4}'),
+        &c5(0, 3, 'z'),
+    ]);
+    let result = MtefReader::parse_bytes(&eq5(&content), &Config::default()).unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        latex(&eq5(&content)),
+        latex(&eq5(&cat(&[
+            &c5(0, 3, 'x'),
+            &c5(0, 24, '\u{EF02}'),
+            &c5(0, 3, 'y'),
+            &c5(0, 24, '\u{EF04}'),
+            &c5(0, 3, 'z'),
+        ])))
+    );
+    // Outside the Spacing style the same code is still a control character.
+    assert!(strict_error(&eq5(&c5(0, 3, '\u{2}'))).contains("control character"));
+}
+
+#[test]
+fn v5_mtcode_math_alphabets() {
+    // A letter in font 1 (`font`, style bits `style`), with a font position.
+    let letter = |font: &str, style: u8, code: u16, position: Option<u8>| {
+        let code = code.to_le_bytes();
+        let options = if position.is_some() { 0x04 } else { 0 };
+        let mut record = cat(&[
+            &[0x11, 2],
+            font.as_bytes(),
+            &[0, 0x08, 1, style, 0x02, options, 0x7F],
+            &code,
+        ]);
+        record.extend(position);
+        eq5(&record)
+    };
+    let fraktur = "Euclid Fraktur";
+    let script = "Euclid Math One";
+    assert_eq!(
+        latex(&letter(fraktur, 0, 0xF001, Some(b'B'))),
+        r"\mathfrak{B}"
+    );
+    assert_eq!(
+        latex(&letter(fraktur, 0, 0xF01E, Some(b'e'))),
+        r"\mathfrak{e}"
+    );
+    assert_eq!(
+        latex(&letter(script, 0, 0xF10D, Some(b'N'))),
+        r"\mathcal{N}"
+    );
+    let bold = nodes(&letter(fraktur, 1, 0xF001, Some(b'B')));
+    assert!(format!("{bold:?}").contains("BoldFraktur"), "{bold:?}");
+    // No position, another position, another font, or a small script letter:
+    // the code point is kept and reported.
+    for (bytes, code) in [
+        (letter(fraktur, 0, 0xF021, None), "U+F021"),
+        (letter(fraktur, 0, 0xF001, Some(b'Q')), "U+F001"),
+        (letter("Wingdings", 0, 0xF001, Some(b'B')), "U+F001"),
+        (letter(script, 0, 0xF127, Some(b'n')), "U+F127"),
+    ] {
+        let result = MtefReader::parse_bytes(&bytes, &lenient()).unwrap();
+        assert!(has_warning(&result, code), "{:?}", result.diagnostics);
+    }
+}
+
+#[test]
+fn v3_ruler_has_its_tag() {
+    let tagged = [
+        0x03, 1, 1, 3, 0, 0x0A, 0x21, 0x07, 1, 0, 0x10, 0, 0x02, 0x83, 0x78, 0, 0, 0,
+    ];
+    assert_eq!(latex(&tagged), "x");
+    let mut untagged = tagged.to_vec();
+    untagged.remove(7);
+    assert!(strict_error(&untagged).contains("RULER"));
+}
+
+#[test]
+fn equation_data_in_the_tail_is_not_slack() {
+    let refuse = |tail: &[u8], total: Option<usize>| {
+        let mut mtef = eq3(&c3(0, 3, 'x'));
+        mtef.extend_from_slice(tail);
+        let total = total.unwrap_or(mtef.len().next_multiple_of(4));
+        mtef.resize(total, 0x01);
+        let declared = u32::try_from(total).unwrap();
+        let data = ole(&mtef, 0x0002_0000, declared);
+        assert!(strict_error(&data).contains("follow the end"), "{tail:?}");
+        let recovered = MtefReader::parse_bytes(&data, &lenient()).unwrap();
+        assert!(has_warning(&recovered, "follow the end"));
+    };
+    // A complete character; the rest of a line; a second equation.
+    refuse(&c3(0, 3, 'y'), None);
+    refuse(&cat(&[&c3(0, 3, 'y'), &[0, 0]]), Some(400));
+    refuse(&cat(&[&[0x0A], &line3(&c3(0, 3, 'y')), &[0]]), Some(400));
+}
+
+#[test]
+fn nested_empty_limits_draw_nothing() {
+    let mut data = vec![
+        0x03, 1, 0x0A, 1, 0, 0x03, 0x27, 1, 0, 1, 0, 0x03, 0x27, 1, 0, 1, 0x10, 5, 0x83, 0x35, 0x0A,
+    ];
+    data.extend([0; 7]);
+    let result = crate::from_mtef_bytes_with(&data, &lenient()).unwrap();
+    let options = crate::MtefWriteOptions::default();
+    let first = result.to_mtef_bytes(&options).unwrap();
+    let back = crate::from_mtef_bytes(&first).unwrap();
+    assert_eq!(back.to_mtef_bytes(&options).unwrap(), first);
+}
+
+#[test]
+fn adobe_symbol_private_use_pieces_are_mapped() {
+    // arrowvertex, as MathType writes it for Symbol position 0xBD.
+    assert_eq!(
+        nodes(&eq5(&c5(0, 6, '\u{F8E6}'))),
+        nodes(&eq5(&c5(0, 6, '\u{23D0}')))
+    );
+    assert_eq!(chars::normalize_code_point('\u{F8F5}'), '\u{23AE}');
+    assert_eq!(chars::normalize_code_point('\u{F8F6}'), '\u{239E}');
+    assert_eq!(chars::normalize_code_point('\u{F8FE}'), '\u{23AD}');
+    assert_eq!(chars::normalize_code_point('\u{F8E8}'), '\u{00AE}');
+    assert_eq!(chars::normalize_code_point('\u{F8E5}'), '\u{F8E5}');
+}
+
+#[test]
 fn v5_size_color_ruler_and_future_records_are_consumed() {
     let content = cat(&[
         // SIZE: explicit point size, large delta, small delta.
@@ -608,8 +758,9 @@ fn v5_size_color_ruler_and_future_records_are_consumed() {
         &[100, 3, 1, 2, 3],
         &c5(0, 3, 'x'),
     ]);
-    // A LINE with a ruler: two tab stops of 3 bytes each.
-    let mut body = vec![0x0A, 0x01, 0x02, 0x07, 2, 0, 0x10, 0, 3, 0x20, 0];
+    // A LINE with a ruler: two tab stops of 3 bytes each, without the RULER
+    // tag byte, as MathType writes it.
+    let mut body = vec![0x0A, 0x01, 0x02, 2, 0, 0x10, 0, 3, 0x20, 0];
     body.extend_from_slice(&content);
     body.extend_from_slice(&[0, 0]);
     let result = MtefReader::parse_bytes(&v5(&body), &Config::default()).unwrap();
@@ -805,6 +956,29 @@ fn equation_native_header_is_validated() {
     let warned = MtefReader::parse_bytes(&ole(&mtef, 0x0003_0000, len), &lenient()).unwrap();
     assert!(has_warning(&warned, "header version"));
     assert_eq!(warned.expr.nodes.len(), 1);
+    // Buffer slack inside the declared object, after the final END: ignored
+    // with a note in Strict mode too (MathType declares its whole buffer).
+    let mut slack = mtef.clone();
+    let filler = 4 - slack.len() % 4;
+    slack.extend(std::iter::repeat_n(0xEF, filler));
+    let slack_len = u32::try_from(slack.len()).unwrap();
+    let result =
+        MtefReader::parse_bytes(&ole(&slack, 0x0002_0000, slack_len), &Config::default()).unwrap();
+    assert_eq!(result.expr.nodes.len(), 1);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.kind == DiagnosticKind::Info && d.message.contains("slack"))
+    );
+    // A longer tail, or a size that is not a multiple of 4, is not slack.
+    let mut long = slack.clone();
+    long.extend_from_slice(&[0xEF; 8]);
+    let odd = [mtef.as_slice(), &vec![0xEF; filler + 1]].concat();
+    for tail in [long, odd] {
+        let declared = u32::try_from(tail.len()).unwrap();
+        assert!(strict_error(&ole(&tail, 0x0002_0000, declared)).contains("follow the end"));
+    }
     // Data after the declared object is ignored with a note.
     let mut padded = ole(&mtef, 0x0002_0000, len);
     padded.extend_from_slice(&[0xFF; 4]);
@@ -1294,4 +1468,32 @@ fn mt_extra_font_positions_without_mtcode() {
     for ch in ['\u{22EF}', '\u{22EE}', '\u{22F1}', '\u{2210}'] {
         assert!(text.contains(ch), "{ch:?} missing from {text}");
     }
+}
+
+#[test]
+fn leading_scripts_stay_outside_trailing_ones() {
+    // tmSUB with tvSU_PRECEDES, `d`, then a trailing tmSUB: one node with
+    // both scripts, which writing and reading again must not change.
+    let sub = |variation: u8, digit: char| {
+        cat(&[
+            &[0x03, 0, 27, variation, 0],
+            &line5(&c5(0, 8, digit)),
+            &[0x01, 0x01, 0],
+        ])
+    };
+    let equation = eq5(&cat(&[&sub(1, '1'), &c5(0, 3, 'd'), &sub(0, '2')]));
+    let decoded = nodes(&equation);
+    assert!(
+        matches!(&decoded[..], [MathNode::PreScripts { base, .. }]
+            if matches!(**base, MathNode::Subscript { .. })),
+        "{decoded:?}"
+    );
+    let result = crate::from_mtef_bytes(&equation).unwrap();
+    let written = result
+        .to_mtef_bytes(&crate::MtefWriteOptions::default())
+        .unwrap();
+    assert_eq!(
+        crate::from_mtef_bytes(&written).unwrap().expr(),
+        result.expr()
+    );
 }

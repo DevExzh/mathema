@@ -14,6 +14,9 @@
 //! MathType's default settings, an initial size record, the equation's LINE
 //! or PILE and the final END. Each AST node becomes the records the MTEF
 //! reader turns back into that node; see the encoder for the mapping.
+//! Fraktur letters and script capitals are written in MTEF 5 as MathType writes them,
+//! in the Euclid Fraktur and Euclid Math One fonts with MTCode's private-use
+//! values; MTEF 3 has no math alphabets.
 //!
 //! The AST holds no typesetting data, so none is written: no nudges, rulers,
 //! line spacing, or explicit point sizes. Typesize records are
@@ -166,9 +169,13 @@ const OLE_HEADER_VERSION: u32 = 0x0002_0000;
 const OLE_CLIPBOARD_FORMAT_V3: u16 = 0xC16D;
 const OLE_CLIPBOARD_FORMAT_V5: u16 = 0xC295;
 
-/// The fnTEXT_FE style definition: unused (0), or font 5 plain.
-fn far_east_style(far_east: bool) -> &'static [u8] {
-    if far_east { &[5, 0] } else { &[0] }
+/// The fnTEXT_FE style definition: unused (0), or the Far East font plain.
+fn far_east_style(far_east: bool, alphabets: bool) -> &'static [u8] {
+    match (far_east, alphabets) {
+        (false, _) => &[0],
+        (true, false) => &[5, 0],
+        (true, true) => &[7, 0],
+    }
 }
 
 /// The definitions and preferences MathType 5 and 6 write in front of every
@@ -194,6 +201,26 @@ const V5_DEFINITIONS: &[u8] = &[
     0x11, 4, b'M', b'T', b' ', b'E', b'x', b't', b'r', b'a', 0,
 ];
 
+/// The definitions MathType adds for Fraktur and script letters, as it
+/// writes them: an encoding named after each font and the font itself
+/// (ENCODING_DEF 6 and FONT_DEF 5 for Euclid Fraktur, ENCODING_DEF 7 and
+/// FONT_DEF 6 for Euclid Math One). Both are defined when either is used, so
+/// that their indices are known while the body is written.
+#[rustfmt::skip]
+const V5_ALPHABET_DEFINITIONS: &[u8] = &[
+    0x13, b'E', b'u', b'c', b'l', b'i', b'd', b'F', b'r', b'a', b'k', b't',
+    b'u', b'r', 0,
+    0x11, 6, b'E', b'u', b'c', b'l', b'i', b'd', b' ', b'F', b'r', b'a', b'k',
+    b't', b'u', b'r', 0,
+    0x13, b'E', b'u', b'c', b'l', b'i', b'd', b'M', b'a', b't', b'h', b'1', 0,
+    0x11, 7, b'E', b'u', b'c', b'l', b'i', b'd', b' ', b'M', b'a', b't', b'h',
+    b' ', b'O', b'n', b'e', 0,
+];
+
+/// FONT_DEF indices of Euclid Fraktur and Euclid Math One in
+/// [`V5_ALPHABET_DEFINITIONS`].
+pub(super) const ALPHABET_FONT_DEFS: [u8; 2] = [5, 6];
+
 /// The definitions MathType adds when an equation holds Far East text: the
 /// WinAllCodePages encoding (ENCODING_DEF 6) and a Far East font (FONT_DEF
 /// 5). MathType writes the font's name in the system code page (宋体 on a
@@ -204,6 +231,10 @@ const V5_FAR_EAST_DEFINITIONS: &[u8] = &[
     b'a', b'g', b'e', b's', 0,
     0x11, 6, b'S', b'i', b'm', b'S', b'u', b'n', 0,
 ];
+
+/// Index of the FONT_DEF's encoding in [`V5_FAR_EAST_DEFINITIONS`], which
+/// moves past the alphabet encodings when those are defined first.
+const FAR_EAST_ENCODING_AT: usize = 18;
 
 #[rustfmt::skip]
 const V5_PREFERENCES: &[u8] = &[
@@ -279,6 +310,7 @@ impl MtefWriter {
         let diagnostics = std::mem::take(&mut encoder.diagnostics);
 
         let far_east = encoder.far_east;
+        let alphabets = encoder.alphabets;
         let mut mtef = Vec::with_capacity(body.len() + 256);
         // Header (MTEFv5.md "Header record", MTEFv3.md "MTEF header").
         mtef.push(if v5 { 5 } else { 3 });
@@ -296,11 +328,18 @@ impl MtefWriter {
             mtef.push(0);
             mtef.push(u8::from(expr.display == DisplayStyle::Inline));
             mtef.extend_from_slice(V5_DEFINITIONS);
+            if alphabets {
+                mtef.extend_from_slice(V5_ALPHABET_DEFINITIONS);
+            }
             if far_east {
+                let start = mtef.len();
                 mtef.extend_from_slice(V5_FAR_EAST_DEFINITIONS);
+                if alphabets {
+                    mtef[start + FAR_EAST_ENCODING_AT] += 2;
+                }
             }
             mtef.extend_from_slice(V5_PREFERENCES);
-            mtef.extend_from_slice(far_east_style(far_east));
+            mtef.extend_from_slice(far_east_style(far_east, alphabets));
         }
         mtef.extend_from_slice(&body);
 

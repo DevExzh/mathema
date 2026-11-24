@@ -1,3 +1,10 @@
+govdocs-v3-buffer-slack: t= \frac{V_n}{15{Q}_p}
+govdocs-v5-bare-space-codes: \int\nolimits {residual\,.\;\mathbf{D}_i\,(x)\;dx}= 0
+govdocs-v5-buffer-slack: v(\hat{\theta})
+govdocs-v5-fraktur: \mathfrak{B}(\mathbf{u}: x,t,\xi)= 0
+govdocs-v5-line-ruler: T= \frac{\varepsilon}{\kappa n}
+govdocs-v5-script: y= f(\theta)+ \varepsilon,\quad \varepsilon\sim \mathcal{N}(0,\sigma^{2})
+govdocs-v5-symbol-arrow-extension: Pi= E(Yi\text{ = }1⏐Xi)= 1/ (1+ e^{- (\beta0+ \Sigma\beta jXij)})
 upstream-v3-limit-sum-embellishment: A= \lim_{\begin{array}{c} n\rightarrow \infty \\ \Delta x_k\rightarrow 0 \end{array}}\sum\limits_{k= 1}^n {f({\tilde{x}}_k)\Delta x_k}
 upstream-v5-embellishments: \begin{array}{l} \widetilde{a+ b}+ \widehat{c+ d}+ \overgroup{d+ f}+ \overset{⃧}{e+ f}+ \overline{x+ y}+ \\ \overline{\overline{y+ t}}+ \underline{l+ m}+ \underline{\underline{k+ e}}+ \overrightarrow{kc+ 3}+ \overleftarrow{a+ b}+ \\ \overrightharpoon{y+ x}+ \overleftrightarrow{k- 4}+ \underrightarrow{c- d}+ \underleftarrow{d+ e}+ \underset{⇁}{e+ f}+ \\ \underleftrightarrow{c+ e}+ \cancel{d+ f}+ \xcancel{x+ z}+ \cancel{e+ x}+ \bcancel{y+ z} \\ \sqrt{2}+ \sqrt[3]{9}+ ⟌\overline{d+ 3}+ \overset{d+ 3}{⟌\overline{xy}} \end{array}
 upstream-v5-fences: \begin{array}{l} \left( a \right)+ \left[ b \right]+ \left\{ c \right\}+ \left\langle d \right\rangle+ \left| e \right|+ \left\| f \right\|+ \left\lfloor g \right\rfloor+ \\ \left\lceil h \right\rceil+ \left[ i \right)+ \left( j \right]+ \left| k \right\rangle+ \left\langle l \right|+ \left[ m \right[+ \left] n \right]+ \\ \left] o \right[+ \left\llbracket p \right\rrbracket+ \left( r \right.+ \left. s \right)+ \left[ t \right.+ \left. u \right]+ \left\{ v+\left. x \right\} \right.+ \\ \left\langle y \right.+ \left. z \right\rangle+ \left| a \right.+ \left. b \right|+ \left\| a \right.+ \left. b \right\|+ \left\llbracket a \right.+ \left. b \right\rrbracket+ \left\langle a \middle| b \right\rangle+ \\ {\overbrace{a}}^b+ {\underbrace{b}}_c+ {\overbracket{a}}^b+ {\underbracket{a}}_b \end{array}

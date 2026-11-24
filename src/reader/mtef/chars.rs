@@ -1,7 +1,7 @@
 //! Character-level helpers for the MTEF reader: typeface (style) values,
 //! font encodings, MathType private-use code points and symbol classes.
 
-use crate::ast::{Rational, SymbolKind};
+use crate::ast::{Rational, SymbolKind, TextStyle};
 
 // Typeface values (MTEFv3.md / MTEFv5.md "Typeface values"). A positive value
 // names one of MathType's styles; a negative value names an explicit font.
@@ -323,8 +323,56 @@ pub(super) fn normalize_code_point(ch: char) -> char {
         '\u{E98F}' => '\u{00B7}',
         '\u{2329}' => '\u{27E8}',
         '\u{232A}' => '\u{27E9}',
+        // Adobe's private-use code points for the Symbol font's extension
+        // pieces (Adobe Glyph List), written by MathType for characters of
+        // the Symbol font; the same values `symbol_font_char` gives their
+        // font positions.
+        '\u{F8E6}'..='\u{F8FE}' => {
+            let position = match u32::from(ch) {
+                0xF8E6 => 0xBD,                                 // arrowvertex
+                0xF8E7 => 0xBE,                                 // arrowhorizex
+                code @ 0xF8E8..=0xF8EA => code - 0xF8E8 + 0xE2, // sans (R) (C) TM
+                code @ 0xF8EB..=0xF8F4 => code - 0xF8EB + 0xE6, // left pieces, braceex
+                0xF8F5 => 0xF4,                                 // integralex
+                code => code - 0xF8F6 + 0xF6,                   // right pieces
+            };
+            u8::try_from(position)
+                .ok()
+                .and_then(symbol_font_char)
+                .unwrap_or(ch)
+        },
         _ => ch,
     }
+}
+
+/// The math alphabet of a font MathType takes its letters from.
+pub(super) fn alphabet_font(name: &[u8]) -> Option<TextStyle> {
+    if name.eq_ignore_ascii_case(b"Euclid Fraktur") {
+        Some(TextStyle::Fraktur)
+    } else if name.eq_ignore_ascii_case(b"Euclid Math One") {
+        Some(TextStyle::Script)
+    } else {
+        None
+    }
+}
+
+/// The plain letter of an MTCode private-use value in the given alphabet:
+/// U+F000 + n for Fraktur (A–Z, then a–z) and U+F100 + n for script capitals.
+///
+/// Real files confirm Fraktur B F L e g i and script A D J N W Z, always in
+/// the alphabet's font with the letter as the font position; the other
+/// letters are interpolated. Small script letters are not in the second
+/// block: real files write Euclid Math One i, m and w as U+F700.
+pub(super) fn mtcode_alphabet(ch: char, style: TextStyle) -> Option<char> {
+    let (code, block, letters) = match style {
+        TextStyle::Fraktur => (u32::from(ch), 0xF000, 52),
+        TextStyle::Script => (u32::from(ch), 0xF100, 26),
+        _ => return None,
+    };
+    let n = u8::try_from(code.checked_sub(block)?)
+        .ok()
+        .filter(|&n| n < letters)?;
+    Some(char::from(if n < 26 { b'A' + n } else { b'a' + n - 26 }))
 }
 
 /// The mathematical character an ASCII character stands for outside the text

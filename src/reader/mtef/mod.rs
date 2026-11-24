@@ -36,11 +36,13 @@
 //!
 //! In [`Strictness::Strict`] mode the reader refuses anything it cannot decode
 //! exactly (an unknown record, template or embellishment, a malformed or
-//! truncated record, data after the final END). In [`Strictness::Lenient`]
-//! mode it reports such problems as warnings and keeps going where the format
-//! allows; future-expansion records (type 100 and up) are skipped by their
-//! length in both modes. A stream that cannot be decoded at all yields an
-//! empty expression and a warning in Lenient mode.
+//! truncated record, data after the final END). The short slack real writers
+//! leave between the final END and the size an `Equation Native` header
+//! declares is ignored with an informational diagnostic in both modes. In
+//! [`Strictness::Lenient`] mode it reports such problems as warnings and
+//! keeps going where the format allows; future-expansion records (type 100
+//! and up) are skipped by their length in both modes. A stream that cannot be
+//! decoded at all yields an empty expression and a warning in Lenient mode.
 
 /// MTEF MATRIX has at most 255 cells on each axis and one more boundary.
 #[derive(Clone, Copy, Default)]

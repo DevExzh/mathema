@@ -77,6 +77,9 @@ pub(super) struct Glyph {
     pub(super) func_start: bool,
     /// Bold/italic of the explicit font, for a negative typeface.
     pub(super) explicit: Option<FontStyle>,
+    /// The math alphabet of a letter MathType wrote as an MTCode
+    /// private-use code point (`ch` then holds the plain letter).
+    pub(super) alphabet: Option<TextStyle>,
     pub(super) embells: SmallVec<[(u8, usize); 1]>,
     /// Offset of the CHAR record, for diagnostics.
     pub(super) offset: usize,
@@ -163,6 +166,8 @@ pub(super) struct Decoder<'a> {
     encodings: Vec<Encoding>,
     /// MTEF 5 FONT_DEF records: encoding index of each font.
     font_defs: Vec<u16>,
+    /// The math alphabet of each FONT_DEF, by its font name.
+    font_alphabets: Vec<Option<TextStyle>>,
     /// MTEF 5 FONT_STYLE_DEF records: (font_def index, style).
     font_styles: Vec<(u16, FontStyle)>,
     /// MTEF 5 EQN_PREFS style definitions: font_def index per typeface style.
@@ -198,6 +203,7 @@ impl<'a> Decoder<'a> {
             v3_fonts: Box::new([None; 256]),
             encodings: Vec::new(),
             font_defs: Vec::new(),
+            font_alphabets: Vec::new(),
             font_styles: Vec::new(),
             style_fonts: Vec::new(),
             colors: Vec::new(),
@@ -345,6 +351,20 @@ impl<'a> Decoder<'a> {
 
     pub(super) fn is_empty_row(&self, id: NodeId) -> bool {
         matches!(*self.arena.node(id), CompactNode::Row(span) if span.is_empty())
+    }
+
+    /// Whether a node draws nothing: rows of nothing, however nested, and
+    /// piles or matrices without cells.
+    pub(super) fn draws_nothing(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Row(span) => self
+                .arena
+                .children(span)
+                .iter()
+                .all(|&child| self.draws_nothing(child)),
+            CompactNode::Array { cells, .. } => cells.is_empty(),
+            _ => false,
+        }
     }
 
     // ── Primitive reads ────────────────────────────────────────────────
@@ -552,18 +572,83 @@ impl<'a> Decoder<'a> {
         Ok(())
     }
 
-    /// Bytes after the final END: zero padding is common and harmless; anything
-    /// else is not part of the equation.
+    /// Bytes after the final END. Zero padding is common and harmless. The
+    /// size in an `Equation Native` header can count the buffer the equation
+    /// was written into rather than the equation: in every real stream with
+    /// such bytes it is a multiple of 4 that exceeds the equation by less
+    /// than 8 bytes, or a fixed 400. The slack holds unrelated leftovers
+    /// (heap fill, string fragments, part of an earlier equation cut off at
+    /// the buffer's end). Any other tail is unexplained, for instance a
+    /// damaged equation that ends too early, and is not accepted; nor is a
+    /// tail that decodes as equation content.
     fn check_trailing(&mut self) -> Result<()> {
         let rest = &self.data[self.pos..self.end];
-        if rest.iter().any(|&b| b != 0) {
-            let (pos, len) = (self.pos, rest.len());
+        if rest.iter().all(|&b| b == 0) {
+            return Ok(());
+        }
+        let (pos, len) = (self.pos, rest.len());
+        let is_slack = !self.tail_holds_equation_data()
+            && self
+                .info
+                .as_ref()
+                .and_then(|info| info.ole_header)
+                .is_some_and(|header| {
+                    header.object_size.is_multiple_of(4) && (len < 8 || header.object_size == 400)
+                });
+        if is_slack {
+            self.note(format!(
+                "ignored {len} bytes of buffer slack after the end of the equation (at byte {pos})"
+            ));
+            Ok(())
+        } else {
             self.recover(
                 pos,
                 format!("{len} bytes of data follow the end of the equation"),
-            )?;
+            )
         }
-        Ok(())
+    }
+
+    /// Whether the bytes after the final END decode, past further ENDs, as an
+    /// equation's list of objects that draws something, or start with a
+    /// complete CHAR record.
+    ///
+    /// A list of nothing but two or more LINEs is the rest of a template
+    /// (its slots), which an equation's own list never is: real files have
+    /// such a piece of an earlier equation in their slack.
+    fn tail_holds_equation_data(&self) -> bool {
+        let rest = &self.data[self.pos..self.end];
+        let Some(skip) = rest.iter().position(|&b| b != 0) else {
+            return false;
+        };
+        let config = Config::default().with_strictness(Strictness::Strict);
+        let trial = || {
+            let mut trial = Decoder::new(self.data, &config);
+            trial.pos = self.pos + skip;
+            trial.end = self.end;
+            trial.v5 = self.v5;
+            trial.mac = self.mac;
+            trial.v3_fonts = self.v3_fonts.clone();
+            trial.encodings = self.encodings.clone();
+            trial.font_defs = self.font_defs.clone();
+            trial.font_alphabets = self.font_alphabets.clone();
+            trial.font_styles = self.font_styles.clone();
+            trial.style_fonts = self.style_fonts.clone();
+            trial
+        };
+        let mut list = trial();
+        if let Ok(items) = list.parse_object_list(true)
+            && items.iter().any(|item| match *item {
+                Item::Glyph(_) | Item::Script(_) | Item::PreScript(_) => true,
+                Item::Node(id) | Item::Line(Some(id)) => !list.draws_nothing(id),
+                Item::Line(None) | Item::Embell(..) => false,
+            })
+        {
+            let only_lines = items.iter().all(|item| matches!(item, Item::Line(_)));
+            return !(only_lines && items.len() > 1);
+        }
+        let mut first = trial();
+        let start = first.pos;
+        matches!(first.read_tag(), Ok((CHAR, options)) if first.parse_char(start, options).is_ok())
     }
 
     // ── Object lists ───────────────────────────────────────────────────
@@ -720,16 +805,21 @@ impl<'a> Decoder<'a> {
         Ok(Some(self.node(CompactNode::Row(span))?))
     }
 
-    /// A RULER record (with its tag) following a LINE or PILE.
+    /// The RULER of a LINE or PILE with the ruler option. Both specifications
+    /// call it a RULER record. The 171 MathType 4 to 6 files in the audited
+    /// corpus that have one (all on a LINE or PILE of MTEF 5) write it
+    /// without the record's tag; no MTEF 3 file there has one, so MTEF 3 is
+    /// read as specified.
     fn ruler_record(&mut self) -> Result<()> {
-        let start = self.pos;
-        let tag = self.u8()?;
-        let rtype = if self.v5 { tag } else { tag & 0x0F };
-        if rtype != RULER {
-            return Err(self.error_at(
-                start,
-                format!("expected a RULER record, found record type {rtype}"),
-            ));
+        if !self.v5 {
+            let start = self.pos;
+            let rtype = self.u8()? & 0x0F;
+            if rtype != RULER {
+                return Err(self.error_at(
+                    start,
+                    format!("expected a RULER record, found record type {rtype}"),
+                ));
+            }
         }
         self.ruler_body()
     }
@@ -744,7 +834,7 @@ impl<'a> Decoder<'a> {
         if options & OPT_NUDGE != 0 {
             self.nudge()?;
         }
-        let (typeface, ch, has_embells, func_start) = if self.v5 {
+        let (typeface, ch, has_embells, func_start, alphabet) = if self.v5 {
             let typeface = self.sint()?;
             let mtcode = if options & V5_CHAR_ENC_NO_MTCODE == 0 {
                 Some(self.u16()?)
@@ -764,18 +854,29 @@ impl<'a> Decoder<'a> {
             } else {
                 None
             };
-            let ch = self.v5_char(start, typeface, mtcode, font_position)?;
+            let mut ch = self.v5_char(start, typeface, mtcode, font_position)?;
+            // A math-alphabet letter in MTCode's private-use blocks, when the
+            // font and the font position both say so.
+            let mut alphabet = None;
+            if let Some(style) = self.alphabet_of_font(typeface)
+                && let Some(letter) = chars::mtcode_alphabet(ch, style)
+                && font_position == Some(u16::from(letter as u8))
+            {
+                ch = letter;
+                alphabet = Some(style);
+            }
             (
                 typeface,
                 ch,
                 options & V5_CHAR_EMBELL != 0,
                 options & V5_CHAR_FUNC_START != 0,
+                alphabet,
             )
         } else {
             let typeface = i32::from(self.u8()?) - 128;
             let code = self.u16()?;
             let ch = self.v3_char(start, typeface, code)?;
-            (typeface, ch, options & V3_CHAR_EMBELL != 0, false)
+            (typeface, ch, options & V3_CHAR_EMBELL != 0, false, None)
         };
         let explicit = if typeface < 0 {
             Some(self.explicit_font_style(start, typeface)?)
@@ -785,11 +886,19 @@ impl<'a> Decoder<'a> {
             }
             None
         };
+        let alphabet = alphabet.map(|style| match (style, explicit) {
+            (TextStyle::Fraktur, Some(FontStyle { bold: true, .. })) => TextStyle::BoldFraktur,
+            (TextStyle::Script, Some(FontStyle { bold: true, .. })) => TextStyle::BoldScript,
+            _ => style,
+        });
         let mut ch = chars::normalize_code_point(ch);
         if !matches!(typeface, chars::FN_TEXT | chars::FN_TEXT_FE) {
             ch = chars::math_ascii(ch);
         }
-        if ch.is_control() && !ch.is_whitespace() {
+        // MathType 5.0 writes the Spacing style's characters as their bare
+        // codes (0x02 for a thin space), not in the 0xEF00 block.
+        let space_code = typeface == chars::FN_SPACE && chars::space_width(u32::from(ch)).is_some();
+        if ch.is_control() && !ch.is_whitespace() && !space_code {
             self.recover(
                 start,
                 format!(
@@ -827,6 +936,7 @@ impl<'a> Decoder<'a> {
             ch,
             func_start,
             explicit,
+            alphabet,
             embells,
             offset: start,
             color: self.color,
@@ -872,6 +982,15 @@ impl<'a> Decoder<'a> {
                 Ok(char::REPLACEMENT_CHARACTER)
             },
         }
+    }
+
+    /// The math alphabet of an MTEF 5 explicit font.
+    fn alphabet_of_font(&self, typeface: i32) -> Option<TextStyle> {
+        let style = usize::try_from(typeface.checked_neg()?)
+            .ok()?
+            .checked_sub(1)?;
+        let &(font, _) = self.font_styles.get(style)?;
+        *self.font_alphabets.get(usize::from(font).checked_sub(1)?)?
     }
 
     fn v5_encoding(&self, typeface: i32) -> Encoding {
@@ -1219,8 +1338,9 @@ impl<'a> Decoder<'a> {
 
     fn font_def(&mut self) -> Result<()> {
         let encoding = self.uint()?;
-        self.cstr()?;
+        let name = self.cstr()?;
         self.font_defs.push(encoding);
+        self.font_alphabets.push(chars::alphabet_font(name));
         Ok(())
     }
 
@@ -1484,7 +1604,25 @@ impl<'a> Decoder<'a> {
                         Some(base) => base,
                         None => self.empty_row()?,
                     };
-                    let id = self.script_node(base, slots)?;
+                    // A leading script belongs to the whole scripted node
+                    // after it (`{}_a b_c` is b with both scripts), as
+                    // normalization builds it for every other reader: keep
+                    // the leading scripts outermost.
+                    let id = match *self.arena.node(base) {
+                        CompactNode::PreScripts {
+                            base: inner,
+                            pre_sub,
+                            pre_sup,
+                        } => {
+                            let scripted = self.script_node(inner, slots)?;
+                            self.node(CompactNode::PreScripts {
+                                base: scripted,
+                                pre_sub,
+                                pre_sup,
+                            })?
+                        },
+                        _ => self.script_node(base, slots)?,
+                    };
                     out.push(id);
                 },
                 Item::PreScript(slots) => {
@@ -2057,6 +2195,9 @@ fn is_decimal_point(glyph: &Glyph) -> bool {
 
 /// How a character takes part in its line, from its typeface and value.
 fn classify(glyph: &Glyph) -> Class {
+    if let Some(style) = glyph.alphabet {
+        return Class::Styled(style);
+    }
     let ch = glyph.ch;
     let code = u32::from(ch);
     match glyph.typeface {
