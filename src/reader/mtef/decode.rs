@@ -608,13 +608,19 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// Whether the bytes after the final END decode, past further ENDs, as an
-    /// equation's list of objects that draws something, or start with a
-    /// complete CHAR record.
+    /// Whether the bytes after the final END hold equation content: past
+    /// further ENDs they decode as a list of objects that draws something, or
+    /// as a complete CHAR record, possibly after typesize, font and colour
+    /// records.
     ///
-    /// A list of nothing but two or more LINEs is the rest of a template
-    /// (its slots), which an equation's own list never is: real files have
-    /// such a piece of an earlier equation in their slack.
+    /// A list of two or more LINEs and nothing else is the shape of a
+    /// template's slots, which a piece of an earlier equation in the slack
+    /// has. Such a piece is cut off by the end of the buffer, so it counts as
+    /// content only when everything up to the end (or zero padding) decodes.
+    ///
+    /// Bytes after the final END are not part of the equation by definition,
+    /// and slack can hold anything, so no such rule is airtight: this one
+    /// refuses tails that a damaged or second equation would leave.
     fn tail_holds_equation_data(&self) -> bool {
         let rest = &self.data[self.pos..self.end];
         let Some(skip) = rest.iter().position(|&b| b != 0) else {
@@ -636,19 +642,64 @@ impl<'a> Decoder<'a> {
             trial
         };
         let mut list = trial();
-        if let Ok(items) = list.parse_object_list(true)
-            && items.iter().any(|item| match *item {
+        // Past lists that draw nothing.
+        while list.skip_zeros()
+            && let Ok(items) = list.parse_object_list(true)
+        {
+            let draws = items.iter().any(|item| match *item {
                 Item::Glyph(_) | Item::Script(_) | Item::PreScript(_) => true,
                 Item::Node(id) | Item::Line(Some(id)) => !list.draws_nothing(id),
                 Item::Line(None) | Item::Embell(..) => false,
-            })
-        {
-            let only_lines = items.iter().all(|item| matches!(item, Item::Line(_)));
-            return !(only_lines && items.len() > 1);
+            });
+            if draws {
+                let slots =
+                    items.len() > 1 && items.iter().all(|item| matches!(item, Item::Line(_)));
+                return !slots || list.decodes_to_the_end();
+            }
         }
         let mut first = trial();
-        let start = first.pos;
-        matches!(first.read_tag(), Ok((CHAR, options)) if first.parse_char(start, options).is_ok())
+        loop {
+            let start = first.pos;
+            match first.read_tag() {
+                Ok((CHAR, options)) => return first.parse_char(start, options).is_ok(),
+                Ok((
+                    rtype @ (FONT
+                    | SIZE
+                    | FULL..=SUBSYM
+                    | COLOR
+                    | COLOR_DEF
+                    | FONT_DEF
+                    | ENCODING_DEF),
+                    options,
+                )) => {
+                    if first
+                        .parse_record(start, rtype, options, &mut Vec::new())
+                        .is_err()
+                    {
+                        return false;
+                    }
+                },
+                _ => return false,
+            }
+        }
+    }
+
+    /// Whether only complete object lists and zero padding follow.
+    fn decodes_to_the_end(&mut self) -> bool {
+        while self.skip_zeros() {
+            if self.parse_object_list(false).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Skip zero bytes; whether anything follows them.
+    fn skip_zeros(&mut self) -> bool {
+        let rest = &self.data[self.pos..self.end];
+        let skip = rest.iter().position(|&b| b != 0).unwrap_or(rest.len());
+        self.pos += skip;
+        skip < rest.len()
     }
 
     // ── Object lists ───────────────────────────────────────────────────
@@ -886,6 +937,8 @@ impl<'a> Decoder<'a> {
             }
             None
         };
+        // Bold is read as the specification defines the style byte; no
+        // audited file has a bold letter of these fonts.
         let alphabet = alphabet.map(|style| match (style, explicit) {
             (TextStyle::Fraktur, Some(FontStyle { bold: true, .. })) => TextStyle::BoldFraktur,
             (TextStyle::Script, Some(FontStyle { bold: true, .. })) => TextStyle::BoldScript,

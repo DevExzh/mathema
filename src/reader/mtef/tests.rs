@@ -699,6 +699,18 @@ fn equation_data_in_the_tail_is_not_slack() {
         let recovered = MtefReader::parse_bytes(&data, &lenient()).unwrap();
         assert!(has_warning(&recovered, "follow the end"));
     };
+    // Records without content before a character; two lines decoding to
+    // the end.
+    refuse(&cat(&[&[0x0A], &c3(0, 3, 'y')]), Some(400));
+    refuse(&cat(&[&[0x09, 1, 130], &c3(0, 3, 'y')]), Some(400));
+    let two_lines = cat(&[&line3(&c3(0, 3, 'y')), &line3(&c3(0, 3, 'z')), &[0]]);
+    let mut mtef = eq3(&c3(0, 3, 'x'));
+    mtef.extend_from_slice(&two_lines);
+    mtef.resize(400, 0);
+    assert!(strict_error(&ole(&mtef, 0x0002_0000, 400)).contains("follow the end"));
+    // The same lines, then a record cut off by the end of the buffer.
+    mtef[399] = 0x03;
+    assert_eq!(latex(&ole(&mtef, 0x0002_0000, 400)), "x");
     // A complete character; the rest of a line; a second equation.
     refuse(&c3(0, 3, 'y'), None);
     refuse(&cat(&[&c3(0, 3, 'y'), &[0, 0]]), Some(400));

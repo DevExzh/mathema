@@ -1013,7 +1013,8 @@ impl<'a> Encoder<'a> {
     /// A Fraktur letter or script capital as MathType writes it: in the explicit
     /// Euclid Fraktur or Euclid Math One font, with the letter's MTCode
     /// private-use value (U+F000 or U+F100 plus its index in A–Z, a–z) and
-    /// the plain letter as its font position.
+    /// the plain letter as its font position. The bold style follows the
+    /// specification; no audited file has a bold letter of these fonts.
     fn alphabet_letter(&mut self, style: TextStyle, ch: char) -> (Glyph, Option<Run>) {
         let (family, bold, block) = match style {
             TextStyle::BoldFraktur => (0, 1, 0xF000),
