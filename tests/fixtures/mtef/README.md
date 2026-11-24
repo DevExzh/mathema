@@ -62,6 +62,7 @@ unmodified stream; the table names the corpus archive and its member.
 | `v3-govdocs-tilde.bin` (OLE) | `zipfiles/868.zip` | `868/868817.doc` | 3 | ASCII tilde as the similarity relation |
 | `v3-govdocs-prime.bin` (OLE) | `zipfiles/090.zip` | `090/090099.doc` | 3 | apostrophe as a prime |
 | `v3-govdocs-leading-script.bin` (OLE) | `zipfiles/321.zip` | `321/321609.ppt` | 3 | leading-script template with nothing to lead |
+| `v3-govdocs-bold-accent.bin` (OLE) | `zipfiles/183.zip` | `183/183756.doc` | 3 | accent embellishment on a bold letter |
 | `v5-govdocs-colour.bin` (OLE) | `zipfiles/700.zip` | `700/700515.ppt` | 5 | COLOR_DEF and COLOR records |
 
 ## From govdocs1 (MTEF 2 and 4)

@@ -785,8 +785,8 @@ impl<'a> Encoder<'a> {
                 base,
                 accent,
                 position,
-                ..
-            } => self.accent(size, base, accent, position),
+                wide,
+            } => self.accent(size, base, accent, position, wide),
             CompactNode::Array { .. } => {
                 // Piles are written for a whole equation and for matrix cells,
                 // as the applications do; elsewhere an array is a matrix.
@@ -1153,10 +1153,14 @@ impl<'a> Encoder<'a> {
         -index
     }
 
-    fn styled(&mut self, size: Size, style: TextStyle, span: NodeSpan) -> Result<()> {
+    fn note_style(&mut self, style: TextStyle) {
         if style == TextStyle::Italic {
             self.lose("MTEF has no italic math alphabet; italic letters were written as variables");
         }
+    }
+
+    fn styled(&mut self, size: Size, style: TextStyle, span: NodeSpan) -> Result<()> {
+        self.note_style(style);
         let outer = self.style.replace(style);
         let outer_start = self.styled_start.replace(self.items);
         let result = self.list(span, size);
@@ -1209,6 +1213,7 @@ impl<'a> Encoder<'a> {
     /// innermost first.
     fn embellishments(&self, id: NodeId) -> Option<(NodeId, SmallVec<[u8; 4]>)> {
         let mut kinds: SmallVec<[u8; 4]> = SmallVec::new();
+        let mut accented = false;
         let mut current = id;
         loop {
             match *self.arena.node(current) {
@@ -1222,6 +1227,7 @@ impl<'a> Encoder<'a> {
                         break;
                     };
                     kinds.push(kind);
+                    accented = true;
                     current = base;
                 },
                 CompactNode::Superscript { base, sup } => {
@@ -1239,7 +1245,7 @@ impl<'a> Encoder<'a> {
                 CompactNode::Cancel {
                     stroke: StrokeKind::Forward,
                     content,
-                } if !self.v5
+                } if (!self.v5 || accented)
                     && self
                         .single_char(content)
                         .is_some_and(|ch| negated(ch).is_none()) =>
@@ -1250,8 +1256,15 @@ impl<'a> Encoder<'a> {
                 _ => break,
             }
         }
-        if kinds.is_empty() || self.single_char(current).is_none() {
+        if kinds.is_empty() {
             return None;
+        }
+        // Primes and strikes alone embellish only a bare character: around a
+        // styled one they have forms of their own.
+        if accented {
+            self.styled_char(current)?;
+        } else {
+            self.single_char(current)?;
         }
         if !self.v5 && kinds.iter().any(|&k| k > chars::V3_MAX_EMBELLISHMENT) {
             return None;
@@ -1283,7 +1296,31 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    /// The leaf of a node that is one character, possibly in math alphabets,
+    /// and the innermost alphabet around it: MathType embellishes a character
+    /// of any style.
+    fn styled_char(&self, id: NodeId) -> Option<(NodeId, Option<TextStyle>)> {
+        let mut style = None;
+        let mut current = self.unwrap_row(id);
+        while let CompactNode::Styled(inner, span) = *self.arena.node(current) {
+            let [only] = *self.arena.children(span) else {
+                return None;
+            };
+            style = Some(inner);
+            current = self.unwrap_row(only);
+        }
+        self.single_char(current).map(|_| (current, style))
+    }
+
     fn embellished(&mut self, size: Size, leaf: NodeId, kinds: &[u8]) -> Result<()> {
+        if let Some((inner, Some(style))) = self.styled_char(leaf) {
+            self.note_style(style);
+            let outer = self.style.replace(style);
+            let result = self.embellished(size, inner, kinds);
+            self.style = outer;
+            return result;
+        }
+        let leaf = self.unwrap_row(leaf);
         let (kind, ch) = match *self.arena.node(leaf) {
             CompactNode::Number(s) => (Leaf::Number, s),
             CompactNode::Identifier(s) => (Leaf::Identifier, s),
@@ -1746,10 +1783,21 @@ impl<'a> Encoder<'a> {
         base: NodeId,
         accent: char,
         position: AccentPosition,
+        wide: bool,
     ) -> Result<()> {
+        // The templates and bars stretch over their slot. The accents that
+        // are drawn stretched anyway (an arrow or arc character) keep.
+        let stretches = matches!(
+            accent,
+            '\u{2190}'..='\u{21FF}' | '\u{23DC}' | '\u{23DD}' | '\u{20E7}'
+        );
+        let narrow_loss = (!wide && !stretches).then_some(
+            "MTEF keeps a narrow accent only on one character; it was written as a wide one",
+        );
         if self.v5 {
             if let Some((selector, variation, glyph)) = chars::v5_accent_template(accent, position)
             {
+                narrow_loss.into_iter().for_each(|m| self.lose(m));
                 self.template(size, selector, variation);
                 self.slot(size, Some(base))?;
                 self.glyph(size, Glyph::new(FN_EXPAND, glyph), false, &[])?;
@@ -1757,12 +1805,14 @@ impl<'a> Encoder<'a> {
                 return Ok(());
             }
         } else if let Some((selector, variation)) = chars::v3_accent_template(accent, position) {
+            narrow_loss.into_iter().for_each(|m| self.lose(m));
             self.template(size, selector, u16::from(variation));
             self.slot(size, Some(base))?;
             self.end();
             return Ok(());
         }
         if chars::is_bar_accent(accent, position) {
+            narrow_loss.into_iter().for_each(|m| self.lose(m));
             return self.bar(size, base, position == AccentPosition::Below);
         }
         // No embellishment or template draws this accent over the base: put

@@ -22,6 +22,7 @@ v3-equation-system: \left\{ \begin{array}{l} \sin \theta+ \cos \theta= \frac{\sq
 v3-fraction-root-script: \because \sin \alpha= \frac{y}{r}= \frac{y}{\sqrt{9+ y^{2}}}= - \frac{2}{3},\therefore y^{2}= \frac{36}{5},y< 0
 v3-function-names: P(r\cos \alpha,r\sin \alpha)
 v3-function-powers: \sin^{3}\theta- \cos^{3}\theta
+v3-govdocs-bold-accent: \hat{\mathbf{\Xi}}
 v3-govdocs-decimal: 1.0
 v3-govdocs-leading-script: Z_o
 v3-govdocs-prime: p^{\prime}

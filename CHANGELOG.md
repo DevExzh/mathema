@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The MTEF writer writes an accent on one styled letter (`\tilde{\mathbf A}`,
+  also over `\mathfrak`, `\mathcal` capitals and `\boldsymbol`) or on a struck
+  letter as the character's embellishment, as on a plain letter; it came back
+  as the wide accent in MTEF 5 and as a limit in MTEF 3, mostly silently. A
+  narrow accent over more than one character, which MTEF has only as a wide
+  one, is now a reported loss.
 - The MTEF reader accepts more real MathType output in `Strictness::Strict`:
   the short buffer slack after the final END of an `Equation Native` stream
   (an error before; unless it decodes as equation content), MTEF 5 tab stops

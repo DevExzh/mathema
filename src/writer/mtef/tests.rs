@@ -1173,3 +1173,87 @@ fn zero_spaces_before_leading_scripts_do_not_accumulate() {
         back.expr()
     );
 }
+
+fn mtef_round_trip(latex: &str, version: crate::MtefVersion) -> (String, Vec<Diagnostic>) {
+    let first = crate::from_latex(latex).unwrap();
+    let options = MtefWriteOptions::new(version);
+    let (bytes, diagnostics) = first.to_mtef_bytes_with_diagnostics(&options).unwrap();
+    let back = crate::from_mtef_bytes(&bytes).unwrap();
+    assert_eq!(back.to_mtef_bytes(&options).unwrap(), bytes, "{latex}");
+    (back.to_latex().unwrap(), diagnostics)
+}
+
+#[test]
+fn accents_on_styled_letters_stay_narrow() {
+    use crate::MtefVersion::{V3, V5};
+    for (latex, versions) in [
+        (r"\tilde{\mathbf{A}}", &[V3, V5][..]),
+        (r"\hat{\mathbf{A}}", &[V3, V5]),
+        (r"\bar{\mathbf{A}}", &[V3, V5]),
+        (r"\vec{\mathbf{A}}", &[V3, V5]),
+        (r"\tilde{\mathrm{A}}", &[V3, V5]),
+        (r"\hat{\boldsymbol{A}}", &[V3, V5]),
+        (r"\hat{\hat{\mathbf{A}}}", &[V3, V5]),
+        (r"\mathbf{Q}\hat{\mathbf{A}}\mathbf{B}", &[V3, V5]),
+        (r"{\hat{\mathbf{A}}}_{1}^{2}", &[V3, V5]),
+        (r"\hat{\mathfrak{A}}", &[V5]),
+        (r"\hat{\mathcal{A}}", &[V5]),
+        (r"\hat{\cancel{E}}", &[V3, V5]),
+    ] {
+        let expected = crate::from_latex(latex).unwrap().to_latex().unwrap();
+        for &version in versions {
+            let (back, diagnostics) = mtef_round_trip(latex, version);
+            assert_eq!(back, expected, "{version:?}");
+            assert!(diagnostics.is_empty(), "{latex}: {diagnostics:?}");
+        }
+    }
+}
+
+#[test]
+fn wide_accents_stay_wide_and_narrow_ones_over_more_are_a_loss() {
+    use crate::MtefVersion::V5;
+    for latex in [
+        r"\widetilde{\mathbf{A}}",
+        r"\widehat{\mathbf{A}}",
+        r"\overline{\mathbf{A}}",
+        r"\overrightarrow{\mathbf{A}}",
+        r"\widehat{\mathfrak{A}}",
+        r"\widehat{xy}",
+    ] {
+        let (back, diagnostics) = mtef_round_trip(latex, V5);
+        assert_eq!(back, latex);
+        assert!(diagnostics.is_empty(), "{latex}: {diagnostics:?}");
+    }
+    for latex in [
+        r"\hat{xy}",
+        r"\tilde{xy}",
+        r"\bar{xy}",
+        r"\vec{xy}",
+        r"\hat{\mathbf{A}_1}",
+        r"\hat{\textcolor{red}{A}}",
+    ] {
+        let (_, diagnostics) = mtef_round_trip(latex, V5);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("narrow accent")),
+            "{latex}: {diagnostics:?}"
+        );
+    }
+    // A math alphabet MTEF lacks is its own loss; the accent still keeps.
+    let (back, diagnostics) = mtef_round_trip(r"\hat{\mathbb{A}}", V5);
+    assert_eq!(back, r"\hat{A}");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.message.contains("math alphabet"))
+    );
+}
+
+/// Primes alone on a styled letter keep the records they had.
+#[test]
+fn primes_on_styled_letters_are_not_embellishments() {
+    let result = crate::from_latex(r"\mathbf{r}'").unwrap();
+    let bytes = result.to_mtef_bytes(&MtefWriteOptions::default()).unwrap();
+    assert!(!bytes.windows(3).any(|w| w == [0x06, 0x00, 5]));
+}
