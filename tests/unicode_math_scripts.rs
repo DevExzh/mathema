@@ -117,6 +117,46 @@ const READS: &[(&str, &str, &str)] = &[
     ("▭(_1)F", "▭((_1)F)", r"\boxed{{{}_{1}F}}"),
     // A quote in text is `\"` (section 3.15).
     ("\"a\\\"b\"", "\"a\\\"b\"", r#"\text{a"b}"#),
+    // The n-aryand is the whole operand after the operator (section 3.4).
+    (
+        "∫_0^1 f(x)/x ⅆx",
+        "∫_0^1 (f(x))/x ⅆx",
+        r"\int\nolimits_{0}^{1} {\frac{f\left( x \right)}{x}}ⅆx",
+    ),
+    (
+        "∫ f(x)/2",
+        "∫ (f(x))/2",
+        r"\int\nolimits {\frac{f\left( x \right)}{2}}",
+    ),
+    (
+        "∑ f(x)/2",
+        "∑ (f(x))/2",
+        r"\sum\limits {\frac{f\left( x \right)}{2}}",
+    ),
+    (
+        "∫ f(x)/g(x)",
+        "∫ (f(x))/(g(x))",
+        r"\int\nolimits {\frac{f\left( x \right)}{g\left( x \right)}}",
+    ),
+    (
+        "∫ 2(a+b)/2",
+        "∫ (2(a+b))/2",
+        r"\int\nolimits {\frac{2\left( a+b \right)}{2}}",
+    ),
+    ("∑_i a_i", "∑_i a_i", r"\sum\limits_i {a_i}"),
+    (
+        "∑_i a_i b_i+1",
+        "∑_i a_i b_i+1",
+        r"\sum\limits_i {a_i}b_i+ 1",
+    ),
+    ("|∑_i a_i|", "|∑_i a_i|", r"|\sum\limits_i {a_i}|"),
+    ("∫∫ f", "∫ ∫ f", r"\int\nolimits {\int\nolimits f}"),
+    ("∑ (a+b)", "∑ (a+b)", r"\sum\limits {a+ b}"),
+    ("∑_i′ a", "∑_i^′ a", r"\sum\limits_i^{\prime} a"),
+    // In text, `\\` is a backslash; a backslash before the last quote ends
+    // the text, and any other backslash is literal.
+    ("\"C:\\\"", "\"C:\\\\\"", r"\text{C:\textbackslash{}}"),
+    ("\"a\\b\"", "\"a\\\\b\"", r"\text{a\textbackslash{}b}"),
     // A word in a decorated group stays unquoted.
     (
         "〖〖ab〗┬n〗^2",
@@ -171,6 +211,8 @@ const LATEX: &[&str] = &[
     "\\frac{a}{b}c",
     "a\\frac{b}{c}",
     "\\text{a\"b}",
+    "\\text{C:\\textbackslash}+\\text{x}",
+    "\\text{a\\textbackslash}x\\text{b}",
 ];
 
 /// LaTeX whose UnicodeMath spelling writes back the same.
@@ -185,6 +227,10 @@ const LATEX_STABLE: &[&str] = &[
     "\\frac{a}{b}c",
     "a\\frac{b}{c}",
     "\\text{a\"b}",
+    "\\text{C:\\textbackslash}+\\text{x}",
+    "\\text{a\\textbackslash}x\\text{b}",
+    "\\sum_i a_i",
+    "\\int_0^1 \\frac{f(x)}{x} dx",
 ];
 
 #[test]

@@ -1641,35 +1641,127 @@ impl CompactParser {
             )));
         }
         let body = &input['"'.len_utf8()..];
-        // UTN #28 section 3.15: `\"` is a quote in the text. The text has no
-        // escape for a backslash, so one before the last quote of the input
-        // ends the text (`"a\"` is the text `a\`).
-        let last_quote = body.rfind('"');
+        // UTN #28 sections 3.2 and 3.15: in text, `\"` is a quote and `\\` a
+        // backslash; any other backslash is literal. A backslash before the
+        // last quote of the input ends the text (`"C:\"` is the text `C:\`).
+        let mut text = String::new();
         let mut end = None;
-        let mut escaped = false;
-        let mut bytes = body.char_indices();
-        while let Some((index, c)) = bytes.next() {
-            if c == '\\' && body[index + 1..].starts_with('"') && last_quote != Some(index + 1) {
-                escaped = true;
-                bytes.next();
-            } else if c == '"' {
-                end = Some(index);
-                break;
+        let mut chars = body.char_indices();
+        while let Some((index, c)) = chars.next() {
+            match c {
+                '"' => {
+                    end = Some(index);
+                    break;
+                },
+                '\\' if body[index + 1..].starts_with('\\') => {
+                    text.push('\\');
+                    chars.next();
+                },
+                '\\' if body[index + 1..].starts_with('"') => {
+                    if body[index + 2..].contains('"') {
+                        text.push('"');
+                        chars.next();
+                    } else {
+                        text.push('\\');
+                    }
+                },
+                _ => text.push(c),
             }
         }
-        let Some(end) = end.filter(|&end| end > 0) else {
+        let Some(end) = end.filter(|_| !text.is_empty()) else {
             return Err(parse_error(body, nom::error::ErrorKind::Char));
         };
         self.tick(end);
-        let text = &body[..end];
         let rest = &body[end + 1..];
-        let sid = if escaped {
-            self.arena.push_str(&text.replace("\\\"", "\""))
-        } else {
-            self.arena.push_str(text)
-        };
+        let sid = self.arena.push_str(&text);
         let id = self.push_node(CompactNode::Text(TextStyle::Normal, sid));
         Ok((rest, id))
+    }
+
+    /// UTN #28 section 3.4: "The operand that follows this operator becomes
+    /// the n-aryand", after white space or `▒`: the factors up to a space or
+    /// an operator, by the operand rule of fractions (`∑_i a_i`,
+    /// `∫_0^1 f(x)/x ⅆx`). Parentheses around the whole operand only group
+    /// it. A nested n-ary operator is the whole n-aryand (`∫∫ f`).
+    fn parse_naryand<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let mut rest = input.trim_start();
+        if let Some(after) = rest.strip_prefix('\u{2592}') {
+            rest = after.trim_start();
+        }
+        let mut ids = SmallVec::<[NodeId; 8]>::new();
+        let mut run = 0;
+        // Decide from the next character whether the operand goes on, so no
+        // element is parsed and then dropped (which could repeat work).
+        while let Some(c) = rest.chars().next()
+            && !c.is_whitespace()
+            && !self.ends_naryand(&ids, c)
+        {
+            // An operand of the n-ary element, at its nesting level (as a
+            // script argument is); a nested n-ary operator is one deeper.
+            let nested_nary = is_nary_char(c);
+            if nested_nary {
+                self.enter(rest)?;
+            }
+            let operand = self.parse_operand(rest, false);
+            if nested_nary {
+                self.depth -= 1;
+            }
+            let (after, id) = match operand {
+                Ok(found) => found,
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                Err(_) => break,
+            };
+            rest = self.push_operand(&mut ids, &mut run, false, id, after)?;
+            // A nested n-ary operator is the whole n-aryand, and so is a lone
+            // operator symbol, as LaTeX reads `\sum \cdot y`.
+            if ids.len() == 1 && self.breaks_operand(id) {
+                break;
+            }
+        }
+        let body = match ids.as_slice() {
+            [] => self.push_node(CompactNode::Row(NodeSpan::EMPTY)),
+            [only] => self.unparenthesized(*only),
+            _ => self.flatten_single(&ids),
+        };
+        Ok((rest, body))
+    }
+
+    /// Whether an n-aryand `ids` ends before an element starting with `c`:
+    /// at quoted text, and once it has begun, at an operator, punctuation or
+    /// a big operator; at a closing fence it did not open, and at `|` or `‖`
+    /// unless it opens the n-aryand or closes one opened in it (`|∑ a|` ends
+    /// at `a`).
+    fn ends_naryand(&self, ids: &[NodeId], c: char) -> bool {
+        if c == '"' {
+            return true;
+        }
+        if let Some(open) = opening_fence(c) {
+            let count = |target: char| {
+                ids.iter()
+                    .filter(|&&id| {
+                        matches!(*self.arena.node(id), CompactNode::Symbol(_, sid)
+                            if self.arena.str_val(sid).chars().eq(std::iter::once(target)))
+                    })
+                    .count()
+            };
+            return if open == c {
+                !ids.is_empty() && count(c) % 2 == 0
+            } else {
+                count(open) <= count(c)
+            };
+        }
+        let breaks = is_nary_char(c)
+            || matches!(c, ',' | ';' | ':' | '?')
+            || (is_math_symbol(c)
+                && matches!(
+                    classify_unicode_symbol(c),
+                    SymbolKind::BinaryOp
+                        | SymbolKind::Relation
+                        | SymbolKind::Punctuation
+                        | SymbolKind::LargeOp
+                        | SymbolKind::Open
+                ));
+        breaks && !ids.is_empty()
     }
 
     fn parse_nary_op<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -1693,6 +1785,14 @@ impl CompactParser {
         } else {
             (input, NodeId::NONE)
         };
+        // Primes may follow the subscript too (`∑_i′`, as `x_1′`).
+        let input = if sub.is_some() && primes.is_empty() && input.starts_with(is_prime) {
+            let (rest, after) = self.parse_primes(input);
+            primes = after;
+            rest
+        } else {
+            input
+        };
 
         // Try superscript
         let input = if let Some(rest) = input.strip_prefix('^') {
@@ -1713,33 +1813,7 @@ impl CompactParser {
             self.flatten_single(&primes)
         };
 
-        // Skip optional whitespace before body
-        let input = input.trim_start();
-
-        let (input, body) = if input.is_empty() {
-            let row_id = self.push_node(CompactNode::Row(NodeSpan::EMPTY));
-            (input, row_id)
-        } else {
-            // An invisible group is an atom that may carry scripts
-            // (`∑ 〖〗_1`); otherwise the n-aryand is a script-like operand.
-            let body = if input.starts_with('〖') {
-                self.enter(input)?;
-                let operand = self.parse_operand(input, false);
-                self.depth -= 1;
-                operand
-            } else {
-                self.parse_script_arg(input)
-            };
-            match body {
-                // The n-aryand may be a fraction (`∑ a/b`).
-                Ok((rest, id)) => self.fraction_after(rest, id)?,
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => {
-                    let row_id = self.push_node(CompactNode::Row(NodeSpan::EMPTY));
-                    (input, row_id)
-                },
-            }
-        };
+        let (input, body) = self.parse_naryand(input)?;
 
         let limits = if is_integral(op) {
             LimitStyle::SubSup

@@ -196,14 +196,15 @@ fn write_undefined_command_name(out: &mut String, name: &str) {
     out.push('"');
 }
 
-/// Quoted text, with `\"` for a quote in it (UTN #28 section 3.15).
+/// Quoted text, with `\"` for a quote and `\\` for a backslash in it (UTN
+/// #28 sections 3.2 and 3.15).
 fn write_quoted_text(out: &mut String, text: &str) {
     out.push('"');
-    for (index, piece) in text.split('"').enumerate() {
-        if index > 0 {
-            out.push_str("\\\"");
+    for c in text.chars() {
+        if matches!(c, '"' | '\\') {
+            out.push('\\');
         }
-        out.push_str(piece);
+        out.push(c);
     }
     out.push('"');
 }
@@ -452,7 +453,7 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                 write_script_arg(out, s, style.sup());
             }
             out.push(' ');
-            write_node(out, body, style);
+            write_naryand(out, body, style);
         },
 
         MathNode::Accent { base, accent, .. } => {
@@ -1089,8 +1090,9 @@ fn write_fraction_arg(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push(')');
         },
-        // An operator alone is not an operand (`(+)/2`).
-        _ if operand_edge(node) == OperandEdge::Break => {
+        // An operator alone is not an operand (`(+)/2`), and an n-ary
+        // operator would take the fraction as its n-aryand (`(∑ a)/b`).
+        _ if matches!(node, MathNode::Nary { .. }) || operand_edge(node) == OperandEdge::Break => {
             out.push('(');
             write_node(out, node, style);
             out.push(')');
@@ -1201,7 +1203,7 @@ fn separate_following_operand(
     // section 2.1): a fraction after an operand (`a b/c`) and a factor
     // after a fraction (`a/b c`, `a/b (c)`) are set apart.
     let fraction = (current == OperandEdge::Fraction && previous != OperandEdge::Break)
-        || (previous == OperandEdge::Fraction
+        || (matches!(previous, OperandEdge::Fraction | OperandEdge::Naryand)
             && (first.is_alphanumeric() || matches!(first, '(' | '〖' | '!')));
     let joins = (previous_operator && first.is_alphanumeric())
         || (takes_prime && is_prime_char(first))
@@ -1209,6 +1211,59 @@ fn separate_following_operand(
         || fraction;
     if joins && !out[..start].ends_with(' ') {
         out.insert(start, ' ');
+    }
+}
+
+/// Write an n-ary operator's n-aryand, which the reader takes as the
+/// operand after the operator (UTN #28 section 3.4): a row of factors as is
+/// (`∑_i a_i b_i`), anything else that is not one operand, or that is
+/// written with a space, in parentheses (`∑ (a+b)`; parentheses are kept
+/// as `((a))`).
+fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
+    let node = select_mathchoice(node, style);
+    let plain = match node {
+        MathNode::Row(children) => children.iter().all(|child| {
+            !matches!(child, MathNode::StyleSwitch(_))
+                && operand_edge(select_mathchoice(child, style)) == OperandEdge::Operand
+        }),
+        MathNode::Fenced { open, close, .. } => !(open == "(" && close == ")"),
+        MathNode::Text(..) => false,
+        // A nested n-ary operator is a whole n-aryand (`∫∫ f`); a lone
+        // symbol (LaTeX `\sum (`) has no better spelling.
+        _ => true,
+    };
+    let start = out.len();
+    write_node(out, node, style);
+    // A space would end the n-aryand early (`∑ (y′ sin x)`).
+    if !plain || (matches!(node, MathNode::Row(_)) && out[start..].contains(' ')) {
+        out.insert(start, '(');
+        out.push(')');
+    }
+}
+
+/// Compact counterpart of [`write_naryand`].
+fn write_naryand_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    let id = select_mathchoice_c(arena, id, style);
+    let plain = match *arena.node(id) {
+        CompactNode::Row(span) => arena.children(span).iter().all(|&child| {
+            !matches!(*arena.node(child), CompactNode::StyleSwitch(_))
+                && operand_edge_c(arena, select_mathchoice_c(arena, child, style))
+                    == OperandEdge::Operand
+        }),
+        CompactNode::Fenced { open, close, .. } => {
+            !(arena.str_val(open) == "(" && arena.str_val(close) == ")")
+        },
+        CompactNode::Text(..) => false,
+        // A nested n-ary operator is a whole n-aryand (`∫∫ f`); a lone
+        // symbol (LaTeX `\sum (`) has no better spelling.
+        _ => true,
+    };
+    let start = out.len();
+    write_node_c(out, arena, id, style);
+    // A space would end the n-aryand early (`∑ (y′ sin x)`).
+    if !plain || (matches!(*arena.node(id), CompactNode::Row(_)) && out[start..].contains(' ')) {
+        out.insert(start, '(');
+        out.push(')');
     }
 }
 
@@ -1221,8 +1276,12 @@ enum OperandEdge {
     Break,
     /// A factor of an operand.
     Operand,
-    /// A fraction, which is not a factor of the operand around it.
+    /// A fraction: its operands are whole, so it is not a factor of the
+    /// operand around it.
     Fraction,
+    /// An n-ary operator ending in its n-aryand, a whole operand that a
+    /// factor after it would join.
+    Naryand,
 }
 
 fn symbol_edge(kind: SymbolKind, glyph: &str) -> OperandEdge {
@@ -1245,17 +1304,23 @@ fn operand_edge(node: &MathNode) -> OperandEdge {
     match node {
         MathNode::Fraction { .. } => OperandEdge::Fraction,
         MathNode::Symbol(kind, glyph) => symbol_edge(*kind, glyph),
+        // Leading scripts end where their base ends.
+        MathNode::PreScripts { base, .. } => operand_edge(base),
         // A scripted operator is still an operator, as in the reader.
-        MathNode::PreScripts { base, .. }
-        | MathNode::Subscript { base, .. }
+        MathNode::Subscript { base, .. }
         | MathNode::Superscript { base, .. }
         | MathNode::SubSup { base, .. } => match operand_edge(base) {
             OperandEdge::Break => OperandEdge::Break,
             _ => OperandEdge::Operand,
         },
-        // An n-ary operator ends with its n-aryand, maybe a fraction.
-        MathNode::Nary { body, .. } if matches!(**body, MathNode::Fraction { .. }) => {
-            OperandEdge::Fraction
+        // An n-ary operator ends with its n-aryand, a whole operand that a
+        // factor after it would join (`∑_i a_i b`), like a denominator.
+        // (A lone operator symbol body, as LaTeX `\sum (` gives, does not.)
+        MathNode::Nary { body, .. }
+            if !matches!(&**body, MathNode::Row(c) if c.is_empty())
+                && operand_edge(body) != OperandEdge::Break =>
+        {
+            OperandEdge::Naryand
         },
         MathNode::Nary { .. } | MathNode::Space(_) | MathNode::Text(..) => OperandEdge::Break,
         _ => OperandEdge::Operand,
@@ -1266,19 +1331,23 @@ fn operand_edge_c(arena: &AstArena, id: NodeId) -> OperandEdge {
     match *arena.node(id) {
         CompactNode::Fraction { .. } => OperandEdge::Fraction,
         CompactNode::Symbol(kind, sid) => symbol_edge(kind, arena.str_val(sid)),
+        // Leading scripts end where their base ends.
+        CompactNode::PreScripts { base, .. } => operand_edge_c(arena, base),
         // A scripted operator is still an operator, as in the reader.
-        CompactNode::PreScripts { base, .. }
-        | CompactNode::Subscript { base, .. }
+        CompactNode::Subscript { base, .. }
         | CompactNode::Superscript { base, .. }
         | CompactNode::SubSup { base, .. } => match operand_edge_c(arena, base) {
             OperandEdge::Break => OperandEdge::Break,
             _ => OperandEdge::Operand,
         },
-        // An n-ary operator ends with its n-aryand, maybe a fraction.
+        // An n-ary operator ends with its n-aryand, a whole operand that a
+        // factor after it would join (`∑_i a_i b`), like a denominator.
+        // (A lone operator symbol body, as LaTeX `\sum (` gives, does not.)
         CompactNode::Nary { body, .. }
-            if matches!(*arena.node(body), CompactNode::Fraction { .. }) =>
+            if !matches!(*arena.node(body), CompactNode::Row(span) if span.is_empty())
+                && operand_edge_c(arena, body) != OperandEdge::Break =>
         {
-            OperandEdge::Fraction
+            OperandEdge::Naryand
         },
         CompactNode::Nary { .. } | CompactNode::Space(_) | CompactNode::Text(..) => {
             OperandEdge::Break
@@ -1663,7 +1732,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
                 write_script_arg_c(out, arena, sup, style.sup());
             }
             out.push(' ');
-            write_node_c(out, arena, body, style);
+            write_naryand_c(out, arena, body, style);
         },
 
         CompactNode::Accent { base, accent, .. } => {
@@ -2248,8 +2317,11 @@ fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: M
             write_node_c(out, arena, id, style);
             out.push(')');
         },
-        // An operator alone is not an operand (`(+)/2`).
-        _ if operand_edge_c(arena, id) == OperandEdge::Break => {
+        // An operator alone is not an operand (`(+)/2`), and an n-ary
+        // operator would take the fraction as its n-aryand (`(∑ a)/b`).
+        _ if matches!(*arena.node(id), CompactNode::Nary { .. })
+            || operand_edge_c(arena, id) == OperandEdge::Break =>
+        {
             out.push('(');
             write_node_c(out, arena, id, style);
             out.push(')');
