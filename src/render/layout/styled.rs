@@ -221,6 +221,7 @@ enum BigDelimLayout {
 }
 
 impl BigDelimLayout {
+    #[inline(never)]
     fn into_heap(self, size: f64) -> LayoutBox {
         match self {
             Self::Null(w) => LayoutBox::kern(w),
@@ -228,6 +229,7 @@ impl BigDelimLayout {
         }
     }
 
+    #[inline(never)]
     fn into_arena(self, arena: &mut LayoutArena, size: f64) -> LayoutBoxId {
         match self {
             Self::Null(w) => arena.alloc(ArenaLayoutBox::kern(w)),

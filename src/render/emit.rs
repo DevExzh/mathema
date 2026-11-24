@@ -1032,6 +1032,8 @@ pub(crate) fn write_escaped_char(out: &mut String, ch: char) {
 /// Baseline for a delimiter drawn as a `<text>` glyph at `font_size`: the
 /// glyph's ink is centered on the delimiter box, which the layout centers on
 /// the math axis, instead of hanging from the box baseline.
+#[cold]
+#[inline(never)]
 fn delimiter_text_baseline(
     ch: char,
     y: f64,
