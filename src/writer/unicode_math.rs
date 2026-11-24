@@ -60,6 +60,30 @@ fn unicode_math_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
 pub struct UnicodeMathWriter;
 
 fn write_unicode_space(out: &mut String, em: f64) {
+    // UTN #28 section 3.16: the space characters with a width of 1, 3, 4,
+    // 5, 6 or 9 eighteenths of an em, and the no-break space (the reader's
+    // widths).
+    if (em - 0.25).abs() < 1e-6 {
+        out.push('\u{00A0}');
+        return;
+    }
+    let eighteenths = em * 18.0;
+    if (eighteenths - eighteenths.round()).abs() < 1e-6 {
+        let exact = match eighteenths.round() as i64 {
+            1 => Some('\u{200A}'),
+            3 => Some('\u{2009}'),
+            4 => Some('\u{205F}'),
+            5 => Some('\u{2005}'),
+            6 => Some('\u{2004}'),
+            9 => Some('\u{2002}'),
+            18 => Some('\u{2003}'),
+            _ => None,
+        };
+        if let Some(space) = exact {
+            out.push(space);
+            return;
+        }
+    }
     if em >= 1.0 {
         out.push('\u{2003}');
     } else if em >= 0.5 {
@@ -249,15 +273,18 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         } => {
             out.push_str(open);
             let mut current_style = style;
-            for (i, item) in content.iter().enumerate() {
-                if i > 0 {
-                    // separator
-                }
+            let mut previous_operator = false;
+            for item in content {
                 match item {
                     FencedItem::Element(MathNode::StyleSwitch(value)) => {
                         current_style = MathStyle::branch_from_switch(*value);
                     },
-                    FencedItem::Element(node) => write_node(out, node, current_style),
+                    FencedItem::Element(node) => {
+                        let start = out.len();
+                        write_node(out, node, current_style);
+                        separate_after_script(out, start, previous_operator);
+                        previous_operator = needs_operator_terminator(node, current_style);
+                    },
                     FencedItem::Middle(delim) => {
                         out.push_str(delim);
                         current_style = style;
@@ -539,11 +566,14 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Styled(text_style, children) => {
             // Apply Unicode math alphabet mapping
             let mut current_style = style;
+            let mut previous_operator = false;
             for child in children {
                 if let MathNode::StyleSwitch(value) = child {
                     current_style = MathStyle::branch_from_switch(*value);
                     continue;
                 }
+                let start = out.len();
+                let terminates = needs_operator_terminator(child, current_style);
                 match child {
                     MathNode::Identifier(s) | MathNode::Number(s) | MathNode::Text(_, s) => {
                         for ch in s.chars() {
@@ -554,6 +584,8 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
                     },
                     _ => write_node(out, child, current_style),
                 }
+                separate_after_script(out, start, previous_operator);
+                previous_operator = terminates;
             }
         },
         MathNode::Color { content, .. } => write_node(out, content, style),
@@ -979,7 +1011,10 @@ fn write_script_base(out: &mut String, node: &MathNode, style: MathStyle) {
     }
 }
 
-use crate::reader::unicode_math::{is_prime as is_prime_char, symbol_takes_prime};
+use crate::reader::unicode_math::{
+    breaks_naryand, is_prime as is_prime_char, is_run_char, starts_signed_script_operand,
+    symbol_takes_prime,
+};
 
 /// A symbol node that starts with a prime, which the reader never gives
 /// the primes after it as a superscript.
@@ -1034,6 +1069,7 @@ fn write_script_arg(out: &mut String, node: &MathNode, style: MathStyle) {
 
 fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyle) {
     match select_mathchoice(node, style) {
+        MathNode::Row(children) if is_simple_script(children) => write_node(out, node, style),
         MathNode::Row(children) if children.len() > 1 => {
             out.push('(');
             write_node(out, node, style);
@@ -1056,6 +1092,96 @@ fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyl
         },
         _ => write_node(out, node, style),
     }
+}
+
+/// A sign the reader takes as the start of a script operand (`e^-x`).
+fn is_script_sign(glyph: &str) -> bool {
+    matches!(glyph, "-" | "+" | "\u{2212}")
+}
+
+/// A letter or a number the reader continues a script operand with
+/// (`a_ij`, `x_2n`); `after_number` when a number comes before it, which
+/// it would join (`12` is one number).
+fn is_run_atom(identifier: Option<&str>, number: Option<&str>, after_number: bool) -> bool {
+    if let Some(name) = identifier {
+        let mut chars = name.chars();
+        return chars.next().is_some_and(is_run_char) && chars.next().is_none();
+    }
+    number.is_some_and(|digits| {
+        !after_number
+            && digits.starts_with(|c: char| c.is_ascii_digit())
+            && digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+    })
+}
+
+/// Whether a script argument row of `children` is an operand the reader
+/// takes whole without parentheses (UTN #28 section 2.2, appendix A
+/// `soperand`): letters and digits (`a_ij`, `x^2y`), possibly after a
+/// sign (`e^-x`, `x^-1`), or a signed infinity (`∑_(n=-∞)`, `x^-∞`).
+fn is_simple_script(children: &[MathNode]) -> bool {
+    let run = match children {
+        [MathNode::Symbol(_, sign), rest @ ..] if is_script_sign(sign) => {
+            if matches!(rest, [MathNode::Symbol(_, glyph)] if glyph == "\u{221E}") {
+                return true;
+            }
+            rest
+        },
+        _ => children,
+    };
+    !run.is_empty()
+        && run.iter().enumerate().all(|(index, node)| {
+            let after_number = index > 0 && matches!(run[index - 1], MathNode::Number(_));
+            match node {
+                MathNode::Identifier(name) => is_run_atom(Some(name), None, after_number),
+                MathNode::Number(digits) => is_run_atom(None, Some(digits), after_number),
+                _ => false,
+            }
+        })
+}
+
+/// Compact counterpart of [`is_simple_script`].
+fn is_simple_script_c(arena: &AstArena, children: &[NodeId]) -> bool {
+    let run = match children.split_first() {
+        Some((&first, rest))
+            if matches!(*arena.node(first), CompactNode::Symbol(_, sid)
+                if is_script_sign(arena.str_val(sid))) =>
+        {
+            if let [only] = rest
+                && matches!(*arena.node(*only), CompactNode::Symbol(_, sid)
+                    if arena.str_val(sid) == "\u{221E}")
+            {
+                return true;
+            }
+            rest
+        },
+        _ => children,
+    };
+    !run.is_empty()
+        && run.iter().enumerate().all(|(index, &id)| {
+            let after_number =
+                index > 0 && matches!(*arena.node(run[index - 1]), CompactNode::Number(_));
+            match *arena.node(id) {
+                CompactNode::Identifier(sid) => {
+                    is_run_atom(Some(arena.str_val(sid)), None, after_number)
+                },
+                CompactNode::Number(sid) => {
+                    is_run_atom(None, Some(arena.str_val(sid)), after_number)
+                },
+                _ => false,
+            }
+        })
+}
+
+/// Whether `written` ends with a script that is only a sign (`x^-`), which
+/// the reader would make the sign of an operand right after it (`x^-y`).
+fn ends_with_script_sign(written: &str) -> bool {
+    let mut chars = written.chars().rev();
+    chars
+        .next()
+        .is_some_and(|c| matches!(c, '-' | '+' | '\u{2212}'))
+        && chars
+            .next()
+            .is_some_and(|c| matches!(c, '_' | '^' | '┬' | '┴'))
 }
 
 /// The UnicodeMath operator between a fraction's numerator and denominator:
@@ -1157,16 +1283,29 @@ fn select_mathchoice(node: &MathNode, style: MathStyle) -> &MathNode {
 }
 
 fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle) {
+    write_nodes_tracking(out, nodes, style, None);
+}
+
+/// Write `nodes`; with `applied`, record the offsets of the spaces written
+/// between a function name and its argument (see [`continues_naryand`]).
+fn write_nodes_tracking(
+    out: &mut String,
+    nodes: &[MathNode],
+    style: MathStyle,
+    mut applied: Option<&mut SmallVec<[usize; 4]>>,
+) {
     let mut current_style = style;
     let mut wrote_node = false;
     let mut previous_operator = false;
     let mut takes_prime = false;
+    let mut function = false;
     let mut edge = OperandEdge::Break;
     for node in nodes {
         if let MathNode::StyleSwitch(value) = node {
             current_style = MathStyle::branch_from_switch(*value);
             continue;
         }
+        let before = out.len();
         if wrote_node && needs_space_before_with_style(node, current_style) {
             out.push(' ');
         }
@@ -1174,11 +1313,101 @@ fn write_nodes_with_style(out: &mut String, nodes: &[MathNode], style: MathStyle
         write_node(out, node, current_style);
         let current = operand_edge(select_mathchoice(node, current_style));
         separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
+        if let Some(applied) = applied.as_deref_mut() {
+            record_applied_space(applied, out, before, function);
+        }
         previous_operator = needs_operator_terminator(node, current_style);
         takes_prime = !is_prime_symbol(node);
+        function = is_function_head(select_mathchoice(node, current_style));
         edge = current;
         wrote_node = true;
     }
+}
+
+/// Whether `node` writes as a function name the reader takes the operand
+/// after as the argument of (`sin`, `sin^2`, `lim_(n→∞)`; UTN #28 section
+/// 3.5).
+fn is_function_head(node: &MathNode) -> bool {
+    match node {
+        MathNode::Operator(attr) => is_unicode_function(&attr.name),
+        MathNode::Subscript { base, .. }
+        | MathNode::Superscript { base, .. }
+        | MathNode::SubSup { base, .. }
+        | MathNode::Underscript { base, .. }
+        | MathNode::Overscript { base, .. }
+        | MathNode::UnderOver { base, .. } => is_function_head(base),
+        _ => false,
+    }
+}
+
+/// Compact counterpart of [`is_function_head`].
+fn is_function_head_c(arena: &AstArena, id: NodeId) -> bool {
+    match *arena.node(id) {
+        CompactNode::Operator { name, .. } => is_unicode_function(arena.str_val(name)),
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. }
+        | CompactNode::Underscript { base, .. }
+        | CompactNode::Overscript { base, .. }
+        | CompactNode::UnderOver { base, .. } => is_function_head_c(arena, base),
+        _ => false,
+    }
+}
+
+/// Record the space at the start of `out[before..]`, written between two
+/// n-aryand factors, when the reader goes on past it (UTN #28 sections 3.4
+/// and 3.5): after a function name (`∑ log k`) and before a differential
+/// (`∫ x^2 ⅆx`).
+fn record_applied_space(
+    applied: &mut SmallVec<[usize; 4]>,
+    out: &str,
+    before: usize,
+    function: bool,
+) {
+    let written = &out[before..];
+    let Some(next) = written.strip_prefix(' ') else {
+        return;
+    };
+    // As the reader decides: not at a closing fence, quoted text, an
+    // operator or white space.
+    let continues = next.starts_with(['\u{2145}', '\u{2146}'])
+        || (function
+            && next.starts_with(|c: char| {
+                !c.is_whitespace()
+                    && !breaks_naryand(c)
+                    && !matches!(c, '"' | ')' | ']' | '}' | '|' | '\u{2016}' | '〗')
+            }));
+    if continues {
+        applied.push(before);
+    }
+}
+
+/// Whether the n-aryand written at `out[start..]` is read back whole: it has
+/// no space outside brackets but those of `applied` (in increasing order).
+/// Spaces inside a balanced bracket pair are read with the group.
+fn continues_naryand(out: &str, start: usize, applied: &[usize]) -> bool {
+    let mut applied = applied.iter().peekable();
+    let mut closers = SmallVec::<[char; 8]>::new();
+    for (index, c) in out[start..].char_indices() {
+        match c {
+            '(' => closers.push(')'),
+            '[' => closers.push(']'),
+            '{' => closers.push('}'),
+            '〖' => closers.push('〗'),
+            ')' | ']' | '}' | '〗' => {
+                if closers.pop() != Some(c) {
+                    return false;
+                }
+            },
+            // Quoted text may hold anything.
+            '"' => return false,
+            ' ' if closers.is_empty() && applied.next_if_eq(&&(start + index)).is_none() => {
+                return false;
+            },
+            _ => {},
+        }
+    }
+    closers.is_empty()
 }
 
 /// Insert an ignored source separator where the reader would otherwise
@@ -1204,14 +1433,40 @@ fn separate_following_operand(
     // after a fraction (`a/b c`, `a/b (c)`) are set apart.
     let fraction = (current == OperandEdge::Fraction && previous != OperandEdge::Break)
         || (matches!(previous, OperandEdge::Fraction | OperandEdge::Naryand)
-            && (first.is_alphanumeric() || matches!(first, '(' | '〖' | '!')));
+            && (first.is_alphanumeric() || matches!(first, '(' | '〖' | '!')))
+        // An n-aryand goes on at anything but an operator or a closing
+        // fence (`∑ a [b]`, `∑ a/b ∞`).
+        || (previous == OperandEdge::Naryand
+            && !first.is_whitespace()
+            && !breaks_naryand(first)
+            && !matches!(first, '"' | ')' | ']' | '}' | '|' | '\u{2016}' | '〗'));
+    // A script that is only a sign takes an operand after it (`x^- y` is
+    // not `x^-y`, UTN #28 appendix A `soperand`).
+    let sign = previous_operator
+        && starts_signed_script_operand(first)
+        && ends_with_script_sign(&out[..start]);
     let joins = (previous_operator && first.is_alphanumeric())
         || (takes_prime && is_prime_char(first))
         || digits
-        || fraction;
+        || fraction
+        || sign;
     if joins && !out[..start].ends_with(' ') {
         out.insert(start, ' ');
     }
+}
+
+/// Separate the sibling written from `start` on from a script before it
+/// that would take it (`x_i y`, not `x_iy`), in a list written without
+/// [`write_nodes_with_style`] (a fence or a styled run).
+fn separate_after_script(out: &mut String, start: usize, previous_operator: bool) {
+    separate_following_operand(
+        out,
+        start,
+        previous_operator,
+        false,
+        OperandEdge::Break,
+        OperandEdge::Break,
+    );
 }
 
 /// Write an n-ary operator's n-aryand, which the reader takes as the
@@ -1222,9 +1477,14 @@ fn separate_following_operand(
 fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
     let node = select_mathchoice(node, style);
     let plain = match node {
+        // A fraction is a factor too (`∑ log 1/k`, `∫ f/x ⅆx`); the spaces
+        // that would set it apart are checked below.
         MathNode::Row(children) => children.iter().all(|child| {
             !matches!(child, MathNode::StyleSwitch(_))
-                && operand_edge(select_mathchoice(child, style)) == OperandEdge::Operand
+                && matches!(
+                    operand_edge(select_mathchoice(child, style)),
+                    OperandEdge::Operand | OperandEdge::Fraction
+                )
         }),
         MathNode::Text(..) => false,
         // A nested n-ary operator is a whole n-aryand (`∫∫ f`); a lone
@@ -1232,9 +1492,15 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
         _ => true,
     };
     let start = out.len();
-    write_node(out, node, style);
-    // A space would end the n-aryand early (`∑ 〖y′ sin x〗`).
-    if !plain || (matches!(node, MathNode::Row(_)) && out[start..].contains(' ')) {
+    let mut applied = SmallVec::new();
+    if let MathNode::Row(children) = node {
+        write_nodes_tracking(out, children, style, Some(&mut applied));
+    } else {
+        write_node(out, node, style);
+    }
+    // A space would end the n-aryand early (`∑ 〖y′ sin x〗`), but for one
+    // after a function name (`∑ log k`) or before a differential.
+    if !plain || (matches!(node, MathNode::Row(_)) && !continues_naryand(out, start, &applied)) {
         out.insert(start, '〖');
         out.push('〗');
     }
@@ -1244,10 +1510,14 @@ fn write_naryand(out: &mut String, node: &MathNode, style: MathStyle) {
 fn write_naryand_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     let id = select_mathchoice_c(arena, id, style);
     let plain = match *arena.node(id) {
+        // A fraction is a factor too (`∑ log 1/k`, `∫ f/x ⅆx`); the spaces
+        // that would set it apart are checked below.
         CompactNode::Row(span) => arena.children(span).iter().all(|&child| {
             !matches!(*arena.node(child), CompactNode::StyleSwitch(_))
-                && operand_edge_c(arena, select_mathchoice_c(arena, child, style))
-                    == OperandEdge::Operand
+                && matches!(
+                    operand_edge_c(arena, select_mathchoice_c(arena, child, style)),
+                    OperandEdge::Operand | OperandEdge::Fraction
+                )
         }),
         CompactNode::Text(..) => false,
         // A nested n-ary operator is a whole n-aryand (`∫∫ f`); a lone
@@ -1255,9 +1525,17 @@ fn write_naryand_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathSt
         _ => true,
     };
     let start = out.len();
-    write_node_c(out, arena, id, style);
-    // A space would end the n-aryand early (`∑ 〖y′ sin x〗`).
-    if !plain || (matches!(*arena.node(id), CompactNode::Row(_)) && out[start..].contains(' ')) {
+    let mut applied = SmallVec::new();
+    let row = if let CompactNode::Row(span) = *arena.node(id) {
+        write_nodes_c_tracking(out, arena, span, style, Some(&mut applied));
+        true
+    } else {
+        write_node_c(out, arena, id, style);
+        false
+    };
+    // A space would end the n-aryand early (`∑ 〖y′ sin x〗`), but for one
+    // after a function name (`∑ log k`) or before a differential.
+    if !plain || (row && !continues_naryand(out, start, &applied)) {
         out.insert(start, '〖');
         out.push('〗');
     }
@@ -1525,6 +1803,7 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         } => {
             out.push_str(arena.str_val(open));
             let mut current_style = style;
+            let mut previous_operator = false;
             for &cid in arena.children(content) {
                 match *arena.node(cid) {
                     CompactNode::StyleSwitch(value) => {
@@ -1536,8 +1815,14 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
                         // Do not let a style declaration from the left side
                         // leak into the segment on the right.
                         current_style = style;
+                        previous_operator = false;
                     },
-                    _ => write_node_c(out, arena, cid, current_style),
+                    _ => {
+                        let start = out.len();
+                        write_node_c(out, arena, cid, current_style);
+                        separate_after_script(out, start, previous_operator);
+                        previous_operator = needs_operator_terminator_c(arena, cid, current_style);
+                    },
                 }
             }
             out.push_str(arena.str_val(close));
@@ -1796,12 +2081,15 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
         CompactNode::Styled(text_style, span) => {
             let mut current_style = style;
+            let mut previous_operator = false;
             for &child_id in arena.children(span) {
                 let child = *arena.node(child_id);
                 if let CompactNode::StyleSwitch(value) = child {
                     current_style = MathStyle::branch_from_switch(value);
                     continue;
                 }
+                let start = out.len();
+                let terminates = needs_operator_terminator_c(arena, child_id, current_style);
                 match child {
                     CompactNode::Identifier(sid)
                     | CompactNode::Number(sid)
@@ -1814,6 +2102,8 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
                     },
                     _ => write_node_c(out, arena, child_id, current_style),
                 }
+                separate_after_script(out, start, previous_operator);
+                previous_operator = terminates;
             }
         },
 
@@ -2268,6 +2558,9 @@ fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: Mat
 
 fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
     match *arena.node(select_mathchoice_c(arena, id, style)) {
+        CompactNode::Row(span) if is_simple_script_c(arena, arena.children(span)) => {
+            write_node_c(out, arena, id, style);
+        },
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
             out.push('(');
             write_node_c(out, arena, id, style);
@@ -2390,10 +2683,22 @@ fn write_nodes_c_with_style(
     span: crate::ast::compact::NodeSpan,
     style: MathStyle,
 ) {
+    write_nodes_c_tracking(out, arena, span, style, None);
+}
+
+/// Compact counterpart of [`write_nodes_tracking`].
+fn write_nodes_c_tracking(
+    out: &mut String,
+    arena: &AstArena,
+    span: crate::ast::compact::NodeSpan,
+    style: MathStyle,
+    mut applied: Option<&mut SmallVec<[usize; 4]>>,
+) {
     let mut current_style = style;
     let mut wrote_node = false;
     let mut previous_operator = false;
     let mut takes_prime = false;
+    let mut function = false;
     let mut edge = OperandEdge::Break;
     let children = arena.children(span);
     for &id in children {
@@ -2402,15 +2707,21 @@ fn write_nodes_c_with_style(
             continue;
         }
         let (needs_space, terminates_operator) = compact_spacing_flags(arena, id, current_style);
+        let before = out.len();
         if wrote_node && needs_space {
             out.push(' ');
         }
         let start = out.len();
         write_node_c(out, arena, id, current_style);
-        let current = operand_edge_c(arena, select_mathchoice_c(arena, id, current_style));
+        let selected = select_mathchoice_c(arena, id, current_style);
+        let current = operand_edge_c(arena, selected);
         separate_following_operand(out, start, previous_operator, takes_prime, edge, current);
+        if let Some(applied) = applied.as_deref_mut() {
+            record_applied_space(applied, out, before, function);
+        }
         previous_operator = terminates_operator;
         takes_prime = !is_prime_symbol_c(arena, id);
+        function = is_function_head_c(arena, selected);
         edge = current;
         wrote_node = true;
     }

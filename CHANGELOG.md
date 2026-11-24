@@ -33,6 +33,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read as the letter.
 - The LaTeX writer no longer braces a font command that carries a script
   (`\mathbf{F}_{x}`).
+
+- **Breaking (behavior):** the UnicodeMath reader follows more of Unicode
+  Technical Note 28. A script operand is the whole run of letters and
+  digits (section 2.2): `a_ij` is `a_{ij}` (was `a_i j`) and `x^2y` is
+  `x^{2y}`; a sign starts one (appendix A `soperand`): `e^-x` is
+  `e^{-x}` (was `e^{-}x`) and `x^-1` is `x^{-1}`. `·` (U+00B7), `•` and
+  `*` are binary operators (table 3.1), so `a·b/c` and `a*b/c` no longer
+  fall back to text. `/` before an operator negates it (section 4.1):
+  `a/=b` is `a≠b`, `a/∈B` is `a∉B` (was a fraction). In an n-aryand a
+  function name takes its argument after a space (section 3.5): `∑ log k`
+  sums `log k` (was `log`), and a space before the differential ⅆ does
+  not end an integrand (`∫ sin x ⅆx`). The space characters of section
+  3.16 (U+2009, U+2005, U+2003, …) are kept as spaces everywhere (they were
+  dropped outside brackets, so `x`, U+2009, `dx` read as the word `xdx`). The
+  UnicodeMath writer writes such script operands without parentheses
+  (`a_ij`, `e^-x`), writes LaTeX spaces with the character of their width
+  (`\;` is U+2005, `\:` U+205F), and keeps a sign-only script apart from
+  an operand after it (`x^- y`).
+
 - **Breaking (behavior):** `\above` and `\abovewithdelims` need a
   dimension, as in TeX ("Missing number") and MathJax ("Missing
   dimension"): `{a \above b}` is now an error under `Strictness::Strict`

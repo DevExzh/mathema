@@ -117,11 +117,12 @@ const READS: &[(&str, &str, &str)] = &[
     ("▭(_1)F", "▭((_1)F)", r"\boxed{{{}_{1}F}}"),
     // A quote in text is `\"` (section 3.15).
     ("\"a\\\"b\"", "\"a\\\"b\"", r#"\text{a"b}"#),
-    // The n-aryand is the whole operand after the operator (section 3.4).
+    // The n-aryand is the whole operand after the operator (section 3.4),
+    // with the differential after it.
     (
         "∫_0^1 f(x)/x ⅆx",
         "∫_0^1 (f(x))/x ⅆx",
-        r"\int\nolimits_{0}^{1} {\frac{f\left( x \right)}{x}}ⅆx",
+        r"\int\nolimits_{0}^{1} {\frac{f\left( x \right)}{x}ⅆx}",
     ),
     (
         "∫ f(x)/2",

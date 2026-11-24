@@ -377,38 +377,38 @@ impl CompactParser {
         let mut ids = SmallVec::new();
         let mut remaining = input;
         let mut run = 0;
+        let mut spaced = false;
         loop {
             // Whitespace separates UnicodeMath operands (it triggers "build up"
             // of the preceding subexpression); it is not literal text. Skip it
             // between elements so parsing continues past spaces.
-            let trimmed = remaining.trim_start();
-            let spaced = trimmed.len() != remaining.len();
+            let trimmed = skip_blanks(remaining);
+            spaced |= trimmed.len() != remaining.len();
             self.baseless_ok = ids.is_empty() || spaced;
             remaining = trimmed;
             if remaining.is_empty() {
                 break;
             }
+            // UTN #28 section 3.16: the other spaces are not removed on
+            // build up (LaTeX `\,` is U+2009).
+            if let Some((rest, width)) = unicode_math_space(remaining) {
+                let id = self.push_node(CompactNode::Space(width));
+                remaining = match self.push_operand(&mut ids, &mut run, true, id, rest) {
+                    Ok(rest) => rest,
+                    Err(_) => return Err(self.parse_failure()),
+                };
+                spaced = true;
+                continue;
+            }
+            let spaced = std::mem::take(&mut spaced);
             match self.parse_element(remaining) {
                 Ok((rest, id)) => {
                     remaining = match self.push_operand(&mut ids, &mut run, spaced, id, rest) {
                         Ok(rest) => rest,
-                        Err(_) => {
-                            return Err(self.abort.take().unwrap_or_else(|| {
-                                Error::UnicodeMathParse {
-                                    message: "UnicodeMath parse error".into(),
-                                }
-                            }));
-                        },
+                        Err(_) => return Err(self.parse_failure()),
                     };
                 },
-                Err(nom::Err::Failure(_)) => {
-                    return Err(self
-                        .abort
-                        .take()
-                        .unwrap_or_else(|| Error::UnicodeMathParse {
-                            message: "UnicodeMath parse error".into(),
-                        }));
-                },
+                Err(nom::Err::Failure(_)) => return Err(self.parse_failure()),
                 Err(_) => break,
             }
         }
@@ -420,6 +420,15 @@ impl CompactParser {
             return Err(error);
         }
         Ok(ids)
+    }
+
+    /// The error that aborted the parse.
+    fn parse_failure(&mut self) -> Error {
+        self.abort
+            .take()
+            .unwrap_or_else(|| Error::UnicodeMathParse {
+                message: "UnicodeMath parse error".into(),
+            })
     }
 
     fn parse_element<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -482,7 +491,7 @@ impl CompactParser {
                         .arena
                         .push_node(CompactNode::Space(Rational::new(1, 4))));
                 }
-                let (after, id) = self.parse_script_arg(after)?;
+                let (after, id) = self.parse_script_operand(after)?;
                 *rest = after;
                 Ok(id)
             };
@@ -700,7 +709,7 @@ impl CompactParser {
             *run = ids.len();
             return Ok(rest);
         }
-        while rest.starts_with(['/', '\u{A6}']) {
+        while rest.starts_with(['/', '\u{A6}']) && negated_operator(rest).is_none() {
             let (&last, before) = ids.split_last().expect("an element was pushed");
             let mut start = (*run).min(before.len());
             if let Some(open) = self.closing_fence(last).and_then(opening_fence)
@@ -739,34 +748,99 @@ impl CompactParser {
         input: &'a str,
         mark: char,
     ) -> std::result::Result<Option<(&'a str, NodeId)>, nom::Err<nom::error::Error<&'a str>>> {
-        let (rest, arg) = match self.parse_script_arg(input) {
+        let (rest, mut factors) = match self.parse_script_factors(input) {
             Ok(found) => found,
             Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
             Err(_) => return Ok(None),
         };
-        let Some(next) = rest.strip_prefix(mark) else {
-            return Ok(Some((rest, arg)));
-        };
-        self.enter(next)?;
-        let nested = self.parse_script_chain(next, mark);
-        self.depth -= 1;
-        Ok(Some(match nested? {
-            Some((rest, script)) => (
-                rest,
-                self.push_node(if mark == '_' {
-                    CompactNode::Subscript {
-                        base: arg,
-                        sub: script,
-                    }
+        if let Some(next) = rest.strip_prefix(mark) {
+            self.enter(next)?;
+            let nested = self.parse_script_chain(next, mark);
+            self.depth -= 1;
+            if let Some((after, script)) = nested? {
+                // The script nests on the last factor (`a_ij_k` is
+                // `a_(i j_k)`, as `ij_k` is `i j_k` outside a script).
+                let base = factors.pop().expect("a script operand has a factor");
+                factors.push(self.push_node(if mark == '_' {
+                    CompactNode::Subscript { base, sub: script }
                 } else {
-                    CompactNode::Superscript {
-                        base: arg,
-                        sup: script,
-                    }
-                }),
-            ),
-            None => (rest, arg),
-        }))
+                    CompactNode::Superscript { base, sup: script }
+                }));
+                return Ok(Some((after, self.flatten_single(&factors))));
+            }
+        }
+        Ok(Some((rest, self.flatten_single(&factors))))
+    }
+
+    /// A script operand as one node (see [`Self::parse_script_factors`]).
+    fn parse_script_operand<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, factors) = self.parse_script_factors(input)?;
+        Ok((rest, self.flatten_single(&factors)))
+    }
+
+    /// The factors of a sub- or superscript operand. UTN #28 section 2.2: "A
+    /// simple subscript operand consists of the string of one or more
+    /// characters with the Unicode General Categories Lx (alphabetic) and Nd
+    /// (decimal digits)" (`δ_μν`, `a_ij`, `x^2y`; `a_i+1` stops at `+`).
+    /// Appendix A, `soperand ← operand | '∞' | '-' operand | "-∞"`, and
+    /// section 3.22 ("math minus (U+2212) or plus if either starts a
+    /// sub/superscript operand"): a sign before an operand is part of it
+    /// (`e^-x`, `x^-1`); parentheses after the sign are visible (`x^-(a+b)`).
+    fn parse_script_factors<'a>(
+        &mut self,
+        input: &'a str,
+    ) -> IResult<&'a str, SmallVec<[NodeId; 8]>> {
+        let mut factors = SmallVec::new();
+        let mut rest = input;
+        if let Some(sign) = input
+            .chars()
+            .next()
+            .filter(|c| matches!(c, '-' | '+' | '\u{2212}'))
+            && input[sign.len_utf8()..].starts_with(starts_signed_script_operand)
+        {
+            let (after, sign) = self.parse_symbol(input)?;
+            factors.push(sign);
+            let operand = if after.starts_with('(') {
+                self.parse_group_as(after, false)
+            } else {
+                self.parse_script_arg(after)
+            };
+            match operand {
+                Ok((after, id)) => {
+                    factors.push(id);
+                    rest = after;
+                },
+                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
+                Err(_) => return Ok((after, factors)),
+            }
+        }
+        if factors.is_empty() {
+            let (after, id) = self.parse_script_arg(input)?;
+            factors.push(id);
+            rest = after;
+        }
+        if factors.last().is_some_and(|&id| self.is_run_factor(id)) {
+            while rest.starts_with(is_run_char) {
+                let (after, id) = self.parse_single_char_node(rest)?;
+                let (after, id) = self.with_accents(after, id);
+                self.tick(1);
+                factors.push(id);
+                rest = after;
+            }
+        }
+        Ok((rest, factors))
+    }
+
+    /// Whether `id` is a letter or a number (possibly accented), which the
+    /// letters and digits after it in a script continue.
+    fn is_run_factor(&self, mut id: NodeId) -> bool {
+        loop {
+            id = match *self.arena.node(id) {
+                CompactNode::Accent { base, .. } => base,
+                CompactNode::Identifier(_) | CompactNode::Number(_) => return true,
+                _ => return false,
+            };
+        }
     }
 
     fn parse_attached_scripts<'a>(
@@ -798,7 +872,7 @@ impl CompactParser {
                     return Err(abort_failure(rest));
                 }
                 rest = &rest[marker.len_utf8()..];
-                let (tail, argument) = self.parse_script_arg(rest)?;
+                let (tail, argument) = self.parse_script_operand(rest)?;
                 forced.push((marker, argument));
                 rest = tail;
             }
@@ -1070,6 +1144,11 @@ impl CompactParser {
                 spaced = true;
                 continue;
             }
+            if remaining.starts_with(is_blank) {
+                remaining = skip_blanks(remaining);
+                spaced = true;
+                continue;
+            }
             if remaining.starts_with(close) {
                 break;
             }
@@ -1122,6 +1201,7 @@ impl CompactParser {
             parse_group,
             parse_number,
             parse_operator_word,
+            parse_negated_operator,
             parse_symbol,
             parse_identifier,
             parse_prime,
@@ -1132,6 +1212,22 @@ impl CompactParser {
             input,
             nom::error::ErrorKind::Alt,
         )))
+    }
+
+    /// UTN #28 sections 2.1 and 4.1: `/` before an operator negates it
+    /// (`a/=b` is `a≠b`, `a/∈B` is `a∉B`).
+    fn parse_negated_operator<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, negated) = negated_operator(input)
+            .ok_or_else(|| parse_error(input, nom::error::ErrorKind::Tag))?;
+        let mut buf = [0_u8; 4];
+        let sid = self.arena.push_str(negated.encode_utf8(&mut buf));
+        let kind = classify_unicode_symbol(negated);
+        let rest = if matches!(kind, SymbolKind::BinaryOp | SymbolKind::Relation) {
+            skip_blanks(rest)
+        } else {
+            rest
+        };
+        Ok((rest, self.push_node(CompactNode::Symbol(kind, sid))))
     }
 
     /// UTN #28 sections 2.1 and 3.2: `\/` is a literal solidus (a binary
@@ -1360,14 +1456,22 @@ impl CompactParser {
     fn parse_root_operand<'a>(&mut self, mut input: &'a str) -> IResult<&'a str, NodeId> {
         let mut ids: SmallVec<[NodeId; 8]> = SmallVec::new();
         let mut run = 0;
+        let mut spaced = false;
         loop {
-            let trimmed = input.trim_start();
-            let spaced = trimmed.len() != input.len();
+            let trimmed = skip_blanks(input);
+            spaced |= trimmed.len() != input.len();
             self.baseless_ok = ids.is_empty() || spaced;
             input = trimmed;
             if input.is_empty() {
                 break;
             }
+            if let Some((rest, width)) = unicode_math_space(input) {
+                let id = self.push_node(CompactNode::Space(width));
+                input = self.push_operand(&mut ids, &mut run, true, id, rest)?;
+                spaced = true;
+                continue;
+            }
+            let spaced = std::mem::take(&mut spaced);
             let before = input.len();
             let (rest, id) = self.parse_element(input)?;
             if rest.len() >= before {
@@ -1518,7 +1622,12 @@ impl CompactParser {
                 break;
             }
             let mut skipped = false;
-            if let Some(rest) = remaining.strip_prefix(|c: char| c.is_whitespace()) {
+            if let Some((rest, width)) = unicode_math_space(remaining) {
+                // A typographic space is content (UTN #28 section 3.16).
+                let id = self.push_node(CompactNode::Space(width));
+                remaining = self.push_operand(&mut current_cell, &mut operand, true, id, rest)?;
+                spaced = true;
+            } else if let Some(rest) = remaining.strip_prefix(|c: char| c.is_whitespace()) {
                 // Whitespace separates operands; it is not content.
                 remaining = rest;
                 spaced = true;
@@ -1687,18 +1796,43 @@ impl CompactParser {
     /// only groups it. A nested n-ary operator is the whole n-aryand
     /// (`∫∫ f`).
     fn parse_naryand<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
-        let mut rest = input.trim_start();
+        let mut rest = skip_blanks(input);
         if let Some(after) = rest.strip_prefix('\u{2592}') {
-            rest = after.trim_start();
+            rest = skip_blanks(after);
         }
         let mut ids = SmallVec::<[NodeId; 8]>::new();
         let mut run = 0;
-        // Decide from the next character whether the operand goes on, so no
-        // element is parsed and then dropped (which could repeat work).
-        while let Some(c) = rest.chars().next()
-            && !c.is_whitespace()
-            && !self.ends_naryand(&ids, c)
-        {
+        let mut spaced = false;
+        loop {
+            // UTN #28 section 3.5: a function name and its argument are one
+            // operand (`∑ log k`); the space after the name only delimits it
+            // (section 2.3). The differential ⅆ (section 3.4: "automatically
+            // introduces a small space") ends the integrand it follows, so a
+            // space before it does not end the n-aryand (`∫ sin x ⅆx`).
+            if rest.starts_with(is_blank) && !ids.is_empty() {
+                let next = skip_blanks(rest);
+                let goes_on = if next.starts_with(['\u{2145}', '\u{2146}']) {
+                    true
+                } else {
+                    ids.last().is_some_and(|&id| self.is_function_head(id))
+                        && next
+                            .chars()
+                            .next()
+                            .is_some_and(|c| !c.is_whitespace() && !self.ends_naryand(&ids, c))
+                };
+                if goes_on {
+                    rest = next;
+                    spaced = true;
+                }
+            }
+            // Decide from the next character whether the operand goes on, so
+            // no element is parsed and then dropped (which could repeat work).
+            let Some(c) = rest.chars().next() else {
+                break;
+            };
+            if c.is_whitespace() || self.ends_naryand(&ids, c) {
+                break;
+            }
             // An operand of the n-ary element, at its nesting level (as a
             // script argument is); a nested n-ary operator is one deeper.
             let nested_nary = is_nary_char(c);
@@ -1714,7 +1848,8 @@ impl CompactParser {
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
                 Err(_) => break,
             };
-            rest = self.push_operand(&mut ids, &mut run, false, id, after)?;
+            let spaced = std::mem::take(&mut spaced);
+            rest = self.push_operand(&mut ids, &mut run, spaced, id, after)?;
             // A nested n-ary operator is the whole n-aryand, and so is a lone
             // operator symbol, as LaTeX reads `\sum \cdot y`.
             if ids.len() == 1 && self.breaks_operand(id) {
@@ -1742,6 +1877,22 @@ impl CompactParser {
         Ok((rest, body))
     }
 
+    /// Whether `id` is a function name, possibly with scripts or limits
+    /// (`sin`, `sin^2`, `lim_(n→∞)`), which takes the operand after it as
+    /// its argument (UTN #28 section 3.5).
+    fn is_function_head(&self, id: NodeId) -> bool {
+        match *self.arena.node(id) {
+            CompactNode::Operator { .. } => true,
+            CompactNode::Subscript { base, .. }
+            | CompactNode::Superscript { base, .. }
+            | CompactNode::SubSup { base, .. }
+            | CompactNode::Underscript { base, .. }
+            | CompactNode::Overscript { base, .. }
+            | CompactNode::UnderOver { base, .. } => self.is_function_head(base),
+            _ => false,
+        }
+    }
+
     /// Whether an n-aryand `ids` ends before an element starting with `c`:
     /// at quoted text, and once it has begun, at an operator, punctuation or
     /// a big operator; at a closing fence it did not open, and at `|` or `‖`
@@ -1766,18 +1917,7 @@ impl CompactParser {
                 count(open) <= count(c)
             };
         }
-        let breaks = is_nary_char(c)
-            || matches!(c, ',' | ';' | ':' | '?')
-            || (is_math_symbol(c)
-                && matches!(
-                    classify_unicode_symbol(c),
-                    SymbolKind::BinaryOp
-                        | SymbolKind::Relation
-                        | SymbolKind::Punctuation
-                        | SymbolKind::LargeOp
-                        | SymbolKind::Open
-                ));
-        breaks && !ids.is_empty()
+        breaks_naryand(c) && !ids.is_empty()
     }
 
     fn parse_nary_op<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -1793,7 +1933,7 @@ impl CompactParser {
 
         // Try subscript
         let (input, sub) = if let Some(rest) = input.strip_prefix('_') {
-            match self.parse_script_arg(rest) {
+            match self.parse_script_operand(rest) {
                 Ok((rest, id)) => (rest, id),
                 Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
                 Err(_) => (input, NodeId::NONE),
@@ -1812,7 +1952,7 @@ impl CompactParser {
 
         // Try superscript
         let input = if let Some(rest) = input.strip_prefix('^') {
-            match self.parse_script_arg(rest) {
+            match self.parse_script_operand(rest) {
                 Ok((rest, id)) => {
                     primes.push(id);
                     rest
@@ -1878,7 +2018,7 @@ impl CompactParser {
         let kind = classify_unicode_symbol(ch);
         // Skip whitespace after binary/relation operators
         let rest = if matches!(kind, SymbolKind::BinaryOp | SymbolKind::Relation) {
-            rest.trim_start()
+            skip_blanks(rest)
         } else {
             rest
         };
@@ -1970,6 +2110,43 @@ fn is_nary_char(c: char) -> bool {
     )
 }
 
+/// UTN #28 section 4.1: the operator `/` negates when it comes before one
+/// (`/=` is `≠`), and the input after both.
+fn negated_operator(input: &str) -> Option<(&str, char)> {
+    let rest = input.strip_prefix('/')?;
+    let op = rest.chars().next()?;
+    let negated = match op {
+        '<' => '\u{226E}',
+        '=' => '\u{2260}',
+        '>' => '\u{226F}',
+        '\u{2203}' => '\u{2204}', // ∃ ∄
+        '\u{2208}' => '\u{2209}', // ∈ ∉
+        '\u{220B}' => '\u{220C}', // ∋ ∌
+        '\u{223C}' => '\u{2241}', // ∼ ≁
+        '\u{2243}' => '\u{2244}', // ≃ ≄
+        '\u{2245}' => '\u{2247}', // ≅ ≇
+        '\u{2248}' => '\u{2249}', // ≈ ≉
+        '\u{224D}' => '\u{226D}', // ≍ ≭
+        '\u{2261}' => '\u{2262}', // ≡ ≢
+        '\u{2264}' => '\u{2270}', // ≤ ≰
+        '\u{2265}' => '\u{2271}', // ≥ ≱
+        '\u{2276}' => '\u{2278}', // ≶ ≸
+        '\u{2277}' => '\u{2279}', // ≷ ≹
+        '\u{227D}' => '\u{22E1}', // ≽ ⋡
+        '\u{227A}' => '\u{2280}', // ≺ ⊀
+        '\u{227B}' => '\u{2281}', // ≻ ⊁
+        '\u{227C}' => '\u{22E0}', // ≼ ⋠
+        '\u{2282}' => '\u{2284}', // ⊂ ⊄
+        '\u{2283}' => '\u{2285}', // ⊃ ⊅
+        '\u{2286}' => '\u{2288}', // ⊆ ⊈
+        '\u{2287}' => '\u{2289}', // ⊇ ⊉
+        '\u{2291}' => '\u{22E2}', // ⊑ ⋢
+        '\u{2292}' => '\u{22E3}', // ⊒ ⋣
+        _ => return None,
+    };
+    Some((&rest[op.len_utf8()..], negated))
+}
+
 /// The primes UTN #28 superscripts automatically after a base (′ ″ ‴ ⁗).
 pub(crate) fn is_prime(c: char) -> bool {
     matches!(c, '\u{2032}'..='\u{2034}' | '\u{2057}')
@@ -2011,6 +2188,35 @@ pub(crate) fn symbol_takes_prime(glyph: &str) -> bool {
         )
 }
 
+/// Whether an element starting with `c` (not a fence) ends an n-aryand that
+/// has begun: an operator, punctuation or a big operator.
+pub(crate) fn breaks_naryand(c: char) -> bool {
+    is_nary_char(c)
+        || matches!(c, ',' | ';' | ':' | '?')
+        || (is_math_symbol(c)
+            && matches!(
+                classify_unicode_symbol(c),
+                SymbolKind::BinaryOp
+                    | SymbolKind::Relation
+                    | SymbolKind::Punctuation
+                    | SymbolKind::LargeOp
+                    | SymbolKind::Open
+            ))
+}
+
+/// A letter or decimal digit, which continues a simple script operand
+/// (UTN #28 section 2.2).
+pub(crate) fn is_run_char(c: char) -> bool {
+    c.is_ascii_digit() || (c.is_alphabetic() && !is_math_symbol(c) && !is_nary_char(c))
+}
+
+/// Whether `c` starts the operand of a sign that begins a script operand
+/// (`e^-x`, `x^-(a+b)`, `x^-∞`); otherwise the sign is the whole operand
+/// (`x^-` alone, `x^- y`).
+pub(crate) fn starts_signed_script_operand(c: char) -> bool {
+    is_run_char(c) || matches!(c, '(' | '[' | '{' | '〖' | '\u{221E}')
+}
+
 /// Whether `rest` continues with a script of the atom before it: a
 /// subscript, a superscript or a prime.
 fn starts_script(rest: &str) -> bool {
@@ -2033,22 +2239,48 @@ fn unicode_accent_suffix(input: &str) -> Option<(&str, char, AccentPosition, boo
     Some((&input[ch.len_utf8()..], ch, position, wide))
 }
 
-fn unicode_math_space(input: &str) -> Option<(&str, Rational)> {
-    let ch = input.chars().next()?;
-    let width = match ch {
+/// The space characters of UTN #28 section 3.16 with their widths in em.
+/// Unlike the ASCII space they are not removed on build up.
+fn space_width(ch: char) -> Option<Rational> {
+    Some(match ch {
         '\u{00A0}' => Rational::new(1, 4),
+        '\u{200A}' => Rational::new(1, 18),
+        '\u{2009}' => Rational::new(3, 18),
+        '\u{205F}' => Rational::new(4, 18),
+        '\u{2005}' => Rational::new(5, 18),
+        '\u{2004}' => Rational::new(6, 18),
         '\u{2002}' => Rational::new(1, 2),
         '\u{2003}' => Rational::new(1, 1),
-        '\u{2009}' => Rational::new(3, 18),
         _ => return None,
-    };
-    Some((&input[ch.len_utf8()..], width))
+    })
+}
+
+fn unicode_math_space(input: &str) -> Option<(&str, Rational)> {
+    if !input.as_bytes().first().is_some_and(|byte| *byte >= 0x80) {
+        return None;
+    }
+    let ch = input.chars().next()?;
+    Some((&input[ch.len_utf8()..], space_width(ch)?))
+}
+
+/// White space that only separates operands: any but the spaces of
+/// [`space_width`].
+fn is_blank(ch: char) -> bool {
+    ch.is_whitespace() && space_width(ch).is_none()
+}
+
+fn skip_blanks(input: &str) -> &str {
+    input.trim_start_matches(is_blank)
 }
 
 fn is_math_symbol(c: char) -> bool {
     matches!(c,
         '+' | '-' | '=' | '<' | '>' | ',' | ';' | '!' | '?' | ':' | '|' | '\u{2016}' |
         '\u{00B1}' | '\u{00D7}' | '\u{00F7}' | // ±, ×, ÷
+        // UTN #28 table 3.1: `*`, `·` and `•` are operators with the
+        // precedence of `+` (section 3.22: "explicit multiplication by
+        // asterisk and raised dot has a precedence equal to that of plus").
+        '*' | '\u{00B7}' | '\u{2022}' |
         '\u{2200}'..='\u{22FF}' | // Mathematical Operators
         '\u{2190}'..='\u{21FF}' | // Arrows
         '\u{23B4}'..='\u{23DF}' | // horizontal braces and bracket accents
@@ -2060,8 +2292,9 @@ fn is_math_symbol(c: char) -> bool {
 
 fn classify_unicode_symbol(ch: char) -> SymbolKind {
     match ch {
-        '+' | '-' | '\u{00B1}' | '\u{2213}' | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2227}'
-        | '\u{2228}' | '\u{2295}' | '\u{2297}' | '\u{2229}' | '\u{222A}' => SymbolKind::BinaryOp,
+        '+' | '-' | '*' | '\u{00B7}' | '\u{2022}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}'
+        | '\u{00F7}' | '\u{22C5}' | '\u{2227}' | '\u{2228}' | '\u{2295}' | '\u{2297}'
+        | '\u{2229}' | '\u{222A}' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2260}' | '\u{2264}' | '\u{2265}' | '\u{226A}' | '\u{226B}'
         | '\u{2248}' | '\u{2261}' | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}'
         | '\u{2208}' | '\u{2209}' | '\u{21D2}' | '\u{21D4}' | '\u{2192}' | '\u{2190}' => {
@@ -2633,8 +2866,14 @@ mod tests {
     fn work_is_linear_in_the_input() {
         let nested_matrices = "\u{25A0}(".repeat(126);
         let unclosed_in_matrix = format!("{}#", "x\u{2211}^(n(ln".repeat(12));
-        let cases: [(&str, &str, &str, usize); 8] = [
+        let cases: [(&str, &str, &str, usize); 14] = [
             ("well-formed", "", "(a_i+b^2)/c ", 500),
+            ("script run", "x_", "ij2", 500),
+            ("signed scripts", "", "e^-x_-1+", 500),
+            ("negated operators", "a", "/=b/\u{2208}", 500),
+            ("function n-aryand", "\u{2211} ", "sin ", 500),
+            ("differentials", "\u{222B} ", "x \u{2146}", 500),
+            ("typographic spaces", "", "x\u{2009}y\u{2003}", 500),
             ("unclosed radicands", "", "\u{221A}(a+", 60),
             ("unclosed n-ary scripts", "", "\u{2211}^(n(l", 60),
             ("unclosed in matrix", "\u{25A0}(", &unclosed_in_matrix, 50),
