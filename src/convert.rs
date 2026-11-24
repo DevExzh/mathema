@@ -299,9 +299,9 @@ impl ConvertResult {
     /// the compact arena representation and is measurably expensive — roughly
     /// 60% of a full parse for a typical formula. Throughput-sensitive callers
     /// should prefer [`compact_expr`](Self::compact_expr) together with the
-    /// `*_compact` writers/renderers (e.g. [`to_mathml`](Self::to_mathml),
-    /// [`to_svg`](Self::to_svg)), which operate on the compact tree with no
-    /// legacy materialization.
+    /// `*_compact` writers/renderers (e.g. [`to_mathml`](Self::to_mathml), or
+    /// `to_svg` with the `render` feature), which operate on the compact tree
+    /// with no legacy materialization.
     #[must_use]
     pub fn expr(&self) -> MathExpr {
         self.compact.expr.to_math_expr()
