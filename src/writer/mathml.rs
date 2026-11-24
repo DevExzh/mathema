@@ -1073,6 +1073,29 @@ fn write_node_in(
         MathNode::StructuredOperator { content, form } => {
             write_structured_operator_group(w, content, *form, false, display_style)
         },
+        MathNode::UndefinedCommand { name, arguments } => {
+            // MathJax's error element, holding the command and, as one
+            // `<mrow>` each, the groups that may be its arguments. A name
+            // that may not be a live command is plain text.
+            let error = crate::ast::undefined::writes_as_command(name);
+            if error {
+                w.write_event(Event::Start(BytesStart::new("merror")))
+                    .map_err(to_err)?;
+            }
+            write_simple_element(w, "mtext", name)?;
+            for argument in arguments {
+                w.write_event(Event::Start(BytesStart::new("mrow")))
+                    .map_err(to_err)?;
+                write_nodes(w, argument, display_style, false)?;
+                w.write_event(Event::End(BytesEnd::new("mrow")))
+                    .map_err(to_err)?;
+            }
+            if error {
+                w.write_event(Event::End(BytesEnd::new("merror")))
+                    .map_err(to_err)?;
+            }
+            Ok(())
+        },
     }
 }
 
@@ -2276,6 +2299,31 @@ fn write_node_fast_in(
         },
         CompactNode::StructuredOperator { content, form } => {
             write_structured_operator_group_fast(buf, arena, content, form, false, display_style)
+        },
+        CompactNode::UndefinedCommand { name, arguments } => {
+            // MathJax's error element, holding the command and, as one
+            // `<mrow>` each, the groups that may be its arguments.
+            let name = arena.str_val(name);
+            let error = crate::ast::undefined::writes_as_command(name);
+            if error {
+                buf.push_str("<merror>");
+            }
+            buf.push_str("<mtext>");
+            xml_escape_into(buf, name);
+            buf.push_str("</mtext>");
+            for &group in arena.children(arguments) {
+                open_tag(buf, "mrow");
+                match *arena.node(group) {
+                    CompactNode::Row(span) => {
+                        write_nodes_fast(buf, arena, arena.children(span), display_style, false)
+                    },
+                    _ => write_node_fast(buf, arena, group, display_style),
+                }
+                close_tag(buf, "mrow");
+            }
+            if error {
+                buf.push_str("</merror>");
+            }
         },
     }
 }

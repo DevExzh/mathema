@@ -55,7 +55,9 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
             SymbolKind::Punctuation => AtomType::Punct,
             SymbolKind::Fence => AtomType::Ord,
         },
-        MathNode::Text(..) | MathNode::StyleSwitch(_) => AtomType::Ord,
+        MathNode::Text(..) | MathNode::StyleSwitch(_) | MathNode::UndefinedCommand { .. } => {
+            AtomType::Ord
+        },
         MathNode::Space(_) | MathNode::ExplicitSpace { .. } | MathNode::Rule { .. } => {
             AtomType::Ord
         },
@@ -149,7 +151,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
             SymbolKind::Punctuation => AtomType::Punct,
             SymbolKind::Fence => AtomType::Ord,
         },
-        CompactNode::Text(..) => AtomType::Ord,
+        CompactNode::Text(..) | CompactNode::UndefinedCommand { .. } => AtomType::Ord,
         CompactNode::Space(_) => AtomType::Ord,
         CompactNode::Row(_) => AtomType::Inner,
         CompactNode::Fenced { .. } => AtomType::Inner,

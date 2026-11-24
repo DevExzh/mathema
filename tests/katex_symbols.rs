@@ -1,10 +1,9 @@
 //! KaTeX command coverage.
 //!
 //! Every command in [`KATEX_COMMANDS`] is documented as supported by KaTeX.
-//! An unknown control word falls back to an identifier spelled like the
-//! command (`\lhd` → `<mi>lhd</mi>`), which silently renders the wrong thing,
-//! so this pins down that each one resolves to real math and survives a
-//! LaTeX round trip.
+//! An unknown control word is reported as undefined and kept as itself (in
+//! KaTeX's error colour), so this pins down that each one resolves to real
+//! math and survives a LaTeX round trip.
 
 use mathema::from_latex;
 
@@ -82,13 +81,18 @@ fn mathml(latex: &str) -> String {
 }
 
 #[test]
-fn katex_commands_do_not_fall_back_to_their_names() {
+fn katex_commands_are_defined() {
     let unknown: Vec<_> = commands()
-        // A one-letter command (`\R`) legitimately yields that letter.
-        .filter(|name| name.len() > 1)
-        .filter(|name| mathml(&format!(r"a \{name} b")).contains(&format!(">{name}</mi>")))
+        .filter(|name| {
+            let input = format!(r"a \{name} b");
+            let parsed = from_latex(&input).unwrap();
+            parsed.diagnostics().iter().any(|d| {
+                d.message.starts_with("undefined control sequence")
+                    || d.message.starts_with("misplaced control sequence")
+            }) || mathml(&input).contains("<merror>")
+        })
         .collect();
-    assert!(unknown.is_empty(), "rendered as literal names: {unknown:?}");
+    assert!(unknown.is_empty(), "reported as undefined: {unknown:?}");
 }
 
 #[test]

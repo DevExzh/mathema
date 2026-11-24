@@ -100,10 +100,11 @@ fn script_argument_boundary(input: &str) -> bool {
         || strip_control_word(input, "middle").is_some()
 }
 
-/// Consume consecutive `\\limits` and `\\nolimits` modifiers after an
-/// operator. TeX permits repeated placement modifiers and the last modifier
-/// determines the operator's placement. A control-word boundary is required
-/// so that names such as `\\limitsize` remain ordinary commands.
+/// Consume consecutive `\\limits`, `\\nolimits` and `\\displaylimits`
+/// modifiers after an operator. TeX permits repeated placement modifiers and
+/// the last modifier determines the operator's placement; `\\displaylimits`
+/// restores the operator's default placement. A control-word boundary is
+/// required so that names such as `\\limitsize` remain ordinary commands.
 #[inline]
 fn consume_limit_modifiers(mut input: &str) -> (&str, Option<LimitStyle>) {
     let mut style = None;
@@ -113,6 +114,7 @@ fn consume_limit_modifiers(mut input: &str) -> (&str, Option<LimitStyle>) {
         let Some((rest, next_style)) = [
             ("\\limits", LimitStyle::AboveBelow),
             ("\\nolimits", LimitStyle::SubSup),
+            ("\\displaylimits", LimitStyle::Default),
         ]
         .into_iter()
         .find_map(|(command, next_style)| {
@@ -1640,6 +1642,99 @@ fn expansion_error(failure: ExpansionFailure) -> Error {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Give an undefined-command diagnostic without a span (its name was read
+/// from preprocessed text: a comment was removed or a macro expanded) the
+/// span of the name's first occurrence in `input` outside comments, text
+/// arguments and `\verb`, if it occurs there.
+#[cold]
+fn locate_undefined_commands(input: &str, diagnostics: &mut [Diagnostic]) {
+    let mut skipped: Option<Vec<(usize, usize)>> = None;
+    for diagnostic in diagnostics.iter_mut().filter(|d| d.span.is_none()) {
+        let message = diagnostic.message.as_str();
+        let Some(spelling) = message
+            .strip_prefix("undefined control sequence ")
+            .or_else(|| message.strip_prefix("misplaced control sequence "))
+            .or_else(|| {
+                let rest = message.strip_prefix("control sequence ")?;
+                rest.strip_suffix(" is not expanded here")
+                    .or_else(|| rest.strip_suffix(" is not allowed and was kept as text"))
+            })
+            .filter(|spelling| !spelling.ends_with('…'))
+        else {
+            continue;
+        };
+        let skipped = skipped.get_or_insert_with(|| text_regions(input));
+        let mut from = 0;
+        while let Some(found) = input[from..].find(spelling) {
+            let start = from + found;
+            let end = start + spelling.len();
+            if !input[end..].starts_with(|ch: char| ch.is_ascii_alphabetic())
+                && !skipped.iter().any(|&(a, b)| (a..b).contains(&start))
+            {
+                diagnostic.span = Some(Span::new(start, end));
+                break;
+            }
+            from = end;
+        }
+    }
+}
+
+/// Byte ranges of `input` where a control word is not math: comments,
+/// `\verb` and the arguments of text commands.
+#[cold]
+#[inline(never)]
+fn text_regions(input: &str) -> Vec<(usize, usize)> {
+    let bytes = input.as_bytes();
+    let mut regions = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let end = input[i..].find('\n').map_or(bytes.len(), |n| i + n);
+                regions.push((i, end));
+                i = end;
+            },
+            b'\\' => {
+                let name_len = bytes[i + 1..]
+                    .iter()
+                    .take_while(|b| b.is_ascii_alphabetic())
+                    .count();
+                let name = &input[i + 1..i + 1 + name_len];
+                let after = i + 1 + name_len;
+                if name == "verb" {
+                    let body = after + usize::from(bytes.get(after) == Some(&b'*'));
+                    if let Some(delim) = input[body..].chars().next() {
+                        let open = body + delim.len_utf8();
+                        let end = input[open..]
+                            .find(delim)
+                            .map_or(bytes.len(), |n| open + n + delim.len_utf8());
+                        regions.push((i, end));
+                        i = end;
+                        continue;
+                    }
+                } else if super::text_style(name).is_some() || name == "emph" {
+                    let open = after + skip_ws_bytes(&bytes[after..]);
+                    if let Some((rest, _)) = super::mhchem::capture_braced(&input[open..]) {
+                        let end = bytes.len() - rest.len();
+                        regions.push((open, end));
+                        i = end;
+                        continue;
+                    }
+                }
+                // A control symbol takes the next character whole.
+                i = after.max(i + 1);
+                if name_len == 0
+                    && let Some(ch) = input[i..].chars().next()
+                {
+                    i += ch.len_utf8();
+                }
+            },
+            _ => i += 1,
+        }
+    }
+    regions
+}
+
 /// Parse a LaTeX string into a compact arena representation.
 ///
 /// This is the primary entry point for LaTeX parsing. The parser operates
@@ -1666,6 +1761,7 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             Err(failure) => return Err(expansion_error(failure)),
         };
     let mut parser = LatexCompactParser::with_capacity(processed.len(), config.max_nodes);
+    parser.source = (input.as_ptr() as usize, input.len());
     if let Some(error) = warning {
         parser.warn(format!(
             "{error}; parsed the original source without macro expansion"
@@ -1690,7 +1786,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
             }
             parser.arena.check_limits()?;
             let roots = parser.arena.push_children(&ids)?;
-            let diagnostics = std::mem::take(&mut parser.diagnostics);
+            parser.finish_undefined_reports();
+            let mut diagnostics = std::mem::take(&mut parser.diagnostics);
+            if !diagnostics.is_empty() {
+                locate_undefined_commands(input, &mut diagnostics);
+            }
             Ok(CompactParseResult::with_diagnostics(
                 CompactExpr::new(parser.arena, roots, config.display),
                 diagnostics,
@@ -1734,7 +1834,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 }
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&result_ids)?;
+                parser.finish_undefined_reports();
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
+                if !diagnostics.is_empty() {
+                    locate_undefined_commands(input, &mut diagnostics);
+                }
                 Ok(CompactParseResult::with_diagnostics(
                     CompactExpr::new(parser.arena, roots, config.display),
                     diagnostics,
@@ -1769,7 +1873,11 @@ pub fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult>
                 }
                 parser.arena.check_limits()?;
                 let roots = parser.arena.push_children(&ids)?;
+                parser.finish_undefined_reports();
                 diagnostics.extend(std::mem::take(&mut parser.diagnostics));
+                if !diagnostics.is_empty() {
+                    locate_undefined_commands(input, &mut diagnostics);
+                }
                 Ok(CompactParseResult::with_diagnostics(
                     CompactExpr::new(parser.arena, roots, config.display),
                     diagnostics,
@@ -1791,6 +1899,57 @@ pub fn parse(input: &str, config: &Config) -> Result<ParseResult> {
 // ---------------------------------------------------------------------------
 // Compact parser
 // ---------------------------------------------------------------------------
+
+/// How the parser's fallback treats a control word that no table, package
+/// or macro defines.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UndefinedKind {
+    /// Kept as an undefined command.
+    Undefined,
+    /// Kept as an undefined command; it is read only in its own context
+    /// (`\right`, `\end`).
+    Misplaced,
+    /// A macro the preprocessor would expand, met where it did not run:
+    /// identifier letters.
+    Unexpanded,
+    /// A dangerous primitive: escaped text.
+    Dangerous,
+}
+
+impl UndefinedKind {
+    fn of(spelling: &str) -> Self {
+        if crate::ast::undefined::is_dangerous_command(spelling) {
+            Self::Dangerous
+        } else if !matches!(
+            super::preprocess::preprocess_cow(spelling),
+            Ok(std::borrow::Cow::Borrowed(_))
+        ) {
+            Self::Unexpanded
+        } else if crate::ast::undefined::is_context_command(spelling) {
+            Self::Misplaced
+        } else {
+            Self::Undefined
+        }
+    }
+}
+
+/// Whether the LaTeX reader keeps `spelling` (`\foo`) on its own as an
+/// undefined command: the same test the reader's fallback makes, used by the
+/// MathML reader before it reads `<merror><mtext>\foo</mtext>…` as one.
+#[cold]
+#[inline(never)]
+pub(crate) fn reads_as_undefined_command(spelling: &str) -> bool {
+    use crate::ast::undefined::{is_control_word, is_dangerous_command};
+    if !is_control_word(spelling) || is_dangerous_command(spelling) {
+        return false;
+    }
+    let Ok(parsed) = parse_compact(spelling, &Config::default()) else {
+        return false;
+    };
+    let arena = &parsed.expr.arena;
+    matches!(arena.children(parsed.expr.roots), [only]
+        if arena.undefined_command(*only) == Some(spelling))
+}
 
 pub(crate) struct LatexCompactParser {
     pub(crate) arena: AstArena,
@@ -1839,6 +1998,20 @@ pub(crate) struct LatexCompactParser {
     in_left_right: bool,
     /// Used to identify the rare font argument that opened an alignment.
     arrays_built: usize,
+    /// Undefined control words met so far, each with whether it is a macro
+    /// left unexpanded (see `undefined_command`), so that each name is
+    /// reported once however often it occurs or is re-parsed, and the number
+    /// of names not reported because the report limit was reached. Boxed:
+    /// most parses meet none.
+    undefined_commands: Option<Box<(HashMap<String, UndefinedKind>, usize)>>,
+    /// Set while a command is read as a single-token argument
+    /// (`\frac\foo{a}{b}`): an undefined command there takes no groups, so
+    /// none is parsed and thrown away. Cleared by the command it is for and
+    /// by any group read inside a known one.
+    single_token: bool,
+    /// Address and length of the caller's input, used only to give a
+    /// diagnostic the span of a name that is a slice of it.
+    source: (usize, usize),
 }
 
 impl LatexCompactParser {
@@ -1867,6 +2040,9 @@ impl LatexCompactParser {
             font_scope_preserve_breaks: false,
             in_left_right: false,
             arrays_built: 0,
+            undefined_commands: None,
+            single_token: false,
+            source: (0, 0),
         }
     }
 
@@ -3437,6 +3613,9 @@ impl LatexCompactParser {
     #[inline]
     fn parse_braced_group<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, _) = char('{')(input)?;
+        // A group inside a single-token argument (`\frac\sqrt{…}`) is not
+        // itself one.
+        self.single_token = false;
         let (input, ids) = self.parse_node_list(input)?;
         let (input, _) = ws(input)?;
         let (input, _) = char('}')(input)?;
@@ -4399,11 +4578,138 @@ impl LatexCompactParser {
                         Ok((input, self.arena.push_node(CompactNode::Symbol(kind, sid))))
                     }
                 } else {
-                    // Unknown command: emit as identifier
-                    let sid = self.arena.push_str(name);
-                    Ok((input, self.arena.push_node(CompactNode::Identifier(sid))))
+                    self.undefined_command(input, name)
                 }
             },
+        }
+    }
+
+    /// A control word no table, package or macro defines, or one that is
+    /// only read in another context. Keep it as the command it is (shown
+    /// like KaTeX's undefined-command error) rather than as identifier
+    /// letters that merge with what follows, and report it once per name.
+    /// The brace groups directly after it are kept with it as possible
+    /// arguments, since its arity is unknown, unless the command is itself a
+    /// single-token argument (`\frac\foo{a}{b}`): then it takes none, and no
+    /// group is parsed only to be thrown away.
+    #[cold]
+    #[inline(never)]
+    fn undefined_command<'a>(
+        &mut self,
+        mut input: &'a str,
+        name: &str,
+    ) -> IResult<&'a str, NodeId> {
+        let mut spelling = String::with_capacity(name.len() + 1);
+        spelling.push('\\');
+        spelling.push_str(name);
+        let single_token = std::mem::take(&mut self.single_token);
+        match self.classify_undefined(name, &spelling) {
+            // A macro the preprocessor expands (`\erf`) reaches this point
+            // only inside text it did not preprocess, such as a rewritten
+            // `\ce` argument. Written back as itself it would expand on the
+            // next read, so it keeps its historical identifier spelling.
+            UndefinedKind::Unexpanded => {
+                let sid = self.arena.push_str(name);
+                return Ok((input, self.arena.push_node(CompactNode::Identifier(sid))));
+            },
+            // A dangerous primitive is kept like any undefined command;
+            // every writer spells it as inert text (see `ast::undefined`).
+            UndefinedKind::Undefined | UndefinedKind::Misplaced | UndefinedKind::Dangerous => {},
+        }
+        let mut groups: SmallVec<[NodeId; 4]> = SmallVec::new();
+        loop {
+            let (rest, _) = ws(input)?;
+            if single_token || !rest.starts_with('{') {
+                break;
+            }
+            let (rest, group) = self.parse_braced_group(rest)?;
+            let group = if matches!(*self.arena.node(group), CompactNode::Row(_)) {
+                group
+            } else {
+                let span = self.arena.push_children_deferred(&[group]);
+                self.arena.push_node(CompactNode::Row(span))
+            };
+            groups.push(group);
+            input = rest;
+        }
+        let arguments = self.arena.push_children_deferred(&groups);
+        let name = self.arena.push_str(&spelling);
+        Ok((
+            input,
+            self.arena
+                .push_node(CompactNode::UndefinedCommand { name, arguments }),
+        ))
+    }
+
+    /// How the fallback treats `name`. Reports `name` the first time it is
+    /// met.
+    fn classify_undefined(&mut self, name: &str, spelling: &str) -> UndefinedKind {
+        /// Distinct names reported before one summary takes their place.
+        const REPORTED_NAMES: usize = 100;
+        /// Longest name spelled out in a message, in bytes.
+        const SPELLED_NAME: usize = 64;
+        let (seen, unreported) = &mut **self.undefined_commands.get_or_insert_with(Box::default);
+        if let Some(&kind) = seen.get(name) {
+            return kind;
+        }
+        let kind = UndefinedKind::of(spelling);
+        seen.insert(name.to_owned(), kind);
+        if seen.len() > REPORTED_NAMES {
+            *unreported += 1;
+            return kind;
+        }
+        let shown = if spelling.len() > SPELLED_NAME {
+            // Control words are ASCII, so any byte is a char boundary.
+            format!("{}…", &spelling[..SPELLED_NAME])
+        } else {
+            spelling.to_owned()
+        };
+        let message = match kind {
+            UndefinedKind::Dangerous => {
+                format!("control sequence {shown} is not allowed and was kept as text")
+            },
+            UndefinedKind::Unexpanded => format!("control sequence {shown} is not expanded here"),
+            UndefinedKind::Misplaced => format!("misplaced control sequence {shown}"),
+            UndefinedKind::Undefined => format!("undefined control sequence {shown}"),
+        };
+        let span = self.source_span_of_command(name);
+        self.diagnostics.push(Diagnostic {
+            kind: DiagnosticKind::Warning,
+            message,
+            span,
+        });
+        kind
+    }
+
+    /// The span of `\name` in the caller's input, when `name` is a slice of
+    /// that input. A name read from preprocessed text is located by
+    /// `locate_undefined_commands` instead.
+    fn source_span_of_command(&self, name: &str) -> Option<Span> {
+        let (base, len) = self.source;
+        let start = (name.as_ptr() as usize).checked_sub(base)?;
+        let end = start.checked_add(name.len())?;
+        let backslash = start.checked_sub(1)?;
+        (end <= len).then(|| Span::new(backslash, end))
+    }
+
+    /// Diagnostics owed at the end of a parse: the summary of unreported
+    /// undefined commands.
+    #[inline]
+    fn finish_undefined_reports(&mut self) {
+        if self.undefined_commands.is_some() {
+            self.summarize_undefined_commands();
+        }
+    }
+
+    #[cold]
+    fn summarize_undefined_commands(&mut self) {
+        if let Some(reports) = &self.undefined_commands
+            && reports.1 > 0
+        {
+            self.warn(format!(
+                "{} more undefined control sequences not listed",
+                reports.1
+            ));
         }
     }
 
@@ -4451,9 +4757,13 @@ impl LatexCompactParser {
             // A `\noexpand` left over after macro expansion has already done
             // its job (suppressing expansion), so it is equally inert here.
             "relax" | "noexpand" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
-            // Line-break hints and equation tags are layout no-ops in this renderer.
+            // Line-break hints and equation tags are layout no-ops in this
+            // renderer, and a placement control that follows no operator has
+            // nothing to place.
             "nonumber" | "notag" | "nobreak" | "allowbreak" | "goodbreak" | "limits"
-            | "nolimits" => Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY))),
+            | "nolimits" | "displaylimits" => {
+                Some(self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)))
+            },
             // Font sizing commands — emit SizeScale nodes for the layout engine
             "Huge" => Some(self.arena.push_node(CompactNode::SizeScale(9))),
             "huge" => Some(self.arena.push_node(CompactNode::SizeScale(8))),
@@ -4514,7 +4824,15 @@ impl LatexCompactParser {
     /// Parse a single unbraced TeX token: one letter, one digit, one symbol, or a command.
     fn parse_single_token<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         match input.as_bytes().first() {
-            Some(b'\\') => self.parse_command(input),
+            Some(b'\\') => {
+                // TeX reads a command argument as one unexpanded token: an
+                // undefined command here takes no groups, which are the
+                // enclosing command's (see `undefined_command`).
+                self.single_token = true;
+                let parsed = self.parse_command(input);
+                self.single_token = false;
+                parsed
+            },
             Some(&b) if b.is_ascii_alphabetic() => {
                 let sid = self.arena.push_str(&input[..1]);
                 Ok((
@@ -5958,6 +6276,14 @@ impl LatexCompactParser {
         }
         if let Some(rgb) = self.colors.get(token) {
             return crate::css_colors::rgb_to_hex(*rgb);
+        }
+        // `#RRGGBB` is written back as `\textcolor[HTML]{RRGGBB}`, which
+        // reads back in lower case: store it that way from the start.
+        if token
+            .strip_prefix('#')
+            .is_some_and(|hex| hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        {
+            return token.to_ascii_lowercase();
         }
         token.to_string()
     }

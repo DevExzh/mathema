@@ -610,6 +610,13 @@ fn normalize_node_depth_with_identifiers(
         MathNode::MathAtom { content, .. } | MathNode::StructuredOperator { content, .. } => {
             normalize_node_depth_with_identifiers(content, d, merge_identifiers);
         },
+        // The command itself is kept as written; its argument groups are
+        // normalized as groups, never merged into each other or the row.
+        MathNode::UndefinedCommand { arguments, .. } => {
+            for argument in arguments {
+                normalize_nodes_depth_with_identifiers(argument, d, merge_identifiers);
+            }
+        },
 
         // Leaf nodes: nothing to normalize
         MathNode::Number(_)
@@ -1197,6 +1204,18 @@ fn normalize_compact_node_with_identifiers(
         },
         CompactNode::MathAtom { content, .. } | CompactNode::StructuredOperator { content, .. } => {
             normalize_compact_node_with_identifiers(arena, content, d, merge_identifiers)?;
+        },
+        // The command itself is kept as written; its argument groups are
+        // normalized as groups, never merged into each other or the row.
+        CompactNode::UndefinedCommand { arguments, .. } => {
+            let groups: SmallVec<[NodeId; 4]> = arena.children(arguments).into();
+            for group in groups {
+                if let CompactNode::Row(span) = *arena.node(group) {
+                    let span =
+                        normalize_compact_span_with_identifiers(arena, span, d, merge_identifiers)?;
+                    *arena.node_mut(group) = CompactNode::Row(span);
+                }
+            }
         },
 
         // Leaf nodes: nothing to normalize

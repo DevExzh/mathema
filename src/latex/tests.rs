@@ -371,10 +371,12 @@ fn unicode_script_scalars_in_explicit_script_arguments_are_literal_content() {
 
 #[test]
 fn compatibility_script_characters_are_literal_in_atom_positions() {
+    // The undefined `\D` is written live so its MathML stays the same.
+    let keep = Config::default().with_undefined_commands(crate::UndefinedCommands::Keep);
     for source in ["x^²", "x^{²}", r"\frac²2", r"\sqrt²", r"\phaseᴶ", r"\D^²"] {
-        let parsed = crate::from_latex(source).unwrap();
+        let parsed = crate::from_latex_with(source, &keep).unwrap();
         let first = parsed.to_latex().unwrap();
-        let again = crate::from_latex(&first).unwrap();
+        let again = crate::from_latex_with(&first, &keep).unwrap();
         assert_eq!(first, again.to_latex().unwrap(), "{source}");
         assert_eq!(
             parsed.to_mathml().unwrap(),
@@ -4468,25 +4470,33 @@ fn color_script_empty_arguments_match_heap_and_compact_normalization() {
 
 #[test]
 fn empty_base_prime_after_middle_stays_stable_in_nested_fraction() {
+    // Its undefined `\\r` is written live so the MathML stays the same.
+    let keep = Config::default().with_undefined_commands(crate::UndefinedCommands::Keep);
     let input = "''>_-'\\ip\\over'_- '\\i\\ip\\r'enew^iJ";
-    let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
-    let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let first =
+        crate::convert_with(input, crate::Format::LaTeX, crate::Format::LaTeX, &keep).unwrap();
+    let second =
+        crate::convert_with(&first, crate::Format::LaTeX, crate::Format::LaTeX, &keep).unwrap();
     assert_eq!(first, second);
     assert_eq!(
-        crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap(),
-        crate::convert(&first, crate::Format::LaTeX, crate::Format::MathML).unwrap(),
+        crate::convert_with(input, crate::Format::LaTeX, crate::Format::MathML, &keep).unwrap(),
+        crate::convert_with(&first, crate::Format::LaTeX, crate::Format::MathML, &keep).unwrap(),
     );
 }
 
 #[test]
 fn prescript_and_scripted_middle_canonicalize_as_one_fenced_sequence() {
+    // Its undefined `\\r` is written live so the MathML stays the same.
+    let keep = Config::default().with_undefined_commands(crate::UndefinedCommands::Keep);
     let input = "''>_-'\\ip\t\t\t''\t\t\t\t\t\t\t\t\t\t\t'\t\t\t\t\\r'enew\\p\\r'>_-'\\ip\\r'enew>_-'\\ip\\r'enew\\pw>_\\r'>_-'\\ip\\r'enew^iJ";
-    let first = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
-    let second = crate::convert(&first, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
+    let first =
+        crate::convert_with(input, crate::Format::LaTeX, crate::Format::LaTeX, &keep).unwrap();
+    let second =
+        crate::convert_with(&first, crate::Format::LaTeX, crate::Format::LaTeX, &keep).unwrap();
     assert_eq!(first, second);
     assert_eq!(
-        crate::convert(input, crate::Format::LaTeX, crate::Format::MathML).unwrap(),
-        crate::convert(&first, crate::Format::LaTeX, crate::Format::MathML).unwrap(),
+        crate::convert_with(input, crate::Format::LaTeX, crate::Format::MathML, &keep).unwrap(),
+        crate::convert_with(&first, crate::Format::LaTeX, crate::Format::MathML, &keep).unwrap(),
     );
 }
 

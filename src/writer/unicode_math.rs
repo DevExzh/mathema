@@ -183,6 +183,17 @@ fn write_bound(
     }
 }
 
+/// An undefined LaTeX command's name as quoted text. UnicodeMath text has no
+/// escape for its quote, so a `"` in a name that is no control word (only
+/// possible through the API) is written as a full-width quote.
+fn write_undefined_command_name(out: &mut String, name: &str) {
+    out.push('"');
+    for ch in name.chars() {
+        out.push(if ch == '"' { '\u{FF02}' } else { ch });
+    }
+    out.push('"');
+}
+
 fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
     match node {
         MathNode::Number(s) => out.push_str(s),
@@ -207,6 +218,15 @@ fn write_node(out: &mut String, node: &MathNode, style: MathStyle) {
         MathNode::Rule { .. } => {},
 
         MathNode::Row(children) => write_nodes_with_style(out, children, style),
+        // Plain text, then each possible argument in parentheses.
+        MathNode::UndefinedCommand { name, arguments } => {
+            write_undefined_command_name(out, name);
+            for argument in arguments {
+                out.push('(');
+                write_nodes_with_style(out, argument, style);
+                out.push(')');
+            }
+        },
 
         MathNode::Fenced {
             open,
@@ -1128,6 +1148,15 @@ fn write_node_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
         },
 
         CompactNode::Row(span) => write_nodes_c_with_style(out, arena, span, style),
+        // Plain text, then each possible argument in parentheses.
+        CompactNode::UndefinedCommand { name, arguments } => {
+            write_undefined_command_name(out, arena.str_val(name));
+            for &group in arena.children(arguments) {
+                out.push('(');
+                write_node_c(out, arena, group, style);
+                out.push(')');
+            }
+        },
         CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
             write_node_c(out, arena, content, style)
         },

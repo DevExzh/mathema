@@ -735,6 +735,14 @@ impl<'a> Emitter<'a> {
             },
             CompactNode::Symbol(_, sid) => self.leaf(sid, Leaf::Symbol, fmt),
             CompactNode::Text(style, sid) => self.text_node(style, sid, fmt),
+            // OMML has no error element: the command is plain text, followed
+            // by its possible arguments.
+            CompactNode::UndefinedCommand { name, arguments } => {
+                self.text_node(TextStyle::Normal, name, fmt);
+                for &group in self.arena.children(arguments) {
+                    self.node(group, fmt);
+                }
+            },
             CompactNode::Space(width) => {
                 let basis = self.arena.space_basis(id);
                 let width = crate::ast::style::local_space_width(width, basis, self.style);

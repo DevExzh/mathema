@@ -14,6 +14,8 @@ mod decimal;
 pub mod normalize;
 /// TeX math styles and their transitions inside expressions.
 pub mod style;
+/// Undefined LaTeX control sequences kept in the AST.
+pub mod undefined;
 /// Traversal helpers for walking the AST.
 pub mod visit;
 
@@ -507,6 +509,16 @@ pub enum MathNode {
         /// Cell content.
         content: Box<MathNode>,
     },
+    /// A LaTeX control sequence that no table, package or macro defines,
+    /// kept as written (KaTeX's `throwOnError: false` rendering) instead of
+    /// being turned into identifier letters. See [`undefined`].
+    UndefinedCommand {
+        /// The command as written, backslash included (`\foo`).
+        name: String,
+        /// The brace groups written directly after it, which may be its
+        /// arguments; its arity is unknown. Each is one group's content.
+        arguments: Vec<Vec<MathNode>>,
+    },
 }
 
 /// TeX math class of a symbol, controlling spacing and stretchiness.
@@ -937,7 +949,11 @@ pub(crate) fn compact_children(
         | CompactNode::Rule { .. }
         | CompactNode::StyleSwitch(_)
         | CompactNode::SizeScale(_) => {},
-        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+        CompactNode::Row(span)
+        | CompactNode::Styled(_, span)
+        | CompactNode::UndefinedCommand {
+            arguments: span, ..
+        } => {
             arena.children(span).iter().for_each(|&id| push(id));
         },
         CompactNode::Fenced { content, .. } => {
@@ -1011,6 +1027,13 @@ fn check_node_depth(node: &MathNode, depth: usize) -> crate::error::Result<()> {
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             for child in children {
                 check_node_depth(child, d)?;
+            }
+            Ok(())
+        },
+        MathNode::UndefinedCommand { arguments, .. } => {
+            // Each argument is a group, one level down as in the arena.
+            for child in arguments.iter().flatten() {
+                check_node_depth(child, d + 1)?;
             }
             Ok(())
         },

@@ -43,6 +43,11 @@ pub fn walk_node<V: Visitor + ?Sized>(v: &mut V, node: &MathNode) {
                 v.visit_node(child);
             }
         },
+        MathNode::UndefinedCommand { arguments, .. } => {
+            for child in arguments.iter().flatten() {
+                v.visit_node(child);
+            }
+        },
         MathNode::Fenced { content, .. } => {
             for item in content {
                 if let FencedItem::Element(node) = item {
@@ -210,6 +215,11 @@ pub fn walk_node_mut<V: MutVisitor + ?Sized>(v: &mut V, node: &mut MathNode) {
 
         MathNode::Row(children) => {
             for child in children {
+                v.visit_node_mut(child);
+            }
+        },
+        MathNode::UndefinedCommand { arguments, .. } => {
+            for child in arguments.iter_mut().flatten() {
                 v.visit_node_mut(child);
             }
         },
@@ -381,7 +391,11 @@ pub fn walk_compact_node<V: CompactVisitor + ?Sized>(v: &mut V, arena: &AstArena
         | CompactNode::StyleSwitch(_)
         | CompactNode::SizeScale(_) => {},
 
-        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+        CompactNode::Row(span)
+        | CompactNode::Styled(_, span)
+        | CompactNode::UndefinedCommand {
+            arguments: span, ..
+        } => {
             for &child in arena.children(span) {
                 v.visit_node(arena, child);
             }
@@ -538,7 +552,11 @@ pub fn walk_compact_node_mut<V: CompactMutVisitor + ?Sized>(
         | CompactNode::StyleSwitch(_)
         | CompactNode::SizeScale(_) => {},
 
-        CompactNode::Row(span) | CompactNode::Styled(_, span) => {
+        CompactNode::Row(span)
+        | CompactNode::Styled(_, span)
+        | CompactNode::UndefinedCommand {
+            arguments: span, ..
+        } => {
             let ids: smallvec::SmallVec<[NodeId; 8]> = arena.children(span).into();
             for &child in &ids {
                 v.visit_node_mut(arena, child);

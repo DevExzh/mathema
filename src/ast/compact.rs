@@ -112,7 +112,7 @@ impl StrId {
 
 // ── CompactNode ────────────────────────────────────────────────────────
 
-/// Arena-backed AST node. 36 variants. All data lives in the owning `AstArena`.
+/// Arena-backed AST node. 37 variants. All data lives in the owning `AstArena`.
 ///
 /// This type is `Copy` — no heap allocations, no destructors. Nodes reference
 /// each other via `NodeId` and store strings via `StrId`, both indexing into
@@ -432,6 +432,15 @@ pub enum CompactNode {
         /// Effective placement for scripts attached to this operator.
         /// Source form and effective limit placement.
         form: OperatorNameForm,
+    },
+
+    /// An undefined LaTeX control sequence kept as written; see
+    /// [`MathNode::UndefinedCommand`].
+    UndefinedCommand {
+        /// Interned spelling, backslash included (`\foo`).
+        name: StrId,
+        /// The brace groups written directly after it, each a `Row` node.
+        arguments: NodeSpan,
     },
 }
 
@@ -884,6 +893,16 @@ fn push_math_node(arena: &mut AstArena, node: &MathNode) -> NodeId {
                 content,
                 form: *form,
             })
+        },
+        MathNode::UndefinedCommand { name, arguments } => {
+            let mut groups: SmallVec<[NodeId; 2]> = SmallVec::new();
+            for argument in arguments {
+                let span = push_children(arena, argument);
+                groups.push(arena.push_node(CompactNode::Row(span)));
+            }
+            let arguments = arena.push_children_deferred(&groups);
+            let name = arena.push_str(name);
+            arena.push_node(CompactNode::UndefinedCommand { name, arguments })
         },
     }
 }
@@ -1338,6 +1357,17 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         CompactNode::StructuredOperator { content, form } => MathNode::StructuredOperator {
             content: Box::new(reconstruct_node(arena, content)),
             form,
+        },
+        CompactNode::UndefinedCommand { name, arguments } => MathNode::UndefinedCommand {
+            name: arena.str_val(name).to_owned(),
+            arguments: arena
+                .children(arguments)
+                .iter()
+                .map(|&group| match *arena.node(group) {
+                    CompactNode::Row(span) => reconstruct_children(arena, span),
+                    _ => vec![reconstruct_node(arena, group)],
+                })
+                .collect(),
         },
         CompactNode::AlignedCell { alignment, content } => MathNode::AlignedCell {
             alignment,

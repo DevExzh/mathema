@@ -616,6 +616,30 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
             lift,
         } => layout_rule(*width, *height, *lift, ctx),
         MathNode::Row(children) => layout_row(children, ctx),
+        // KaTeX's undefined-command rendering: the name upright in its error
+        // colour, followed by its possible arguments.
+        MathNode::UndefinedCommand { name, arguments } => {
+            let mut boxes = vec![
+                layout_text_run(name, ctx, false, None)
+                    .with_color(crate::ast::undefined::UNDEFINED_COMMAND_COLOR),
+            ];
+            boxes.extend(arguments.iter().map(|argument| layout_row(argument, ctx)));
+            let mut children = Vec::with_capacity(boxes.len());
+            let (mut width, mut height, mut depth) = (0.0_f64, 0.0_f64, 0.0_f64);
+            for layout in boxes {
+                height = height.max(layout.height);
+                depth = depth.max(layout.depth);
+                let next = width + layout.width;
+                children.push(PositionedBox::new(width, 0.0, layout));
+                width = next;
+            }
+            LayoutBox {
+                width,
+                height,
+                depth,
+                kind: BoxKind::HBox { children },
+            }
+        },
         MathNode::Fenced {
             open,
             close,
@@ -1752,6 +1776,18 @@ fn layout_node_arena(
             )))
         },
         CompactNode::Row(span) => layout_row_arena(ast, span, arena, ctx),
+        // KaTeX's undefined-command rendering: the name upright in its error
+        // colour, followed by its possible arguments.
+        CompactNode::UndefinedCommand { name, arguments } => {
+            let text = layout_text_run_arena(ast.str_val(name), arena, ctx, false, None);
+            let mut result =
+                layout_color_arena(crate::ast::undefined::UNDEFINED_COMMAND_COLOR, text, arena);
+            for &group in ast.children(arguments) {
+                let argument = layout_node_arena(ast, group, arena, ctx);
+                result = build_hbox_arena(result, argument, 0.0, arena);
+            }
+            result
+        },
         CompactNode::Fenced {
             open,
             close,

@@ -1225,6 +1225,37 @@ impl<'a> MathmlCompactParser<'a> {
                 }
             },
             "mstyle" => self.parse_mstyle(start, false),
+            "merror" => {
+                // The writer's form for an undefined LaTeX control sequence:
+                // the command's spelling, then one `<mrow>` per possible
+                // argument. Only a name the LaTeX reader itself keeps as
+                // undefined is read so, never a command it knows or a
+                // dangerous primitive; any other error is read as its
+                // content.
+                let children = self.parse_children(name)?;
+                if let [first, arguments @ ..] = &children[..]
+                    && let CompactNode::Text(TextStyle::Normal, text) = *self.arena.node(*first)
+                    && crate::ast::undefined::writes_as_command(self.arena.str_val(text))
+                {
+                    let groups: SmallVec<[NodeId; 4]> = arguments
+                        .iter()
+                        .map(|&group| {
+                            if matches!(*self.arena.node(group), CompactNode::Row(_)) {
+                                group
+                            } else {
+                                let span = self.arena.push_children_deferred(&[group]);
+                                self.arena.push_node(CompactNode::Row(span))
+                            }
+                        })
+                        .collect();
+                    let arguments = self.arena.push_children_deferred(&groups);
+                    return Ok(self.arena.push_node(CompactNode::UndefinedCommand {
+                        name: text,
+                        arguments,
+                    }));
+                }
+                Ok(self.flatten_ids(&children))
+            },
             "mpadded" => self.parse_child_id(name),
             "mmultiscripts" => self.parse_multiscripts_element(name),
             "semantics" => {

@@ -276,6 +276,27 @@ pub enum Strictness {
     Lenient,
 }
 
+/// How the LaTeX writer spells an undefined control sequence
+/// ([`MathNode::UndefinedCommand`](crate::MathNode::UndefinedCommand)).
+///
+/// Only the LaTeX output differs: the AST node, its diagnostics, the MathML
+/// `<merror>` and the rendering are the same in both modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum UndefinedCommands {
+    /// Write it as visible, inert text with its argument groups shown as
+    /// literal braces (`\mathord{\text{\textbackslash{}foo}\{a\}}`), so an
+    /// unknown command never comes out as live LaTeX. The default.
+    #[default]
+    Escape,
+    /// Write it back as the live command (`\foo{a}`), for output compiled
+    /// where the command is defined. Best effort only: dangerous primitives
+    /// on a fixed list (see [`crate::ast::undefined`]) are still escaped, but
+    /// that list cannot be complete, so this mode is not safe for untrusted
+    /// input compiled with file, Lua or shell access.
+    Keep,
+}
+
 /// Default upper bound on reader input size (4 MiB). Math formulas are
 /// kilobytes at most; this guards against adversarial multi-megabyte inputs
 /// that would otherwise be fully tokenized and parsed.
@@ -318,6 +339,9 @@ pub struct Config {
     /// are built by the MTEF and UnicodeMath readers, and on every parsed tree by
     /// [`convert_with`](crate::convert_with) and the `from_*` functions.
     pub max_depth: usize,
+    /// How the LaTeX writer spells an undefined control sequence (default:
+    /// [`UndefinedCommands::Escape`], never live LaTeX).
+    pub undefined_commands: UndefinedCommands,
 }
 
 impl Default for Config {
@@ -328,6 +352,7 @@ impl Default for Config {
             max_input_bytes: Some(DEFAULT_MAX_INPUT_BYTES),
             max_nodes: Some(DEFAULT_MAX_NODES),
             max_depth: DEFAULT_MAX_DEPTH,
+            undefined_commands: UndefinedCommands::Escape,
         }
     }
 }
@@ -368,6 +393,13 @@ impl Config {
     #[must_use]
     pub fn with_max_depth(mut self, max_depth: usize) -> Self {
         self.max_depth = max_depth;
+        self
+    }
+
+    /// Builder: set how the LaTeX writer spells undefined control sequences.
+    #[must_use]
+    pub fn with_undefined_commands(mut self, undefined_commands: UndefinedCommands) -> Self {
+        self.undefined_commands = undefined_commands;
         self
     }
 

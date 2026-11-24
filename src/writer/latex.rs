@@ -16,10 +16,12 @@ impl Writer for LatexWriter {
         Self::write_compact(&compact, config)
     }
 
-    fn write_compact(expr: &CompactExpr, _config: &Config) -> Result<String> {
+    fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
         let mut buf = LatexBuffer {
             text: String::with_capacity(256),
             in_operator_name: false,
+            keep_undefined: config.undefined_commands == crate::UndefinedCommands::Keep,
+            command_ends: Vec::new(),
         };
         write_sequence(
             &mut buf,
@@ -28,7 +30,7 @@ impl Writer for LatexWriter {
             false,
             true,
         );
-        Ok(buf.text)
+        Ok(buf.finish())
     }
 }
 
@@ -36,6 +38,50 @@ impl Writer for LatexWriter {
 struct LatexBuffer {
     text: String,
     in_operator_name: bool,
+    /// Whether undefined commands are written live
+    /// ([`UndefinedCommands::Keep`](crate::UndefinedCommands::Keep)).
+    keep_undefined: bool,
+    /// Where the output of each undefined command written as a live control
+    /// word ends, and whether it ends with the bare name. What the writer
+    /// puts next is only known at the end: a group there would read back as
+    /// another argument of the command, and a letter would extend its name.
+    command_ends: Vec<(usize, bool)>,
+}
+
+impl LatexBuffer {
+    /// Insert `text` at byte offset `at`, keeping the recorded command ends
+    /// on the same output.
+    fn insert_text(&mut self, at: usize, text: &str) {
+        self.text.insert_str(at, text);
+        for (end, _) in &mut self.command_ends {
+            if *end > at {
+                *end += text.len();
+            }
+        }
+    }
+
+    /// Cut the output back to `len` bytes.
+    fn truncate_text(&mut self, len: usize) {
+        self.text.truncate(len);
+        self.command_ends.retain(|&(end, _)| end <= len);
+    }
+
+    /// The finished output. After each undefined command, put `\relax`
+    /// before a group that would read back as one more of its arguments,
+    /// and a space before a letter that would extend its name.
+    fn finish(mut self) -> String {
+        self.command_ends.sort_unstable();
+        self.command_ends.dedup();
+        for &(end, bare) in self.command_ends.iter().rev() {
+            let rest = &self.text[end..];
+            if rest.trim_start().starts_with('{') {
+                self.text.insert_str(end, "\\relax");
+            } else if bare && rest.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+                self.text.insert(end, ' ');
+            }
+        }
+        self.text
+    }
 }
 impl std::ops::Deref for LatexBuffer {
     type Target = String;
@@ -137,8 +183,11 @@ fn write_sequence(
         // A trailing implicit script can attach here when the next sibling
         // cannot take it as a prescript. This also applies before explicit
         // spacing, just as in row normalization.
+        // Not after a bare undefined command: the script's `{}` base would
+        // read back as the command's argument (`\\foo{}^2`).
         if i + 1 < children.len()
             && is_script_with_empty_base(arena, children[i + 1])
+            && !is_bare_undefined_command(arena, id)
             && children.get(i + 2).is_none_or(|&after| {
                 !crate::ast::normalize::can_take_prescripts(*arena.node(after))
             })
@@ -274,6 +323,115 @@ fn write_sequence(
     }
 }
 
+/// An undefined command as inert text: one ordinary atom holding the
+/// spelling and each group between literal braces,
+/// `\mathord{\text{\textbackslash{}foo}\{a\}}`. It reads back as that atom,
+/// whose row the sequence writer spells the same way: the spaces it would
+/// put after `\{` and before `\}` are put here too.
+fn write_escaped_undefined_command(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
+    name: &str,
+    groups: &[NodeId],
+) {
+    buf.push_str("\\mathord{");
+    write_styled_text(buf, TextStyle::Normal, name);
+    for &group in groups {
+        buf.push_str("\\{");
+        let mut children: &[NodeId] = match *arena.node(group) {
+            CompactNode::Row(span) => arena.children(span),
+            _ => std::slice::from_ref(&group),
+        };
+        // A leading script without a base (one that did not become the next
+        // node's leading script) is written as the sequence writer writes it
+        // after an escaped brace: as the markers alone.
+        if let [first, second, ..] = *children
+            && is_script_with_empty_base(arena, first)
+        {
+            write_empty_base_script_markers(buf, arena, first, Some(second));
+            children = &children[1..];
+        }
+        if children
+            .first()
+            .is_some_and(|&first| has_visible_prescripts(arena, first))
+        {
+            buf.push(' ');
+        }
+        // A trailing script without a base becomes the leading script of
+        // the `\}` on the next read; write it so already.
+        let (children, trailing_script) = match children.split_last() {
+            Some((&last, rest)) if is_script_with_empty_base(arena, last) => (rest, Some(last)),
+            _ => (children, None),
+        };
+        write_node_slice(buf, arena, children, false);
+        if let Some(script) = trailing_script {
+            if !buf.ends_with(' ') {
+                buf.push(' ');
+            }
+            write_brace_prescripts(buf, arena, script);
+            continue;
+        }
+        if let Some(&last) = children.last() {
+            if ends_with_empty_body_nary(arena, last) {
+                // `\int\}` would read the brace as the operator's body.
+                buf.push_str("{}");
+            } else if needs_space(arena, Some(last), group) {
+                buf.push(' ');
+            }
+        }
+        buf.push_str("\\}");
+    }
+    buf.push('}');
+}
+
+/// `\}` with the scripts of the empty-base script `script` as its leading
+/// scripts, spelled as the writer spells such a node: `{{}^{2}\}}`.
+fn write_brace_prescripts(buf: &mut LatexBuffer, arena: &AstArena, script: NodeId) {
+    let (sub, sup) = match *arena.node(script) {
+        CompactNode::Subscript { sub, .. } => (sub, NodeId::NONE),
+        CompactNode::Superscript { sup, .. } => (NodeId::NONE, sup),
+        CompactNode::SubSup { sub, sup, .. } => (sub, sup),
+        _ => (NodeId::NONE, NodeId::NONE),
+    };
+    buf.push_str("{{}");
+    for (mark, script) in [('_', sub), ('^', sup)] {
+        if script.is_some() && !is_effectively_empty_arg(arena, script) {
+            buf.push(mark);
+            if !write_scalar_operator_arg(buf, arena, script) {
+                buf.push('{');
+                write_wrapped_content(buf, arena, script);
+                buf.push('}');
+            }
+        }
+    }
+    buf.push_str("\\}}");
+}
+
+/// One brace group after an undefined command.
+fn write_undefined_command_group(buf: &mut LatexBuffer, arena: &AstArena, group: NodeId) {
+    buf.push('{');
+    match *arena.node(group) {
+        // A group holding just a group (MathML `<mrow>` around a style row)
+        // is written as that one group.
+        CompactNode::Row(span) => match *arena.children(span) {
+            [only] if let CompactNode::Row(inner) = *arena.node(only) => {
+                write_nodes(buf, arena, inner)
+            },
+            _ => write_nodes(buf, arena, span),
+        },
+        _ => write_node(buf, arena, group),
+    }
+    buf.push('}');
+}
+
+/// An undefined command written as a bare control word, whose following
+/// groups the reader takes as its arguments.
+fn is_bare_undefined_command(arena: &AstArena, id: NodeId) -> bool {
+    matches!(*arena.node(id), CompactNode::UndefinedCommand { name, .. }
+        if crate::ast::undefined::writes_as_command(arena.str_val(name))
+            && !crate::ast::undefined::is_context_command(arena.str_val(name)))
+}
+
 /// A `[` after a row break `\\` (even past white space) is read as the
 /// break's optional spacing argument by LaTeX and by this crate's table
 /// parser, so the bracketed content would vanish. If the output written from
@@ -293,10 +451,10 @@ fn guard_row_break_argument(buf: &mut LatexBuffer, start: usize) {
     let offset = rest.len() - rest.trim_start().len();
     let at = start + offset;
     match rest.as_bytes().get(offset) {
-        Some(b'[') => buf.insert_str(at, "{}"),
+        Some(b'[') => buf.insert_text(at, "{}"),
         Some(b'*') => {
-            buf.insert(at + 1, '}');
-            buf.insert(at, '{');
+            buf.insert_text(at + 1, "}");
+            buf.insert_text(at, "{");
         },
         _ => {},
     }
@@ -1045,7 +1203,6 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     },
                 }
             }
-
             for &start in row_breaks.iter().rev() {
                 guard_row_break_argument(buf, start);
             }
@@ -1279,7 +1436,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             {
                 // Preserve a literal closing bracket or a nested root's index:
                 // at this level TeX would otherwise finish the outer index.
-                buf.insert(start, '{');
+                buf.insert_text(start, "{");
                 buf.push('}');
             }
             buf.push_str("]{");
@@ -1594,7 +1751,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     && !(num_rows < 32 && row_seps & (1 << num_rows) != 0)
                     && buf[cells_start..].trim().is_empty()
                 {
-                    buf.truncate(cells_start);
+                    buf.truncate_text(cells_start);
                     buf.push_str("{}");
                 }
             }
@@ -1861,6 +2018,35 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         CompactNode::StructuredOperator { content, form } => {
             write_structured_operator(buf, arena, content, form)
         },
+        CompactNode::UndefinedCommand { name, arguments } => {
+            let name = arena.str_val(name);
+            let groups = arena.children(arguments);
+            // By default, and always for a name that is no undefined
+            // control word or is a dangerous primitive, the command is
+            // visible inert text and its groups literal braces (see
+            // `ast::undefined`). The atom keeps the text from merging with
+            // neighbouring text on the next read.
+            if !buf.keep_undefined || !crate::ast::undefined::writes_as_command(name) {
+                write_escaped_undefined_command(buf, arena, name, groups);
+                return;
+            }
+            // A command read only in its own context (`\end`, `\right`) is
+            // braced with its groups so it is not read in such a context.
+            let braced = crate::ast::undefined::is_context_command(name);
+            if braced {
+                buf.push('{');
+            }
+            buf.push_str(name);
+            for &group in groups {
+                write_undefined_command_group(buf, arena, group);
+            }
+            if braced {
+                buf.push('}');
+            } else {
+                let end = buf.len();
+                buf.command_ends.push((end, groups.is_empty()));
+            }
+        },
     }
 }
 
@@ -1882,7 +2068,7 @@ fn write_structured_operator(
     // A constructed structured name may contain only plain letters. Keep a
     // TeX atom boundary so another import can recover its form and placement.
     if !crate::latex::parse::operator_name_needs_math(&buf[start..]) {
-        buf.insert_str(start, r"\mathord{");
+        buf.insert_text(start, r"\mathord{");
         buf.push('}');
     }
     buf.push('}');
@@ -3345,14 +3531,16 @@ mod tests {
     #[test]
     fn adjacent_upright_cell_identifiers_remain_separate_on_reimport() {
         use crate::{Format, convert};
+        // Undefined commands stay commands; they never become identifiers.
+        let keep = Config::default().with_undefined_commands(crate::UndefinedCommands::Keep);
         for contents in [r"\foo\word", r"\text{AV}\word", r"\foo\text{AV}"] {
             let src =
                 format!(r"\begin{{array}}{{cc}}\multicolumn{{2}}{{r}}{{{contents}}}\end{{array}}");
-            let first = convert(&src, Format::LaTeX, Format::LaTeX).unwrap();
-            assert!(first.contains(r"\mathord{\text{"), "{first}");
+            let first = crate::convert_with(&src, Format::LaTeX, Format::LaTeX, &keep).unwrap();
+            assert!(first.contains(contents), "{first}");
             assert_eq!(
                 first,
-                convert(&first, Format::LaTeX, Format::LaTeX).unwrap()
+                crate::convert_with(&first, Format::LaTeX, Format::LaTeX, &keep).unwrap()
             );
         }
         let src = r#"<math><mtable><mtr><mn>1</mn></mtr><mtr><mtd columnalign="right"><mi>AV</mi><mi>end</mi></mtd></mtr></mtable></math>"#;
@@ -3777,7 +3965,7 @@ mod tests {
         assert_eq!(first, normalized_latex(&first));
         assert_eq!(
             first,
-            r"{{}^{\prime}\mathord{\mid}}{midfle}^{\prime}o{e}^{\prime}"
+            r"{{}^{\prime}\mathord{\mid}}{\mathord{\text{\textbackslash{}midfle}}}^{\prime}o{e}^{\prime}"
         );
     }
 
@@ -4701,7 +4889,7 @@ mod tests {
     #[test]
     fn multicolumn_groups_are_only_interpreted_at_table_cell_boundaries() {
         let canonical = |input: &str| {
-            let config = Config::default();
+            let config = Config::default().with_undefined_commands(crate::UndefinedCommands::Keep);
             let mut expr = LatexReader::parse_compact(input, &config).unwrap().expr;
             crate::ast::normalize::normalize_compact_expr(&mut expr).unwrap();
             LatexWriter::write_compact(&expr, &config).unwrap()
@@ -4718,7 +4906,15 @@ mod tests {
             ),
         ] {
             let first = canonical(source);
-            assert_eq!(first.matches(r"\multicolumn").count(), overrides, "{first}");
+            // A misplaced `\multicolumn` is kept as an undefined command,
+            // braced with its groups.
+            let misplaced = first.matches(r"{\multicolumn").count();
+            assert_eq!(
+                first.matches(r"\multicolumn").count() - misplaced,
+                overrides,
+                "{first}"
+            );
+            assert_eq!(misplaced, 1 - overrides, "{first}");
             assert_eq!(canonical(&first), first);
         }
     }

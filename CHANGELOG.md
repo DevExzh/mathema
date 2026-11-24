@@ -111,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The LaTeX `\displaylimits` placement modifier.
 - LaTeX macro definitions take effect in source order. Group-local and global
   definitions, `\let`, `\futurelet`, expanded and protected definitions, and
   delimited parameters preserve token meanings. Declared environments accept
@@ -162,6 +163,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read its own output back.
 
 ### Changed
+
+- An undefined LaTeX control sequence is kept as itself instead of becoming
+  identifier letters that merge with what follows (`\foo x` used to give
+  `foox`). It is the new `MathNode::UndefinedCommand` (and
+  `CompactNode::UndefinedCommand`), holding its spelling and the brace groups
+  written directly after it, which may be its arguments (`\foo{a}{}`).
+  Like KaTeX with `throwOnError: false` it renders upright in KaTeX's error
+  colour (`#cc0000`); LaTeX output spells it as inert text by default (see
+  below), MathML writes MathJax's
+  `<merror><mtext>\foo</mtext><mrow>a</mrow>…</merror>`, which the MathML
+  reader reads back, and OMML, UnicodeMath (arguments in parentheses) and
+  MTEF write it as text. Each
+  name is reported once as an `undefined control sequence \foo` warning, in
+  strict and lenient mode alike (the first 100 names, then one summary).
+  `\right`, `\end`, `\multicolumn`, `\cellcolor`, `\rowcolor` and
+  `\columncolor` outside their context are reported as misplaced and written
+  in braces. Text mode (`\text{\foo}`) is unchanged, and a builtin macro met
+  where the preprocessor did not run (inside some rewritten `\ce` text) keeps
+  its identifier spelling with a `control sequence \tr is not expanded here`
+  warning. `CompactNode` gains a variant, so code matching it exhaustively
+  needs an arm.
+- LaTeX output never contains an unknown command as live LaTeX by default.
+  With the default `Config::undefined_commands` (`UndefinedCommands::Escape`)
+  the LaTeX writer spells an undefined command as visible, inert text with
+  its groups as literal braces, `\mathord{\text{\textbackslash{}foo}\{a\}}`,
+  which reads back stably (before, it was the identifier letters `fooa`).
+  `Config::with_undefined_commands(UndefinedCommands::Keep)` writes it back
+  live (`\foo{a}`); that mode is best effort and not safe for untrusted
+  input compiled with file, Lua or shell access. In both modes, as defence
+  in depth only, a fixed list of dangerous primitives (`\input`,
+  `\write`, `\immediate`, `\catcode`, `\usepackage`, `\directlua`,
+  `\lstinputlisting`, the `\def`/`\let` family and others; see
+  `ast::undefined`) is never written live: it is spelled like the default
+  inert text in both modes (`\mathord{\text{\textbackslash{}input}\{x\}}`)
+  and reported with a `control sequence \input is not allowed and was kept
+  as text` warning. The MathML reader
+  reads `<merror><mtext>\foo</mtext>…` as an undefined command only for a
+  name the LaTeX reader itself keeps as undefined, and the writers write a
+  node built through the API or serde with any other name as text. The AST
+  node, diagnostics, MathML and rendering are the same in both modes.
+- A `#RRGGBB` colour in `\textcolor`/`\color` is stored in lower case, the way
+  its `\textcolor[HTML]{…}` spelling reads back, so it round-trips stably.
 
 - LaTeX script arguments reuse canonical token grouping for mapped Unicode
   symbols, keeping preferred control words such as `\Re` stable across writes.

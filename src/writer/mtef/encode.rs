@@ -622,6 +622,15 @@ impl<'a> Encoder<'a> {
                 Ok(())
             },
             CompactNode::Row(span) => self.list(span, size),
+            CompactNode::UndefinedCommand { name, arguments } => {
+                self.lose("an undefined LaTeX command was written as plain text");
+                self.leaf(size, Leaf::Text, name)?;
+                let groups: SmallVec<[NodeId; 4]> = self.arena.children(arguments).into();
+                for group in groups {
+                    self.node(group, size)?;
+                }
+                Ok(())
+            },
             CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
                 self.node(content, size)
             },
