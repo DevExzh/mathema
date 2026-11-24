@@ -787,6 +787,20 @@ impl<'a> MathmlCompactParser<'a> {
         let mark_fences = self.fence_depth == Some(self.depth);
         let vertical_line = matches!(name, "|" | "‖");
         let attrs = operator_attributes(start, mark_fences || vertical_line);
+        // MathJax writes `\big(` as an `<mo>` fixed at one of the TeX sizes.
+        if let Some(factor) = attrs.big_delim_factor()
+            && big_delim_glyph(name)
+        {
+            let kind = match kind {
+                SymbolKind::Open | SymbolKind::Close => kind,
+                _ => SymbolKind::Fence,
+            };
+            let sid = self.arena.push_str(name);
+            let content = self.arena.push_node(CompactNode::Symbol(kind, sid));
+            return self
+                .arena
+                .push_node(CompactNode::Scaled { factor, content });
+        }
         if let Some(marked_kind) = attrs
             .symbol_kind
             .filter(|_| matches!(name, "-" | "−" | "*" | "'"))
@@ -1227,6 +1241,12 @@ impl<'a> MathmlCompactParser<'a> {
         content: NodeId,
         attrs: &MrowAttributes,
     ) -> NodeId {
+        // MathJax's REL class is kept only for `\bigm`, a sized delimiter.
+        if atom_type == MathAtomType::Rel
+            && !matches!(self.arena.node(content), CompactNode::Scaled { .. })
+        {
+            return content;
+        }
         if atom_type == MathAtomType::Op
             && let Some(form) = attrs.structured_operator
         {
@@ -2206,9 +2226,30 @@ struct OperatorAttributes {
     fixed_literal: bool,
     stretchy: bool,
     non_fence: bool,
+    minsize: Option<f64>,
+    maxsize: Option<f64>,
 }
 
 impl OperatorAttributes {
+    /// The `\big`-family scale factor of an operator whose `minsize` and
+    /// `maxsize` fix it at one of the four TeX sizes. MathJax's sizes and the
+    /// plain scale factors (`1.8em` for `\Big`, …) are both recognized.
+    fn big_delim_factor(&self) -> Option<Rational> {
+        let (Some(min), Some(max)) = (self.minsize, self.maxsize) else {
+            return None;
+        };
+        if (min - max).abs() > 1e-6 {
+            return None;
+        }
+        crate::ast::BIG_DELIM_SIZES
+            .iter()
+            .find(|&&(scale, _, size)| {
+                let mathjax = size.trim_end_matches("em").parse::<f64>().unwrap_or(0.0);
+                (min - mathjax).abs() < 5e-3 || (min - scale.as_f64()).abs() < 5e-3
+            })
+            .map(|&(scale, ..)| scale)
+    }
+
     fn fence_role(&self) -> FenceRole {
         if self.constrained || self.fixed_literal {
             FenceRole::Constrained
@@ -2227,6 +2268,20 @@ fn writable_middle(text: &str) -> bool {
             && !c.is_whitespace()
             && !c.is_control()
             && !matches!(c, '%' | '#' | '$' | '&' | '~' | '^' | '_' | '.')
+    })
+}
+
+/// A glyph the LaTeX writer can spell after `\big`: a null delimiter or one
+/// symbol character. A literal `.`, `<` or `>` would read back as the null
+/// delimiter or an angle bracket, so those stay ordinary operators.
+fn big_delim_glyph(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_none_or(|c| {
+        chars.as_str().is_empty()
+            && !c.is_ascii_alphanumeric()
+            && !c.is_whitespace()
+            && !c.is_control()
+            && !matches!(c, '.' | '<' | '>')
     })
 }
 
@@ -2296,8 +2351,22 @@ fn operator_attributes(
                     _ => FenceRole::Constrained,
                 };
             },
-            "minsize" | "maxsize" | "lspace" | "rspace" | "style" | "mathsize" | "mathvariant"
-            | "mathcolor" | "mathbackground" | "class" | "displaystyle" | "scriptlevel"
+            key @ ("minsize" | "maxsize") => {
+                let value = fence_attr_value(&attr.value);
+                let em = value
+                    .trim()
+                    .strip_suffix("em")
+                    .and_then(|number| number.trim().parse::<f64>().ok())
+                    .filter(|em| em.is_finite());
+                if key == "minsize" {
+                    result.minsize = em;
+                } else {
+                    result.maxsize = em;
+                }
+                result.constrained |= inspect_fences;
+            },
+            "lspace" | "rspace" | "style" | "mathsize" | "mathvariant" | "mathcolor"
+            | "mathbackground" | "class" | "displaystyle" | "scriptlevel"
                 if inspect_fences =>
             {
                 result.constrained = true;
@@ -2359,6 +2428,7 @@ fn mrow_attributes(start: &quick_xml::events::BytesStart<'_>) -> MrowAttributes 
                     "OPEN" => Some(MathAtomType::Open),
                     "CLOSE" => Some(MathAtomType::Close),
                     "OP" => Some(MathAtomType::Op),
+                    "REL" => Some(MathAtomType::Rel),
                     _ => None,
                 };
             },
@@ -4719,5 +4789,40 @@ mod tests {
     fn unterminated_cdata_reports_an_xml_error_in_strict_mode() {
         let config = crate::Config::default().with_strictness(crate::Strictness::Strict);
         assert!(crate::from_mathml_with("<math><mi><![CDATA[x</mi></math>", &config).is_err());
+    }
+
+    #[test]
+    fn mathjax_sized_delimiters_keep_their_size_and_class() {
+        // MathJax 4 output for `a\bigl( b \bigr) \bigm| \big( \Biggl\langle`.
+        let mathjax = r#"<math><mi>a</mi><mrow data-mjx-texclass="OPEN"><mo minsize="1.2em" maxsize="1.2em">(</mo></mrow><mi>b</mi><mrow data-mjx-texclass="CLOSE"><mo minsize="1.2em" maxsize="1.2em">)</mo></mrow><mrow data-mjx-texclass="REL"><mo minsize="1.2em" maxsize="1.2em" fence="true" stretchy="true" symmetric="true">|</mo></mrow><mrow data-mjx-texclass="ORD"><mo minsize="1.2em" maxsize="1.2em">(</mo></mrow><mrow data-mjx-texclass="OPEN"><mo minsize="2.470em" maxsize="2.470em">&#x27E8;</mo></mrow></math>"#;
+        let latex = crate::convert(mathjax, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+        assert_eq!(latex, r"a\bigl(b\bigr)\bigm| \big(\Biggl\langle");
+        // The plain scale factor as an em size is read too.
+        let plain = r#"<math><mo minsize="1.8em" maxsize="1.8em">[</mo></math>"#;
+        assert_eq!(
+            crate::convert(plain, crate::Format::MathML, crate::Format::LaTeX).unwrap(),
+            r"\Big["
+        );
+    }
+
+    #[test]
+    fn unsized_or_unequal_operator_sizes_stay_plain_operators() {
+        for source in [
+            r#"<math><mo minsize="1.2em">(</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="2em">(</mo></math>"#,
+            r#"<math><mo minsize="1.5em" maxsize="1.5em">(</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="1.2em">ab</mo></math>"#,
+            r#"<math><mo minsize="1.2em" maxsize="1.2em">.</mo></math>"#,
+        ] {
+            let latex =
+                crate::convert(source, crate::Format::MathML, crate::Format::LaTeX).unwrap();
+            assert!(!latex.contains(r"\big"), "{source} -> {latex}");
+        }
+        // REL without a sized delimiter adds no class wrapper.
+        let rel = r#"<math><mrow data-mjx-texclass="REL"><mi>x</mi></mrow></math>"#;
+        assert_eq!(
+            crate::convert(rel, crate::Format::MathML, crate::Format::LaTeX).unwrap(),
+            "x"
+        );
     }
 }

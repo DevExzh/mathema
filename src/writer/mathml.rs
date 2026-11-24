@@ -54,8 +54,22 @@ fn packed_boundary_attr(boundaries: &str) -> Option<String> {
 /// Classifies a compact node that the MathML writer cannot fully represent.
 /// MathML preserves `Color`/`Boxed`/`Phantom`/`Cancel`, so only the genuinely
 /// lossy kinds are reported.
-fn mathml_loss(_arena: &AstArena, node: &CompactNode) -> Option<String> {
-    match node {
+fn mathml_loss(arena: &AstArena, node: &CompactNode) -> Option<String> {
+    match *node {
+        // `\big`-family delimiters keep their size and class, as MathJax writes them.
+        CompactNode::Scaled { factor, content } if big_delim_fast(arena, factor, content).is_some() => {
+            None
+        },
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Rel,
+            content,
+        } if matches!(
+            *arena.node(content),
+            CompactNode::Scaled { factor, content } if big_delim_fast(arena, factor, content).is_some()
+        ) =>
+        {
+            Some("MathML annotates the TeX fence spacing class. Native operator spacing can differ.".into())
+        },
         CompactNode::MathChoice { .. } => {
             Some("MathML output keeps only the applicable branch of \\mathchoice".into())
         },
@@ -983,7 +997,14 @@ fn write_node_in(
             Ok(())
         },
 
-        MathNode::Scaled { content, .. } | MathNode::RaiseBox { content, .. } => {
+        MathNode::Scaled { factor, content } => {
+            if let Some(delim) = big_delim(*factor, content) {
+                write_big_delim(w, "ORD", delim)
+            } else {
+                write_node_in(w, content, single_argument, display_style)
+            }
+        },
+        MathNode::RaiseBox { content, .. } => {
             write_node_in(w, content, single_argument, display_style)
         },
 
@@ -1029,7 +1050,15 @@ fn write_node_in(
             Ok(())
         },
         MathNode::MathAtom { atom_type, content } => {
-            if let Some(class) = annotated_atom_class(*atom_type) {
+            if let Some(class) = big_delim_class(*atom_type)
+                && let MathNode::Scaled {
+                    factor,
+                    content: inner,
+                } = content.as_ref()
+                && let Some(delim) = big_delim(*factor, inner)
+            {
+                write_big_delim(w, class, delim)
+            } else if let Some(class) = annotated_atom_class(*atom_type) {
                 write_atom_group(w, content, class, false, display_style)
             } else if *atom_type == MathAtomType::Ord
                 && let MathNode::Symbol(_, s) = content.as_ref()
@@ -1299,6 +1328,87 @@ fn write_limit_base(
         },
         _ => write_argument(w, node, display_style),
     }
+}
+
+/// A `\big`-family delimiter: its MathJax size and its glyph.
+struct BigDelim<'a> {
+    size: &'static str,
+    glyph: &'a str,
+}
+
+/// The `minsize`/`maxsize` MathJax writes for a `\big`-family scale factor.
+fn big_delim_size(factor: Rational) -> Option<&'static str> {
+    BIG_DELIM_SIZES
+        .iter()
+        .find(|&&(scale, ..)| scale == factor)
+        .map(|&(.., size)| size)
+}
+
+fn big_delim(factor: Rational, content: &MathNode) -> Option<BigDelim<'_>> {
+    let MathNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, glyph) = content
+    else {
+        return None;
+    };
+    Some(BigDelim {
+        size: big_delim_size(factor)?,
+        glyph,
+    })
+}
+
+fn big_delim_fast(arena: &AstArena, factor: Rational, content: NodeId) -> Option<BigDelim<'_>> {
+    let CompactNode::Symbol(SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence, sid) =
+        *arena.node(content)
+    else {
+        return None;
+    };
+    Some(BigDelim {
+        size: big_delim_size(factor)?,
+        glyph: arena.str_val(sid),
+    })
+}
+
+/// MathJax's TeX class for `\bigl`, `\bigr` and `\bigm`.
+fn big_delim_class(atom: MathAtomType) -> Option<&'static str> {
+    match atom {
+        MathAtomType::Open => Some("OPEN"),
+        MathAtomType::Close => Some("CLOSE"),
+        MathAtomType::Rel => Some("REL"),
+        _ => None,
+    }
+}
+
+/// Write a sized delimiter as MathJax does: a fixed-size stretchy `<mo>` in
+/// an `<mrow>` that records the TeX class of `\big`/`\bigl`/`\bigr`/`\bigm`.
+fn write_big_delim(w: &mut XmlWriter, class: &str, delim: BigDelim<'_>) -> Result<()> {
+    let mut group = BytesStart::new("mrow");
+    group.push_attribute(("data-mjx-texclass", class));
+    w.write_event(Event::Start(group)).map_err(to_err)?;
+    let mut elem = BytesStart::new("mo");
+    elem.push_attribute(("minsize", delim.size));
+    elem.push_attribute(("maxsize", delim.size));
+    elem.push_attribute(("fence", "true"));
+    elem.push_attribute(("stretchy", "true"));
+    elem.push_attribute(("symmetric", "true"));
+    w.write_event(Event::Start(elem)).map_err(to_err)?;
+    w.write_event(Event::Text(BytesText::new(delim.glyph)))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mo")))
+        .map_err(to_err)?;
+    w.write_event(Event::End(BytesEnd::new("mrow")))
+        .map_err(to_err)
+}
+
+fn write_big_delim_fast(buf: &mut XmlBuffer, class: &str, delim: BigDelim<'_>) {
+    buf.push_str(r#"<mrow data-mjx-texclass=""#);
+    buf.push_str(class);
+    buf.push_str(r#""><mo minsize=""#);
+    buf.push_str(delim.size);
+    buf.push_str(r#"" maxsize=""#);
+    buf.push_str(delim.size);
+    buf.push_str(r#"" fence="true" stretchy="true" symmetric="true">"#);
+    xml_escape_into(buf, delim.glyph);
+    buf.push_str("</mo>");
+    close_tag(buf, "mrow");
 }
 
 fn annotated_atom_class(atom: MathAtomType) -> Option<&'static str> {
@@ -2011,7 +2121,14 @@ fn write_node_fast_in(
             buf.push_str("</menclose>");
         },
 
-        CompactNode::Scaled { content, .. } | CompactNode::RaiseBox { content, .. } => {
+        CompactNode::Scaled { factor, content } => {
+            if let Some(delim) = big_delim_fast(arena, factor, content) {
+                write_big_delim_fast(buf, "ORD", delim);
+            } else {
+                write_node_fast_in(buf, arena, content, single_argument, display_style)
+            }
+        },
+        CompactNode::RaiseBox { content, .. } => {
             write_node_fast_in(buf, arena, content, single_argument, display_style)
         },
 
@@ -2077,7 +2194,15 @@ fn write_node_fast_in(
             write_node_fast_in(buf, arena, branch, single_argument, display_style);
         },
         CompactNode::MathAtom { atom_type, content } => {
-            if let Some(class) = annotated_atom_class(atom_type) {
+            if let Some(class) = big_delim_class(atom_type)
+                && let CompactNode::Scaled {
+                    factor,
+                    content: inner,
+                } = *arena.node(content)
+                && let Some(delim) = big_delim_fast(arena, factor, inner)
+            {
+                write_big_delim_fast(buf, class, delim);
+            } else if let Some(class) = annotated_atom_class(atom_type) {
                 write_atom_group_fast(buf, arena, content, class, false, display_style);
             } else if atom_type == MathAtomType::Ord
                 && let CompactNode::Symbol(_, sid) = *arena.node(content)
@@ -3949,6 +4074,35 @@ mod tests {
         assert!(
             !output.contains("mathcolor=\"red&blue\"\""),
             "compact output: {output}"
+        );
+    }
+
+    #[test]
+    fn big_delimiters_are_written_as_mathjax_sized_operators() {
+        let mathml = crate::convert(
+            r"a\bigl( b\bigr) \Bigm| \bigg\| \Biggl.",
+            crate::Format::LaTeX,
+            crate::Format::MathML,
+        )
+        .unwrap();
+        for expected in [
+            r#"<mrow data-mjx-texclass="OPEN"><mo minsize="1.2em" maxsize="1.2em" fence="true" stretchy="true" symmetric="true">(</mo></mrow>"#,
+            r#"<mrow data-mjx-texclass="CLOSE"><mo minsize="1.2em" maxsize="1.2em" fence="true" stretchy="true" symmetric="true">)</mo></mrow>"#,
+            r#"<mrow data-mjx-texclass="REL"><mo minsize="1.623em" maxsize="1.623em" fence="true" stretchy="true" symmetric="true">|</mo></mrow>"#,
+            r#"<mrow data-mjx-texclass="ORD"><mo minsize="2.047em" maxsize="2.047em" fence="true" stretchy="true" symmetric="true">‖</mo></mrow>"#,
+            r#"<mrow data-mjx-texclass="OPEN"><mo minsize="2.470em" maxsize="2.470em" fence="true" stretchy="true" symmetric="true"></mo></mrow>"#,
+        ] {
+            assert!(mathml.contains(expected), "missing {expected} in {mathml}");
+        }
+        // The heap writer agrees with the compact writer.
+        let parsed = crate::from_latex(r"a\bigl( b\bigr) \Bigm| \bigg\| \Biggl.").unwrap();
+        let heap = MathmlWriter::write(&parsed.expr(), &Config::default()).unwrap();
+        assert_eq!(heap, mathml);
+        // Sized delimiters are represented without a loss diagnostic.
+        let (_, diagnostics) = parsed.to_mathml_with_diagnostics().unwrap();
+        assert!(
+            diagnostics.iter().all(|d| !d.message.contains("scalebox")),
+            "{diagnostics:?}"
         );
     }
 }
