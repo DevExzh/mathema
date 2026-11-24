@@ -1455,14 +1455,19 @@ fn xy_take_script(input: &str) -> (&str, &str) {
         return (rest, inner);
     }
     if let Some(after_bs) = t.strip_prefix('\\') {
-        let nlen = after_bs
+        // A control word is ASCII letters; otherwise a control symbol is one
+        // character, which may be multi-byte (`\㏁`).
+        let word = after_bs
             .as_bytes()
             .iter()
             .take_while(|b| b.is_ascii_alphabetic())
-            .count()
-            .max(1);
+            .count();
+        let nlen = if word > 0 {
+            word
+        } else {
+            after_bs.chars().next().map_or(0, char::len_utf8)
+        };
         let end = 1 + nlen;
-        let end = end.min(t.len());
         return (&t[end..], &t[..end]);
     }
     let ch_len = t.chars().next().map_or(0, char::len_utf8);

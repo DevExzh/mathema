@@ -5021,3 +5021,19 @@ fn color_arguments_are_read_to_their_matching_brace() {
         assert_eq!(first, second, "{input}");
     }
 }
+
+#[test]
+fn xymatrix_label_with_multibyte_control_symbol_does_not_panic() {
+    // Fuzz-found: a non-letter control symbol was taken as one byte, so a
+    // multi-byte character after `\` sliced inside it.
+    let lenient = Config::default().with_strictness(crate::error::Strictness::Lenient);
+    for input in [
+        "\\xymatrix{ A \\ar[r]^\\\u{33C1} & B }",
+        "\\xymatrix{ A \\ar[r]_\\é & B }",
+        "\\xymatrix{ A \\ar[r]^\\",
+        "\\xymatrix{ A \\ar[r]^\\\u{33C1}",
+    ] {
+        let _ = crate::from_latex(input);
+        let _ = crate::from_latex_with(input, &lenient);
+    }
+}
