@@ -1509,3 +1509,58 @@ fn leading_scripts_stay_outside_trailing_ones() {
         result.expr()
     );
 }
+
+#[test]
+fn a_leading_script_leads_the_first_item_of_a_template_row() {
+    // tmSUP with tvSU_PRECEDES, then a tmINTOP whose operator is empty and
+    // whose body starts with a space.
+    let equation = eq5(&cat(&[
+        &[0x03, 0, 28, 1, 0, 0x01, 0x01],
+        &line5(&c5(0, 3, 'l')),
+        &[0],
+        &[0x03, 0, 21, 0, 0],
+        &line5(&cat(&[&c5(0, 24, '\u{EF02}'), &c5(0, 3, 'x')])),
+        &[0x01, 0x01, 0x01, 0x01],
+        &line5(&[]),
+        &[0],
+    ]));
+    let decoded = format!("{:?}", nodes(&equation));
+    assert!(
+        decoded.contains("PreScripts") && !decoded.contains("PreScripts { base: Row([Space"),
+        "{decoded}"
+    );
+}
+
+#[test]
+fn labelled_arrow_pairs_keep_both_arrows() {
+    for arrow in ["⇌", "⇄"] {
+        let source = format!("<math><mover><mo>{arrow}</mo><mi>a</mi></mover></math>");
+        let result = crate::from_mathml(&source).unwrap();
+        let data = result
+            .to_mtef_bytes(&crate::MtefWriteOptions::default())
+            .unwrap();
+        let back = crate::from_mtef_bytes(&data).unwrap();
+        let mathml = back.to_mathml().unwrap();
+        assert!(mathml.contains(arrow), "{mathml}");
+    }
+}
+
+#[test]
+fn a_prime_after_a_group_stays_inside_its_leading_scripts() {
+    // A leading script, an embellished letter (not a lone character) and an
+    // apostrophe.
+    let equation = eq5(&cat(&[
+        &[0x03, 0, 27, 1, 0],
+        &line5(&c5(0, 8, '1')),
+        &[0x01, 0x01, 0],
+        &c5(0x01, 3, 'A'),
+        &[0x06, 0, 13, 0],
+        &c5(0, 6, '\''),
+    ]));
+    let decoded = nodes(&equation);
+    assert!(
+        matches!(&decoded[..], [MathNode::PreScripts { base, .. }]
+            if matches!(**base, MathNode::Superscript { .. })),
+        "{decoded:?}"
+    );
+}

@@ -605,7 +605,12 @@ impl Decoder<'_> {
                 arrow,
                 v3_label_on_top,
             } => {
-                let arrow = glyphs.first().map_or(arrow, |g| g.ch);
+                // A pair of arrows is drawn with two characters, which the
+                // variation names together.
+                let arrow = match glyphs.as_slice() {
+                    [glyph] => glyph.ch,
+                    _ => arrow,
+                };
                 let base =
                     self.char_node(arrow, |s| CompactNode::Symbol(SymbolKind::Relation, s))?;
                 let (top, bottom) = match v3_label_on_top {

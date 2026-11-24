@@ -1718,6 +1718,16 @@ impl<'a> Decoder<'a> {
         pending: &mut Option<ScriptSlots>,
         id: NodeId,
     ) -> Result<()> {
+        // A template that became a row (a big operator and its body): a
+        // leading script is its first item's, where it also reads back from.
+        if pending.is_some()
+            && matches!(*self.arena.node(id), CompactNode::Row(span) if !span.is_empty())
+        {
+            for child in self.children_of(id) {
+                self.emit(out, pending, child)?;
+            }
+            return Ok(());
+        }
         let id = match pending.take() {
             // MathType draws a leading script (`tvSU_PRECEDES`) between the
             // items around it. Before an operator, a relation, punctuation or
@@ -1810,16 +1820,14 @@ impl<'a> Decoder<'a> {
             pre_sup,
         } = *self.arena.node(base)
         {
-            // `{}_a^b z′`: the prime is the letter's. (A group's prime stays
-            // outside, where the writer's script template puts it back.)
-            if self.single_char(inner).is_some() {
-                let base = self.prime(inner, marks)?;
-                return self.node(CompactNode::PreScripts {
-                    base,
-                    pre_sub,
-                    pre_sup,
-                });
-            }
+            // `{}_a^b z′`: leading scripts stay outermost, as they do around
+            // a script template.
+            let base = self.prime(inner, marks)?;
+            return self.node(CompactNode::PreScripts {
+                base,
+                pre_sub,
+                pre_sup,
+            });
         }
         if let CompactNode::Superscript { base: inner, sup } = *self.arena.node(base)
             && self.all_primes(sup)

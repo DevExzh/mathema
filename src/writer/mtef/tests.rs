@@ -1037,6 +1037,7 @@ fn mtef_3_has_no_math_alphabets() {
     );
 }
 
+#[test]
 fn dashed_partition_lines_round_trip() {
     let result =
         crate::from_latex(r"\begin{array}{l:l|l} a & b & c \\ \hdashline d & e & f \end{array}")
