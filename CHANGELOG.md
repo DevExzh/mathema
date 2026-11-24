@@ -90,13 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A `\color` switch in a `\left…\right` list stays in force across
   `\middle` to the end of the fence, as in TeX and KaTeX:
-  `\left( \color{red} a \atop b \middle| c \right)` left `c` uncolored.
+  `\left( \color{red} a \middle| c \right)` left `c` uncolored.
   The `\middle` delimiter itself keeps the default color (TeX and KaTeX
   color it). An infix command after nested color switches divides the
   whole list, as in TeX: `x \color{red} a \color{blue} b \over c` left `x`
   outside the fraction. The LaTeX writer keeps the `\left…\right` pair of
-  a barless fraction whose part holds a `\middle` inside a color, instead
-  of writing a `\binom` that does not read back.
+  a barless fraction whose part holds a `\middle` anywhere (inside a
+  color, a prescript's base or an array cell), instead of writing a
+  `\binom` that does not read back.
 - Infix fraction commands (`\over`, `\atop`, `\above`, `\choose`,
   `\brace`, `\brack`, `\…withdelims`) no longer leak an internal marker:
   `\operatorname{a \over b}` was `<mi>__infix_over__</mi>` in MathML and

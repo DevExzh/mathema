@@ -486,6 +486,33 @@ fn color_switch_continues_across_middle() {
     );
 }
 
+/// A `\middle` anywhere in a part of a barless fraction (a prescript's
+/// base, an array cell, a color) keeps the `\left…\right` pair: written as
+/// `\binom` it would read back outside its fence. Checked after
+/// normalization, which makes `{}^x a` a prescript, as the round-trip fuzz
+/// target does.
+#[test]
+fn middle_anywhere_in_a_barless_fraction_keeps_its_fence() {
+    use mathema::ast::normalize::normalize_compact_expr;
+    use mathema::writer::Writer;
+    use mathema::writer::latex::LatexWriter;
+    let config = Config::default();
+    let write = |input: &str| {
+        let mut parsed = LatexReader::parse_compact(input, &config).unwrap();
+        normalize_compact_expr(&mut parsed.expr).unwrap();
+        LatexWriter::write_compact(&parsed.expr, &config).unwrap()
+    };
+    for input in [
+        r"\left( ^x {\color{red} a \middle| b} \atop c \right)",
+        r"\left( ^x \textcolor{red}{a \middle| b} \atop c \right)",
+        r"\left( \color{red} \begin{matrix} a \middle| b \end{matrix} \atop c \right)",
+    ] {
+        let first = write(input);
+        assert!(first.starts_with(r"\left"), "{input}: {first}");
+        assert_eq!(write(&first), first, "unstable: {input}");
+    }
+}
+
 /// One infix command per list holds across nested color switches and a
 /// `\middle`, as in TeX and KaTeX.
 #[test]
