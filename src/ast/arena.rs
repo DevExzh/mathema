@@ -341,6 +341,12 @@ impl AstArena {
         &mut self.nodes[id.index()]
     }
 
+    /// Every node in the arena, reachable or not.
+    #[inline]
+    pub(crate) fn nodes(&self) -> &[CompactNode] {
+        &self.nodes
+    }
+
     /// Replace a node by an existing node, preserving its source metadata
     /// when normalization unwraps a group or elides an empty script field.
     pub(crate) fn replace_from(&mut self, destination: NodeId, source: NodeId) {

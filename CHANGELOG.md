@@ -71,9 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   text, and `∜x` is read.
 
 - **Security:** LaTeX output writes a color argument only for text that is a
-  color (a name, `#hex`, a numeric list, an xcolor mix). `\colorbox{\input{a}}{x}`
-  was written back verbatim, and `\verb` is no longer written, since it is
-  unsafe in the argument of a command.
+  color (a name, `#hex`, an xcolor expression). `\colorbox{\input{a}}{x}` was
+  written back verbatim.
+- **Security:** `UndefinedCommands::Keep` no longer writes any engine primitive
+  (except those that only typeset in place), any kernel command that defines,
+  hooks, loads or ends something, `\begin` and `\end`, or more package
+  commands live. It is still not a sandbox.
+- **Breaking (behavior):** a color that is none is dropped from LaTeX output: a
+  `\textcolor` or a box that only had that background becomes its content.
+  Braced names (`\colorbox{{red}}{x}`) count as none. `\verb` is written as
+  `\texttt` with character codes, since it is unsafe in an argument.
 - **Breaking (behavior):** characters that are LaTeX syntax are escaped
   everywhere in LaTeX output (large operators, numbers, delimiters, names).
   Control characters in text and function names are dropped, and

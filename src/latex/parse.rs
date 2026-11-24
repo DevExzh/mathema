@@ -75,8 +75,33 @@ fn trim_latex_input(input: &str) -> &str {
     &trimmed_start[..end]
 }
 
-/// Byte table of ASCII characters that are recognized as symbol tokens.
-const SYMBOL_BYTES: &[u8] = b"+-*/=<>!,;:.?'|@()[]";
+/// The ASCII characters read as symbols, with the class `classify_char` gives
+/// them.
+#[inline]
+fn is_symbol_byte(b: u8) -> bool {
+    matches!(
+        b,
+        b'+' | b'-'
+            | b'*'
+            | b'/'
+            | b'='
+            | b'<'
+            | b'>'
+            | b'!'
+            | b','
+            | b';'
+            | b':'
+            | b'.'
+            | b'?'
+            | b'\''
+            | b'|'
+            | b'@'
+            | b'('
+            | b')'
+            | b'['
+            | b']'
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Standalone helpers (stateless — no arena access needed)
@@ -250,19 +275,12 @@ fn is_nary_body_boundary(input: &str) -> bool {
 /// A bare character in the math parser would not reconstruct an ordinary
 /// symbol made by TeX's character primitive.
 pub(crate) const fn ascii_ordinary_needs_char(ch: char) -> bool {
-    if !ch.is_ascii() {
-        return false;
+    match ch {
+        // `is_symbol_byte` whose class is ordinary (see `classify_char`), the
+        // symbols with a control symbol, and the double quote.
+        '!' | '.' | ':' | '?' | '\'' | '@' | '#' | '$' | '%' | '&' | '"' => false,
+        _ => ch.is_ascii(),
     }
-    let mut i = 0;
-    while i < SYMBOL_BYTES.len() {
-        if SYMBOL_BYTES[i] == ch as u8 {
-            return !matches!(classify_char(ch), SymbolKind::Ordinary);
-        }
-        i += 1;
-    }
-    // The symbol writer already emits literal control symbols for these
-    // four, and the math reader accepts a double quote as an ordinary atom.
-    !matches!(ch, '#' | '$' | '%' | '&' | '"')
 }
 
 /// A single-glyph delimiter contributed by a supported package, such as
@@ -277,7 +295,7 @@ fn package_delimiter(name: &str) -> Option<char> {
     }
 }
 
-const fn classify_char(c: char) -> SymbolKind {
+fn classify_char(c: char) -> SymbolKind {
     match c {
         '+' | '-' | '*' => SymbolKind::BinaryOp,
         '/' => SymbolKind::BinaryOp,
@@ -288,8 +306,8 @@ const fn classify_char(c: char) -> SymbolKind {
         '|' => SymbolKind::Fence,
         '(' | '[' => SymbolKind::Open,
         ')' | ']' => SymbolKind::Close,
-        // All callers guard with SYMBOL_BYTES, so this arm is unreachable.
-        _ => unreachable!(),
+        // All callers guard with is_symbol_byte, so this arm is unreachable.
+        _ => unreachable!("classify_char called with non-symbol byte: {c:?}"),
     }
 }
 
@@ -1960,7 +1978,9 @@ enum UndefinedKind {
 
 impl UndefinedKind {
     fn of(spelling: &str) -> Self {
-        if crate::ast::undefined::is_dangerous_command(spelling) {
+        if crate::ast::undefined::is_dangerous_command(spelling)
+            && !crate::ast::undefined::is_context_command(spelling)
+        {
             Self::Dangerous
         } else if !matches!(
             super::preprocess::preprocess_cow(spelling),
@@ -3179,7 +3199,7 @@ impl LatexCompactParser {
                         .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
                 ))
             },
-            Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
+            Some(&b) if is_symbol_byte(b) => self.parse_symbol_char(input),
             Some(&b) if b.is_ascii_alphabetic() => self.parse_letter(input),
             // ~ is a non-breaking space in LaTeX
             Some(b'~') => Ok((
@@ -3192,18 +3212,8 @@ impl LatexCompactParser {
                 &input[1..],
                 self.arena.push_node(CompactNode::Row(NodeSpan::EMPTY)),
             )),
-            // A backtick is the opening quote ‘ and a double quote the closing
-            // quote glyph in TeX's math font (and in KaTeX).
-            Some(&quote @ (b'`' | b'"')) => {
-                let sid = self
-                    .arena
-                    .push_str(if quote == b'`' { "\u{2018}" } else { "\"" });
-                Ok((
-                    &input[1..],
-                    self.arena
-                        .push_node(CompactNode::Symbol(SymbolKind::Ordinary, sid)),
-                ))
-            },
+            Some(b'`') => Ok(self.parse_quote(input)),
+            Some(b'"') => Ok(self.parse_quote(input)),
             // Non-ASCII: math spaces → explicit widths, letters → identifiers,
             // other characters → symbols
             Some(&b) if b > 127 => {
@@ -3248,6 +3258,20 @@ impl LatexCompactParser {
         }
     }
 
+    /// A backtick is the opening quote ‘ and a double quote the closing quote
+    /// glyph in TeX's math font (and in KaTeX).
+    #[inline(never)]
+    fn parse_quote<'a>(&mut self, input: &'a str) -> (&'a str, NodeId) {
+        let glyph = if input.starts_with('`') {
+            "\u{2018}"
+        } else {
+            "\""
+        };
+        let sid = self.arena.push_str(glyph);
+        let node = CompactNode::Symbol(SymbolKind::Ordinary, sid);
+        (&input[1..], self.arena.push_node(node))
+    }
+
     /// Parse a braced group `{ ... }` into a Row (or single node).
     /// Also handles TeX infix fraction operators: `{a \over b}`, `{a \atop b}`,
     /// `{n \choose k}`, `{a \brace b}`, `{a \brack b}`.
@@ -3275,7 +3299,7 @@ impl LatexCompactParser {
     /// Parse a bracket group `[ ... ]` for optional arguments.
     ///
     /// Scans forward to the matching `]` (with brace-depth tracking) before
-    /// parsing content, so that `]` atoms inside `SYMBOL_BYTES` don't get
+    /// parsing content, so that `]` atoms inside `is_symbol_byte` don't get
     /// consumed as content by `parse_node_list`.
     fn parse_bracket_group<'a>(
         &mut self,
@@ -3344,7 +3368,7 @@ impl LatexCompactParser {
     /// Parse a symbol character: +, -, =, <, >, !, comma, semicolon, etc.
     ///
     /// Called only when byte dispatch already confirmed the first byte is in
-    /// `SYMBOL_BYTES`, so we consume the char directly instead of re-checking.
+    /// `is_symbol_byte`, so we consume the char directly instead of re-checking.
     #[inline]
     fn parse_symbol_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let c = input.as_bytes()[0] as char;
@@ -3809,7 +3833,7 @@ impl LatexCompactParser {
                 // producing unparseable output. Treat the whole \middle as
                 // unparseable and stop.
                 let symbol = if ch.is_ascii() {
-                    if !SYMBOL_BYTES.contains(&(ch as u8)) {
+                    if !is_symbol_byte(ch as u8) {
                         return Err(nom::Err::Error(nom::error::Error::new(
                             input,
                             nom::error::ErrorKind::Char,
@@ -4482,7 +4506,7 @@ impl LatexCompactParser {
                 let sid = self.arena.push_str(&input[..1]);
                 Ok((&input[1..], self.arena.push_node(CompactNode::Number(sid))))
             },
-            Some(&b) if SYMBOL_BYTES.contains(&b) => self.parse_symbol_char(input),
+            Some(&b) if is_symbol_byte(b) => self.parse_symbol_char(input),
             // `~` (a non-breaking space) is one token too: `\frac~x`.
             Some(&b) if !b.is_ascii() || b == b'~' => self.parse_atom(input),
             _ => Err(nom::Err::Error(nom::error::Error::new(

@@ -5059,7 +5059,7 @@ fn color_arguments_are_read_to_their_matching_brace() {
     // Balanced nesting parses; the braced name is not a color.
     for (input, expected) in [
         (r"\textcolor{{red}}{x}", "x"),
-        (r"\colorbox{{red}}{x}", r"\boxed{x}"),
+        (r"\colorbox{{red}}{x}", "x"),
     ] {
         let out = crate::convert(input, crate::Format::LaTeX, crate::Format::LaTeX).unwrap();
         assert_eq!(out, expected, "{input}");
@@ -5098,34 +5098,31 @@ fn xymatrix_label_with_multibyte_control_symbol_does_not_panic() {
 
 #[test]
 fn color_spec_ending_in_control_space_round_trips() {
-    // Such text is no color and is dropped. Fuzz-found: trimming the color spec `a\ ` to `a\` left a dangling
-    // backslash, so the written `\colorbox{a\}{J}` escaped its own closing
+    // Such text is no color and is dropped. Fuzz-found: trimming the color
+    // spec `a\ ` to `a\` left a dangling backslash, so the written `\colorbox{a\}{J}` escaped its own closing
     // brace and could not be read back.
     let config = Config::default();
     for (input, expected) in [
-        (r"\colorbox{a\ }J", r"\boxed{J}"),
-        (r"\colorbox[rgb]{a\ }J", r"\boxed{J}"),
-        (r"\colorbox{a!\ }J", r"\boxed{J}"),
+        (r"\colorbox{a\ }J", "J"),
+        (r"\colorbox[rgb]{a\ }J", "J"),
+        (r"\colorbox{a!\ }J", "J"),
         (r"\fcolorbox{a\ }{\ }J", r"\boxed{J}"),
-        ("\\colorbox{a\\\t}J", r"\boxed{J}"),
-        (r"\colorbox{a\\ }J", r"\boxed{J}"),
-        ("\\colorbox{a\\\u{3000}}J", r"\boxed{J}"),
+        ("\\colorbox{a\\\t}J", "J"),
+        (r"\colorbox{a\\ }J", "J"),
+        ("\\colorbox{a\\\u{3000}}J", "J"),
         (
             r"\begin{array}{c}\cellcolor{a\ }b\end{array}",
-            r"\begin{array}{c} \boxed{b} \end{array}",
+            r"\begin{array}{c} b \end{array}",
         ),
         (
             r"\begin{array}{c}\cellcolor[x]{a\ }b\end{array}",
-            r"\begin{array}{c} \boxed{b} \end{array}",
+            r"\begin{array}{c} b \end{array}",
         ),
         (
             r"\rowcolors{1}{a\ }{b}\begin{array}{c}b\\c\end{array}",
-            r"\begin{array}{c} \boxed{b} \\ \colorbox{b}{c} \end{array}",
+            r"\begin{array}{c} b \\ \colorbox{b}{c} \end{array}",
         ),
-        (
-            "\\colorbox{x\\colorbox{Zb%:\r\n[\u{c}1\\rm\t}*J\\\t}J",
-            r"\boxed{J}",
-        ),
+        ("\\colorbox{x\\colorbox{Zb%:\r\n[\u{c}1\\rm\t}*J\\\t}J", "J"),
     ] {
         let mut r1 = LatexReader::parse_compact(input, &config).unwrap();
         normalize_compact_expr(&mut r1.expr).unwrap();

@@ -22,14 +22,17 @@
 //! letters, `fooa`: just as inert, but lossy.)
 //!
 //! [`UndefinedCommands::Keep`] writes the command back live (`\foo{a}`) for
-//! output compiled where it is defined. That mode is best effort, not safe
-//! for untrusted input compiled with file, Lua or shell access: a command
-//! unknown here may be a package's file reader or code runner. As defence
-//! in depth only, two rules hold in every mode:
+//! output compiled where it is defined. **That mode is not a sandbox**: it is
+//! not safe for untrusted input compiled with file, Lua or shell access, since
+//! a command unknown here may be a package's file reader or code runner. As
+//! defence in depth only, two rules hold in every mode:
 //!
-//! - A name on a fixed list of dangerous primitives (in this module's source)
-//!   (`\input`, `\write`, `\catcode`, `\usepackage`, `\directlua`, …) is
-//!   never written live in any mode: every writer spells it as the inert
+//! - A name on a fixed list is never written live in any mode: the primitives
+//!   of every TeX engine that do more than typeset in place, the commands of
+//!   the LaTeX kernel that define, hook, load, read, write or end something
+//!   (`\begin` and `\end` included), and known package commands that read or
+//!   write files or run code (`\input`, `\pdfliteral`, `\directlua`,
+//!   `\usepackage`, `\AtBeginDocument`, `\CatchFileDef`, …): every writer spells it as the inert
 //!   text above, and the LaTeX reader reports it as not allowed. The list
 //!   cannot be complete, so it is not a guarantee.
 //! - A writer writes the node live, and the MathML reader builds it from an
@@ -59,113 +62,19 @@ pub(crate) fn is_control_word(spelling: &str) -> bool {
 
 /// Whether `spelling` names a known TeX, LaTeX or package command that is
 /// never written back as a live command, even with
-/// [`UndefinedCommands::Keep`](crate::UndefinedCommands::Keep): it reads or
-/// writes files, runs Lua or shell code, changes how TeX reads its input,
-/// defines macros, loads code, or ends or loops the run. Defence in depth
-/// only: the list cannot be complete.
+/// [`UndefinedCommands::Keep`](crate::UndefinedCommands::Keep): an engine
+/// primitive that does more than typeset in place, a kernel command that
+/// defines, hooks, loads, reads, writes or ends something (every `\begin` and
+/// `\end` too, so no document environment can be opened or closed), or a
+/// package command that reads or writes files or runs code. Defence in depth
+/// only: the lists cannot be complete, and the mode is not a sandbox.
 pub(crate) fn is_dangerous_command(spelling: &str) -> bool {
-    matches!(
-        spelling.strip_prefix('\\').unwrap_or(spelling),
-        "input"
-            | "include"
-            | "InputIfFileExists"
-            | "IfFileExists"
-            | "openin"
-            | "openout"
-            | "closein"
-            | "closeout"
-            | "read"
-            | "readline"
-            | "write"
-            | "immediate"
-            | "message"
-            | "special"
-            | "catcode"
-            | "lccode"
-            | "uccode"
-            | "mathcode"
-            | "csname"
-            | "endcsname"
-            | "expandafter"
-            | "usepackage"
-            | "RequirePackage"
-            | "documentclass"
-            | "directlua"
-            | "latelua"
-            | "luaexec"
-            | "ShellEscape"
-            | "pdfprimitive"
-            | "primitive"
-            | "scantokens"
-            | "everyjob"
-            | "everymath"
-            | "everydisplay"
-            | "everypar"
-            | "def"
-            | "gdef"
-            | "edef"
-            | "xdef"
-            | "let"
-            | "futurelet"
-            | "global"
-            | "outer"
-            | "long"
-            | "newcommand"
-            | "renewcommand"
-            | "providecommand"
-            | "DeclareRobustCommand"
-            | "newenvironment"
-            | "renewenvironment"
-            | "NewDocumentCommand"
-            | "RenewDocumentCommand"
-            | "ProvideDocumentCommand"
-            | "DeclareDocumentCommand"
-            | "NewDocumentEnvironment"
-            | "chardef"
-            | "mathchardef"
-            | "countdef"
-            | "toksdef"
-            | "toks"
-            | "newwrite"
-            | "newread"
-            | "lstinputlisting"
-            | "verbatiminput"
-            | "VerbatimInput"
-            | "inputminted"
-            | "pdffiledump"
-            | "pdfmdfivesum"
-            | "filesize"
-            | "pdffilesize"
-            | "pdffilemoddate"
-            | "font"
-            | "subfile"
-            | "subimport"
-            | "import"
-            | "includepdf"
-            | "includegraphics"
-            | "usetikzlibrary"
-            | "usepgflibrary"
-            | "LoadClass"
-            | "includeonly"
-            | "luadirect"
-            | "luacode"
-            | "ExplSyntaxOn"
-            | "ExplSyntaxOff"
-            | "makeatletter"
-            | "makeatother"
-            | "loop"
-            | "repeat"
-            | "shipout"
-            | "output"
-            | "endinput"
-            | "errmessage"
-            | "batchmode"
-            | "nonstopmode"
-            | "scrollmode"
-            | "errorstopmode"
-            | "dump"
-            | "jobname"
-    )
+    let name = spelling.strip_prefix('\\').unwrap_or(spelling);
+    super::dangerous::DANGEROUS.contains(name)
+        // Families that grow with every engine release.
+        || ["pdf", "luatex", "XeTeX"]
+            .iter()
+            .any(|prefix| name.len() > prefix.len() && name.starts_with(prefix))
 }
 
 /// Whether an undefined command spelled `spelling` may be written as a live
@@ -238,8 +147,41 @@ mod tests {
     }
 
     #[test]
+    fn dangerous_commands() {
+        for name in [
+            "input",
+            "write",
+            "pdfcatalog",
+            "pdfliteral",
+            "pdfximage",
+            "pdfobj",
+            "CatchFileDef",
+            "filedump",
+            "everyeof",
+            "halign",
+            "setbox",
+            "XeTeXinterchartoks",
+            "XeTeXnew",
+            "AtBeginDocument",
+            "directlua",
+            "begin",
+            "end",
+            "document",
+            "pdfnewprimitive",
+        ] {
+            assert!(is_dangerous_command(name), "{name}");
+        }
+        for name in [
+            "foo", "pdf", "vcenter", "penalty", "Set", "norm", "ref", "cite",
+        ] {
+            assert!(!is_dangerous_command(name), "{name}");
+        }
+    }
+
+    #[test]
     fn context_commands() {
-        assert!(is_context_command(r"\end"));
+        // Reported as misplaced, but never live.
+        assert!(is_context_command(r"\end") && is_dangerous_command(r"\end"));
         assert!(!is_context_command(r"\foo"));
     }
 }

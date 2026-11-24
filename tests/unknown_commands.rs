@@ -280,7 +280,7 @@ fn context_commands_out_of_context_are_misplaced() {
         (
             r"x\end{matrix}",
             r"misplaced control sequence \end",
-            r"x{\end{matrix}}",
+            r"x\mathord{\text{\textbackslash{}end}\{matrix\}}",
         ),
         (
             r"x\multicolumn{1}{c}{y}",
@@ -291,7 +291,7 @@ fn context_commands_out_of_context_are_misplaced() {
         (
             r"\xymatrix{\end>}",
             r"misplaced control sequence \end",
-            r"\begin{array}{c} {\end}> \end{array}",
+            r"\begin{array}{c} \mathord{\text{\textbackslash{}end}}> \end{array}",
         ),
     ] {
         let parsed = from_latex(input).unwrap();
@@ -783,4 +783,52 @@ fn an_empty_nary_body_before_a_trailing_script_keeps_its_group() {
         r"\mathord{\text{\textbackslash{}foo}\{ {{}^{\prime}\int}{} {{}^{\prime}\}}}"
     );
     assert_eq!(latex_default(&first), first, "{input} is not stable");
+}
+
+/// `UndefinedCommands::Keep` is no sandbox, but these never come out live.
+#[test]
+fn dangerous_commands_are_never_live() {
+    let keep = Config::default().with_undefined_commands(mathema::UndefinedCommands::Keep);
+    for command in [
+        "pdfcatalog",
+        "pdfliteral",
+        "pdfximage",
+        "pdfobj",
+        "CatchFileDef",
+        "filedump",
+        "everyeof",
+        "halign",
+        "setbox",
+        "XeTeXinterchartoks",
+        "AtBeginDocument",
+        "AddToHook",
+        "openout",
+        "luaescapestring",
+        "tracingonline",
+        "endinput",
+        "newread",
+    ] {
+        let read = mathema::from_latex(&format!(r"x\{command}{{a}}")).unwrap();
+        assert_eq!(
+            read.to_latex_with(&keep).unwrap(),
+            format!(r"x\mathord{{\text{{\textbackslash{{}}{command}}}\{{a\}}}}")
+        );
+    }
+    for input in [
+        r"x\end{document}",
+        r"x\end{filecontents}",
+        r"x\begin{document}",
+        r"x\begin{verbatim}",
+    ] {
+        if let Ok(read) = mathema::from_latex(input) {
+            let latex = read.to_latex_with(&keep).unwrap();
+            assert!(
+                !latex.contains(r"\end{") && !latex.contains(r"\begin{"),
+                "{latex}"
+            );
+        }
+    }
+    // A command of no list is kept.
+    let read = mathema::from_latex(r"\mycommand{a}").unwrap();
+    assert_eq!(read.to_latex_with(&keep).unwrap(), r"\mycommand{a}");
 }

@@ -7,7 +7,9 @@ use crate::unicode::symbols::{
     latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
 };
 use crate::writer::Writer;
+use std::collections::HashSet;
 
+mod colors;
 mod escape;
 use escape::{
     Place, Spelling, ascii_needs_escape, is_no_token, needs_escape, write_char, write_char_code,
@@ -23,28 +25,127 @@ impl Writer for LatexWriter {
     }
 
     fn write_compact(expr: &CompactExpr, config: &Config) -> Result<String> {
-        Self::write_compact_with_diagnostics(expr, config).map(|(latex, _)| latex)
+        write_expr(expr, config, LossReport::default()).map(|(latex, _)| latex)
     }
 
     fn write_compact_with_diagnostics(
         expr: &CompactExpr,
         config: &Config,
     ) -> Result<(String, Vec<Diagnostic>)> {
-        let mut buf = LatexBuffer {
-            text: String::with_capacity(256),
-            in_operator_name: false,
-            keep_undefined: config.undefined_commands == crate::UndefinedCommands::Keep,
-            command_ends: Vec::new(),
-            diagnostics: Vec::new(),
+        let (latex, report) = write_expr(expr, config, LossReport::collecting())?;
+        Ok((latex, report.finish()))
+    }
+}
+
+fn write_expr(
+    expr: &CompactExpr,
+    config: &Config,
+    mut report: LossReport,
+) -> Result<(String, LossReport)> {
+    let without_colors = colors::without_dropped_colors(expr, &mut report);
+    let expr = without_colors.as_ref().unwrap_or(expr);
+    let mut buf = LatexBuffer {
+        text: String::with_capacity(256),
+        in_operator_name: false,
+        keep_undefined: config.undefined_commands == crate::UndefinedCommands::Keep,
+        command_ends: Vec::new(),
+        report,
+    };
+    write_sequence(
+        &mut buf,
+        &expr.arena,
+        expr.arena.children(expr.roots),
+        false,
+    );
+    let report = std::mem::take(&mut buf.report);
+    Ok((buf.finish(), report))
+}
+
+/// What the output does not keep, when the caller asked for it. Reports are
+/// bounded: one per message, [`LossReport::LIMIT`] messages, and the number of
+/// the rest.
+#[derive(Default)]
+struct LossReport(Option<Box<Losses>>);
+
+#[derive(Default)]
+struct Losses {
+    diagnostics: Vec<Diagnostic>,
+    messages: HashSet<String>,
+    rest: usize,
+}
+
+impl LossReport {
+    const LIMIT: usize = 100;
+    /// How many characters of a color are quoted.
+    const QUOTED: usize = 40;
+
+    fn collecting() -> Self {
+        Self(Some(Box::default()))
+    }
+
+    fn is_collecting(&self) -> bool {
+        self.0.is_some()
+    }
+
+    fn add(&mut self, message: impl FnOnce() -> String) {
+        let Some(losses) = self.0.as_deref_mut() else {
+            return;
         };
-        write_sequence(
-            &mut buf,
-            &expr.arena,
-            expr.arena.children(expr.roots),
-            false,
-        );
-        let diagnostics = std::mem::take(&mut buf.diagnostics);
-        Ok((buf.finish(), diagnostics))
+        let message = message();
+        if losses.messages.contains(&message) {
+            return;
+        }
+        if losses.diagnostics.len() >= Self::LIMIT {
+            losses.rest += 1;
+            return;
+        }
+        losses.messages.insert(message.clone());
+        losses.diagnostics.push(warning(message));
+    }
+
+    /// Text that is no color was dropped.
+    fn color(&mut self, spec: &str) {
+        if spec.is_empty() {
+            return;
+        }
+        self.add(|| {
+            let quoted: String = spec.chars().take(Self::QUOTED).collect();
+            let more = if quoted.len() < spec.len() { "…" } else { "" };
+            format!("{quoted:?}{more} is not a color; it was dropped")
+        });
+    }
+
+    /// A character that cannot be written in text was dropped.
+    #[cold]
+    fn char(&mut self, ch: char) {
+        self.add(|| {
+            format!(
+                "the control character U+{:04X} cannot be written in text; it was dropped",
+                ch as u32
+            )
+        });
+    }
+
+    fn finish(self) -> Vec<Diagnostic> {
+        let Some(losses) = self.0 else {
+            return Vec::new();
+        };
+        let mut diagnostics = losses.diagnostics;
+        if losses.rest > 0 {
+            diagnostics.push(warning(format!(
+                "{} more colors or characters were dropped",
+                losses.rest
+            )));
+        }
+        diagnostics
+    }
+}
+
+fn warning(message: String) -> Diagnostic {
+    Diagnostic {
+        kind: DiagnosticKind::Warning,
+        message,
+        span: None,
     }
 }
 
@@ -61,7 +162,7 @@ struct LatexBuffer {
     /// another argument of the command, and a letter would extend its name.
     command_ends: Vec<(usize, bool)>,
     /// What the output does not keep.
-    diagnostics: Vec<Diagnostic>,
+    report: LossReport,
 }
 
 impl LatexBuffer {
@@ -74,31 +175,6 @@ impl LatexBuffer {
                 *end += text.len();
             }
         }
-    }
-
-    /// Report content that is not written, once per kind of loss.
-    #[cold]
-    fn report_loss(&mut self, message: String) {
-        if !self
-            .diagnostics
-            .iter()
-            .any(|known| known.message == message)
-        {
-            self.diagnostics.push(Diagnostic {
-                kind: DiagnosticKind::Warning,
-                message,
-                span: None,
-            });
-        }
-    }
-
-    /// Report a character that cannot be written in text.
-    #[cold]
-    fn report_dropped_char(&mut self, ch: char) {
-        self.report_loss(format!(
-            "the control character U+{:04X} cannot be written in text; it was dropped",
-            ch as u32
-        ));
     }
 
     /// Cut the output back to `len` bytes.
@@ -495,7 +571,7 @@ fn adjacent_number_nodes_need_separator(
 fn ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
     matches!(
         *arena.node(id),
-        CompactNode::PreScripts { .. } | CompactNode::Nary { .. } | CompactNode::Color { .. }
+        CompactNode::PreScripts { .. } | CompactNode::Nary { .. }
     ) && output_ends_with_empty_body_nary(arena, id)
 }
 
@@ -509,16 +585,6 @@ fn output_ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
         CompactNode::Nary { op, body, .. } => {
             (is_bare_large_op(arena, body) || output_ends_with_empty_body_nary(arena, body))
                 && nary_op_to_latex(op).is_none()
-        },
-        // A color that cannot be written leaves only its content.
-        CompactNode::Color { color, content } if latex_color(arena.str_val(color)).is_none() => {
-            let last = match *arena.node(content) {
-                CompactNode::Row(span) => arena.children(span).last().copied(),
-                _ => Some(content),
-            };
-            last.is_some_and(|last| {
-                is_bare_large_op(arena, last) || output_ends_with_empty_body_nary(arena, last)
-            })
         },
         _ => false,
     }
@@ -598,27 +664,6 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
     match *arena.node(base) {
         CompactNode::Operator { .. } | CompactNode::StructuredOperator { .. } => {
             write_node(buf, arena, base)
-        },
-        CompactNode::Color { color, content }
-            if latex_color(arena.str_val(color)).is_none()
-                && matches!(
-                    *arena.node(content),
-                    CompactNode::Operator { .. }
-                        | CompactNode::StructuredOperator { .. }
-                        | CompactNode::MathAtom {
-                            atom_type: MathAtomType::Op,
-                            ..
-                        }
-                ) =>
-        {
-            // An invalid color wrapper is transparent in the LaTeX writer.
-            // Keep the resulting operator an explicit ordinary atom, with the
-            // outer group that write_script_base uses for this node shape.
-            // This prevents the next parser pass from inferring a new
-            // MathAtom::Ord boundary around a grouped operator.
-            buf.push_str("{\\mathord{");
-            write_node(buf, arena, content);
-            buf.push_str("}}");
         },
         // Without limits and body, such an operator is only its `\mathop`.
         CompactNode::Nary {
@@ -1040,10 +1085,6 @@ fn node_starts_with_ascii_letter(arena: &AstArena, id: NodeId) -> bool {
         // if the sizing command is dropped (non-delimiter content), so the
         // wrapper itself can start with a letter.
         CompactNode::Scaled { content, .. } => node_starts_with_ascii_letter(arena, content),
-        // A color that cannot be written leaves only its content.
-        CompactNode::Color { color, content } if latex_color(arena.str_val(color)).is_none() => {
-            node_starts_with_ascii_letter(arena, content)
-        },
         _ => false,
     }
 }
@@ -1162,48 +1203,6 @@ fn scalar_negation_command(arena: &AstArena, children: &[NodeId]) -> Option<&'st
     match ch {
         '∫' => Some("intop"),
         _ => nary_op_to_latex(ch),
-    }
-}
-
-enum ColorArgument<'a> {
-    Html(&'a str),
-    Named(&'a str),
-}
-
-/// The color as an xcolor argument. Text that is no color (see
-/// [`escape::is_color`]) is `None`, which leaves only the content, when it
-/// holds TeX syntax, and an empty argument otherwise: that keeps the group the
-/// color makes, with nothing TeX could expand. A hexadecimal RGB color has a
-/// separate, lossless xcolor spelling.
-fn latex_color(name: &str) -> Option<ColorArgument<'_>> {
-    if let Some(hex) = name.strip_prefix('#')
-        && hex.len() == 6
-        && hex.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        Some(ColorArgument::Html(hex))
-    } else if name.contains(escape::is_tex_special) {
-        None
-    } else if escape::is_color(name) {
-        Some(ColorArgument::Named(name))
-    } else {
-        Some(ColorArgument::Named(""))
-    }
-}
-
-/// The color of a box as the argument of `\colorbox`/`\fcolorbox`, `""` for
-/// none.
-fn box_color_argument<'a>(buf: &mut LatexBuffer, spec: &'a str) -> &'a str {
-    if spec.is_empty() || escape::is_color(spec) {
-        return spec;
-    }
-    report_dropped_color(buf, spec);
-    ""
-}
-
-#[cold]
-fn report_dropped_color(buf: &mut LatexBuffer, spec: &str) {
-    if !spec.is_empty() {
-        buf.report_loss(format!("{spec:?} is not a color; it was dropped"));
     }
 }
 
@@ -1902,8 +1901,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         } => {
             // A spec that would not read back as the same braced argument
             // is dropped, so the box keeps whichever color still reads back.
-            let bg = box_color_argument(buf, arena.str_val(bg_color));
-            let border = box_color_argument(buf, arena.str_val(border_color));
+            let [bg, border] = [bg_color, border_color].map(|spec| {
+                let spec = arena.str_val(spec);
+                let color = colors::box_color(spec);
+                if color.is_empty() {
+                    buf.report.color(spec);
+                }
+                color
+            });
             if !bg.is_empty() && !border.is_empty() {
                 // \fcolorbox{border}{bg}{content}
                 buf.push_str("\\fcolorbox{");
@@ -2006,24 +2011,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         },
 
         CompactNode::Color { color, content } => {
-            match latex_color(arena.str_val(color)) {
-                Some(ColorArgument::Html(hex)) => {
-                    buf.push_str(r"\textcolor[HTML]{");
-                    buf.push_str(hex);
-                },
-                Some(ColorArgument::Named(name)) => {
-                    if name.is_empty() {
-                        report_dropped_color(buf, arena.str_val(color));
-                    }
-                    buf.push_str(r"\textcolor{");
-                    buf.push_str(name);
-                },
-                None => {
-                    report_dropped_color(buf, arena.str_val(color));
-                    write_wrapped_content(buf, arena, content);
-                    return;
-                },
-            }
+            // `without_dropped_colors` left only colors that can be written.
+            let (model, spec) = colors::text_color(arena.str_val(color)).unwrap_or_default();
+            buf.push_str(r"\textcolor");
+            buf.push_str(model);
+            buf.push('{');
+            buf.push_str(spec);
             buf.push_str("}{");
             write_wrapped_content(buf, arena, content);
             buf.push('}');
@@ -2357,7 +2350,7 @@ fn write_operator_name_content(buf: &mut LatexBuffer, name: &str) {
     }
     for ch in name.chars() {
         if !write_char(buf, ch, Place::Name) {
-            buf.report_dropped_char(ch);
+            buf.report.char(ch);
         }
     }
 }
@@ -2934,15 +2927,6 @@ fn is_bare_space_prescript_base(arena: &AstArena, base: NodeId) -> bool {
 
 /// Write the (non-empty) body of an n-ary operator, after its separator.
 fn write_nary_body(buf: &mut LatexBuffer, arena: &AstArena, body: NodeId) {
-    // An unwritable color is transparent in the output, so choose the body's
-    // spelling from what the reader will see: `\int {c}` with a dropped color
-    // would reparse as a bare `c` body, and a number keeps its braces.
-    let mut body = body;
-    while let CompactNode::Color { color, content } = *arena.node(body)
-        && latex_color(arena.str_val(color)).is_none()
-    {
-        body = content;
-    }
     if let CompactNode::PreScripts { base, .. } = *arena.node(body)
         && has_visible_prescripts(arena, body)
         && !is_bare_space_prescript_base(arena, base)
@@ -3382,7 +3366,7 @@ fn write_text_content(buf: &mut LatexBuffer, text: &str, monospace: bool) {
         {
             write_char_code(buf, ch, "{}");
         } else if !write_char(buf, ch, place) {
-            buf.report_dropped_char(ch);
+            buf.report.char(ch);
             continue;
         }
         previous = Some(ch);
@@ -3417,15 +3401,10 @@ fn write_script_base(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
 }
 
 /// Choose braces for what the script will actually emit. Rows containing
-/// one significant child and colors the writer cannot spell are transparent.
+/// one significant child are transparent.
 fn written_script_content(arena: &AstArena, mut id: NodeId) -> NodeId {
     loop {
         id = match *arena.node(id) {
-            CompactNode::Color { color, content }
-                if latex_color(arena.str_val(color)).is_none() =>
-            {
-                content
-            },
             CompactNode::Subscript { base, .. }
             | CompactNode::Superscript { base, .. }
             | CompactNode::SubSup { base, .. }
@@ -3597,9 +3576,6 @@ fn is_empty_row(arena: &AstArena, id: NodeId) -> bool {
 fn is_empty_script_base(arena: &AstArena, id: NodeId) -> bool {
     is_empty_row(arena, id)
         || matches!(*arena.node(id), CompactNode::Space(width) if width.num == 0)
-        || matches!(*arena.node(id), CompactNode::Color { color, content }
-            if latex_color(arena.str_val(color)).is_none()
-                && is_effectively_empty_arg(arena, content))
 }
 
 /// Check if a Nary body is effectively empty (empty Row, zero-width Space, or
@@ -3754,13 +3730,13 @@ mod tests {
             LatexWriter::write(&expr, &Config::default()).unwrap()
         };
         for (bg, border, want) in [
-            (Some(r"a\"), None, r"\boxed{x}"),
-            (Some("a}"), None, r"\boxed{x}"),
-            (Some("{a"), None, r"\boxed{x}"),
-            (Some("a%b"), None, r"\boxed{x}"),
-            (Some(r"a\ "), None, r"\boxed{x}"),
-            (Some(r"a\%"), None, r"\boxed{x}"),
-            (Some("{red}"), None, r"\boxed{x}"),
+            (Some(r"a\"), None, "x"),
+            (Some("a}"), None, "x"),
+            (Some("{a"), None, "x"),
+            (Some("a%b"), None, "x"),
+            (Some(r"a\ "), None, "x"),
+            (Some(r"a\%"), None, "x"),
+            (Some("{red}"), None, "x"),
             (Some("red"), Some(r"b\"), r"\colorbox{red}{x}"),
             (Some(r"r\"), Some("blue"), r"\boxed{x}"),
             (Some("red"), Some("blue"), r"\fcolorbox{blue}{red}{x}"),
@@ -3772,17 +3748,17 @@ mod tests {
             (Some("rgb(1, 2, 3)"), None, r"\colorbox{rgb(1, 2, 3)}{x}"),
             (Some(r"\input{pwn}"), Some("red"), r"\boxed{x}"),
             (Some("red"), Some(r"\write18{ls}"), r"\colorbox{red}{x}"),
-            (Some("^^5cinput"), None, r"\boxed{x}"),
-            (Some("#1"), None, r"\boxed{x}"),
-            (Some("red\n\nblue"), None, r"\boxed{x}"),
-            (Some(r"\def\ "), None, r"\boxed{x}"),
-            (Some(r"\newcommand\left"), None, r"\boxed{x}"),
+            (Some("^^5cinput"), None, "x"),
+            (Some("#1"), None, "x"),
+            (Some("red\n\nblue"), None, "x"),
+            (Some(r"\def\ "), None, "x"),
+            (Some(r"\newcommand\left"), None, "x"),
             (Some(r"\verb|%"), Some("red"), r"\boxed{x}"),
             (Some("red"), Some(r"\verb|%"), r"\colorbox{red}{x}"),
-            (Some(r"\global"), None, r"\boxed{x}"),
-            (Some("\\\u{e9}"), None, r"\boxed{x}"),
-            (Some("a\\\u{e9}\\"), None, r"\boxed{x}"),
-            (Some(r"\defx"), None, r"\boxed{x}"),
+            (Some(r"\global"), None, "x"),
+            (Some("\\\u{e9}"), None, "x"),
+            (Some("a\\\u{e9}\\"), None, "x"),
+            (Some(r"\defx"), None, "x"),
         ] {
             let out = boxed(bg, border);
             assert_eq!(out, want, "{bg:?} {border:?}");

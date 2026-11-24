@@ -498,21 +498,15 @@ fn color_arguments_are_inert() {
             bg_color: Some(bg.into()),
             border_color: border.map(String::from),
         };
-        assert_eq!(write(vec![boxed(spec, None)]), r"\boxed{x}");
+        // A background alone draws no frame.
+        assert_eq!(write(vec![boxed(spec, None)]), "x");
         assert_eq!(write(vec![boxed("red", Some(spec))]), r"\colorbox{red}{x}");
         assert_eq!(write(vec![boxed(spec, Some("red"))]), r"\boxed{x}");
         let color = MathNode::Color {
             color: spec.into(),
             content: bx(id("x")),
         };
-        // Without the color, the group it makes is kept where the spec is not
-        // TeX syntax.
-        let expected = if spec.starts_with("red") {
-            r"\textcolor{}{x}"
-        } else {
-            "x"
-        };
-        assert_eq!(write(vec![color]), expected);
+        assert_eq!(write(vec![color]), "x");
     }
     for input in [
         r"\colorbox{\input{pwn}}{x}",
@@ -540,6 +534,83 @@ fn color_arguments_are_inert() {
         .unwrap();
     assert_eq!(latex, r"\fcolorbox{red}{#ff0000}{x}");
     assert!(lost.is_empty());
+}
+
+/// What a dropped color leaves is written as if the color had never been
+/// there, and reads back that way.
+#[test]
+fn dropped_colors_leave_a_stable_expression() {
+    for (input, latex) in [
+        (r"\color{}\int\\ x", r"\int{}\\ x"),
+        (r"1\textcolor{a=b}{2}3", "123"),
+        (r"\alpha\textcolor{é}{x}", r"\alpha x"),
+        (r"a\textcolor{$}{b+}c", "ab+ c"),
+        (r"x^\textcolor{a=b}{22}", r"x^{22}"),
+        (r"\textcolor{a=b}{\lim}_x", r"{\mathord{\lim}}_x"),
+        (
+            r"\frac{\textcolor{a=b}{x}}{\colorbox{a=b}{y}}",
+            r"\frac{x}{y}",
+        ),
+        (
+            r"\textcolor{a=b}{\textcolor{red}{x}\textcolor{=}{y}}z",
+            r"\textcolor{red}{x}yz",
+        ),
+        (r"\textcolor{a=b}{\scriptstyle x}y", r"{\scriptstyle x}y"),
+        (
+            r"\begin{array}{c}\cellcolor{a=b}x\end{array}",
+            r"\begin{array}{c} x \end{array}",
+        ),
+        (r"\colorbox{my_c}{x}", r"\colorbox{my_c}{x}"),
+        (r"\colorbox{red!!+}{x}", r"\colorbox{red!!+}{x}"),
+    ] {
+        let read = mathema::from_latex(input).unwrap();
+        assert_eq!(read.to_latex().unwrap(), latex, "{input}");
+        assert_eq!(reread(latex).to_latex().unwrap(), latex, "{input}");
+    }
+}
+
+#[test]
+fn loss_reports_are_bounded() {
+    let colors = (0..1000)
+        .map(|i| MathNode::Color {
+            color: format!("={i}{}", "x".repeat(500)),
+            content: bx(id("x")),
+        })
+        .collect();
+    let compact = mathema::CompactExpr::from_math_expr(&expr(colors)).unwrap();
+    let (latex, lost) =
+        LatexWriter::write_compact_with_diagnostics(&compact, &Config::default()).unwrap();
+    assert_eq!(latex, "x".repeat(1000));
+    assert_eq!(lost.len(), 101);
+    assert!(lost.iter().all(|d| d.message.len() < 120), "{lost:?}");
+    assert!(lost[100].message.starts_with("900 more"), "{:?}", lost[100]);
+    // The same loss is reported once.
+    let text = MathNode::Text(TextStyle::Normal, "\0".repeat(50));
+    let compact = mathema::CompactExpr::from_math_expr(&expr(vec![text])).unwrap();
+    let (_, lost) =
+        LatexWriter::write_compact_with_diagnostics(&compact, &Config::default()).unwrap();
+    assert_eq!(lost.len(), 1);
+}
+
+#[test]
+fn apostrophes_are_not_two_superscripts() {
+    for (nodes, latex) in [
+        (vec![MathNode::Number("5''".into())], r"5\char`'{}\char`'"),
+        (
+            vec![
+                sym(SymbolKind::Ordinary, "'"),
+                sym(SymbolKind::Ordinary, "'"),
+            ],
+            r"\char`'{}\char`'",
+        ),
+        (
+            vec![fenced("''", "")],
+            r"\left. \mathopen{\char`'{}\char`'}x \right.",
+        ),
+    ] {
+        assert_eq!(write(nodes), latex);
+        assert_eq!(reread(latex).to_latex().unwrap(), latex);
+    }
 }
 
 #[test]

@@ -243,6 +243,10 @@ pub(super) fn write_char_token(buf: &mut String, ch: char) {
         write_char_code(buf, ch, " ");
         return;
     }
+    // TeX's math code of `'` makes it a prime: two are two superscripts.
+    if ch == '\'' && buf.ends_with(r"\char`'") {
+        buf.push_str("{}");
+    }
     buf.push_str(r"\char`");
     if is_tex_special(ch) {
         buf.push('\\');
@@ -255,24 +259,6 @@ pub(super) fn write_char_code(buf: &mut String, ch: char, terminator: &str) {
     buf.push_str(r"\char");
     buf.push_str(&(ch as u32).to_string());
     buf.push_str(terminator);
-}
-
-/// Whether a color may be written in a color argument: names, `#hex`, numeric
-/// lists and `!` mixes. The argument is expanded and parsed by TeX, so
-/// anything else (a command, `^^5c`, a parameter, a blank line) could do more
-/// than name a color.
-pub(super) fn is_color(spec: &str) -> bool {
-    if let Some(hex) = spec.strip_prefix('#') {
-        return matches!(hex.len(), 3 | 4 | 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit());
-    }
-    !spec.is_empty()
-        && spec.bytes().all(|b| {
-            b.is_ascii_alphanumeric()
-                || matches!(
-                    b,
-                    b'!' | b'.' | b',' | b'-' | b':' | b';' | b'(' | b')' | b' '
-                )
-        })
 }
 
 #[cfg(test)]
@@ -346,52 +332,6 @@ mod tests {
                     || TABLE.iter().any(|(chars, _)| chars.contains(ch)),
                 "{ch:?}"
             );
-        }
-    }
-
-    #[test]
-    fn colors_are_allowlisted() {
-        for color in [
-            "red",
-            "Dark Blue",
-            "#f00",
-            "#ff0000",
-            "#FF000080",
-            "red!50",
-            "red!50!blue",
-            "-red",
-            ".",
-            "0.5,0.5,0",
-            "rgb(1,2,3)",
-            "rgb:red,1;blue,2",
-        ] {
-            assert!(is_color(color), "{color}");
-        }
-        for color in [
-            "",
-            r"\input{pwn}",
-            r"\write18{ls}",
-            "^^5cinput",
-            "#1",
-            "#12",
-            "a#123",
-            "#gggggg",
-            "a\n\nb",
-            "a\tb",
-            "a%",
-            "a~",
-            "$x$",
-            "a&b",
-            "{red}",
-            "}",
-            "a_b",
-            "é",
-            "\0",
-            "a\u{A0}b",
-            "a=b",
-            "@x",
-        ] {
-            assert!(!is_color(color), "{color}");
         }
     }
 }

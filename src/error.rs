@@ -290,7 +290,7 @@ pub enum UndefinedCommands {
     #[default]
     Escape,
     /// Write it back as the live command (`\foo{a}`), for output compiled
-    /// where the command is defined. Best effort only: dangerous primitives
+    /// where the command is defined. Not a sandbox: dangerous commands
     /// on a fixed list (see [`crate::ast::undefined`]) are still escaped, but
     /// that list cannot be complete, so this mode is not safe for untrusted
     /// input compiled with file, Lua or shell access.

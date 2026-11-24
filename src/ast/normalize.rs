@@ -22,12 +22,16 @@ pub fn normalize_expr(expr: &mut MathExpr) {
 /// Every nested layer of such colors is peeled.
 fn push_row_child(children: &mut Vec<MathNode>, mut node: MathNode) {
     let mut peeled = false;
-    while let MathNode::Color { color, content } = node {
-        if !is_unwritable_color(&color) {
-            node = MathNode::Color { color, content };
-            break;
-        }
-        node = *content;
+    loop {
+        node = match node {
+            MathNode::Color { color, content } if is_unwritable_color(&color) => *content,
+            MathNode::Boxed {
+                content,
+                bg_color: Some(color),
+                border_color: None,
+            } if is_unwritable_background(&color) => *content,
+            _ => break,
+        };
         peeled = true;
     }
     match node {
@@ -770,9 +774,7 @@ fn normalize_span_keeping_breaks(
     let mut splayed: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in &flattened {
         let mut node_id = id;
-        while let CompactNode::Color { color, content } = *arena.node(node_id)
-            && is_unwritable_color(arena.str_val(color))
-        {
+        while let Some(content) = unwritable_color_content(arena, arena.node(node_id)) {
             node_id = content;
         }
         if node_id == id {
@@ -1449,24 +1451,35 @@ fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::
     Ok(arena.push_node(CompactNode::Row(span)))
 }
 
-/// True for color strings that the LaTeX writer cannot emit verbatim inside
-/// `\textcolor{...}` without breaking brace balance or being reinterpreted.
-/// Such wrappers are dropped during writing, so the normalizer flattens them
-/// early so spacing decisions see the wrapped content.
+/// True for a color the LaTeX writer does not write, leaving the content
+/// alone. The normalizer flattens such a wrapper early so spacing decisions
+/// see the wrapped content.
 fn is_unwritable_color(color: &str) -> bool {
-    // `#RRGGBB` is written as `\textcolor[HTML]{RRGGBB}`.
-    if color
-        .strip_prefix('#')
-        .is_some_and(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-    {
-        return false;
+    !crate::ast::color::is_text_color(color)
+}
+
+fn is_unwritable_background(color: &str) -> bool {
+    !color.is_empty() && !crate::ast::color::is_color(color)
+}
+
+/// The content of a node the LaTeX writer leaves out for its color: a color,
+/// or a box that is only that background.
+pub(crate) fn unwritable_color_content(arena: &AstArena, node: &CompactNode) -> Option<NodeId> {
+    match *node {
+        CompactNode::Color { color, content } => {
+            is_unwritable_color(arena.str_val(color)).then_some(content)
+        },
+        CompactNode::Boxed {
+            content,
+            bg_color,
+            border_color,
+        } => {
+            let background = arena.str_val(bg_color);
+            (is_unwritable_background(background) && arena.str_val(border_color).is_empty())
+                .then_some(content)
+        },
+        _ => None,
     }
-    color.chars().any(|c| {
-        matches!(
-            c,
-            '{' | '}' | '\\' | '~' | '#' | '$' | '%' | '&' | '^' | '_'
-        )
-    })
 }
 
 /// True if `id` is a script node whose base is effectively empty.  Such nodes
