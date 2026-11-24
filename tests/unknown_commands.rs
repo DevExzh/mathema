@@ -720,3 +720,50 @@ fn only_the_single_token_command_itself_skips_its_groups() {
         assert!(!out.contains(r"\relax"), "{input} -> {out}");
     }
 }
+
+#[test]
+fn an_escaped_group_starting_with_leading_scripts_is_stable() {
+    // Found by fuzzing: a group's first node with leading scripts, followed
+    // by a script without a base that the next read attaches to that node.
+    // The sequence writer puts no space before it then, so neither may the
+    // first write.
+    for (input, expected) in [
+        (
+            "imMpod'''_$\n_$,4\t\tn\\txettbfexttt{'\n\n=\n'\n'\n'}n",
+            r"imMpo{d}^{\prime\prime\prime},4n\mathord{\text{\textbackslash{}txettbfexttt}\{{{}^{\prime}=^{\prime}}{}^{\prime} {{}^{\prime}\}}}n",
+        ),
+        (
+            r"\foo{' = ' ' '}",
+            r"\mathord{\text{\textbackslash{}foo}\{{{}^{\prime}=^{\prime}}{}^{\prime} {{}^{\prime}\}}}",
+        ),
+        (
+            r"\foo{{}^2x{}^4{}^5}",
+            r"\mathord{\text{\textbackslash{}foo}\{{{}^{2}x}{}^{4} {{}^{5}\}}}",
+        ),
+        (
+            r"\foo{{}^2x{}^4{}^5y}",
+            r"\mathord{\text{\textbackslash{}foo}\{{{}^{2}x}{}^{4} {{}^{5}y}\}}",
+        ),
+        (
+            r"\foo{{}^1{}^2x{}^4{}^5}",
+            r"\mathord{\text{\textbackslash{}foo}\{^{1}{{}^{2}x}{}^{4} {{}^{5}\}}}",
+        ),
+        (
+            r"\foo{{}^2=^3{}^4{}^5}",
+            r"\mathord{\text{\textbackslash{}foo}\{{{}^{2}=^{3}}{}^{4} {{}^{5}\}}}",
+        ),
+        // Without such a script the space stays.
+        (
+            r"\foo{{}^2x{}^4}",
+            r"\mathord{\text{\textbackslash{}foo}\{ {{}^{2}x} {{}^{4}\}}}",
+        ),
+        (
+            r"\foo{{}^2x{}^4y}",
+            r"\mathord{\text{\textbackslash{}foo}\{ {{}^{2}x} {{}^{4}y}\}}",
+        ),
+    ] {
+        let first = latex_default(input);
+        assert_eq!(first, expected, "{input:?}");
+        assert_eq!(latex_default(&first), first, "{input:?} is not stable");
+    }
+}

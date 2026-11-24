@@ -187,7 +187,7 @@ fn write_sequence(
         // read back as the command's argument (`\\foo{}^2`).
         if i + 1 < children.len()
             && is_script_with_empty_base(arena, children[i + 1])
-            && !is_bare_undefined_command(arena, id)
+            && !is_bare_undefined_command(buf, arena, id)
             && children.get(i + 2).is_none_or(|&after| {
                 !crate::ast::normalize::can_take_prescripts(*arena.node(after))
             })
@@ -351,18 +351,32 @@ fn write_escaped_undefined_command(
             write_empty_base_script_markers(buf, arena, first, Some(second));
             children = &children[1..];
         }
-        if children
-            .first()
-            .is_some_and(|&first| has_visible_prescripts(arena, first))
-        {
-            buf.push(' ');
-        }
         // A trailing script without a base becomes the leading script of
         // the `\}` on the next read; write it so already.
         let (children, trailing_script) = match children.split_last() {
             Some((&last, rest)) if is_script_with_empty_base(arena, last) => (rest, Some(last)),
             _ => (children, None),
         };
+        // On the next read the group's first node follows the `\{` in one
+        // row, so it gets the space `write_sequence` puts before a node with
+        // leading scripts, unless that writer takes the node's next sibling
+        // (a script without a base) as its script. Decide that against the
+        // siblings the next read sees: after the content comes the `\}`,
+        // which takes leading scripts unless it already has the trailing
+        // one.
+        if let Some(&first) = children.first()
+            && has_visible_prescripts(arena, first)
+        {
+            let takes_next_script = children
+                .get(1)
+                .is_some_and(|&next| is_script_with_empty_base(arena, next))
+                && children.get(2).map_or(trailing_script.is_some(), |&after| {
+                    !crate::ast::normalize::can_take_prescripts(*arena.node(after))
+                });
+            if !takes_next_script {
+                buf.push(' ');
+            }
+        }
         write_node_slice(buf, arena, children, false);
         if let Some(script) = trailing_script {
             if !buf.ends_with(' ') {
@@ -426,8 +440,10 @@ fn write_undefined_command_group(buf: &mut LatexBuffer, arena: &AstArena, group:
 
 /// An undefined command written as a bare control word, whose following
 /// groups the reader takes as its arguments.
-fn is_bare_undefined_command(arena: &AstArena, id: NodeId) -> bool {
-    matches!(*arena.node(id), CompactNode::UndefinedCommand { name, .. }
+fn is_bare_undefined_command(buf: &LatexBuffer, arena: &AstArena, id: NodeId) -> bool {
+    // With `UndefinedCommands::Escape` it is written as an inert atom.
+    buf.keep_undefined
+        && matches!(*arena.node(id), CompactNode::UndefinedCommand { name, .. }
         if crate::ast::undefined::writes_as_command(arena.str_val(name))
             && !crate::ast::undefined::is_context_command(arena.str_val(name)))
 }
