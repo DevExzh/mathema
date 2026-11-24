@@ -157,7 +157,6 @@ fn write_sequence(
         // empty-base script). Write it with an explicit `{}` base so that it
         // stays a separate atom and remains stable across round-trips.
         if is_script_with_empty_base(arena, id) {
-            let next = children.get(i + 1).copied();
             let output_start = buf.len();
             // A Middle node is only a fence separator while it is inside a
             // left/right construction. It can also occur in a nested group
@@ -170,9 +169,9 @@ fn write_sequence(
                 && (matches!(*arena.node(children[i - 1]), CompactNode::Middle(_))
                     || is_escaped_brace_symbol(arena, children[i - 1]))
             {
-                write_empty_base_script_markers(buf, arena, id, next);
+                write_empty_base_script_markers(buf, arena, id);
             } else {
-                write_standalone_empty_base_script(buf, arena, id, next);
+                write_standalone_empty_base_script(buf, arena, id);
             }
             ends_with_command =
                 appended_ends_with_letter_command(buf, output_start, ends_with_command);
@@ -201,7 +200,6 @@ fn write_sequence(
                 }
             }
             let script_id = children[i + 1];
-            let next = children.get(i + 2).copied();
             if is_script_node(arena, id) && !script_has_any_arg(arena, id) {
                 // The preceding script has no effective arguments. Keep its
                 // base as the single surviving base, then attach the trailing
@@ -209,18 +207,25 @@ fn write_sequence(
                 // an extra `{}` base before a real trailing script.
                 let base = script_base_id(arena, id).expect("script node has a base");
                 write_script_base(buf, arena, base);
-                write_empty_base_script_markers(buf, arena, script_id, next);
-            } else if is_script_base_token(arena, id) && !would_merge_with_buffer(buf, arena, id) {
+                write_empty_base_script_markers(buf, arena, script_id);
+            } else if is_script_base_token(arena, id)
+                && (!would_merge_with_buffer(buf, arena, id)
+                    || matches!(*arena.node(id), CompactNode::Number(_)))
+            {
                 // Use the same canonical base spelling and bracing as an ordinary
-                // script node, rather than bypassing it on this fast path.
+                // script node, rather than bypassing it on this fast path. A
+                // number after a number is braced there (`1.1{2.2}_{a}`): it
+                // is spelled so here too, as the scripted number it reads
+                // back as. Written bare with its own `{}` base, it would join
+                // the number before it on the next read (`1.12.2{}_{a}`).
                 write_script_base(buf, arena, id);
-                write_empty_base_script_markers(buf, arena, script_id, next);
+                write_empty_base_script_markers(buf, arena, script_id);
             } else if matches!(*arena.node(id), CompactNode::Row(_)) {
                 // Use the script-base writer so that a single-child Row wrapping
                 // a simple token gets braced when it would otherwise merge with
                 // the preceding output (e.g. `p{p}^{\prime}`).
                 write_script_base(buf, arena, id);
-                write_empty_base_script_markers(buf, arena, script_id, next);
+                write_empty_base_script_markers(buf, arena, script_id);
             } else if is_empty_body_nary(arena, id) {
                 // The parser reads a following scripted empty group as the
                 // integral's body. Group that whole body on the first write.
@@ -238,15 +243,15 @@ fn write_sequence(
                     buf.push('{');
                     write_node(buf, arena, id);
                     buf.push('}');
-                    write_empty_base_script_markers(buf, arena, script_id, next);
+                    write_empty_base_script_markers(buf, arena, script_id);
                 } else {
                     // A script node is spelled as `write_sequence` spells
                     // it elsewhere: the trailing script may have come from
                     // a token base taking its first script's markers on the
                     // previous write (`\{^{2}{}^{\prime}`), which reads back
                     // as this node. Any other node is written by `write_node`.
-                    write_script_node_with_next(buf, arena, id, Some(script_id));
-                    write_standalone_empty_base_script(buf, arena, script_id, next);
+                    write_script_node(buf, arena, id);
+                    write_standalone_empty_base_script(buf, arena, script_id);
                 }
             }
             ends_with_command =
@@ -302,10 +307,7 @@ fn write_sequence(
             continue;
         }
         if is_script_node(arena, id) && !is_script_with_empty_base(arena, id) {
-            // Script nodes whose argument would merge with the following
-            // sibling need to be written with the argument forcibly braced.
-            let next = children.get(i + 1).copied();
-            write_script_node_with_next(buf, arena, id, next);
+            write_script_node(buf, arena, id);
         } else {
             // Verbatim delimiters are read directly from top-level input.
             // Inside a macro argument, TeX has already tokenized the text.
@@ -350,10 +352,10 @@ fn write_escaped_undefined_command(
         // A leading script without a base (one that did not become the next
         // node's leading script) is written as the sequence writer writes it
         // after an escaped brace: as the markers alone.
-        if let [first, second, ..] = *children
+        if let [first, _, ..] = *children
             && is_script_with_empty_base(arena, first)
         {
-            write_empty_base_script_markers(buf, arena, first, Some(second));
+            write_empty_base_script_markers(buf, arena, first);
             children = &children[1..];
         }
         // A trailing script without a base becomes the leading script of
@@ -422,11 +424,7 @@ fn write_brace_prescripts(buf: &mut LatexBuffer, arena: &AstArena, script: NodeI
     for (mark, script) in [('_', sub), ('^', sup)] {
         if script.is_some() && !is_effectively_empty_arg(arena, script) {
             buf.push(mark);
-            if !write_scalar_operator_arg(buf, arena, script) {
-                buf.push('{');
-                write_wrapped_content(buf, arena, script);
-                buf.push('}');
-            }
+            write_script_arg(buf, arena, script, ScriptArgGroup::Group);
         }
     }
     buf.push_str("\\}}");
@@ -570,14 +568,9 @@ fn script_base_id(arena: &AstArena, id: NodeId) -> Option<NodeId> {
     }
 }
 
-/// Write a script node, forcibly bracing any sub/superscript argument that
-/// would merge with the following sibling when written unbraced.
-fn write_script_node_with_next(
-    buf: &mut LatexBuffer,
-    arena: &AstArena,
-    id: NodeId,
-    next: Option<NodeId>,
-) {
+/// Write a script node in a row. Its arguments are spelled by
+/// `write_script_arg`, so they cannot merge with the following sibling.
+fn write_script_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
     match *arena.node(id) {
         CompactNode::Subscript { base, sub } => {
             if is_effectively_empty_arg(arena, sub) {
@@ -590,7 +583,7 @@ fn write_script_node_with_next(
             }
             write_postscript_base(buf, arena, base);
             buf.push('_');
-            write_script_arg(buf, arena, sub, next);
+            write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
         },
         CompactNode::Superscript { base, sup } => {
             if is_effectively_empty_arg(arena, sup) {
@@ -599,7 +592,7 @@ fn write_script_node_with_next(
             }
             write_postscript_base(buf, arena, base);
             buf.push('^');
-            write_script_arg(buf, arena, sup, next);
+            write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
         },
         CompactNode::SubSup { base, sub, sup } => {
             let sub_empty = is_effectively_empty_arg(arena, sub);
@@ -611,13 +604,11 @@ fn write_script_node_with_next(
             write_postscript_base(buf, arena, base);
             if !sub_empty {
                 buf.push('_');
-                // The subscript argument is always followed by the `^` marker, so
-                // it cannot merge with the row-next node.
-                write_script_arg(buf, arena, sub, None);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
             }
             if !sup_empty {
                 buf.push('^');
-                write_script_arg(buf, arena, sup, next);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
             }
         },
         _ => write_node(buf, arena, id),
@@ -686,7 +677,7 @@ fn write_compound_limits(
     for (marker, limit) in [('_', lower), ('^', upper)] {
         if !is_effectively_empty_arg(arena, limit) {
             buf.push(marker);
-            write_script_arg(buf, arena, limit, None);
+            write_script_arg(buf, arena, limit, ScriptArgGroup::Token);
         }
     }
     true
@@ -713,39 +704,97 @@ fn write_scalar_operator_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeI
     }
 }
 
-fn write_grouped_script_arg(
-    buf: &mut LatexBuffer,
-    arena: &AstArena,
-    arg: NodeId,
-    force_group: bool,
-) {
-    if !write_scalar_operator_arg(buf, arena, arg) {
-        if force_group {
-            write_always_braced(buf, arena, arg)
-        } else {
-            write_braced(buf, arena, arg)
-        }
+/// How a script argument is grouped.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScriptArgGroup {
+    /// The canonical spelling: a token on its own when TeX reads it as the
+    /// whole argument, otherwise a brace group.
+    Token,
+    /// Always a brace group, for scripts that must stay isolated from the
+    /// text around them (scripts without a base, leading scripts).
+    Group,
+}
+
+/// Write the argument of a `_`/`^` marker. Every script and limit argument
+/// the writer emits goes through here, so it is spelled the same way in every
+/// context.
+///
+/// TeX, KaTeX and MathJax take exactly one token after a script marker:
+/// `x^22` is `x^{2}2` and `x^2.5` is `x^{2}.5`. The argument is therefore
+/// written either as one token (`x^a`, `x^\alpha`) or as one brace group.
+/// Numbers are always braced, so that neither a following digit or `.` nor
+/// the argument's position in its row changes the spelling. Whatever the
+/// node-specific spelling produces, the written text is checked and braced
+/// when it is not one argument.
+fn write_script_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeId, group: ScriptArgGroup) {
+    let start = buf.len();
+    match group {
+        ScriptArgGroup::Group => {
+            if !write_scalar_operator_arg(buf, arena, arg) {
+                write_always_braced(buf, arena, arg);
+            }
+        },
+        ScriptArgGroup::Token => {
+            let arg = written_script_content(arena, arg);
+            if write_scalar_operator_arg(buf, arena, arg) {
+                // A large-operator control word is one token.
+            } else if is_numeric_argument(arena, arg) {
+                buf.push('{');
+                write_node(buf, arena, arg);
+                buf.push('}');
+            } else {
+                // Use the same token spelling and grouping rules as a script
+                // base. In particular, an alphabetic Unicode symbol such as ℜ
+                // emits the preferred control word `\Re` without braces, while
+                // non-alphabetic symbols keep the braces needed to isolate
+                // their control words.
+                write_script_base(buf, arena, arg);
+            }
+        },
+    }
+    if !is_one_tex_argument(&buf[start..]) {
+        buf.insert_text(start, "{");
+        buf.push('}');
     }
 }
 
-/// Write a script argument.  Digit sequences are always braced so that a
-/// following `.` is not swallowed into a decimal literal and so that trailing
-/// vs. non-trailing position cannot change the bracing decision.
-fn write_script_arg(buf: &mut LatexBuffer, arena: &AstArena, arg: NodeId, _next: Option<NodeId>) {
-    let arg = written_script_content(arena, arg);
-    if write_scalar_operator_arg(buf, arena, arg) {
-        return;
-    }
-    if is_numeric_argument(arena, arg) {
-        buf.push('{');
-        write_node(buf, arena, arg);
-        buf.push('}');
-    } else {
-        // Use the same token spelling and grouping rules as a script base.
-        // In particular, an alphabetic Unicode symbol such as ℜ emits the
-        // preferred control word `\Re` without braces, while non-alphabetic
-        // symbols keep the braces needed to isolate their control words.
-        write_script_base(buf, arena, arg);
+/// Whether TeX reads `text`, written right after a `_`/`^` marker, as exactly
+/// that marker's argument: a single character, a single control sequence, or
+/// one brace group spanning all of `text`.
+fn is_one_tex_argument(text: &str) -> bool {
+    let mut chars = text.chars();
+    match chars.next() {
+        None => false,
+        Some('{') => {
+            let mut depth = 1usize;
+            let mut chars = text[1..].chars();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\\' => {
+                        chars.next();
+                    },
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return chars.next().is_none();
+                        }
+                    },
+                    _ => {},
+                }
+            }
+            false
+        },
+        Some('\\') => match chars.next() {
+            None => false,
+            Some(ch) if ch.is_ascii_alphabetic() => chars.all(|ch| ch.is_ascii_alphabetic()),
+            Some(_) => chars.next().is_none(),
+        },
+        Some(ch) => {
+            chars.next().is_none()
+                && !ch.is_whitespace()
+                && !matches!(ch, '}' | '%' | '#' | '&' | '$' | '^' | '_')
+        },
     }
 }
 
@@ -764,12 +813,7 @@ fn is_numeric_argument(arena: &AstArena, id: NodeId) -> bool {
 }
 
 /// Write a stand-alone empty-base script with an explicit `{}` base.
-fn write_standalone_empty_base_script(
-    buf: &mut LatexBuffer,
-    arena: &AstArena,
-    script_id: NodeId,
-    _next: Option<NodeId>,
-) {
+fn write_standalone_empty_base_script(buf: &mut LatexBuffer, arena: &AstArena, script_id: NodeId) {
     if !script_has_any_arg(arena, script_id) {
         return;
     }
@@ -788,51 +832,44 @@ fn write_standalone_empty_base_script_markers(
     match *arena.node(script_id) {
         CompactNode::Subscript { sub, .. } if !is_effectively_empty_arg(arena, sub) => {
             buf.push('_');
-            write_grouped_script_arg(buf, arena, sub, true);
+            write_script_arg(buf, arena, sub, ScriptArgGroup::Group);
         },
         CompactNode::Superscript { sup, .. } if !is_effectively_empty_arg(arena, sup) => {
             buf.push('^');
-            write_grouped_script_arg(buf, arena, sup, true);
+            write_script_arg(buf, arena, sup, ScriptArgGroup::Group);
         },
         CompactNode::SubSup { sub, sup, .. } => {
             let sub_empty = is_effectively_empty_arg(arena, sub);
             let sup_empty = is_effectively_empty_arg(arena, sup);
             if !sub_empty {
                 buf.push('_');
-                write_grouped_script_arg(buf, arena, sub, true);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Group);
             }
             if !sup_empty {
                 buf.push('^');
-                write_grouped_script_arg(buf, arena, sup, true);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Group);
             }
         },
         _ => {},
     }
 }
 
-/// Write the `_`/`^` markers and braced arguments of an empty-base script node.
-/// `next` is the following sibling in the current row; it is used to brace a
-/// script argument that would otherwise merge with that sibling (e.g. `{}^2 2`).
-fn write_empty_base_script_markers(
-    buf: &mut LatexBuffer,
-    arena: &AstArena,
-    script_id: NodeId,
-    next: Option<NodeId>,
-) {
+/// Write the `_`/`^` markers and arguments of an empty-base script node.
+fn write_empty_base_script_markers(buf: &mut LatexBuffer, arena: &AstArena, script_id: NodeId) {
     match *arena.node(script_id) {
         CompactNode::Subscript { sub, .. } => {
             if is_effectively_empty_arg(arena, sub) {
                 return;
             }
             buf.push('_');
-            write_script_arg(buf, arena, sub, next);
+            write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
         },
         CompactNode::Superscript { sup, .. } => {
             if is_effectively_empty_arg(arena, sup) {
                 return;
             }
             buf.push('^');
-            write_script_arg(buf, arena, sup, next);
+            write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
         },
         CompactNode::SubSup { sub, sup, .. } => {
             let sub_empty = is_effectively_empty_arg(arena, sub);
@@ -842,13 +879,11 @@ fn write_empty_base_script_markers(
             }
             if !sub_empty {
                 buf.push('_');
-                // The subscript argument is followed by the `^` marker, so it
-                // cannot merge with the row-next node.
-                write_script_arg(buf, arena, sub, None);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
             }
             if !sup_empty {
                 buf.push('^');
-                write_script_arg(buf, arena, sup, next);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
             }
         },
         _ => {},
@@ -1267,65 +1302,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             write_delim(buf, close_str);
         },
 
-        CompactNode::Subscript { base, sub } => {
-            if is_effectively_empty_arg(arena, sub) {
-                write_node(buf, arena, base);
-                return;
-            }
+        CompactNode::Subscript { base, .. }
+        | CompactNode::Superscript { base, .. }
+        | CompactNode::SubSup { base, .. } => {
             if is_empty_row(arena, base) {
-                buf.push_str("{}");
-                buf.push('_');
-                write_grouped_script_arg(buf, arena, sub, true);
+                write_standalone_empty_base_script(buf, arena, id);
             } else {
-                write_postscript_base(buf, arena, base);
-                buf.push('_');
-                write_grouped_script_arg(buf, arena, sub, false);
-            }
-        },
-
-        CompactNode::Superscript { base, sup } => {
-            if is_effectively_empty_arg(arena, sup) {
-                write_node(buf, arena, base);
-                return;
-            }
-            if is_empty_row(arena, base) {
-                buf.push_str("{}");
-                buf.push('^');
-                write_grouped_script_arg(buf, arena, sup, true);
-            } else {
-                write_postscript_base(buf, arena, base);
-                buf.push('^');
-                write_grouped_script_arg(buf, arena, sup, false);
-            }
-        },
-
-        CompactNode::SubSup { base, sub, sup } => {
-            let sub_empty = is_effectively_empty_arg(arena, sub);
-            let sup_empty = is_effectively_empty_arg(arena, sup);
-            if sub_empty && sup_empty {
-                write_node(buf, arena, base);
-                return;
-            }
-            if is_empty_row(arena, base) {
-                buf.push_str("{}");
-                if !sub_empty {
-                    buf.push('_');
-                    write_grouped_script_arg(buf, arena, sub, true);
-                }
-                if !sup_empty {
-                    buf.push('^');
-                    write_grouped_script_arg(buf, arena, sup, true);
-                }
-            } else {
-                write_postscript_base(buf, arena, base);
-                if !sub_empty {
-                    buf.push('_');
-                    write_grouped_script_arg(buf, arena, sub, false);
-                }
-                if !sup_empty {
-                    buf.push('^');
-                    write_grouped_script_arg(buf, arena, sup, false);
-                }
+                write_script_node(buf, arena, id);
             }
         },
 
@@ -1364,12 +1347,10 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             {
                 if visible {
                     buf.push(mark);
-                    scalar_last = write_scalar_operator_arg(buf, arena, script);
-                    if !scalar_last {
-                        buf.push('{');
-                        write_wrapped_content(buf, arena, script);
-                        buf.push('}');
-                    }
+                    write_script_arg(buf, arena, script, ScriptArgGroup::Group);
+                    // A grouped argument ends in `}`; a bare large-operator
+                    // control word needs a separator before a letter.
+                    scalar_last = !buf.ends_with('}');
                 }
             }
             if scalar_last && node_starts_with_ascii_letter(arena, base) {
@@ -1521,11 +1502,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             }
             if !is_effectively_empty_arg(arena, sub) {
                 buf.push('_');
-                write_grouped_script_arg(buf, arena, sub, false);
+                write_script_arg(buf, arena, sub, ScriptArgGroup::Token);
             }
             if !is_effectively_empty_arg(arena, sup) {
                 buf.push('^');
-                write_grouped_script_arg(buf, arena, sup, false);
+                write_script_arg(buf, arena, sup, ScriptArgGroup::Token);
             }
             // Only write the body if it's non-empty — avoids \prod vs \prod {} divergence
             if !is_empty_body(arena, body) {
@@ -1596,7 +1577,14 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     AccentPosition::Above => "\\overset{",
                     AccentPosition::Below => "\\underset{",
                 });
-                buf.push(accent);
+                // A TeX special character is spelled as its character token:
+                // raw, `^`/`_` would be script markers without an argument,
+                // and a brace or `%` would unbalance the group.
+                if matches!(accent, '\\' | '{' | '}' | '%' | '#' | '$' | '&' | '_' | '^') {
+                    write_math_char(buf, accent);
+                } else {
+                    buf.push(accent);
+                }
                 buf.push_str("}{");
                 write_accent_base_content(buf, arena, base);
                 buf.push('}');
@@ -3611,6 +3599,29 @@ mod tests {
             assert_eq!(out, want, "{bg:?} {border:?}");
             LatexReader::parse(&out, &Config::default())
                 .unwrap_or_else(|e| panic!("{out:?} does not re-parse: {e}"));
+        }
+    }
+
+    #[test]
+    fn one_tex_argument_is_one_token_or_one_group() {
+        for one in [
+            "2", "a", "'", r"\alpha", r"\{", "{22}", "{a{b}c}", r"{\}}", "~",
+        ] {
+            assert!(is_one_tex_argument(one), "{one}");
+        }
+        for not_one in [
+            "",
+            "22",
+            "2.5",
+            r"\alpha b",
+            r"\mathrm{d}",
+            "{a}{b}",
+            "{a",
+            " ",
+            "}",
+            "^",
+        ] {
+            assert!(!is_one_tex_argument(not_one), "{not_one}");
         }
     }
 

@@ -351,9 +351,9 @@ fn text_mode_is_unchanged() {
 
 #[test]
 fn displaylimits_restores_default_placement() {
-    assert_eq!(latex(r"\sum\displaylimits_0 x"), r"\sum_0 x");
-    assert_eq!(latex(r"\sum\limits\displaylimits_0 x"), r"\sum_0 x");
-    assert_eq!(latex(r"\sum\nolimits_0 x"), r"\sum\nolimits_0 x");
+    assert_eq!(latex(r"\sum\displaylimits_0 x"), r"\sum_{0} x");
+    assert_eq!(latex(r"\sum\limits\displaylimits_0 x"), r"\sum_{0} x");
+    assert_eq!(latex(r"\sum\nolimits_0 x"), r"\sum\nolimits_{0} x");
     // Without an operator it places nothing, like `\limits`.
     assert_eq!(latex(r"\displaylimits x"), "x");
 }

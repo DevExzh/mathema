@@ -458,7 +458,7 @@ fn v5_integral_limits_use_bits_0x10_and_0x20() {
         &c5(0, 6, '\u{222B}'),
         &[0],
     ]);
-    assert_eq!(latex(&eq5(&integral)), r"\int\nolimits_0^1 f");
+    assert_eq!(latex(&eq5(&integral)), r"\int\nolimits_{0}^{1} f");
     // Two-byte variation: 0x81 0x01 = 0x0101 (single sign, expanding).
     let expanding = cat(&[
         &[0x03, 0, 15, 0x81, 0x01, 0],

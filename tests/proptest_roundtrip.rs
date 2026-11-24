@@ -13,6 +13,8 @@ use mathema::writer::omml::OmmlWriter;
 use mathema::writer::unicode_math::UnicodeMathWriter;
 use proptest::prelude::*;
 
+mod common;
+
 // =========================================================================
 // Strategies for generating AST types
 // =========================================================================
@@ -382,6 +384,15 @@ proptest! {
     fn latex_write_never_panics(expr in arb_math_expr()) {
         let config = Config::default();
         let _ = LatexWriter::write(&expr, &config);
+    }
+
+    /// Every `^`/`_` the writer emits takes one TeX token or a brace group.
+    #[test]
+    fn latex_script_arguments_are_one_tex_token(expr in arb_math_expr()) {
+        let config = Config::default();
+        if let Ok(latex) = LatexWriter::write(&expr, &config) {
+            prop_assert!(common::check_script_args(&latex).is_ok(), "{:?}", common::check_script_args(&latex));
+        }
     }
 
     #[test]
