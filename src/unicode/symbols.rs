@@ -963,6 +963,106 @@ pub(crate) fn operator_glyph_kind(ch: char) -> Option<SymbolKind> {
         .filter(|kind| !matches!(kind, SymbolKind::Ordinary | SymbolKind::Alphabetic))
 }
 
+/// The atom class a glyph has where nothing but the glyph says so (a
+/// UnicodeMath operator): the one table the UnicodeMath reader, its operand
+/// rules and the UnicodeMath writer consult. `None` for a glyph with no class
+/// but ordinary or alphabetic.
+///
+/// In order: the canonical command's class, the class of any other command or
+/// package symbol spelling the glyph, the MathML operator dictionary's infix
+/// spacing, and a relation for an arrow (UTN #28 appendix B).
+pub(crate) fn glyph_class(ch: char) -> Option<SymbolKind> {
+    use crate::unicode::operators::{OperatorForm, lookup_operator};
+    let class = match ch {
+        // `\perp` and `\bot` share a glyph; UTN #28 appendix B: relational.
+        '\u{22A5}' => SymbolKind::Relation,
+        // Symmetric delimiters, whatever `\lvert` and `\rvert` say.
+        '|' | '\u{2016}' => SymbolKind::Fence,
+        '+' | '-' | '*' | '\u{2212}' | '\u{2022}' => SymbolKind::BinaryOp,
+        '=' | '<' | '>' | ':' => SymbolKind::Relation,
+        ',' | ';' => SymbolKind::Punctuation,
+        _ if ch.is_ascii() => return None,
+        _ => match mapped_symbol_kind(ch) {
+            Some(kind) => kind,
+            None => match other_glyph_classes().get(&ch) {
+                Some(&kind) => kind,
+                None => match lookup_operator(ch, OperatorForm::Infix) {
+                    Some(entry) if entry.lspace == 5 => SymbolKind::Relation,
+                    Some(entry) if entry.lspace == 4 => SymbolKind::BinaryOp,
+                    _ => match ch {
+                        '\u{2190}'..='\u{21FF}'
+                        | '\u{27F0}'..='\u{27FF}'
+                        | '\u{2900}'..='\u{297F}'
+                        | '\u{2B00}'..='\u{2B4F}' => SymbolKind::Relation,
+                        _ => return None,
+                    },
+                },
+            },
+        },
+    };
+    (!matches!(class, SymbolKind::Ordinary | SymbolKind::Alphabetic)).then_some(class)
+}
+
+/// Classes of the glyphs only non-canonical commands and package symbols
+/// spell; an operator class wins over an ordinary one.
+fn other_glyph_classes() -> &'static std::collections::HashMap<char, SymbolKind> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<char, SymbolKind>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| {
+        let packages = crate::latex::packages::PACKAGE_SYMBOLS
+            .iter()
+            .flat_map(|table| table.iter())
+            .filter_map(|&(_, glyph, kind)| {
+                let mut chars = glyph.chars();
+                chars
+                    .next()
+                    .filter(|_| chars.next().is_none())
+                    .map(|ch| (ch, kind))
+            });
+        let mut map = std::collections::HashMap::new();
+        for (ch, kind) in LATEX_TO_UNICODE.values().copied().chain(packages) {
+            if UNICODE_TO_LATEX.contains_key(&ch) {
+                continue;
+            }
+            let known = map.entry(ch).or_insert(kind);
+            let rank = |kind: SymbolKind| match kind {
+                SymbolKind::Alphabetic => 0,
+                SymbolKind::Ordinary => 1,
+                SymbolKind::Relation => 3,
+                _ => 2,
+            };
+            if rank(kind) > rank(*known) {
+                *known = kind;
+            }
+        }
+        map
+    })
+}
+
+/// Every LaTeX command of the core tables and packages with its glyph and
+/// class, for exhaustive tests.
+#[cfg(test)]
+pub(crate) fn all_commands() -> Vec<(String, String, SymbolKind)> {
+    let mut all: Vec<_> = LATEX_TO_UNICODE
+        .entries()
+        .map(|(name, &(ch, kind))| ((*name).to_owned(), ch.to_string(), kind))
+        .chain(
+            crate::latex::packages::PACKAGE_SYMBOLS
+                .iter()
+                .flat_map(|table| table.iter())
+                .map(|&(name, glyph, kind)| (name.to_owned(), glyph.to_owned(), kind)),
+        )
+        .collect();
+    all.sort_by(|a, b| a.0.cmp(&b.0));
+    all.dedup_by(|a, b| a.0 == b.0);
+    all
+}
+
+/// Whether some command or package symbol spells `ch`.
+pub(crate) fn is_symbol_glyph(ch: char) -> bool {
+    UNICODE_TO_LATEX.contains_key(&ch) || other_glyph_classes().contains_key(&ch)
+}
+
 /// Find a core command spelling `ch` with exactly the atom class `kind`.
 ///
 /// Several commands share a glyph but differ in class (`\triangle` is

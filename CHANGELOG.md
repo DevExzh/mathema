@@ -56,7 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   function name (`i nf`). A script run goes on through a span of letters
   that only ends in a function name (`x_kmax`, `x_max1`). The minus
   sign U+2212 is a binary operator, as `-` is: `a−b/c` is `a-\frac{b}{c}`
-  (was `\frac{a-b}{c}`, which LaTeX `a-\frac{b}{c}` became). Accents and
+  (was `\frac{a-b}{c}`, which LaTeX `a-\frac{b}{c}` became). Every
+  operator, relation, arrow and delimiter a LaTeX command spells has its
+  class (`a≲b/c` was `(a≲b)/c`, `⟹` was text). Accents and
   scripts on words, fractions, scripted atoms and n-ary operators group
   them, and a script that is a radical or is parenthesized is written in
   parentheses.

@@ -99,6 +99,20 @@ const READS: &[(&str, &str, &str)] = &[
         r"\sum\limits {-}\inf !^{\hat{\log}}\left( x \right)",
     ),
     // The minus sign is an operator as the hyphen is (table 3.1).
+    ("a≲b/c", "a≲b/c", r"a\lesssim \frac{b}{c}"),
+    (
+        "x〖∑ a〗^2/b",
+        "(x〖∑ a〗^2)/b",
+        r"\frac{x{\sum\limits a}^{2}}{b}",
+    ),
+    (
+        "〖∑ a〗_1¦c",
+        "〖∑ a〗_1¦c",
+        r"\genfrac{}{}{0pt}{}{{\sum\limits a}_{1}}{c}",
+    ),
+    ("∑^-1^′ a", "∑^(-1′) a", r"\sum\limits^{- 1^{\prime}} a"),
+    ("∑_a_b x", "∑_(a_b) x", r"\sum\limits_{a_b} x"),
+    ("∑^2_1 x", "∑_1^2 x", r"\sum\limits_{1}^{2} x"),
     ("a−b/c", "a−b/c", r"a- \frac{b}{c}"),
     // The sign keeps the operand after it; the function's argument is
     // outside the script, which the space ends (appendix A, section 2.3).
@@ -335,6 +349,29 @@ const OPERANDS: &[(&str, &str, &str)] = &[
     (r"\sideset{_1}{}{s}in", "(_1)s in", r"{{}_{1}s}in"),
     (r"a-\frac{b}{c}", "a−b/c", r"a- \frac{b}{c}"),
     (r"\frac{\mathord{-}}{b}", "(−)/b", r"\frac{-}{b}"),
+    (
+        r"\frac{{\sum a}^2}{b}",
+        "〖∑ a〗^2/b",
+        r"\frac{{\sum\limits a}^{2}}{b}",
+    ),
+    (
+        r"\frac{{\int f}^2}{2}",
+        "〖∫ f〗^2/2",
+        r"\frac{{\int\nolimits f}^{2}}{2}",
+    ),
+    (r"a\lesssim\frac{b}{c}", "a≲b/c", r"a\lesssim \frac{b}{c}"),
+    (
+        r"a_1\coloneqq\frac{b}{c}",
+        "a_1≔b/c",
+        r"a_{1}\coloneqq \frac{b}{c}",
+    ),
+    (
+        r"\sum a\perp\frac{b}{c}",
+        "∑ a⊥b/c",
+        r"\sum\limits a\perp \frac{b}{c}",
+    ),
+    (r"\langle\frac{b}{c}", "⟨b/c", r"\langle\frac{b}{c}"),
+    (r"a\iff\frac{b}{c}", "a⟺b/c", r"a\iff \frac{b}{c}"),
     (r"\,a", "\u{2009}a", r"\,a"),
     (r"{\sum a}^2", r"〖∑ a〗^2", r"{\sum\limits a}^{2}"),
     (r"{\sum a}_1", r"〖∑ a〗_1", r"{\sum\limits a}_{1}"),

@@ -1159,13 +1159,18 @@ fn write_script_base(out: &mut String, node: &MathNode, style: MathStyle) {
             write_node(out, node, style);
             out.push('〗');
         },
+        MathNode::Symbol(_, glyph) if glyph.chars().nth(1).is_some() => {
+            out.push('〖');
+            write_node(out, node, style);
+            out.push('〗');
+        },
         _ => write_base(out, node, style),
     }
 }
 
 use crate::reader::unicode_math::{
-    breaks_naryand, is_alphanumeric, is_prime as is_prime_char, is_run_char, opening_fence,
-    reads_as_script_run, starts_signed_script_operand, symbol_takes_prime,
+    breaks_naryand, breaks_operand_at, is_alphanumeric, is_prime as is_prime_char, is_run_char,
+    opening_fence, reads_as_script_run, starts_signed_script_operand, symbol_takes_prime,
 };
 
 /// A symbol node that starts with a prime, which the reader never gives
@@ -1229,6 +1234,12 @@ fn write_script_arg_unguarded(out: &mut String, node: &MathNode, style: MathStyl
         },
         MathNode::Row(children) if write_simple_script(out, script_items(children)) => {},
         MathNode::Row(children) if children.len() > 1 => {
+            out.push('(');
+            write_node(out, node, style);
+            out.push(')');
+        },
+        // A symbol of several characters, or a quoted solidus.
+        MathNode::Symbol(_, glyph) if glyph == "/" || glyph.chars().nth(1).is_some() => {
             out.push('(');
             write_node(out, node, style);
             out.push(')');
@@ -1379,6 +1390,10 @@ fn write_script_word(out: &mut String, name: &str) {
 /// dropped spaces (`x^{\!}`), by an empty group. `grouping`: parentheses
 /// around it are the writer's.
 fn group_null_operand(out: &mut String, start: usize, grouping: bool) {
+    // Most operands start with a letter, a digit or an operator.
+    if out[start..].starts_with(|c: char| c != '(' && c.is_ascii()) {
+        return;
+    }
     let written = &out[start..];
     let inner = written
         .strip_prefix('(')
@@ -1415,6 +1430,10 @@ fn breaks_word(name: &str) -> bool {
 /// (the word `inf` is `i nf`, not the function inf). The reader joins the
 /// letters into one word again.
 fn write_identifier(out: &mut String, name: &str) {
+    if name.len() == 1 {
+        out.push_str(name);
+        return;
+    }
     let mut chars = name.char_indices().peekable();
     while let Some((index, c)) = chars.next() {
         out.push(c);
@@ -1525,19 +1544,32 @@ fn write_word_c(out: &mut String, arena: &AstArena, id: NodeId) {
 /// Break the letters `out[from..to]`, written by adjacent identifiers, where
 /// they would read as a function name with what follows (`i nf(x)`).
 fn break_function_names(out: &mut String, from: usize, mut to: usize) {
-    let mut index = from;
-    while index < to {
-        let Some(c) = out[index..].chars().next() else {
-            return;
-        };
-        index += c.len_utf8();
-        let start = index - c.len_utf8();
-        if c.is_ascii_alphabetic()
-            && crate::unicode::symbols::unicode_math_operator_prefix(&out[start..]).is_some()
-        {
-            out.insert(index, ' ');
-            index += 1;
-            to += 1;
+    let mut start = from;
+    while start < to {
+        let letters = |bytes: &[u8]| bytes.iter().take_while(|b| b.is_ascii_alphabetic()).count();
+        let end = start + letters(&out.as_bytes()[start..]);
+        if end - start > 1 {
+            // A name ends where its letters do and has at most 8.
+            let mut index = start.max(end.saturating_sub(8));
+            while index < end.min(to) {
+                index += 1;
+                if crate::unicode::symbols::unicode_math_operator_prefix(&out[index - 1..])
+                    .is_some()
+                {
+                    out.insert(index, ' ');
+                    to += 1;
+                    break;
+                }
+            }
+            if index < end {
+                // Go on after the break.
+                start = index.max(start + 1);
+                continue;
+            }
+        }
+        start = end + 1;
+        while start < to && !out.is_char_boundary(start) {
+            start += 1;
         }
     }
 }
@@ -1770,7 +1802,9 @@ fn write_nodes_tracking(
             continue;
         }
         track_word(out, &mut word, start, identifier);
-        if let Some(letter) = prescripted_letter(selected, current_style) {
+        if matches!(selected, MathNode::PreScripts { .. })
+            && let Some(letter) = prescripted_letter(selected, current_style)
+        {
             word = Some(out.len() - letter.len());
         }
         previous = Some((node, current_style));
@@ -1911,7 +1945,10 @@ fn separate_following_operand(
         && ends_with_script_sign(&out[..start]);
     // A radical or box sign written alone (not a radical, which writes its
     // radicand) would take the operand after it (`√ y` is not `√y`).
-    let prefix = !first.is_whitespace() && out[..start].ends_with(['√', '∛', '∜', '▭', '⟡']);
+    let before = &out[..start];
+    let prefix = before.as_bytes().last().is_some_and(|byte| *byte >= 0x80)
+        && before.ends_with(['√', '∛', '∜', '▭', '⟡'])
+        && !first.is_whitespace();
     let joins = prefix
         || (previous_operator && alphanumeric)
         || (takes_prime && is_prime_char(first))
@@ -2149,18 +2186,13 @@ enum OperandEdge {
     NaryandFunction,
 }
 
-fn symbol_edge(kind: SymbolKind, glyph: &str) -> OperandEdge {
-    if matches!(
-        kind,
-        SymbolKind::BinaryOp
-            | SymbolKind::Relation
-            | SymbolKind::Punctuation
-            | SymbolKind::LargeOp
-            | SymbolKind::Open
-    ) || matches!(glyph, "," | ";" | ":" | "?")
-        // Whatever its class here, the reader goes by the glyph.
-        || (glyph.chars().nth(1).is_none() && glyph.chars().next().is_some_and(breaks_naryand))
-    {
+fn symbol_edge(glyph: &str) -> OperandEdge {
+    // The reader knows only the glyph, whatever the symbol's class here: an
+    // ordinary minus (`\mathord{-}`) reads back as the operator, and `△`
+    // (`\vartriangle`) as an ordinary symbol.
+    // An opening bracket starts a group, where an operand starts too.
+    let breaks = |c| breaks_operand_at(c) || matches!(c, '(' | '[' | '{');
+    if !glyph.is_empty() && glyph.chars().all(breaks) {
         OperandEdge::Break
     } else {
         OperandEdge::Operand
@@ -2170,7 +2202,7 @@ fn symbol_edge(kind: SymbolKind, glyph: &str) -> OperandEdge {
 fn operand_edge(node: &MathNode) -> OperandEdge {
     match node {
         MathNode::Fraction { .. } => OperandEdge::Fraction,
-        MathNode::Symbol(kind, glyph) => symbol_edge(*kind, glyph),
+        MathNode::Symbol(_, glyph) => symbol_edge(glyph),
         // Leading scripts end where their base ends.
         MathNode::PreScripts { base, .. } => operand_edge(base),
         // A scripted operator is still an operator, as in the reader.
@@ -2205,7 +2237,7 @@ fn operand_edge(node: &MathNode) -> OperandEdge {
 fn operand_edge_c(arena: &AstArena, id: NodeId) -> OperandEdge {
     match *arena.node(id) {
         CompactNode::Fraction { .. } => OperandEdge::Fraction,
-        CompactNode::Symbol(kind, sid) => symbol_edge(kind, arena.str_val(sid)),
+        CompactNode::Symbol(_, sid) => symbol_edge(arena.str_val(sid)),
         // Leading scripts end where their base ends.
         CompactNode::PreScripts { base, .. } => operand_edge_c(arena, base),
         // A scripted operator is still an operator, as in the reader.
@@ -3165,8 +3197,20 @@ fn write_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle
 
 /// Compact counterpart of [`write_script_base`].
 fn write_script_base_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    // A letter or a number is an operand as it is.
+    if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = *arena.node(id)
+        && arena.str_val(sid).len() == 1
+    {
+        out.push_str(arena.str_val(sid));
+        return;
+    }
     match *arena.node(select_mathchoice_c(arena, id, style)) {
         CompactNode::Identifier(sid) if arena.str_val(sid).chars().nth(1).is_some() => {
+            out.push('〖');
+            write_node_c(out, arena, id, style);
+            out.push('〗');
+        },
+        CompactNode::Symbol(_, sid) if arena.str_val(sid).chars().nth(1).is_some() => {
             out.push('〖');
             write_node_c(out, arena, id, style);
             out.push('〗');
@@ -3211,6 +3255,13 @@ fn prime_superscript_c(
 
 /// Compact counterpart of [`write_script_arg`].
 fn write_script_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    // A letter or a number is an operand as it is.
+    if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = *arena.node(id)
+        && arena.str_val(sid).len() == 1
+    {
+        out.push_str(arena.str_val(sid));
+        return;
+    }
     let start = out.len();
     write_script_arg_unguarded_c(out, arena, id, style);
     let fenced = matches!(
@@ -3231,6 +3282,14 @@ fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, 
         CompactNode::Identifier(sid) => write_script_word(out, arena.str_val(sid)),
         CompactNode::Row(span) if write_simple_script(out, script_items_c(arena, span)) => {},
         CompactNode::Row(span) if arena.children(span).len() > 1 => {
+            out.push('(');
+            write_node_c(out, arena, id, style);
+            out.push(')');
+        },
+        // A symbol of several characters, or a quoted solidus.
+        CompactNode::Symbol(_, sid)
+            if arena.str_val(sid) == "/" || arena.str_val(sid).chars().nth(1).is_some() =>
+        {
             out.push('(');
             write_node_c(out, arena, id, style);
             out.push(')');
@@ -3274,6 +3333,13 @@ fn write_script_arg_unguarded_c(out: &mut String, arena: &AstArena, id: NodeId, 
 
 /// Compact counterpart of [`write_fraction_arg`].
 fn write_fraction_arg_c(out: &mut String, arena: &AstArena, id: NodeId, style: MathStyle) {
+    // A letter or a number is an operand as it is.
+    if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = *arena.node(id)
+        && arena.str_val(sid).len() == 1
+    {
+        out.push_str(arena.str_val(sid));
+        return;
+    }
     let id = select_mathchoice_c(arena, id, style);
     let start = out.len();
     match *arena.node(id) {
@@ -3354,7 +3420,25 @@ fn write_paren_if_complex_unguarded_c(
     }
 }
 
+#[inline]
 fn select_mathchoice_c(arena: &AstArena, id: NodeId, style: MathStyle) -> NodeId {
+    // Most nodes are themselves.
+    match *arena.node(id) {
+        CompactNode::Identifier(_)
+        | CompactNode::Number(_)
+        | CompactNode::Symbol(..)
+        | CompactNode::Operator { .. }
+        | CompactNode::Space(_)
+        | CompactNode::Text(..)
+        | CompactNode::Superscript { .. }
+        | CompactNode::Subscript { .. }
+        | CompactNode::SubSup { .. }
+        | CompactNode::Fraction { .. } => id,
+        _ => select_operand_c(arena, id, style),
+    }
+}
+
+fn select_operand_c(arena: &AstArena, id: NodeId, style: MathStyle) -> NodeId {
     let mut id = id;
     loop {
         id = match *arena.node(id) {
@@ -3413,10 +3497,37 @@ fn write_nodes_c_tracking(
             current_style = MathStyle::branch_from_switch(value);
             continue;
         }
+        // A letter after a letter: nothing comes between, and what both meet
+        // stays the same.
+        if let CompactNode::Identifier(sid) = *arena.node(id)
+            && word.is_some()
+            && out.as_bytes().last().is_some_and(u8::is_ascii_alphabetic)
+            && arena
+                .str_val(sid)
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic)
+        {
+            out.push_str(arena.str_val(sid));
+            continue;
+        }
         let selected = select_mathchoice_c(arena, id, current_style);
-        let identifier = is_word_c(arena, selected);
+        let node = *arena.node(selected);
+        // A letter, number or symbol needs none of the checks of a compound.
+        let atom = matches!(
+            node,
+            CompactNode::Identifier(_)
+                | CompactNode::Number(_)
+                | CompactNode::Symbol(..)
+                | CompactNode::Space(_)
+        );
+        let identifier = if atom {
+            matches!(node, CompactNode::Identifier(_))
+        } else {
+            is_word_c(arena, selected)
+        };
         let before = out.len();
-        if wrote_node && needs_space_before_c_with_style(arena, id, current_style) {
+        if wrote_node && !atom && needs_space_before_c_with_style(arena, selected, current_style) {
             out.push(' ');
         }
         let start = out.len();
@@ -3429,19 +3540,28 @@ fn write_nodes_c_tracking(
                     _ => true,
                 })
         };
-        let open = matches!(*arena.node(id), CompactNode::Nary { .. })
-            && ends_in_function_c(arena, id, current_style);
+        let open = matches!(node, CompactNode::Nary { .. })
+            && ends_in_function_c(arena, selected, current_style);
         let grouped =
             open && next().is_some_and(|&next| splits_naryand_c(arena, next, current_style));
         // Within a list a word is broken once what follows it is written.
-        if identifier {
+        if let CompactNode::Identifier(sid) | CompactNode::Number(sid) = node {
+            out.push_str(arena.str_val(sid));
+        } else if let CompactNode::Symbol(_, sid) = node
+            && arena.str_val(sid) != "/"
+        {
+            out.push_str(arena.str_val(sid));
+        } else if identifier {
             write_word_c(out, arena, selected);
         } else if grouped {
-            write_nary_c(out, arena, id, current_style, true);
+            write_nary_c(out, arena, selected, current_style, true);
         } else {
-            write_node_c(out, arena, id, current_style);
+            write_node_c(out, arena, selected, current_style);
         }
-        let current = operand_edge_c(arena, selected);
+        let current = match node {
+            CompactNode::Identifier(_) | CompactNode::Number(_) => OperandEdge::Operand,
+            _ => operand_edge_c(arena, selected),
+        };
         let current = if open && !grouped && current == OperandEdge::Naryand {
             OperandEdge::NaryandFunction
         } else {
@@ -3460,12 +3580,15 @@ fn write_nodes_c_tracking(
             continue;
         }
         track_word(out, &mut word, start, identifier);
-        if let Some(letter) = prescripted_letter_c(arena, selected, current_style) {
+        if matches!(node, CompactNode::PreScripts { .. })
+            && let Some(letter) = prescripted_letter_c(arena, selected, current_style)
+        {
             word = Some(out.len() - letter.len());
         }
-        previous = Some((id, current_style));
-        takes_prime = !is_prime_symbol_c(arena, id);
-        function = applied.is_some() && is_function_head_c(arena, selected);
+        previous = (!atom).then_some((selected, current_style));
+        takes_prime =
+            !(matches!(node, CompactNode::Symbol(..)) && is_prime_symbol_c(arena, selected));
+        function = applied.is_some() && !atom && is_function_head_c(arena, selected);
         edge = current;
         wrote_node = true;
     }
@@ -3543,6 +3666,165 @@ fn needs_space_before_c_with_style(arena: &AstArena, id: NodeId, style: MathStyl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The UnicodeMath of `latex` from the builder, `convert`, and the heap
+    /// writer for each.
+    fn by_path(latex: &str) -> Option<[String; 4]> {
+        use crate::reader::{Reader, latex::LatexReader};
+        use crate::{Format, convert};
+        let config = Config::default();
+        let mut heap = LatexReader::parse(latex, &config).ok()?.expr;
+        let builder_heap = UnicodeMathWriter::write(&heap, &config).ok()?;
+        crate::ast::normalize::normalize_expr(&mut heap);
+        Some([
+            crate::from_latex(latex).ok()?.to_unicode_math().ok()?,
+            convert(latex, Format::LaTeX, Format::UnicodeMath).ok()?,
+            builder_heap,
+            UnicodeMathWriter::write(&heap, &config).ok()?,
+        ])
+    }
+
+    /// The structure of a formula: its MathML without rows and attributes.
+    fn structure(input: &str, from: crate::Format) -> String {
+        let mathml = crate::convert(input, from, crate::Format::MathML).unwrap();
+        let mut out = String::new();
+        let mut rest = mathml.as_str();
+        while let Some(open) = rest.find('<') {
+            out.push_str(&rest[..open]);
+            let close = open + rest[open..].find('>').unwrap();
+            let tag = &rest[open + 1..close];
+            let name = tag.split(' ').next().unwrap();
+            if !matches!(name, "mrow" | "/mrow" | "math" | "/math") {
+                out.push('<');
+                out.push_str(name);
+                out.push('>');
+            }
+            rest = &rest[close + 1..];
+        }
+        // A symbol of several characters reads back as one for each.
+        out.replace("</mo><mo>", "")
+    }
+
+    const TEMPLATES: &[&str] = &[
+        "a OP b",
+        "a OP \\frac{b}{c}",
+        "a_1 OP \\frac{b}{c}",
+        "\\sum a OP \\frac{b}{c}",
+        "\\frac{1}{2} OP \\frac{b}{c}",
+        "\\frac{a OP b}{c}",
+        "a OP b^2",
+        "x^{OP}y",
+        "x_{i OP 1}y",
+        "OP \\frac{b}{c}",
+        "a OP",
+        "\\sqrt{a OP b}",
+        "\\sin a OP \\frac{b}{c}",
+    ];
+
+    /// Every operator, delimiter, punctuation mark and arrow a LaTeX command
+    /// spells keeps the structure around it on every path, and its class.
+    #[test]
+    fn every_symbol_command_keeps_structure_and_class() {
+        use crate::Format::{LaTeX, UnicodeMath};
+        let mut failures = Vec::new();
+        for (name, glyph, kind) in crate::unicode::symbols::all_commands() {
+            if matches!(kind, SymbolKind::Alphabetic) || UNWRITABLE.contains(&name.as_str()) {
+                continue;
+            }
+            let delimiter = matches!(
+                kind,
+                SymbolKind::Open | SymbolKind::Close | SymbolKind::Fence
+            );
+            for template in TEMPLATES {
+                // Delimiters pair up; alone they are tried where they can be.
+                if delimiter && *template != "a OP b" && *template != "a OP b^2" {
+                    continue;
+                }
+                let latex = template.replace("OP", &format!("\\{name} "));
+                let Some(written) = by_path(&latex) else {
+                    continue;
+                };
+                let wanted = structure(&latex, LaTeX);
+                for unicode in &written {
+                    let found = structure(unicode, UnicodeMath);
+                    if found != wanted {
+                        failures.push(format!("{latex}: {unicode}: {found} / {wanted}"));
+                        break;
+                    }
+                }
+            }
+            let mut chars = glyph.chars();
+            if let (Some(c), None) = (chars.next(), chars.next())
+                && matches!(kind, SymbolKind::BinaryOp | SymbolKind::Relation)
+                && !OTHER_CLASS.contains(&name.as_str())
+                && {
+                    use crate::reader::{Reader, unicode_math::UnicodeMathReader};
+                    let read = UnicodeMathReader::parse(&glyph, &Config::default()).unwrap();
+                    !matches!(&read.expr.nodes[..], [MathNode::Symbol(found, text)]
+                        if *found == kind && text.starts_with(c))
+                }
+            {
+                failures.push(format!("\\{name} {glyph}: class is not {kind:?}"));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{}\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// Commands whose glyph UnicodeMath uses for something else.
+    const UNWRITABLE: &[&str] = &[
+        // Structure: `&`, `\\`, `^`, `¦` and unpaired brackets.
+        "And",
+        "backslash",
+        "textbackslash",
+        "textasciicircum",
+        "textbrokenbar",
+        "lbrace",
+        "lbrack",
+        "rbrace",
+        "rbrack",
+        // ASCII characters the reader keeps as text.
+        "ldotp",
+        "textasciitilde",
+        "textdollar",
+        "textquotesingle",
+        // Numeric characters, likewise (UTN #28: scripts and fractions).
+        "bbone",
+        "bbzero",
+        "textonehalf",
+        "textonequarter",
+        "textonesuperior",
+        "textthreequarters",
+        "textthreesuperior",
+        "texttwosuperior",
+        // Letters, which read back as identifiers.
+        "Finv",
+        "circledS",
+        "textangstrom",
+        "textflorin",
+        "textmicro",
+        "textmu",
+        "textohm",
+        "textordfeminine",
+        "textordmasculine",
+    ];
+
+    /// Commands that share a glyph with another of a different class.
+    const OTHER_CLASS: &[&str] = &[
+        "bigtriangleup",
+        "vartriangle",
+        "trianglelefteq",
+        "trianglerighteq",
+        "vartriangleleft",
+        "vartriangleright",
+        "dag",
+        "ddag",
+        "bot",
+    ];
 
     fn write(node: MathNode) -> String {
         let expr = MathExpr::inline(vec![node]);

@@ -666,20 +666,23 @@ impl CompactParser {
     /// 2.1: `operand ← operand factor`).
     fn breaks_operand(&self, id: NodeId) -> bool {
         match *self.arena.node(id) {
+            // A grouped n-ary operator is one factor (`〖∑ a〗^2/b`).
+            CompactNode::Subscript { base, .. }
+            | CompactNode::Superscript { base, .. }
+            | CompactNode::SubSup { base, .. }
+                if matches!(*self.arena.node(base), CompactNode::Nary { body, .. }
+                    if !matches!(*self.arena.node(body), CompactNode::Row(span) if span.is_empty())) =>
+            {
+                false
+            },
             // A scripted operator is still an operator (`(^2)+`, `+_1`).
             CompactNode::PreScripts { base, .. }
             | CompactNode::Subscript { base, .. }
             | CompactNode::Superscript { base, .. }
             | CompactNode::SubSup { base, .. } => self.breaks_operand(base),
-            CompactNode::Symbol(kind, sid) => {
-                matches!(
-                    kind,
-                    SymbolKind::BinaryOp
-                        | SymbolKind::Relation
-                        | SymbolKind::Punctuation
-                        | SymbolKind::LargeOp
-                        | SymbolKind::Open
-                ) || matches!(self.arena.str_val(sid), "," | ";" | ":" | "?")
+            CompactNode::Symbol(_, sid) => {
+                let mut chars = self.arena.str_val(sid).chars();
+                chars.next().is_some_and(breaks_operand_at) && chars.next().is_none()
             },
             CompactNode::Nary { .. } | CompactNode::Space(_) | CompactNode::Text(..) => true,
             _ => false,
@@ -1999,38 +2002,33 @@ impl CompactParser {
             (input, SmallVec::new())
         };
 
-        // Try subscript
-        let (input, sub) = if let Some(rest) = input.strip_prefix('_') {
-            match self.parse_script_operand(rest) {
-                Ok((rest, id)) => (rest, id),
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => (input, NodeId::NONE),
-            }
-        } else {
-            (input, NodeId::NONE)
-        };
+        // Scripts nest right to left, as on any base (`∑_a_b`, `∑^-1^′`).
+        let mut rest = input;
+        let mut sub = NodeId::NONE;
+        if let Some(after) = rest.strip_prefix('_')
+            && let Some((after, id)) = self.parse_script_chain(after, '_')?
+        {
+            sub = id;
+            rest = after;
+        }
         // Primes may follow the subscript too (`∑_i′`, as `x_1′`).
-        let input = if sub.is_some() && primes.is_empty() && input.starts_with(is_prime) {
-            let (rest, after) = self.parse_primes(input);
-            primes = after;
-            rest
-        } else {
-            input
-        };
-
-        // Try superscript
-        let input = if let Some(rest) = input.strip_prefix('^') {
-            match self.parse_script_operand(rest) {
-                Ok((rest, id)) => {
-                    primes.push(id);
-                    rest
-                },
-                Err(nom::Err::Failure(e)) => return Err(nom::Err::Failure(e)),
-                Err(_) => input,
+        if sub.is_some() && primes.is_empty() && rest.starts_with(is_prime) {
+            (rest, primes) = self.parse_primes(rest);
+        }
+        if let Some(after) = rest.strip_prefix('^')
+            && let Some((after, id)) = self.parse_script_chain(after, '^')?
+        {
+            primes.push(id);
+            rest = after;
+            if sub.is_none()
+                && let Some(after) = rest.strip_prefix('_')
+                && let Some((after, id)) = self.parse_script_chain(after, '_')?
+            {
+                sub = id;
+                rest = after;
             }
-        } else {
-            input
-        };
+        }
+        let input = rest;
         let sup = if primes.is_empty() {
             NodeId::NONE
         } else {
@@ -2182,6 +2180,13 @@ impl CompactParser {
 // ── Pure helper functions (no arena needed) ───────────────────────────
 
 fn is_nary_char(c: char) -> bool {
+    // The LaTeX commands' big operators, and only those blocks hold any.
+    matches!(c, '\u{2200}'..='\u{22FF}' | '\u{2A00}'..='\u{2AFF}')
+        && crate::unicode::symbols::nary_op_to_latex(c).is_some()
+}
+
+#[cfg(test)]
+fn is_common_nary_char(c: char) -> bool {
     matches!(
         c,
         '\u{2211}' // sum
@@ -2268,33 +2273,30 @@ pub(crate) fn symbol_takes_prime(glyph: &str) -> bool {
         return true;
     };
     !is_prime(c)
+        && !breaks_operand_at(c)
         // Their operand would be the prime (`√′`).
         && !matches!(c, '√' | '∛' | '∜' | '▭' | '⟡')
         && !matches!(c, '(' | '[' | '{' | '\u{27E8}' | '\u{2308}' | '\u{230A}')
-        && !matches!(
-            classify_unicode_symbol(c),
-            SymbolKind::LargeOp
-                | SymbolKind::BinaryOp
-                | SymbolKind::Relation
-                | SymbolKind::Open
-                | SymbolKind::Punctuation
-        )
 }
 
 /// Whether an element starting with `c` (not a fence) ends an n-aryand that
 /// has begun: an operator, punctuation or a big operator.
 pub(crate) fn breaks_naryand(c: char) -> bool {
-    is_nary_char(c)
-        || matches!(c, ',' | ';' | ':' | '?')
-        || (is_math_symbol(c)
-            && matches!(
-                classify_unicode_symbol(c),
-                SymbolKind::BinaryOp
-                    | SymbolKind::Relation
-                    | SymbolKind::Punctuation
-                    | SymbolKind::LargeOp
-                    | SymbolKind::Open
-            ))
+    is_nary_char(c) || (is_math_symbol(c) && breaks_operand_at(c))
+}
+
+/// Whether the symbol `c` ends an operand: the rule for numerators, n-aryands
+/// and primes, in the reader and the writer.
+pub(crate) fn breaks_operand_at(c: char) -> bool {
+    c == '?'
+        || matches!(
+            classify_unicode_symbol(c),
+            SymbolKind::BinaryOp
+                | SymbolKind::Relation
+                | SymbolKind::Punctuation
+                | SymbolKind::LargeOp
+                | SymbolKind::Open
+        )
 }
 
 /// A letter or decimal digit, which continues a simple script operand
@@ -2313,6 +2315,7 @@ pub(crate) fn is_run_char(c: char) -> bool {
 pub(crate) fn is_alphanumeric(c: char) -> bool {
     match c {
         '\u{2000}'..='\u{206F}' | '\u{2190}'..='\u{23FF}' | '\u{27C0}'..='\u{2AFF}' => false,
+        '〖' | '〗' => false,
         _ => c.is_alphanumeric(),
     }
 }
@@ -2419,7 +2422,7 @@ fn skip_blanks(input: &str) -> &str {
 }
 
 fn is_math_symbol(c: char) -> bool {
-    matches!(c,
+    (matches!(c,
         '+' | '-' | '=' | '<' | '>' | ',' | ';' | '!' | '?' | ':' | '|' | '\u{2016}' |
         '\u{00B1}' | '\u{00D7}' | '\u{00F7}' | // ±, ×, ÷
         // UTN #28 table 3.1: `*`, `·` and `•` are operators with the
@@ -2434,24 +2437,31 @@ fn is_math_symbol(c: char) -> bool {
         '\u{23B4}'..='\u{23DF}' | // horizontal braces and bracket accents
         '\u{27C0}'..='\u{27EF}' | // Misc Math Symbols-A
         '\u{2980}'..='\u{29FF}' | // Misc Math Symbols-B
-        '\u{2A00}'..='\u{2AFF}'   // Supplemental Math Operators
-    ) && !is_nary_char(c)
+        '\u{2A00}'..='\u{2AFF}' | // Supplemental Math Operators
+        '\u{2900}'..='\u{297F}' | // Supplemental Arrows-B
+        '\u{2B00}'..='\u{2B4F}'   // Miscellaneous Symbols and Arrows
+    ) || is_other_symbol(c))
+        && !is_nary_char(c)
 }
 
+/// A symbol outside the operator blocks that a command spells (`†`, `…`,
+/// `¬`): not a letter, nor a character with a meaning of its own here.
+fn is_other_symbol(c: char) -> bool {
+    !c.is_ascii()
+        && !is_alphanumeric(c)
+        && !c.is_whitespace()
+        && !is_prime(c)
+        && !matches!(
+            c,
+            '\u{A6}' | '\u{200B}' | '\u{2061}'..='\u{2064}' | '\u{0300}'..='\u{036F}'
+            | '\u{20D0}'..='\u{20FF}' | '▒' | '■' | '▭' | '┬' | '┴' | '〖' | '〗'
+        )
+        && crate::unicode::symbols::is_symbol_glyph(c)
+}
+
+/// The class of a symbol, by [`crate::unicode::symbols::glyph_class`].
 fn classify_unicode_symbol(ch: char) -> SymbolKind {
-    match ch {
-        '+' | '-' | '\u{2212}' | '*' | '\u{00B7}' | '\u{2022}' | '\u{00B1}' | '\u{2213}'
-        | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2227}' | '\u{2228}' | '\u{2295}'
-        | '\u{2297}' | '\u{2229}' | '\u{222A}' => SymbolKind::BinaryOp,
-        '=' | '<' | '>' | '\u{2260}' | '\u{2264}' | '\u{2265}' | '\u{226A}' | '\u{226B}'
-        | '\u{2248}' | '\u{2261}' | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}'
-        | '\u{2208}' | '\u{2209}' | '\u{21D2}' | '\u{21D4}' | '\u{2192}' | '\u{2190}' => {
-            SymbolKind::Relation
-        },
-        '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\u{2016}' | '\u{27E8}' | '\u{27E9}'
-        | '\u{2308}' | '\u{2309}' | '\u{230A}' | '\u{230B}' => SymbolKind::Fence,
-        _ => crate::unicode::symbols::operator_glyph_kind(ch).unwrap_or(SymbolKind::Ordinary),
-    }
+    crate::unicode::symbols::glyph_class(ch).unwrap_or(SymbolKind::Ordinary)
 }
 
 #[cfg(test)]
@@ -3210,6 +3220,14 @@ mod tests {
             })
         ));
         assert!(UnicodeMathReader::parse(&input, &Config::default()).is_ok());
+    }
+
+    #[test]
+    fn nary_characters_are_the_table() {
+        // Every one the reader listed by hand is in the table it now uses.
+        for c in '\0'..=char::MAX {
+            assert!(!is_common_nary_char(c) || is_nary_char(c), "{c:?}");
+        }
     }
 
     #[test]
