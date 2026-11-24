@@ -95,9 +95,11 @@ const READS: &[(&str, &str, &str)] = &[
     ),
     (
         "∑ −inf!^loĝ(x)",
-        "∑ 〖− inf!^loĝ(x)〗",
-        r"\sum\limits {\mathord{-}\inf !^{\hat{\log}}\left( x \right)}",
+        "∑ − inf!^loĝ(x)",
+        r"\sum\limits {-}\inf !^{\hat{\log}}\left( x \right)",
     ),
+    // The minus sign is an operator as the hyphen is (table 3.1).
+    ("a−b/c", "a−b/c", r"a- \frac{b}{c}"),
     // The sign keeps the operand after it; the function's argument is
     // outside the script, which the space ends (appendix A, section 2.3).
     ("e^-sin x", "e^(- sin) x", r"e^{- \sin}x"),
@@ -326,4 +328,197 @@ fn a_word_is_not_written_as_a_function_name() {
         expect(&mathml(&written), &mathml(input))?;
         expect(&unicode_math(&written), &written)
     });
+}
+
+/// LaTeX, its UnicodeMath from every path, and the LaTeX that reads back as.
+const OPERANDS: &[(&str, &str, &str)] = &[
+    (r"\sideset{_1}{}{s}in", "(_1)s in", r"{{}_{1}s}in"),
+    (r"a-\frac{b}{c}", "a−b/c", r"a- \frac{b}{c}"),
+    (r"\frac{\mathord{-}}{b}", "(−)/b", r"\frac{-}{b}"),
+    (r"\,a", "\u{2009}a", r"\,a"),
+    (r"{\sum a}^2", r"〖∑ a〗^2", r"{\sum\limits a}^{2}"),
+    (r"{\sum a}_1", r"〖∑ a〗_1", r"{\sum\limits a}_{1}"),
+    (
+        r"{\int_0^1 f}^2",
+        r"〖∫_0^1 f〗^2",
+        r"{\int\nolimits_{0}^{1} f}^{2}",
+    ),
+    (r"{\prod_k x}^2", r"〖∏_k x〗^2", r"{\prod\limits_k x}^{2}"),
+    (
+        r"{\sum_i a_i}^2",
+        r"〖∑_i a_i〗^2",
+        r"{\sum\limits_i {a_i}}^{2}",
+    ),
+    (
+        r"\underset{n}{\sum a}",
+        r"〖∑ a〗┬n",
+        r"\underset{n}{\mathinner{\sum\limits a}}",
+    ),
+    (
+        r"\overbrace{\sum a}^{n}",
+        r"〖〖∑ a〗┴⏞〗^n",
+        r"{\mathinner{\overset{⏞}{\mathinner{\sum\limits a}}}}^n",
+    ),
+    (
+        r"\underbrace{\sum a}_{n}",
+        r"〖〖∑ a〗┬⏟〗_n",
+        r"{\mathinner{\underset{⏟}{\mathinner{\sum\limits a}}}}_n",
+    ),
+    (
+        r"\sideset{_1}{}{\sum a}_2",
+        r"(_1)〖∑ a〗_2",
+        r"{{}_{1}{\sum\limits a}_{2}}",
+    ),
+    (
+        r"\dot{\sum a}_1",
+        r"〖∑ a〗̇_1",
+        r"{\dot{\sum\limits a}}_{1}",
+    ),
+    (
+        r"\hat{\sum a}_i^2",
+        r"〖∑ a〗̂_i^2",
+        r"{\hat{\sum\limits a}}_i^{2}",
+    ),
+    (
+        r"\frac{\hat{\sum a}}{2}",
+        r"〖∑ a〗̂/2",
+        r"\frac{\hat{\sum\limits a}}{2}",
+    ),
+    (r"\prod_k {max}", r"∏_k 〖m ax〗", r"\prod\limits_k {max}"),
+    (
+        r"\sum_{i} {sin} b",
+        r"∑_i 〖s in〗 b",
+        r"\sum\limits_i {sin}b",
+    ),
+    (r"\mathinner{log}x", r"〖l og〗x", r"\mathinner{log}x"),
+    (
+        r"\int {max}\,dx",
+        r"∫ 〖m ax〗 dx",
+        r"\int\nolimits {max}\,dx",
+    ),
+    (
+        r"\int_0^1 {max}/x dx",
+        r"∫_0^1 〖m ax〗 \/xdx",
+        r"\int\nolimits_{0}^{1} {max}/ xdx",
+    ),
+    (r"{max}/{max}", r"m ax\/m ax", r"max/ max"),
+    (
+        r"\sum_i {xmin} b",
+        r"∑_i 〖xm in〗 b",
+        r"\sum\limits_i {xmin}b",
+    ),
+    (r"\hat{max}", r"〖m ax〗̂", r"\hat{\mathinner{max}}"),
+    (r"\bar{sin}", r"〖s in〗̄", r"\bar{\mathinner{sin}}"),
+    (r"\vec{log}x", r"〖l og〗⃗x", r"\vec{\mathinner{log}}x"),
+    (r"\hat{ab}", r"〖ab〗̂", r"\hat{\mathinner{ab}}"),
+    (r"\hat{kmax}y", r"〖km ax〗̂y", r"\hat{\mathinner{kmax}}y"),
+    (r"\hat{x_1}", r"〖x_1〗̂", r"\hat{x_{1}}"),
+    (r"\bar{\frac{a}{b}}y", r"〖a/b〗̄y", r"\bar{\frac{a}{b}}y"),
+    (r"\hat{a+b}", r"〖a+b〗̂", r"\hat{\mathinner{a+ b}}"),
+    (r"\underset{max}{x}", r"x┬(m ax)", r"\underset{max}{x}"),
+    (r"\sqrt{max}", r"√(m ax)", r"\sqrt{max}"),
+    (r"\boxed{sin}", r"▭(s in)", r"\boxed{sin}"),
+    (r"x_{max1}", r"x_max1", r"x_{max1}"),
+    (r"x_{kmax}y", r"x_kmax y", r"x_{kmax}y"),
+    (r"{max}_1", r"〖m ax〗_1", r"{max}_{1}"),
+    (r"\frac{sin}{max}", r"(s in)/(m ax)", r"\frac{sin}{max}"),
+    (r"\sum_{max} x", r"∑_(m ax) x", r"\sum\limits_{max} x"),
+    (r"\left(max\right)", r"(m ax)", r"\left( max \right)"),
+    (
+        r"\left(x_1\middle|y\right)",
+        r"(x_1|y)",
+        r"\left( x_{1}|y \right)",
+    ),
+    (
+        r"\left(max\middle|log x\right)",
+        r"(m ax|logx)",
+        r"\left( max|logx \right)",
+    ),
+    (
+        r"\begin{matrix}max&sin\end{matrix}",
+        r"■(m ax&s in)",
+        r"\begin{matrix} max & sin \end{matrix}",
+    ),
+    (r"\sin{max}", r"sin m ax", r"\sin max"),
+    (r"x_{\sqrt{x}}", r"x_(√x)", r"x_{\sqrt{x}}"),
+    (r"x^{\left(a\right)}", r"x^((a))", r"x^{\left( a \right)}"),
+    (r"x_1'^{\sqrt{x}}", r"x′_1^(√x)", r"x_{1}^{\prime\sqrt{x}}"),
+];
+
+/// UnicodeMath of a LaTeX formula by each path: `convert` (normalized), the
+/// builder (not normalized), and the heap writer for both.
+fn unicode_math_by_path(latex: &str) -> [(&'static str, String); 4] {
+    use mathema::reader::{Reader, latex::LatexReader};
+    use mathema::writer::{Writer, unicode_math::UnicodeMathWriter};
+    let config = mathema::Config::default();
+    let mut heap = LatexReader::parse(latex, &config).unwrap().expr;
+    let builder_heap = UnicodeMathWriter::write(&heap, &config).unwrap();
+    mathema::ast::normalize::normalize_expr(&mut heap);
+    [
+        (
+            "convert",
+            convert(latex, Format::LaTeX, Format::UnicodeMath).unwrap(),
+        ),
+        (
+            "builder",
+            mathema::from_latex(latex)
+                .unwrap()
+                .to_unicode_math()
+                .unwrap(),
+        ),
+        ("heap builder", builder_heap),
+        (
+            "heap convert",
+            UnicodeMathWriter::write(&heap, &config).unwrap(),
+        ),
+    ]
+}
+
+/// Grouped n-ary operators, accents over several atoms, words that spell or
+/// contain function names, and fences, in every construct's operand.
+#[test]
+fn operands_agree_on_every_path() {
+    check(OPERANDS, |&(latex, written, read)| {
+        for (path, unicode) in unicode_math_by_path(latex) {
+            expect(&unicode, written).map_err(|error| format!("{path}: {error}"))?;
+        }
+        expect(
+            &convert(written, Format::UnicodeMath, Format::LaTeX).unwrap(),
+            read,
+        )
+    });
+}
+
+/// An empty script after a fraction does not join its denominator.
+#[test]
+fn an_empty_script_after_a_fraction_stays_apart() {
+    for (path, unicode) in unicode_math_by_path(r"\frac{1}{2}{}{}^2x") {
+        let wanted = if path.ends_with("builder") {
+            "1/2 〖〗^2 x"
+        } else {
+            "1/2 (^2)x"
+        };
+        assert_eq!(unicode, wanted, "{path}");
+        let latex = convert(&unicode, Format::UnicodeMath, Format::LaTeX).unwrap();
+        assert!(latex.starts_with(r"\frac{1}{2}"), "{path}: {latex}");
+    }
+}
+
+/// The readings a script takes from MathML (no LaTeX spells them).
+#[test]
+fn a_space_after_a_sign_script_ends_it() {
+    check(
+        &[
+            ("x^- 1/2", r"x^-\frac{1}{2}"),
+            ("(^2)x^- 1/2", r"{{}^{2}x^-}\frac{1}{2}"),
+            ("√^′", r"{\surd}^{\prime}"),
+            ("(|)/y", r"\frac{|}{y}"),
+        ],
+        |&(input, latex)| {
+            expect(
+                &convert(input, Format::UnicodeMath, Format::LaTeX).unwrap(),
+                latex,
+            )
+        },
+    );
 }

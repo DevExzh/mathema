@@ -79,8 +79,9 @@ impl Reader for UnicodeMathReader {
 
     fn parse_compact(input: &str, config: &Config) -> Result<CompactParseResult> {
         config.check_input_size(input)?;
-        let lead = input.len() - input.trim_start().len();
-        let input = input.trim();
+        // A typographic space is content even at the ends.
+        let lead = input.len() - skip_blanks(input).len();
+        let input = input.trim_matches(is_blank);
         if input.is_empty() {
             return Ok(CompactParseResult::new(CompactExpr::new(
                 AstArena::new(),
@@ -412,8 +413,9 @@ impl CompactParser {
                 Err(_) => break,
             }
         }
-        if !remaining.trim().is_empty() {
-            let sid = self.arena.push_str(remaining.trim());
+        let remaining = remaining.trim_matches(is_blank);
+        if !remaining.is_empty() {
+            let sid = self.arena.push_str(remaining);
             ids.push(self.push_node(CompactNode::Text(TextStyle::Normal, sid)));
         }
         if let Some(error) = self.abort.take() {
@@ -1360,6 +1362,23 @@ impl CompactParser {
                 return Ok((rest, self.push_node(CompactNode::Row(NodeSpan::EMPTY))));
             }
             let base = self.flatten_single(&children);
+            // One atom that only needed the group to take an accent whole
+            // (`〖x_1〗̂`) is the accent's base itself.
+            if unicode_accent_suffix(rest).is_some()
+                && matches!(
+                    *self.arena.node(base),
+                    CompactNode::Subscript { .. }
+                        | CompactNode::Superscript { .. }
+                        | CompactNode::SubSup { .. }
+                        | CompactNode::Underscript { .. }
+                        | CompactNode::Overscript { .. }
+                        | CompactNode::UnderOver { .. }
+                        | CompactNode::Fraction { .. }
+                        | CompactNode::Nary { .. }
+                )
+            {
+                return Ok((rest, base));
+            }
             // A subscript on an explicitly grouped named function belongs at
             // the side, even when its ungrouped name would take display
             // limits. Preserve this long-standing ordinary UnicodeMath rule;
@@ -2063,17 +2082,23 @@ impl CompactParser {
     }
 
     fn parse_symbol<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (rest, id) = self.parse_symbol_char(input)?;
+        // Skip blanks after a binary operator or a relation.
+        let skips = matches!(
+            *self.arena.node(id),
+            CompactNode::Symbol(SymbolKind::BinaryOp | SymbolKind::Relation, _)
+        );
+        Ok((if skips { skip_blanks(rest) } else { rest }, id))
+    }
+
+    /// A symbol and nothing after it: a space after one in a script ends the
+    /// script (`x^- 1/2`).
+    fn parse_symbol_char<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (rest, ch) = satisfy(is_math_symbol)(input)?;
-        let kind = classify_unicode_symbol(ch);
-        // Skip whitespace after binary/relation operators
-        let rest = if matches!(kind, SymbolKind::BinaryOp | SymbolKind::Relation) {
-            skip_blanks(rest)
-        } else {
-            rest
-        };
-        let sid = self.arena.push_str(&ch.to_string());
-        let id = self.push_node(CompactNode::Symbol(kind, sid));
-        Ok((rest, id))
+        let mut buf = [0_u8; 4];
+        let sid = self.arena.push_str(ch.encode_utf8(&mut buf));
+        let symbol = CompactNode::Symbol(classify_unicode_symbol(ch), sid);
+        Ok((rest, self.push_node(symbol)))
     }
 
     fn parse_identifier<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
@@ -2142,7 +2167,7 @@ impl CompactParser {
             self,
             input,
             parse_number,
-            parse_symbol,
+            parse_symbol_char,
             parse_identifier,
             parse_prime,
             parse_zero_width_space,
@@ -2220,7 +2245,7 @@ pub(crate) fn is_prime(c: char) -> bool {
 
 /// The opening fence a closing fence `c` pairs with (`|` and `‖` pair
 /// with themselves).
-fn opening_fence(c: char) -> Option<char> {
+pub(crate) fn opening_fence(c: char) -> Option<char> {
     Some(match c {
         '|' | '\u{2016}' => c,
         ')' => '(',
@@ -2243,6 +2268,8 @@ pub(crate) fn symbol_takes_prime(glyph: &str) -> bool {
         return true;
     };
     !is_prime(c)
+        // Their operand would be the prime (`√′`).
+        && !matches!(c, '√' | '∛' | '∜' | '▭' | '⟡')
         && !matches!(c, '(' | '[' | '{' | '\u{27E8}' | '\u{2308}' | '\u{230A}')
         && !matches!(
             classify_unicode_symbol(c),
@@ -2413,9 +2440,9 @@ fn is_math_symbol(c: char) -> bool {
 
 fn classify_unicode_symbol(ch: char) -> SymbolKind {
     match ch {
-        '+' | '-' | '*' | '\u{00B7}' | '\u{2022}' | '\u{00B1}' | '\u{2213}' | '\u{00D7}'
-        | '\u{00F7}' | '\u{22C5}' | '\u{2227}' | '\u{2228}' | '\u{2295}' | '\u{2297}'
-        | '\u{2229}' | '\u{222A}' => SymbolKind::BinaryOp,
+        '+' | '-' | '\u{2212}' | '*' | '\u{00B7}' | '\u{2022}' | '\u{00B1}' | '\u{2213}'
+        | '\u{00D7}' | '\u{00F7}' | '\u{22C5}' | '\u{2227}' | '\u{2228}' | '\u{2295}'
+        | '\u{2297}' | '\u{2229}' | '\u{222A}' => SymbolKind::BinaryOp,
         '=' | '<' | '>' | '\u{2260}' | '\u{2264}' | '\u{2265}' | '\u{226A}' | '\u{226B}'
         | '\u{2248}' | '\u{2261}' | '\u{2282}' | '\u{2283}' | '\u{2286}' | '\u{2287}'
         | '\u{2208}' | '\u{2209}' | '\u{21D2}' | '\u{21D4}' | '\u{2192}' | '\u{2190}' => {
