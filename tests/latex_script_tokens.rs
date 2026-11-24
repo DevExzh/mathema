@@ -315,3 +315,13 @@ fn written_script_arguments_are_one_tex_token() {
         }
     }
 }
+
+/// A glyph whose class needs a command is braced as a script argument.
+#[test]
+fn classed_glyph_argument_is_braced() {
+    let input = "x^{\\mathrel{\u{5252}}}";
+    let mathml = r#"<math><msup><mi>x</mi><mo data-mjx-texclass="REL">&#x5252;</mo></msup></math>"#;
+    let written = mathema::from_mathml(mathml).unwrap().to_latex().unwrap();
+    assert_eq!(written, input);
+    assert_eq!(latex(&written), written);
+}

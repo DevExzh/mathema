@@ -688,7 +688,11 @@ fn write_script_arg(
                 // A glyph spelled with the `\char` primitive is the primitive
                 // and its character code, not one token (`x^\char`\^` is an
                 // error in KaTeX).
-                if buf[start..].starts_with(r"\char") {
+                // So is a glyph that needs a class command (`\mathrel{…}`).
+                if buf[start..].starts_with(r"\char")
+                    || (buf[start..].starts_with(r"\math")
+                        && matches!(*arena.node(arg), CompactNode::Symbol(..)))
+                {
                     buf.insert_text(start, "{");
                     buf.push('}');
                 }
