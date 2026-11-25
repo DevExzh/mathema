@@ -69,7 +69,7 @@ const READS: &[(&str, &str, &str)] = &[
     (
         "x/〖ab〗̅",
         "x/〖ab〗̅",
-        r"\frac{x}{\overset{̅}{\mathinner{ab}}}",
+        r"\frac{x}{\overline{\mathinner{ab}}}",
     ),
     // Empty operands are empty groups.
     ("\u{200B}/y", "〖〗/y", r"\frac{\mathinner{}}{y}"),

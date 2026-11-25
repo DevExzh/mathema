@@ -1232,6 +1232,25 @@ pub(crate) fn is_accent_glyph(ch: char) -> bool {
     )
 }
 
+/// Combining marks placed below their base (canonical combining class 220 of
+/// the two math blocks).
+pub(crate) fn is_mark_below(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0316}'..='\u{0319}'
+            | '\u{031C}'..='\u{0320}'
+            | '\u{0323}'..='\u{0326}'
+            | '\u{0329}'..='\u{0333}'
+            | '\u{0339}'..='\u{033C}'
+            | '\u{0347}'..='\u{0349}'
+            | '\u{034D}'..='\u{034E}'
+            | '\u{0353}'..='\u{0356}'
+            | '\u{0359}'..='\u{035A}'
+            | '\u{20E8}'
+            | '\u{20EC}'..='\u{20EF}'
+    )
+}
+
 /// Integral operators use side scripts by default in every TeX math style.
 #[inline]
 pub(crate) fn is_integral_operator(ch: char) -> bool {

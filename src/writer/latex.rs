@@ -1806,6 +1806,11 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     ('\u{0301}', _) => Some("acute"),
                     ('\u{0300}', _) => Some("grave"),
                     ('\u{030A}', _) => Some("mathring"),
+                    ('\u{0305}', _) => Some("overline"),
+                    ('\u{20D0}', _) => Some("overleftharpoon"),
+                    ('\u{20D1}', _) => Some("overrightharpoon"),
+                    ('\u{20D6}', _) => Some("overleftarrow"),
+                    ('\u{20E1}', _) => Some("overleftrightarrow"),
                     ('\u{2192}', _) => Some("overrightarrow"),
                     ('\u{2190}', _) => Some("overleftarrow"),
                     ('\u{2194}', _) => Some("overleftrightarrow"),
@@ -1823,6 +1828,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     '\u{2190}' => Some("underleftarrow"),
                     '\u{2194}' => Some("underleftrightarrow"),
                     '\u{0330}' => Some("utilde"),
+                    '\u{0331}' | '\u{0332}' => Some("underline"),
+                    '\u{20EE}' => Some("underleftarrow"),
+                    '\u{20EF}' => Some("underrightarrow"),
                     '\u{23DD}' => Some("undergroup"),
                     '\u{23DF}' => Some("underbrace"),
                     '\u{23B5}' if wide => Some("underbracket"),
@@ -1843,7 +1851,12 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     AccentPosition::Above => "\\overset{",
                     AccentPosition::Below => "\\underset{",
                 });
-                write_char(buf, accent, Place::Accent);
+                // A combining mark would join the brace before it.
+                if is_joining_mark(accent) {
+                    write_char_code(buf, accent, " ");
+                } else {
+                    write_char(buf, accent, Place::Accent);
+                }
                 buf.push_str("}{");
                 write_accent_base_content(buf, arena, base);
                 buf.push('}');

@@ -73,8 +73,8 @@ const READS: &[(&str, &str, &str)] = &[
     ("x^1sin1", "x^1 sin1", r"x^{1}sin1"),
     ("x_max", "x_max", r"x_{\max}"),
     // Accents, primes and scripts on a function name in a script.
-    ("x_max̅ y", "x_max̅ y", r"x_{\overset{̅}{\max}}y"),
-    ("x_min̅^2", "x_min̅^2", r"x_{\overset{̅}{\min}}^{2}"),
+    ("x_max̅ y", "x_max̅ y", r"x_{\overline{\max}}y"),
+    ("x_min̅^2", "x_min̅^2", r"x_{\overline{\min}}^{2}"),
     ("x_max̂/2", "x_max̂/2", r"\frac{x_{\hat{\max}}}{2}"),
     ("x_max̂!", "x_max̂!", r"x_{\hat{\max}}!"),
     ("x_max̂′", "x_max̂^′", r"x_{\hat{\max}}^{\prime}"),
@@ -363,7 +363,7 @@ const OPERANDS: &[(&str, &str, &str)] = &[
     (
         r"a\not\doteq\frac{b}{c}",
         "a≐̸b/c",
-        r"a\overset{̸}{\doteq}\frac{b}{c}",
+        r"a\overset{\char824 }{\doteq}\frac{b}{c}",
     ),
     (
         r"\left(a\frac{b}{c}\right)",

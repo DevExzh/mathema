@@ -2774,7 +2774,7 @@ fn is_integral(c: char) -> bool {
 fn unicode_accent_suffix(input: &str) -> Option<(&str, char, AccentPosition, bool)> {
     let ch = input.chars().next()?;
     let (position, wide) = match ch {
-        '\u{0332}' => (AccentPosition::Below, false),
+        _ if crate::unicode::symbols::is_mark_below(ch) => (AccentPosition::Below, false),
         '\u{0300}'..='\u{036F}' | '\u{20D0}'..='\u{20FF}' => (AccentPosition::Above, false),
         '\u{23B4}' | '\u{23DE}' => (AccentPosition::Above, true),
         '\u{23B5}' | '\u{23DF}' => (AccentPosition::Below, true),
