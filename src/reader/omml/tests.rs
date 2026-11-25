@@ -1038,16 +1038,10 @@ fn matrix_padding_is_bounded_over_the_whole_input() {
 #[test]
 fn host_run_properties_without_an_ast_home_are_reported() {
     let input = format!(
-        r#"<m:oMath {NS} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><m:r><w:rPr><w:vanish/><w:sz w:val="28"/><w:highlight w:val="yellow"/></w:rPr><m:t>x</m:t></m:r><m:r><a:rPr sz="2400" i="1"><a:latin typeface="Cambria Math"/></a:rPr><m:t>y</m:t></m:r></m:oMath>"#
+        r#"<m:oMath {NS} xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><m:r><w:rPr><w:vanish/><w:highlight w:val="yellow"/></w:rPr><m:t>x</m:t></m:r><m:r><a:rPr sz="2400" i="1"><a:latin typeface="Cambria Math"/></a:rPr><m:t>y</m:t></m:r></m:oMath>"#
     );
     let result = OmmlReader::parse(&input, &Config::default()).unwrap();
-    for name in [
-        "<w:vanish>",
-        "<w:sz>",
-        "<w:highlight>",
-        "a:rPr@sz",
-        "<a:latin>",
-    ] {
+    for name in ["<w:vanish>", "<w:highlight>", "a:rPr@sz", "<a:latin>"] {
         assert!(
             result
                 .diagnostics
@@ -1137,6 +1131,6 @@ fn padding_cells_are_separate_nodes() {
     let x = expr.arena.push_str("x");
     let ident = expr.arena.push_node(CompactNode::Identifier(x));
     let span = expr.arena.push_children(&[ident]).unwrap();
-    *expr.arena.node_mut(pad1) = CompactNode::Row(span);
+    *expr.arena.node_mut_in_place(pad1) = CompactNode::Row(span);
     assert!(matches!(*expr.arena.node(pad2), CompactNode::Row(s) if s.is_empty()));
 }

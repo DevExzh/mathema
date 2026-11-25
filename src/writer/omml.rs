@@ -141,6 +141,7 @@ impl OmmlWriter {
         } else {
             e.open_root("m:oMath");
         }
+        e.start(expr);
         e.seq(expr.arena.children(expr.roots), Fmt::default());
         e.buf.push_str("</m:oMath>");
         if options.display_block {
@@ -182,6 +183,7 @@ impl OmmlWriter {
             e.arena = &eq.arena;
             e.style = MathStyle::from(eq.display);
             e.buf.push_str("<m:oMath>");
+            e.start(eq);
             e.seq(eq.arena.children(eq.roots), Fmt::default());
             e.buf.push_str("</m:oMath>");
         }
@@ -262,6 +264,11 @@ struct Emitter<'a> {
     buf: String,
     arena: &'a AstArena,
     host: OmmlRunProperties,
+    /// The size of ordinary text in points.
+    base_pt: f64,
+    /// The size of the runs being written, in half points, outside of
+    /// scripts.
+    run_size: Option<u16>,
     style: MathStyle,
     diags: Vec<Diagnostic>,
     seen: HashSet<String>,
@@ -273,6 +280,8 @@ impl<'a> Emitter<'a> {
             buf: String::with_capacity(512),
             arena,
             host,
+            base_pt: f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),
+            run_size: None,
             style,
             diags: Vec::new(),
             seen: HashSet::new(),
@@ -445,8 +454,66 @@ impl<'a> Emitter<'a> {
         self.close("m:r");
     }
 
+    /// Start an equation. The size of ordinary text
+    /// is written too, if it is known and the host has one.
+    fn start(&mut self, expr: &CompactExpr) {
+        self.base_pt = crate::ast::attrs::base_size_pt(expr.meta.as_deref());
+        let known = expr
+            .meta
+            .as_deref()
+            .is_some_and(|meta| meta.base_size_pt.is_some());
+        self.run_size = (known && self.host == OmmlRunProperties::WordprocessingMl)
+            .then(|| (self.base_pt * 2.0).round().clamp(1.0, f64::from(u16::MAX)) as u16);
+    }
+
+    /// The size of an object's own sign.
+    fn control(&mut self, id: NodeId) {
+        if self.run_size.is_some() || self.arena.has_attrs() {
+            self.sized_control(id);
+        }
+    }
+
+    #[cold]
+    fn sized_control(&mut self, id: NodeId) {
+        let own = self.arena.attrs(id).and_then(|attrs| attrs.glyph_size);
+        let Some(size) = own.map(|size| self.half_points(size)).or(self.run_size) else {
+            return;
+        };
+        if self.host == OmmlRunProperties::WordprocessingMl {
+            self.buf.push_str(&format!(
+                "<m:ctrlPr><w:rPr><w:sz w:val=\"{size}\"/></w:rPr></m:ctrlPr>"
+            ));
+        } else {
+            self.drop_size();
+        }
+    }
+
+    fn drop_size(&mut self) {
+        let message = "font sizes need OmmlRunProperties::WordprocessingMl and were dropped";
+        if self.seen.insert(message.to_owned()) {
+            self.diags.push(Diagnostic {
+                kind: DiagnosticKind::Info,
+                message: message.to_owned(),
+                span: None,
+            });
+        }
+    }
+
+    /// The run size that gives the node its font size where it is.
+    #[cold]
+    fn size_of(&self, id: NodeId) -> Option<u16> {
+        Some(self.half_points(self.arena.attrs(id)?.size?))
+    }
+
+    /// The run size that is `size` where it is written.
+    fn half_points(&self, size: FontSize) -> u16 {
+        let level = [1.0, 0.7, 0.5][self.style.size_class().min(2)];
+        let half_points = size.scale(self.base_pt) * self.base_pt / level * 2.0;
+        half_points.round().clamp(1.0, f64::from(u16::MAX)) as u16
+    }
+
     fn host_props(&mut self, host: Host) {
-        if !host.bold && !host.italic && host.color.is_none() {
+        if !host.bold && !host.italic && host.color.is_none() && self.run_size.is_none() {
             return;
         }
         match self.host {
@@ -457,6 +524,9 @@ impl<'a> Emitter<'a> {
                          or DrawingMl) and was dropped",
                     );
                 }
+                if self.run_size.is_some() {
+                    self.drop_size();
+                }
                 if host.bold || host.italic {
                     self.loss(
                         "bold or italic normal text needs host run properties \
@@ -465,7 +535,8 @@ impl<'a> Emitter<'a> {
                 }
             },
             OmmlRunProperties::WordprocessingMl => {
-                // CT_RPr child order: b, i, ..., color (ECMA-376 §17.3.2.28).
+                // CT_RPr child order: b, i, ..., color sz
+                // (ECMA-376 §17.3.2.28).
                 self.open("w:rPr");
                 if host.bold {
                     self.buf.push_str("<w:b/>");
@@ -477,9 +548,18 @@ impl<'a> Emitter<'a> {
                     self.buf
                         .push_str(&format!("<w:color w:val=\"{r:02X}{g:02X}{b:02X}\"/>"));
                 }
+                if let Some(size) = self.run_size {
+                    self.buf.push_str(&format!("<w:sz w:val=\"{size}\"/>"));
+                }
                 self.close("w:rPr");
             },
             OmmlRunProperties::DrawingMl => {
+                if self.run_size.is_some() {
+                    self.drop_size();
+                    if !host.bold && !host.italic && host.color.is_none() {
+                        return;
+                    }
+                }
                 self.buf.push_str("<a:rPr");
                 if host.bold {
                     self.buf.push_str(" b=\"1\"");
@@ -705,6 +785,25 @@ impl<'a> Emitter<'a> {
     }
 
     fn node(&mut self, id: NodeId, fmt: Fmt) {
+        if self.arena.has_attrs() {
+            return self.sized_node(id, fmt);
+        }
+        self.bare_node(id, fmt);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn sized_node(&mut self, id: NodeId, fmt: Fmt) {
+        let outer = self.run_size;
+        if let Some(size) = self.size_of(id) {
+            self.run_size = Some(size);
+        }
+        self.bare_node(id, fmt);
+        self.run_size = outer;
+    }
+
+    #[inline(always)]
+    fn bare_node(&mut self, id: NodeId, fmt: Fmt) {
         if fmt.color.is_some()
             && matches!(
                 *self.arena.node(id),
@@ -923,6 +1022,7 @@ impl<'a> Emitter<'a> {
                 if sup.is_none() {
                     self.on("m:supHide");
                 }
+                self.control(id);
                 self.close("m:naryPr");
                 self.with_style(style.sub(), |e| e.arg("m:sub", sub, fmt));
                 self.with_style(style.sup(), |e| e.arg("m:sup", sup, fmt));
@@ -955,6 +1055,7 @@ impl<'a> Emitter<'a> {
                     self.open("m:acc");
                     self.open("m:accPr");
                     self.val("m:chr", chr);
+                    self.control(id);
                     self.close("m:accPr");
                     self.arg("m:e", base, fmt);
                     self.close("m:acc");

@@ -23,6 +23,7 @@ use smallvec::SmallVec;
 
 use crate::ast::arena::AstArena;
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::style::MathStyle;
 use crate::ast::*;
 use crate::error::{
     CompactParseResult, Config, Diagnostic, DiagnosticKind, Error, ParseResult, Result, Strictness,
@@ -175,12 +176,17 @@ impl MathReader for OmmlReader {
                     config.display
                 };
                 let roots = parser.single_expression(doc)?;
-                let Parser { arena, diags, .. } = parser;
-                arena.check_limits()?;
-                Ok(CompactParseResult::with_diagnostics(
-                    CompactExpr::new(arena, roots, display),
+                let Parser {
+                    mut arena,
                     diags,
-                ))
+                    sizes,
+                    ..
+                } = parser;
+                arena.check_limits()?;
+                let base = sizes.apply(&mut arena);
+                let mut expr = CompactExpr::new(arena, roots, display);
+                expr.set_base_size(base);
+                Ok(CompactParseResult::with_diagnostics(expr, diags))
             },
             // Resource limits apply in every mode.
             Err(e) if config.strictness == Strictness::Lenient && !is_limit(&e) => {
@@ -221,7 +227,10 @@ impl OmmlReader {
                     let mut arena = eq.arena.unwrap_or_default();
                     let roots = checked_span(&mut arena, &eq.ids)?;
                     arena.check_limits()?;
-                    equations.push(CompactExpr::new(arena, roots, display));
+                    let base = eq.sizes.apply(&mut arena);
+                    let mut expr = CompactExpr::new(arena, roots, display);
+                    expr.set_base_size(base);
+                    equations.push(expr);
                 }
                 Ok(OmmlParagraph {
                     justification: doc.justification,
@@ -287,6 +296,7 @@ enum Item<'i> {
 /// One equation being collected. In paragraph mode every equation owns its
 /// arena; otherwise all equations share the parser's arena.
 struct Equation {
+    sizes: RunSizes,
     arena: Option<AstArena>,
     ids: SmallVec<[NodeId; 8]>,
     fragment: bool,
@@ -329,6 +339,8 @@ struct HostRunProps {
     bold: bool,
     italic: bool,
     color: Option<[u8; 3]>,
+    /// `w:sz`, in half points.
+    size: Option<u16>,
 }
 
 impl HostRunProps {
@@ -344,7 +356,67 @@ impl HostRunProps {
 
 type Ids = SmallVec<[NodeId; 8]>;
 
+/// The text runs read and their sizes.
+#[derive(Default)]
+struct RunSizes {
+    sized: Vec<(NodeId, MathStyle, u16)>,
+    /// The signs of n-ary objects and accents.
+    signs: Vec<(NodeId, MathStyle, u16)>,
+    /// A run has the size that the document gives it.
+    unsized_runs: bool,
+}
+
+impl RunSizes {
+    /// A node took the place of a run.
+    fn replaced(&mut self, old: NodeId, new: NodeId) {
+        for (id, ..) in &mut self.sized {
+            if *id == old {
+                *id = new;
+            }
+        }
+    }
+
+    /// Give the runs their sizes, and return the size of ordinary text.
+    ///
+    /// The application scales the runs of scripts: what `w:sz` gives is the
+    /// size that a run would have outside of them.
+    fn apply(self, arena: &mut AstArena) -> Option<Rational> {
+        let mut counts = std::collections::BTreeMap::<u16, usize>::new();
+        for &(_, _, size) in &self.sized {
+            *counts.entry(size).or_default() += 1;
+        }
+        // Unsized runs have a size that only the document knows.
+        let base = (!self.unsized_runs)
+            .then(|| {
+                counts
+                    .into_iter()
+                    .max_by_key(|&(size, count)| (count, size))
+            })
+            .flatten()
+            .map(|(size, _)| size);
+        let points = |style: MathStyle, size: u16| {
+            let per_mille = [1000, 700, 500][style.size_class().min(2)];
+            FontSize::Points(Rational::new(i32::from(size) * per_mille, 2000))
+        };
+        for (id, style, size) in self.signs {
+            if Some(size) != base {
+                arena.add_attrs(id, &NodeAttrs::with_glyph_size(points(style, size)));
+            }
+        }
+        for (id, style, size) in self.sized {
+            if Some(size) == base {
+                continue;
+            }
+            arena.add_attrs(id, &NodeAttrs::with_size(points(style, size)));
+        }
+        base.map(|size| Rational::new(size.into(), 2))
+    }
+}
+
 struct Parser<'i> {
+    sizes: RunSizes,
+    /// The math style of what is being read.
+    style: MathStyle,
     reader: NsReader<&'i [u8]>,
     arena: AstArena,
     strict: bool,
@@ -426,6 +498,8 @@ impl<'i> Parser<'i> {
         cfg.check_end_names = true;
         cfg.check_comments = true;
         Self {
+            sizes: RunSizes::default(),
+            style: config.display.into(),
             reader,
             arena: AstArena::new(),
             strict: config.strictness == Strictness::Strict,
@@ -736,6 +810,25 @@ impl<'i> Parser<'i> {
         Ok(())
     }
 
+    /// The `w:sz` of an `m:ctrlPr`, the formatting of an object's own sign.
+    /// Word writes one into every object; what else it says is not kept.
+    fn control_size(&mut self) -> Result<Option<u16>> {
+        let mut size = None;
+        while let Some(child) = self.next_child("m:ctrlPr")? {
+            if child.ns != Ns::Wml || child.local() != "rPr" {
+                self.skip()?;
+                continue;
+            }
+            while let Some(child) = self.next_child("w:rPr")? {
+                if child.ns == Ns::Wml && child.local() == "sz" {
+                    size = self.attr(&child, "val")?.as_deref().and_then(half_points);
+                }
+                self.skip()?;
+            }
+        }
+        Ok(size)
+    }
+
     /// Store `id` into an argument slot, refusing duplicates.
     fn set_once(
         &mut self,
@@ -805,6 +898,7 @@ impl<'i> Parser<'i> {
         // The previous arena (if any) is stashed in the new equation slot and
         // swapped back in `end_equation`.
         doc.equations.push(Equation {
+            sizes: RunSizes::default(),
             arena,
             ids: SmallVec::new(),
             fragment,
@@ -817,6 +911,7 @@ impl<'i> Parser<'i> {
             && let Some(outer) = eq.arena.take()
         {
             eq.arena = Some(std::mem::replace(&mut self.arena, outer));
+            eq.sizes = std::mem::take(&mut self.sizes);
         }
     }
 
@@ -860,6 +955,7 @@ impl<'i> Parser<'i> {
                 self.recover("more than one <m:oMathPara> in the input".into())?;
             }
             doc.paragraph = true;
+            self.style = MathStyle::Display;
             return self.math_paragraph(doc);
         }
         if el.is_math("oMath") {
@@ -1048,6 +1144,21 @@ impl<'i> Parser<'i> {
 
     /// Parse an argument (`CT_OMathArg`) and return its nodes.
     fn arg(&mut self, name: &'static str) -> Result<Ids> {
+        let outer = self.style;
+        self.style = match name {
+            "m:sub" | "m:lim" => outer.sub(),
+            "m:sup" => outer.sup(),
+            "m:deg" => MathStyle::ScriptScript,
+            "m:num" => outer.fracnum(),
+            "m:den" => outer.fracden(),
+            _ => outer,
+        };
+        let result = self.arg_content(name);
+        self.style = outer;
+        result
+    }
+
+    fn arg_content(&mut self, name: &'static str) -> Result<Ids> {
         let mut out = Ids::new();
         let mut seen_pr = false;
         while let Some(child) = self.next_child(name)? {
@@ -1183,8 +1294,8 @@ impl<'i> Parser<'i> {
         ));
     }
 
-    /// `w:rPr`: keep bold, italic and color; other host formatting (fonts,
-    /// sizes, highlighting, ...) is dropped with a note per property.
+    /// `w:rPr`: keep bold, italic, color and size; other host formatting
+    /// (fonts, highlighting, ...) is dropped with a note per property.
     fn wml_run_props(&mut self, host: &mut HostRunProps) -> Result<()> {
         while let Some(child) = self.next_child("w:rPr")? {
             if child.ns != Ns::Wml {
@@ -1196,6 +1307,23 @@ impl<'i> Parser<'i> {
             match child.local() {
                 "b" => host.bold = self.on_off(&child)?,
                 "i" => host.italic = self.on_off(&child)?,
+                "sz" => {
+                    let val = self.attr(&child, "val")?;
+                    self.skip()?;
+                    // ST_HpsMeasure: half points, or a length.
+                    host.size = match val.as_deref() {
+                        None => None,
+                        Some(val) => match half_points(val) {
+                            Some(size) => Some(size),
+                            // A valid number that is no size.
+                            None if val.bytes().all(|b| b.is_ascii_digit()) => {
+                                self.info(format!("the run size {val:?} was dropped"));
+                                None
+                            },
+                            None => self.bad_value(&child, val, None)?,
+                        },
+                    };
+                },
                 "color" => {
                     let val = self.attr(&child, "val")?;
                     self.skip()?;
@@ -1279,6 +1407,15 @@ impl<'i> Parser<'i> {
             );
         } else {
             self.tokenize(text, props.style(), &mut ids)?;
+        }
+        match host.size {
+            Some(size) => {
+                let style = self.style;
+                self.sizes
+                    .sized
+                    .extend(ids.iter().map(|&id| (id, style, size)));
+            },
+            None => self.sizes.unsized_runs = true,
         }
         match host.color {
             // One wrapper per token, matching the writer's one run per token.
@@ -1425,6 +1562,7 @@ impl<'i> Parser<'i> {
     /// `m:acc` (§22.1.2.1): `accPr{chr}`, `e`.
     fn accent(&mut self) -> Result<NodeId> {
         let mut chr = Some("\u{0302}".to_owned());
+        let mut mark = None;
         let mut base = None;
         let mut seen_pr = false;
         while let Some(c) = self.next_child("m:acc")? {
@@ -1432,10 +1570,11 @@ impl<'i> Parser<'i> {
                 (Ns::Math, "accPr") => {
                     if self.once_props(&mut seen_pr, "accPr", "m:acc")? {
                         self.props("m:accPr", &[], |p, c| {
-                            if c.local() != "chr" {
-                                return Ok(false);
+                            match c.local() {
+                                "chr" => chr = p.char_val(c)?,
+                                "ctrlPr" => mark = p.control_size()?,
+                                _ => return Ok(false),
                             }
-                            chr = p.char_val(c)?;
                             Ok(true)
                         })?;
                     }
@@ -1449,12 +1588,18 @@ impl<'i> Parser<'i> {
         }
         let base = self.or_empty(base);
         match chr.and_then(|s| s.chars().next()) {
-            Some(accent) => Ok(self.arena.push_node(CompactNode::Accent {
-                base,
-                accent,
-                position: AccentPosition::Above,
-                wide: false,
-            })),
+            Some(accent) => {
+                let id = self.arena.push_node(CompactNode::Accent {
+                    base,
+                    accent,
+                    position: AccentPosition::Above,
+                    wide: false,
+                });
+                if let Some(size) = mark {
+                    self.sizes.signs.push((id, self.style, size));
+                }
+                Ok(id)
+            },
             None => Ok(base),
         }
     }
@@ -1817,11 +1962,19 @@ impl<'i> Parser<'i> {
                     }
                 },
                 (Ns::Math, "num") => {
-                    let id = self.arg_id("m:num")?;
+                    let outer = self.style;
+                    self.style = kind.forced_style().unwrap_or(outer);
+                    let id = self.arg_id("m:num");
+                    self.style = outer;
+                    let id = id?;
                     self.set_once(&mut num, id, "num", "m:f")?;
                 },
                 (Ns::Math, "den") => {
-                    let id = self.arg_id("m:den")?;
+                    let outer = self.style;
+                    self.style = kind.forced_style().unwrap_or(outer);
+                    let id = self.arg_id("m:den");
+                    self.style = outer;
+                    let id = id?;
                     self.set_once(&mut den, id, "den", "m:f")?;
                 },
                 _ => self.unknown(&c, "m:f")?,
@@ -1981,10 +2134,12 @@ impl<'i> Parser<'i> {
         };
         match *self.arena.node(base) {
             CompactNode::Operator { name, .. } => {
+                let run = base;
                 let base = self.arena.push_node(CompactNode::Operator {
                     name,
                     limits: LimitStyle::AboveBelow,
                 });
+                self.sizes.replaced(run, base);
                 return Ok(self.arena.push_node(if upper {
                     CompactNode::Superscript { base, sup: lim }
                 } else {
@@ -2186,6 +2341,7 @@ impl<'i> Parser<'i> {
     /// `sub`, `sup`, `e`. Default operator: U+222B INTEGRAL.
     fn nary(&mut self) -> Result<NodeId> {
         let mut op = Some('\u{222B}');
+        let mut sign = None;
         let mut limits = LimitStyle::Default;
         let (mut sub_hide, mut sup_hide) = (false, false);
         let (mut sub, mut sup, mut body) = (None, None, None);
@@ -2213,6 +2369,7 @@ impl<'i> Parser<'i> {
                                         p.info("growing n-ary operators (<m:grow>) are not represented".into());
                                     }
                                 },
+                                "ctrlPr" => sign = p.control_size()?,
                                 "subHide" => sub_hide = p.on_off(c)?,
                                 "supHide" => sup_hide = p.on_off(c)?,
                                 _ => return Ok(false),
@@ -2259,13 +2416,17 @@ impl<'i> Parser<'i> {
             ids.push(body);
             return self.group(&ids);
         };
-        Ok(self.arena.push_node(CompactNode::Nary {
+        let id = self.arena.push_node(CompactNode::Nary {
             op,
             sub,
             sup,
             body,
             limits,
-        }))
+        });
+        if let Some(size) = sign {
+            self.sizes.signs.push((id, self.style, size));
+        }
+        Ok(id)
     }
 
     /// A limit or degree slot: hidden or empty slots become `NONE`.
@@ -2452,10 +2613,14 @@ impl<'i> Parser<'i> {
         // operator. Stacked limits arrive through `m:limLow`/`m:limUpp` and
         // are decoded separately below.
         let base = match *self.arena.node(base) {
-            CompactNode::Operator { name, .. } => self.arena.push_node(CompactNode::Operator {
-                name,
-                limits: LimitStyle::SubSup,
-            }),
+            CompactNode::Operator { name, .. } => {
+                let operator = self.arena.push_node(CompactNode::Operator {
+                    name,
+                    limits: LimitStyle::SubSup,
+                });
+                self.sizes.replaced(base, operator);
+                operator
+            },
             CompactNode::StructuredOperator { content, form } => {
                 let form = match form {
                     OperatorNameForm::Unstarred => OperatorNameForm::Unstarred,
@@ -2486,6 +2651,30 @@ fn strip_bom(input: &str) -> &str {
 
 fn truncate(s: &str) -> String {
     s.chars().take(32).collect()
+}
+
+/// `ST_HpsMeasure`: a number of half points, or a length with its unit
+/// (ECMA-376 §17.18.42 and §22.9.2.15).
+fn half_points(value: &str) -> Option<u16> {
+    let unit = value.len().saturating_sub(2);
+    let per_unit = match value.get(unit..)? {
+        "pt" => 2.0,
+        "pc" | "pi" => 24.0,
+        "in" => 144.0,
+        "cm" => 144.0 / 2.54,
+        "mm" => 14.4 / 2.54,
+        _ if value.bytes().all(|b| b.is_ascii_digit()) => {
+            return value.parse().ok().filter(|&size| size > 0);
+        },
+        _ => return None,
+    };
+    let digits = &value[..unit];
+    if digits.bytes().any(|b| !b.is_ascii_digit() && b != b'.') {
+        return None;
+    }
+    let number: f64 = digits.parse().ok()?;
+    let size = (number * per_unit).round();
+    (size >= 1.0 && size <= f64::from(u16::MAX)).then_some(size as u16)
 }
 
 /// `ST_HexColor` RGB value (`RRGGBB`).
