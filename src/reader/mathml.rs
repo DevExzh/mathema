@@ -142,6 +142,8 @@ struct MathmlCompactParser<'a> {
     sized_operator: bool,
     /// Set for an element whose `mathsize` is already read.
     size_checked: bool,
+    /// Lists whose items all have sizes.
+    sized_rows: std::collections::HashSet<NodeId>,
     /// Whether to recover lengths that are not valid MathML.
     lenient: bool,
     /// Rows read from an `mstyle` that only sets a size, to be spliced into
@@ -190,6 +192,7 @@ impl<'a> MathmlCompactParser<'a> {
             base_size: None,
             sized_operator: false,
             size_checked: false,
+            sized_rows: std::collections::HashSet::new(),
             lenient: false,
             size_runs: SmallVec::new(),
             style_warnings: HashSet::new(),
@@ -946,6 +949,25 @@ impl<'a> MathmlCompactParser<'a> {
             })
     }
 
+    /// Give what an element holds its size, where it has none. A list whose
+    /// items all have one is not gone through again for each element around
+    /// it.
+    #[cold]
+    fn give_size(&mut self, id: NodeId, size: FontSize) {
+        let attrs = NodeAttrs::with_size(size);
+        let mut pending = vec![id];
+        while let Some(id) = pending.pop() {
+            match *self.arena.node(id) {
+                CompactNode::Row(span) => {
+                    if self.sized_rows.insert(id) {
+                        pending.extend_from_slice(self.arena.children(span));
+                    }
+                },
+                _ => self.arena.add_attrs(id, &attrs),
+            }
+        }
+    }
+
     #[cold]
     fn unsupported_size(&mut self, name: &str) {
         self.style_warning(format!(
@@ -988,7 +1010,7 @@ impl<'a> MathmlCompactParser<'a> {
             let id = self.parse_element_by_name(name, start);
             self.leave_font_size(previous);
             let id = id?;
-            self.arena.add_attrs(id, &NodeAttrs::with_size(size));
+            self.give_size(id, size);
             return Ok(id);
         }
         let id = self.parse_element_by_name(name, start)?;
@@ -1138,7 +1160,7 @@ impl<'a> MathmlCompactParser<'a> {
         scoped_children.extend(children);
         let content = self.flatten_ids(&scoped_children);
         if let Some(size) = font_size {
-            self.arena.add_attrs(content, &NodeAttrs::with_size(size));
+            self.give_size(content, size);
         }
         let content = if let Some(color) = attrs.color.filter(|color| !color.trim().is_empty()) {
             let color = self.arena.push_str(color.trim());
@@ -1311,7 +1333,7 @@ impl<'a> MathmlCompactParser<'a> {
             return self.unsupported_size("mo");
         }
         if let Some(size) = self.font_size(Some(&mathsize), None, logical.as_deref()) {
-            self.arena.add_attrs(id, &NodeAttrs::with_size(size));
+            self.give_size(id, size);
         }
     }
 
@@ -1950,7 +1972,7 @@ impl<'a> MathmlCompactParser<'a> {
                 let id = self.parse_empty_element(name, start);
                 self.leave_font_size(previous);
                 let id = id?;
-                self.arena.add_attrs(id, &NodeAttrs::with_size(size));
+                self.give_size(id, size);
                 return Ok(id);
             }
         }

@@ -1066,6 +1066,284 @@ mod review {
         assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
     }
 
+    /// Each of these was quadratic: seconds or minutes at this size.
+    #[test]
+    fn runs_cost_in_proportion() {
+        let lines = |line: &[u8]| {
+            // Lines of a fraction: one list holds no more than 65,535 items.
+            let mut bytes = vec![3, 1, 1, 3, 10, 1];
+            for _ in 0..4 {
+                bytes.extend([3, 14, 0, 0, 1]);
+                bytes.extend(line);
+                bytes.extend([0, 1]);
+                bytes.extend(line);
+                bytes.extend([0, 0]);
+            }
+            bytes.extend([0, 0]);
+            bytes
+        };
+        let blanks = [2, 129, b' ', 0].repeat(60_000);
+        let start = std::time::Instant::now();
+        from_mtef_bytes(&lines(&blanks)).unwrap();
+        assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+        // Sizes that change within a function name.
+        let time = |step: u32| {
+            let letters: Vec<u8> = (0..60_000u32)
+                .flat_map(|i| [9, 101, 64 + (i % 2 * step) as u8, 1, 2, 130, b'q', 0])
+                .collect();
+            let bytes = lines(&letters);
+            let start = std::time::Instant::now();
+            from_mtef_bytes(&bytes).unwrap();
+            start.elapsed()
+        };
+        let (same, changing) = (time(0), time(10));
+        assert!(changing < same * 5, "{same:?} {changing:?}");
+        // A size around a list that has one already costs little more than
+        // the list.
+        let list = format!("<mrow>{}</mrow>", "<mi>x</mi>".repeat(60_000)).repeat(6);
+        let time = |depth: usize| {
+            let open: String = (0..depth)
+                .map(|i| format!(r#"<mstyle mathsize="{}pt"><mi>y</mi>"#, 10 + i))
+                .collect();
+            let mathml = format!("<math>{open}{list}{}</math>", "</mstyle>".repeat(depth));
+            let start = std::time::Instant::now();
+            let read = from_mathml(&mathml).unwrap();
+            assert!(read.compact_expr().arena.has_attrs());
+            start.elapsed()
+        };
+        let (one, hundred) = (time(1), time(100));
+        assert!(hundred < one * 5, "{one:?} {hundred:?}");
+    }
+
+    /// Every loss is reported once.
+    #[test]
+    fn a_dropped_size_is_reported_once() {
+        let fence = [3, 1, 0, 0, 1, 2, 131, b'x', 0, 0, 9, 101, 128, 2];
+        let fence = [&fence[..], &[2, 150, b'(', 0, 2, 150, b')', 0, 0, 10]].concat();
+        let bytes = [&[3, 1, 1, 3, 10, 1][..], &fence.repeat(50), &[0, 0]].concat();
+        let read = from_mtef_bytes(&bytes).unwrap();
+        let dropped = read
+            .diagnostics()
+            .iter()
+            .filter(|d| d.message.contains("delimiters"))
+            .count();
+        assert_eq!(dropped, 1, "{:?}", read.diagnostics());
+    }
+
+    /// A size in a cell, by itself and in a fraction, wherever the table is.
+    #[test]
+    fn omml_sizes_in_cells() {
+        let x = || sized(points(20, 1), id("x"));
+        let fraction = |num| MathNode::Fraction {
+            kind: mathema::ast::FractionKind::Normal,
+            num: Box::new(num),
+            den: Box::new(id("y")),
+        };
+        for content in [x(), fraction(x()), fraction(fraction(x()))] {
+            let table = |content| MathNode::Array {
+                columns: vec![mathema::ast::ColumnAlign::Center],
+                rows: vec![vec![vec![content]]],
+                arraystretch: None,
+                add_jot: false,
+            };
+            let table = table(content);
+            for node in [
+                table.clone(),
+                MathNode::Subscript {
+                    base: Box::new(id("z")),
+                    sub: Box::new(table.clone()),
+                },
+                MathNode::Superscript {
+                    base: Box::new(id("z")),
+                    sup: Box::new(table.clone()),
+                },
+                fraction(table),
+            ] {
+                let nodes = vec![node, id("w")];
+                let expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes)).unwrap();
+                let write = |expr: &CompactExpr| {
+                    mathema::writer::omml::OmmlWriter::write_with_options(
+                        expr,
+                        &Config::default(),
+                        &wml(),
+                    )
+                    .unwrap()
+                    .0
+                };
+                let written = write(&expr);
+                let read = from_omml(&written).unwrap();
+                // A half point is 0.7 or 0.5 of one in a script.
+                let text = format!("{:?}", read.expr());
+                assert!(text.contains("Rational { num: "), "{written} {text}");
+                let size = text
+                    .split("Rational { num: ")
+                    .nth(1)
+                    .unwrap()
+                    .split(" }")
+                    .next()
+                    .unwrap();
+                let (num, den) = size.split_once(", den: ").unwrap();
+                let size = num.parse::<f64>().unwrap() / den.parse::<f64>().unwrap();
+                assert!((size - 20.0).abs() <= 0.25, "{size} {written}");
+                assert_eq!(write(read.compact_expr()), written);
+            }
+        }
+    }
+
+    /// What is not written does not split runs.
+    #[test]
+    fn unwritten_sizes_do_not_split_runs() {
+        use mathema::reader::{Reader, omml::OmmlReader};
+        let source = omml(
+            &[
+                ("T", None),
+                ("H", Some("17")),
+                ("1", None),
+                ("2", Some("17")),
+            ],
+            None,
+        );
+        let round = |omml: &str| {
+            let mut read = OmmlReader::parse_compact(omml, &Config::default()).unwrap();
+            mathema::ast::normalize::normalize_compact_expr(&mut read.expr).unwrap();
+            let write = <mathema::writer::omml::OmmlWriter as Writer>::write_compact(
+                &read.expr,
+                &Config::default(),
+            );
+            (read.expr, write.unwrap())
+        };
+        let (expr, written) = round(&source);
+        assert_eq!(round(&written).1, written);
+        assert!(
+            written.contains(">TH<") && written.contains(">12<"),
+            "{written}"
+        );
+        // The LaTeX writer drops a size in a script and joins what it kept apart.
+        let latex = <mathema::writer::latex::LatexWriter as Writer>::write_compact(
+            &expr,
+            &Config::default(),
+        )
+        .unwrap();
+        assert!(from_latex(&latex).is_ok(), "{latex}");
+        let unicode = <mathema::writer::unicode_math::UnicodeMathWriter as Writer>::write_compact(
+            &expr,
+            &Config::default(),
+        )
+        .unwrap();
+        assert!(unicode.contains("TH"), "{unicode}");
+    }
+
+    /// A mark with a size is a limit: a group character has none.
+    #[test]
+    fn a_sized_mark_keeps_its_size_in_omml() {
+        let mark = MathNode::Symbol(mathema::ast::SymbolKind::Relation, "\u{2193}".into());
+        let nodes = vec![MathNode::Underscript {
+            base: Box::new(id("B")),
+            under: Box::new(sized(points(12, 1), mark)),
+            movable_limits: false,
+        }];
+        let expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes)).unwrap();
+        let written = mathema::writer::omml::OmmlWriter::write_with_options(
+            &expr,
+            &Config::default(),
+            &wml(),
+        )
+        .unwrap()
+        .0;
+        assert!(written.contains(r#"<w:sz w:val="34"/>"#), "{written}");
+    }
+
+    /// The scripts of a structure shrink from its size, with a difference too.
+    #[test]
+    fn a_typesize_and_difference_on_a_structure() {
+        let script = MathNode::Superscript {
+            base: Box::new(id("x")),
+            sup: Box::new(MathNode::Number("2".into())),
+        };
+        let size = NodeAttrs::with_size(FontSize::Logical {
+            level: TypeSize::Sub2,
+            delta_pt: Rational::new(2, 1),
+        });
+        let nodes = [sized(size, script)];
+        // That of a character in a root's index is kept as it is.
+        let sub = NodeAttrs::with_size(FontSize::Logical {
+            level: TypeSize::Sub,
+            delta_pt: Rational::new(3, 1),
+        });
+        let root = MathNode::Root {
+            index: Box::new(sized(sub, MathNode::Number("4".into()))),
+            radicand: Box::new(id("x")),
+        };
+        let root = [root];
+        assert_eq!(through_mtef(&root, MtefVersion::V5).0, root);
+        for version in [MtefVersion::V3, MtefVersion::V5] {
+            // 8 pt and 0.7 of it, 5.6.
+            let text = format!("{:?}", through_mtef(&nodes, version).0);
+            assert!(
+                text.contains("num: 8, den: 1") && text.contains("num: 179, den: 32"),
+                "{text}"
+            );
+        }
+    }
+
+    /// The base of a limit with a size is one element, not a list of one.
+    #[test]
+    fn a_sized_limit_base_survives_mathml() {
+        let nodes = vec![MathNode::Underscript {
+            base: Box::new(sized(
+                points(18, 1),
+                MathNode::Operator(mathema::ast::OperatorAttr {
+                    name: "lim".into(),
+                    limit_style: mathema::ast::LimitStyle::AboveBelow,
+                }),
+            )),
+            under: Box::new(id("n")),
+            movable_limits: true,
+        }];
+        let expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(nodes)).unwrap();
+        let write = |expr: &CompactExpr| {
+            <mathema::writer::mathml::MathmlWriter as Writer>::write_compact(
+                expr,
+                &Config::default(),
+            )
+            .unwrap()
+        };
+        let written = write(&expr);
+        let read = from_mathml(&written).unwrap();
+        assert!(written.contains(r#"mathsize="18pt""#), "{written}");
+        assert!(
+            !format!("{:?}", read.expr()).contains("base: Row"),
+            "{:?}",
+            read.expr()
+        );
+        assert_eq!(write(read.compact_expr()), written);
+    }
+
+    /// A table in a script sets its cells in text style: so is its size.
+    #[cfg(feature = "render")]
+    #[test]
+    fn a_sized_table_in_a_script() {
+        use mathema::render::{RenderOptions, render_to_svg_compact};
+        let table = MathNode::Array {
+            columns: vec![mathema::ast::ColumnAlign::Center],
+            rows: vec![vec![vec![MathNode::Number("7".into())]]],
+            arraystretch: None,
+            add_jot: false,
+        };
+        let node = MathNode::Superscript {
+            base: Box::new(MathNode::Number("8".into())),
+            sup: Box::new(sized(points(12, 1), table)),
+        };
+        let expr = CompactExpr::from_math_expr(&mathema::MathExpr::block(vec![node])).unwrap();
+        let svg = render_to_svg_compact(&expr, &RenderOptions::default()).unwrap();
+        let size = |text: &str| -> f64 {
+            let node = svg.split("<text ").find(|t| t.contains(text)).unwrap();
+            let size = node.split("font-size=\"").nth(1).unwrap();
+            size.split('"').next().unwrap().parse().unwrap()
+        };
+        assert!((size(">7<") / size(">8<") - 1.0).abs() < 0.01, "{svg}");
+    }
+
     #[cfg(feature = "render")]
     #[test]
     fn a_sized_fraction_with_a_style_of_its_own() {

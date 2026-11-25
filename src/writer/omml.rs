@@ -19,7 +19,9 @@ use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::style::MathStyle;
 use crate::ast::*;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result};
-use crate::reader::omml::{FUNCTION_APPLICATION, MATH_SPACES, OmmlJustification, OmmlParagraph};
+use crate::reader::omml::{
+    FUNCTION_APPLICATION, MATH_SPACES, OmmlJustification, OmmlParagraph, argument_style, cell_style,
+};
 use crate::writer::Writer as MathWriter;
 
 const MATH_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
@@ -129,12 +131,19 @@ impl OmmlWriter {
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
         crate::ast::validate_compact_depth(&expr.arena, expr.roots)?;
+        if expr.arena.has_attrs() && options.run_properties != OmmlRunProperties::WordprocessingMl {
+            let plain = crate::ast::normalize::without_attrs(expr)?;
+            let (omml, mut diagnostics) = Self::write_with_options(&plain, _config, options)?;
+            diagnostics.insert(0, dropped_sizes());
+            return Ok((omml, diagnostics));
+        }
         let mut e = Emitter::new(
             &expr.arena,
             options.run_properties,
             MathStyle::from(expr.display),
         );
         if options.display_block {
+            e.host_style = MathStyle::Display;
             e.open_root("m:oMathPara");
             e.paragraph_props(options.justification);
             e.buf.push_str("<m:oMath>");
@@ -174,14 +183,30 @@ impl OmmlWriter {
         _config: &Config,
         options: &OmmlOptions,
     ) -> Result<(String, Vec<Diagnostic>)> {
+        let keeps_sizes = options.run_properties == OmmlRunProperties::WordprocessingMl;
+        let plain: Vec<Option<CompactExpr>> = paragraph
+            .equations
+            .iter()
+            .map(|eq| {
+                (!keeps_sizes && eq.arena.has_attrs())
+                    .then(|| crate::ast::normalize::without_attrs(eq))
+                    .transpose()
+            })
+            .collect::<Result<_>>()?;
         let empty = AstArena::new();
         let mut e = Emitter::new(&empty, options.run_properties, MathStyle::Text);
         e.open_root("m:oMathPara");
         e.paragraph_props(paragraph.justification.or(options.justification));
-        for eq in &paragraph.equations {
+        for (eq, plain) in paragraph.equations.iter().zip(&plain) {
+            if plain.is_some() {
+                e.drop_size();
+            }
+            let eq = plain.as_ref().unwrap_or(eq);
             crate::ast::validate_compact_depth(&eq.arena, eq.roots)?;
             e.arena = &eq.arena;
             e.style = MathStyle::from(eq.display);
+            // A paragraph is display math.
+            e.host_style = MathStyle::Display;
             e.buf.push_str("<m:oMath>");
             e.start(eq);
             e.seq(eq.arena.children(eq.roots), Fmt::default());
@@ -193,6 +218,14 @@ impl OmmlWriter {
         }
         e.buf.push_str("</m:oMathPara>");
         Ok((e.buf, e.diags))
+    }
+}
+
+fn dropped_sizes() -> Diagnostic {
+    Diagnostic {
+        kind: DiagnosticKind::Info,
+        message: "font sizes need OmmlRunProperties::WordprocessingMl and were dropped".to_owned(),
+        span: None,
     }
 }
 
@@ -270,6 +303,12 @@ struct Emitter<'a> {
     /// scripts.
     run_size: Option<u16>,
     style: MathStyle,
+    /// Whether the equation has sizes.
+    sized: bool,
+    /// Set when `node` is called for the node itself, its size applied.
+    entered: bool,
+    /// The style that the reader of the output knows, for the sizes of runs.
+    host_style: MathStyle,
     diags: Vec<Diagnostic>,
     seen: HashSet<String>,
 }
@@ -283,6 +322,9 @@ impl<'a> Emitter<'a> {
             base_pt: f64::from(crate::ast::attrs::DEFAULT_BASE_SIZE_PT),
             run_size: None,
             style,
+            host_style: style,
+            sized: false,
+            entered: false,
             diags: Vec::new(),
             seen: HashSet::new(),
         }
@@ -417,7 +459,8 @@ impl<'a> Emitter<'a> {
     /// and text.
     fn run(&mut self, text: &str, sty: Option<&str>, scr: Option<&str>, nor: bool, host: Host) {
         let sanitized: String;
-        let text = if text.chars().all(is_xml_char) {
+        let plain = text.bytes().all(|b| matches!(b, b' '..=b'~'));
+        let text = if plain || text.chars().all(is_xml_char) {
             text
         } else {
             self.loss("a character that XML cannot represent was dropped");
@@ -444,7 +487,10 @@ impl<'a> Emitter<'a> {
             self.close("m:rPr");
         }
         self.host_props(host);
-        if text.contains([' ', '\t', '\n', '\r']) {
+        if text
+            .bytes()
+            .any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+        {
             self.buf.push_str("<m:t xml:space=\"preserve\">");
         } else {
             self.open("m:t");
@@ -458,6 +504,8 @@ impl<'a> Emitter<'a> {
     /// is written too, if it is known and the host has one.
     fn start(&mut self, expr: &CompactExpr) {
         self.base_pt = crate::ast::attrs::base_size_pt(expr.meta.as_deref());
+        self.sized = expr.arena.has_attrs();
+        self.entered = false;
         let known = expr
             .meta
             .as_deref()
@@ -468,7 +516,7 @@ impl<'a> Emitter<'a> {
 
     /// The size of an object's own sign.
     fn control(&mut self, id: NodeId) {
-        if self.run_size.is_some() || self.arena.has_attrs() {
+        if self.run_size.is_some() || self.sized {
             self.sized_control(id);
         }
     }
@@ -489,14 +537,15 @@ impl<'a> Emitter<'a> {
     }
 
     fn drop_size(&mut self) {
-        let message = "font sizes need OmmlRunProperties::WordprocessingMl and were dropped";
-        if self.seen.insert(message.to_owned()) {
-            self.diags.push(Diagnostic {
-                kind: DiagnosticKind::Info,
-                message: message.to_owned(),
-                span: None,
-            });
+        let loss = dropped_sizes();
+        if self.seen.insert(loss.message.clone()) {
+            self.diags.push(loss);
         }
+    }
+
+    /// Whether a node or its own sign has a font size.
+    fn has_size(&self, id: NodeId) -> bool {
+        self.sized && self.arena.attrs(id).is_some()
     }
 
     /// The run size that gives the node its font size where it is.
@@ -507,7 +556,7 @@ impl<'a> Emitter<'a> {
 
     /// The run size that is `size` where it is written.
     fn half_points(&self, size: FontSize) -> u16 {
-        let level = [1.0, 0.7, 0.5][self.style.size_class().min(2)];
+        let level = [1.0, 0.7, 0.5][self.host_style.size_class().min(2)];
         let half_points = size.scale(self.base_pt) * self.base_pt / level * 2.0;
         half_points.round().clamp(1.0, f64::from(u16::MAX)) as u16
     }
@@ -727,9 +776,22 @@ impl<'a> Emitter<'a> {
     }
 
     /// Write `<tag>` + node + `</tag>`; `NONE` gives an empty argument.
+    #[cold]
+    #[inline(never)]
+    fn sized_arg(&mut self, tag: &str, id: NodeId, fmt: Fmt) {
+        let outer = self.host_style;
+        self.host_style = argument_style(outer, tag);
+        self.node(id, fmt);
+        self.host_style = outer;
+        self.close(tag);
+    }
+
     fn arg(&mut self, tag: &str, id: NodeId, fmt: Fmt) {
         self.open(tag);
         if id.is_some() {
+            if self.sized {
+                return self.sized_arg(tag, id, fmt);
+            }
             self.node(id, fmt);
         }
         self.close(tag);
@@ -748,6 +810,15 @@ impl<'a> Emitter<'a> {
     }
 
     fn cell_content(&mut self, id: NodeId, fmt: Fmt) {
+        let outer = self.host_style;
+        if self.sized {
+            self.host_style = cell_style(outer);
+        }
+        self.cell_nodes(id, fmt);
+        self.host_style = outer;
+    }
+
+    fn cell_nodes(&mut self, id: NodeId, fmt: Fmt) {
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.children(span, fmt),
             CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
@@ -784,13 +855,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn node(&mut self, id: NodeId, fmt: Fmt) {
-        if self.arena.has_attrs() {
-            return self.sized_node(id, fmt);
-        }
-        self.bare_node(id, fmt);
-    }
-
+    /// Write a node of an equation with sizes: its runs have its size.
     #[cold]
     #[inline(never)]
     fn sized_node(&mut self, id: NodeId, fmt: Fmt) {
@@ -798,12 +863,15 @@ impl<'a> Emitter<'a> {
         if let Some(size) = self.size_of(id) {
             self.run_size = Some(size);
         }
-        self.bare_node(id, fmt);
+        self.entered = true;
+        self.node(id, fmt);
         self.run_size = outer;
     }
 
-    #[inline(always)]
-    fn bare_node(&mut self, id: NodeId, fmt: Fmt) {
+    fn node(&mut self, id: NodeId, fmt: Fmt) {
+        if self.sized && !std::mem::take(&mut self.entered) {
+            return self.sized_node(id, fmt);
+        }
         if fmt.color.is_some()
             && matches!(
                 *self.arena.node(id),
@@ -979,8 +1047,15 @@ impl<'a> Emitter<'a> {
                     self.val("m:type", ty);
                     self.close("m:fPr");
                 }
+                let host = self.host_style;
+                if kind != FractionKind::Display
+                    && let Some(style) = kind.forced_style()
+                {
+                    self.host_style = style;
+                }
                 self.with_style(style.fracnum(), |e| e.arg("m:num", num, fmt));
                 self.with_style(style.fracden(), |e| e.arg("m:den", den, fmt));
+                self.host_style = host;
                 self.close("m:f");
             },
             CompactNode::Sqrt(radicand) => {
@@ -1044,6 +1119,9 @@ impl<'a> Emitter<'a> {
                 }
                 if position == AccentPosition::Below {
                     self.loss("OMML accents sit above the base; a below accent was written as a group character");
+                    if self.has_size(id) {
+                        self.loss("OMML group characters have no font size; that of a below accent was dropped");
+                    }
                     self.open("m:groupChr");
                     self.open("m:groupChrPr");
                     self.val("m:chr", chr);
@@ -1300,7 +1378,8 @@ impl<'a> Emitter<'a> {
                 self.with_style(style, |e| e.arg("m:e", base, fmt));
                 self.close("m:bar");
             },
-            Some(chr) if !movable && chr.chars().count() <= 1 => {
+            // A group character has no size: a mark that has one is a limit.
+            Some(chr) if !movable && chr.chars().count() <= 1 && !self.has_size(script) => {
                 // CT_GroupChrPr: chr, pos, vertJc.
                 self.open("m:groupChr");
                 self.open("m:groupChrPr");

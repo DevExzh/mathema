@@ -4,8 +4,9 @@
 
 use smallvec::SmallVec;
 
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{AstArena, Normalized};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan};
+use crate::ast::normalize::number_decimal_points;
 use crate::ast::style::MathStyle;
 use crate::ast::{FontSize, MathAtomType, SymbolKind, TypeSize};
 
@@ -27,6 +28,15 @@ struct Context {
     style: MathStyle,
     /// The size declaration in force.
     size: u8,
+}
+
+/// Neighbours that become one node.
+struct Joined {
+    /// The index of the first one in its list.
+    at: usize,
+    text: String,
+    /// The decimal points in it, for numbers.
+    points: usize,
 }
 
 struct Lowering<'a> {
@@ -207,7 +217,7 @@ impl Lowering<'_> {
         let mut current = context;
         // Text that takes the place of a node of `out`, and the node it ends
         // with.
-        let mut joined: Option<(usize, String)> = None;
+        let mut joined: Option<Joined> = None;
         let mut joined_last = None;
         for id in children {
             match *self.arena.node(id) {
@@ -247,17 +257,13 @@ impl Lowering<'_> {
             self.switch(&mut out, current, wanted);
             current = wanted;
             let lowered = self.node(id, wanted);
-            // Text that differs only in sizes that are not declared is one.
+            // What differs only in sizes that are not declared is one, as it
+            // would be without them.
             if let Some(&last) = out.last()
                 && self.arena.has_attrs()
-                && let CompactNode::Text(style, after) = *self.arena.node(lowered)
-                && let CompactNode::Text(before_style, before) = *self.arena.node(last)
-                && style == before_style
                 && self.arena.attrs(id) != self.arena.attrs(joined_last.unwrap_or(last))
+                && self.join(out.len() - 1, last, lowered, &mut joined)
             {
-                let (_, text) = joined
-                    .get_or_insert_with(|| (out.len() - 1, self.arena.str_val(before).to_owned()));
-                text.push_str(self.arena.str_val(after));
                 joined_last = Some(id);
                 continue;
             }
@@ -269,13 +275,65 @@ impl Lowering<'_> {
         self.arena.push_children_deferred(&out)
     }
 
+    /// Join `next` to `last`, at `at` in its list, if normalization would. Only
+    /// the new part is looked at, whatever has been joined before.
+    fn join(&self, at: usize, last: NodeId, next: NodeId, joined: &mut Option<Joined>) -> bool {
+        let normalized = self.arena.normalized();
+        let points = |sid| number_decimal_points(self.arena.str_val(sid));
+        let (before, after) = match (*self.arena.node(last), *self.arena.node(next)) {
+            (CompactNode::Text(a, before), CompactNode::Text(b, after)) if a == b => {
+                (before, after)
+            },
+            (CompactNode::Number(before), CompactNode::Number(after))
+                if normalized != Normalized::No =>
+            {
+                let so_far = match joined {
+                    Some(joined) => Some(joined.points),
+                    None => points(before),
+                };
+                // One decimal point at most.
+                match (so_far, points(after)) {
+                    (Some(a), Some(b)) if a + b <= 1 => (before, after),
+                    _ => return false,
+                }
+            },
+            (CompactNode::Identifier(before), CompactNode::Identifier(after))
+                if normalized == Normalized::MergingIdentifiers
+                    && (joined.is_some() || self.arena.str_val(before).is_ascii())
+                    && self.arena.str_val(after).is_ascii() =>
+            {
+                (before, after)
+            },
+            _ => return false,
+        };
+        let number = matches!(*self.arena.node(next), CompactNode::Number(_));
+        let joined = joined.get_or_insert_with(|| Joined {
+            at,
+            text: self.arena.str_val(before).to_owned(),
+            points: if number {
+                points(before).unwrap_or(0)
+            } else {
+                0
+            },
+        });
+        joined.text.push_str(self.arena.str_val(after));
+        if number {
+            joined.points += points(after).unwrap_or(0);
+        }
+        true
+    }
+
     /// Put joined text in the place of its first part.
-    fn finish_text(&mut self, out: &mut [NodeId], joined: Option<(usize, String)>) {
-        if let Some((at, text)) = joined
-            && let CompactNode::Text(style, _) = *self.arena.node(out[at])
-        {
+    fn finish_text(&mut self, out: &mut [NodeId], joined: Option<Joined>) {
+        if let Some(Joined { at, text, .. }) = joined {
             let text = self.arena.push_str(&text);
-            out[at] = self.arena.push_node(CompactNode::Text(style, text));
+            let node = match *self.arena.node(out[at]) {
+                CompactNode::Text(style, _) => CompactNode::Text(style, text),
+                CompactNode::Number(_) => CompactNode::Number(text),
+                CompactNode::Identifier(_) => CompactNode::Identifier(text),
+                _ => return,
+            };
+            out[at] = self.arena.push_node(node);
         }
     }
 

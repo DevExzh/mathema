@@ -57,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A chain of commands that take each other without braces (`\hat\hat…`,
   `\big\big…`, `\sum\sum…`) has a depth limit in the reader; a long one
   overflowed the stack.
+- MTEF 2 to 4 do not record the full size of an equation: sizes in points are
+  kept and drawn relative to an assumed 12 pt.
 - Rendering: a leading script is placed by its nucleus alone, as TeX sets
   `{}_a t_b`; trailing scripts pushed it further down or up.
 - MTEF writer: stretchy bar accents over several letters no longer warn as

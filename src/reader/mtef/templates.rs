@@ -10,7 +10,7 @@
 
 use smallvec::SmallVec;
 
-use super::decode::{Decoder, Glyph, Item, OpenTemplate, ScriptSlots, SlotSizes};
+use super::decode::{Decoder, Glyph, Item, ScriptSlots, SizeLoss, SlotSizes};
 use crate::ast::compact::{CompactNode, NodeId};
 use crate::ast::{
     AccentPosition, FontSize, FractionKind, LimitStyle, NodeAttrs, Rational, StrokeKind, SymbolKind,
@@ -159,24 +159,6 @@ impl Decoder<'_> {
             points.num.checked_mul(text)?,
             points.den.checked_mul(script)?,
         )))
-    }
-
-    /// The typesize that a slot of a template has by its place.
-    #[inline]
-    pub(super) fn slot_size_of(&self, open: OpenTemplate) -> u8 {
-        let OpenTemplate {
-            sizes,
-            level,
-            slots,
-            ..
-        } = open;
-        let smaller = match sizes {
-            SlotSizes::Same => false,
-            SlotSizes::Smaller => true,
-            SlotSizes::FirstSame => slots > 0,
-            SlotSizes::Limits => matches!(slots, 1 | 2),
-        };
-        if smaller { (level + 1).min(2) } else { level }
     }
 }
 
@@ -625,7 +607,7 @@ impl Decoder<'_> {
                 .iter()
                 .any(|sign| self.sign_size(sign, false).is_some())
         {
-            self.lose_size("the sizes of delimiters were dropped; they fit what is between them");
+            self.lose_size(SizeLoss::Delimiter);
         }
         let Some(desc) = desc else {
             let version = if self.v5 { 5 } else { 3 };
@@ -772,7 +754,10 @@ impl Decoder<'_> {
                         if let Some(slot) = op_slot {
                             for id in self.children_of(slot) {
                                 if let Some(rare) = &mut self.rare_sizes {
-                                    rare.dropped_symbols.remove(&id);
+                                    // Its slot is the last of the template.
+                                    if rare.dropped_symbols.last() == Some(&id) {
+                                        rare.dropped_symbols.pop();
+                                    }
                                 }
                                 if let Some(attrs) = self.arena.attrs(id).cloned() {
                                     self.arena.remove_attrs(id, &attrs);

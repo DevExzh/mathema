@@ -136,16 +136,19 @@ impl SizeState {
     }
 }
 
-/// Which slots of a template are smaller than the template by their place.
+/// Which slots of a template are smaller than the template by their place:
+/// the bit of each slot, the lowest that of the first and the sign that of all
+/// the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i8)]
 pub(super) enum SlotSizes {
-    Same,
-    Smaller,
+    Same = 0,
+    Smaller = -1,
     /// All but the first.
-    FirstSame,
+    FirstSame = -2,
     /// Slots 1 and 2 of four: the limits of a general big operator, whose
     /// sign is in the fourth.
-    Limits,
+    Limits = 0b0110,
 }
 
 /// The sizes of MTEF 5 equation preferences.
@@ -158,13 +161,42 @@ struct Preferences {
     others: [Option<Rational>; 4],
 }
 
+/// Sizes that are not kept, each reported once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SizeLoss {
+    SymbolSize,
+    FunctionName,
+    Delimiter,
+}
+
+impl SizeLoss {
+    const COUNT: usize = 3;
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::SymbolSize => "symbol sizes of characters were dropped",
+            Self::FunctionName => {
+                "the sizes of the letters of a function name differ; they were dropped"
+            },
+            Self::Delimiter => {
+                "the sizes of delimiters were dropped; they fit what is between them"
+            },
+        }
+    }
+}
+
+/// No operator command is longer: a longer name need not be looked up.
+const MAX_OPERATOR_COMMAND: usize = 32;
+
 /// The sizes that need a second look when the equation is read.
 #[derive(Debug, Default)]
 pub(super) struct RareSizes {
     /// Characters whose symbol size was dropped.
-    pub(super) dropped_symbols: HashSet<NodeId>,
+    pub(super) dropped_symbols: Vec<NodeId>,
     /// The same for characters that are no node of their own.
     dropped_in_runs: bool,
+    /// The losses reported, by [`SizeLoss`].
+    losses: [bool; SizeLoss::COUNT],
     /// Nodes at full size by a smaller slot's place. Some writers leave the
     /// typesize records out: without any script size in the equation these
     /// say nothing.
@@ -175,20 +207,18 @@ pub(super) struct RareSizes {
 #[derive(Debug, Clone, Copy)]
 #[repr(align(4))]
 pub(super) struct OpenTemplate {
-    pub(super) sizes: SlotSizes,
+    /// The bits of the [`SlotSizes`] from the next slot on.
+    small: i8,
     /// The typesize its text has without attributes of its own.
-    pub(super) level: u8,
-    /// The number of slots read.
-    pub(super) slots: u8,
+    level: u8,
     /// Whether there is one.
     open: bool,
 }
 
 impl OpenTemplate {
-    pub(super) const NONE: Self = Self {
-        sizes: SlotSizes::Same,
+    const NONE: Self = Self {
+        small: 0,
         level: 0,
-        slots: 0,
         open: false,
     };
 }
@@ -307,7 +337,7 @@ pub(super) struct Decoder<'a> {
     /// Where the sizes of MTEF 5 equation preferences are.
     sizes_at: Option<usize>,
     /// The sizes there, read when first asked for.
-    preferences: std::cell::OnceCell<Preferences>,
+    preferences: std::cell::OnceCell<Box<Preferences>>,
 }
 
 impl<'a> Decoder<'a> {
@@ -860,7 +890,7 @@ impl<'a> Decoder<'a> {
     /// has been read completely.
     fn parse_object_list(&mut self, top: bool) -> Result<Vec<Item>> {
         self.enter()?;
-        let mut items = Vec::new();
+        let mut items = Vec::with_capacity(8);
         loop {
             if self.pos >= self.end {
                 if top
@@ -1324,9 +1354,8 @@ impl<'a> Decoder<'a> {
         // Only characters have sizes: what a template draws of its own has the
         // size of its contents or of its sign.
         let open = OpenTemplate {
-            sizes: self.slot_sizes(selector, variation),
+            small: self.slot_sizes(selector, variation) as i8,
             level: self.slot_size,
-            slots: 0,
             open: true,
         };
         let outer_template = std::mem::replace(&mut self.template, open);
@@ -1596,7 +1625,7 @@ impl<'a> Decoder<'a> {
     #[cold]
     fn settle_rare_sizes(&mut self, rare: RareSizes) {
         if rare.dropped_in_runs || !rare.dropped_symbols.is_empty() {
-            self.lose_size("symbol sizes of characters were dropped");
+            self.lose_size(SizeLoss::SymbolSize);
         }
         if !self.script_sizes {
             for (id, attrs) in rare.full_in_script {
@@ -1610,13 +1639,8 @@ impl<'a> Decoder<'a> {
     /// MTEF 3 does not record. It is not kept.
     #[inline]
     fn is_dropped_symbol(size: SizeState) -> bool {
-        matches!(
-            size.record(),
-            SizeRecord::Logical {
-                level: 3 | 4,
-                delta: 0
-            }
-        )
+        // The typesizes 3 and 4, with nothing added.
+        matches!(size.0, 3 | 4)
     }
 
     /// The size of something drawn in `size` that does not have it by its
@@ -1702,11 +1726,13 @@ impl<'a> Decoder<'a> {
     }
 
     /// Report a size that the AST has no place for.
-    pub(super) fn lose_size(&mut self, message: &str) {
-        if !self.diagnostics.iter().any(|d| d.message == message) {
+    #[cold]
+    pub(super) fn lose_size(&mut self, loss: SizeLoss) {
+        let rare = self.rare_sizes.get_or_insert_default();
+        if !std::mem::replace(&mut rare.losses[loss as usize], true) {
             self.diagnostics.push(Diagnostic {
                 kind: DiagnosticKind::Info,
-                message: message.to_owned(),
+                message: loss.message().to_owned(),
                 span: None,
             });
         }
@@ -1763,7 +1789,7 @@ impl<'a> Decoder<'a> {
             self.rare_sizes
                 .get_or_insert_default()
                 .dropped_symbols
-                .insert(id);
+                .push(id);
         } else if drawn && let Some(size) = self.own_size(size) {
             self.add_size(id, size);
         }
@@ -1795,7 +1821,7 @@ impl<'a> Decoder<'a> {
                 self.rare_sizes
                     .get_or_insert_default()
                     .dropped_symbols
-                    .insert(id);
+                    .push(id);
             }
             return;
         };
@@ -1831,18 +1857,20 @@ impl<'a> Decoder<'a> {
     }
 
     /// Read a slot of the open template, or a line of a pile or matrix.
-    #[inline(always)]
+    #[inline]
     fn in_slot<T>(&mut self, read: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         let mut open = std::mem::replace(&mut self.template, OpenTemplate::NONE);
-        if !open.open {
-            return read(self);
-        }
         let outer = self.slot_size;
-        self.slot_size = self.slot_size_of(open);
+        if open.open {
+            self.slot_size = if open.small & 1 != 0 {
+                (open.level + 1).min(2)
+            } else {
+                open.level
+            };
+            open.small >>= 1;
+        }
         let result = read(self);
         self.slot_size = outer;
-        // Only the first slots differ.
-        open.slots += u8::from(open.slots < 4);
         self.template = open;
         result
     }
@@ -1955,7 +1983,7 @@ impl<'a> Decoder<'a> {
 
     fn preferences(&self) -> &Preferences {
         self.preferences
-            .get_or_init(|| self.read_preferences().unwrap_or_default())
+            .get_or_init(|| Box::new(self.read_preferences().unwrap_or_default()))
     }
 
     #[cold]
@@ -2021,8 +2049,8 @@ impl<'a> Decoder<'a> {
 
     /// Note the size of a character that joins a run, where it is dropped.
     #[inline(always)]
-    fn note_run_size(&mut self, glyph: &Glyph) {
-        if Self::is_dropped_symbol(glyph.size) && !glyph.ch.is_whitespace() {
+    fn note_run_size(&mut self, size: SizeState, ch: char) {
+        if Self::is_dropped_symbol(size) && !ch.is_whitespace() {
             self.rare_sizes.get_or_insert_default().dropped_in_runs = true;
         }
     }
@@ -2099,22 +2127,21 @@ impl<'a> Decoder<'a> {
                         Class::Text => {
                             let mut text = String::new();
                             text.push(glyph.ch);
+                            let mut blank = glyph.ch.is_whitespace();
                             while let Some(Item::Glyph(next)) = items.front()
                                 && next.embells.is_empty()
                                 && next.color == glyph.color
                                 && classify(next) == Class::Text
-                                && (next.ch.is_whitespace()
-                                    || text.trim().is_empty()
-                                    || self.same_size(next, size))
+                                && (blank || self.same_size(next, size) || next.ch.is_whitespace())
                             {
                                 // Blanks have no size that shows.
-                                if text.trim().is_empty() {
+                                if blank {
                                     size = next.size;
+                                    blank = next.ch.is_whitespace();
                                 }
                                 text.push(next.ch);
-                                if let Some(Item::Glyph(next)) = items.pop_front() {
-                                    self.note_run_size(&next);
-                                }
+                                self.note_run_size(next.size, next.ch);
+                                items.pop_front();
                             }
                             self.str_node(&text, |s| CompactNode::Text(TextStyle::Normal, s))?
                         },
@@ -2129,18 +2156,16 @@ impl<'a> Decoder<'a> {
                                 && !next.func_start
                                 // A name is one whatever its sizes.
                                 && (self.same_size(next, size)
+                                    || name.len() > MAX_OPERATOR_COMMAND
                                     || !crate::unicode::symbols::is_operator_command(&name))
                             {
                                 mixed |= !self.same_size(next, size);
                                 name.push(next.ch);
-                                if let Some(Item::Glyph(next)) = items.pop_front() {
-                                    self.note_run_size(&next);
-                                }
+                                self.note_run_size(next.size, next.ch);
+                                items.pop_front();
                             }
                             if mixed {
-                                self.lose_size(
-                                    "the sizes of the letters of a function name differ; they were dropped",
-                                );
+                                self.lose_size(SizeLoss::FunctionName);
                                 size = self.size_by_place();
                             }
                             self.str_node(&name, |s| CompactNode::Operator {
@@ -2168,9 +2193,8 @@ impl<'a> Decoder<'a> {
                                     && self.same_size(next, size)
                                 {
                                     digits.push(next.ch);
-                                    if let Some(Item::Glyph(next)) = items.pop_front() {
-                                        self.note_run_size(&next);
-                                    }
+                                    self.note_run_size(next.size, next.ch);
+                                    items.pop_front();
                                 } else if !digits.contains('.')
                                     && let Some(Item::Glyph(point)) = items.front()
                                     && is_decimal_point(point)
@@ -2187,9 +2211,8 @@ impl<'a> Decoder<'a> {
                                     // decimal in the function style and the
                                     // digits in the number style.
                                     digits.push('.');
-                                    if let Some(Item::Glyph(point)) = items.pop_front() {
-                                        self.note_run_size(&point);
-                                    }
+                                    self.note_run_size(point.size, point.ch);
+                                    items.pop_front();
                                 } else {
                                     break;
                                 }
@@ -2207,9 +2230,8 @@ impl<'a> Decoder<'a> {
                                 && self.same_size(next, size)
                             {
                                 let ch = next.ch;
-                                if let Some(Item::Glyph(next)) = items.pop_front() {
-                                    self.note_run_size(&next);
-                                }
+                                self.note_run_size(next.size, next.ch);
+                                items.pop_front();
                                 run.push(self.plain_char_node(ch)?);
                             }
                             let span = self.children(&run)?;

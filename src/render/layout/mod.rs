@@ -1807,9 +1807,35 @@ fn layout_node_arena(
     }
     let mut ctx = ctx.deeper();
     if let Some(attrs) = ast.attrs(id) {
-        // The size of a fraction with a style of its own is in that style.
+        // The size of a node that sets its content in a style of its own
+        // is in that style.
         let style = match *ast.node(id) {
             CompactNode::Fraction { kind, .. } => kind.forced_style(),
+            CompactNode::Array {
+                col_aligns,
+                cells,
+                num_cols,
+                arraystretch_pct,
+                add_jot,
+                array_style,
+                col_seps,
+                row_seps,
+            } => Some(
+                match ast.valid_matrix_environment(
+                    id,
+                    col_aligns,
+                    cells,
+                    num_cols,
+                    arraystretch_pct,
+                    add_jot,
+                    array_style,
+                    col_seps,
+                    row_seps,
+                ) {
+                    Some((crate::ast::MatrixKind::SmallMatrix, _)) => MathStyle::Script,
+                    _ => MathStyle::Text,
+                },
+            ),
             _ => None,
         };
         ctx = ctx.with_attrs(attrs, style);

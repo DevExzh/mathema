@@ -326,8 +326,12 @@ fn token_tag_len(element: &str) -> Option<usize> {
         .strip_prefix('<')?
         .split(|c: char| !c.is_ascii_alphanumeric())
         .next()?;
-    let one = element.matches('<').count() <= 2 && !element.contains(" mathsize=");
-    (one && matches!(name, "mi" | "mn" | "mo" | "mtext" | "mspace")).then_some(name.len() + 1)
+    if !matches!(name, "mi" | "mn" | "mo" | "mtext" | "mspace") {
+        return None;
+    }
+    // Its own two tags: no more of a longer one is gone through.
+    let one = element.match_indices('<').nth(2).is_none() && !element.contains(" mathsize=");
+    one.then_some(name.len() + 1)
 }
 
 fn write_math_fast(expr: &CompactExpr, has_sizes: bool) -> XmlBuffer {
@@ -3513,13 +3517,7 @@ fn write_scripts_fast(
     }
     buf.push('>');
     if let Some(movable) = place.base_movable {
-        if arena.has_attrs() && writes_own_tag(arena, base, movable) {
-            write_sized(buf, arena, base, display, |buf| {
-                write_limit_base_fast(buf, arena, base, movable, display);
-            });
-        } else {
-            write_limit_base_fast(buf, arena, base, movable, display);
-        }
+        write_limit_base_fast(buf, arena, base, movable, display);
     } else if let CompactNode::Operator { name, limits } = *arena.node(base) {
         write_sized(buf, arena, base, display, |buf| {
             write_named_operator_fast(buf, arena.str_val(name), limits, true);
@@ -3598,7 +3596,7 @@ fn write_mo_char_fast(buf: &mut XmlBuffer, ch: char, movable: Option<bool>) {
     buf.push_str("</mo>");
 }
 
-/// Whether [`write_limit_base_fast`] writes the node's element itself, without
+/// Whether [`write_bare_limit_base`] writes the node's element itself, without
 /// the code that adds the node's size.
 fn writes_own_tag(arena: &AstArena, id: NodeId, movable: bool) -> bool {
     match *arena.node(id) {
@@ -3616,6 +3614,21 @@ fn writes_own_tag(arena: &AstArena, id: NodeId, movable: bool) -> bool {
 }
 
 fn write_limit_base_fast(
+    buf: &mut XmlBuffer,
+    arena: &AstArena,
+    id: NodeId,
+    movable: bool,
+    display_style: MathStyle,
+) {
+    if arena.has_attrs() && writes_own_tag(arena, id, movable) {
+        return write_sized(buf, arena, id, display_style, |buf| {
+            write_bare_limit_base(buf, arena, id, movable, display_style);
+        });
+    }
+    write_bare_limit_base(buf, arena, id, movable, display_style);
+}
+
+fn write_bare_limit_base(
     buf: &mut XmlBuffer,
     arena: &AstArena,
     id: NodeId,

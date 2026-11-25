@@ -128,6 +128,16 @@ impl TypeSize {
 
 /// The base size of an expression that does not say its own, in points: the
 /// factory setting of MathType, and the size of CSS `medium` text.
+///
+/// MTEF 2 to 4 do not record the full size, and the preferences of the program
+/// that wrote an equation are not in its file. A size in points there is kept
+/// as it is and its ratio to ordinary text assumes 12 pt. Where the author had
+/// another full size this is off by that ratio: an equation with its scripts
+/// `SUSY`, `SM` and `2` at an explicit 12 pt, written by a program whose full
+/// size was larger, has scripts as large as its text. Judged by the pictures
+/// stored with 112 equations where it can be measured, keeping the sizes is
+/// right in 89, dropping them in 37; where only one of the two is right,
+/// keeping them is in 57 of 62.
 pub(crate) const DEFAULT_BASE_SIZE_PT: i32 = 12;
 
 /// Facts about an expression as a whole.

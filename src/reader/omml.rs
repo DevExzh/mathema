@@ -1157,15 +1157,17 @@ impl<'i> Parser<'i> {
     /// Parse an argument (`CT_OMathArg`) and return its nodes.
     fn arg(&mut self, name: &'static str) -> Result<Ids> {
         let outer = self.style;
-        self.style = match name {
-            "m:sub" | "m:lim" => outer.sub(),
-            "m:sup" => outer.sup(),
-            "m:deg" => MathStyle::ScriptScript,
-            "m:num" => outer.fracnum(),
-            "m:den" => outer.fracden(),
-            _ => outer,
-        };
+        self.style = argument_style(outer, name);
         let result = self.arg_content(name);
+        self.style = outer;
+        result
+    }
+
+    /// Parse a cell of a matrix or a row of an equation array.
+    fn cell(&mut self) -> Result<Ids> {
+        let outer = self.style;
+        self.style = cell_style(outer);
+        let result = self.arg_content("m:e");
         self.style = outer;
         result
     }
@@ -1900,7 +1902,7 @@ impl<'i> Parser<'i> {
                     }
                 },
                 (Ns::Math, "e") => {
-                    let ids = self.arg("m:e")?;
+                    let ids = self.cell()?;
                     // `&` in a row's text marks an alignment point (the
                     // convention Word uses for equation arrays): split the
                     // row into cells at each one.
@@ -2228,7 +2230,7 @@ impl<'i> Parser<'i> {
                     let mut cells = SmallVec::new();
                     while let Some(e) = self.next_child("m:mr")? {
                         if e.is_math("e") {
-                            let ids = self.arg("m:e")?;
+                            let ids = self.cell()?;
                             let span = checked_span(&mut self.arena, &ids)?;
                             cells.push(self.arena.push_node(CompactNode::Row(span)));
                         } else {
@@ -2687,6 +2689,30 @@ fn half_points(value: &str) -> Option<u16> {
     let number: f64 = digits.parse().ok()?;
     let size = (number * per_unit).round();
     (size >= 1.0 && size <= f64::from(u16::MAX)).then_some(size as u16)
+}
+
+/// The style of the argument `name` of an object set in `style`, as far as
+/// the sizes of its runs go: `w:sz` is the size outside of scripts. The writer
+/// uses the same function, so that a size is read as it is written whatever
+/// the styles of the AST are.
+pub(crate) fn argument_style(style: MathStyle, name: &str) -> MathStyle {
+    match name {
+        "m:sub" | "m:lim" => style.sub(),
+        "m:sup" => style.sup(),
+        "m:deg" => MathStyle::ScriptScript,
+        "m:num" => style.fracnum(),
+        "m:den" => style.fracden(),
+        _ => style,
+    }
+}
+
+/// The style of a cell: not display, and in a script as small as that.
+pub(crate) fn cell_style(style: MathStyle) -> MathStyle {
+    match style {
+        MathStyle::Display => MathStyle::Text,
+        MathStyle::DisplayCramped => MathStyle::TextCramped,
+        _ => style,
+    }
 }
 
 /// `ST_HexColor` RGB value (`RRGGBB`).

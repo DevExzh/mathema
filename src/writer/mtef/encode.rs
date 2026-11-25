@@ -511,31 +511,24 @@ impl<'a> Encoder<'a> {
                     !self.absolute && (self.v5 || !matches!(level, Size::User1 | Size::User2));
                 // The scripts of a structure shrink from its size, those of a
                 // typesize are the next one; a root's index has no typesize
-                // in the AST.
-                let whole = self.is_character(id) && !(self.in_index && level == Size::Sub);
-                match delta_pt.num {
-                    0 if known && whole => (None, level),
-                    0 => (
-                        Some(OwnSize {
-                            size: self.points(font_size.scale(self.base_pt) * self.base_pt),
-                            place: size,
-                        }),
-                        size,
-                    ),
-                    _ if known => (
-                        Some(OwnSize {
-                            size: font_size,
-                            place: level,
-                        }),
-                        level,
-                    ),
-                    _ => (
-                        Some(OwnSize {
-                            size: self.points(font_size.scale(self.base_pt) * self.base_pt),
-                            place: size,
-                        }),
-                        size,
-                    ),
+                // in the AST, which a difference from one does not need.
+                let in_index = self.in_index && level == Size::Sub && delta_pt.num == 0;
+                let whole = self.is_character(id) && !in_index;
+                if !(known && whole) {
+                    let size_pt = self.points(font_size.scale(self.base_pt) * self.base_pt);
+                    let own = OwnSize {
+                        size: size_pt,
+                        place: size,
+                    };
+                    (Some(own), size)
+                } else if delta_pt.num == 0 {
+                    (None, level)
+                } else {
+                    let own = OwnSize {
+                        size: font_size,
+                        place: level,
+                    };
+                    (Some(own), level)
                 }
             },
             font_size => (
@@ -683,13 +676,23 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    #[cold]
+    #[inline(never)]
+    fn glyph_need(&mut self, size: Size) {
+        // A separator has no size to see.
+        if self.size.is_none() || !self.separator {
+            self.need(size);
+            self.glyph_size = self.size;
+        }
+    }
+
     /// One CHAR record with its embellishment list.
     fn glyph(&mut self, size: Size, glyph: Glyph, func_start: bool, embells: &[u8]) -> Result<()> {
         let code = self.code(glyph.ch)?;
-        // A separator has no size to see.
-        if !(self.sized && self.size.is_some() && self.separator) {
+        if self.sized {
+            self.glyph_need(size);
+        } else {
             self.need(size);
-            self.glyph_size = self.size;
         }
         if self.v5 {
             let mut options = 0;
@@ -2792,8 +2795,7 @@ impl<'a> Encoder<'a> {
         (alignment, code, has_overrides)
     }
 
-    /// PILE: halign, valign (baseline of the centre line), one line per row.
-    /// A pile that is written without the line around it.
+    /// A pile that is written without the line around it, as a node is.
     fn sized_pile(&mut self, id: NodeId, mut size: Size) -> Result<()> {
         if !self.sized {
             return self.pile(id, size);
@@ -2808,6 +2810,7 @@ impl<'a> Encoder<'a> {
         result
     }
 
+    /// PILE: halign, valign (baseline of the centre line), one line per row.
     fn pile(&mut self, id: NodeId, size: Size) -> Result<()> {
         let CompactNode::Array {
             col_aligns,

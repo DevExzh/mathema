@@ -1,6 +1,6 @@
 use smallvec::SmallVec;
 
-use crate::ast::arena::AstArena;
+use crate::ast::arena::{AstArena, Normalized};
 use crate::ast::compact::{CompactExpr, CompactNode, NodeId, NodeSpan, StrId};
 use crate::ast::*;
 
@@ -183,7 +183,7 @@ pub(crate) fn can_merge_number_text(first: &str, second: &str) -> bool {
 /// Count decimal points in a number token whose text came from a parser or an
 /// authored MathML `<mn>`. Non-decimal content stays in its own node and is
 /// never merged with neighboring number nodes.
-fn number_decimal_points(text: &str) -> Option<usize> {
+pub(crate) fn number_decimal_points(text: &str) -> Option<usize> {
     let mut dots = 0;
     for byte in text.bytes() {
         if byte == b'.' {
@@ -658,6 +658,7 @@ fn normalize_node_depth_with_identifiers(
 /// would outgrow its 32-bit indices.
 pub fn normalize_compact_expr(expr: &mut CompactExpr) -> crate::error::Result<()> {
     expr.roots = normalize_compact_span(&mut expr.arena, expr.roots, 0)?;
+    expr.arena.set_normalized(Normalized::MergingIdentifiers);
     expr.arena.check_limits()
 }
 
@@ -670,7 +671,22 @@ pub(crate) fn normalize_compact_expr_keeping_identifiers(
     expr: &mut CompactExpr,
 ) -> crate::error::Result<()> {
     expr.roots = normalize_compact_span_with_identifiers(&mut expr.arena, expr.roots, 0, false)?;
+    expr.arena.set_normalized(Normalized::KeepingIdentifiers);
     expr.arena.check_limits()
+}
+
+/// `expr` without its typesetting attributes, for a writer that has no place
+/// for them. Nodes that only differed in them are joined where normalization
+/// would have joined them: what is not written does not change what is.
+pub(crate) fn without_attrs(expr: &CompactExpr) -> crate::error::Result<CompactExpr> {
+    let mut plain = expr.clone();
+    plain.arena.clear_attrs();
+    match plain.arena.normalized() {
+        Normalized::No => {},
+        Normalized::KeepingIdentifiers => normalize_compact_expr_keeping_identifiers(&mut plain)?,
+        Normalized::MergingIdentifiers => normalize_compact_expr(&mut plain)?,
+    }
+    Ok(plain)
 }
 
 /// Normalize a span of child nodes. Returns a (possibly new) span.
