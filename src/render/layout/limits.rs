@@ -472,7 +472,7 @@ pub(super) fn layout_nary(
             let result = layout_subscript_from_box_heap(op_box, op_ic, sub_n, ctx);
             return build_hbox(result, body_box);
         } else if let Some(sup_n) = sup {
-            let result = layout_superscript_from_box_heap(op_box, op_ic, sup_n, ctx);
+            let result = layout_superscript_from_box_heap(op_box, sup_n, ctx);
             return build_hbox(result, body_box);
         }
 
@@ -1196,8 +1196,7 @@ pub(super) fn layout_nary_arena(
                 layout_subscript_from_box_arena(op_glyph_id, op_ic, ast, sub, arena, ctx);
             return build_hbox_arena(result_id, body_id, thin_space, arena);
         } else if sup.is_some() {
-            let result_id =
-                layout_superscript_from_box_arena(op_glyph_id, op_ic, ast, sup, arena, ctx);
+            let result_id = layout_superscript_from_box_arena(op_glyph_id, ast, sup, arena, ctx);
             return build_hbox_arena(result_id, body_id, thin_space, arena);
         }
 

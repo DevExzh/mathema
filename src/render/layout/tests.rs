@@ -224,25 +224,96 @@ fn layout_accent_over_base() {
 }
 
 #[test]
-fn accent_skew_nonzero_for_italic_f() {
-    // 'f' has significant italic correction in math italic fonts.
-    let base = MathNode::Identifier("f".into());
-    let skew = accent_skew(&base, 1.0);
-    assert!(skew > 0.0, "f should have positive accent skew, got {skew}");
+fn accent_is_centred_on_the_attachment_point() {
+    // Values of the embedded font: attachment point, advance + correction.
+    for (ch, at, width) in [
+        ('f', 0.464, 0.580),
+        ('d', 0.442, 0.544),
+        ('T', 0.398, 0.732),
+    ] {
+        let base = LayoutBox::glyph(ch, 2.0, true);
+        assert!((base.width - 2.0 * width).abs() < 1e-9, "{ch}");
+        assert!(
+            (accent_skew(&base) - (2.0 * at - width)).abs() < 1e-9,
+            "{ch}"
+        );
+    }
+    // Not for text faces or several characters.
+    assert_eq!(
+        accent_skew(&LayoutBox::glyph_font('f', 1.0, false, FontId::RomanBold)),
+        0.0
+    );
+    assert_eq!(accent_skew(&LayoutBox::kern(1.0)), 0.0);
 }
 
+/// TeXBook Rules 12, 17 and 18, checked against XeTeX with Latin Modern Math
+/// (whose 7pt script glyphs are 0.0485em wider than ours per digit).
 #[test]
-fn accent_skew_zero_for_multi_char() {
-    // Multi-character identifiers should have no skew correction.
-    let base = MathNode::Identifier("abc".into());
-    assert_eq!(accent_skew(&base, 1.0), 0.0);
-}
-
-#[test]
-fn accent_skew_zero_for_non_identifier() {
-    // Non-identifier nodes should have no skew correction.
-    let base = MathNode::Number("2".into());
-    assert_eq!(accent_skew(&base, 1.0), 0.0);
+fn italic_correction_follows_the_texbook() {
+    let place = |latex: &str, style| {
+        assert_arena_heap_equivalent(latex, style);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, style, &default_options());
+        let mut glyphs = Vec::new();
+        fn walk(b: &LayoutBox, x: f64, out: &mut Vec<(char, f64)>) {
+            match &b.kind {
+                BoxKind::Glyph { ch, .. } => out.push((*ch, x)),
+                BoxKind::TextRun { text, .. } => {
+                    out.extend(text.chars().next().map(|ch| (ch, x)));
+                },
+                BoxKind::HBox { children } | BoxKind::VBox { children } => {
+                    for child in children {
+                        walk(&child.layout, x + child.dx, out);
+                    }
+                },
+                _ => {},
+            }
+        }
+        walk(&root, 0.0, &mut glyphs);
+        (root.width, glyphs)
+    };
+    let check = |latex: &str, style, width: f64, last: f64| {
+        let (w, glyphs) = place(latex, style);
+        assert!((w - width).abs() < 1e-6, "{latex}: width {w}, not {width}");
+        let x = glyphs.last().unwrap().1;
+        assert!((x - last).abs() < 1e-6, "{latex}: last at {x}, not {last}");
+    };
+    use MathStyle::{Display, Text};
+    check("f", Text, 0.580, 0.0);
+    check("ff", Text, 1.160, 0.580);
+    check("f)", Text, 0.969, 0.580);
+    check("\\frac{f}{T}", Text, 0.732 * 0.7 + 0.24, 0.12);
+    // A superscript follows the correction, primes too; a subscript does not.
+    check("f^2", Text, 0.980, 0.580);
+    check("f'", Text, 0.8477, 0.580);
+    check("f_2", Text, 0.890, 0.490);
+    check("T_2^2", Text, 0.584 + 0.148 + 0.4, 0.584);
+    check("V_{,}", Text, 0.583 + 0.278 * 0.7 + 0.05, 0.583);
+    check("{ff}_2", Text, 1.160 + 0.4, 1.160);
+    // An accented character takes its scripts where the character does.
+    check("\\vec{V}_2", Text, 0.583 + 0.4, 0.583);
+    check("\\hat{T}^2", Text, 0.732 + 0.4, 0.732);
+    check("\\Gamma_2", Text, 0.625 + 0.4, 0.625);
+    check("\\mathbf{f}_2", Text, 0.351 + 0.4, 0.351);
+    // Text has no corrections.
+    check("\\textit{ff}", Text, 0.980, 0.0);
+    check("\\text{∫}", Text, 0.665, 0.0);
+    // The subscript of an integral is under its slope.
+    check("\\int_2", Display, 0.408 + 0.4, 0.408);
+    check("\\int_2", Text, 0.333 + 0.4, 0.333);
+    check("\\int_2^2", Display, 0.999 + 0.4, 0.408);
+    check(
+        "\\oint_2^2 f",
+        Text,
+        0.665 + 0.4 + 1.0 / 6.0 + 0.580,
+        0.665 + 0.4 + 1.0 / 6.0,
+    );
+    check(
+        "\\int\\limits_2",
+        Display,
+        0.999,
+        (0.999 - 0.35) / 2.0 - 0.591 / 2.0,
+    );
 }
 
 #[test]

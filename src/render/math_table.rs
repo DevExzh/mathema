@@ -14,6 +14,8 @@ use super::metrics::GlyphMetrics;
 struct FontMetrics {
     /// Map from Unicode character to its glyph metrics (in em units).
     metrics: HashMap<char, GlyphMetrics>,
+    /// Top accent attachment points (em units).
+    top_accents: HashMap<char, f64>,
 }
 
 /// Lazily-parsed font metrics, initialized on first access.
@@ -30,7 +32,15 @@ static PARSED_METRICS: LazyLock<FontMetrics> = LazyLock::new(|| {
         .and_then(|math| math.glyph_info.as_ref())
         .and_then(|info| info.italic_corrections.as_ref());
 
+    let top_accent_attachments = face
+        .tables()
+        .math
+        .as_ref()
+        .and_then(|math| math.glyph_info.as_ref())
+        .and_then(|info| info.top_accent_attachments.as_ref());
+
     let mut metrics = HashMap::new();
+    let mut top_accents = HashMap::new();
 
     // Iterate all cmap subtables to discover every codepoint in the font.
     if let Some(cmap) = face.tables().cmap.as_ref() {
@@ -70,12 +80,26 @@ static PARSED_METRICS: LazyLock<FontMetrics> = LazyLock::new(|| {
                     .map(|mv| mv.value as f64 / upem)
                     .unwrap_or(0.0);
 
+                if let Some(at) = top_accent_attachments.and_then(|at| at.get(gid)) {
+                    top_accents.insert(ch, f64::from(at.value) / upem);
+                }
+
+                // The advance of an integral includes its italic correction.
+                let width = if super::metrics::is_integral(ch) {
+                    width - italic
+                } else {
+                    width
+                };
+
                 metrics.insert(ch, GlyphMetrics::new(height, depth, width, italic));
             });
         }
     }
 
-    FontMetrics { metrics }
+    FontMetrics {
+        metrics,
+        top_accents,
+    }
 });
 
 /// Look up font-derived glyph metrics for a character (math italic variant).
@@ -84,6 +108,11 @@ static PARSED_METRICS: LazyLock<FontMetrics> = LazyLock::new(|| {
 #[inline]
 pub fn font_glyph_metrics(ch: char) -> Option<GlyphMetrics> {
     PARSED_METRICS.metrics.get(&ch).copied()
+}
+
+/// Horizontal point of a character's glyph that an accent is centred on.
+pub fn top_accent_attachment(ch: char) -> Option<f64> {
+    PARSED_METRICS.top_accents.get(&ch).copied()
 }
 
 /// Look up font-derived glyph metrics for an upright character.

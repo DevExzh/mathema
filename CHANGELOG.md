@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A brace, overline or underline over `\mathop{…}` keeps its command, and a
   lone `⏞`/`⏟` over or under something is written `\overbrace`/`\underbrace`.
 - Rendering: an operator without an operand has no thin space after it.
+- Rendering: a letter's box includes its italic correction, as in TeX, so `T)`,
+  `f_1` and `\frac{V}{Y}` no longer collide. A superscript (primes too) follows
+  the correction, a subscript does not, and that of an integral sits under its
+  slope. Advances are those of the drawn Latin Modern Math glyph (most Greek
+  letters, `\infty`, `\forall`, the dots and the integrals were too narrow), and
+  an accent is centred on the font's attachment point (`\hat d`, `\vec V_1`).
 - `\textcolor{red}{\sum}`, `\colorbox` and `\fcolorbox` with just an operator
   in braces are read like the operator token (`\textcolor{red}\sum`).
 - LaTeX output spells more combining accents as commands (`\overline`,

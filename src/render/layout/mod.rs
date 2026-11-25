@@ -194,7 +194,7 @@ impl LayoutBox {
             fonts_registry::text_metrics(ch, italic, font)
         };
         Self {
-            width: m.width * size,
+            width: m.advance() * size,
             height: m.height * size,
             depth: m.depth * size,
             kind: BoxKind::Glyph {
@@ -214,7 +214,7 @@ impl LayoutBox {
             return b;
         }
         Self {
-            width: m.width * size,
+            width: m.advance() * size,
             height: m.height * size,
             depth: m.depth * size,
             kind: BoxKind::Glyph {
@@ -380,12 +380,27 @@ const SCRIPT_SPACE: f64 = 0.05;
 /// backend agrees (important for SVG↔PNG parity).
 pub(crate) const PARTIAL_DESLANT_DEG: f32 = -8.0;
 
+/// Italic correction (in absolute units) that the `width` of a glyph box
+/// includes. A large operator in display style has that of its variant.
+fn glyph_italic(ch: char, size: f64, italic: bool, font: FontId, width: f64) -> f64 {
+    let m = fonts_registry::text_metrics(ch, italic, font);
+    if (m.advance() * size - width).abs() > 1e-9 {
+        return metrics::glyph_metrics_display(ch).italic * size;
+    }
+    m.italic * size
+}
+
 /// Extract the italic correction (in absolute units) for a base LayoutBox.
 /// Returns a non-zero value only when the base is a single glyph.
 #[inline]
 fn italic_correction(base: &LayoutBox) -> f64 {
     match &base.kind {
-        BoxKind::Glyph { ch, size, .. } => metrics::glyph_metrics(*ch).italic * size,
+        BoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => glyph_italic(*ch, *size, *italic, *font, base.width),
         _ => 0.0,
     }
 }
@@ -928,7 +943,7 @@ fn layout_text_run(
         let d = m.depth * size;
         max_height = max_height.max(h);
         max_depth = max_depth.max(d);
-        total_width += m.width * size;
+        total_width += m.run_advance(ch) * size;
     }
 
     LayoutBox {
@@ -1242,8 +1257,14 @@ use crate::render::arena::{
 /// Extract the italic correction for a base box in the arena layout path.
 #[inline]
 fn italic_correction_arena(base_id: LayoutBoxId, arena: &LayoutArena) -> f64 {
-    match &arena.get(base_id).kind {
-        ArenaBoxKind::Glyph { ch, size, .. } => metrics::glyph_metrics(*ch).italic * size,
+    let base = arena.get(base_id);
+    match &base.kind {
+        ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => glyph_italic(*ch, *size, *italic, *font, base.width),
         _ => 0.0,
     }
 }
@@ -1417,7 +1438,7 @@ fn alloc_glyph_font(
         fonts_registry::text_metrics(ch, italic, font)
     };
     arena.alloc(ArenaLayoutBox {
-        width: m.width * size,
+        width: m.advance() * size,
         height: m.height * size,
         depth: m.depth * size,
         kind: ArenaBoxKind::Glyph {
@@ -1478,7 +1499,7 @@ fn alloc_glyph_with_metrics(
         return id;
     }
     arena.alloc(ArenaLayoutBox {
-        width: m.width * size,
+        width: m.advance() * size,
         height: m.height * size,
         depth: m.depth * size,
         kind: ArenaBoxKind::Glyph {
@@ -1615,7 +1636,7 @@ fn layout_text_run_arena(
         let d = m.depth * size;
         max_height = max_height.max(h);
         max_depth = max_depth.max(d);
-        total_width += m.width * size;
+        total_width += m.run_advance(ch) * size;
     }
 
     arena.alloc(ArenaLayoutBox {

@@ -28,6 +28,11 @@ pub(super) fn is_stretchy_accent(accent: char) -> bool {
     )
 }
 
+/// `\widehat`, `\widetilde` and `\widecheck`, accents of any width in TeX.
+fn is_wide_accent(accent: char) -> bool {
+    matches!(accent, '\u{0302}' | '\u{0303}' | '\u{030C}')
+}
+
 /// A pre-drawn accent path with its native viewBox dimensions (in KaTeX units).
 pub(super) struct KatexAccentPath {
     path: &'static str,
@@ -543,19 +548,31 @@ fn stretchy_overunder_path_verbose(sym: &str, w: f64, h: f64) -> String {
     }
 }
 
-/// Compute the italic skew correction for accent positioning.
-/// When the base of an accent is a single italic character, TeX shifts the accent
-/// right by half the italic correction to compensate for the italic slant.
-pub(super) fn accent_skew(base: &MathNode, size: f64) -> f64 {
-    if let MathNode::Identifier(s) = base {
-        let mut chars = s.chars();
-        if let Some(ch) = chars.next()
-            && chars.next().is_none()
-        {
-            return metrics::glyph_metrics(ch).italic * size / 2.0;
-        }
+/// How far right of the base's centre its accent goes: over a single character
+/// the accent is centred on the font's top accent attachment point (OpenType
+/// MATH; the `\skewchar` kern of TeXBook Rule 12).
+pub(super) fn accent_skew(base: &LayoutBox) -> f64 {
+    match base.kind {
+        BoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => glyph_skew(ch, size, italic, font, base.width),
+        _ => 0.0,
     }
-    0.0
+}
+
+fn glyph_skew(ch: char, size: f64, italic: bool, font: FontId, width: f64) -> f64 {
+    if !font.is_math() {
+        return 0.0;
+    }
+    let drawn = if italic {
+        math_italic_codepoint(ch).unwrap_or(ch)
+    } else {
+        ch
+    };
+    math_table::top_accent_attachment(drawn).map_or(0.0, |at| at * size - width / 2.0)
 }
 
 /// Bracket primitives scale the path to the operand and use large-operator
@@ -857,10 +874,10 @@ pub(super) fn layout_accent(
         LayoutBox::glyph(accent, ctx.size(), false)
     };
 
-    // TeX Rule 12: italic skew correction only for above accents.
+    // TeX Rule 12: only for accents above, not `\overrightarrow` and its like.
     let skew = match position {
-        AccentPosition::Above => accent_skew(base, ctx.size()),
-        AccentPosition::Below => 0.0,
+        AccentPosition::Above if !wide || is_wide_accent(accent) => accent_skew(&base_box),
+        _ => 0.0,
     };
     let accent_dx = (base_width - accent_box.width) / 2.0 + skew;
     let (accent_dy, total_h, total_d) = match position {
@@ -897,18 +914,18 @@ pub(super) fn layout_accent(
     }
 }
 
-/// Compact-arena variant of `accent_skew`.
-pub(super) fn accent_skew_c(arena: &AstArena, base: NodeId, size: f64) -> f64 {
-    if let CompactNode::Identifier(sid) = arena.node(base) {
-        let s = arena.str_val(*sid);
-        let mut chars = s.chars();
-        if let Some(ch) = chars.next()
-            && chars.next().is_none()
-        {
-            return metrics::glyph_metrics(ch).italic * size / 2.0;
-        }
+/// Arena variant of `accent_skew`.
+fn accent_skew_arena(base: LayoutBoxId, arena: &LayoutArena) -> f64 {
+    let base = arena.get(base);
+    match base.kind {
+        ArenaBoxKind::Glyph {
+            ch,
+            size,
+            italic,
+            font,
+        } => glyph_skew(ch, size, italic, font, base.width),
+        _ => 0.0,
     }
-    0.0
 }
 
 // ==========================================================================
@@ -1250,8 +1267,10 @@ pub(super) fn layout_accent_arena(
     let accent_h = arena.get(accent_id).height;
 
     let skew = match position {
-        AccentPosition::Above => accent_skew_c(ast, base, ctx.size()),
-        AccentPosition::Below => 0.0,
+        AccentPosition::Above if !wide || is_wide_accent(accent) => {
+            accent_skew_arena(base_id, arena)
+        },
+        _ => 0.0,
     };
     let accent_dx = (base_w - accent_w) / 2.0 + skew;
     let (accent_dy, total_h, total_d) = match position {

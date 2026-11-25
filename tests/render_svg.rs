@@ -133,11 +133,11 @@ fn compact_smallmatrix_uses_script_quad_and_exterior_thin_spaces() {
 
     let small_width = viewbox_values(&small)[2];
     let full_width = viewbox_values(&full)[2];
-    assert!((small_width - 24.087).abs() < 0.02, "{small}");
-    assert!((full_width - 32.144).abs() < 0.02, "{full}");
+    assert!((small_width - 24.354).abs() < 0.02, "{small}");
+    assert!((full_width - 32.528).abs() < 0.02, "{full}");
     assert!(small_x[0] > 2.0, "smallmatrix exterior thin space missing");
     assert!(
-        (small_x[1] - small_x[0] - 10.879).abs() < 0.03,
+        (small_x[1] - small_x[0] - 10.933).abs() < 0.03,
         "smallmatrix intercolumn spacing is not script-sized: {small}"
     );
     assert!(

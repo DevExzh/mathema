@@ -1,27 +1,5 @@
 use super::*;
 
-/// Returns true if the superscript node consists entirely of prime symbols (U+2032).
-/// TeX skips italic correction for prime superscripts so they sit tight against the base.
-pub(super) fn is_prime_sup(node: &MathNode) -> bool {
-    match node {
-        MathNode::Symbol(_, s) => s.chars().all(|c| c == '\u{2032}'),
-        MathNode::Row(children) => !children.is_empty() && children.iter().all(is_prime_sup),
-        _ => false,
-    }
-}
-
-/// Compact-AST version of `is_prime_sup`.
-pub(super) fn is_prime_sup_c(arena: &AstArena, id: NodeId) -> bool {
-    match *arena.node(id) {
-        CompactNode::Symbol(_, sid) => arena.str_val(sid).chars().all(|c| c == '\u{2032}'),
-        CompactNode::Row(span) => {
-            let ids = arena.children(span);
-            !ids.is_empty() && ids.iter().all(|&nid| is_prime_sup_c(arena, nid))
-        },
-        _ => false,
-    }
-}
-
 /// TeXBook Rule 18a: superscript positioning.
 /// When the base is a large operator in display mode, place the superscript above as a limit.
 pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
@@ -54,21 +32,13 @@ pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCt
     };
 
     // Bug 2 fix: only apply height-based sup_drop term when base is not a single character
-    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let is_char_box = matches!(script_nucleus(base, &base_box).kind, BoxKind::Glyph { .. });
     if !is_char_box {
         shift_up = shift_up.max(base_box.height - sup_params.sup_drop * sup_size_ratio * size);
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    // Italic correction: shift superscript right by the base glyph's italic correction.
-    // TeX skips italic correction for prime superscripts — primes sit tight against the base.
-    let ic = if is_prime_sup(sup) {
-        0.0
-    } else {
-        italic_correction(&base_box)
-    };
-
-    let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
+    let total_width = base_box.width + sup_box.width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
@@ -76,7 +46,7 @@ pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCt
     let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width + ic, shift_up, sup_box),
+        PositionedBox::new(base_width, shift_up, sup_box),
     ];
 
     LayoutBox {
@@ -110,20 +80,18 @@ pub(super) fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx)
     let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
     // Bug 2 fix: only apply depth-based sub_drop term when base is not a single character
-    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let is_char_box = matches!(script_nucleus(base, &base_box).kind, BoxKind::Glyph { .. });
     let mut shift_down = p.sub1 * size;
     if !is_char_box {
         shift_down = shift_down.max(base_box.depth + sub_params.sub_drop * sub_size_ratio * size);
     }
     let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height * size / 5.0));
 
-    // Italic correction: shift subscript left by the base glyph's italic correction
-    let ic = italic_correction(&base_box);
+    // Rule 18: a subscript goes where the base's advance ends, without the
+    // italic correction its box includes.
+    let ic = italic_correction(script_nucleus(base, &base_box));
     let sub_dx = (base_box.width - ic).max(0.0);
-
-    // Ensure total width is at least base width — large italic correction
-    // can shift the subscript far left, but the base itself still occupies space.
-    let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_box.width + SCRIPT_SPACE * size;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -173,7 +141,7 @@ pub(super) fn layout_subsup(
     let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
     // Bug 2 fix: only apply height/depth-based drop terms when base is not a single character
-    let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
+    let is_char_box = matches!(script_nucleus(base, &base_box).kind, BoxKind::Glyph { .. });
 
     // Superscript shift
     let mut shift_up = if ctx.branch_style().is_display() {
@@ -212,14 +180,9 @@ pub(super) fn layout_subsup(
         shift_down = shift_down.max(0.0);
     }
 
-    // TeX skips italic correction for prime superscripts.
-    let ic = if is_prime_sup(sup) {
-        0.0
-    } else {
-        italic_correction(&base_box)
-    };
-    let sup_dx = base_box.width + ic;
-    let sub_dx = (base_box.width - ic / 2.0).max(0.0);
+    let ic = italic_correction(script_nucleus(base, &base_box));
+    let sup_dx = base_box.width;
+    let sub_dx = (base_box.width - ic).max(0.0);
 
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
@@ -245,7 +208,6 @@ pub(super) fn layout_subsup(
 /// Helper: superscript layout where the base is an already-laid-out LayoutBox (heap path).
 pub(super) fn layout_superscript_from_box_heap(
     base_box: LayoutBox,
-    base_ic: f64,
     sup: &MathNode,
     ctx: &LayoutCtx,
 ) -> LayoutBox {
@@ -274,16 +236,14 @@ pub(super) fn layout_superscript_from_box_heap(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_box.depth);
 
-    let ic = if is_prime_sup(sup) { 0.0 } else { base_ic };
-
-    let total_width = base_box.width + ic + sup_box.width + SCRIPT_SPACE * size;
+    let total_width = base_box.width + sup_box.width + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_box.height).max(base_box.height);
     let total_depth = base_box.depth;
 
     let base_width = base_box.width;
     let children = vec![
         PositionedBox::at_origin(base_box),
-        PositionedBox::new(base_width + ic, shift_up, sup_box),
+        PositionedBox::new(base_width, shift_up, sup_box),
     ];
 
     LayoutBox {
@@ -319,10 +279,9 @@ pub(super) fn layout_subscript_from_box_heap(
     }
     let shift_down = shift_down.max(sub_box.height - (4.0 * p.x_height * size / 5.0));
 
-    let _ = base_ic;
-    let sub_dx = base_box.width;
+    let sub_dx = base_box.width - base_ic;
 
-    let total_width = (sub_dx + sub_box.width).max(base_box.width) + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_box.width + SCRIPT_SPACE * size;
     let total_height = base_box.height;
     let total_depth = (shift_down + sub_box.depth).max(base_box.depth);
 
@@ -398,9 +357,8 @@ pub(super) fn layout_subsup_from_box_heap(
         shift_down = shift_down.max(0.0);
     }
 
-    let ic = if is_prime_sup(sup) { 0.0 } else { base_ic };
-    let sup_dx = base_box.width + ic;
-    let sub_dx = base_box.width;
+    let sup_dx = base_box.width;
+    let sub_dx = base_box.width - base_ic;
 
     let script_width = (sup_dx - base_box.width + sup_box.width)
         .max(sub_dx - base_box.width + sub_box.width)
@@ -450,6 +408,46 @@ fn nucleus_box<'a>(base: &MathNode, base_box: &'a LayoutBox, ctx: &LayoutCtx) ->
         };
         (node, current) = (inner, &first.layout);
     }
+}
+
+/// The box scripts attach to: TeXBook Rule 12 puts the scripts of an accented
+/// character on the character.
+fn script_nucleus<'a>(base: &MathNode, base_box: &'a LayoutBox) -> &'a LayoutBox {
+    if let MathNode::Accent {
+        base,
+        position: AccentPosition::Above,
+        ..
+    } = base
+        && matches!(&**base, MathNode::Identifier(_))
+        && let BoxKind::HBox { children } = &base_box.kind
+        && let Some(first) = children.first()
+        && matches!(first.layout.kind, BoxKind::Glyph { .. })
+    {
+        return &first.layout;
+    }
+    base_box
+}
+
+/// Compact-AST version of `script_nucleus`.
+fn script_nucleus_arena(
+    ast: &AstArena,
+    base: NodeId,
+    base_id: LayoutBoxId,
+    arena: &LayoutArena,
+) -> LayoutBoxId {
+    if let CompactNode::Accent {
+        base,
+        position: AccentPosition::Above,
+        ..
+    } = *ast.node(base)
+        && matches!(ast.node(base), CompactNode::Identifier(_))
+        && let ArenaBoxKind::HBox { children } = arena.get(base_id).kind
+        && let Some(first) = arena.children(children).first()
+        && matches!(arena.get(first.id).kind, ArenaBoxKind::Glyph { .. })
+    {
+        return first.id;
+    }
+    base_id
 }
 
 /// Compact-AST version of `nucleus_box`.
@@ -605,15 +603,9 @@ pub(super) fn layout_superscript_arena(
     let sup_d = arena.get(sup_id).depth;
     let sup_w = arena.get(sup_id).width;
 
-    // TeX skips italic correction for prime superscripts.
-    let ic = if is_prime_sup_c(ast, sup) {
-        0.0
-    } else {
-        italic_correction_arena(base_id, arena)
-    };
-
     // Bug 2 fix: check if base is a single character
-    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+    let nucleus = script_nucleus_arena(ast, base, base_id, arena);
+    let is_char_box = matches!(arena.get(nucleus).kind, ArenaBoxKind::Glyph { .. });
 
     let p = &ctx.params;
     let size = ctx.size();
@@ -634,7 +626,7 @@ pub(super) fn layout_superscript_arena(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_d);
 
-    let total_width = base_w + ic + sup_w + SCRIPT_SPACE * size;
+    let total_width = base_w + sup_w + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
@@ -645,7 +637,7 @@ pub(super) fn layout_superscript_arena(
         id: base_id,
     });
     arena.push_child(ArenaPositionedBox {
-        dx: base_w + ic,
+        dx: base_w,
         dy: shift_up,
         id: sup_id,
     });
@@ -686,11 +678,12 @@ pub(super) fn layout_subscript_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let ic = italic_correction_arena(base_id, arena);
+    let ic = italic_correction_arena(script_nucleus_arena(ast, base, base_id, arena), arena);
     let sub_dx = (base_w - ic).max(0.0);
 
     // Bug 2 fix: check if base is a single character
-    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+    let nucleus = script_nucleus_arena(ast, base, base_id, arena);
+    let is_char_box = matches!(arena.get(nucleus).kind, ArenaBoxKind::Glyph { .. });
 
     let p = &ctx.params;
     let size = ctx.size();
@@ -705,7 +698,7 @@ pub(super) fn layout_subscript_arena(
     }
     let shift_down = shift_down.max(sub_h - (4.0 * p.x_height * size / 5.0));
 
-    let total_width = (sub_dx + sub_w).max(base_w) + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_w + SCRIPT_SPACE * size;
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -762,14 +755,10 @@ pub(super) fn layout_subsup_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let ic = if is_prime_sup_c(ast, sup) {
-        0.0
-    } else {
-        italic_correction_arena(base_id, arena)
-    };
-
+    let ic = italic_correction_arena(script_nucleus_arena(ast, base, base_id, arena), arena);
     // Bug 2 fix: check if base is a single character
-    let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+    let nucleus = script_nucleus_arena(ast, base, base_id, arena);
+    let is_char_box = matches!(arena.get(nucleus).kind, ArenaBoxKind::Glyph { .. });
 
     let p = &ctx.params;
     let size = ctx.size();
@@ -814,8 +803,8 @@ pub(super) fn layout_subsup_arena(
         shift_down = shift_down.max(0.0);
     }
 
-    let sup_dx = base_w + ic;
-    let sub_dx = (base_w - ic / 2.0).max(0.0);
+    let sup_dx = base_w;
+    let sub_dx = (base_w - ic).max(0.0);
 
     let script_width = (sup_dx - base_w + sup_w)
         .max(sub_dx - base_w + sub_w)
@@ -853,7 +842,6 @@ pub(super) fn layout_subsup_arena(
 /// Helper: superscript layout where the base is an already-laid-out arena box.
 pub(super) fn layout_superscript_from_box_arena(
     base_id: LayoutBoxId,
-    base_ic: f64,
     ast: &AstArena,
     sup: NodeId,
     arena: &mut LayoutArena,
@@ -868,12 +856,6 @@ pub(super) fn layout_superscript_from_box_arena(
     let sup_h = arena.get(sup_id).height;
     let sup_d = arena.get(sup_id).depth;
     let sup_w = arena.get(sup_id).width;
-
-    let ic = if is_prime_sup_c(ast, sup) {
-        0.0
-    } else {
-        base_ic
-    };
 
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
@@ -897,7 +879,7 @@ pub(super) fn layout_superscript_from_box_arena(
     }
     let shift_up = shift_up.max(p.x_height * size / 4.0 + sup_d);
 
-    let total_width = base_w + ic + sup_w + SCRIPT_SPACE * size;
+    let total_width = base_w + sup_w + SCRIPT_SPACE * size;
     let total_height = (shift_up + sup_h).max(base_h);
     let total_depth = base_d;
 
@@ -908,7 +890,7 @@ pub(super) fn layout_superscript_from_box_arena(
         id: base_id,
     });
     arena.push_child(ArenaPositionedBox {
-        dx: base_w + ic,
+        dx: base_w,
         dy: shift_up,
         id: sup_id,
     });
@@ -941,8 +923,7 @@ pub(super) fn layout_subscript_from_box_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let _ = base_ic;
-    let sub_dx = base_w;
+    let sub_dx = base_w - base_ic;
 
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
@@ -960,7 +941,7 @@ pub(super) fn layout_subscript_from_box_arena(
     }
     let shift_down = shift_down.max(sub_h - (4.0 * p.x_height * size / 5.0));
 
-    let total_width = (sub_dx + sub_w).max(base_w) + SCRIPT_SPACE * size;
+    let total_width = sub_dx + sub_w + SCRIPT_SPACE * size;
     let total_height = base_h;
     let total_depth = (shift_down + sub_d).max(base_d);
 
@@ -1010,12 +991,6 @@ pub(super) fn layout_subsup_from_box_arena(
     let sub_d = arena.get(sub_id).depth;
     let sub_w = arena.get(sub_id).width;
 
-    let ic = if is_prime_sup_c(ast, sup) {
-        0.0
-    } else {
-        base_ic
-    };
-
     // Bug 2 fix: check if base is a single character
     let is_char_box = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
 
@@ -1062,8 +1037,8 @@ pub(super) fn layout_subsup_from_box_arena(
         shift_down = shift_down.max(0.0);
     }
 
-    let sup_dx = base_w + ic;
-    let sub_dx = base_w;
+    let sup_dx = base_w;
+    let sub_dx = base_w - base_ic;
 
     let script_width = (sup_dx - base_w + sup_w)
         .max(sub_dx - base_w + sub_w)

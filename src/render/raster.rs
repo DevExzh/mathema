@@ -431,7 +431,7 @@ fn emit_raster_box(
                 }
                 let m = fonts_registry::text_metrics(ch, *italic, font);
                 draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font, xform);
-                cx += m.width * size * em;
+                cx += m.run_advance(ch) * size * em;
             }
         },
 
@@ -753,7 +753,7 @@ fn emit_raster_box_arena(
                 }
                 let m = fonts_registry::text_metrics(ch, *italic, font);
                 draw_glyph(pixmap, ctx, ch, font_size_px, cx, y, *italic, font, xform);
-                cx += m.width * size * em;
+                cx += m.run_advance(ch) * size * em;
             }
         },
 
@@ -2101,9 +2101,9 @@ mod tests {
 
     #[test]
     fn reflected_asymmetric_glyph_matches_horizontal_pixel_flip() {
-        let plain = render_png(vec![MathNode::Identifier("b".into())]);
+        let plain = render_png(vec![MathNode::Identifier("L".into())]);
         let reflected = render_png(vec![MathNode::Reflect {
-            content: Box::new(MathNode::Identifier("b".into())),
+            content: Box::new(MathNode::Identifier("L".into())),
             text_mode: false,
         }]);
         let plain = Pixmap::decode_png(&plain).unwrap();

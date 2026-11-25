@@ -436,7 +436,7 @@ fn emit_box_embedded(
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
                 let m = fonts_registry::text_metrics(ch, *italic, font);
-                cx += m.width * size * em;
+                cx += m.run_advance(ch) * size * em;
             }
         },
 
@@ -834,7 +834,7 @@ fn emit_box_arena_embedded(
                 // Use the same metric lookup as layout_text_run to keep
                 // glyph positions consistent with the layout pass.
                 let m = fonts_registry::text_metrics(ch, *italic, font);
-                cx += m.width * size * em;
+                cx += m.run_advance(ch) * size * em;
             }
         },
 
