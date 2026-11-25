@@ -2028,6 +2028,8 @@ fn unwritable_colors_around_nothing_are_stable() {
         r"^m^\colorbox{~}{}x",
         r"^{\colorbox{~}\mathbf{}}",
         r"^{\bf{\colorbox{~}{}}}",
+        r"^\color{}\colorbox{~}{\bf{}}",
+        r"+_\textcolor{}\colorbox{~}{}t",
         r"^\textcolor{}{\colorbox{~}{}}x",
         r"x_\textcolor{}{\colorbox{~}{}}+y",
         r"\mathop e_\kern_\}",
