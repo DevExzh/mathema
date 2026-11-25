@@ -100,7 +100,8 @@ pub enum TypeSize {
     Sub,
     /// The size of scripts on scripts.
     Sub2,
-    /// The size of big operators.
+    /// The size of big operators. The MTEF reader and writer drop it, and
+    /// [`SubSym`](Self::SubSym), on characters, with a diagnostic.
     Sym,
     /// The size of big operators in scripts.
     SubSym,

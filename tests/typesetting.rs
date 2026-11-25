@@ -496,6 +496,86 @@ fn mtef_5_size_preferences_are_the_documents() {
     );
 }
 
+/// MTEF 3: SUMOP (43) with no limits drawn, and `symbol` at the symbol size in
+/// its operator slot.
+fn operator_slot(symbol: u8) -> Vec<u8> {
+    vec![
+        3,
+        1,
+        1,
+        3,
+        10,
+        1, // header, FULL, LINE
+        3,
+        43,
+        1,
+        0, // TMPL SUMOP, lower limit
+        1,
+        0, // body
+        11,
+        1,
+        2,
+        131,
+        b'i',
+        0,
+        0,    // SUB, LINE, CHAR i
+        0x11, // no upper limit
+        13,
+        1,
+        2,
+        134,
+        symbol,
+        if symbol == 0x11 { 0x22 } else { 0 },
+        0, // SYM, LINE, CHAR
+        0,
+        0,
+        0,
+    ]
+}
+
+#[test]
+fn symbol_sizes_are_dropped_and_reported() {
+    let read = from_mtef_bytes(&operator_slot(b'M')).unwrap();
+    assert!(!read.compact_expr().arena.has_attrs(), "{:?}", read.expr());
+    let found: Vec<_> = read
+        .diagnostics()
+        .iter()
+        .filter(|d| d.message.contains("symbol sizes"))
+        .collect();
+    assert_eq!(found.len(), 1, "{:?}", read.diagnostics());
+    assert_eq!(found[0].kind, mathema::DiagnosticKind::Info);
+    // Anywhere, and in writing: SYM and SUBSYM records before a letter.
+    for record in [13, 14] {
+        let bytes = [3, 1, 1, 3, 10, 1, record, 2, 131, b'M', 0, 0, 0];
+        let read = from_mtef_bytes(&bytes).unwrap();
+        assert_eq!(read.expr().nodes, [id("M")]);
+        assert_eq!(read.diagnostics().len(), 1, "{:?}", read.diagnostics());
+    }
+    let source = r#"<math><mi mathsize="18pt" data-mathema-size="sym">x</mi></math>"#;
+    let read = from_mathml(source).unwrap();
+    assert_eq!(read.expr().nodes, [sized(logical(TypeSize::Sym), id("x"))]);
+    for version in [MtefVersion::V3, MtefVersion::V5] {
+        let (bytes, diagnostics) = read
+            .to_mtef_bytes_with_diagnostics(&MtefWriteOptions::new(version))
+            .unwrap();
+        assert_eq!(from_mtef_bytes(&bytes).unwrap().expr().nodes, [id("x")]);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("symbol sizes")),
+            "{diagnostics:?}"
+        );
+    }
+    // The sign of a big operator (U+2211) is there at that size by rule.
+    let read = from_mtef_bytes(&operator_slot(0x11)).unwrap();
+    assert!(
+        format!("{:?}", read.expr()).contains("Nary"),
+        "{:?}",
+        read.expr()
+    );
+    assert!(read.diagnostics().is_empty(), "{:?}", read.diagnostics());
+}
+
 #[test]
 fn nested_sizes_settle_after_one_rewrite() {
     let dir = format!("{}/tests/fixtures/mtef-sizes", env!("CARGO_MANIFEST_DIR"));

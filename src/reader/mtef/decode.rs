@@ -229,6 +229,8 @@ pub(super) struct Decoder<'a> {
     /// The size the lines being read have by their place in the equation:
     /// that of their text in the AST without attributes of its own.
     slot_size: u8,
+    /// Characters whose symbol size was dropped.
+    pub(super) dropped_symbols: Vec<NodeId>,
     /// The template whose own list is being read.
     template: Option<OpenTemplate>,
     /// Whether a typesize record names a script size.
@@ -271,6 +273,7 @@ impl<'a> Decoder<'a> {
             template_runs: HashSet::new(),
             size: SizeState::Logical { level: 0, delta: 0 },
             slot_size: 0,
+            dropped_symbols: Vec::new(),
             template: None,
             script_sizes: false,
             full_in_script: Vec::new(),
@@ -534,6 +537,9 @@ impl<'a> Decoder<'a> {
         let items = self.parse_object_list(true)?;
         self.check_trailing()?;
         let line = self.assemble_line(items)?;
+        if !self.dropped_symbols.is_empty() {
+            self.lose_size("symbol sizes of characters were dropped");
+        }
         if !self.script_sizes {
             for (id, attrs) in std::mem::take(&mut self.full_in_script) {
                 self.arena.remove_attrs(id, &attrs);
@@ -1530,6 +1536,20 @@ impl<'a> Decoder<'a> {
         size == self.size_by_place()
     }
 
+    /// Whether `size` is a symbol size. Big operators have their signs at
+    /// it; what it makes of other characters is the document's setting, which
+    /// MTEF 3 does not record. It is not kept.
+    #[inline]
+    fn is_dropped_symbol(size: SizeState) -> bool {
+        matches!(
+            size,
+            SizeState::Logical {
+                level: 3 | 4,
+                delta: 0
+            }
+        )
+    }
+
     /// The size of something drawn in `size` that does not have it by its
     /// place in the equation.
     fn own_size(&self, size: SizeState) -> Option<FontSize> {
@@ -1538,7 +1558,7 @@ impl<'a> Decoder<'a> {
                 (points > 0).then(|| FontSize::Points(Rational::new(points.into(), 32)))
             },
             SizeState::Logical { level, delta } => {
-                if level == self.slot_size && delta == 0 {
+                if level == self.slot_size && delta == 0 || Self::is_dropped_symbol(size) {
                     return None;
                 }
                 let level = match level {
@@ -1650,7 +1670,9 @@ impl<'a> Decoder<'a> {
             CompactNode::Text(_, text) => !self.arena.str_val(text).trim().is_empty(),
             _ => true,
         };
-        if drawn && let Some(size) = self.own_size(size) {
+        if drawn && Self::is_dropped_symbol(size) {
+            self.dropped_symbols.push(id);
+        } else if drawn && let Some(size) = self.own_size(size) {
             self.add_size(id, size);
         }
     }
@@ -1674,6 +1696,9 @@ impl<'a> Decoder<'a> {
             return;
         }
         let Some(own) = self.own_size(size) else {
+            if Self::is_dropped_symbol(size) {
+                self.dropped_symbols.push(id);
+            }
             return;
         };
         let mut current = id;

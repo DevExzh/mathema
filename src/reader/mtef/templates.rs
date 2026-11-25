@@ -749,6 +749,7 @@ impl Decoder<'_> {
                         // The sign is no node.
                         if let Some(slot) = op_slot {
                             for id in self.children_of(slot) {
+                                self.dropped_symbols.retain(|&dropped| dropped != id);
                                 if let Some(attrs) = self.arena.attrs(id).cloned() {
                                     self.arena.remove_attrs(id, &attrs);
                                 }

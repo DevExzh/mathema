@@ -501,8 +501,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sizes, and in UnicodeMath dropped ones, are reported too. `MathExpr::meta`
   holds the size of ordinary text. Not kept: the sizes of delimiters (MTEF
   reports them), of other OMML objects' `m:ctrlPr`, DrawingML `sz`, MathML
-  `mathsize` on table rows and cells, and letters in the operator slot of an
-  MTEF big operator at a symbol size.
+  `mathsize` on table rows and cells, and the symbol and
+  sub-symbol typesizes of MTEF characters (reported as Info; pictures of
+  documents do not settle them, and MTEF 3 does not record their size).
 - **Breaking (behavior):** `AstArena::node_mut` removes the typesetting
   attributes of the node it returns, which may become another node.
 - **Breaking:** `MathExpr`, `CompactExpr` and `Config` have a new field each

@@ -44,6 +44,7 @@ const COLOR: u8 = 15;
 const COLOR_DEF: u8 = 16;
 /// Distinct colours written before further ones are dropped.
 const MAX_COLORS: usize = 4096;
+const SYMBOL_SIZE_LOSS: &str = "symbol sizes of characters were dropped";
 const V3_COLOR_LOSS: &str = "MTEF 3 has no colours; the content was written without colour";
 /// The typesize records FULL (10) to SUBSYM (14) are 10 + the typesize.
 const TYPESIZE_BASE: u8 = 10;
@@ -429,6 +430,15 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    /// Whether a node is set in a symbol size, which the reader does not
+    /// keep.
+    fn has_symbol_size(&self, id: NodeId) -> bool {
+        matches!(
+            self.arena.attrs(id).and_then(|attrs| attrs.size),
+            Some(FontSize::Logical { level: TypeSize::Sym | TypeSize::SubSym, delta_pt }) if delta_pt.num == 0
+        )
+    }
+
     /// The size and typesize to write a node in, where `size` is the typesize
     /// of its place.
     #[cold]
@@ -437,6 +447,9 @@ impl<'a> Encoder<'a> {
         let Some(font_size) = self.arena.attrs(id).and_then(|attrs| attrs.size) else {
             return (self.own_size, size);
         };
+        if self.has_symbol_size(id) {
+            return (self.own_size, size);
+        }
         match font_size {
             FontSize::Logical { level, delta_pt } => {
                 let level = match level {
@@ -863,6 +876,9 @@ impl<'a> Encoder<'a> {
         self.enter()?;
         if self.sized {
             let outer = self.own_size;
+            if self.has_symbol_size(id) {
+                self.lose(SYMBOL_SIZE_LOSS);
+            }
             (self.own_size, size) = self.own_size_of(id, size);
             self.sized_node(id, size)?;
             self.own_size = outer;
