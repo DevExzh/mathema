@@ -2613,7 +2613,12 @@ fn empheq_sides_are_math() {
         (r"left=\empheqlvert", r"\left| @ \right."),
         (r"left=\{", r"\left\{ @ \right."),
         (r"right=)", r"\left. @ \right)"),
-        (r"left=\Rightarrow", r"\left⇒ @ \right."),
+        (r"left=.", r"\left. @ \right."),
+        (r"left=\langle", r"\left\langle @ \right."),
+        (r"right=\Uparrow", r"\left. @ \right\Uparrow"),
+        // Not a delimiter.
+        (r"left=\Rightarrow", r"{\Rightarrow \left. @ \right.}"),
+        (r"left={{x=\empheqlbrace}}", r"{{x=}\left\{ @ \right.}"),
         ("left=", r"\left. @ \right."),
         // keyval takes off the braces around a whole value.
         (r"left={\empheqlbrace}", r"\left\{ @ \right."),
@@ -2668,6 +2673,71 @@ fn empheq_sides_are_math() {
         let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
         assert_eq!(again, written, "{options}");
     }
+    // A symbol that TeX does not take as a delimiter is no fence, braced or not.
+    for symbol in [
+        "=",
+        r"\Rightarrow",
+        r"\to",
+        "+",
+        "-",
+        ":",
+        r"\int",
+        r"\sum",
+        ",",
+        ";",
+        "!",
+        "?",
+        "a",
+        "1",
+        r"\alpha",
+        r"\infty",
+        r"\leq",
+        r"\times",
+        r"\cdot",
+        r"\prime",
+        r"\neq",
+        r"\colon",
+        r"\ldots",
+        r"\forall",
+        "*",
+        "<",
+        ">",
+        r"\hbar",
+        r"\ell",
+        r"\partial",
+        r"\bbsum",
+        r"\coloneq",
+        r"\lim",
+        r"\sin",
+        "'",
+        "⅀",
+        "é",
+        "‰",
+        r"\%",
+        r"\&",
+        r"\_",
+        r"\#",
+    ] {
+        for side in [
+            format!("left={symbol}"),
+            format!("left={{{symbol}}}"),
+            format!("right={{{symbol}}}"),
+        ] {
+            let input = format!(r"\begin{{empheq}}[{side}]{{align}}a\end{{empheq}}");
+            let written = mathema::from_latex(&input).unwrap().to_latex().unwrap();
+            if matches!(symbol, "<" | ">") {
+                assert!(written.contains("angle"), "{side}: {written}");
+            } else {
+                assert!(
+                    written.contains(r"\left. \begin")
+                        && written.contains(r"\end{aligned} \right."),
+                    "{side}: {written}"
+                );
+            }
+            let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
+            assert_eq!(again, written, "{side}");
+        }
+    }
     // A `\middle` there is not the enclosing fence's, one after it is.
     let written = |input: &str| mathema::from_latex(input).unwrap().to_latex().unwrap();
     let alone = r"\begin{empheq}[left=x\middle|y]{align}a\end{empheq}";
@@ -2693,6 +2763,18 @@ fn empheq_sides_are_math() {
                 .any(|d| d.message.contains("was dropped")),
             "{side}: {:?}",
             read.diagnostics()
+        );
+    }
+    let unbalanced = r"\begin{empheq}[left={a}{b}}]{align}c\end{empheq}";
+    let read = mathema::from_latex_with(unbalanced, &lenient).unwrap();
+    assert!(read.to_latex().unwrap().starts_with("{{ab}"));
+    for declaration in [r"\Large", r"\displaystyle"] {
+        let input = format!(r"\begin{{empheq}}[left={declaration}]{{align}}a\end{{empheq}}");
+        let written = written(&input);
+        let group = format!("{{{declaration} }}");
+        assert!(
+            written.matches(declaration).count() == written.matches(&group).count(),
+            "{written}"
         );
     }
     let deep = format!(

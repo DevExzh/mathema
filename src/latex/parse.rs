@@ -21,7 +21,8 @@ use crate::error::{
 use crate::unicode::decode_script_scalar;
 use crate::unicode::fonts::latex_font_to_style;
 use crate::unicode::symbols::{
-    UNNAMED_NARY, is_operator_command, latex_to_unicode, lookup_command, operator_has_limits,
+    UNNAMED_NARY, is_operator_command, is_tex_delimiter, latex_to_unicode, lookup_command,
+    operator_has_limits,
 };
 
 use place::{Buffers, Place};
@@ -742,9 +743,12 @@ fn parse_empheq_options(opts: &str) -> [Option<&str>; 3] {
     for part in parts {
         let part = part.trim();
         if let Some((key, val)) = part.split_once('=') {
-            // keyval takes the braces off a value.
-            let val = val.trim();
-            let val = braced(val).unwrap_or(val).trim();
+            // keyval takes the braces off a value, and those inside of them are
+            // in the way of no delimiter.
+            let mut val = val.trim();
+            for _ in 0..2 {
+                val = braced(val).unwrap_or(val).trim();
+            }
             match key.trim() {
                 // `box`, `innerbox` and `outerbox` all wrap the body in a box.
                 "box" | "innerbox" | "outerbox" => box_spec = Some(val),
@@ -8473,6 +8477,7 @@ impl LatexCompactParser {
         }
         if let Ok((rest, delimiter)) = self.parse_delimiter_into(spec)
             && rest.trim().is_empty()
+            && self.arena.str_val(delimiter).chars().all(is_tex_delimiter)
         {
             return Ok(("", (None, delimiter, None)));
         }
@@ -8510,8 +8515,18 @@ impl LatexCompactParser {
             self.warn(format!("empheq: `{rest}` was dropped"));
         }
         let ids = self.resolve_infix_fraction(ids);
-        if ids.is_empty() {
-            return Ok(("", None));
+        match ids[..] {
+            [] => return Ok(("", None)),
+            // (A declaration stays in its group.)
+            [only]
+                if !matches!(
+                    *self.arena.node(only),
+                    CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_)
+                ) =>
+            {
+                return Ok(("", Some(only)));
+            },
+            _ => {},
         }
         let span = self.arena.push_children_deferred(&ids);
         Ok(("", Some(self.arena.push_node(CompactNode::Row(span)))))
