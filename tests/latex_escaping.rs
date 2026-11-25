@@ -1752,6 +1752,14 @@ fn colored_operator_tokens_stay_operators() {
             r"\mathord{\text{\textbackslash{}foo}\{\int \}}",
         ),
         (r"\textcolor{red}\sum x", r"\textcolor{red}{\sum}x"),
+        (
+            r"\foo{\idotsint}",
+            r"\mathord{\text{\textbackslash{}foo}\{\idotsint\}}",
+        ),
+        (
+            r"\foo{\textcolor{}\int+}",
+            r"\mathord{\text{\textbackslash{}foo}\{\int +\}}",
+        ),
     ] {
         assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
         assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);

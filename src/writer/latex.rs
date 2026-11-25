@@ -514,15 +514,34 @@ fn write_escaped_undefined_command(
             write_brace_prescripts(buf, arena, script);
             continue;
         }
+        let ends_with_idotsint = is_idotsint_triple_at_end(arena, children);
         if !empty_nary_body
             && let Some(&last) = children.last()
-            && (needs_space(arena, Some(last), group) || is_bare_large_op(arena, last))
+            && if ends_with_idotsint {
+                false
+            } else if is_bare_large_op(arena, last) {
+                true
+            } else {
+                // The body of a bare operator is spaced as part of it.
+                let body = children.len().checked_sub(2).is_some_and(|before| {
+                    is_bare_large_op(arena, children[before])
+                        && reads_as_nary_body(arena, last)
+                        && !is_idotsint_triple_at_end(arena, &children[..=before])
+                });
+                !body && needs_space(arena, Some(last), group)
+            }
         {
             buf.push(' ');
         }
         buf.push_str("\\}");
     }
     buf.push('}');
+}
+
+fn is_idotsint_triple_at_end(arena: &AstArena, nodes: &[NodeId]) -> bool {
+    nodes
+        .last_chunk::<3>()
+        .is_some_and(|triple| is_idotsint_triple(arena, triple))
 }
 
 /// `\}` with the scripts of the empty-base script `script` as its leading
