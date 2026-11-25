@@ -150,8 +150,8 @@ pub(crate) fn radical_path(w: f64, h: f64, t: f64) -> String {
 pub(super) struct RadicalGeom {
     /// Radical (vinculum) rule thickness, in absolute units.
     thickness: f64,
-    /// Height at which the vinculum / surd top sits above the row baseline.
-    shift_up: f64,
+    /// Height of the bottom of the vinculum above the row baseline.
+    rule: f64,
     /// Horizontal width occupied by the surd glyph, in absolute units.
     surd_width: f64,
     /// Surd box height (above its own baseline).
@@ -170,11 +170,8 @@ pub(super) struct RadicalGeom {
 
 /// Compute radical surd geometry for a radicand of the given height/depth.
 ///
-/// When the Latin Modern Math font exposes `√` (U+221A) MATH-table size
-/// variants (it does), the surd is rendered from the real font glyph selected
-/// to enclose the radicand — matching KaTeX/MathJax optical sizing. The
-/// vinculum top is aligned with the surd glyph top, and the surd descends to
-/// cover the radicand depth. Falls back to a synthetic path otherwise.
+/// The surd is the smallest glyph of the font that is tall enough, at its own
+/// size, and an assembly of its parts when none is; a synthetic path otherwise.
 pub(super) fn radical_geometry(
     inner_height: f64,
     inner_depth: f64,
@@ -183,77 +180,62 @@ pub(super) fn radical_geometry(
     x_height_em: f64,
     is_display: bool,
 ) -> RadicalGeom {
-    let rule_thickness = rule_thickness_em * size;
-    // Radical strokes thicker than fraction rules for better visibility.
-    let thickness = math_table::math_constants()
-        .map(|c| (c.radical_rule_thickness * size).max(0.06 * size))
-        .unwrap_or((rule_thickness * 1.5).max(0.06 * size));
+    let constants = math_table::math_constants();
+    let thickness = constants.map_or(rule_thickness_em, |c| c.radical_rule_thickness) * size;
+    // Rule 11: theta + phi/4, where phi is the x-height in display style.
+    let clearance = size
+        * match (constants, is_display) {
+            (Some(c), true) => c.radical_display_vertical_gap,
+            (Some(c), false) => c.radical_vertical_gap,
+            (None, true) => rule_thickness_em + x_height_em / 4.0,
+            (None, false) => rule_thickness_em * 1.25,
+        };
 
-    // KaTeX-compatible clearance: theta + phi/4, where phi = xHeight in display
-    // mode (≈ the MATH `radicalDisplayStyleVerticalGap`) and theta otherwise
-    // (≈ the MATH `radicalVerticalGap`).
-    let phi = if is_display {
-        x_height_em * size
-    } else {
-        rule_thickness
-    };
-    let clearance = rule_thickness + phi / 4.0;
-
+    let inner = inner_height + inner_depth;
     // Total surd height needed to clear the radicand plus the vinculum.
-    let min_height = inner_height + inner_depth + clearance + thickness;
-    // The vinculum / surd top.
-    let shift_up = inner_height + clearance + thickness;
+    let min_height = inner + clearance + thickness;
+    let target_em = min_height / size;
 
-    if let Some(v) = glyph_variants::delimiter_variant('\u{221A}', min_height) {
-        // The emitters render the chosen variant scaled so its vertical advance
-        // equals `target_height`; replicate that scale here for placement.
-        let scale = min_height / v.advance_em;
-        let surd_top = v.y_max_em * scale; // glyph top above its own baseline
-        let surd_bottom = v.y_min_em * scale; // glyph bottom (≤ 0)
-        let surd_width = (v.h_adv_em * scale).max(0.4 * size);
-        RadicalGeom {
-            thickness,
-            shift_up,
-            surd_width,
-            box_height: surd_top,
-            box_depth: -surd_bottom,
-            // Place the box so the (scaled) glyph top lands exactly at `shift_up`.
-            surd_dy: shift_up - surd_top,
-            surd_target: Some(min_height),
-            synthetic_height: min_height,
-        }
-    } else if let Some(asm) = glyph_variants::vertical_assembly('\u{221A}', min_height) {
-        // Too tall for any discrete variant: build the surd from real font
-        // assembly parts (checkmark + stretchy extender + top), like MathJax.
-        // The renderer fills the box [top = vinculum, bottom = radicand foot]
-        // using the same assembly, so layout only needs the box extent. We keep
-        // the same box shape as the synthetic fallback: all ink above the box
-        // baseline, height = min_height, depth = 0.
-        let surd_width = (asm.width_em * size).max(0.4 * size);
-        RadicalGeom {
-            thickness,
-            shift_up,
-            surd_width,
-            box_height: min_height,
-            box_depth: 0.0,
-            surd_dy: shift_up - min_height,
-            surd_target: Some(min_height),
-            synthetic_height: min_height,
-        }
-    } else {
-        // Fallback: synthetic path sized to the exact required height.
-        RadicalGeom {
-            thickness,
-            shift_up,
-            surd_width: 0.833 * size,
-            box_height: min_height,
-            box_depth: 0.0,
-            surd_dy: shift_up - min_height,
-            surd_target: None,
-            synthetic_height: min_height,
-        }
+    let surd = glyph_variants::delimiter_variant('\u{221A}', target_em)
+        .map(|v| {
+            // The emitters draw the glyph they choose for the target at the
+            // target's height: at its own size, unless it is a little short.
+            let target = v.advance_em.max(target_em);
+            let s = target / v.advance_em * size;
+            (
+                target * size,
+                v.h_adv_em * s,
+                v.y_max_em * s,
+                -v.y_min_em * s,
+            )
+        })
+        .or_else(|| {
+            // Too tall for any discrete variant: real font assembly parts
+            // (checkmark, extender, top), which the emitters stretch over the box.
+            let asm = glyph_variants::vertical_assembly('\u{221A}', target_em)?;
+            Some((min_height, asm.width_em * size, min_height, 0.0))
+        });
+    let (height, width, box_height, box_depth) =
+        surd.unwrap_or((min_height, 0.833 * size, min_height, 0.0));
+    // What the surd is taller than it must be is shared by the space above and
+    // below the radicand.
+    let clearance = clearance + (height - min_height).max(0.0) / 2.0;
+    let rule = inner_height + clearance;
+    RadicalGeom {
+        thickness,
+        rule,
+        surd_width: width,
+        box_height,
+        box_depth,
+        // The top of the surd is that of the vinculum.
+        surd_dy: rule + thickness - box_height,
+        surd_target: surd.map(|_| height),
+        synthetic_height: min_height,
     }
 }
+
+/// Blank part of the surd glyph, which a narrow index may be set over.
+const ROOT_SURD_BEARING_EM: f64 = 0.07;
 
 /// TeXBook Rule 11: square root.
 pub(super) fn layout_sqrt(
@@ -286,7 +268,7 @@ pub(super) fn layout_sqrt(
             kind: BoxKind::Delimiter {
                 ch: '\u{221A}',
                 target_height: target,
-                scale: 1.0,
+                scale: size,
             },
         }
     } else {
@@ -305,14 +287,14 @@ pub(super) fn layout_sqrt(
     // Vinculum (horizontal rule on top) — match radical_thickness for seamless junction
     let vinculum = LayoutBox::rule(inner.width, radical_thickness);
 
-    let shift_up = g.shift_up;
+    let rule = g.rule;
 
     // Capture dimensions before moving inner into children vec
     let inner_width = inner.width;
     let inner_depth = inner.depth;
     let mut children = vec![
         PositionedBox::new(0.0, g.surd_dy, radical),
-        PositionedBox::new(radical_width, shift_up, vinculum),
+        PositionedBox::new(radical_width, rule, vinculum),
         PositionedBox::new(radical_width, 0.0, inner),
     ];
 
@@ -320,7 +302,7 @@ pub(super) fn layout_sqrt(
     let extra_ascender = math_table::math_constants()
         .map(|c| c.radical_extra_ascender * size)
         .unwrap_or(0.0);
-    let total_height = shift_up + radical_thickness + extra_ascender;
+    let total_height = rule + radical_thickness + extra_ascender;
     let total_depth = inner_depth.max(g.box_depth - g.surd_dy);
 
     // Optional root index
@@ -349,7 +331,7 @@ pub(super) fn layout_sqrt(
             .unwrap_or(-0.5556 * size);
 
         let degree_x = kern_before;
-        let radical_start = (degree_x + idx_width + kern_after).max(0.0);
+        let radical_start = (degree_x + idx_width + kern_after).max(-ROOT_SURD_BEARING_EM * size);
 
         // Place degree
         children.push(PositionedBox::new(degree_x, idx_shift, idx_box));
@@ -405,7 +387,7 @@ pub(super) fn layout_sqrt_arena(
             kind: ArenaBoxKind::Delimiter {
                 ch: '\u{221A}',
                 target_height: target,
-                scale: 1.0,
+                scale: size,
             },
         })
     } else {
@@ -423,7 +405,7 @@ pub(super) fn layout_sqrt_arena(
 
     let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, radical_thickness));
 
-    let shift_up = g.shift_up;
+    let rule = g.rule;
 
     // Build children: radical, vinculum, inner
     // We may need to adjust dx values if there's an index, so we track the span start
@@ -435,7 +417,7 @@ pub(super) fn layout_sqrt_arena(
     let extra_ascender = math_table::math_constants()
         .map(|c| c.radical_extra_ascender * size)
         .unwrap_or(0.0);
-    let total_height = shift_up + radical_thickness + extra_ascender;
+    let total_height = rule + radical_thickness + extra_ascender;
     // Radical surd baseline offset (positions the glyph top at the vinculum).
     let radical_dy = g.surd_dy;
     let total_depth = inner_d.max(g.box_depth - g.surd_dy);
@@ -462,7 +444,7 @@ pub(super) fn layout_sqrt_arena(
             .unwrap_or(-0.5556 * size);
 
         let degree_x = kern_before;
-        let radical_start = (degree_x + idx_w + kern_after).max(0.0);
+        let radical_start = (degree_x + idx_w + kern_after).max(-ROOT_SURD_BEARING_EM * size);
 
         radical_dx += radical_start;
         vinculum_dx += radical_start;
@@ -477,7 +459,7 @@ pub(super) fn layout_sqrt_arena(
         });
         arena.push_child(ArenaPositionedBox {
             dx: vinculum_dx,
-            dy: shift_up,
+            dy: rule,
             id: vinculum_id,
         });
         arena.push_child(ArenaPositionedBox {
@@ -507,7 +489,7 @@ pub(super) fn layout_sqrt_arena(
         });
         arena.push_child(ArenaPositionedBox {
             dx: vinculum_dx,
-            dy: shift_up,
+            dy: rule,
             id: vinculum_id,
         });
         arena.push_child(ArenaPositionedBox {

@@ -23,10 +23,10 @@ pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCt
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
     // Superscript shift: max of sup1/sup2/sup3, base.height - sup_drop, x_height/4 + sup.depth
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };
@@ -144,10 +144,10 @@ pub(super) fn layout_subsup(
     let is_char_box = matches!(script_nucleus(base, &base_box).kind, BoxKind::Glyph { .. });
 
     // Superscript shift
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };
@@ -221,10 +221,10 @@ pub(super) fn layout_superscript_from_box_heap(
     let sup_params = TexParams::for_size_class(sup_style.size_class());
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };
@@ -325,10 +325,10 @@ pub(super) fn layout_subsup_from_box_heap(
     // Bug 2 fix: only apply height/depth-based drop terms when base is not a single character
     let is_char_box = matches!(base_box.kind, BoxKind::Glyph { .. });
 
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };
@@ -614,10 +614,10 @@ pub(super) fn layout_superscript_arena(
     let sup_params = TexParams::for_size_class(sup_style.size_class());
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };
@@ -771,10 +771,10 @@ pub(super) fn layout_subsup_arena(
     let sub_params = TexParams::for_size_class(sub_style.size_class());
     let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };
@@ -867,10 +867,10 @@ pub(super) fn layout_superscript_from_box_arena(
     let sup_params = TexParams::for_size_class(sup_style.size_class());
     let sup_size_ratio = sup_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };
@@ -1005,10 +1005,10 @@ pub(super) fn layout_subsup_from_box_arena(
     let sub_params = TexParams::for_size_class(sub_style.size_class());
     let sub_size_ratio = sub_style.size_multiplier() / ctx.style.size_multiplier();
 
-    let mut shift_up = if ctx.branch_style().is_display() {
-        p.sup1 * size
-    } else if ctx.style.is_cramped() {
+    let mut shift_up = if ctx.style.is_cramped() {
         p.sup3 * size
+    } else if ctx.branch_style().is_display() {
+        p.sup1 * size
     } else {
         p.sup2 * size
     };

@@ -1,4 +1,5 @@
 use super::*;
+use crate::render::delimiter_paths;
 
 /// Returns true if `ch` is an extensible arrow character used by \xrightarrow etc.
 pub(super) fn is_extensible_arrow(ch: char) -> bool {
@@ -470,6 +471,77 @@ enum FencePart<'a, B> {
     Middle(&'a str),
 }
 
+/// The character of a delimiter, unless it is a null one.
+fn fence_char(text: &str) -> Option<char> {
+    text.chars().next().filter(|_| text != ".")
+}
+
+/// The size of the delimiters of a fence.
+#[derive(Clone, Copy)]
+struct FenceSize {
+    /// The height they must have (Rule 19).
+    target: f64,
+    size: f64,
+    axis: f64,
+}
+
+impl FenceSize {
+    /// The delimiter TeX takes: the smallest variant of the font that is tall
+    /// enough, at its own size, or an assembly.
+    fn glyph(self, ch: char) -> Option<BigDelimiter> {
+        let target = self.target / self.size;
+        if !target.is_finite() {
+            return None;
+        }
+        let v = glyph_variants::delimiter_variant(ch, target);
+        let target = v.map_or(target, |v| v.advance_em.max(target));
+        delimiter_at(ch, target, self.size, self.axis)
+    }
+
+    /// Width, height and depth of a delimiter the font has no variants of.
+    fn other(self, ch: char) -> (f64, f64, f64) {
+        let Self { size, axis, .. } = self;
+        let target = self.target.max(size);
+        let width = if delimiter_paths::should_use_path(ch, target, size) {
+            delimiter_paths::delimiter_path_width(ch, target, size)
+        } else {
+            0.389 * size * (target / (0.9 * size)).max(1.0)
+        };
+        (width, target / 2.0 + axis, target / 2.0 - axis)
+    }
+
+    fn heap(self, ch: char) -> LayoutBox {
+        if let Some(d) = self.glyph(ch) {
+            return big_delimiter_box(d);
+        }
+        let (width, height, depth) = self.other(ch);
+        delimiter_box(
+            ch,
+            width,
+            height,
+            depth,
+            self.target.max(self.size),
+            self.size,
+        )
+    }
+
+    fn arena(self, ch: char, arena: &mut LayoutArena) -> LayoutBoxId {
+        if let Some(d) = self.glyph(ch) {
+            return alloc_big_delimiter(arena, d);
+        }
+        let (width, height, depth) = self.other(ch);
+        alloc_delimiter(
+            arena,
+            ch,
+            width,
+            height,
+            depth,
+            self.target.max(self.size),
+            self.size,
+        )
+    }
+}
+
 fn fence_atom_gap(
     previous: &mut Option<AtomType>,
     atoms: Option<(AtomType, AtomType)>,
@@ -493,8 +565,6 @@ pub(super) fn layout_fenced(
     content: &[FencedItem],
     ctx: &LayoutCtx,
 ) -> LayoutBox {
-    use crate::render::delimiter_paths;
-
     // Pass 1: Layout all Element items, compute max_h/max_d for delimiter sizing.
     // Store laid-out boxes for reuse in pass 2.
     let mut laid_out = Vec::with_capacity(content.len());
@@ -570,32 +640,13 @@ pub(super) fn layout_fenced(
         let max_dist_from_axis = (max_h - axis).max(max_d + axis);
         let delim_factor = 901.0_f64;
         let delim_shortfall = 0.5 * ctx.size();
-        let target = (max_dist_from_axis / 500.0 * delim_factor)
-            .max(2.0 * max_dist_from_axis - delim_shortfall);
-        target.max(1.0 * ctx.size())
+        (max_dist_from_axis / 500.0 * delim_factor).max(2.0 * max_dist_from_axis - delim_shortfall)
     };
     let target_h = quantize_delim_height(target_h);
-    let half = target_h / 2.0;
-    let delim_h = half + axis;
-    let delim_d = half - axis;
-
-    // Helper: compute delimiter width for a character at the computed target height
-    let compute_delim_w = |ch: char| -> f64 {
-        if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
-            v.h_adv_em * (target_h / v.advance_em)
-        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
-            asm.width_em * ctx.size()
-        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-        } else {
-            let base_delim_width = 0.389 * ctx.size();
-            let standard_height = 0.9 * ctx.size();
-            if target_h > standard_height {
-                base_delim_width * (target_h / standard_height)
-            } else {
-                base_delim_width
-            }
-        }
+    let fence = FenceSize {
+        target: target_h,
+        size: ctx.size(),
+        axis,
     };
 
     // Pass 2: Build positioned children with open, content, middle delimiters, close
@@ -604,23 +655,21 @@ pub(super) fn layout_fenced(
     let mut prev_atom: Option<spacing::AtomType> = None;
 
     // Open delimiter
-    if !open.is_empty()
-        && open != "."
-        && let Some(ch) = open.chars().next()
-    {
-        let delim = delimiter_box(
-            ch,
-            compute_delim_w(ch),
-            delim_h,
-            delim_d,
-            target_h,
-            ctx.size(),
-        );
-        let dw = delim.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, delim));
-        cursor_x += dw;
-        // Inner padding between open delimiter and content (TeX null-delimiter-space)
-        cursor_x += 0.12 * ctx.size();
+    let mut push_delimiter = |text: &str, x: f64, children: &mut Vec<PositionedBox>| {
+        let Some(ch) = fence_char(text) else {
+            return NULL_DELIMITER_SPACE_EM * ctx.size();
+        };
+        let delim = fence.heap(ch);
+        max_h = max_h.max(delim.height);
+        max_d = max_d.max(delim.depth);
+        let width = delim.width;
+        children.push(PositionedBox::new(x, 0.0, delim));
+        width
+    };
+    cursor_x += push_delimiter(open, cursor_x, &mut children);
+    // The delimiters of `\binom` take the place of its null delimiters.
+    if is_genfrac {
+        cursor_x -= NULL_DELIMITER_SPACE_EM * ctx.size();
     }
 
     // Content + middle delimiters
@@ -638,9 +687,7 @@ pub(super) fn layout_fenced(
                 cursor_x += w;
             },
             FencePart::Middle(s) => {
-                if s != "."
-                    && let Some(ch) = s.chars().next()
-                {
+                if fence_char(s).is_some() {
                     // A `\middle` closes what is before it and opens what is after.
                     if let Some(prev) = prev_atom {
                         let space = spacing::inter_atom_space(
@@ -652,17 +699,7 @@ pub(super) fn layout_fenced(
                             cursor_x += space * ctx.size();
                         }
                     }
-                    let delim = delimiter_box(
-                        ch,
-                        compute_delim_w(ch),
-                        delim_h,
-                        delim_d,
-                        target_h,
-                        ctx.size(),
-                    );
-                    let dw = delim.width;
-                    children.push(PositionedBox::new(cursor_x, 0.0, delim));
-                    cursor_x += dw;
+                    cursor_x += push_delimiter(s, cursor_x, &mut children);
                     // Next element sees middle delimiter as Inner for spacing
                     prev_atom = Some(spacing::AtomType::Open);
                 }
@@ -671,29 +708,15 @@ pub(super) fn layout_fenced(
     }
 
     // Close delimiter
-    if !close.is_empty()
-        && close != "."
-        && let Some(ch) = close.chars().next()
-    {
-        // Inner padding between content and close delimiter
-        cursor_x += 0.12 * ctx.size();
-        let delim = delimiter_box(
-            ch,
-            compute_delim_w(ch),
-            delim_h,
-            delim_d,
-            target_h,
-            ctx.size(),
-        );
-        let dw = delim.width;
-        children.push(PositionedBox::new(cursor_x, 0.0, delim));
-        cursor_x += dw;
+    if is_genfrac {
+        cursor_x -= NULL_DELIMITER_SPACE_EM * ctx.size();
     }
+    cursor_x += push_delimiter(close, cursor_x, &mut children);
 
     LayoutBox {
         width: cursor_x,
-        height: max_h.max(delim_h),
-        depth: max_d.max(delim_d),
+        height: max_h,
+        depth: max_d,
         kind: BoxKind::HBox { children },
     }
 }
@@ -706,8 +729,6 @@ pub(super) fn layout_fenced_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
-    use crate::render::delimiter_paths;
-
     // Pass 1: Layout all Element items, compute max_h/max_d for delimiter sizing.
     let content_children = ast.children(content);
     let mut laid_out = Vec::with_capacity(content_children.len());
@@ -782,68 +803,56 @@ pub(super) fn layout_fenced_arena(
         let max_dist_from_axis = (max_h - axis).max(max_d + axis);
         let delim_factor = 901.0_f64;
         let delim_shortfall = 0.5 * ctx.size();
-        let target = (max_dist_from_axis / 500.0 * delim_factor)
-            .max(2.0 * max_dist_from_axis - delim_shortfall);
-        target.max(1.0 * ctx.size())
+        (max_dist_from_axis / 500.0 * delim_factor).max(2.0 * max_dist_from_axis - delim_shortfall)
     };
     let target_h = quantize_delim_height(target_h);
-    // Recompute axis-centered delimiter box dimensions with updated target
-    let half = target_h / 2.0;
-    let delim_h = half + axis;
-    let delim_d = half - axis;
+    let fence = FenceSize {
+        target: target_h,
+        size: ctx.size(),
+        axis,
+    };
+
+    // Delimiters are laid out before the children are collected.
+    let open = fence_char(ast.str_val(open)).map(|ch| fence.arena(ch, arena));
+    let close = fence_char(ast.str_val(close)).map(|ch| fence.arena(ch, arena));
+    let middles: SmallVec<[LayoutBoxId; 2]> = laid_out
+        .iter()
+        .filter_map(|part| match part {
+            FencePart::Middle(s) => fence_char(s).map(|ch| fence.arena(ch, arena)),
+            FencePart::Element { .. } => None,
+        })
+        .collect();
+    for &id in open.iter().chain(&close).chain(&middles) {
+        max_h = max_h.max(arena.get(id).height);
+        max_d = max_d.max(arena.get(id).depth);
+    }
+    let mut middles = middles.into_iter();
+    let null = NULL_DELIMITER_SPACE_EM * ctx.size();
+    // The delimiters of `\binom` take the place of its null delimiters.
+    let inner = if is_genfrac { -null } else { 0.0 };
 
     let children_start = arena.begin_children();
     let mut cursor_x = 0.0;
     let mut prev_atom: Option<spacing::AtomType> = None;
 
     // Open delimiter
-    let open_str = ast.str_val(open);
-    if !open_str.is_empty()
-        && open_str != "."
-        && let Some(ch) = open_str.chars().next()
-    {
-        let delim_width = if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
-            v.h_adv_em * (target_h / v.advance_em)
-        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
-            asm.width_em * ctx.size()
-        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-        } else {
-            let base_delim_width = 0.389 * ctx.size();
-            let standard_height = 0.9 * ctx.size();
-            if target_h > standard_height {
-                base_delim_width * (target_h / standard_height)
-            } else {
-                base_delim_width
-            }
-        };
-        let delim_id = alloc_delimiter(
-            arena,
-            ch,
-            delim_width,
-            delim_h,
-            delim_d,
-            target_h,
-            ctx.size(),
-        );
-        let dw = arena.get(delim_id).width;
+    if let Some(id) = open {
         arena.push_child(ArenaPositionedBox {
             dx: cursor_x,
             dy: 0.0,
-            id: delim_id,
+            id,
         });
-        cursor_x += dw;
-        // Inner padding between open delimiter and content (TeX null-delimiter-space)
-        cursor_x += 0.12 * ctx.size();
+        cursor_x += arena.get(id).width;
+    } else {
+        cursor_x += null;
     }
+    cursor_x += inner;
 
     // Content + middle delimiters
     for part in laid_out {
         match part {
             FencePart::Middle(s) => {
-                if s != "."
-                    && let Some(ch) = s.chars().next()
-                {
+                if fence_char(s).is_some() {
                     // A `\middle` closes what is before it and opens what is after.
                     if let Some(prev) = prev_atom {
                         let space = spacing::inter_atom_space(
@@ -855,38 +864,14 @@ pub(super) fn layout_fenced_arena(
                             cursor_x += space * ctx.size();
                         }
                     }
-                    let delim_width =
-                        if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
-                            v.h_adv_em * (target_h / v.advance_em)
-                        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
-                            asm.width_em * ctx.size()
-                        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-                            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-                        } else {
-                            let base_delim_width = 0.389 * ctx.size();
-                            let standard_height = 0.9 * ctx.size();
-                            if target_h > standard_height {
-                                base_delim_width * (target_h / standard_height)
-                            } else {
-                                base_delim_width
-                            }
-                        };
-                    let delim_id = alloc_delimiter(
-                        arena,
-                        ch,
-                        delim_width,
-                        delim_h,
-                        delim_d,
-                        target_h,
-                        ctx.size(),
-                    );
-                    let dw = arena.get(delim_id).width;
-                    arena.push_child(ArenaPositionedBox {
-                        dx: cursor_x,
-                        dy: 0.0,
-                        id: delim_id,
-                    });
-                    cursor_x += dw;
+                    if let Some(id) = middles.next() {
+                        arena.push_child(ArenaPositionedBox {
+                            dx: cursor_x,
+                            dy: 0.0,
+                            id,
+                        });
+                        cursor_x += arena.get(id).width;
+                    }
                     prev_atom = Some(spacing::AtomType::Open);
                 }
             },
@@ -909,51 +894,23 @@ pub(super) fn layout_fenced_arena(
     }
 
     // Close delimiter
-    let close_str = ast.str_val(close);
-    if !close_str.is_empty()
-        && close_str != "."
-        && let Some(ch) = close_str.chars().next()
-    {
-        // Inner padding between content and close delimiter
-        cursor_x += 0.12 * ctx.size();
-        let delim_width = if let Some(v) = glyph_variants::delimiter_variant(ch, target_h) {
-            v.h_adv_em * (target_h / v.advance_em)
-        } else if let Some(asm) = glyph_variants::vertical_assembly(ch, target_h) {
-            asm.width_em * ctx.size()
-        } else if delimiter_paths::should_use_path(ch, target_h, ctx.size()) {
-            delimiter_paths::delimiter_path_width(ch, target_h, ctx.size())
-        } else {
-            let base_delim_width = 0.389 * ctx.size();
-            let standard_height = 0.9 * ctx.size();
-            if target_h > standard_height {
-                base_delim_width * (target_h / standard_height)
-            } else {
-                base_delim_width
-            }
-        };
-        let delim_id = alloc_delimiter(
-            arena,
-            ch,
-            delim_width,
-            delim_h,
-            delim_d,
-            target_h,
-            ctx.size(),
-        );
-        let dw = arena.get(delim_id).width;
+    cursor_x += inner;
+    if let Some(id) = close {
         arena.push_child(ArenaPositionedBox {
             dx: cursor_x,
             dy: 0.0,
-            id: delim_id,
+            id,
         });
-        cursor_x += dw;
+        cursor_x += arena.get(id).width;
+    } else {
+        cursor_x += null;
     }
 
     let children = arena.finish_children(children_start);
     arena.alloc(ArenaLayoutBox {
         width: cursor_x,
-        height: max_h.max(delim_h),
-        depth: max_d.max(delim_d),
+        height: max_h,
+        depth: max_d,
         kind: ArenaBoxKind::HBox { children },
     })
 }
@@ -1087,6 +1044,11 @@ pub(super) fn big_delimiter(
         glyph_variants::BigDelimiterGlyph::Variant(v) => v.advance_em,
         glyph_variants::BigDelimiterGlyph::Assembly => target_em,
     };
+    delimiter_at(ch, target, size, axis)
+}
+
+/// The delimiter of height `target` (em), at font size `size`, on the axis.
+fn delimiter_at(ch: char, target: f64, size: f64, axis: f64) -> Option<BigDelimiter> {
     let target_height = target * size;
     // The emitters' own choice for this box; for a variant it is the one
     // chosen above, drawn at its natural size.

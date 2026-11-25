@@ -333,6 +333,66 @@ fn boxes_have_the_padding_of_tex() {
     assert!((root.width - 1.772).abs() < 1e-6, "{}", root.width);
 }
 
+/// Delimiters and radicals are the font's glyphs at their own size, as in
+/// XeTeX with Latin Modern Math.
+#[test]
+fn fences_and_radicals_are_those_of_the_font() {
+    use MathStyle::{Display, Text};
+    for (latex, style, width, height, depth) in [
+        ("\\left(x\\right)", Text, 1.350, 0.748, 0.248),
+        ("\\left[x\\right]", Text, 1.128, 0.750, 0.250),
+        ("\\left|x\\right|", Text, 1.128, 0.750, 0.250),
+        ("\\left.x\\right|", Text, 0.970, 0.750, 0.250),
+        ("\\left(x\\right.", Text, 1.081, 0.748, 0.248),
+        ("\\left(\\frac ab\\right)", Display, 1.963, 1.146, 0.686),
+        ("\\left/x\\right\\backslash", Text, 1.572, 0.750, 0.250),
+        (
+            "\\left(\\begin{matrix}a\\\\b\\\\c\\\\d\\end{matrix}\\right)",
+            Text,
+            2.294,
+            2.650,
+            2.150,
+        ),
+        (
+            "\\begin{pmatrix}a&b\\end{pmatrix}",
+            Text,
+            2.816,
+            0.850,
+            0.350,
+        ),
+        ("\\binom nk", Display, 2.072, 1.446, 0.946),
+        ("\\genfrac[]{0pt}{}{a}{b}", Display, 1.585, 1.450, 0.950),
+        ("\\sqrt x", Display, 1.405, 0.849, 0.191),
+        ("\\sqrt x", Text, 1.405, 0.801, 0.239),
+        ("\\sqrt{b}", Text, 1.276, 0.9325, 0.1075),
+        ("\\sqrt{}", Text, 0.833, 0.585, 0.455),
+        ("\\sqrt{x+y}", Text, 3.145, 0.780, 0.260),
+        ("\\sqrt{\\sqrt{x}}", Text, 2.405, 0.966, 0.274),
+        ("\\sqrt{\\frac ab}", Display, 1.769, 1.545, 0.895),
+    ] {
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, style, &default_options());
+        assert!((root.width - width).abs() < 2e-3, "{latex}: {}", root.width);
+        assert!(
+            (root.height - height).abs() < 2e-3,
+            "{latex}: {}",
+            root.height
+        );
+        assert!((root.depth - depth).abs() < 2e-3, "{latex}: {}", root.depth);
+        assert_arena_heap_equivalent(latex, style);
+        // In a script everything is as much smaller.
+        assert_arena_heap_equivalent(&format!("x^{{{latex}}}"), style);
+    }
+    // A superscript in a cramped display is as low as in text.
+    let height = |latex: &str, style| {
+        assert_arena_heap_equivalent(latex, style);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        layout_expr(&expr, style, &default_options()).height
+    };
+    assert!((height("\\sqrt{x^2}", Display) - 1.012).abs() < 2e-3);
+    assert!(height("x^2", Display) > height("x^2", Text));
+}
+
 /// A label that fits on an arrow or an equals sign does not stretch it.
 #[test]
 fn labels_stretch_what_they_do_not_fit_on() {
@@ -381,9 +441,10 @@ fn middle_delimiters_have_no_space() {
         layout_expr(&expr, MathStyle::Text, &default_options()).width
     };
     let bar = width("\\left.a\\middle|b\\right.") - width("ab");
-    assert!((bar - 0.278).abs() < 0.02, "{bar}");
+    // With two null delimiters.
+    assert!((bar - 0.278 - 0.24).abs() < 1e-6, "{bar}");
     let relation = width("\\left.a=\\middle|b\\right.") - width("\\left.a=b\\right.");
-    assert!((relation - (0.278 - 5.0 / 18.0)).abs() < 0.02, "{relation}");
+    assert!((relation - (0.278 - 5.0 / 18.0)).abs() < 1e-6, "{relation}");
 }
 
 /// TeXBook Rules 12, 17 and 18, checked against XeTeX with Latin Modern Math

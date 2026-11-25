@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rendering: `\boxed`, `\fbox`, `\colorbox` and `\fcolorbox` have the padding of
   TeX (3pt, and 0.4pt of frame, drawn inside the box), not 1pt, and a
   `\colorbox` or cell colour has no frame.
+- Rendering: the delimiters of `\left…\right`, `\binom` and matrices and the
+  radical sign are the font's glyphs at their own size, as TeX takes them, not
+  the next ones scaled to fit; there is no padding inside the delimiters, a null
+  one has its space, and matrix columns are 1em apart. A superscript in a
+  cramped style (`\sqrt{x^2}`) is as low as in TeX.
 - Rendering: a letter's box includes its italic correction, as in TeX, so `T)`,
   `f_1` and `\frac{V}{Y}` no longer collide. A superscript (primes too) follows
   the correction, a subscript does not, and that of an integral sits under its

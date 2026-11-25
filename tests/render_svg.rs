@@ -134,7 +134,7 @@ fn compact_smallmatrix_uses_script_quad_and_exterior_thin_spaces() {
     let small_width = viewbox_values(&small)[2];
     let full_width = viewbox_values(&full)[2];
     assert!((small_width - 24.354).abs() < 0.02, "{small}");
-    assert!((full_width - 32.528).abs() < 0.02, "{full}");
+    assert!((full_width - 35.728).abs() < 0.02, "{full}");
     assert!(small_x[0] > 2.0, "smallmatrix exterior thin space missing");
     assert!(
         (small_x[1] - small_x[0] - 10.933).abs() < 0.03,
@@ -2304,14 +2304,15 @@ fn svg_sqrt_surd_encloses_and_grows() {
     );
 
     // A taller radicand must produce a taller surd (optical size variant).
-    let h_sqrt_tall = extract_svg_dimension(&latex_to_svg(r"\sqrt{x^2}"), "height");
+    let h_sqrt_tall = extract_svg_dimension(&latex_to_svg(r"\sqrt{\frac{a}{b}}"), "height");
     assert!(
         h_sqrt_tall > h_sqrt_x,
         "taller radicand must select a taller surd: {h_sqrt_tall} vs {h_sqrt_x}"
     );
 
-    // A fraction radicand is taller still.
-    let h_sqrt_frac = extract_svg_dimension(&latex_to_svg(r"\sqrt{\frac{a}{b}}"), "height");
+    // A nested fraction is taller still.
+    let h_sqrt_frac =
+        extract_svg_dimension(&latex_to_svg(r"\sqrt{\frac{a}{\frac{b}{c}}}"), "height");
     assert!(
         h_sqrt_frac > h_sqrt_tall,
         "sqrt of a fraction must grow further: {h_sqrt_frac} vs {h_sqrt_tall}"

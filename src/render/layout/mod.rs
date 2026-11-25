@@ -353,13 +353,8 @@ const MAX_LAYOUT_DEPTH: u32 = 128;
 // BIG_OP_DISPLAY_SCALE removed: display-mode operators now use per-operator
 // scale factors from metrics::display_op_scale() matching KaTeX Size2/Size1 ratios.
 
-/// Matrix/array inter-column gap as a fraction of the current font size (em).
-///
-/// Standard LaTeX uses `2 * \arraycolsep = 10pt = 1.0em` at 10pt, but KaTeX's
-/// rendered output appears tighter due to CSS padding interactions and glyph
-/// metrics. A value of 0.8em produces output that matches KaTeX more closely,
-/// especially for compact matrix environments with single-character cells.
-const MATRIX_COL_GAP_EM: f64 = 0.8;
+/// Matrix inter-column gap: LaTeX's `2 * \arraycolsep`, 10pt.
+const MATRIX_COL_GAP_EM: f64 = 1.0;
 
 /// LaTeX `\arraycolsep` (≈ 5pt at a 10pt size). Added on both sides of every
 /// column in `array`-style tables, and used as half the inter-column gap.

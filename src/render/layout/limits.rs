@@ -638,11 +638,10 @@ pub(super) fn layout_underscript(base: &MathNode, under: &MathNode, ctx: &Layout
     let under_box = if let Some(sym) = get_stretchy_overunder_sym(under) {
         make_stretchy_overunder_box(sym, base_w.max(0.5 * size), size)
     } else {
-        let under_box = label.unwrap_or_else(|| {
+        label.unwrap_or_else(|| {
             let under_ctx = ctx.with_style(ctx.style.sub());
             layout_node(under, &under_ctx)
-        });
-        under_box
+        })
     };
 
     let gap = p.big_op_spacing[4] * size;
@@ -1406,11 +1405,10 @@ pub(super) fn layout_underscript_arena(
             kind: ArenaBoxKind::SvgPath(stretchy_overunder_path(sym, deco_w, deco_h)),
         })
     } else {
-        let under_box = label.unwrap_or_else(|| {
+        label.unwrap_or_else(|| {
             let under_ctx = ctx.with_style(ctx.style.sub());
             layout_node_arena(ast, under, arena, &under_ctx)
-        });
-        under_box
+        })
     };
 
     let gap = p.big_op_spacing[4] * size;
