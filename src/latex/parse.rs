@@ -6300,7 +6300,7 @@ impl LatexCompactParser {
         };
         // The writer braces the base of a script.
         let scripts = &rest[self.skip_script_ws(rest.as_bytes())..];
-        if starts_limit_modifier(scripts) || self.script_marker_at(scripts).is_some() {
+        if self.script_marker_at(scripts).is_some() {
             return base;
         }
         let ordinary = self.arena.push_node(CompactNode::MathAtom {

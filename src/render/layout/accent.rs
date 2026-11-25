@@ -1321,3 +1321,24 @@ pub(super) fn layout_accent_arena(
         kind: ArenaBoxKind::HBox { children },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An accent on a letter in a script is placed by the attachment of its
+    /// design for scripts.
+    #[test]
+    fn accents_of_script_designs() {
+        for (font, size, attachment, advance) in [
+            (FontId::MathScript, 0.7, 0.325, 0.620),
+            (FontId::MathScriptScript, 0.5, 0.397, 0.774),
+        ] {
+            let skew = glyph_skew('\u{1D44E}', size, false, font, advance * size);
+            assert!(
+                (skew - (attachment - advance / 2.0) * size).abs() < 1e-9,
+                "{skew}"
+            );
+        }
+    }
+}

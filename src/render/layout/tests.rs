@@ -736,6 +736,7 @@ fn scripts_have_the_designs_of_the_font() {
         ("x^{\\partial f}", 1.528),
         ("x''", 1.075),
         ("f'''", 1.251),
+        ("x^{y''}", 1.478),
         ("\\tfrac{a}{b}", 0.674),
         ("\\vec{v}_{\\hat T}", 1.108),
         // No design of its own.

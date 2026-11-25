@@ -98,6 +98,11 @@ fn svg_matches_png_on_corpus() {
     // (name, tex, display)
     let formulas: &[(&str, &str, bool)] = &[
         ("ident_ops", "x + y = z - w", false),
+        (
+            "script_designs",
+            r"x^{y^{z_{ab}}} e^{\hat x^{\mathrm{ab}}}",
+            true,
+        ),
         ("frac_nested", r"\frac{a + \frac{b}{c}}{d - e}", true),
         (
             "sqrt_index",
