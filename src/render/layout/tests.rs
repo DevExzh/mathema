@@ -293,6 +293,17 @@ fn atoms_are_spaced_as_in_tex() {
         ("2\\boxed{x}y", Text, 0.5 + 1.252 + 0.518),
         ("x=!y", Text, 2.424),
         ("n!\\sin x", Text, 3.011),
+        // A binary operator nothing follows is ordinary.
+        ("a+", Text, 1.307),
+        ("a+)", Text, 1.696),
+        ("a+=b", Text, 3.084),
+        ("a+,b", Text, 2.195),
+        ("a+\\,)", Text, 1.863),
+        ("\\mathrm{a+}", Text, 0.5 + 0.778),
+        ("\\left(a+\\right)", Text, 2.085),
+        ("\\left(a+\\,\\right)", Text, 2.085 + 1.0 / 6.0),
+        ("\\left(a+\\middle|b\\right)", Text, 2.806),
+        ("a+\\displaystyle b", Text, 2.194),
         // Braces are operators, an overline is ordinary.
         ("a\\underbrace{x}b", Text, 1.877),
         ("a\\overbrace{x}b", Text, 1.877),

@@ -465,6 +465,13 @@ impl<'a> LayoutCtx<'a> {
         next
     }
 
+    /// For letters that are in their face already.
+    fn without_styled_face(&self) -> LayoutCtx<'a> {
+        let mut next = self.clone();
+        next.styled_face = None;
+        next
+    }
+
     fn branch_style(&self) -> MathStyle {
         if self.display_choice {
             MathStyle::Display
@@ -544,7 +551,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     let mut max_depth: f64 = 0.0;
     let mut current_ctx = ctx.clone();
 
-    for node in nodes {
+    for (index, node) in nodes.iter().enumerate() {
         if let MathNode::StyleSwitch(style) = node {
             current_ctx = current_ctx.with_switch(*style);
             continue;
@@ -556,7 +563,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
         if !spacing::is_space(node) {
-            let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
+            let raw_atom = spacing::first_atom(&nodes[index..], current_ctx.branch_style());
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.unwrap(); // safe: we passed Some
             if let Some(prev) = adj_prev {
@@ -1780,7 +1787,7 @@ fn layout_row_segment_arena(
     let mut max_depth: f64 = 0.0;
     let mut current_ctx = ctx.clone();
 
-    for &id in ids {
+    for (index, &id) in ids.iter().enumerate() {
         // Handle style switches — update context for subsequent children
         if let CompactNode::StyleSwitch(s) = *ast.node(id) {
             current_ctx = current_ctx.with_switch(s);
@@ -1795,7 +1802,7 @@ fn layout_row_segment_arena(
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
         if !spacing::is_space_c(ast, id) {
-            let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
+            let raw_atom = spacing::first_atom_c(ast, &ids[index..], current_ctx.branch_style());
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.unwrap(); // safe: we passed Some
             if let Some(prev) = adj_prev {

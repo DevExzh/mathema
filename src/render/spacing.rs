@@ -71,6 +71,44 @@ pub(super) fn is_space_c(arena: &AstArena, id: NodeId) -> bool {
     matches!(arena.node(id), CompactNode::Space(_))
 }
 
+/// The atom of the first of `nodes`, which a list ends with. TeX reads a binary
+/// operator as ordinary at the end of a list and before a relation, a closing or
+/// a punctuation.
+pub(super) fn first_atom(nodes: &[MathNode], style: MathStyle) -> AtomType {
+    let atom = classify_node_in(&nodes[0], style);
+    if atom != AtomType::Bin {
+        return atom;
+    }
+    let next = nodes[1..].iter().find(|node| {
+        !is_space(node) && !matches!(node, MathNode::StyleSwitch(_) | MathNode::SizeSwitch(_))
+    });
+    bin_before(next.map(|node| classify_node_in(node, style)))
+}
+
+/// Compact-AST version of `first_atom`.
+pub(super) fn first_atom_c(arena: &AstArena, ids: &[NodeId], style: MathStyle) -> AtomType {
+    let atom = classify_node_c_in(arena, ids[0], style);
+    if atom != AtomType::Bin {
+        return atom;
+    }
+    let next = ids[1..].iter().find(|&&id| {
+        !is_space_c(arena, id)
+            && !matches!(
+                arena.node(id),
+                CompactNode::StyleSwitch(_) | CompactNode::SizeScale(_)
+            )
+    });
+    bin_before(next.map(|&id| classify_node_c_in(arena, id, style)))
+}
+
+/// What a binary operator is before `next`.
+pub(super) fn bin_before(next: Option<AtomType>) -> AtomType {
+    match next {
+        None | Some(AtomType::Rel | AtomType::Close | AtomType::Punct) => AtomType::Ord,
+        Some(_) => AtomType::Bin,
+    }
+}
+
 /// The atom that what follows a node is spaced against. A big operator holds
 /// its operand, which is the next atom of TeX's list.
 pub(super) fn right_atom(node: &MathNode, atom: AtomType, style: MathStyle) -> AtomType {

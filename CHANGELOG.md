@@ -27,8 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rendering: `{…}`, `\frac`, `\boxed` and accents are ordinary atoms and the dots
   on the line inner ones, spaces do not hide the atoms on their sides from each
   other, what follows a big operator is spaced against its operand, `\middle`
-  has no space around it, `\colon` has amsmath's, `!` and `?` close, and
-  `\underbrace` and its like are operators.
+  has no space around it, `\colon` has amsmath's, `!` and `?` close,
+  `\underbrace` and its like are operators, and a binary operator at the end of a
+  list or before a relation or a closing is ordinary.
 - Rendering: an arrow or equals sign is drawn at its natural width under or over
   a label that fits (`\overset{!}{=}`, `\xrightarrow{f}`), not 2.25em wide.
   Angle brackets past the largest glyph are that glyph.

@@ -474,6 +474,27 @@ enum FencePart<'a, B> {
     Middle(&'a str),
 }
 
+/// Read the binary operators of a fence that nothing follows as ordinary.
+fn settle_operators<B>(parts: &mut [FencePart<'_, B>]) {
+    let mut next = None;
+    for part in parts.iter_mut().rev() {
+        match part {
+            FencePart::Element {
+                atoms: Some((atom, right)),
+                ..
+            } => {
+                if *atom == AtomType::Bin && *right == AtomType::Bin {
+                    *atom = spacing::bin_before(next);
+                    *right = *atom;
+                }
+                next = Some(*atom);
+            },
+            FencePart::Element { atoms: None, .. } => {},
+            FencePart::Middle(_) => next = Some(AtomType::Close),
+        }
+    }
+}
+
 /// The character of a delimiter, unless it is a null one.
 fn fence_char(text: &str) -> Option<char> {
     text.chars().next().filter(|_| text != ".")
@@ -629,6 +650,8 @@ pub(super) fn layout_fenced(
             },
         }
     }
+
+    settle_operators(&mut laid_out);
 
     // Detect fraction-with-delimiters (e.g., \binom{n}{k}) — TeX Rule 15e
     let is_genfrac = element_count == 1 && sole_nobar_frac;
@@ -794,6 +817,8 @@ pub(super) fn layout_fenced_arena(
             },
         }
     }
+
+    settle_operators(&mut laid_out);
 
     // Detect fraction-with-delimiters (e.g., \binom) — TeX Rule 15e
     let is_genfrac = element_count == 1 && sole_nobar_frac;

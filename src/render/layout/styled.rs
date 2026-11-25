@@ -363,7 +363,7 @@ pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &Layout
                     .chars()
                     .map(|c| styled_char(c, style).unwrap_or(c))
                     .collect();
-                layout_node(&MathNode::Identifier(mapped), ctx)
+                layout_node(&MathNode::Identifier(mapped), &ctx.without_styled_face())
             }
         },
         MathNode::Number(s) => {
@@ -374,7 +374,7 @@ pub(super) fn layout_styled_node(style: TextStyle, node: &MathNode, ctx: &Layout
                     .chars()
                     .map(|c| styled_char(c, style).unwrap_or(c))
                     .collect();
-                layout_node(&MathNode::Number(mapped), ctx)
+                layout_node(&MathNode::Number(mapped), &ctx.without_styled_face())
             }
         },
         MathNode::Color { color, content } => {
@@ -426,7 +426,7 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
         }
 
         if !spacing::is_space(node) {
-            let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
+            let raw_atom = spacing::first_atom(&children[index..], current_ctx.branch_style());
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.expect("passed Some");
             if let Some(prev) = adj_prev {
@@ -889,7 +889,7 @@ pub(super) fn layout_styled_arena(
         // Inter-atom spacing (e.g. medium space around a binary `+`), matching
         // the legacy styled-row layout and the normal arena row builder.
         if !spacing::is_space_c(ast, id) {
-            let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
+            let raw_atom = spacing::first_atom_c(ast, &ids[index..], current_ctx.branch_style());
             let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
             let cur_atom = adj_cur.expect("passed Some");
             if let Some(prev) = adj_prev {

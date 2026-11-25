@@ -29,6 +29,7 @@ fn heap_and_arena_are_drawn_alike() {
         r"\text{∫x}",
         r"\left(\frac{a}{b}\right)+\sqrt[3]{x}",
         r"\boxed{x}+\colorbox{yellow}{y}+\fcolorbox{red}{blue}{z}",
+        r"\mathbb{\hat{I}}+\pmb{\frac{x^2}{x_1}}+\mathcal{\frac{A}{B}}",
         r"\hat f+\vec V+\bar M+\int_a^b f",
     ] {
         let expr = mathema::from_latex(latex).unwrap().expr();
@@ -38,6 +39,12 @@ fn heap_and_arena_are_drawn_alike() {
         assert_eq!(
             render_to_svg_standalone(&expr, &options).unwrap(),
             render_to_svg_standalone_compact_arena(&compact, &options, &mut arena).unwrap(),
+            "{latex}"
+        );
+        let mut arena = LayoutArena::new();
+        assert_eq!(
+            mathema::render::render_to_svg(&expr, &options).unwrap(),
+            mathema::render::render_to_svg_compact_arena(&compact, &options, &mut arena).unwrap(),
             "{latex}"
         );
         png(&expr);
