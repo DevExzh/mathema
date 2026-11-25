@@ -1937,11 +1937,11 @@ fn write_nodes_tracking<N: std::borrow::Borrow<MathNode>>(
         }
         let selected = select_mathchoice(node, current_style);
         let identifier = is_word(selected);
-        let before = out.len();
+        let mut before = out.len();
         if wrote_node && needs_space_before_with_style(node, current_style) {
             out.push(' ');
         }
-        let start = out.len();
+        let mut start = out.len();
         let next = || {
             nodes[index + 1..]
                 .iter()
@@ -1962,8 +1962,12 @@ fn write_nodes_tracking<N: std::borrow::Borrow<MathNode>>(
         } else {
             write_node(out, node, current_style);
         }
-        if matches!(selected, MathNode::Row(nodes) if nodes.len() > 1) {
-            group_argument(out, start);
+        if matches!(selected, MathNode::Row(row) if row.len() > 1)
+            && index > 0
+            && matches!(nodes[index - 1].borrow(), MathNode::Symbol(_, s) if s == "\u{2061}")
+        {
+            start = group_argument(out, start);
+            before = before.min(start);
         }
         let current = operand_edge(selected);
         let current = if open && !grouped && current == OperandEdge::Naryand {
@@ -2735,8 +2739,9 @@ fn needs_space_before_with_style(node: &MathNode, style: MathStyle) -> bool {
             atom_type: MathAtomType::Inner,
             ..
         } => false,
-        MathNode::MathAtom { content, .. } => needs_space_before_with_style(content, style),
-        MathNode::StructuredOperator { .. } => true,
+        MathNode::MathAtom { content, .. } | MathNode::StructuredOperator { content, .. } => {
+            needs_space_before_with_style(content, style)
+        },
         _ => false,
     }
 }
@@ -3902,12 +3907,17 @@ fn write_nodes_c_with_style(
 }
 
 /// The argument of a function that is several nodes is one in `〖…〗`
-/// (`sin⁡〖xy〗`, UTN #28): what is written from `start` on, after U+2061.
-fn group_argument(out: &mut String, start: usize) {
-    if out.len() > start && out[..start].trim_end().ends_with('\u{2061}') {
-        out.insert(start, '〖');
-        out.push('〗');
+/// (`sin⁡〖xy〗`, UTN #28): what is written from `start` on, after U+2061 and
+/// perhaps a space, which the group takes the place of. Returns where the
+/// argument starts now.
+fn group_argument(out: &mut String, start: usize) -> usize {
+    if out.len() == start {
+        return start;
     }
+    let before = out[..start].trim_end().len();
+    out.replace_range(before..start, "〖");
+    out.push('〗');
+    before
 }
 
 /// Compact counterpart of [`write_nodes_tracking`].
@@ -3982,11 +3992,11 @@ fn write_nodes_c_tracking(
         } else {
             is_word_c(arena, selected)
         };
-        let before = out.len();
+        let mut before = out.len();
         if wrote_node && !atom && needs_space_before_c_with_style(arena, selected, current_style) {
             out.push(' ');
         }
-        let start = out.len();
+        let mut start = out.len();
         let next = || {
             children[index + 1..]
                 .iter()
@@ -4014,8 +4024,13 @@ fn write_nodes_c_tracking(
         } else {
             write_node_c(out, arena, selected, current_style);
         }
-        if matches!(node, CompactNode::Row(span) if span.len() > 1) {
-            group_argument(out, start);
+        if matches!(node, CompactNode::Row(span) if span.len() > 1)
+            && index > 0
+            && matches!(*arena.node(children[index - 1]), CompactNode::Symbol(_, sid)
+                if arena.str_val(sid) == "\u{2061}")
+        {
+            start = group_argument(out, start);
+            before = before.min(start);
         }
         let current = match node {
             CompactNode::Identifier(_) | CompactNode::Number(_) => OperandEdge::Operand,

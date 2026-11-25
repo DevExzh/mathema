@@ -683,7 +683,7 @@ fn arguments_of_functions_in_trees() {
     let nested = "<math><mo>sin</mo><mo>&#x2061;</mo><mrow><mo>sin</mo><mo>&#x2061;</mo><mi>x</mi></mrow><mi>z</mi></math>";
     assert_eq!(
         convert(nested, Format::MathML, Format::UnicodeMath).unwrap(),
-        "sin\u{2061} 〖sin\u{2061}x〗z"
+        "sin\u{2061}〖sin\u{2061}x〗z"
     );
     tree.nodes = vec![
         letter("f"),
@@ -730,4 +730,239 @@ fn arguments_of_functions_in_trees() {
     let open = source.replace("<mrow>", "").replace("</mrow>", "");
     let mtef = |source: &str| from_mathml(source).unwrap().to_mtef().unwrap();
     assert_eq!(mtef(source), mtef(&open));
+}
+
+/// What a name has above, below or beside it is no part of it, also where the
+/// argument is empty and the name is an operator's.
+#[test]
+fn what_is_beside_a_name() {
+    let source = |name: &str| {
+        omml(&format!(
+            "<m:func><m:fName>{name}</m:fName><m:e></m:e></m:func>"
+        ))
+    };
+    let plain = |text: &str| run(text, "");
+    let lim = run("lim", "p");
+    let letters = run("n", "") + &run("k", "");
+    for (tag, base, side) in [
+        ("m:limLow", "m:e", "m:lim"),
+        ("m:limUpp", "m:e", "m:lim"),
+        ("m:sSub", "m:e", "m:sub"),
+        ("m:sSup", "m:e", "m:sup"),
+        ("m:f", "m:num", "m:den"),
+    ] {
+        let of = |side_text: &str, base_text: &str| {
+            source(&format!(
+                "<{tag}><{base}>{base_text}</{base}><{side}>{side_text}</{side}></{tag}>"
+            ))
+        };
+        let written = omml_again(&of(&plain("nk"), &lim));
+        assert_eq!(written, of(&letters, &lim), "{tag}");
+        let word = run("foo", "p");
+        assert_eq!(
+            omml_again(&of(&plain("nk"), &word)),
+            of(&letters, &word),
+            "{tag}"
+        );
+        let mut heap = from_omml(&of(&plain("nk"), &lim)).unwrap().expr();
+        mathema::ast::normalize::normalize_expr(&mut heap);
+        assert!(
+            !format!("{heap:?}").contains(r#"Identifier("nk")"#),
+            "{heap:?}"
+        );
+    }
+    let cells = |text: &str| source(&format!("<m:m><m:mr><m:e>{text}</m:e></m:mr></m:m>"));
+    assert!(omml_again(&cells(&plain("nk"))).contains(&letters));
+}
+
+/// A name in several runs is one, as is one written of letters.
+#[test]
+fn names_in_several_runs() {
+    let func = |name: &str| {
+        omml(&format!(
+            "<m:func><m:fName>{name}</m:fName><m:e>{}</m:e></m:func>",
+            run("x", "")
+        ))
+    };
+    let sup = |base: &str| {
+        format!(
+            "<m:sSup><m:e>{base}</m:e><m:sup>{}</m:sup></m:sSup>",
+            run("2", "")
+        )
+    };
+    for (runs, name) in [
+        (&["er", "f"][..], "erf"),
+        (&["f", "oo"], "foo"),
+        (&["e", "r", "f"], "erf"),
+        (&["si", "n"], "sin"),
+        (&["α", "β"], "αβ"),
+    ] {
+        for style in ["", "p"] {
+            let split: String = runs.iter().map(|r| run(r, style)).collect();
+            assert_eq!(omml_again(&func(&split)), func(&run(name, "p")), "{runs:?}");
+            assert_eq!(
+                omml_again(&func(&sup(&split))),
+                func(&sup(&run(name, "p"))),
+                "{runs:?}"
+            );
+        }
+    }
+    // Runs in other styles or sizes are apart.
+    let apart = run("a", "p") + &run("b", "b");
+    assert!(omml_again(&func(&sup(&apart))).contains(&apart));
+    let sized = |text: &str, size: &str| {
+        format!(r#"<m:r><w:rPr><w:sz w:val="{size}"/></w:rPr><m:t>{text}</m:t></m:r>"#)
+    };
+    let read = |second: &str| {
+        let body = func(&sup(&(sized("a", "20") + &sized("b", second)))).replace(
+            "<m:oMath ",
+            r#"<m:oMath xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" "#,
+        );
+        format!("{:?}", from_omml(&body).unwrap().expr().nodes)
+    };
+    assert!(read("20").contains(r#"Identifier("ab")"#), "{}", read("20"));
+    assert!(!read("40").contains(r#"Identifier("ab")"#));
+    let colored = |color: &str| {
+        let second = format!(r#"<m:r><w:rPr><w:color w:val="{color}"/></w:rPr><m:t>b</m:t></m:r>"#);
+        func(&sup(&(run("a", "") + &second))).replace(
+            "<m:oMath ",
+            r#"<m:oMath xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" "#,
+        )
+    };
+    let word = mathema::OmmlOptions::default()
+        .with_run_properties(mathema::OmmlRunProperties::WordprocessingMl);
+    for body in [
+        colored("FF0000"),
+        func(&sup(&(sized("a", "20") + &sized("b", "40")))).replace(
+            "<m:oMath ",
+            r#"<m:oMath xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" "#,
+        ),
+    ] {
+        let read = from_omml(&body).unwrap();
+        let (written, _) = read.to_omml_with_options(&word).unwrap();
+        assert!(
+            written.contains(">a</m:t>") && written.contains(">b</m:t>"),
+            "{written}"
+        );
+    }
+    // As they are from other formats, words with letters too, but not the
+    // argument of a function in the name.
+    for (name, expected) in [
+        ("<mi>a</mi><mi>b</mi>", "ab"),
+        ("<mi>foo</mi><mi>x</mi>", "foox"),
+    ] {
+        let source = format!(
+            "<math><msup><mrow>{name}</mrow><mn>2</mn></msup><mo>&#x2061;</mo><mi>x</mi></math>"
+        );
+        let written = convert(&source, Format::MathML, Format::Omml).unwrap();
+        assert_eq!(written, func(&sup(&run(expected, "p"))));
+    }
+    let inner = format!(
+        "<m:func><m:fName>{}</m:fName><m:e>{}</m:e></m:func>",
+        run("sin", "p"),
+        run("nk", "")
+    );
+    let written = from_omml(&func(&sup(&inner))).unwrap().to_omml().unwrap();
+    assert!(
+        written.contains(&(run("n", "") + &run("k", ""))),
+        "{written}"
+    );
+    // Letters in the style of words that are a name are written in one run.
+    let written = convert("\\mathrm{ab}\u{2061}x", Format::LaTeX, Format::Omml).unwrap();
+    assert_eq!(written, func(&run("ab", "p")));
+    assert_eq!(omml_again(&written), written);
+}
+
+/// Applications that have no function (first, or after an argument) hold no
+/// group, and neither does what follows an empty argument.
+#[test]
+fn applications_are_paired() {
+    let a = "<mo>&#x2061;</mo>";
+    let ab = "<mrow><mi>a</mi><mi>b</mi></mrow>";
+    for (source, kept) in [
+        (format!("<mi>f</mi>{a}{ab}"), true),
+        (format!("{a}{ab}"), false),
+        (format!("<mi>f</mi>{a}<mi>g</mi>{a}{ab}"), false),
+        (format!("<mi>f</mi>{a}<mrow/><mi>g</mi>{a}{ab}"), true),
+        (
+            format!("<mfenced><mi>f</mi>{a}<mrow/><mi>g</mi>{a}{ab}</mfenced>"),
+            true,
+        ),
+        (
+            format!("<mfenced><mrow><msup><mrow/><mn>2</mn></msup>{a}{ab}</mrow></mfenced>"),
+            true,
+        ),
+        // A number that another joins is still one argument.
+        (format!("<mi>f</mi>{a}<mn>2</mn><mn>3</mn>{a}{ab}"), false),
+    ] {
+        let source = format!("<math>{source}<mi>z</mi></math>");
+        let read = from_mathml(&source).unwrap();
+        let (mut heap, mut compact) = (read.expr(), read.compact_expr().clone());
+        for _ in 0..2 {
+            mathema::ast::normalize::normalize_expr(&mut heap);
+            mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+            assert_eq!(heap.nodes, compact.to_math_expr().nodes, "{source}");
+            let nodes = format!("{:?}", heap.nodes);
+            assert_eq!(
+                nodes.contains(r#"Row([Identifier("a"), Identifier("b")])"#),
+                kept,
+                "{source} {nodes}"
+            );
+        }
+        let written = convert(&source, Format::MathML, Format::Omml).unwrap();
+        if !source.contains("mfenced") {
+            assert_eq!(omml_again(&written), written, "{source}");
+        }
+    }
+    // A style switch is no name, and a middle delimiter neither that nor an
+    // argument.
+    for (source, kept) in [
+        ("\\displaystyle\u{2061}{ab}z", false),
+        ("\\left(\\middle|\u{2061}{ab}z\\right)", false),
+        ("\\left(f\u{2061}\\middle|\u{2061}{ab}z\\right)", false),
+        // Opening a group joins two numbers, and what followed the second is
+        // no argument any more; it is opened too, and the argument of `h` stays.
+        ("\u{2061}{g\u{2061}2}3\u{2061}{ab}h\u{2061}{ab}z", true),
+        (
+            "\u{2061}{g\u{2061}2}3\u{2061}{ab}h\u{2061}{f\u{2061}{ab}z}z",
+            true,
+        ),
+        (r"{}^2\mathrm{}x", false),
+        (r"{}^2\mathrm{}\mathrm{}", false),
+        // An empty group or a zero space is no name.
+        ("\\operatorname{{}\u{2061}\\mathord{ab}}z", false),
+        ("\\operatorname{\\kern0pt\u{2061}\\mathord{ab}}z", false),
+    ] {
+        let read = mathema::from_latex(source).unwrap();
+        let (mut heap, mut compact) = (read.expr(), read.compact_expr().clone());
+        mathema::ast::normalize::normalize_expr(&mut heap);
+        mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        let once = heap.nodes.clone();
+        assert_eq!(once, compact.to_math_expr().nodes, "{source}");
+        assert_eq!(
+            format!("{once:?}").contains(r#"Row([Identifier("a"), Identifier("b")])"#),
+            kept,
+            "{source} {once:?}"
+        );
+        mathema::ast::normalize::normalize_expr(&mut heap);
+        mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+        assert_eq!(once, heap.nodes, "{source}");
+        assert_eq!(once, compact.to_math_expr().nodes, "{source}");
+    }
+    // Scripts with an empty base lead what follows a font of nothing at once.
+    let latex = convert(r"{}^2\mathrm{}x", Format::LaTeX, Format::MathML).unwrap();
+    assert!(latex.contains("mprescripts"), "{latex}");
+    // Both UnicodeMath writers space a name of words alike.
+    let source = omml(&format!(
+        "{}<m:func><m:fName>{}</m:fName><m:e></m:e></m:func>",
+        run("x", ""),
+        run("foo", "")
+    ));
+    let read = from_omml(&source).unwrap();
+    use mathema::writer::{Writer, unicode_math::UnicodeMathWriter};
+    let config = mathema::Config::default();
+    assert_eq!(
+        UnicodeMathWriter::write(&read.expr(), &config).unwrap(),
+        <UnicodeMathWriter as Writer>::write_compact(read.compact_expr(), &config).unwrap()
+    );
 }

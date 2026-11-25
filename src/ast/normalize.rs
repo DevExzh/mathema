@@ -53,6 +53,19 @@ impl Rules {
         keeps_arguments: true,
     };
 
+    /// Those for what a node has above, below or beside it: it is no part of a
+    /// name that the node is in.
+    fn beside(self) -> Self {
+        let identifiers = match self.identifiers {
+            Identifiers::Apart => Identifiers::Apart,
+            Identifiers::JoinedInNames | Identifiers::Joined => Identifiers::JoinedInNames,
+        };
+        Self {
+            identifiers,
+            ..self
+        }
+    }
+
     /// Those in the name of an operator.
     fn in_name(self) -> Self {
         let identifiers = match self.identifiers {
@@ -114,15 +127,21 @@ fn normalize_nodes_keeping_breaks(
     keep_break_groups: bool,
 ) {
     // Phase 1: recursively normalize each child
-    for node in nodes.iter_mut() {
-        normalize_node_depth_with_identifiers(node, depth, rules);
+    if rules.identifiers == Identifiers::Joined {
+        normalize_in_name_math(nodes, depth, rules);
+    } else {
+        for node in nodes.iter_mut() {
+            normalize_node_depth_with_identifiers(node, depth, rules);
+        }
     }
 
     // Phase 2: flatten Row children into the parent list
     let mut flattened = Vec::with_capacity(nodes.len());
     for node in nodes.drain(..) {
         match node {
-            MathNode::Row(children) if flattened.last().is_some_and(applies_to_next_math) => {
+            MathNode::Row(children)
+                if rules.keeps_arguments && flattened.last().is_some_and(applies_to_next_math) =>
+            {
                 flattened.push(MathNode::Row(children));
             },
             MathNode::Row(children) if children.is_empty() => {
@@ -147,6 +166,77 @@ fn normalize_nodes_keeping_breaks(
         }
     }
 
+    let mut settled = settle_nodes(flattened, rules);
+    // A group that is nobody's argument is opened as any other is, again where
+    // what it held moves the arguments; all are if that goes on.
+    let (mut all, mut passes) = (false, 0);
+    while rules.keeps_arguments && open_groups_math(&mut settled, keep_break_groups, all) {
+        if rules.identifiers == Identifiers::Joined {
+            // In a name what was in an argument is now in the name.
+            normalize_in_name_math(&mut settled, depth, rules);
+        }
+        settled = settle_nodes(settled, rules);
+        if all {
+            break;
+        }
+        passes += 1;
+        all = passes == OPENING_PASSES;
+    }
+    *nodes = settled;
+}
+
+/// Normalize the nodes of a list in a name: the argument of a function there
+/// is no part of the name.
+fn normalize_in_name_math(nodes: &mut [MathNode], depth: usize, rules: Rules) {
+    let arguments = arguments(nodes.iter().map(role_math));
+    for (node, argument) in nodes.iter_mut().zip(arguments) {
+        let rules = if argument { rules.beside() } else { rules };
+        normalize_node_depth_with_identifiers(node, depth, rules);
+    }
+}
+
+/// Heap form of [`opens`].
+fn opens_math(node: &MathNode, keep_break_groups: bool) -> bool {
+    matches!(node, MathNode::Row(children)
+        if !is_idotsint_math(children)
+            && !children.iter().any(is_declaration_math)
+            && !(keep_break_groups && children.contains(&MathNode::LineBreak)))
+}
+
+/// Heap form of [`open_groups`].
+fn open_groups_math(nodes: &mut Vec<MathNode>, keep_break_groups: bool, all: bool) -> bool {
+    if !nodes.iter().any(|node| matches!(node, MathNode::Row(_))) {
+        return false;
+    }
+    let arguments = arguments(nodes.iter().map(role_math));
+    let stray = |i: usize, node: &MathNode| !arguments[i] && opens_math(node, keep_break_groups);
+    if !nodes.iter().enumerate().any(|(i, node)| stray(i, node)) {
+        return false;
+    }
+    let mut opened = Vec::with_capacity(nodes.len());
+    for (i, node) in std::mem::take(nodes).into_iter().enumerate() {
+        if !all && !stray(i, &node) {
+            opened.push(node);
+            continue;
+        }
+        let mut pending = vec![(node, true)];
+        while let Some((node, outer)) = pending.pop() {
+            match node {
+                MathNode::Row(_) if (outer || all) && opens_math(&node, keep_break_groups) => {
+                    if let MathNode::Row(children) = node {
+                        pending.extend(children.into_iter().rev().map(|child| (child, false)));
+                    }
+                },
+                node => opened.push(node),
+            }
+        }
+    }
+    *nodes = opened;
+    true
+}
+
+/// The phases of normalization that join the nodes of a flat list.
+fn settle_nodes(mut flattened: Vec<MathNode>, rules: Rules) -> Vec<MathNode> {
     // Phase 2b: drop zero-width spaces (see the compact normalizer).
     // (A group here is an argument, or holds something.)
     flattened.retain(|node| matches!(node, MathNode::Row(_)) || !is_zero_space_math(node));
@@ -218,7 +308,20 @@ fn normalize_nodes_keeping_breaks(
     }
     let mut coalesced: Vec<MathNode> = Vec::with_capacity(with_limits.len());
     for node in with_limits.into_iter().rev() {
-        if is_empty_base_script_math(&node) && coalesced.last().is_some_and(can_be_led_math) {
+        if is_empty_base_script_math(&node) {
+            while coalesced.last().is_some_and(|next| {
+                can_take_prescripts_math(next)
+                    && !matches!(next, MathNode::Row(_))
+                    && is_effectively_empty_math(next)
+            }) {
+                coalesced.pop();
+            }
+        }
+        if is_empty_base_script_math(&node)
+            && coalesced
+                .last()
+                .is_some_and(|next| can_be_led_math(next, rules))
+        {
             let next = coalesced.pop().unwrap_or(MathNode::Row(Vec::new()));
             coalesced.push(lead_math(node, next));
             continue;
@@ -226,7 +329,7 @@ fn normalize_nodes_keeping_breaks(
         coalesced.push(node);
     }
     coalesced.reverse();
-    *nodes = coalesced;
+    coalesced
 }
 
 /// Adjacent number tokens can be merged only when their concatenation is a
@@ -412,16 +515,6 @@ fn takes_limits_math(node: &MathNode) -> bool {
     }
 }
 
-fn is_plain_group(item: &FencedItem) -> bool {
-    matches!(item, FencedItem::Element(MathNode::Row(nodes)) if is_plain_group_row(nodes))
-}
-
-/// A group that holds no declaration to keep inside it and is no `\idotsint`,
-/// so that its nodes are nodes of the fence (none, for an empty one).
-fn is_plain_group_row(nodes: &[MathNode]) -> bool {
-    !nodes.iter().any(is_declaration_math) && !is_idotsint_math(nodes)
-}
-
 /// Heap form of `is_idotsint_row`.
 fn is_idotsint_math(nodes: &[MathNode]) -> bool {
     let is = |node: &MathNode, kind, text: &str| matches!(peel_attributes(node), MathNode::Symbol(k, t) if *k == kind && t == text);
@@ -466,15 +559,15 @@ fn peel_attributes(mut node: &MathNode) -> &MathNode {
 
 /// Whether an empty-base script becomes a leading script of `next`, or of the
 /// first node of a group kept for its line break (see `leading_scripts_on`).
-fn can_be_led_math(next: &MathNode) -> bool {
+fn can_be_led_math(next: &MathNode, rules: Rules) -> bool {
     match next {
-        MathNode::Row(nodes) if nodes.contains(&MathNode::LineBreak) => {
-            nodes.first().is_some_and(can_be_led_math)
-        },
+        MathNode::Row(nodes) if nodes.contains(&MathNode::LineBreak) => nodes
+            .first()
+            .is_some_and(|first| can_be_led_math(first, rules)),
         _ => {
             can_take_prescripts_math(next)
                 && !is_empty_base_script_math(next)
-                && !applies_to_next_math(next)
+                && !(rules.keeps_arguments && applies_to_next_math(next))
         },
     }
 }
@@ -533,84 +626,39 @@ fn normalize_node_depth_with_identifiers(node: &mut MathNode, depth: usize, rule
         },
 
         MathNode::Fenced { content, .. } => {
-            for item in content.iter_mut() {
-                if let FencedItem::Element(n) = item {
-                    normalize_node_depth_with_identifiers(n, d, rules);
-                }
-            }
-            // As in the compact normalizer, a group is flattened into the
-            // fenced row.
-            if content.iter().any(is_plain_group) {
-                let mut opened: Vec<FencedItem> = Vec::with_capacity(content.len());
-                for item in content.drain(..) {
-                    let argument = matches!(opened.last(), Some(FencedItem::Element(last))
-                            if applies_to_next_math(last));
-                    match item {
-                        FencedItem::Element(MathNode::Row(nodes))
-                            if !argument && is_plain_group_row(&nodes) =>
-                        {
-                            opened.extend(nodes.into_iter().map(FencedItem::Element));
-                        },
-                        item => opened.push(item),
-                    }
-                }
-                *content = opened;
-            }
-            content.retain(
-                |item| !matches!(item, FencedItem::Element(node) if is_zero_space_math(node)),
-            );
-            // Empty-base scripts become leading scripts of the next element;
-            // middle delimiters are not elements and break the sequence.
-            let mut with_limits: Vec<FencedItem> = Vec::with_capacity(content.len());
+            // As in the compact normalizer, what is between middle delimiters
+            // is a row.
+            let mut items = Vec::with_capacity(content.len());
+            let mut row = Vec::new();
             for item in content.drain(..) {
                 match item {
-                    FencedItem::Element(node)
-                        if is_empty_base_script_math(&node)
-                            && matches!(with_limits.last(), Some(FencedItem::Element(prev)) if takes_limits_math(prev)) =>
-                    {
-                        let Some(FencedItem::Element(prev)) = with_limits.pop() else {
-                            unreachable!()
-                        };
-                        with_limits
-                            .push(FencedItem::Element(make_script_with_base_math(prev, node)));
+                    FencedItem::Element(node) => row.push(node),
+                    middle => {
+                        normalize_nodes_depth_with_identifiers(&mut row, d, rules);
+                        items.extend(row.drain(..).map(FencedItem::Element));
+                        items.push(middle);
                     },
-                    other => with_limits.push(other),
                 }
             }
-            let mut coalesced: Vec<FencedItem> = Vec::with_capacity(with_limits.len());
-            for item in with_limits.into_iter().rev() {
-                match item {
-                    FencedItem::Element(node)
-                        if is_empty_base_script_math(&node)
-                            && matches!(coalesced.last(), Some(FencedItem::Element(next))
-                                if can_take_prescripts_math(next) && !is_empty_base_script_math(next)) =>
-                    {
-                        let Some(FencedItem::Element(next)) = coalesced.pop() else {
-                            unreachable!()
-                        };
-                        coalesced.push(FencedItem::Element(make_prescripts_math(node, next)));
-                    },
-                    other => coalesced.push(other),
-                }
-            }
-            coalesced.reverse();
-            *content = coalesced;
+            normalize_nodes_depth_with_identifiers(&mut row, d, rules);
+            items.extend(row.into_iter().map(FencedItem::Element));
+            *content = items;
         },
 
         MathNode::Subscript { base, sub } => {
             normalize_node_depth_with_identifiers(base, d, rules);
-            normalize_node_depth_with_identifiers(sub, d, rules);
+            normalize_node_depth_with_identifiers(sub, d, rules.beside());
             flatten_empty_script_math(node);
         },
         MathNode::Superscript { base, sup } => {
             normalize_node_depth_with_identifiers(base, d, rules);
-            normalize_node_depth_with_identifiers(sup, d, rules);
+            normalize_node_depth_with_identifiers(sup, d, rules.beside());
             flatten_empty_script_math(node);
         },
         MathNode::SubSup { base, sub, sup } => {
             normalize_node_depth_with_identifiers(base, d, rules);
-            normalize_node_depth_with_identifiers(sub, d, rules);
-            normalize_node_depth_with_identifiers(sup, d, rules);
+            normalize_node_depth_with_identifiers(sub, d, rules.beside());
+            normalize_node_depth_with_identifiers(sup, d, rules.beside());
             flatten_empty_script_math(node);
         },
         MathNode::PreScripts {
@@ -620,49 +668,49 @@ fn normalize_node_depth_with_identifiers(node: &mut MathNode, depth: usize, rule
         } => {
             normalize_node_depth_with_identifiers(base, d, rules);
             if let Some(s) = pre_sub {
-                normalize_node_depth_with_identifiers(s, d, rules);
+                normalize_node_depth_with_identifiers(s, d, rules.beside());
             }
             if let Some(s) = pre_sup {
-                normalize_node_depth_with_identifiers(s, d, rules);
+                normalize_node_depth_with_identifiers(s, d, rules.beside());
             }
         },
 
         MathNode::Overscript { base, over, .. } => {
             normalize_node_depth_with_identifiers(base, d, rules);
-            normalize_node_depth_with_identifiers(over, d, rules);
+            normalize_node_depth_with_identifiers(over, d, rules.beside());
         },
         MathNode::Underscript { base, under, .. } => {
             normalize_node_depth_with_identifiers(base, d, rules);
-            normalize_node_depth_with_identifiers(under, d, rules);
+            normalize_node_depth_with_identifiers(under, d, rules.beside());
         },
         MathNode::UnderOver {
             base, under, over, ..
         } => {
             normalize_node_depth_with_identifiers(base, d, rules);
-            normalize_node_depth_with_identifiers(under, d, rules);
-            normalize_node_depth_with_identifiers(over, d, rules);
+            normalize_node_depth_with_identifiers(under, d, rules.beside());
+            normalize_node_depth_with_identifiers(over, d, rules.beside());
         },
 
         MathNode::Fraction { num, den, .. } => {
-            normalize_node_depth_with_identifiers(num, d, rules);
-            normalize_node_depth_with_identifiers(den, d, rules);
+            normalize_node_depth_with_identifiers(num, d, rules.beside());
+            normalize_node_depth_with_identifiers(den, d, rules.beside());
         },
         MathNode::Sqrt(inner) => {
             normalize_node_depth_with_identifiers(inner, d, rules);
         },
         MathNode::Root { index, radicand } => {
-            normalize_node_depth_with_identifiers(index, d, rules);
+            normalize_node_depth_with_identifiers(index, d, rules.beside());
             normalize_node_depth_with_identifiers(radicand, d, rules);
         },
 
         MathNode::Nary { sub, sup, body, .. } => {
             if let Some(s) = sub {
-                normalize_node_depth_with_identifiers(s, d, rules);
+                normalize_node_depth_with_identifiers(s, d, rules.beside());
             }
             if let Some(s) = sup {
-                normalize_node_depth_with_identifiers(s, d, rules);
+                normalize_node_depth_with_identifiers(s, d, rules.beside());
             }
-            normalize_node_depth_with_identifiers(body, d, rules);
+            normalize_node_depth_with_identifiers(body, d, rules.beside());
         },
 
         MathNode::Accent { base, .. } => {
@@ -674,7 +722,7 @@ fn normalize_node_depth_with_identifiers(node: &mut MathNode, depth: usize, rule
         | MathNode::NativeArray { rows, .. } => {
             for row in rows.iter_mut() {
                 for cell in row.iter_mut() {
-                    normalize_array_cell_math(cell, d, rules);
+                    normalize_array_cell_math(cell, d, rules.beside());
                 }
             }
         },
@@ -850,8 +898,12 @@ fn normalize_span_keeping_breaks(
     // Phase 1: recursively normalize each child node.
     // Collect IDs first to avoid borrow conflicts with arena.
     let child_ids: SmallVec<[NodeId; 8]> = arena.children(span).into();
-    for &id in &child_ids {
-        normalize_compact_node_with_identifiers(arena, id, d, rules)?;
+    if rules.identifiers == Identifiers::Joined {
+        normalize_in_name(arena, &child_ids, d, rules)?;
+    } else {
+        for &id in &child_ids {
+            normalize_compact_node_with_identifiers(arena, id, d, rules)?;
+        }
     }
 
     // Phase 2: flatten Rows and remove empty Rows.
@@ -896,6 +948,163 @@ fn normalize_span_keeping_breaks(
         }
     }
 
+    let mut settled = settle_list(arena, flattened, rules)?;
+    let (mut all, mut passes) = (false, 0);
+    while rules.keeps_arguments && open_groups(arena, &mut settled, keep_break_groups, all) {
+        if rules.identifiers == Identifiers::Joined {
+            // In a name what was in an argument is now in the name.
+            normalize_in_name(arena, &settled, d, rules)?;
+        }
+        settled = settle_list(arena, settled, rules)?;
+        if all {
+            break;
+        }
+        passes += 1;
+        all = passes == OPENING_PASSES;
+    }
+    arena.push_children(&settled)
+}
+
+/// Normalize the nodes of a list in a name: the argument of a function there
+/// is no part of the name.
+fn normalize_in_name(
+    arena: &mut AstArena,
+    ids: &[NodeId],
+    depth: usize,
+    rules: Rules,
+) -> crate::error::Result<()> {
+    let arguments = arguments(ids.iter().map(|&id| role(arena, id)));
+    for (&id, argument) in ids.iter().zip(arguments) {
+        let rules = if argument { rules.beside() } else { rules };
+        normalize_compact_node_with_identifiers(arena, id, depth, rules)?;
+    }
+    Ok(())
+}
+
+/// How often groups that are no arguments are opened before all are.
+const OPENING_PASSES: usize = 4;
+
+/// What a node is to the applications of a list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    Application,
+    /// A style switch is no name.
+    Switch,
+    /// A middle delimiter is neither a name nor an argument.
+    Middle,
+    /// An empty group is no name: normalization drops it.
+    Empty,
+    /// A zero space is nothing: normalization drops it.
+    Nothing,
+    Other,
+}
+
+fn role(arena: &AstArena, id: NodeId) -> Role {
+    match *arena.node(id) {
+        CompactNode::StyleSwitch(_) => Role::Switch,
+        CompactNode::Middle(_) => Role::Middle,
+        CompactNode::Row(span) if span.is_empty() => Role::Empty,
+        CompactNode::Space(width) if width == Rational::zero() => Role::Nothing,
+        _ if applies_to_next(arena, id) => Role::Application,
+        _ => Role::Other,
+    }
+}
+
+/// Heap form of [`role`].
+fn role_math(node: &MathNode) -> Role {
+    match node {
+        MathNode::StyleSwitch(_) => Role::Switch,
+        MathNode::Row(nodes) if nodes.is_empty() => Role::Empty,
+        node if is_zero_space_math(node) => Role::Nothing,
+        node if applies_to_next_math(node) => Role::Application,
+        _ => Role::Other,
+    }
+}
+
+/// Which nodes of a list are the argument of a function: they are paired from
+/// left to right, as the OMML writer writes them. An application that is first
+/// or that follows an argument (`f⁡g⁡x`) has no function.
+fn arguments(roles: impl Iterator<Item = Role>) -> SmallVec<[bool; 8]> {
+    let roles: SmallVec<[Role; 8]> = roles.collect();
+    let mut found: SmallVec<[bool; 8]> = smallvec::smallvec![false; roles.len()];
+    // What is something, with where it is.
+    let at: SmallVec<[(usize, Role); 8]> = roles
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|&(_, role)| role != Role::Nothing)
+        .collect();
+    let mut i = 0;
+    while i < at.len() {
+        let name = !matches!(at[i].1, Role::Switch | Role::Middle | Role::Empty);
+        if name
+            && at
+                .get(i + 1)
+                .is_some_and(|&(_, role)| role == Role::Application)
+        {
+            if let Some(&(argument, role)) = at.get(i + 2) {
+                found[argument] = role != Role::Middle;
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    found
+}
+
+/// Whether a node is a group that may be opened into the list it is in.
+fn opens(arena: &AstArena, id: NodeId, keep_break_groups: bool) -> bool {
+    matches!(*arena.node(id), CompactNode::Row(span)
+        if !is_idotsint_row(arena, span)
+            && !has_direct_declaration(arena, span)
+            && !(keep_break_groups && has_direct_newline(arena, span)))
+}
+
+/// Open the groups of a list that are nobody's argument. With `all`, open every
+/// group if there is such a one. Returns whether there was.
+fn open_groups(
+    arena: &AstArena,
+    ids: &mut SmallVec<[NodeId; 8]>,
+    keep_break_groups: bool,
+    all: bool,
+) -> bool {
+    let is_row = |id: &NodeId| matches!(*arena.node(*id), CompactNode::Row(_));
+    if !ids.iter().any(is_row) {
+        return false;
+    }
+    let arguments = arguments(ids.iter().map(|&id| role(arena, id)));
+    let stray = |i: usize, id: NodeId| !arguments[i] && opens(arena, id, keep_break_groups);
+    if !ids.iter().enumerate().any(|(i, &id)| stray(i, id)) {
+        return false;
+    }
+    let mut opened: SmallVec<[NodeId; 8]> = SmallVec::new();
+    let mut pending: SmallVec<[(NodeId, bool); 8]> = SmallVec::new();
+    for (i, &id) in ids.iter().enumerate() {
+        if !all && !stray(i, id) {
+            opened.push(id);
+            continue;
+        }
+        pending.push((id, true));
+        while let Some((id, outer)) = pending.pop() {
+            match *arena.node(id) {
+                CompactNode::Row(span) if (outer || all) && opens(arena, id, keep_break_groups) => {
+                    pending.extend(arena.children(span).iter().rev().map(|&id| (id, false)));
+                },
+                _ => opened.push(id),
+            }
+        }
+    }
+    *ids = opened;
+    true
+}
+
+/// The phases of normalization that join the nodes of a flat list.
+fn settle_list(
+    arena: &mut AstArena,
+    flattened: SmallVec<[NodeId; 8]>,
+    rules: Rules,
+) -> crate::error::Result<SmallVec<[NodeId; 8]>> {
     // Phase 2b: drop zero-width spacing nodes. They produce no visible output
     // (e.g. a malformed/empty `\kern` or `\hspace{}`) and their presence can
     // block merges, suppress script attachment, or create/destroy separator
@@ -958,6 +1167,17 @@ fn normalize_span_keeping_breaks(
     }
     let mut coalesced: SmallVec<[NodeId; 8]> = SmallVec::new();
     for &id in with_limits.iter().rev() {
+        if is_empty_base_script(arena, id) {
+            // A base of nothing would be none, and the scripts lead what
+            // follows it.
+            while coalesced.last().is_some_and(|&next| {
+                can_take_prescripts(*arena.node(next))
+                    && !matches!(*arena.node(next), CompactNode::Row(_))
+                    && is_effectively_empty_node(arena, next)
+            }) {
+                coalesced.pop();
+            }
+        }
         if is_empty_base_script(arena, id)
             && let Some(&next_id) = coalesced.last()
             && let Some(prescripts) = leading_scripts_on(arena, id, next_id, rules)?
@@ -970,7 +1190,7 @@ fn normalize_span_keeping_breaks(
     }
     coalesced.reverse();
 
-    arena.push_children(&coalesced)
+    Ok(coalesced)
 }
 
 /// The node that results from attaching the empty-base script `script` to
@@ -1148,18 +1368,18 @@ fn normalize_compact_node_with_identifiers(
 
         CompactNode::Subscript { base, sub } => {
             normalize_compact_node_with_identifiers(arena, base, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, sub, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, sub, d, rules.beside())?;
             flatten_empty_script(arena, id);
         },
         CompactNode::Superscript { base, sup } => {
             normalize_compact_node_with_identifiers(arena, base, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, sup, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, sup, d, rules.beside())?;
             flatten_empty_script(arena, id);
         },
         CompactNode::SubSup { base, sub, sup } => {
             normalize_compact_node_with_identifiers(arena, base, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, sub, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, sup, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, sub, d, rules.beside())?;
+            normalize_compact_node_with_identifiers(arena, sup, d, rules.beside())?;
             flatten_empty_script(arena, id);
         },
         CompactNode::PreScripts {
@@ -1169,10 +1389,10 @@ fn normalize_compact_node_with_identifiers(
         } => {
             normalize_compact_node_with_identifiers(arena, base, d, rules)?;
             if pre_sub.is_some() {
-                normalize_compact_node_with_identifiers(arena, pre_sub, d, rules)?;
+                normalize_compact_node_with_identifiers(arena, pre_sub, d, rules.beside())?;
             }
             if pre_sup.is_some() {
-                normalize_compact_node_with_identifiers(arena, pre_sup, d, rules)?;
+                normalize_compact_node_with_identifiers(arena, pre_sup, d, rules.beside())?;
             }
             // Leading scripts stay leading scripts of their base. Without
             // scripts the node is its base; without a base it is an
@@ -1212,40 +1432,40 @@ fn normalize_compact_node_with_identifiers(
 
         CompactNode::Overscript { base, over, .. } => {
             normalize_compact_node_with_identifiers(arena, base, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, over, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, over, d, rules.beside())?;
         },
         CompactNode::Underscript { base, under, .. } => {
             normalize_compact_node_with_identifiers(arena, base, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, under, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, under, d, rules.beside())?;
         },
         CompactNode::UnderOver {
             base, under, over, ..
         } => {
             normalize_compact_node_with_identifiers(arena, base, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, under, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, over, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, under, d, rules.beside())?;
+            normalize_compact_node_with_identifiers(arena, over, d, rules.beside())?;
         },
 
         CompactNode::Fraction { num, den, .. } => {
-            normalize_compact_node_with_identifiers(arena, num, d, rules)?;
-            normalize_compact_node_with_identifiers(arena, den, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, num, d, rules.beside())?;
+            normalize_compact_node_with_identifiers(arena, den, d, rules.beside())?;
         },
         CompactNode::Sqrt(inner) => {
             normalize_compact_node_with_identifiers(arena, inner, d, rules)?;
         },
         CompactNode::Root { index, radicand } => {
-            normalize_compact_node_with_identifiers(arena, index, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, index, d, rules.beside())?;
             normalize_compact_node_with_identifiers(arena, radicand, d, rules)?;
         },
 
         CompactNode::Nary { sub, sup, body, .. } => {
             if sub.is_some() {
-                normalize_compact_node_with_identifiers(arena, sub, d, rules)?;
+                normalize_compact_node_with_identifiers(arena, sub, d, rules.beside())?;
             }
             if sup.is_some() {
-                normalize_compact_node_with_identifiers(arena, sup, d, rules)?;
+                normalize_compact_node_with_identifiers(arena, sup, d, rules.beside())?;
             }
-            normalize_compact_node_with_identifiers(arena, body, d, rules)?;
+            normalize_compact_node_with_identifiers(arena, body, d, rules.beside())?;
         },
 
         CompactNode::Accent { base, .. } => {
@@ -1263,9 +1483,9 @@ fn normalize_compact_node_with_identifiers(
             for &cell_id in &cell_ids {
                 if let CompactNode::Row(span) = *arena.node(cell_id) {
                     // The depth a nested `normalize_compact_node` call uses.
-                    normalize_row_node(arena, cell_id, span, d + 1, rules, true)?;
+                    normalize_row_node(arena, cell_id, span, d + 1, rules.beside(), true)?;
                 } else {
-                    normalize_compact_node_with_identifiers(arena, cell_id, d, rules)?;
+                    normalize_compact_node_with_identifiers(arena, cell_id, d, rules.beside())?;
                 }
                 let new_id = normalize_array_cell(arena, cell_id)?;
                 new_cells.push(new_id);

@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one node through normalization: `sin⁡(2x)` written as OMML no longer has `x`
   outside the function, MathML keeps the `mrow`, and UnicodeMath writes
   `sin⁡〖2x〗`. Conversion to LaTeX writes it without a group, as before.
+- OMML reader and writer: a function name in several runs (`er`, `f`) is one; what
+  a name has above, below or beside it is not joined to a word.
 - **Breaking (behavior):** the letters of an italic OMML run (`sty` i, or none,
   which is Word's default) are identifiers of their own; a run of `sty` p is one
   as before, and so is the name of an `m:func`.

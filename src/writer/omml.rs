@@ -311,6 +311,22 @@ struct Emitter<'a> {
     host_style: MathStyle,
     diags: Vec<Diagnostic>,
     seen: HashSet<String>,
+    /// Whether the name of a function is written, whose letters are one run.
+    in_name: bool,
+    /// The last run of such letters.
+    name_run: Option<NameRun>,
+}
+
+/// Letters of a name of a function, as written in one run.
+struct NameRun {
+    start: usize,
+    end: usize,
+    text: String,
+    /// Whether a style is not given, but that of words or variables.
+    plain: bool,
+    sty: Option<&'static str>,
+    scr: Option<&'static str>,
+    size: Option<u16>,
 }
 
 impl<'a> Emitter<'a> {
@@ -327,6 +343,8 @@ impl<'a> Emitter<'a> {
             entered: false,
             diags: Vec::new(),
             seen: HashSet::new(),
+            in_name: false,
+            name_run: None,
         }
     }
 
@@ -668,6 +686,14 @@ impl<'a> Emitter<'a> {
             color: fmt.color,
             ..Host::default()
         };
+        if self.in_name
+            && kind == Leaf::Identifier
+            && fmt.color.is_none()
+            && !text.is_empty()
+            && text.chars().all(char::is_alphabetic)
+        {
+            return self.name_letters(text, style.is_none(), (sty, scr), host);
+        }
         self.run(text, sty, scr, false, host);
     }
 
@@ -757,26 +783,26 @@ impl<'a> Emitter<'a> {
     /// `m:func`.
     fn seq(&mut self, ids: &[NodeId], fmt: Fmt) {
         let previous_style = self.style;
-        let mut i = self.after_empty_applications(ids, 0);
+        let mut i = 0;
         while i < ids.len() {
             if let CompactNode::StyleSwitch(value) = *self.arena.node(ids[i]) {
                 self.style = MathStyle::branch_from_switch(value);
                 self.loss("OMML output does not preserve math style or size switches");
-                i = self.after_empty_applications(ids, i + 1);
+                i += 1;
                 continue;
             }
             if i + 1 < ids.len() && self.is_apply(ids[i + 1]) {
                 self.open("m:func");
-                self.open("m:fName");
-                self.node(ids[i], fmt);
-                self.close("m:fName");
+                self.name(ids[i], fmt);
                 self.open("m:e");
                 if let Some(&arg) = ids.get(i + 2) {
+                    let in_name = std::mem::replace(&mut self.in_name, false);
                     self.node(arg, fmt);
+                    self.in_name = in_name;
                 }
                 self.close("m:e");
                 self.close("m:func");
-                i = self.after_empty_applications(ids, i + 3);
+                i += 3;
             } else {
                 self.node(ids[i], fmt);
                 i += 1;
@@ -785,22 +811,53 @@ impl<'a> Emitter<'a> {
         self.style = previous_style;
     }
 
+    fn name(&mut self, id: NodeId, fmt: Fmt) {
+        self.open("m:fName");
+        let in_name = std::mem::replace(&mut self.in_name, true);
+        self.node(id, fmt);
+        self.in_name = in_name;
+        self.close("m:fName");
+    }
+
+    /// Write letters of a name of a function, in one run with those before
+    /// them as the reader joins them.
+    fn name_letters(
+        &mut self,
+        text: &str,
+        plain: bool,
+        (mut sty, scr): (Option<&'static str>, Option<&'static str>),
+        host: Host,
+    ) {
+        let mut text = text.to_owned();
+        let mut start = self.buf.len();
+        let size = self.run_size;
+        if let Some(last) = self.name_run.take()
+            && last.end == start
+            && last.size == size
+            && (plain && last.plain || (last.sty, last.scr) == (sty, scr))
+        {
+            if plain && last.plain {
+                sty = Some("p");
+            }
+            text.insert_str(0, &last.text);
+            start = last.start;
+            self.buf.truncate(start);
+        }
+        self.run(&text, sty, scr, false, host);
+        self.name_run = Some(NameRun {
+            start,
+            end: self.buf.len(),
+            text,
+            plain,
+            sty,
+            scr,
+            size,
+        });
+    }
+
     fn is_apply(&self, id: NodeId) -> bool {
         matches!(*self.arena.node(id), CompactNode::Symbol(_, sid)
             if self.arena.str_val(sid) == FUNCTION_APPLICATION)
-    }
-
-    /// Where `ids` go on at `i`, past applications of no function (first, or
-    /// in a chain `f⁡g⁡`) that have an empty argument: they would read back
-    /// with the next group as their argument.
-    fn after_empty_applications(&self, ids: &[NodeId], mut i: usize) -> usize {
-        while let Some(&[apply, argument]) = ids.get(i..i + 2)
-            && self.is_apply(apply)
-            && matches!(*self.arena.node(argument), CompactNode::Row(span) if span.is_empty())
-        {
-            i += 2;
-        }
-        i
     }
 
     /// Write `<tag>` + node + `</tag>`; `NONE` gives an empty argument.
@@ -815,14 +872,19 @@ impl<'a> Emitter<'a> {
     }
 
     fn arg(&mut self, tag: &str, id: NodeId, fmt: Fmt) {
+        // As in the reader, what a name has beside it is no part of it.
+        let in_name = self.in_name;
+        self.in_name &= tag == "m:e";
         self.open(tag);
-        if id.is_some() {
-            if self.sized {
-                return self.sized_arg(tag, id, fmt);
+        if id.is_some() && self.sized {
+            self.sized_arg(tag, id, fmt);
+        } else {
+            if id.is_some() {
+                self.node(id, fmt);
             }
-            self.node(id, fmt);
+            self.close(tag);
         }
-        self.close(tag);
+        self.in_name = in_name;
     }
 
     fn children(&mut self, span: NodeSpan, fmt: Fmt) {
@@ -847,6 +909,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn cell_nodes(&mut self, id: NodeId, fmt: Fmt) {
+        let in_name = std::mem::replace(&mut self.in_name, false);
         match *self.arena.node(id) {
             CompactNode::Row(span) => self.children(span, fmt),
             CompactNode::AlignedCell { content, .. } | CompactNode::SpannedCell { content, .. } => {
@@ -854,6 +917,7 @@ impl<'a> Emitter<'a> {
             },
             _ => self.node(id, fmt),
         }
+        self.in_name = in_name;
     }
 
     /// Resolve the effective placement of a named operator in the current
@@ -931,9 +995,7 @@ impl<'a> Emitter<'a> {
                 // which keeps decorated names grouped without a private
                 // attribute.
                 self.open("m:func");
-                self.open("m:fName");
-                self.node(content, fmt);
-                self.close("m:fName");
+                self.name(content, fmt);
                 self.open("m:e");
                 self.close("m:e");
                 self.close("m:func");

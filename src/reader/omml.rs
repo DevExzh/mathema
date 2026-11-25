@@ -1197,7 +1197,9 @@ impl<'i> Parser<'i> {
     fn cell(&mut self) -> Result<Ids> {
         let outer = self.style;
         self.style = cell_style(outer);
+        let outer_name = std::mem::replace(&mut self.in_name, false);
         let result = self.arg_content("m:e");
+        self.in_name = outer_name;
         self.style = outer;
         result
     }
@@ -1453,6 +1455,9 @@ impl<'i> Parser<'i> {
         } else {
             self.tokenize(text, props.style(), &mut ids)?;
         }
+        if self.in_name && host.color.is_none() {
+            self.join_name(host.size, &mut ids, out)?;
+        }
         match host.size {
             Some(size) => {
                 let style = self.style;
@@ -1574,6 +1579,50 @@ impl<'i> Parser<'i> {
     fn styled(&mut self, style: TextStyle, id: NodeId) -> Result<NodeId> {
         let span = checked_span(&mut self.arena, &[id])?;
         Ok(self.arena.push_node(CompactNode::Styled(style, span)))
+    }
+
+    /// Join the letters that start the run read into `ids`, in size `size`, to
+    /// those that end `out`: the name of a function may be in several runs
+    /// (`er` and `f`).
+    fn join_name(&mut self, size: Option<u16>, ids: &mut Ids, out: &mut Ids) -> Result<()> {
+        let (Some(&last), Some(&first)) = (out.last(), ids.first()) else {
+            return Ok(());
+        };
+        let sized = |&(id, _, size)| (id == last).then_some(size);
+        let runs = self.sizes.runs.as_deref();
+        let last_size = runs.and_then(|runs| runs.sized.last()).and_then(sized);
+        let (Some((before, style)), Some((after, same))) = (self.word(last), self.word(first))
+        else {
+            return Ok(());
+        };
+        if style != same || last_size != size {
+            return Ok(());
+        }
+        let text = format!(
+            "{}{}",
+            self.arena.str_val(before),
+            self.arena.str_val(after)
+        );
+        let mut joined = Ids::new();
+        self.letters(&text, style, &mut joined)?;
+        out.pop();
+        ids.remove(0);
+        ids.insert_many(0, joined);
+        Ok(())
+    }
+
+    /// The letters of a word and their style.
+    fn word(&self, id: NodeId) -> Option<(crate::ast::compact::StrId, Option<TextStyle>)> {
+        let (id, style) = match *self.arena.node(id) {
+            CompactNode::Styled(style, span) if span.len() == 1 => {
+                (self.arena.children(span)[0], Some(style))
+            },
+            _ => (id, None),
+        };
+        match *self.arena.node(id) {
+            CompactNode::Identifier(sid) => Some((sid, style)),
+            _ => None,
+        }
     }
 
     /// Classify a run of letters. Without an explicit style (math italic)
