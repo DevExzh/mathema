@@ -33,6 +33,18 @@ fn is_wide_accent(accent: char) -> bool {
     matches!(accent, '\u{0302}' | '\u{0303}' | '\u{030C}')
 }
 
+/// The width an accent is drawn at: over a single character that of the
+/// accent itself, which is then centred on the character's attachment point.
+fn accent_width(accent: char, wide: bool, single: bool, base: f64, size: f64) -> f64 {
+    let fixed = 0.45 * size;
+    match accent {
+        _ if wide => base,
+        '\u{0304}' | '\u{20D7}' if single => fixed,
+        '\u{0302}' | '\u{0303}' | '\u{030C}' if single || base < fixed * 1.2 => fixed,
+        _ => base,
+    }
+}
+
 /// A pre-drawn accent path with its native viewBox dimensions (in KaTeX units).
 pub(super) struct KatexAccentPath {
     path: &'static str,
@@ -620,19 +632,8 @@ pub(super) fn layout_accent(
     let accent_box = if is_stretchy_accent(accent) && base_width > 0.0 {
         let size = ctx.size();
 
-        // For non-wide accents (\hat, \tilde, \check), use a fixed-size accent
-        // instead of stretching to base width when the base is narrow (single char).
-        let effective_width =
-            if !wide && (accent == '\u{0302}' || accent == '\u{0303}' || accent == '\u{030C}') {
-                let fixed = 0.45 * size;
-                if base_width < fixed * 1.2 {
-                    fixed
-                } else {
-                    base_width
-                }
-            } else {
-                base_width
-            };
+        let single = matches!(base_box.kind, BoxKind::Glyph { .. });
+        let effective_width = accent_width(accent, wide, single, base_width, size);
 
         match accent {
             // Bar: horizontal rule across base width — thicker than fraction
@@ -641,7 +642,7 @@ pub(super) fn layout_accent(
                 let thickness = math_table::math_constants()
                     .map(|c| (c.overbar_rule_thickness * size).max(0.06 * size))
                     .unwrap_or((ctx.params.rule_thickness * size * 1.8).max(0.06 * size));
-                LayoutBox::rule(base_width, thickness)
+                LayoutBox::rule(effective_width, thickness)
             },
             // Dot: small filled square centered above base
             '\u{0307}' => {
@@ -977,15 +978,8 @@ pub(super) fn layout_accent_arena(
     let accent_id = if is_stretchy_accent(accent) && base_w > 0.0 {
         let size = ctx.size() * ctx.glyph_scale;
 
-        // For non-wide accents (\hat, \tilde, \check), use a fixed-size accent
-        // instead of stretching to base width when the base is narrow (single char).
-        let effective_width =
-            if !wide && (accent == '\u{0302}' || accent == '\u{0303}' || accent == '\u{030C}') {
-                let fixed = 0.45 * size;
-                if base_w < fixed * 1.2 { fixed } else { base_w }
-            } else {
-                base_w
-            };
+        let single = matches!(arena.get(base_id).kind, ArenaBoxKind::Glyph { .. });
+        let effective_width = accent_width(accent, wide, single, base_w, size);
 
         match accent {
             '\u{0304}' => {
@@ -993,7 +987,7 @@ pub(super) fn layout_accent_arena(
                     .map(|c| (c.overbar_rule_thickness * size).max(0.06 * size))
                     .unwrap_or((ctx.params.rule_thickness * size * 1.8).max(0.06 * size));
                 arena.alloc(ArenaLayoutBox {
-                    width: base_w,
+                    width: effective_width,
                     height: thickness / 2.0,
                     depth: thickness / 2.0,
                     kind: ArenaBoxKind::Rule { thickness },

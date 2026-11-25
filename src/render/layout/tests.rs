@@ -383,6 +383,18 @@ fn fences_and_radicals_are_those_of_the_font() {
         // In a script everything is as much smaller.
         assert_arena_heap_equivalent(&format!("x^{{{latex}}}"), style);
     }
+    // The vinculum's top is the surd's.
+    let expr = crate::from_latex("\\sqrt{x}").unwrap().expr();
+    let root = layout_expr(&expr, Text, &default_options());
+    let BoxKind::HBox { children } = &root.kind else {
+        panic!("{root:?}")
+    };
+    let BoxKind::HBox { children } = &children[0].layout.kind else {
+        panic!("{root:?}")
+    };
+    let top = |child: &PositionedBox| child.dy + child.layout.height;
+    assert!((top(&children[0]) - top(&children[1])).abs() < 1e-9);
+    assert!((children[1].layout.height + children[1].layout.depth - 0.04).abs() < 1e-9);
     // A superscript in a cramped display is as low as in text.
     let height = |latex: &str, style| {
         assert_arena_heap_equivalent(latex, style);
@@ -391,6 +403,53 @@ fn fences_and_radicals_are_those_of_the_font() {
     };
     assert!((height("\\sqrt{x^2}", Display) - 1.012).abs() < 2e-3);
     assert!(height("x^2", Display) > height("x^2", Text));
+}
+
+/// The bar of a fraction is as wide as the wider part, inside the null
+/// delimiters, and on the axis.
+#[test]
+fn the_bar_of_a_fraction_is_inside_its_null_delimiters() {
+    let expr = crate::from_latex("\\frac{m}{s}").unwrap().expr();
+    let root = layout_expr(&expr, MathStyle::Display, &default_options());
+    let BoxKind::HBox { children } = &root.kind else {
+        panic!("{root:?}")
+    };
+    let BoxKind::VBox { children } = &children[0].layout.kind else {
+        panic!("{root:?}")
+    };
+    let bar = children
+        .iter()
+        .find(|child| matches!(child.layout.kind, BoxKind::Rule { .. }))
+        .unwrap();
+    assert!((bar.dx - 0.12).abs() < 1e-9);
+    let middle = bar.dy + (bar.layout.height - bar.layout.depth) / 2.0;
+    assert!((middle - 0.25).abs() < 1e-9);
+    assert!((bar.layout.width - 0.878).abs() < 1e-9);
+    assert!((root.width - 0.878 - 0.24).abs() < 1e-9);
+    assert_arena_heap_equivalent("\\frac{m}{s}", MathStyle::Display);
+}
+
+/// An accent over one character has its own width.
+#[test]
+fn accents_of_characters_do_not_stretch() {
+    for command in ["hat", "check", "tilde", "bar", "vec"] {
+        let accent = |base: &str| {
+            let latex = format!("\\{command}{{{base}}}");
+            assert_arena_heap_equivalent(&latex, MathStyle::Text);
+            let expr = crate::from_latex(&latex).unwrap().expr();
+            let root = layout_expr(&expr, MathStyle::Text, &default_options());
+            let BoxKind::HBox { children } = &root.kind else {
+                panic!("{root:?}")
+            };
+            let BoxKind::HBox { children } = &children[0].layout.kind else {
+                panic!("{root:?}")
+            };
+            children[1].layout.width
+        };
+        assert!((accent("M") - 0.45).abs() < 1e-9, "{command}");
+        assert!((accent("i") - 0.45).abs() < 1e-9, "{command}");
+        assert!(accent("AB") > 1.0, "{command}");
+    }
 }
 
 /// A label that fits on an arrow or an equals sign does not stretch it.

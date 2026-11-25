@@ -84,9 +84,8 @@ pub(super) fn layout_fraction(
     }
 
     let frac_width = num_box.width.max(den_box.width);
-    // Add null-delimiter-space side padding to prevent content from touching adjacent glyphs.
-    // Standard TeX adds ~0.12em on each side of a fraction.
-    let side_padding = 0.12 * size;
+    // TeX's null delimiters, outside of the bar.
+    let side_padding = NULL_DELIMITER_SPACE_EM * size;
     let padded_frac_width = frac_width + 2.0 * side_padding;
     let total_height = num_up + num_box.height;
     let total_depth = den_down + den_box.depth;
@@ -102,8 +101,8 @@ pub(super) fn layout_fraction(
 
     // Add the fraction bar
     if bar_thickness > 0.0 {
-        let bar = LayoutBox::rule(padded_frac_width, bar_thickness);
-        children.push(PositionedBox::new(0.0, axis, bar));
+        let bar = LayoutBox::rule(frac_width, bar_thickness);
+        children.push(PositionedBox::new(side_padding, axis, bar));
     }
 
     LayoutBox {
@@ -199,8 +198,7 @@ pub(super) fn layout_fraction_arena(
     }
 
     let frac_width = num_w.max(den_w);
-    // Add null-delimiter-space side padding to prevent content from touching adjacent glyphs
-    let side_padding = 0.12 * size;
+    let side_padding = NULL_DELIMITER_SPACE_EM * size;
     let padded_frac_width = frac_width + 2.0 * side_padding;
     let total_height = num_up + num_h;
     let total_depth = den_down + den_d;
@@ -221,9 +219,9 @@ pub(super) fn layout_fraction_arena(
     });
 
     if bar_thickness > 0.0 {
-        let bar_id = arena.alloc(ArenaLayoutBox::rule(padded_frac_width, bar_thickness));
+        let bar_id = arena.alloc(ArenaLayoutBox::rule(frac_width, bar_thickness));
         arena.push_child(ArenaPositionedBox {
-            dx: 0.0,
+            dx: side_padding,
             dy: axis,
             id: bar_id,
         });

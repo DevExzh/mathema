@@ -43,7 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the correction, a subscript does not, and that of an integral sits under its
   slope. Advances are those of the drawn Latin Modern Math glyph (most Greek
   letters, `\infty`, `\forall`, the dots and the integrals were too narrow), and
-  an accent is centred on the font's attachment point (`\hat d`, `\vec V_1`).
+  an accent is centred on the font's attachment point (`\hat d`, `\vec V_1`) and
+  as narrow over a wide letter. The bar of a fraction is inside its null
+  delimiters.
 - `\textcolor{red}{\sum}`, `\colorbox` and `\fcolorbox` with just an operator
   in braces are read like the operator token (`\textcolor{red}\sum`).
 - LaTeX output spells more combining accents as commands (`\overline`,

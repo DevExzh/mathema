@@ -288,13 +288,15 @@ pub(super) fn layout_sqrt(
     let vinculum = LayoutBox::rule(inner.width, radical_thickness);
 
     let rule = g.rule;
+    // A rule box is centred on its baseline.
+    let vinculum_dy = rule + radical_thickness / 2.0;
 
     // Capture dimensions before moving inner into children vec
     let inner_width = inner.width;
     let inner_depth = inner.depth;
     let mut children = vec![
         PositionedBox::new(0.0, g.surd_dy, radical),
-        PositionedBox::new(radical_width, rule, vinculum),
+        PositionedBox::new(radical_width, vinculum_dy, vinculum),
         PositionedBox::new(radical_width, 0.0, inner),
     ];
 
@@ -406,6 +408,8 @@ pub(super) fn layout_sqrt_arena(
     let vinculum_id = arena.alloc(ArenaLayoutBox::rule(inner_w, radical_thickness));
 
     let rule = g.rule;
+    // A rule box is centred on its baseline.
+    let vinculum_dy = rule + radical_thickness / 2.0;
 
     // Build children: radical, vinculum, inner
     // We may need to adjust dx values if there's an index, so we track the span start
@@ -459,7 +463,7 @@ pub(super) fn layout_sqrt_arena(
         });
         arena.push_child(ArenaPositionedBox {
             dx: vinculum_dx,
-            dy: rule,
+            dy: vinculum_dy,
             id: vinculum_id,
         });
         arena.push_child(ArenaPositionedBox {
@@ -489,7 +493,7 @@ pub(super) fn layout_sqrt_arena(
         });
         arena.push_child(ArenaPositionedBox {
             dx: vinculum_dx,
-            dy: rule,
+            dy: vinculum_dy,
             id: vinculum_id,
         });
         arena.push_child(ArenaPositionedBox {
