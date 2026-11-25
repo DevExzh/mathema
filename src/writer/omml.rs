@@ -209,6 +209,26 @@ fn dropped_sizes() -> Diagnostic {
     }
 }
 
+/// Whether there is a color to drop.
+pub(crate) fn has_colors(expr: &CompactExpr) -> bool {
+    let is_color = |node: &CompactNode| matches!(node, CompactNode::Color { .. });
+    expr.arena.nodes().iter().any(is_color)
+}
+
+/// Drop every color, so that normalization joins what a color kept apart as
+/// it joins it in the OMML read back. (Nesting is bounded: a chain of colors
+/// is at most as long as the tree is deep.)
+pub(crate) fn drop_colors(expr: &mut CompactExpr) {
+    for raw in 0..expr.arena.nodes().len() as u32 {
+        let id = NodeId::new(raw);
+        let mut content = id;
+        while let CompactNode::Color { content: inner, .. } = *expr.arena.node(content) {
+            content = inner;
+        }
+        expr.arena.replace_from(id, content);
+    }
+}
+
 /// Map a [`PhantomKind`] to OMML `phantPr` flags
 /// `(show, zero_wid, zero_asc, zero_desc)`, where `show` is whether the
 /// content is visible (`\smash` family) versus invisible (`\phantom` family).

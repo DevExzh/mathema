@@ -64,9 +64,9 @@ fn normalize_for(expr: &mut CompactExpr, from: Format, to: Format) -> Result<()>
     normalize(expr)
 }
 
-/// Drop what `target` does not write, before normalization: the font sizes of
-/// pure OMML and UnicodeMath, and in LaTeX those that no declaration draws and
-/// the colors it cannot hold.
+/// Drop what `target` does not write, before normalization: the font sizes and
+/// colors of pure OMML, the sizes of UnicodeMath, and in LaTeX those that no
+/// declaration draws and the colors it cannot hold.
 pub(crate) fn drop_unwritten(expr: &mut CompactExpr, target: Format) -> Result<()> {
     match target {
         Format::LaTeX => {
@@ -75,7 +75,11 @@ pub(crate) fn drop_unwritten(expr: &mut CompactExpr, target: Format) -> Result<(
                 *expr = crate::writer::latex::lower_sizes(expr)?;
             }
         },
-        Format::Omml | Format::UnicodeMath => expr.arena.clear_attrs(),
+        Format::Omml => {
+            crate::writer::omml::drop_colors(expr);
+            expr.arena.clear_attrs();
+        },
+        Format::UnicodeMath => expr.arena.clear_attrs(),
         _ => {},
     }
     Ok(())
@@ -151,6 +155,21 @@ impl ConvertResult {
         Ok(Some(plain))
     }
 
+    /// The expression without the sizes and colors that pure OMML does not
+    /// write, if it has some.
+    fn in_pure_omml(&self) -> Result<Option<CompactExpr>> {
+        let expr = &self.compact.expr;
+        if !expr.arena.has_attrs() && !crate::writer::omml::has_colors(expr) {
+            return Ok(None);
+        }
+        let mut plain = expr.clone();
+        drop_unwritten(&mut plain, Format::Omml)?;
+        if let Some(normalize) = self.normalization() {
+            normalize(&mut plain)?;
+        }
+        Ok(Some(plain))
+    }
+
     fn write_omml(
         &self,
         config: &Config,
@@ -158,9 +177,12 @@ impl ConvertResult {
     ) -> Result<(String, Vec<crate::error::Diagnostic>)> {
         let expr = &self.compact.expr;
         let written = OmmlWriter::write_with_options(expr, config, options)?;
-        if options.run_properties != crate::writer::omml::OmmlRunProperties::WordprocessingMl
-            && let Some(plain) = self.without_sizes()?
-        {
+        let plain = match options.run_properties {
+            crate::writer::omml::OmmlRunProperties::WordprocessingMl => None,
+            crate::writer::omml::OmmlRunProperties::DrawingMl => self.without_sizes()?,
+            crate::writer::omml::OmmlRunProperties::None => self.in_pure_omml()?,
+        };
+        if let Some(plain) = plain {
             let (omml, _) = OmmlWriter::write_with_options(&plain, config, options)?;
             return Ok((omml, written.1));
         }
@@ -205,11 +227,8 @@ impl ConvertResult {
 
     /// Serialize to OMML using the given configuration.
     pub fn to_omml_with(&self, config: &Config) -> Result<String> {
-        if !self.compact.expr.arena.has_attrs() {
-            return OmmlWriter::write_compact(&self.compact.expr, config);
-        }
-        self.write_omml(config, &Default::default())
-            .map(|(omml, _)| omml)
+        let plain = self.in_pure_omml()?;
+        OmmlWriter::write_compact(plain.as_ref().unwrap_or(&self.compact.expr), config)
     }
 
     /// Serialize to OMML with writer options (host run-property dialect,

@@ -806,3 +806,87 @@ const WML_STUB_XSD: &str = r#"<?xml version="1.0" encoding="utf-8"?>
   <xsd:group name="EG_RunInnerContent"><xsd:choice><xsd:element name="br"/></xsd:choice></xsd:group>
   <xsd:group name="EG_PContentMath"><xsd:choice><xsd:element name="bookmarkStart"/></xsd:choice></xsd:group>
 </xsd:schema>"#;
+
+/// Pure OMML holds no colors: what a color kept apart reads back together, so
+/// `convert` writes it together.
+#[test]
+fn pure_omml_settles_where_colors_are_dropped() {
+    use mathema::{Format, convert};
+    let run = |text: &str, color: &str, text_run: bool| {
+        let nor = if text_run {
+            "<m:rPr><m:nor/></m:rPr>"
+        } else {
+            ""
+        };
+        let color = if color.is_empty() {
+            String::new()
+        } else {
+            format!(r#"<w:rPr><w:color w:val="{color}"/></w:rPr>"#)
+        };
+        format!(r#"<m:r>{nor}{color}<m:t xml:space="preserve">{text}</m:t></m:r>"#)
+    };
+    for content in [
+        run("n", "", false) + &run("e", "FF8000", false),
+        run("K", "", false) + &run("b→", "0000FF", false) + &run("π", "", false),
+        run("⋅", "", false) + &run("r", "FF0000", false) + &run("c≤", "", false),
+        run("M\u{2061}", "0000FF", false),
+        run(" ", "", true) + &run("S", "FF00FF", true),
+        run("1", "FF0000", false) + &run("2", "0000FF", false),
+    ] {
+        let input = format!(
+            r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{content}</m:oMath>"#
+        );
+        let first = convert(&input, Format::Omml, Format::Omml).unwrap();
+        let second = convert(&first, Format::Omml, Format::Omml).unwrap();
+        assert_eq!(first, second, "{content}");
+    }
+}
+
+/// A result drops the colors pure OMML does not write as a conversion does:
+/// the runs only they kept apart are one, and what is written settles.
+#[test]
+fn results_drop_colors_as_conversions_do() {
+    use mathema::{Format, MtefVersion, MtefWriteOptions, OmmlOptions, convert};
+    for latex in [
+        r"\text{a }\textcolor{red}{\text{b}}\text{ c}",
+        r"1\textcolor{red}{2}\textcolor{blue}{3}",
+        r"\textcolor{red}{\textcolor{blue}{\text{a}}}\text{b}",
+        r"x\textcolor{red}{y}z^{\textcolor{blue}{1}2}",
+    ] {
+        let options = MtefWriteOptions::new(MtefVersion::V5);
+        let bytes = mathema::from_latex(latex)
+            .unwrap()
+            .to_mtef_bytes(&options)
+            .unwrap();
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        let result = mathema::from_mtef_bytes(&bytes).unwrap();
+        let omml = result.to_omml().unwrap();
+        assert_eq!(
+            omml,
+            convert(&hex, Format::Mtef, Format::Omml).unwrap(),
+            "{latex}"
+        );
+        let (with_diagnostics, lost) = result.to_omml_with_diagnostics().unwrap();
+        assert_eq!(omml, with_diagnostics);
+        assert!(
+            lost.iter().any(|d| d.message.contains("run color")),
+            "{lost:?}"
+        );
+        let again = mathema::from_omml(&omml).unwrap().to_omml().unwrap();
+        assert_eq!(omml, again, "{latex}");
+        // Word keeps them.
+        let word = OmmlOptions::default()
+            .with_run_properties(mathema::OmmlRunProperties::WordprocessingMl);
+        let (word, _) = result.to_omml_with_options(&word).unwrap();
+        assert!(word.contains("<w:color"), "{word}");
+    }
+}
+
+/// A color in a color is dropped whole.
+#[test]
+fn nested_colors_are_dropped() {
+    use mathema::{Format, convert};
+    let latex = r"\text{a}{\color{red}{\color{blue}\text{b}}}\textcolor{red}{\textcolor{blue}{\textcolor{red}{\text{c}}}}";
+    let omml = convert(latex, Format::LaTeX, Format::Omml).unwrap();
+    assert!(omml.contains(">abc<"), "{omml}");
+}

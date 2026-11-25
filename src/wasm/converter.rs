@@ -138,10 +138,11 @@ pub struct ParsedMath {
 }
 
 impl ParsedMath {
-    /// The expression without the font sizes that `format` does not write, as
+    /// The expression without the font sizes and colors that `format` does not write, as
     /// it would have been normalized without them.
     fn written_in(&self, format: Format) -> Result<Cow<'_, CompactExpr>, JsValue> {
-        if !self.compact.expr.arena.has_attrs() {
+        let arena = &self.compact.expr.arena;
+        if !arena.has_attrs() && !crate::writer::omml::has_colors(&self.compact.expr) {
             return Ok(Cow::Borrowed(&self.compact.expr));
         }
         let mut expr = self.compact.expr.clone();

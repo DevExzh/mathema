@@ -82,6 +82,7 @@ pub fn latex_to_mathml(input: &str) -> Result<String, JsValue> {
 pub fn latex_to_omml(input: &str) -> Result<String, JsValue> {
     let config = Config::default();
     let mut compact = LatexReader::parse_compact(input, &config).map_err(to_js_err)?;
+    crate::convert::drop_unwritten(&mut compact.expr, Format::Omml).map_err(to_js_err)?;
     crate::ast::normalize::normalize_compact_expr(&mut compact.expr).map_err(to_js_err)?;
     OmmlWriter::write_compact(&compact.expr, &config).map_err(to_js_err)
 }

@@ -1,23 +1,26 @@
 #![no_main]
 //! OMML → OMML must be a fixed point after one pass, on two routes.
 //!
-//! [`mathema::convert`] drops what pure OMML does not write (font sizes) before
-//! it normalizes, so its first output must be stable for every input.
+//! [`mathema::convert`] drops what pure OMML does not write (font sizes and
+//! colors) before it normalizes, so its first output must be stable for every input.
 //!
 //! The other route normalizes what was read and gives it to the public writer,
 //! which writes the tree it is given. A font size or a color that it does not
 //! write keeps runs of that tree apart that normalization joins once they have
 //! been written: for an input with sizes or colors the second output must be
 //! stable there, for any other the first.
+//!
+//! What is written draws the characters of what was read.
 use libfuzzer_sys::fuzz_target;
 use mathema::ast::MathNode;
 use mathema::ast::compact::CompactExpr;
 use mathema::ast::normalize::normalize_compact_expr;
-use mathema::ast::visit::{Visitor, walk_node};
+use mathema::ast::visit::{MutVisitor, Visitor, walk_node, walk_node_mut};
 use mathema::error::Config;
 use mathema::reader::Reader;
 use mathema::reader::omml::OmmlReader;
 use mathema::writer::Writer;
+use mathema::writer::mathml::MathmlWriter;
 use mathema::writer::omml::OmmlWriter;
 use mathema::{Format, convert};
 
@@ -49,8 +52,8 @@ fn pass(input: &str) -> Option<(String, bool)> {
     Some((written, unwritten))
 }
 
-/// [`pass`] over an output. `None` when it exceeds a limit in normalization.
-fn again(input: &str, written: &str) -> Option<String> {
+/// [`pass`] over an output, which must be possible.
+fn again(input: &str, written: &str) -> String {
     let config = Config::default();
     let Ok(mut read) = OmmlReader::parse_compact(written, &config) else {
         panic!(
@@ -59,7 +62,13 @@ fn again(input: &str, written: &str) -> Option<String> {
              write:  {written:?}"
         );
     };
-    normalize_compact_expr(&mut read.expr).ok()?;
+    if let Err(e) = normalize_compact_expr(&mut read.expr) {
+        panic!(
+            "round-trip failed: the output could not be normalized: {e}\n\
+             input:  {input:?}\n\
+             write:  {written:?}"
+        );
+    }
     let Ok(next) = OmmlWriter::write_compact(&read.expr, &config) else {
         panic!(
             "round-trip failed: the output could not be written again.\n\
@@ -67,7 +76,84 @@ fn again(input: &str, written: &str) -> Option<String> {
              write:  {written:?}"
         );
     };
-    Some(next)
+    next
+}
+
+/// The characters a tree draws, in no order: scripts and limits are written
+/// in an order of their own.
+fn drawn(expr: &CompactExpr) -> Option<Vec<char>> {
+    let mathml = MathmlWriter::write_compact(expr, &Config::default()).ok()?;
+    let mut inside_tag = false;
+    let mut characters: Vec<char> = mathml
+        .chars()
+        .filter(|&ch| {
+            let text = !inside_tag && ch != '<';
+            inside_tag = ch == '<' || inside_tag && ch != '>';
+            // (Invisible operators draw nothing.)
+            text && !ch.is_whitespace() && !('\u{2061}'..='\u{2064}').contains(&ch)
+        })
+        .collect();
+    characters.sort_unstable();
+    Some(characters)
+}
+
+/// A color changes nothing of what is written: a tree is written as it is with
+/// each color replaced by what it colors.
+fn colors_are_content(read: &CompactExpr, written: &str) {
+    struct Uncolor;
+    impl MutVisitor for Uncolor {
+        fn visit_node_mut(&mut self, node: &mut MathNode) {
+            while let MathNode::Color { content, .. } = node {
+                let content = std::mem::replace(&mut **content, MathNode::Row(Vec::new()));
+                *node = content;
+            }
+            walk_node_mut(self, node);
+        }
+    }
+    let mut plain = read.to_math_expr();
+    Uncolor.visit_expr_mut(&mut plain);
+    assert_eq!(
+        OmmlWriter::write(&plain, &Config::default())
+            .ok()
+            .as_deref(),
+        Some(written),
+        "colors change what is written: {read:?}"
+    );
+}
+
+/// What is written without a loss (but of sizes, colors and fonts of text)
+/// draws what was read.
+fn keeps_text(input: &str) {
+    let config = Config::default();
+    let Ok(read) = OmmlReader::parse_compact(input, &config) else {
+        return;
+    };
+    let (Ok((written, lost)), Ok(converted)) = (
+        OmmlWriter::write_compact_with_diagnostics(&read.expr, &config),
+        convert(input, Format::Omml, Format::Omml),
+    ) else {
+        return;
+    };
+    // (A colored function application is written as a character.)
+    if has_unwritten(&read.expr) && !input.contains('\u{2061}') && !input.contains("2061;") {
+        colors_are_content(&read.expr, &written);
+    }
+    if !lost
+        .iter()
+        .all(|d| d.message.contains("host run properties") || d.message.contains("font sizes"))
+    {
+        return;
+    }
+    for written in [written, converted] {
+        let Ok(again) = OmmlReader::parse_compact(&written, &config) else {
+            panic!("the output could not be re-parsed.\ninput: {input:?}\nwrite: {written:?}");
+        };
+        assert_eq!(
+            drawn(&read.expr),
+            drawn(&again.expr),
+            "the output draws other characters.\ninput: {input:?}\nwrite: {written:?}"
+        );
+    }
 }
 
 fuzz_target!(|data: &[u8]| {
@@ -75,21 +161,21 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
 
+    keeps_text(input);
+
     // The route that writes the normalized tree.
-    if let Some((first, unwritten)) = pass(input)
-        && let Some(second) = again(input, &first)
-    {
+    if let Some((first, unwritten)) = pass(input) {
+        let second = again(input, &first);
         if unwritten {
-            if let Some(third) = again(input, &second) {
-                assert_eq!(
-                    second, third,
-                    "OMML round-trip does not settle.\n\
+            let third = again(input, &second);
+            assert_eq!(
+                second, third,
+                "OMML round-trip does not settle.\n\
                      input:  {input:?}\n\
                      write1: {first:?}\n\
                      write2: {second:?}\n\
                      write3: {third:?}"
-                );
-            }
+            );
         } else {
             assert_eq!(
                 first, second,
