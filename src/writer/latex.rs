@@ -834,6 +834,21 @@ fn write_script_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
 /// group. Write the operator token directly so its requested limit policy
 /// stays in effect. A side-scripted compound operator needs explicit nolimits.
 fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) {
+    // (Only an operator: other bases keep their own grouping.)
+    let written = limitless_base(arena, base);
+    let base = match *arena.node(written) {
+        CompactNode::MathAtom {
+            atom_type: MathAtomType::Op,
+            ..
+        } if matches!(
+            *arena.node(written_script_content(arena, base)),
+            CompactNode::Overscript { .. } | CompactNode::Underscript { .. }
+        ) =>
+        {
+            written
+        },
+        _ => base,
+    };
     match *arena.node(base) {
         CompactNode::Operator { .. } | CompactNode::StructuredOperator { .. } => {
             write_node(buf, arena, base)
@@ -931,15 +946,9 @@ fn write_stack_base(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId, ba
     }
 }
 
-fn write_compound_limits(
-    buf: &mut LatexBuffer,
-    arena: &AstArena,
-    base: NodeId,
-    lower: NodeId,
-    upper: NodeId,
-    movable: bool,
-) -> bool {
-    let placed = |limit| !is_effectively_empty_arg(arena, limit);
+/// The node that is written for `base`: a `\mathop{x}` without its own limit
+/// when that writes nothing.
+fn limitless_base(arena: &AstArena, base: NodeId) -> NodeId {
     let mut base = written_script_content(arena, base);
     // `\mathop{x}` whose own limit is not written.
     while let CompactNode::Overscript {
@@ -952,10 +961,23 @@ fn write_compound_limits(
         under: limit,
         movable_limits: true,
     } = *arena.node(base)
-        && !placed(limit)
+        && is_effectively_empty_arg(arena, limit)
     {
         base = written_script_content(arena, inner);
     }
+    base
+}
+
+fn write_compound_limits(
+    buf: &mut LatexBuffer,
+    arena: &AstArena,
+    base: NodeId,
+    lower: NodeId,
+    upper: NodeId,
+    movable: bool,
+) -> bool {
+    let placed = |limit| !is_effectively_empty_arg(arena, limit);
+    let base = limitless_base(arena, base);
     // A placement with nothing to place is not read back.
     if !movable && !placed(lower) && !placed(upper) {
         return false;
@@ -1694,6 +1716,13 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                                 .position(|&id| matches!(*arena.node(id), CompactNode::Middle(_)))
                                 .unwrap_or(run.len());
                             next = index + write_large_op_chain(buf, arena, &run[..end]);
+                            // Before a `\middle` too its body is empty.
+                            if next == index + 1
+                                && end == 1
+                                && (literal_close || next < content_ids.len())
+                            {
+                                buf.push_str("{}");
+                            }
                         } else {
                             write_node(buf, arena, child_id);
                         }

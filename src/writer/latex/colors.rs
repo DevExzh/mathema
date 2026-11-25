@@ -218,6 +218,46 @@ pub(super) fn with_ordinary_atoms(expr: &CompactExpr) -> Option<CompactExpr> {
     };
     mark(arena.children(roots), true);
     for node in arena.nodes() {
+        // A script or limit that is a box around nothing is still one.
+        let scripts = match *node {
+            CompactNode::Subscript { sub, .. } => [sub, NodeId::NONE],
+            CompactNode::Superscript { sup, .. } => [NodeId::NONE, sup],
+            CompactNode::SubSup { sub, sup, .. } | CompactNode::Nary { sub, sup, .. } => [sub, sup],
+            CompactNode::PreScripts {
+                pre_sub, pre_sup, ..
+            } => [pre_sub, pre_sup],
+            CompactNode::Underscript { under, .. } => [under, NodeId::NONE],
+            CompactNode::Overscript { over, .. } => [NodeId::NONE, over],
+            CompactNode::UnderOver { under, over, .. } => [under, over],
+            _ => [NodeId::NONE; 2],
+        };
+        for script in scripts {
+            if !script.is_some() {
+                continue;
+            }
+            let mut inner = script;
+            while let CompactNode::Row(span) | CompactNode::Styled(_, span) = *arena.node(inner)
+                && let Some(&first) = arena
+                    .children(span)
+                    .iter()
+                    .find(|&&child| !super::is_empty_row(arena, child))
+            {
+                inner = first;
+            }
+            // (A color around nothing is no script.)
+            let mut boxed = inner;
+            while let CompactNode::Color { content, .. } = *arena.node(boxed)
+                && uncolored_content(arena, arena.node(boxed)).is_some()
+            {
+                boxed = content;
+            }
+            if matches!(*arena.node(boxed), CompactNode::Boxed { .. })
+                && let Some(content) = innermost(arena, inner)
+                && crate::ast::normalize::is_effectively_empty_node(arena, content)
+            {
+                mark(&[inner], false);
+            }
+        }
         match *node {
             CompactNode::Row(span) | CompactNode::Styled(_, span) => {
                 mark(arena.children(span), true)
@@ -280,6 +320,7 @@ fn own_list(arena: &AstArena, span: NodeSpan) -> NodeSpan {
     if let [only] = *arena.children(span)
         && let Some(content) = innermost(arena, only)
         && let CompactNode::Row(list) = *arena.node(content)
+        && !list.is_empty()
         && !arena
             .children(list)
             .iter()

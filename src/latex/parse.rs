@@ -5298,15 +5298,24 @@ impl LatexCompactParser {
         // scripts separates them from the glyph: they become scripts on an
         // empty base (`{}_1`), followed by that material.
         // So do scripts before what takes no leading ones, or is no one atom.
-        let nucleus = match *self.arena.node(op_glyph) {
+        let uncolored = |mut id: NodeId| {
+            while let CompactNode::Color { content, .. } | CompactNode::Boxed { content, .. } =
+                *self.arena.node(id)
+            {
+                id = content;
+            }
+            id
+        };
+        let bare = uncolored(op_glyph);
+        let nucleus = match *self.arena.node(bare) {
             CompactNode::Subscript { base, .. }
             | CompactNode::Superscript { base, .. }
-            | CompactNode::SubSup { base, .. } => base,
-            _ => op_glyph,
+            | CompactNode::SubSup { base, .. } => uncolored(base),
+            _ => bare,
         };
         let hugs = l_rest.is_empty()
             && !matches!(*self.arena.node(nucleus), CompactNode::Row(_))
-            && !crate::ast::normalize::is_empty_base_script(&self.arena, op_glyph)
+            && !crate::ast::normalize::is_empty_base_script(&self.arena, bare)
             && crate::ast::normalize::can_take_prescripts(*self.arena.node(nucleus));
         let (l_sub, l_sup) = if hugs {
             (l_sub, l_sup)

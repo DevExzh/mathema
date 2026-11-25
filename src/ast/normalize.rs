@@ -93,6 +93,9 @@ fn normalize_nodes_keeping_breaks(
         }
     }
 
+    // Phase 2b: drop zero-width spaces (see the compact normalizer).
+    flattened.retain(|node| !is_zero_space_math(node));
+
     // Phase 3: merge adjacent Text nodes with the same style
     let mut merged = Vec::with_capacity(flattened.len());
     for node in flattened {
@@ -160,13 +163,9 @@ fn normalize_nodes_keeping_breaks(
     }
     let mut coalesced: Vec<MathNode> = Vec::with_capacity(with_limits.len());
     for node in with_limits.into_iter().rev() {
-        if is_empty_base_script_math(&node)
-            && coalesced.last().is_some_and(|next| {
-                can_take_prescripts_math(next) && !is_empty_base_script_math(next)
-            })
-        {
+        if is_empty_base_script_math(&node) && coalesced.last().is_some_and(can_be_led_math) {
             let next = coalesced.pop().unwrap_or(MathNode::Row(Vec::new()));
-            coalesced.push(make_prescripts_math(node, next));
+            coalesced.push(lead_math(node, next));
             continue;
         }
         coalesced.push(node);
@@ -417,6 +416,33 @@ fn can_take_prescripts_math(node: &MathNode) -> bool {
     }
 }
 
+fn is_zero_space_math(node: &MathNode) -> bool {
+    matches!(node, MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } if width.num == 0)
+}
+
+/// Whether an empty-base script becomes a leading script of `next`, or of the
+/// first node of a group kept for its line break (see `leading_scripts_on`).
+fn can_be_led_math(next: &MathNode) -> bool {
+    match next {
+        MathNode::Row(nodes) if nodes.contains(&MathNode::LineBreak) => {
+            nodes.first().is_some_and(can_be_led_math)
+        },
+        _ => can_take_prescripts_math(next) && !is_empty_base_script_math(next),
+    }
+}
+
+fn lead_math(script: MathNode, next: MathNode) -> MathNode {
+    match next {
+        MathNode::Row(mut nodes) if nodes.contains(&MathNode::LineBreak) => {
+            if let Some(first) = nodes.first_mut() {
+                *first = lead_math(script, std::mem::replace(first, MathNode::Row(Vec::new())));
+            }
+            MathNode::Row(nodes)
+        },
+        next => make_prescripts_math(script, next),
+    }
+}
+
 /// Make an empty-base script a leading script of `base`.
 fn make_prescripts_math(script: MathNode, base: MathNode) -> MathNode {
     let (pre_sub, pre_sup) = match script {
@@ -478,6 +504,9 @@ fn normalize_node_depth_with_identifiers(
                     })
                     .collect();
             }
+            content.retain(
+                |item| !matches!(item, FencedItem::Element(node) if is_zero_space_math(node)),
+            );
             // Empty-base scripts become leading scripts of the next element;
             // middle delimiters are not elements and break the sequence.
             let mut with_limits: Vec<FencedItem> = Vec::with_capacity(content.len());
@@ -740,7 +769,9 @@ fn normalize_span_keeping_breaks(
     if depth > super::MAX_AST_DEPTH {
         return Ok(span);
     }
-    let d = depth + 1;
+    // A list is no level of its own: its node is, as `validate_compact_depth`
+    // counts.
+    let d = depth;
 
     // Phase 1: recursively normalize each child node.
     // Collect IDs first to avoid borrow conflicts with arena.
