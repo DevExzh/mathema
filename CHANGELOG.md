@@ -63,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applied to a parenthesis has none.
 - Rendering: labels of `\overset`, `\underset`, `\stackrel` and the arrows are as far
   away as TeX's, with its space outside of them.
+- LaTeX: a relation, binary operator or punctuation in braces among other symbols
+  (`1{,}000`, `a{=}b`) stays an ordinary atom, without spaces; the output spells it
+  `\mathord{=}`.
 - Rendering: the left-aligned columns of `aligned`, `align`, `split` and the like
   start with an ordinary atom, as in amsmath: `a &= b` has a space before `=`.
 - Rendering: an arrow or equals sign is drawn at its natural width under or over

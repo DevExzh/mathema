@@ -2589,9 +2589,15 @@ impl LatexCompactParser {
         }
         self.depth += 1;
         let fence_list = std::mem::replace(&mut self.fence_list, false);
-        let result = self.parse_node_list_inner(input);
+        let mut result = self.parse_node_list_inner(input);
         self.fence_list = fence_list;
         self.depth -= 1;
+        // Alone, a symbol in braces is like the symbol.
+        if let Ok((_, ids)) = &mut result
+            && let [only] = &mut ids[..]
+        {
+            *only = self.nary_body(*only);
+        }
         result
     }
 
@@ -2690,13 +2696,27 @@ impl LatexCompactParser {
             return result;
         }
         let grouped = input.starts_with('{');
-        let (input, base) = self.parse_atom(input)?;
+        let (input, mut base) = self.parse_atom(input)?;
         // A brace group is an ordinary atom: `a{:}b`.
         if grouped
             && let CompactNode::Symbol(SymbolKind::Relation, sid) = *self.arena.node(base)
             && self.arena.str_val(sid) == ":"
         {
             *self.arena.node_mut_in_place(base) = CompactNode::Symbol(SymbolKind::Ordinary, sid);
+        }
+        // `1{,}000` and `a{=}b` have no spaces.
+        if grouped
+            && let CompactNode::Symbol(
+                SymbolKind::Punctuation | SymbolKind::BinaryOp | SymbolKind::Relation,
+                _,
+            ) = *self.arena.node(base)
+        {
+            let ordinary = self.arena.push_node(CompactNode::MathAtom {
+                atom_type: MathAtomType::Ord,
+                content: base,
+            });
+            self.grouped_operator = Some((ordinary, base));
+            base = ordinary;
         }
         // An infix fraction command is no atom: scripts after it begin the
         // next one, the denominator's first (`a \over^2 b`).

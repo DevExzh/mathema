@@ -613,6 +613,54 @@ fn labels_are_as_far_away_as_limits() {
     }
 }
 
+/// A symbol in braces is an ordinary atom, as in XeTeX.
+#[test]
+fn symbols_in_braces_have_no_space() {
+    for (latex, expected) in [
+        ("1{,}000", 2.278),
+        ("a{+}b", 1.750),
+        ("a{=}b", 1.750),
+        ("a{\\leq}b", 1.750),
+        ("a{\\not=}b", 1.750),
+        ("a{=}{=}b", 2.528),
+        ("a{=}^2b", 2.198),
+        ("-{+}x", 2.128),
+        ("a{;}b", 1.250),
+        ("a=b", 2.306),
+        ("\\begin{array}{rcl}a&{=}&b\\end{array}", 4.750),
+    ] {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let read = crate::from_latex(latex).unwrap();
+        let width = |read: &crate::ConvertResult| {
+            layout_expr(&read.expr(), MathStyle::Text, &default_options()).width
+        };
+        assert!(
+            (width(&read) - expected).abs() < 2e-3,
+            "{latex}: {}",
+            width(&read)
+        );
+        let written = read.to_latex().unwrap();
+        let again = crate::from_latex(&written).unwrap();
+        assert!(
+            (width(&again) - expected).abs() < 2e-3,
+            "{latex}: {written}"
+        );
+        assert_eq!(again.to_latex().unwrap(), written, "{latex}");
+    }
+    for (latex, expected) in [
+        ("1{,}000", "1\\mathord{,}000"),
+        ("a{=}b", "a\\mathord{=}b"),
+        // Alone, or as an operand, the braces only delimit it.
+        ("{=}", "="),
+        ("x^{{+}}", "x^+"),
+        ("\\sum{+}", "\\sum +"),
+        ("\\frac{{=}}{a}", "\\frac{=}{a}"),
+    ] {
+        let written = crate::from_latex(latex).unwrap().to_latex().unwrap();
+        assert_eq!(written, expected);
+    }
+}
+
 /// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
 #[test]
 fn scripts_have_the_designs_of_the_font() {

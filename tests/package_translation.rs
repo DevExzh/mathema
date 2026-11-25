@@ -342,7 +342,7 @@ fn ce_reads_frac_arguments() {
 fn ce_reads_other_tokens_as_mhchem() {
     for (input, expected) in [
         (r"\ce{x1{}0}", r"{\mathrm{x}_{1}0}"),
-        (r"\ce{-x1{}0}", r"{{-}\mathrm{x}_{1}0}"),
+        (r"\ce{-x1{}0}", r"{-\mathrm{x}_{1}0}"),
         (r"\ce{\alpha2}", r"{\alpha_{2}}"),
         (r"\ce{\pm2}", r"{ {}\pm{} 2}"),
         (r"\ce{\pmE}", r"{ {}\pm{} \mathrm{E}}"),

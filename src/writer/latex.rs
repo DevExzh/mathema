@@ -600,9 +600,8 @@ fn write_undefined_command_group(buf: &mut LatexBuffer, arena: &AstArena, group:
 ///
 /// A leading `*` can likewise be taken as the starred break `\\*`: LaTeX's
 /// `\@ifstar` looks for the star with `\@ifnextchar`, which skips spaces.
-/// Brace it as `{*}` instead of adding `{}`: a binary operator at the start of
-/// a row is already an ordinary atom, so the group renders the same, while
-/// `{}*` would turn it into a spaced binary operator.
+/// `\relax` stops it and is no atom: `{}*` would turn the star into a spaced
+/// binary operator, and `{*}` into an ordinary atom.
 fn guard_row_break_argument(buf: &mut LatexBuffer, start: usize) {
     let Some(rest) = buf.get(start..) else {
         return;
@@ -611,10 +610,7 @@ fn guard_row_break_argument(buf: &mut LatexBuffer, start: usize) {
     let at = start + offset;
     match rest.as_bytes().get(offset) {
         Some(b'[') => buf.insert_text(at, "{}"),
-        Some(b'*') => {
-            buf.insert_text(at + 1, "}");
-            buf.insert_text(at, "{");
-        },
+        Some(b'*') => buf.insert_text(at, "\\relax "),
         _ => {},
     }
 }
@@ -4732,15 +4728,15 @@ mod tests {
     fn literal_star_after_a_row_break_is_not_a_starred_break() {
         for (input, expected) in [
             (
-                r"\begin{array}{c}a\\{*}b\end{array}",
-                r"\begin{array}{c} a \\ {*} b \end{array}",
+                r"\begin{array}{c}a\\\relax*b\end{array}",
+                r"\begin{array}{c} a \\ \relax * b \end{array}",
             ),
             (
-                r"\begin{matrix}a\\{*}^2b\end{matrix}",
-                r"\begin{matrix} a \\ {*}^{2}b \end{matrix}",
+                r"\begin{matrix}a\\\relax*^2b\end{matrix}",
+                r"\begin{matrix} a \\ \relax *^{2}b \end{matrix}",
             ),
-            (r"a\\{*}b", r"a\\ {*} b"),
-            (r"\left(a\\{*}b\right)", r"\left( a\\ {*}b \right)"),
+            (r"a\\\relax*b", r"a\\ \relax * b"),
+            (r"\left(a\\\relax*b\right)", r"\left( a\\ \relax *b \right)"),
             // A star later in the row is not at the break.
             (
                 r"\begin{array}{c}a\\b*c\end{array}",
