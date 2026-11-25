@@ -2685,6 +2685,18 @@ impl LatexCompactParser {
             return Ok((rest, self.apply_limit_style(scripted, style)));
         }
 
+        // `\underbrace` is a `\mathop` with `\limits`: its scripts are labels.
+        if !grouped && crate::ast::is_brace_operator(&self.arena, base) {
+            let (rest, ((sub, sup), modifier)) =
+                self.parse_script_fields_with_limits(input, false)?;
+            let style = match modifier {
+                Some(LimitStyle::SubSup) => LimitStyle::SubSup,
+                _ => LimitStyle::AboveBelow,
+            };
+            let scripted = self.make_script_node(base, sub, sup);
+            return Ok((rest, self.apply_limit_style(scripted, style)));
+        }
+
         let (rest, scripted) = self.parse_scripts(input, base)?;
         // Placement controls are only meaningful after an operator. Keep the
         // permissive empty command for standalone package input, but reject it

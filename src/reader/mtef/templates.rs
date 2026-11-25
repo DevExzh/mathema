@@ -792,11 +792,9 @@ impl Decoder<'_> {
                     }
                 };
                 let id = match (top, label) {
-                    (true, Some(sup)) => {
-                        self.node(CompactNode::Superscript { base: inner, sup })?
-                    },
-                    (false, Some(sub)) => self.node(CompactNode::Subscript { base: inner, sub })?,
                     (_, None) => inner,
+                    (true, label) => self.over_under(inner, label, None)?,
+                    (false, label) => self.over_under(inner, None, label)?,
                 };
                 Item::Node(id)
             },

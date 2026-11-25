@@ -33,18 +33,6 @@ pub(super) fn layout_superscript(base: &MathNode, sup: &MathNode, ctx: &LayoutCt
         return layout_op_limits_above_below_heap(base, None, Some(sup), ctx);
     }
 
-    // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
-    // Place annotation centered above the brace, not as a regular superscript.
-    if let MathNode::Overscript {
-        base: inner_base,
-        over,
-        ..
-    } = base
-        && node_is_overbrace(over)
-    {
-        return layout_overbrace_annotated(inner_base, over, sup, ctx);
-    }
-
     let base_box = layout_node(base, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_box = layout_node(sup, &sup_ctx);
@@ -108,18 +96,6 @@ pub(super) fn layout_subscript(base: &MathNode, sub: &MathNode, ctx: &LayoutCtx)
             return layout_big_op_limits_heap(base, Some(sub), None, ctx);
         }
         return layout_op_limits_above_below_heap(base, Some(sub), None, ctx);
-    }
-
-    // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
-    // Place annotation centered below the brace, not as a regular subscript.
-    if let MathNode::Underscript {
-        base: inner_base,
-        under,
-        ..
-    } = base
-        && node_is_underbrace(under)
-    {
-        return layout_underbrace_annotated(inner_base, under, sub, ctx);
     }
 
     let base_box = layout_node(base, ctx);
@@ -456,21 +432,11 @@ pub(super) fn layout_subsup_from_box_heap(
 fn nucleus_box<'a>(base: &MathNode, base_box: &'a LayoutBox, ctx: &LayoutCtx) -> &'a LayoutBox {
     let (mut node, mut current) = (base, base_box);
     loop {
-        // Limits and brace labels are stacked, not scripts beside the base.
+        // Limits are stacked, not scripts beside the base.
         let inner = match node {
             MathNode::Subscript { base, .. }
-                if !matches!(&**base, MathNode::Underscript { under, .. }
-                    if node_is_underbrace(under)) =>
-            {
-                base
-            },
-            MathNode::Superscript { base, .. }
-                if !matches!(&**base, MathNode::Overscript { over, .. }
-                    if node_is_overbrace(over)) =>
-            {
-                base
-            },
-            MathNode::SubSup { base, .. } => base,
+            | MathNode::Superscript { base, .. }
+            | MathNode::SubSup { base, .. } => base,
             _ => return current,
         };
         if wants_limits_above_below(inner, ctx.branch_style()) {
@@ -498,18 +464,8 @@ fn nucleus_box_arena(
     loop {
         let inner = match *ast.node(node) {
             CompactNode::Subscript { base, .. }
-                if !matches!(*ast.node(base), CompactNode::Underscript { under, .. }
-                    if node_is_underbrace_c(ast, under)) =>
-            {
-                base
-            },
-            CompactNode::Superscript { base, .. }
-                if !matches!(*ast.node(base), CompactNode::Overscript { over, .. }
-                    if node_is_overbrace_c(ast, over)) =>
-            {
-                base
-            },
-            CompactNode::SubSup { base, .. } => base,
+            | CompactNode::Superscript { base, .. }
+            | CompactNode::SubSup { base, .. } => base,
             _ => return current,
         };
         if wants_limits_above_below_c(ast, inner, ctx.branch_style()) {
@@ -637,17 +593,6 @@ pub(super) fn layout_superscript_arena(
         return layout_op_limits_above_below_arena(ast, base, None, Some(sup), arena, ctx);
     }
 
-    // Overbrace annotation: Superscript { base: Overscript { over: "⏞" }, sup: annotation }
-    if let CompactNode::Overscript {
-        base: inner_base,
-        over,
-        ..
-    } = *ast.node(base)
-        && node_is_overbrace_c(ast, over)
-    {
-        return layout_overbrace_annotated_arena(ast, inner_base, sup, arena, ctx);
-    }
-
     let base_id = layout_node_arena(ast, base, arena, ctx);
     let sup_ctx = ctx.with_style(ctx.style.sup());
     let sup_id = layout_node_arena(ast, sup, arena, &sup_ctx);
@@ -727,17 +672,6 @@ pub(super) fn layout_subscript_arena(
             return layout_big_op_limits_arena(ast, base, Some(sub), None, arena, ctx);
         }
         return layout_op_limits_above_below_arena(ast, base, Some(sub), None, arena, ctx);
-    }
-
-    // Underbrace annotation: Subscript { base: Underscript { under: "⏟" }, sub: annotation }
-    if let CompactNode::Underscript {
-        base: inner_base,
-        under,
-        ..
-    } = *ast.node(base)
-        && node_is_underbrace_c(ast, under)
-    {
-        return layout_underbrace_annotated_arena(ast, inner_base, sub, arena, ctx);
     }
 
     let base_id = layout_node_arena(ast, base, arena, ctx);

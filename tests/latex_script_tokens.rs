@@ -56,7 +56,7 @@ fn nested_numeric_script_arguments_are_braced() {
         (r"\left( x^{2.5} \right)", r"\left( x^{2.5} \right)"),
         (r"\sqrt{x^{22}}", r"\sqrt{x^{22}}"),
         (r"\int_{x^{22}}^{2} f", r"\int_{x^{22}}^{2} f"),
-        (r"\overbrace{x^{22}}^{3}", r"{\overbrace{x^{22}}}^{3}"),
+        (r"\overbrace{x^{22}}^{3}", r"\overbrace{x^{22}}^{3}"),
         (r"\int_{22}^{33} f", r"\int_{22}^{33} f"),
         (r"\sum_{i=10}^{100} i", r"\sum_{i= 10}^{100} i"),
         (r"\frac{a_{12}}{b}", r"\frac{a_{12}}{b}"),

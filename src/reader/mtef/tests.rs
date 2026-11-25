@@ -567,7 +567,7 @@ fn v5_horizontal_brace_with_label() {
         &c5(0, 22, '\u{FE37}'),
         &[0],
     ]);
-    assert_eq!(latex(&eq5(&brace)), r"{\overbrace{a}}^b");
+    assert_eq!(latex(&eq5(&brace)), r"\overbrace{a}^b");
 }
 
 #[test]

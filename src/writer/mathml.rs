@@ -3089,6 +3089,15 @@ impl ScriptBase {
     }
 }
 
+/// Whether a decoration is a brace or line over an operator group, which no
+/// limit of it is.
+fn stretches_over_operator(decoration: &str) -> bool {
+    matches!(
+        decoration,
+        "overbrace" | "underbrace" | "overline" | "underline"
+    )
+}
+
 fn named_movable_attr(style: LimitStyle) -> Option<&'static str> {
     match style {
         LimitStyle::Default => Some("true"),
@@ -3173,11 +3182,20 @@ fn write_scripts(
 ) -> Result<()> {
     let script_base = ScriptBase::for_node(base);
     let place = script_base.placement(under_over, display);
-    let accent_value = if under_over == Some(false) && script_base.allows_glyph_accent() {
-        "true"
-    } else {
-        "false"
+    let stretches = || {
+        upper
+            .and_then(|node| mathml_script_decoration(node, AccentPosition::Above))
+            .or_else(|| {
+                lower.and_then(|node| mathml_script_decoration(node, AccentPosition::Below))
+            })
+            .is_some_and(stretches_over_operator)
     };
+    let accent_value =
+        if under_over == Some(false) && (script_base.allows_glyph_accent() || stretches()) {
+            "true"
+        } else {
+            "false"
+        };
     let Some(tag) = script_tag(place.stacked, lower.is_some(), upper.is_some()) else {
         return write_argument(w, base, display);
     };
@@ -3230,30 +3248,33 @@ fn write_scripts_fast(
 ) {
     let script_base = ScriptBase::for_compact(arena, base);
     let place = script_base.placement(under_over, display);
-    let accent_value = if under_over == Some(false) && script_base.allows_glyph_accent() {
-        "true"
-    } else {
-        "false"
+    let decoration = |id: NodeId, position| {
+        id.is_some()
+            .then(|| mathml_script_decoration_fast(arena, id, position))
+            .flatten()
     };
+    let stretches = || {
+        decoration(upper, AccentPosition::Above)
+            .or_else(|| decoration(lower, AccentPosition::Below))
+            .is_some_and(stretches_over_operator)
+    };
+    let accent_value =
+        if under_over == Some(false) && (script_base.allows_glyph_accent() || stretches()) {
+            "true"
+        } else {
+            "false"
+        };
     let Some(tag) = script_tag(place.stacked, lower.is_some(), upper.is_some()) else {
         return write_argument_fast(buf, arena, base, display);
     };
     buf.push('<');
     buf.push_str(tag);
     if under_over == Some(false) && accent_value == "true" && tag != "munderover" {
-        if let Some(name) = upper
-            .is_some()
-            .then(|| mathml_script_decoration_fast(arena, upper, AccentPosition::Above))
-            .flatten()
-        {
+        if let Some(name) = decoration(upper, AccentPosition::Above) {
             buf.push_str(" data-mathema-accent-decoration=\"");
             buf.push_str(name);
             buf.push('"');
-        } else if let Some(name) = lower
-            .is_some()
-            .then(|| mathml_script_decoration_fast(arena, lower, AccentPosition::Below))
-            .flatten()
-        {
+        } else if let Some(name) = decoration(lower, AccentPosition::Below) {
             buf.push_str(" data-mathema-accent-decoration=\"");
             buf.push_str(name);
             buf.push('"');

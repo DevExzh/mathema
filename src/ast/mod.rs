@@ -969,6 +969,38 @@ fn depth_error(limit: usize) -> crate::error::Error {
     }
 }
 
+/// Whether the node is a horizontal brace or bracket over or under its base
+/// (`\overbrace`, `\underbracket`), an operator whose scripts are limits.
+pub(crate) fn is_brace_operator(arena: &arena::AstArena, id: compact::NodeId) -> bool {
+    use compact::CompactNode;
+    let is = |id, brace| matches!(*arena.node(id), CompactNode::Symbol(_, sid) if arena.str_val(sid) == brace);
+    match *arena.node(id) {
+        CompactNode::Overscript {
+            over,
+            movable_limits: false,
+            ..
+        } => is(over, "\u{23DE}"),
+        CompactNode::Underscript {
+            under,
+            movable_limits: false,
+            ..
+        } => is(under, "\u{23DF}"),
+        CompactNode::Accent {
+            accent,
+            position,
+            wide,
+            ..
+        } => matches!(
+            (accent, position, wide),
+            ('\u{23DE}', AccentPosition::Above, _)
+                | ('\u{23DF}', AccentPosition::Below, _)
+                | ('\u{23B4}', AccentPosition::Above, true)
+                | ('\u{23B5}', AccentPosition::Below, true)
+        ),
+        _ => false,
+    }
+}
+
 /// The direct children of a compact node, in the order the depth validator
 /// visits them (fence `Middle` separators and absent optional slots are
 /// skipped; array column alignments are not children).

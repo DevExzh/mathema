@@ -464,13 +464,13 @@ const OPERANDS: &[(&str, &str, &str)] = &[
     ),
     (
         r"\overbrace{\sum a}^{n}",
-        r"〖〖∑ a〗┴⏞〗^n",
-        r"{\mathinner{\overset{⏞}{\mathinner{\sum\limits a}}}}^n",
+        r"〖〖∑ a〗┴⏞〗┴n",
+        r"\overset{n}{\mathinner{\overbrace{\mathinner{\sum\limits a}}}}",
     ),
     (
         r"\underbrace{\sum a}_{n}",
-        r"〖〖∑ a〗┬⏟〗_n",
-        r"{\mathinner{\underset{⏟}{\mathinner{\sum\limits a}}}}_n",
+        r"〖〖∑ a〗┬⏟〗┬n",
+        r"\underset{n}{\mathinner{\underbrace{\mathinner{\sum\limits a}}}}",
     ),
     (
         r"\sideset{_1}{}{\sum a}_2",

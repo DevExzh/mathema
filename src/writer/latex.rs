@@ -823,6 +823,24 @@ fn write_compound_limits(
     {
         base = written_script_content(arena, inner);
     }
+    // A placement with nothing to place is not read back.
+    if !movable && !placed(lower) && !placed(upper) {
+        return false;
+    }
+    let write_limits = |buf: &mut LatexBuffer| {
+        for (marker, limit) in [('_', lower), ('^', upper)] {
+            if placed(limit) {
+                buf.push(marker);
+                write_script_arg(buf, arena, limit, ScriptArgGroup::Minimal);
+            }
+        }
+    };
+    // The labels of a horizontal brace are its limits.
+    if !movable && crate::ast::is_brace_operator(arena, base) {
+        write_node(buf, arena, base);
+        write_limits(buf);
+        return true;
+    }
     let CompactNode::MathAtom {
         atom_type: MathAtomType::Op,
         content,
@@ -830,10 +848,6 @@ fn write_compound_limits(
     else {
         return false;
     };
-    // A placement with nothing to place is not read back.
-    if !movable && !placed(lower) && !placed(upper) {
-        return false;
-    }
     // The reader gives a named operator in `\mathop{\lim}\limits^a` its own
     // placement (`\lim\limits^a`), a different tree. An explicit wrapper
     // (`\overset{a}{\mathop{\lim}}`, `\overline{…}`) reads back as written.
@@ -844,12 +858,7 @@ fn write_compound_limits(
     if !movable {
         buf.push_str("\\limits");
     }
-    for (marker, limit) in [('_', lower), ('^', upper)] {
-        if !is_effectively_empty_arg(arena, limit) {
-            buf.push(marker);
-            write_script_arg(buf, arena, limit, ScriptArgGroup::Minimal);
-        }
-    }
+    write_limits(buf);
     true
 }
 
@@ -1606,26 +1615,32 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             over,
             movable_limits,
         } => {
-            if !write_compound_limits(buf, arena, base, NodeId::NONE, over, movable_limits) {
-                if is_line_symbol(arena, over) {
-                    buf.push_str("\\overline{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
-                } else if is_overlinesegment(arena, over) {
-                    buf.push_str("\\overlinesegment{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
-                } else if is_overbrace(arena, over) {
-                    buf.push_str("\\overbrace{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
+            // A decoration stretches over any base, an operator too.
+            if movable_limits && write_compound_limits(buf, arena, base, NodeId::NONE, over, true) {
+                return;
+            }
+            let decoration = if is_line_symbol(arena, over) {
+                Some("\\overline{")
+            } else if is_overbrace(arena, over) {
+                Some("\\overbrace{")
+            } else {
+                None
+            };
+            if let Some(command) = decoration {
+                buf.push_str(command);
+                write_wrapped_content(buf, arena, base);
+                buf.push('}');
+            } else if !write_compound_limits(buf, arena, base, NodeId::NONE, over, movable_limits) {
+                let command = if is_overlinesegment(arena, over) {
+                    "\\overlinesegment{"
                 } else {
                     buf.push_str("\\overset{");
                     write_stacked_content(buf, arena, over);
-                    buf.push_str("}{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
-                }
+                    "}{"
+                };
+                buf.push_str(command);
+                write_wrapped_content(buf, arena, base);
+                buf.push('}');
             }
         },
 
@@ -1634,26 +1649,33 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             under,
             movable_limits,
         } => {
-            if !write_compound_limits(buf, arena, base, under, NodeId::NONE, movable_limits) {
-                if is_line_symbol(arena, under) {
-                    buf.push_str("\\underline{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
-                } else if is_underlinesegment(arena, under) {
-                    buf.push_str("\\underlinesegment{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
-                } else if is_underbrace(arena, under) {
-                    buf.push_str("\\underbrace{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
+            if movable_limits && write_compound_limits(buf, arena, base, under, NodeId::NONE, true)
+            {
+                return;
+            }
+            let decoration = if is_line_symbol(arena, under) {
+                Some("\\underline{")
+            } else if is_underbrace(arena, under) {
+                Some("\\underbrace{")
+            } else {
+                None
+            };
+            if let Some(command) = decoration {
+                buf.push_str(command);
+                write_wrapped_content(buf, arena, base);
+                buf.push('}');
+            } else if !write_compound_limits(buf, arena, base, under, NodeId::NONE, movable_limits)
+            {
+                let command = if is_underlinesegment(arena, under) {
+                    "\\underlinesegment{"
                 } else {
                     buf.push_str("\\underset{");
                     write_stacked_content(buf, arena, under);
-                    buf.push_str("}{");
-                    write_wrapped_content(buf, arena, base);
-                    buf.push('}');
-                }
+                    "}{"
+                };
+                buf.push_str(command);
+                write_wrapped_content(buf, arena, base);
+                buf.push('}');
             }
         },
 
@@ -1791,6 +1813,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     ('\u{21BC}', _) => Some("overleftharpoon"),
                     ('\u{21D2}', _) => Some("Overrightarrow"),
                     ('\u{23DC}', _) => Some("overgroup"),
+                    ('\u{23DE}', _) => Some("overbrace"),
                     ('\u{23B4}', true) => Some("overbracket"),
                     ('\u{23B4}', false) => Some("overlinesegment"),
                     _ => None,
@@ -1801,6 +1824,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     '\u{2194}' => Some("underleftrightarrow"),
                     '\u{0330}' => Some("utilde"),
                     '\u{23DD}' => Some("undergroup"),
+                    '\u{23DF}' => Some("underbrace"),
                     '\u{23B5}' if wide => Some("underbracket"),
                     '\u{23B5}' => Some("underlinesegment"),
                     _ => None,
@@ -5385,8 +5409,8 @@ mod tests {
             ),
             (r"\overlinesegment{x}", r"\overlinesegment{x}"),
             (r"\underlinesegment{x}", r"\underlinesegment{x}"),
-            (r"\overbracket{x}^2", r"{\overbracket{x}}^{2}"),
-            (r"\underbracket{x}_2", r"{\underbracket{x}}_{2}"),
+            (r"\overbracket{x}^2", r"\overbracket{x}^{2}"),
+            (r"\underbracket{x}_2", r"\underbracket{x}_{2}"),
         ] {
             assert_eq!(roundtrip(input), expected, "{input}");
             assert_eq!(roundtrip(expected), expected, "{input}");

@@ -1449,51 +1449,6 @@ impl<'a> Encoder<'a> {
                 LimitStyle::SubSup => {},
             }
         }
-        if self.v5
-            && let CompactNode::Accent {
-                base: inner,
-                accent,
-                position,
-                wide: true,
-            } = *self.arena.node(base)
-            && is_bracket_accent(accent, position)
-        {
-            let top = position == AccentPosition::Above;
-            let (label, other) = if top { (sup, sub) } else { (sub, sup) };
-            if other.is_none() {
-                return self.horizontal_brace(size, inner, label, top, true, accent);
-            }
-        }
-        // The label of a horizontal brace.
-        match (*self.arena.node(base), sub, sup) {
-            (
-                CompactNode::Overscript {
-                    base: inner, over, ..
-                },
-                None,
-                Some(label),
-            ) => {
-                if let Some((true, bracket, glyph)) = self.brace_of(over)
-                    && (self.v5 || !bracket)
-                {
-                    return self.horizontal_brace(size, inner, Some(label), true, bracket, glyph);
-                }
-            },
-            (
-                CompactNode::Underscript {
-                    base: inner, under, ..
-                },
-                Some(label),
-                None,
-            ) => {
-                if let Some((false, bracket, glyph)) = self.brace_of(under)
-                    && (self.v5 || !bracket)
-                {
-                    return self.horizontal_brace(size, inner, Some(label), false, bracket, glyph);
-                }
-            },
-            _ => {},
-        }
         // A number or text base must not join the number or text before it,
         // or the script would take both as its base.
         let joins = match *self.arena.node(base) {
@@ -1683,6 +1638,11 @@ impl<'a> Encoder<'a> {
                 {
                     return self.horizontal_brace(size, base, None, top, bracket, glyph);
                 }
+                if let Some((inner, brace_top, bracket, glyph)) = self.brace_parts(base)
+                    && brace_top == top
+                {
+                    return self.horizontal_brace(size, inner, Some(mark), top, bracket, glyph);
+                }
                 if top && let Some((dividend, quotient)) = self.long_division_parts(base, mark) {
                     return self.long_division(size, dividend, Some(quotient));
                 }
@@ -1736,6 +1696,26 @@ impl<'a> Encoder<'a> {
     }
 
     /// HFenceBoxClass / HBrBoxClass: main slot, label slot, brace character.
+    /// The content of a horizontal brace and the brace, which takes a label.
+    fn brace_parts(&self, id: NodeId) -> Option<(NodeId, bool, bool, char)> {
+        let (inner, mark_top, brace) = match *self.arena.node(id) {
+            CompactNode::Overscript { base, over, .. } => (base, true, self.brace_of(over)),
+            CompactNode::Underscript { base, under, .. } => (base, false, self.brace_of(under)),
+            CompactNode::Accent {
+                base,
+                accent,
+                position,
+                wide: true,
+            } if is_bracket_accent(accent, position) => {
+                let top = position == AccentPosition::Above;
+                (base, top, Some((top, true, accent)))
+            },
+            _ => return None,
+        };
+        let (top, bracket, glyph) = brace?;
+        (top == mark_top && (self.v5 || !bracket)).then_some((inner, top, bracket, glyph))
+    }
+
     fn horizontal_brace(
         &mut self,
         size: Size,
