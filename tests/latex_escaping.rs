@@ -1570,6 +1570,9 @@ fn dropped_text_between_inline_math() {
         ("\\angl{a\0$x$\0\\textbf{\0}$y$b}", r"\angl{a$xy$b}"),
         ("\\reflectbox{$x$\0$y$}", r"\reflectbox{$xy$}"),
         (r"\angl{$x$ $y$}", r"\angl{$x$ $y$}"),
+        (r"\angl{a\texttt{}b}", r"\angl{ab}"),
+        (r"\angl{\verb5}", r"\angl{}"),
+        ("\\angl{a\\texttt{\0}b}", r"\angl{a\texttt{\char0{}}b}"),
     ] {
         let written = mathema::convert(input, mathema::Format::LaTeX, mathema::Format::LaTeX);
         assert_eq!(written.unwrap(), latex);

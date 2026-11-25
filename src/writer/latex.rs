@@ -3443,11 +3443,18 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         _ => &one,
     };
     // Text that is dropped entirely leaves the math around it one run.
-    let dropped = |id: NodeId| match *arena.node(id) {
-        CompactNode::Text(style, sid) if style != TextStyle::Monospace => {
-            is_dropped_text(arena.str_val(sid)).then_some(sid)
-        },
-        _ => None,
+    let dropped = |id: NodeId| {
+        let CompactNode::Text(style, sid) = *arena.node(id) else {
+            return None;
+        };
+        let text = arena.str_val(sid);
+        // The typewriter face writes every character.
+        let written = if style == TextStyle::Monospace {
+            !text.is_empty()
+        } else {
+            !is_dropped_text(text)
+        };
+        (!written).then_some(sid)
     };
     let kept: smallvec::SmallVec<[NodeId; 8]>;
     let mut rest = children;
