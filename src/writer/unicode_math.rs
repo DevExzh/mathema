@@ -1179,7 +1179,9 @@ fn ends_in_bound(node: &MathNode) -> bool {
         MathNode::Row(children) | MathNode::Styled(_, children) => {
             matches!(children.as_slice(), [only] if ends_in_bound(only))
         },
-        MathNode::Color { content, .. } => ends_in_bound(content),
+        MathNode::Color { content, .. } | MathNode::Attributed { content, .. } => {
+            ends_in_bound(content)
+        },
         MathNode::MathAtom { content, atom_type } => {
             *atom_type != crate::ast::MathAtomType::Inner && ends_in_bound(content)
         },

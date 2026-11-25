@@ -1988,6 +1988,31 @@ fn heap_drops_zero_spaces_and_leads_kept_groups() {
     }
 }
 
+/// Attributes are no level of the expression for the heap normalizer either,
+/// and a sized zero-width space is dropped like another.
+#[test]
+fn sized_nodes_normalize_like_the_compact_ones() {
+    use mathema::ast::{FontSize, NodeAttrs};
+    let sized = |node| MathNode::Attributed {
+        attrs: NodeAttrs::with_size(FontSize::Points(Rational::new(20, 1))),
+        content: Box::new(node),
+    };
+    let mut deep = MathNode::Row(vec![
+        MathNode::Number("1".into()),
+        sized(MathNode::Space(Rational::zero())),
+        MathNode::Number("2".into()),
+    ]);
+    for _ in 0..100 {
+        deep = sized(MathNode::Sqrt(Box::new(deep)));
+    }
+    let mut heap = MathExpr::inline(vec![deep]);
+    let mut compact = mathema::ast::compact::CompactExpr::from_math_expr(&heap).unwrap();
+    normalize_expr(&mut heap);
+    mathema::ast::normalize::normalize_compact_expr(&mut compact).unwrap();
+    assert_eq!(compact.to_math_expr(), heap);
+    assert!(format!("{heap:?}").contains("Number(\"12\")"));
+}
+
 #[test]
 fn unwritable_colors_around_nothing_are_stable() {
     use mathema::Format::LaTeX;

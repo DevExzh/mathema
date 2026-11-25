@@ -394,7 +394,7 @@ fn is_plain_group_row(nodes: &[MathNode]) -> bool {
 
 /// Heap form of `is_idotsint_row`.
 fn is_idotsint_math(nodes: &[MathNode]) -> bool {
-    let is = |node: &MathNode, kind, text: &str| matches!(node, MathNode::Symbol(k, t) if *k == kind && t == text);
+    let is = |node: &MathNode, kind, text: &str| matches!(without_sizes(node), MathNode::Symbol(k, t) if *k == kind && t == text);
     matches!(nodes, [first, dots, last]
         if is(first, SymbolKind::LargeOp, "\u{222B}")
             && is(dots, SymbolKind::Ordinary, "\u{22EF}")
@@ -404,7 +404,7 @@ fn is_idotsint_math(nodes: &[MathNode]) -> bool {
 /// Whether a node can be the base of leading scripts. Mirrors
 /// `can_take_prescripts` for compact nodes.
 fn can_take_prescripts_math(node: &MathNode) -> bool {
-    match node {
+    match without_sizes(node) {
         MathNode::PreScripts { .. }
         | MathNode::Space(_)
         | MathNode::ExplicitSpace { .. }
@@ -417,7 +417,7 @@ fn can_take_prescripts_math(node: &MathNode) -> bool {
 }
 
 fn is_zero_space_math(node: &MathNode) -> bool {
-    matches!(node, MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } if width.num == 0)
+    matches!(without_sizes(node), MathNode::Space(width) | MathNode::ExplicitSpace { width, .. } if width.num == 0)
 }
 
 /// Whether an empty-base script becomes a leading script of `next`, or of the
@@ -469,9 +469,12 @@ fn normalize_node_depth_with_identifiers(
     }
     let d = depth + 1;
     match node {
-        // What carries attributes stays apart from its neighbours.
+        // What carries attributes stays apart from its neighbours. It is no
+        // level of its own, as in `check_node_depth`.
         MathNode::Attributed { content, .. } => {
-            normalize_node_depth_with_identifiers(content, d, merge_identifiers);
+            let nested = matches!(**content, MathNode::Attributed { .. });
+            let depth = if nested { d } else { depth };
+            normalize_node_depth_with_identifiers(content, depth, merge_identifiers);
         },
         MathNode::Row(children) => {
             normalize_nodes_depth_with_identifiers(children, d, merge_identifiers);
