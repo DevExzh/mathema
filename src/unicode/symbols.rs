@@ -1220,6 +1220,18 @@ pub fn nary_op_to_latex(ch: char) -> Option<&'static str> {
     (kind == SymbolKind::LargeOp).then_some(name)
 }
 
+/// A large operator of the LaTeX reader that no command of LaTeX, KaTeX or
+/// amsmath names (bboldx's `\bbsum`). It is spelled `\mathop{⅀}`, which reads as
+/// the operator.
+pub(crate) const UNNAMED_NARY: char = '\u{2140}';
+
+/// Whether the LaTeX reader reads what the writer spells `ch` as, as an n-ary
+/// operator.
+#[inline]
+pub(crate) fn is_latex_nary(ch: char) -> bool {
+    ch == UNNAMED_NARY || nary_op_to_latex(ch).is_some()
+}
+
 /// Identify fixed line and brace decorations whose presentation markup
 /// otherwise looks identical to a general accent.
 pub(crate) fn fixed_script_decoration(

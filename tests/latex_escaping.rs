@@ -246,7 +246,7 @@ fn unnamed_large_operators_are_operator_atoms() {
             .unwrap()
             .to_latex()
             .unwrap(),
-        r"\mathop{⅀}_ia"
+        r"\mathop{⅀}_i a"
     );
 }
 
@@ -2459,6 +2459,187 @@ proptest! {
             prop_assert_eq!(&heap_again, &heap, "heap: {}", source);
             let [_, compact_again] = normalized_latex(&compact).expect("reads back");
             prop_assert_eq!(&compact_again, &compact, "compact: {}", source);
+        }
+    }
+}
+
+/// `\bbsum`, which no LaTeX or KaTeX command spells, is written `\mathop{⅀}` and
+/// read back as the operator it is.
+#[test]
+fn an_operator_without_a_command_is_the_operator_again() {
+    use mathema::Format::{LaTeX, MathML, Omml};
+    for body in [
+        "",
+        "K",
+        ")",
+        "+",
+        "-",
+        "1",
+        r"\degree",
+        "`",
+        "|",
+        "{x}",
+        r"{p~}",
+        r"{\dot{i}m}",
+        r"\gets",
+        r"\sum x",
+        r"\bbsum x",
+        r"\mbox'\mbox9",
+        "^2",
+        r"^\prime K",
+        "'",
+        "_i",
+        r"_i^n x",
+        "{}_i",
+        r"\limits_a b",
+        r"\nolimits^a b",
+        r"\frac12",
+        r"\color{red}x",
+        r"\middle'",
+        "''2",
+        "' '2",
+    ] {
+        for (before, after) in [
+            ("", ""),
+            ("'", ""),
+            ("^n", ""),
+            ("_1", "y"),
+            ("x", "y"),
+            ("{", "}_1"),
+            (r"\frac{", "}{a}"),
+            (r"\left(", r"\right)"),
+            (r"x_{", "}"),
+            (r"\mathrel{", "}"),
+        ] {
+            let of = |operator: &str| {
+                let input = format!("{before}{operator} {body}{after}");
+                mathema::from_latex(&input).ok()
+            };
+            let (Some(named), Some(read)) = (of(r"\sum"), of(r"\bbsum")) else {
+                assert!(of(r"\sum").is_none() && of(r"\bbsum").is_none());
+                continue;
+            };
+            let written = read.to_latex().unwrap();
+            let again = mathema::from_latex(&written).unwrap();
+            assert_eq!(
+                again.to_latex().unwrap(),
+                written,
+                "{before}|{body}|{after}"
+            );
+            // Everywhere the same tree as of an operator that has a command.
+            let shape = |read: &mathema::ConvertResult| format!("{:?}", read.expr());
+            assert_eq!(
+                shape(&again).replace('⅀', "∑"),
+                shape(&mathema::from_latex(&named.to_latex().unwrap()).unwrap()).replace('⅀', "∑")
+            );
+        }
+    }
+    // Scripts and the operand are the operator's in other formats too.
+    let mathml = mathema::convert(r"\mathop{⅀}_{i}^n x", LaTeX, MathML).unwrap();
+    assert_eq!(
+        mathml,
+        mathema::convert(r"\bbsum_i^n x", LaTeX, MathML).unwrap()
+    );
+    let omml = mathema::convert(r"\mathop{⅀}_i^n x", LaTeX, Omml).unwrap();
+    assert!(omml.contains("<m:nary>"), "{omml}");
+    // Another atom around the glyph is that atom.
+    for atom in [r"\mathord{⅀}", r"\mathrel{⅀}", r"\mathop{⅀⅀}"] {
+        let read = mathema::from_latex(&format!("{atom}x")).unwrap();
+        assert!(
+            matches!(read.expr().nodes[0], MathNode::MathAtom { .. }),
+            "{atom}"
+        );
+    }
+}
+
+/// empheq sets math beside its display, and some of its commands are
+/// delimiters.
+#[test]
+fn empheq_sides_are_math() {
+    for (options, before, after) in [
+        (r"left=\empheqlbrace", r"\left\{ ", r" \right."),
+        (
+            r"left=\empheqbiglbrack,right=\empheqrvert",
+            r"\left[ ",
+            r" \right|",
+        ),
+        (r"left=\{", r"\left\{ ", r" \right."),
+        (r"right=)", r"\left. ", r" \right)"),
+        (
+            r"left={f(x)=}\empheqlbrace",
+            r"{{f(x)=}\left\{ ",
+            r" \right.}",
+        ),
+        (r"right=\empheqrceil z", r"{\left. ", r" \right\rceil z}"),
+        (r"left={a\over b}", r"{\frac{a}{b}\left. ", r" \right.}"),
+        (r"left=\uppi", r"{\mathrm{\pi}\left. ", r" \right.}"),
+        ("left=3.", r"{3 .\left. ", r" \right.}"),
+        ("right=‖w", r"{\left. ", r" \right.\lVert w}"),
+        ("left=:w", r"{: w\left. ", r" \right.}"),
+        // Not next to the display, the command is an undefined one.
+        (
+            r"left=\empheqlbrace x",
+            r"{\mathord{\text{\textbackslash{}empheqlbrace}}x\left. ",
+            r" \right.}",
+        ),
+        (r"left=a\over b", r"{\frac{a}{b}\left. ", r" \right.}"),
+        ("left=‖}", "", ""),
+        (r"left=\Rightarrow", r"\left⇒ ", r" \right."),
+        ("left=", r"\left. ", r" \right."),
+    ] {
+        let input = format!(r"\begin{{empheq}}[{options}]{{align}}a&=b\end{{empheq}}");
+        let written = mathema::from_latex(&input).unwrap().to_latex().unwrap();
+        if !before.is_empty() {
+            let expected = format!(r"{before}\begin{{aligned}} a & = b \end{{aligned}}{after}");
+            assert_eq!(written, expected, "{options}");
+        }
+        let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
+        assert_eq!(again, written, "{options}");
+    }
+    // A `\middle` there is not the enclosing fence's.
+    let fenced = r"\left(\begin{empheq}[left=x\middle|y]{align}a\end{empheq}\right)";
+    let alone = r"\begin{empheq}[left=x\middle|y]{align}a\end{empheq}";
+    let written = |input| mathema::from_latex(input).unwrap().to_latex().unwrap();
+    assert!(
+        written(fenced).contains(&written(alone)),
+        "{}",
+        written(fenced)
+    );
+    let dropped = mathema::from_latex(r"\begin{empheq}[left=‖}]{align}a\end{empheq}").unwrap();
+    assert!(
+        dropped
+            .diagnostics()
+            .iter()
+            .any(|d| d.message.contains("was dropped")),
+        "{:?}",
+        dropped.diagnostics()
+    );
+}
+
+/// A compound symbol is no delimiter.
+#[test]
+fn compound_symbols_are_null_delimiters() {
+    for command in [r"\coloneq", r"\colonapprox", r"\eqcolon", r"\simcolon"] {
+        for input in [
+            format!(r"\genfrac{command}){{}}{{}}{{a}}{{b}}"),
+            format!(r"\genfrac({command}{{}}{{}}{{a}}{{b}}"),
+        ] {
+            let read = mathema::from_latex(&input).unwrap();
+            assert!(
+                read.diagnostics()
+                    .iter()
+                    .any(|d| d.message.contains("is not a delimiter")),
+                "{input}"
+            );
+            let written = read.to_latex().unwrap();
+            assert!(
+                written.contains(r"\right)") || written.contains(r"\left( "),
+                "{written}"
+            );
+            assert_eq!(
+                mathema::from_latex(&written).unwrap().to_latex().unwrap(),
+                written
+            );
         }
     }
 }

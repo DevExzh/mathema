@@ -2552,8 +2552,7 @@ impl CompactParser {
 
 pub(crate) fn is_nary_char(c: char) -> bool {
     // The LaTeX commands' big operators, and only those blocks hold any.
-    // (`\bbsum` is a package symbol.)
-    c == '\u{2140}'
+    c == crate::unicode::symbols::UNNAMED_NARY
         || matches!(c, '\u{2200}'..='\u{22FF}' | '\u{2A00}'..='\u{2AFF}')
             && crate::unicode::symbols::nary_op_to_latex(c).is_some()
 }

@@ -373,6 +373,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- LaTeX: `\bbsum`, which is written `\mathop{⅀}` for KaTeX, is read back as the
+  operator, with its scripts and operand; the rewritten text differed from pass
+  to pass next to primes, scripts and groups. `left=` and `right=` of empheq are
+  math (`left={f(x)=}\empheqlbrace`) and its `\empheqlbrace`, … delimiters; they
+  were literal text. A compound symbol as a delimiter of `\genfrac` is a null
+  one, with a warning.
 - Security: a control word of the LaTeX output no longer takes in letters that
   follow it when what was between them writes nothing: the base of a leading
   script made `\int` + `eractionmode` into `\interactionmode`. A space is put

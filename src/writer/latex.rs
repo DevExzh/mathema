@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result, TypesettingPolicy};
 use crate::unicode::fonts::style_to_latex_font;
 use crate::unicode::symbols::{
-    latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
+    is_latex_nary, latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
 };
 use crate::writer::Writer;
 use std::borrow::Cow;
@@ -675,7 +675,7 @@ fn output_ends_with_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
         // Without a command: `\mathop{…}` and its body (`write_unnamed_nary`).
         CompactNode::Nary { op, body, .. } => {
             (is_bare_large_op(arena, body) || output_ends_with_empty_body_nary(arena, body))
-                && nary_op_to_latex(op).is_none()
+                && !is_latex_nary(op)
         },
         _ => false,
     }
@@ -687,7 +687,7 @@ fn is_empty_body_nary(arena: &AstArena, id: NodeId) -> bool {
     matches!(
         *arena.node(id),
         CompactNode::Nary { op, body, .. }
-            if is_empty_body(arena, body) && nary_op_to_latex(op).is_some()
+            if is_empty_body(arena, body) && is_latex_nary(op)
     )
 }
 
@@ -774,7 +774,7 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
         // Without limits and body, such an operator is only its `\mathop`.
         CompactNode::Nary {
             op, sub, sup, body, ..
-        } if nary_op_to_latex(op).is_none()
+        } if !is_latex_nary(op)
             && is_empty_body(arena, body)
             && is_effectively_empty_arg(arena, sub)
             && is_effectively_empty_arg(arena, sup) =>
@@ -1238,9 +1238,7 @@ fn needs_space(arena: &AstArena, prev: Option<NodeId>, curr: NodeId) -> bool {
 
 #[inline(never)]
 fn nary_needs_space(arena: &AstArena, op: char, body: NodeId, curr: NodeId) -> bool {
-    !is_empty_body(arena, body)
-        && needs_space(arena, Some(body), curr)
-        && nary_op_to_latex(op).is_none()
+    !is_empty_body(arena, body) && needs_space(arena, Some(body), curr) && !is_latex_nary(op)
 }
 
 /// A superscript/subscript with an empty base is meant to attach to the
@@ -1862,15 +1860,16 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
             body,
             limits,
         } => {
-            let cmd = match crate::unicode::symbols::unicode_to_latex_entry(op) {
-                Some((cmd, SymbolKind::LargeOp)) => cmd,
-                entry => {
+            let entry = crate::unicode::symbols::unicode_to_latex_entry(op);
+            match entry {
+                Some((cmd, SymbolKind::LargeOp)) => buf.command(cmd),
+                None if is_latex_nary(op) => write_mathop_glyph(buf, op, None),
+                _ => {
                     let kind = entry.map(|(_, kind)| kind);
                     write_unnamed_nary(buf, arena, (op, kind), [sub, sup], body, limits);
                     return;
                 },
-            };
-            buf.command(cmd);
+            }
             match limits {
                 LimitStyle::AboveBelow => buf.push_str("\\limits"),
                 LimitStyle::SubSup => buf.push_str("\\nolimits"),
@@ -3401,7 +3400,7 @@ fn is_bare_large_op(arena: &AstArena, id: NodeId) -> bool {
 }
 
 fn is_named_large_op(text: &str) -> bool {
-    single_char(text).is_some_and(|ch| nary_op_to_latex(ch).is_some())
+    single_char(text).is_some_and(is_latex_nary)
 }
 
 /// An n-ary operator whose glyph is no large operator of its own (MTEF and
