@@ -362,21 +362,28 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
             continue;
         }
 
-        let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
-        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-        let cur_atom = adj_cur.expect("passed Some");
-        if let Some(prev) = adj_prev {
-            let space =
-                spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
-            if space > 0.0 {
-                // A break has no size of its own.
-                let size = if matches!(node, MathNode::LineBreak) {
-                    ctx.size()
-                } else {
-                    current_ctx.size()
-                };
-                cursor_x += space * size;
+        if !spacing::is_space(node) {
+            let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
+            let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+            let cur_atom = adj_cur.expect("passed Some");
+            if let Some(prev) = adj_prev {
+                let space = spacing::inter_atom_space(
+                    prev,
+                    cur_atom,
+                    current_ctx.effective_spacing_style(),
+                );
+                if space > 0.0 {
+                    // A break has no size of its own.
+                    let size = if matches!(node, MathNode::LineBreak) {
+                        ctx.size()
+                    } else {
+                        current_ctx.size()
+                    };
+                    cursor_x += space * size;
+                }
             }
+            let style = current_ctx.branch_style();
+            prev_atom = Some(spacing::right_atom(node, cur_atom, style));
         }
 
         let layout = layout_styled_node(style, node, &current_ctx);
@@ -385,7 +392,6 @@ pub(super) fn layout_styled(style: TextStyle, children: &[MathNode], ctx: &Layou
         let w = layout.width;
         boxes.push(PositionedBox::new(cursor_x, 0.0, layout));
         cursor_x += w;
-        prev_atom = Some(cur_atom);
     }
 
     LayoutBox {
@@ -780,21 +786,28 @@ pub(super) fn layout_styled_arena(
 
         // Inter-atom spacing (e.g. medium space around a binary `+`), matching
         // the legacy styled-row layout and the normal arena row builder.
-        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
-        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-        let cur_atom = adj_cur.expect("passed Some");
-        if let Some(prev) = adj_prev {
-            let space =
-                spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
-            if space > 0.0 {
-                // A break has no size of its own.
-                let size = if matches!(*ast.node(id), CompactNode::Newline) {
-                    ctx.size()
-                } else {
-                    current_ctx.size()
-                };
-                cursor_x += space * size;
+        if !spacing::is_space_c(ast, id) {
+            let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
+            let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+            let cur_atom = adj_cur.expect("passed Some");
+            if let Some(prev) = adj_prev {
+                let space = spacing::inter_atom_space(
+                    prev,
+                    cur_atom,
+                    current_ctx.effective_spacing_style(),
+                );
+                if space > 0.0 {
+                    // A break has no size of its own.
+                    let size = if matches!(*ast.node(id), CompactNode::Newline) {
+                        ctx.size()
+                    } else {
+                        current_ctx.size()
+                    };
+                    cursor_x += space * size;
+                }
             }
+            let style = current_ctx.branch_style();
+            prev_atom = Some(spacing::right_atom_c(ast, id, cur_atom, style));
         }
 
         let layout_id = layout_styled_node_arena(style, ast, id, arena, &current_ctx);
@@ -804,7 +817,6 @@ pub(super) fn layout_styled_arena(
         let w = b.width;
         laid_out.push((layout_id, cursor_x));
         cursor_x += w;
-        prev_atom = Some(cur_atom);
     }
 
     // Phase 2: now that all sub-layouts are done, capture exactly this box's

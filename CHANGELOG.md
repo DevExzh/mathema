@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `/` is an ordinary symbol and a `:` a relation, as in TeX and KaTeX, in
   every reader; they were a binary operator and an ordinary symbol. `a/b` is
   written without a space, an ordinary colon `{:}` and a punctuation one `\colon`.
+- Rendering: `{…}`, `\frac`, `\boxed` and accents are ordinary atoms and the dots
+  on the line inner ones, spaces do not hide the atoms on their sides from each
+  other, what follows a big operator is spaced against its operand, `\middle`
+  has no space around it, and `\colon` has amsmath's.
 - Rendering: a letter's box includes its italic correction, as in TeX, so `T)`,
   `f_1` and `\frac{V}{Y}` no longer collide. A superscript (primes too) follows
   the correction, a subscript does not, and that of an integral sits under its

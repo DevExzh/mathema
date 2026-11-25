@@ -321,6 +321,11 @@ pub(crate) fn math_italic_codepoint(ch: char) -> Option<char> {
     }
 }
 
+/// The space amsmath's `\colon` has on each side, in every style.
+fn colon_space(size: f64) -> (f64, f64) {
+    (2.0 / 18.0 * size, 6.0 / 18.0 * size)
+}
+
 /// Wrap a glyph LayoutBox so it is centered on the math axis.
 /// The shift moves the glyph's vertical center to `axis_height * size`.
 fn center_glyph_on_axis(glyph: LayoutBox, ctx: &LayoutCtx) -> LayoutBox {
@@ -553,16 +558,23 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         }
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
-        let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
-        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
-        if let Some(prev) = adj_prev {
-            let space =
-                spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
-            if space > 0.0 {
-                let kern_width = space * current_ctx.size();
-                cursor_x += kern_width;
+        if !spacing::is_space(node) {
+            let raw_atom = spacing::classify_node_in(node, current_ctx.branch_style());
+            let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+            let cur_atom = adj_cur.unwrap(); // safe: we passed Some
+            if let Some(prev) = adj_prev {
+                let space = spacing::inter_atom_space(
+                    prev,
+                    cur_atom,
+                    current_ctx.effective_spacing_style(),
+                );
+                if space > 0.0 {
+                    let kern_width = space * current_ctx.size();
+                    cursor_x += kern_width;
+                }
             }
+            let style = current_ctx.branch_style();
+            prev_atom = Some(spacing::right_atom(node, cur_atom, style));
         }
 
         let layout = layout_node(node, &current_ctx);
@@ -573,7 +585,6 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
         let layout_width = layout.width;
         children.push(PositionedBox::new(cursor_x, 0.0, layout));
         cursor_x += layout_width;
-        prev_atom = Some(cur_atom);
     }
 
     LayoutBox {
@@ -658,7 +669,17 @@ fn layout_node(node: &MathNode, ctx: &LayoutCtx) -> LayoutBox {
                     LayoutBox::glyph_with_metrics(ch, m, size, false)
                 } else {
                     let glyph = LayoutBox::glyph(ch, ctx.size(), false);
-                    if is_axis_centered_char(ch) {
+                    if *kind == SymbolKind::Punctuation && ch == ':' {
+                        let (before, after) = colon_space(ctx.size());
+                        LayoutBox {
+                            width: before + glyph.width + after,
+                            height: glyph.height,
+                            depth: glyph.depth,
+                            kind: BoxKind::HBox {
+                                children: vec![PositionedBox::new(before, 0.0, glyph)],
+                            },
+                        }
+                    } else if is_axis_centered_char(ch) {
                         center_glyph_on_axis(glyph, ctx)
                     } else {
                         glyph
@@ -1776,15 +1797,22 @@ fn layout_row_segment_arena(
         }
 
         // Inter-atom spacing with TeXBook Ch.26 Bin reclassification
-        let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
-        let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
-        let cur_atom = adj_cur.unwrap(); // safe: we passed Some
-        if let Some(prev) = adj_prev {
-            let space =
-                spacing::inter_atom_space(prev, cur_atom, current_ctx.effective_spacing_style());
-            if space > 0.0 {
-                cursor_x += space * current_ctx.size();
+        if !spacing::is_space_c(ast, id) {
+            let raw_atom = spacing::classify_node_c_in(ast, id, current_ctx.branch_style());
+            let (adj_prev, adj_cur) = spacing::adjust_bin_context(prev_atom, Some(raw_atom));
+            let cur_atom = adj_cur.unwrap(); // safe: we passed Some
+            if let Some(prev) = adj_prev {
+                let space = spacing::inter_atom_space(
+                    prev,
+                    cur_atom,
+                    current_ctx.effective_spacing_style(),
+                );
+                if space > 0.0 {
+                    cursor_x += space * current_ctx.size();
+                }
             }
+            let style = current_ctx.branch_style();
+            prev_atom = Some(spacing::right_atom_c(ast, id, cur_atom, style));
         }
 
         let box_id = layout_node_arena(ast, id, arena, &current_ctx);
@@ -1795,7 +1823,6 @@ fn layout_row_segment_arena(
 
         laid_out.push((box_id, cursor_x));
         cursor_x += w;
-        prev_atom = Some(cur_atom);
     }
 
     // Phase 2: now push all children into the arena's children array.
@@ -1896,7 +1923,26 @@ fn layout_node_arena(
                     alloc_glyph_with_metrics(arena, ch, m, size, false)
                 } else {
                     let glyph_id = alloc_glyph(arena, ch, ctx.size(), false);
-                    if is_axis_centered_char(ch) {
+                    if kind == SymbolKind::Punctuation && ch == ':' {
+                        let (before, after) = colon_space(ctx.size());
+                        let (width, height, depth) = {
+                            let glyph = arena.get(glyph_id);
+                            (glyph.width, glyph.height, glyph.depth)
+                        };
+                        let start = arena.begin_children();
+                        arena.push_child(ArenaPositionedBox {
+                            dx: before,
+                            dy: 0.0,
+                            id: glyph_id,
+                        });
+                        let children = arena.finish_children(start);
+                        arena.alloc(ArenaLayoutBox {
+                            width: before + width + after,
+                            height,
+                            depth,
+                            kind: ArenaBoxKind::HBox { children },
+                        })
+                    } else if is_axis_centered_char(ch) {
                         center_glyph_on_axis_arena(glyph_id, arena, ctx)
                     } else {
                         glyph_id

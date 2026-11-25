@@ -319,12 +319,10 @@ pub(super) fn layout_nary(
 ) -> LayoutBox {
     let p = &ctx.params;
     let size = ctx.size();
-    // The space is between the operator and its operand.
-    let thin_space = if matches!(body, MathNode::Row(nodes) if nodes.is_empty()) {
-        0.0
-    } else {
-        3.0 / 18.0 * size
-    };
+    // The space between the operator and its operand.
+    let thin_space = spacing::nary_body_atom(body, ctx.branch_style()).map_or(0.0, |atom| {
+        spacing::inter_atom_space(AtomType::Op, atom, ctx.effective_spacing_style()) * size
+    });
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
     let (op_size, m) = if ctx.branch_style().is_display() {
@@ -1010,12 +1008,10 @@ pub(super) fn layout_nary_arena(
 ) -> LayoutBoxId {
     let p = &ctx.params;
     let size = ctx.size();
-    // The space is between the operator and its operand.
-    let thin_space = if matches!(*ast.node(body), CompactNode::Row(span) if span.is_empty()) {
-        0.0
-    } else {
-        3.0 / 18.0 * size
-    };
+    // The space between the operator and its operand.
+    let thin_space = spacing::nary_body_atom_c(ast, body, ctx.branch_style()).map_or(0.0, |atom| {
+        spacing::inter_atom_space(AtomType::Op, atom, ctx.effective_spacing_style()) * size
+    });
 
     // Large op in display mode: use per-operator scale matching KaTeX Size2/Size1
     let (op_size, m) = if ctx.branch_style().is_display() {

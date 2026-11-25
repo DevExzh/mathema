@@ -246,6 +246,70 @@ fn accent_is_centred_on_the_attachment_point() {
     assert_eq!(accent_skew(&LayoutBox::kern(1.0)), 0.0);
 }
 
+/// The spacing of atoms, checked against XeTeX with Latin Modern Math.
+#[test]
+fn atoms_are_spaced_as_in_tex() {
+    use MathStyle::{Display, Text};
+    for (latex, style, width) in [
+        // A `/` is ordinary, a `:` a relation, `\\colon` has its own space.
+        ("a/b", Text, 1.472),
+        ("\\pi/2", Text, 1.595),
+        ("(a)/(b)", Text, 3.028),
+        ("a:b", Text, 1.806),
+        ("f:A\\to B", Text, 4.503),
+        ("x:=y", Text, 2.702),
+        ("a{:}b", Text, 1.250),
+        ("a\\mathbin{:}b", Text, 1.694),
+        ("a\\colon b", Text, 1.694),
+        ("a\\colon", Text, 1.251),
+        ("\\colon b", Text, 1.165),
+        // Groups, fractions, boxes and accents are ordinary.
+        ("2{x+y}z", Text, 3.307),
+        ("f{(x)}", Text, 1.930),
+        ("2\\frac{a}{b}c", Display, 1.727),
+        ("\\frac ab\\frac cd", Display, 1.553),
+        ("a=\\frac bc", Display, 2.561),
+        ("a\\hat{=}b", Text, 1.750),
+        // Dots on the line are inner.
+        ("a\\ldots b", Text, 2.142),
+        ("a\\cdots b", Text, 2.081),
+        ("a,\\dots,b", Text, 2.865),
+        ("(\\ldots)", Text, 1.615),
+        // Spaces are no atoms.
+        ("a\\,:b", Text, 1.972),
+        ("a=\\,=b", Text, 3.250),
+        ("\\,-b", Text, 1.388),
+        ("(\\,-b)", Text, 2.166),
+        ("a\\,-b", Text, 2.361),
+        ("\\mathbf{a\\,=b}", Text, 2.698),
+        ("\\sin\\,x", Text, 2.133),
+        // The operand of a big operator is the next atom.
+        ("\\int x\\,dx", Display, 3.020),
+        ("\\int\\!\\int", Display, 1.998),
+        ("\\sum\\nolimits\\,x", Display, 2.349),
+        ("\\sum(x)", Display, 1.444 + 1.350),
+    ] {
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, style, &default_options());
+        assert!((root.width - width).abs() < 2e-3, "{latex}: {}", root.width);
+        assert_arena_heap_equivalent(latex, style);
+    }
+}
+
+/// A `\\middle` closes what is before it and opens what is after.
+#[test]
+fn middle_delimiters_have_no_space() {
+    let width = |latex: &str| {
+        assert_arena_heap_equivalent(latex, MathStyle::Text);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        layout_expr(&expr, MathStyle::Text, &default_options()).width
+    };
+    let bar = width("\\left.a\\middle|b\\right.") - width("ab");
+    assert!((bar - 0.278).abs() < 0.02, "{bar}");
+    let relation = width("\\left.a=\\middle|b\\right.") - width("\\left.a=b\\right.");
+    assert!((relation - (0.278 - 5.0 / 18.0)).abs() < 0.02, "{relation}");
+}
+
 /// TeXBook Rules 12, 17 and 18, checked against XeTeX with Latin Modern Math
 /// (whose 7pt script glyphs are 0.0485em wider than ours per digit).
 #[test]

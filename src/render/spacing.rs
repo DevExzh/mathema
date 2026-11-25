@@ -26,6 +26,93 @@ pub enum AtomType {
     Inner,
 }
 
+/// The atom of a symbol. `\ldots`, `\cdots` and `\ddots` are inner atoms.
+fn symbol_atom(kind: SymbolKind, text: &str) -> AtomType {
+    match kind {
+        SymbolKind::Ordinary if matches!(text, "…" | "⋯" | "⋱" | "⋰") => AtomType::Inner,
+        // amsmath's `\colon` has its own space around an ordinary colon.
+        SymbolKind::Punctuation if text == ":" => AtomType::Ord,
+        SymbolKind::Ordinary | SymbolKind::Alphabetic | SymbolKind::Fence => AtomType::Ord,
+        SymbolKind::LargeOp => AtomType::Op,
+        SymbolKind::BinaryOp => AtomType::Bin,
+        SymbolKind::Relation => AtomType::Rel,
+        SymbolKind::Open => AtomType::Open,
+        SymbolKind::Close => AtomType::Close,
+        SymbolKind::Punctuation => AtomType::Punct,
+    }
+}
+
+/// The marks of `\overbrace` and its like, which are no TeX accents.
+fn is_brace(accent: char) -> bool {
+    matches!(accent, '⏞' | '⏟' | '⎴' | '⎵' | '⏜' | '⏝')
+}
+
+/// Spaces are no atoms: the ones on their sides are still adjacent.
+pub(super) fn is_space(node: &MathNode) -> bool {
+    matches!(node, MathNode::Space(_) | MathNode::ExplicitSpace { .. })
+}
+
+/// Compact-AST version of `is_space`.
+pub(super) fn is_space_c(arena: &AstArena, id: NodeId) -> bool {
+    matches!(arena.node(id), CompactNode::Space(_))
+}
+
+/// The atom that what follows a node is spaced against. A big operator holds
+/// its operand, which is the next atom of TeX's list.
+pub(super) fn right_atom(node: &MathNode, atom: AtomType, style: MathStyle) -> AtomType {
+    let (mut node, mut atom) = (node, atom);
+    while let MathNode::Nary { body, .. } = node {
+        let Some(next) = nary_body_atom(body, style) else {
+            break;
+        };
+        (node, atom) = (body, next);
+    }
+    atom
+}
+
+/// The atom of a big operator's operand, unless it is a space or nothing.
+pub(super) fn nary_body_atom(body: &MathNode, style: MathStyle) -> Option<AtomType> {
+    if is_space(body) || matches!(body, MathNode::Row(nodes) if nodes.is_empty()) {
+        return None;
+    }
+    adjust_bin_context(Some(AtomType::Op), Some(classify_node_in(body, style))).1
+}
+
+/// Compact-AST version of `right_atom`.
+pub(super) fn right_atom_c(
+    arena: &AstArena,
+    id: NodeId,
+    atom: AtomType,
+    style: MathStyle,
+) -> AtomType {
+    let (mut id, mut atom) = (id, atom);
+    while let CompactNode::Nary { body, .. } = *arena.node(id) {
+        let Some(next) = nary_body_atom_c(arena, body, style) else {
+            break;
+        };
+        (id, atom) = (body, next);
+    }
+    atom
+}
+
+/// Compact-AST version of `nary_body_atom`.
+pub(super) fn nary_body_atom_c(
+    arena: &AstArena,
+    body: NodeId,
+    style: MathStyle,
+) -> Option<AtomType> {
+    if is_space_c(arena, body)
+        || matches!(*arena.node(body), CompactNode::Row(span) if span.is_empty())
+    {
+        return None;
+    }
+    adjust_bin_context(
+        Some(AtomType::Op),
+        Some(classify_node_c_in(arena, body, style)),
+    )
+    .1
+}
+
 /// Classify a MathNode into its atom type for spacing purposes.
 pub fn classify_node(node: &MathNode) -> AtomType {
     classify_node_in(node, MathStyle::Display)
@@ -46,16 +133,7 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         MathNode::Number(_) => AtomType::Ord,
         MathNode::Identifier(_) => AtomType::Ord,
         MathNode::Operator(_) | MathNode::StructuredOperator { .. } => AtomType::Op,
-        MathNode::Symbol(kind, _) => match kind {
-            SymbolKind::Ordinary | SymbolKind::Alphabetic => AtomType::Ord,
-            SymbolKind::LargeOp => AtomType::Op,
-            SymbolKind::BinaryOp => AtomType::Bin,
-            SymbolKind::Relation => AtomType::Rel,
-            SymbolKind::Open => AtomType::Open,
-            SymbolKind::Close => AtomType::Close,
-            SymbolKind::Punctuation => AtomType::Punct,
-            SymbolKind::Fence => AtomType::Ord,
-        },
+        MathNode::Symbol(kind, text) => symbol_atom(*kind, text),
         MathNode::Text(..)
         | MathNode::StyleSwitch(_)
         | MathNode::SizeSwitch(_)
@@ -64,9 +142,10 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         MathNode::Space(_) | MathNode::ExplicitSpace { .. } | MathNode::Rule { .. } => {
             AtomType::Ord
         },
-        MathNode::Row(_) => AtomType::Inner,
+        // A group is ordinary, and LaTeX's `\frac` and `\boxed` are groups.
+        MathNode::Row(_) | MathNode::Fraction { .. } => AtomType::Ord,
+        MathNode::Boxed { .. } | MathNode::Actuarial { .. } => AtomType::Ord,
         MathNode::Fenced { .. } => AtomType::Inner,
-        MathNode::Fraction { .. } => AtomType::Inner,
         MathNode::Sqrt(_) | MathNode::Root { .. } => AtomType::Ord,
         MathNode::Nary { .. } => AtomType::Op,
         MathNode::Subscript { base, .. }
@@ -76,6 +155,7 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         MathNode::Overscript { base, .. }
         | MathNode::Underscript { base, .. }
         | MathNode::UnderOver { base, .. } => classify_node_depth(base, style, depth + 1),
+        MathNode::Accent { accent, .. } if !is_brace(*accent) => AtomType::Ord,
         MathNode::Accent { base, .. } => classify_node_depth(base, style, depth + 1),
         // TeX's bare `array`, `matrix`, `smallmatrix`, `aligned`, and
         // `gathered` environments produce an ordinary/vcenter noad. Their
@@ -90,7 +170,6 @@ fn classify_node_depth(node: &MathNode, style: MathStyle, depth: usize) -> AtomT
         },
         MathNode::Phantom(_, _) => AtomType::Ord,
         MathNode::Reflect { .. } => AtomType::Ord,
-        MathNode::Boxed { .. } | MathNode::Actuarial { .. } => AtomType::Inner,
         MathNode::Cancel { content, .. } => classify_node_depth(content, style, depth + 1),
         // TeX's `\big` boxes its delimiter, so the result is an ordinary
         // atom; `\bigl`/`\bigr`/`\bigm` add an explicit MathAtom class.
@@ -144,21 +223,13 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
         CompactNode::Number(_) => AtomType::Ord,
         CompactNode::Identifier(_) => AtomType::Ord,
         CompactNode::Operator { .. } | CompactNode::StructuredOperator { .. } => AtomType::Op,
-        CompactNode::Symbol(kind, _) => match kind {
-            SymbolKind::Ordinary | SymbolKind::Alphabetic => AtomType::Ord,
-            SymbolKind::LargeOp => AtomType::Op,
-            SymbolKind::BinaryOp => AtomType::Bin,
-            SymbolKind::Relation => AtomType::Rel,
-            SymbolKind::Open => AtomType::Open,
-            SymbolKind::Close => AtomType::Close,
-            SymbolKind::Punctuation => AtomType::Punct,
-            SymbolKind::Fence => AtomType::Ord,
-        },
+        CompactNode::Symbol(kind, sid) => symbol_atom(kind, arena.str_val(sid)),
         CompactNode::Text(..) | CompactNode::UndefinedCommand { .. } => AtomType::Ord,
         CompactNode::Space(_) => AtomType::Ord,
-        CompactNode::Row(_) => AtomType::Inner,
+        // A group is ordinary, and LaTeX's `\frac` and `\boxed` are groups.
+        CompactNode::Row(_) | CompactNode::Fraction { .. } => AtomType::Ord,
+        CompactNode::Boxed { .. } | CompactNode::Actuarial { .. } => AtomType::Ord,
         CompactNode::Fenced { .. } => AtomType::Inner,
-        CompactNode::Fraction { .. } => AtomType::Inner,
         CompactNode::Sqrt(_) | CompactNode::Root { .. } => AtomType::Ord,
         CompactNode::Nary { .. } => AtomType::Op,
         CompactNode::Subscript { base, .. }
@@ -172,6 +243,7 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
         | CompactNode::UnderOver { base, .. } => {
             classify_node_c_depth(arena, base, style, depth + 1)
         },
+        CompactNode::Accent { accent, .. } if !is_brace(accent) => AtomType::Ord,
         CompactNode::Accent { base, .. } => classify_node_c_depth(arena, base, style, depth + 1),
         // Keep heap and compact classification identical. Native tables are
         // ordinary noads until a fence or explicit MathAtom wrapper changes
@@ -182,7 +254,6 @@ fn classify_node_c_depth(arena: &AstArena, id: NodeId, style: MathStyle, depth: 
         },
         CompactNode::Phantom(..) => AtomType::Ord,
         CompactNode::Reflect { .. } => AtomType::Ord,
-        CompactNode::Boxed { .. } | CompactNode::Actuarial { .. } => AtomType::Inner,
         CompactNode::Cancel { content, .. } => {
             classify_node_c_depth(arena, content, style, depth + 1)
         },
@@ -433,7 +504,7 @@ mod tests {
             num: Box::new(MathNode::Number("1".into())),
             den: Box::new(MathNode::Number("2".into())),
         };
-        assert_eq!(classify_node(&frac), AtomType::Inner);
+        assert_eq!(classify_node(&frac), AtomType::Ord);
     }
 
     #[test]

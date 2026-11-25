@@ -443,7 +443,9 @@ fn stretchy_arrow_svg_verbose(ch: char, w: f64, em: f64) -> String {
 enum FencePart<'a, B> {
     Element {
         layout: B,
-        atom: AtomType,
+        /// The atom, and the one that what follows is spaced against. `None`
+        /// for a space.
+        atoms: Option<(AtomType, AtomType)>,
         style: MathStyle,
         size: f64,
     },
@@ -452,13 +454,16 @@ enum FencePart<'a, B> {
 
 fn fence_atom_gap(
     previous: &mut Option<AtomType>,
-    atom: AtomType,
+    atoms: Option<(AtomType, AtomType)>,
     style: MathStyle,
     size: f64,
 ) -> f64 {
+    let Some((atom, next)) = atoms else {
+        return 0.0;
+    };
     let (left, right) = spacing::adjust_bin_context(*previous, Some(atom));
     let current = right.unwrap_or(atom);
-    *previous = Some(current);
+    *previous = Some(if next == atom { current } else { next });
     left.map_or(0.0, |left| {
         spacing::inter_atom_space(left, current, style) * size
     })
@@ -498,7 +503,11 @@ pub(super) fn layout_fenced(
                 max_d = max_d.max(child.depth);
                 laid_out.push(FencePart::Element {
                     layout: child,
-                    atom: spacing::classify_node_in(n, current_ctx.branch_style()),
+                    atoms: (!spacing::is_space(n)).then(|| {
+                        let style = current_ctx.branch_style();
+                        let atom = spacing::classify_node_in(n, style);
+                        (atom, spacing::right_atom(n, atom, style))
+                    }),
                     style: current_ctx.effective_spacing_style(),
                     // A break has no size of its own.
                     size: if matches!(n, MathNode::LineBreak) {
@@ -601,11 +610,11 @@ pub(super) fn layout_fenced(
         match part {
             FencePart::Element {
                 layout: child,
-                atom,
+                atoms,
                 style,
                 size,
             } => {
-                cursor_x += fence_atom_gap(&mut prev_atom, atom, style, size);
+                cursor_x += fence_atom_gap(&mut prev_atom, atoms, style, size);
                 let w = child.width;
                 children.push(PositionedBox::new(cursor_x, 0.0, child));
                 cursor_x += w;
@@ -614,11 +623,11 @@ pub(super) fn layout_fenced(
                 if s != "."
                     && let Some(ch) = s.chars().next()
                 {
-                    // Spacing before middle delimiter (treat as Inner atom)
+                    // A `\middle` closes what is before it and opens what is after.
                     if let Some(prev) = prev_atom {
                         let space = spacing::inter_atom_space(
                             prev,
-                            spacing::AtomType::Inner,
+                            spacing::AtomType::Close,
                             ctx.effective_spacing_style(),
                         );
                         if space > 0.0 {
@@ -637,7 +646,7 @@ pub(super) fn layout_fenced(
                     children.push(PositionedBox::new(cursor_x, 0.0, delim));
                     cursor_x += dw;
                     // Next element sees middle delimiter as Inner for spacing
-                    prev_atom = Some(spacing::AtomType::Inner);
+                    prev_atom = Some(spacing::AtomType::Open);
                 }
             },
         }
@@ -714,7 +723,11 @@ pub(super) fn layout_fenced_arena(
                 max_d = max_d.max(b.depth);
                 laid_out.push(FencePart::Element {
                     layout: laid,
-                    atom: spacing::classify_node_c_in(ast, child_id, current_ctx.branch_style()),
+                    atoms: (!spacing::is_space_c(ast, child_id)).then(|| {
+                        let style = current_ctx.branch_style();
+                        let atom = spacing::classify_node_c_in(ast, child_id, style);
+                        (atom, spacing::right_atom_c(ast, child_id, atom, style))
+                    }),
                     style: current_ctx.effective_spacing_style(),
                     // A break has no size of its own.
                     size: if matches!(*ast.node(child_id), CompactNode::Newline) {
@@ -813,11 +826,11 @@ pub(super) fn layout_fenced_arena(
                 if s != "."
                     && let Some(ch) = s.chars().next()
                 {
-                    // Spacing before middle delimiter (treat as Inner atom)
+                    // A `\middle` closes what is before it and opens what is after.
                     if let Some(prev) = prev_atom {
                         let space = spacing::inter_atom_space(
                             prev,
-                            spacing::AtomType::Inner,
+                            spacing::AtomType::Close,
                             ctx.effective_spacing_style(),
                         );
                         if space > 0.0 {
@@ -856,16 +869,16 @@ pub(super) fn layout_fenced_arena(
                         id: delim_id,
                     });
                     cursor_x += dw;
-                    prev_atom = Some(spacing::AtomType::Inner);
+                    prev_atom = Some(spacing::AtomType::Open);
                 }
             },
             FencePart::Element {
                 layout: laid,
-                atom,
+                atoms,
                 style,
                 size,
             } => {
-                cursor_x += fence_atom_gap(&mut prev_atom, atom, style, size);
+                cursor_x += fence_atom_gap(&mut prev_atom, atoms, style, size);
                 let w = arena.get(laid).width;
                 arena.push_child(ArenaPositionedBox {
                     dx: cursor_x,

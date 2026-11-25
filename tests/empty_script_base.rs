@@ -177,6 +177,7 @@ fn operators_still_take_a_script_after_an_empty_group_as_limit() {
 #[test]
 fn layout_keeps_the_empty_base() {
     let svg = |input: &str| convert(input, Format::LaTeX, Format::Svg).unwrap();
-    assert_ne!(svg(r"x{}_1"), svg(r"x_1"));
+    // Only the second is under the slope of the letter.
+    assert_ne!(svg(r"f{}_1"), svg(r"f_1"));
     assert_eq!(svg(r"x{}_1"), svg(r"x{}_{1}"));
 }
