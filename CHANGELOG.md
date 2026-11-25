@@ -68,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `\mathord{=}`.
 - Rendering: the box of `\sum` and the other displayed operators is that of the drawn
   glyph, so their limits are as close as TeX sets them with the font.
+- Rendering: the delimiters of `\binom` and `\genfrac` have TeX's two sizes and do not
+  grow with what is inside.
 - Rendering: the left-aligned columns of `aligned`, `align`, `split` and the like
   start with an ordinary atom, as in amsmath: `a &= b` has a space before `=`.
 - Rendering: an arrow or equals sign is drawn at its natural width under or over

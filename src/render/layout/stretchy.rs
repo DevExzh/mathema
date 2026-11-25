@@ -659,12 +659,11 @@ pub(super) fn layout_fenced(
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
         // TeX Rule 15e: fixed minimum delimiter height for fractions
-        let delim_min = if ctx.branch_style().is_display() {
+        if ctx.branch_style().is_display() {
             ctx.params.delim1 * ctx.size()
         } else {
             ctx.params.delim2 * ctx.size()
-        };
-        delim_min.max(max_h + max_d)
+        }
     } else {
         // TeX Rule 19: delimiterFactor/delimiterShortfall for \left...\right
         let max_dist_from_axis = (max_h - axis).max(max_d + axis);
@@ -825,12 +824,11 @@ pub(super) fn layout_fenced_arena(
 
     let axis = ctx.params.axis_height * ctx.size();
     let target_h = if is_genfrac {
-        let delim_min = if ctx.branch_style().is_display() {
+        if ctx.branch_style().is_display() {
             ctx.params.delim1 * ctx.size()
         } else {
             ctx.params.delim2 * ctx.size()
-        };
-        delim_min.max(max_h + max_d)
+        }
     } else {
         let max_dist_from_axis = (max_h - axis).max(max_d + axis);
         let delim_factor = 901.0_f64;

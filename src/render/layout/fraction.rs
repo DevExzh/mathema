@@ -20,11 +20,6 @@ pub(super) fn layout_fraction(
         ctx.style.fracnum()
     };
     let den_style = num_style.cramped();
-    // Fraction content should always preserve at least text-level inter-atom
-    // spacing (medium and thick spaces).  Without this floor, inline fractions
-    // (Text→Script) suppress binary-operator spacing, producing visually
-    // cramped numerators/denominators.  The layout SIZE still follows the
-    // normal fracnum/fracden rules; only the spacing calculation is upgraded.
     let num_ctx = ctx.with_style(num_style);
     let den_ctx = ctx.with_style(den_style);
     let num_box = layout_node(num, &num_ctx);

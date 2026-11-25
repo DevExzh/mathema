@@ -661,6 +661,50 @@ fn symbols_in_braces_have_no_space() {
     }
 }
 
+/// The delimiters of a binomial do not grow with it (Rule 15e).
+#[test]
+fn delimiters_of_binomials_have_fixed_sizes() {
+    for (latex, style, width, height, depth) in [
+        ("\\binom{n-1}{k}", MathStyle::Text, 2.281, 0.909, 0.352),
+        (
+            "\\tbinom{\\frac{a}{b}}{c}",
+            MathStyle::Text,
+            1.471,
+            0.934,
+            0.352,
+        ),
+        (
+            "\\binom{\\frac{a}{b}}{\\frac{c}{d}}",
+            MathStyle::Display,
+            2.146,
+            1.446,
+            1.038,
+        ),
+        ("\\binom{n}{k}", MathStyle::Display, 2.072, 1.446, 0.946),
+        (
+            "\\left(\\frac{a}{b}\\right)",
+            MathStyle::Display,
+            1.963,
+            1.146,
+            0.686,
+        ),
+    ] {
+        assert_arena_heap_equivalent(latex, style);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        let root = layout_expr(&expr, style, &default_options());
+        for (actual, expected) in [
+            (root.width, width),
+            (root.height, height),
+            (root.depth, depth),
+        ] {
+            assert!(
+                (actual - expected).abs() < 2e-3,
+                "{latex}: {actual}, not {expected}"
+            );
+        }
+    }
+}
+
 /// Scripts are drawn with the font's designs for them (`ssty`), as in XeTeX.
 #[test]
 fn scripts_have_the_designs_of_the_font() {
