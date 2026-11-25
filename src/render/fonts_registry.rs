@@ -164,53 +164,83 @@ pub fn face(id: FontId) -> &'static ttf_parser::Face<'static> {
     })
 }
 
-/// The glyphs of the Math font's characters in scripts and in scripts of scripts.
-static SCRIPT_GLYPHS: LazyLock<HashMap<char, [u16; 2]>> = LazyLock::new(|| {
-    let face = face(FontId::Math);
-    let mut glyphs = HashMap::new();
-    let Some(gsub) = face.tables().gsub else {
-        return glyphs;
-    };
-    let lookups: Vec<_> = gsub
-        .features
-        .into_iter()
-        .filter(|feature| feature.tag == ttf_parser::Tag::from_bytes(b"ssty"))
-        .flat_map(|feature| feature.lookup_indices)
-        .filter_map(|index| gsub.lookups.get(index))
-        .collect();
-    let alternate = |gid, level| {
-        lookups.iter().find_map(|lookup| {
-            lookup
-                .subtables
-                .into_iter::<ttf_parser::gsub::SubstitutionSubtable<'_>>()
-                .find_map(|table| match table {
-                    ttf_parser::gsub::SubstitutionSubtable::Alternate(table) => {
-                        let set = table.alternate_sets.get(table.coverage.get(gid)?)?;
-                        set.alternates.get(level)
-                    },
-                    _ => None,
-                })
-        })
-    };
-    let Some(cmap) = face.tables().cmap else {
-        return glyphs;
-    };
-    for subtable in cmap
-        .subtables
-        .into_iter()
-        .filter(|table| table.is_unicode())
-    {
-        subtable.codepoints(|code| {
-            if let Some(ch) = char::from_u32(code)
-                && let Some(gid) = face.glyph_index(ch)
-                && let (Some(first), Some(second)) = (alternate(gid, 0), alternate(gid, 1))
-            {
-                glyphs.insert(ch, [first.0, second.0]);
-            }
-        });
+/// A character of the Math font with designs for scripts and for scripts of
+/// scripts (OpenType `ssty`), and their metrics once read.
+struct ScriptGlyph {
+    glyphs: [u16; 2],
+    metrics: [OnceLock<Option<GlyphMetrics>>; 2],
+}
+
+/// The alternates of the Math font's `ssty` feature.
+static SCRIPT_ALTERNATES: LazyLock<Vec<ttf_parser::gsub::AlternateSubstitution<'static>>> =
+    LazyLock::new(|| {
+        let Some(gsub) = face(FontId::Math).tables().gsub else {
+            return Vec::new();
+        };
+        gsub.features
+            .into_iter()
+            .filter(|feature| feature.tag == ttf_parser::Tag::from_bytes(b"ssty"))
+            .flat_map(|feature| feature.lookup_indices)
+            .filter_map(|index| gsub.lookups.get(index))
+            .flat_map(|lookup| {
+                lookup
+                    .subtables
+                    .into_iter::<ttf_parser::gsub::SubstitutionSubtable<'static>>()
+            })
+            .filter_map(|table| match table {
+                ttf_parser::gsub::SubstitutionSubtable::Alternate(table) => Some(table),
+                _ => None,
+            })
+            .collect()
+    });
+
+/// The designs of `ch` for scripts, read from the font.
+fn read_script_glyph(ch: char) -> Option<ScriptGlyph> {
+    let gid = face(FontId::Math).glyph_index(ch)?;
+    let glyphs = SCRIPT_ALTERNATES.iter().find_map(|table| {
+        let set = table.alternate_sets.get(table.coverage.get(gid)?)?;
+        Some([set.alternates.get(0)?.0, set.alternates.get(1)?.0])
+    })?;
+    let metrics = [const { OnceLock::new() }; 2];
+    Some(ScriptGlyph { glyphs, metrics })
+}
+
+/// The first code point of the Mathematical Alphanumeric Symbols.
+const MATH_ALPHANUMERICS: u32 = 0x1D400;
+
+/// The designs for scripts, read as characters are first drawn: ASCII and the
+/// math alphanumerics in tables, others (only those of the font) in a map.
+static ASCII_SCRIPT_GLYPHS: [OnceLock<Option<ScriptGlyph>>; 128] = [const { OnceLock::new() }; 128];
+static ALPHANUMERIC_SCRIPT_GLYPHS: [OnceLock<Option<ScriptGlyph>>; 1024] =
+    [const { OnceLock::new() }; 1024];
+static OTHER_SCRIPT_GLYPHS: LazyLock<RwLock<HashMap<char, Option<&'static ScriptGlyph>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// The designs of `ch` for scripts, if the Math font has them.
+#[inline]
+fn script_glyph(ch: char) -> Option<&'static ScriptGlyph> {
+    let code = ch as u32;
+    if let Some(cell) = ASCII_SCRIPT_GLYPHS.get(code as usize) {
+        return cell.get_or_init(|| read_script_glyph(ch)).as_ref();
     }
-    glyphs
-});
+    if let Some(cell) = code
+        .checked_sub(MATH_ALPHANUMERICS)
+        .and_then(|index| ALPHANUMERIC_SCRIPT_GLYPHS.get(index as usize))
+    {
+        return cell.get_or_init(|| read_script_glyph(ch)).as_ref();
+    }
+    if let Some(&hit) = OTHER_SCRIPT_GLYPHS.read().expect("script glyphs").get(&ch) {
+        return hit;
+    }
+    // (Only characters of the font are kept, so the map stays small.)
+    face(FontId::Math).glyph_index(ch)?;
+    let glyph = read_script_glyph(ch).map(|glyph| &*Box::leak(Box::new(glyph)));
+    *OTHER_SCRIPT_GLYPHS
+        .write()
+        .expect("script glyphs")
+        .entry(ch)
+        .or_insert(glyph)
+}
 
 /// The font for `ch`, a character of the Math font, in a style of the given size
 /// class: the Math font has designs for scripts of most letters and digits.
@@ -221,24 +251,30 @@ pub fn script_font(ch: char, size_class: usize) -> Option<FontId> {
         1 => FontId::MathScript,
         _ => FontId::MathScriptScript,
     };
-    SCRIPT_GLYPHS.contains_key(&ch).then_some(font)
+    script_glyph(ch).map(|_| font)
+}
+
+/// The level of a font of designs for scripts.
+#[inline]
+fn script_level(id: FontId) -> Option<usize> {
+    match id {
+        FontId::MathScript => Some(0),
+        FontId::MathScriptScript => Some(1),
+        _ => None,
+    }
 }
 
 /// The glyph of `ch` in a font.
 #[inline]
 pub fn glyph_index(id: FontId, ch: char) -> Option<ttf_parser::GlyphId> {
-    let level = match id {
-        FontId::MathScript => 0,
-        FontId::MathScriptScript => 1,
-        FontId::MathDisplay => {
-            return super::glyph_variants::display_operator_variant(ch)
-                .map(|v| ttf_parser::GlyphId(v.glyph_id));
-        },
-        _ => return face(id).glyph_index(ch),
+    if id == FontId::MathDisplay {
+        return super::glyph_variants::display_operator_variant(ch)
+            .map(|v| ttf_parser::GlyphId(v.glyph_id));
+    }
+    let Some(level) = script_level(id) else {
+        return face(id).glyph_index(ch);
     };
-    SCRIPT_GLYPHS
-        .get(&ch)
-        .map(|glyphs| ttf_parser::GlyphId(glyphs[level]))
+    script_glyph(ch).map(|glyph| ttf_parser::GlyphId(glyph.glyphs[level]))
 }
 
 /// The point of `ch` in a design for scripts that an accent is centred on, em.
@@ -324,6 +360,13 @@ pub fn text_metrics(ch: char, italic: bool, font: FontId) -> GlyphMetrics {
         } else {
             glyph_metrics_upright(ch)
         };
+    }
+    if let Some(level) = script_level(font)
+        && let Some(glyph) = script_glyph(ch)
+    {
+        return glyph.metrics[level]
+            .get_or_init(|| face_glyph_metrics(font, ch))
+            .unwrap_or_else(|| glyph_metrics_upright(ch));
     }
     if let Some(hit) = TEXT_METRICS_CACHE
         .read()

@@ -71,12 +71,10 @@ pub(super) fn is_space(node: &MathNode) -> bool {
     }
 }
 
+#[inline]
 fn is_invisible(text: &str) -> bool {
-    let mut chars = text.chars();
-    matches!(
-        (chars.next(), chars.next()),
-        (Some('\u{2061}'..='\u{2064}'), None)
-    )
+    // U+2061 to U+2064 alone.
+    matches!(text.as_bytes(), [0xE2, 0x81, 0xA1..=0xA4])
 }
 
 /// Compact-AST version of `is_space`.
