@@ -1561,3 +1561,18 @@ fn combining_mark_at_the_start_of_a_name() {
         }
     }
 }
+
+/// Dropped text in a text box leaves the math around it one run.
+#[test]
+fn dropped_text_between_inline_math() {
+    for (input, latex) in [
+        ("\\angl{$h$\u{14}$`$}", r"\angl{$h`$}"),
+        ("\\angl{a\0$x$\0\\textbf{\0}$y$b}", r"\angl{a$xy$b}"),
+        ("\\reflectbox{$x$\0$y$}", r"\reflectbox{$xy$}"),
+        (r"\angl{$x$ $y$}", r"\angl{$x$ $y$}"),
+    ] {
+        let written = mathema::convert(input, mathema::Format::LaTeX, mathema::Format::LaTeX);
+        assert_eq!(written.unwrap(), latex);
+        assert_eq!(reread(latex).to_latex().unwrap(), latex);
+    }
+}

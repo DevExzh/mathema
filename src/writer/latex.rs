@@ -3442,7 +3442,31 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         CompactNode::Row(span) => arena.children(span),
         _ => &one,
     };
+    // Text that is dropped entirely leaves the math around it one run.
+    let dropped = |id: NodeId| match *arena.node(id) {
+        CompactNode::Text(style, sid) if style != TextStyle::Monospace => {
+            is_dropped_text(arena.str_val(sid)).then_some(sid)
+        },
+        _ => None,
+    };
+    let kept: smallvec::SmallVec<[NodeId; 8]>;
     let mut rest = children;
+    if children.iter().any(|&id| dropped(id).is_some()) {
+        for &id in children {
+            if let Some(sid) = dropped(id) {
+                arena
+                    .str_val(sid)
+                    .chars()
+                    .for_each(|ch| buf.report.char(ch));
+            }
+        }
+        kept = children
+            .iter()
+            .copied()
+            .filter(|&id| dropped(id).is_none())
+            .collect();
+        rest = &kept;
+    }
     while let Some((&first, tail)) = rest.split_first() {
         if let CompactNode::Text(style, sid) = *arena.node(first) {
             if style == TextStyle::Normal {
@@ -3453,12 +3477,6 @@ fn write_hbox_content(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     buf.push_str("{}");
                 }
                 write_text_content(buf, text, false);
-            } else if is_dropped_text(arena.str_val(sid)) {
-                // In text mode there is nothing to keep apart.
-                arena
-                    .str_val(sid)
-                    .chars()
-                    .for_each(|ch| buf.report.char(ch));
             } else {
                 write_styled_text(buf, style, arena.str_val(sid));
             }
