@@ -741,6 +741,11 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
             atom_type: MathAtomType::Op,
             content,
         } => {
+            // The reader gives the name in `\mathop{\lim}\nolimits` the placement.
+            if let CompactNode::Operator { name, .. } = *arena.node(content) {
+                write_operator_name(buf, &kept_name(arena.str_val(name)), LimitStyle::SubSup);
+                return;
+            }
             write_math_atom_op(buf, arena, content);
             buf.push_str("\\nolimits");
         },
@@ -756,6 +761,22 @@ fn write_postscript_base(buf: &mut LatexBuffer, arena: &AstArena, base: NodeId) 
     }
 }
 
+/// The first argument of `\overset` or `\underset`, where the reader takes a
+/// lone accent glyph for an accent.
+fn write_stacked_content(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
+    let glyph = match *arena.node(written_script_content(arena, content)) {
+        CompactNode::Symbol(_, sid) => single_char(arena.str_val(sid)),
+        _ => None,
+    };
+    if glyph.is_some_and(crate::unicode::symbols::is_accent_glyph) {
+        buf.push_str("\\mathord{");
+        write_atom_content(buf, arena, content);
+        buf.push('}');
+    } else {
+        write_wrapped_content(buf, arena, content);
+    }
+}
+
 fn write_compound_limits(
     buf: &mut LatexBuffer,
     arena: &AstArena,
@@ -764,6 +785,23 @@ fn write_compound_limits(
     upper: NodeId,
     movable: bool,
 ) -> bool {
+    let placed = |limit| !is_effectively_empty_arg(arena, limit);
+    let mut base = written_script_content(arena, base);
+    // `\mathop{x}` whose own limit is not written.
+    while let CompactNode::Overscript {
+        base: inner,
+        over: limit,
+        movable_limits: true,
+    }
+    | CompactNode::Underscript {
+        base: inner,
+        under: limit,
+        movable_limits: true,
+    } = *arena.node(base)
+        && !placed(limit)
+    {
+        base = written_script_content(arena, inner);
+    }
     let CompactNode::MathAtom {
         atom_type: MathAtomType::Op,
         content,
@@ -771,6 +809,10 @@ fn write_compound_limits(
     else {
         return false;
     };
+    // A placement with nothing to place is not read back.
+    if !movable && !placed(lower) && !placed(upper) {
+        return false;
+    }
     // The reader gives a named operator in `\mathop{\lim}\limits^a` its own
     // placement (`\lim\limits^a`), a different tree. An explicit wrapper
     // (`\overset{a}{\mathop{\lim}}`, `\overline{…}`) reads back as written.
@@ -1479,7 +1521,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
         CompactNode::Subscript { base, .. }
         | CompactNode::Superscript { base, .. }
         | CompactNode::SubSup { base, .. } => {
-            if is_empty_row(arena, base) {
+            if is_empty_script_base(arena, base) {
                 write_standalone_empty_base_script(buf, arena, id);
             } else {
                 write_script_node(buf, arena, id);
@@ -1558,7 +1600,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     buf.push('}');
                 } else {
                     buf.push_str("\\overset{");
-                    write_wrapped_content(buf, arena, over);
+                    write_stacked_content(buf, arena, over);
                     buf.push_str("}{");
                     write_wrapped_content(buf, arena, base);
                     buf.push('}');
@@ -1586,7 +1628,7 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                     buf.push('}');
                 } else {
                     buf.push_str("\\underset{");
-                    write_wrapped_content(buf, arena, under);
+                    write_stacked_content(buf, arena, under);
                     buf.push_str("}{");
                     write_wrapped_content(buf, arena, base);
                     buf.push('}');
@@ -1604,9 +1646,9 @@ fn write_node(buf: &mut LatexBuffer, arena: &AstArena, id: NodeId) {
                 return;
             }
             buf.push_str("\\underset{");
-            write_wrapped_content(buf, arena, under);
+            write_stacked_content(buf, arena, under);
             buf.push_str("}{\\overset{");
-            write_wrapped_content(buf, arena, over);
+            write_stacked_content(buf, arena, over);
             buf.push_str("}{");
             write_wrapped_content(buf, arena, base);
             buf.push_str("}}");

@@ -1387,7 +1387,7 @@ fn normalize_array_cell(arena: &mut AstArena, cell_id: NodeId) -> crate::error::
 /// True if `id` is a script node whose base is effectively empty.  Such nodes
 /// arise when a sub/superscript marker is not attached to an explicit base
 /// during parsing (e.g. `sm\Big'` where `\Big` has no content).
-fn is_empty_base_script(arena: &AstArena, id: NodeId) -> bool {
+pub(crate) fn is_empty_base_script(arena: &AstArena, id: NodeId) -> bool {
     match *arena.node(id) {
         CompactNode::Subscript { base, .. }
         | CompactNode::Superscript { base, .. }

@@ -1691,6 +1691,29 @@ fn scripts_beside_middle_delimiters_are_stable() {
     }
 }
 
+#[test]
+fn scripts_and_limits_with_nothing_beside_them_are_stable() {
+    for (source, latex) in [
+        (r"_{\hspace{}^C}", r"{}_{{}^{C}}"),
+        (r"\mathop\max{^2}", r"\max\nolimits^{2}"),
+        (r"\mathop\bmod{}^t", r"\operatorname{mod}^t"),
+        (r"\overset{}\mathop|'", r"{\overset{}{\mathop{|}}}^{\prime}"),
+        (r"\overset{a}{\mathop{x}}", r"\mathop{x}\limits^a"),
+        (
+            "\\xrightarrow{\u{30a}}",
+            r"\overset{\mathord{\char778 }}{\rightarrow}",
+        ),
+        (r"\sideset{_1}{}'", r"{}_{1}{}^{\prime}"),
+        (r"\sideset{_1}{}{!(}", r"{{}_{1}!}("),
+        (r"\sideset{_1}{}\,", r"{}_{1}\,"),
+        (r"\sideset{_1}{}\\^{{}}", r"{}_{1}\\ "),
+    ] {
+        use mathema::Format::LaTeX;
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+    }
+}
+
 /// An empty preamble is the preamble, not the first cell.
 #[test]
 fn empty_array_preamble() {
