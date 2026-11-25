@@ -520,6 +520,40 @@ fn wrapped_characters_take_scripts_and_accents_like_bare_ones() {
     assert_eq!(offset("\\hat{\\mathord{V}}"), offset("\\hat V"));
 }
 
+/// A left-aligned column of `aligned` starts with amsmath's `{}`, as in XeTeX;
+/// those of `array`, matrices and `cases` do not.
+#[test]
+fn left_columns_of_aligned_start_with_an_ordinary_atom() {
+    let width = |latex: &str| {
+        assert_arena_heap_equivalent(latex, MathStyle::Display);
+        let expr = crate::from_latex(latex).unwrap().expr();
+        layout_expr(&expr, MathStyle::Display, &default_options()).width
+    };
+    for (latex, expected) in [
+        ("\\begin{aligned}a&=b\\\\c&=d\\end{aligned}", 2.407),
+        ("\\begin{split}a&=b\\\\c&=d\\end{split}", 2.407),
+        ("\\begin{aligned}a&+b\\\\&-c\\end{aligned}", 2.209),
+        ("\\begin{aligned}a&\\sin x\\end{aligned}", 2.662),
+        ("\\begin{aligned}a&,b\\end{aligned}", 1.417),
+        ("\\begin{aligned}a=&b\\end{aligned}", 2.028),
+        ("\\begin{aligned}&\\end{aligned}", 0.0),
+        ("\\begin{array}{rl}a&=b\\end{array}", 4.028),
+        ("\\begin{matrix}a&=b\\end{matrix}", 3.028),
+        ("\\begin{cases}a&=b\\end{cases}", 3.772),
+        ("\\begin{gathered}=a\\end{gathered}", 1.585),
+    ] {
+        let actual = width(latex);
+        assert!((actual - expected).abs() < 2e-3, "{latex}: {actual}");
+    }
+    // Its MathML is laid out alike.
+    let mathml = crate::from_latex("\\begin{aligned}a&=b\\end{aligned}").unwrap();
+    let read = crate::from_mathml(&mathml.to_mathml().unwrap())
+        .unwrap()
+        .expr();
+    let drawn = layout_expr(&read, MathStyle::Display, &default_options()).width;
+    assert!((drawn - 2.306).abs() < 2e-3, "{drawn}");
+}
+
 /// An equals sign is drawn wider for a label wider than two of it.
 #[test]
 fn an_equals_sign_stretches_past_two_of_it() {

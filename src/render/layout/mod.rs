@@ -537,6 +537,11 @@ pub fn layout_expr(expr: &MathExpr, style: MathStyle, options: &RenderOptions) -
 }
 
 fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
+    layout_row_after(None, nodes, ctx)
+}
+
+/// A row that the atom `before` is before, in the same list but not drawn.
+fn layout_row_after(before: Option<AtomType>, nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
     if nodes.is_empty() {
         return LayoutBox::kern(0.0);
     }
@@ -546,7 +551,7 @@ fn layout_row(nodes: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
 
     let mut children = Vec::with_capacity(nodes.len() * 2);
     let mut cursor_x = 0.0;
-    let mut prev_atom: Option<AtomType> = None;
+    let mut prev_atom = before;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
     let mut current_ctx = ctx.clone();
@@ -1683,6 +1688,17 @@ fn layout_row_arena(
     arena: &mut LayoutArena,
     ctx: &ArenaLayoutCtx,
 ) -> LayoutBoxId {
+    layout_row_after_arena(None, ast, span, arena, ctx)
+}
+
+/// Arena counterpart of `layout_row_after`.
+fn layout_row_after_arena(
+    before: Option<AtomType>,
+    ast: &AstArena,
+    span: NodeSpan,
+    arena: &mut LayoutArena,
+    ctx: &ArenaLayoutCtx,
+) -> LayoutBoxId {
     let ids = ast.children(span);
     if ids.is_empty() {
         return arena.alloc(ArenaLayoutBox::kern(0.0));
@@ -1693,7 +1709,7 @@ fn layout_row_arena(
         .iter()
         .any(|&id| matches!(*ast.node(id), CompactNode::Newline));
     if !has_newlines {
-        return layout_row_segment_arena(ast, ids, arena, ctx);
+        return layout_row_segment_arena(before, ast, ids, arena, ctx);
     }
 
     // Multi-line: split at Newline boundaries and layout each line
@@ -1706,7 +1722,7 @@ fn layout_row_arena(
 
     for i in 0..ids.len() {
         if matches!(*ast.node(ids[i]), CompactNode::Newline) {
-            let line = layout_row_segment_arena(ast, &ids[line_start..i], arena, &line_ctx);
+            let line = layout_row_segment_arena(None, ast, &ids[line_start..i], arena, &line_ctx);
             for &id in &ids[line_start..i] {
                 if let CompactNode::SizeScale(idx) = *ast.node(id) {
                     line_ctx.size_scale = size_scale_factor(idx);
@@ -1717,7 +1733,7 @@ fn layout_row_arena(
         }
     }
     // Last segment after final newline
-    let line = layout_row_segment_arena(ast, &ids[line_start..], arena, &line_ctx);
+    let line = layout_row_segment_arena(None, ast, &ids[line_start..], arena, &line_ctx);
     line_ids.push(line);
 
     if line_ids.len() == 1 {
@@ -1770,6 +1786,7 @@ fn layout_row_arena(
 
 /// Layout a contiguous segment of nodes as a single horizontal line (arena path).
 fn layout_row_segment_arena(
+    before: Option<AtomType>,
     ast: &AstArena,
     ids: &[NodeId],
     arena: &mut LayoutArena,
@@ -1782,7 +1799,7 @@ fn layout_row_segment_arena(
     // Phase 1: layout all children and collect (box_id, dx) pairs.
     let mut laid_out: SmallVec<[(LayoutBoxId, f64); 16]> = SmallVec::new();
     let mut cursor_x = 0.0;
-    let mut prev_atom: Option<AtomType> = None;
+    let mut prev_atom = before;
     let mut max_height: f64 = 0.0;
     let mut max_depth: f64 = 0.0;
     let mut current_ctx = ctx.clone();

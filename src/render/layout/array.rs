@@ -14,6 +14,12 @@ pub(super) fn is_aligned_rl_pattern(columns: &[ColumnAlign]) -> bool {
         })
 }
 
+/// The atom before a cell: a left-aligned column of `aligned` and its like (not
+/// of `array`) starts with amsmath's `{}`.
+fn cell_start(column: usize, aligned: bool) -> Option<AtomType> {
+    (aligned && !column.is_multiple_of(2)).then_some(AtomType::Ord)
+}
+
 /// Return the column gap that should appear *after* column `j` (0-indexed)
 /// in an array.  For aligned environments (detected via `is_aligned`) the gap
 /// alternates between near-zero (within an rl-pair) and wider (between pairs).
@@ -436,13 +442,17 @@ pub(super) fn layout_array(
     let mut has_override = false;
     for row in rows {
         let mut row_layouts = Vec::new();
-        for cell in row {
+        for (column, cell) in row.iter().enumerate() {
             has_span |= matches!(cell.as_slice(), [MathNode::SpannedCell { .. }]);
             has_override |= matches!(
                 cell.as_slice(),
                 [MathNode::SpannedCell { .. } | MathNode::AlignedCell { .. }]
             );
-            row_layouts.push(layout_table_cell(cell, &cell_ctx));
+            row_layouts.push(layout_table_cell(
+                cell_start(column, aligned && !array_style),
+                cell,
+                &cell_ctx,
+            ));
         }
         cell_layouts.push(row_layouts);
     }
@@ -639,7 +649,7 @@ pub(super) fn layout_array_arena(
     });
     let mut has_span = false;
     let mut has_override = false;
-    for &cell_id in cell_ids_ast {
+    for (index, &cell_id) in cell_ids_ast.iter().enumerate() {
         has_span |= matches!(ast.node(cell_id), CompactNode::SpannedCell { .. });
         has_override |= matches!(
             ast.node(cell_id),
@@ -647,7 +657,13 @@ pub(super) fn layout_array_arena(
         );
         match *ast.node(cell_id) {
             CompactNode::Row(span) => {
-                cell_layout_ids.push(layout_table_cell_arena(ast, span, arena, &cell_ctx));
+                cell_layout_ids.push(layout_table_cell_arena(
+                    cell_start(index % nc, aligned && !array_style),
+                    ast,
+                    span,
+                    arena,
+                    &cell_ctx,
+                ));
             },
             _ => {
                 cell_layout_ids.push(layout_node_arena(ast, cell_id, arena, &cell_ctx));

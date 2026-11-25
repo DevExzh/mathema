@@ -70,7 +70,11 @@ const CELL_COLOR_SEP_EM: f64 = 0.1;
 
 /// A cell that is all a coloured box: `\cellcolor` takes no space in TeX, and
 /// is drawn around the content.
-pub(super) fn layout_table_cell(cell: &[MathNode], ctx: &LayoutCtx) -> LayoutBox {
+pub(super) fn layout_table_cell(
+    before: Option<AtomType>,
+    cell: &[MathNode],
+    ctx: &LayoutCtx,
+) -> LayoutBox {
     if let [
         MathNode::Boxed {
             content,
@@ -81,7 +85,7 @@ pub(super) fn layout_table_cell(cell: &[MathNode], ctx: &LayoutCtx) -> LayoutBox
     {
         return boxed(content, Some(bg), None, CELL_COLOR_SEP_EM * ctx.size(), ctx);
     }
-    layout_row(crate::ast::table_cell_parts(cell).1, ctx)
+    layout_row_after(before, crate::ast::table_cell_parts(cell).1, ctx)
 }
 
 pub(super) fn layout_boxed(
@@ -545,6 +549,7 @@ pub(super) fn layout_boxed_arena(
 
 /// Arena counterpart of [`layout_table_cell`].
 pub(super) fn layout_table_cell_arena(
+    before: Option<AtomType>,
     ast: &AstArena,
     span: NodeSpan,
     arena: &mut LayoutArena,
@@ -564,7 +569,7 @@ pub(super) fn layout_table_cell_arena(
         let padding = CELL_COLOR_SEP_EM * ctx.size();
         return boxed_arena(ast, content, colors, padding, arena, ctx);
     }
-    layout_row_arena(ast, span, arena, ctx)
+    layout_row_after_arena(before, ast, span, arena, ctx)
 }
 
 fn boxed_arena(
