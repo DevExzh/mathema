@@ -153,6 +153,13 @@ jobs:
         run: |
           for target in $(cargo +nightly fuzz list); do
             echo "::group::fuzz $target"
-            cargo +nightly fuzz run "$target" -- -max_total_time=30 -runs=100000
+            mkdir -p "fuzz/corpus/$target"
+            case "$target" in
+              fuzz_latex* | fuzz_layout | fuzz_svg_embed)
+                cargo +nightly fuzz run "$target" "fuzz/corpus/$target" fuzz/seeds/latex -- \
+                  -dict=fuzz/dict/latex.dict -max_total_time=30 -runs=100000 ;;
+              *)
+                cargo +nightly fuzz run "$target" -- -max_total_time=30 -runs=100000 ;;
+            esac
             echo "::endgroup::"
           done
