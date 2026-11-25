@@ -4,7 +4,8 @@ use crate::ast::*;
 use crate::error::{Config, Diagnostic, DiagnosticKind, Result, TypesettingPolicy};
 use crate::unicode::fonts::style_to_latex_font;
 use crate::unicode::symbols::{
-    is_latex_nary, latex_to_unicode, mapped_symbol_kind, nary_op_to_latex, unicode_to_latex,
+    UNNAMED_NARY, is_latex_nary, latex_to_unicode, mapped_symbol_kind, nary_op_to_latex,
+    unicode_to_latex,
 };
 use crate::writer::Writer;
 use std::borrow::Cow;
@@ -3622,7 +3623,13 @@ fn holds_middle(arena: &AstArena, id: NodeId) -> bool {
 /// the wrapper around an accent would change the class on the next read.
 fn write_math_atom_op(buf: &mut LatexBuffer, arena: &AstArena, content: NodeId) {
     buf.push_str("\\mathop{");
+    let start = buf.len();
     write_atom_content(buf, arena, content);
+    // `\mathop{⅀}` is the operator.
+    if single_char(&buf[start..]) == Some(UNNAMED_NARY) {
+        buf.insert_text(start, "{");
+        buf.push('}');
+    }
     buf.push('}');
 }
 
@@ -3957,7 +3964,7 @@ fn script_base_needs_braces(arena: &AstArena, id: NodeId) -> bool {
                 || (ch.is_ascii() && needs_escape(ch, Place::Identifier))
         }),
         CompactNode::Symbol(kind, _) => script_base_char(arena, id).is_some_and(|ch| {
-            if kind == SymbolKind::LargeOp && nary_op_to_latex(ch).is_none() {
+            if kind == SymbolKind::LargeOp && !is_latex_nary(ch) {
                 // `\mathop{…}`, whose limits a group would take away.
                 return false;
             }

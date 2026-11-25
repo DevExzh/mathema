@@ -742,7 +742,9 @@ fn parse_empheq_options(opts: &str) -> [Option<&str>; 3] {
     for part in parts {
         let part = part.trim();
         if let Some((key, val)) = part.split_once('=') {
+            // keyval takes the braces off a value.
             let val = val.trim();
+            let val = braced(val).unwrap_or(val).trim();
             match key.trim() {
                 // `box`, `innerbox` and `outerbox` all wrap the body in a box.
                 "box" | "innerbox" | "outerbox" => box_spec = Some(val),
@@ -755,24 +757,66 @@ fn parse_empheq_options(opts: &str) -> [Option<&str>; 3] {
     [box_spec, left_spec, right_spec]
 }
 
-/// Split the `\empheqlbrace` or the like that ends what is on the left of an
-/// empheq display, or begins what is on its right, from the rest.
-fn split_empheq_delimiter(spec: &str, left: bool) -> (&str, Option<char>) {
-    const PREFIX: &str = "\\empheq";
-    let at = if left {
-        spec.rfind(PREFIX)
-    } else {
-        spec.starts_with(PREFIX).then_some(0)
-    };
-    let Some(at) = at else {
-        return (spec, None);
-    };
-    let name = &spec[at + PREFIX.len()..];
-    let end = name
-        .find(|ch: char| !ch.is_ascii_alphabetic())
-        .unwrap_or(name.len());
-    let (name, after) = name.split_at(end);
-    let delimiter = match name.strip_prefix("big").unwrap_or(name) {
+/// What is in the braces around all of `text`.
+fn braced(text: &str) -> Option<&str> {
+    let inner = text.strip_prefix('{')?.strip_suffix('}')?;
+    let (mut depth, mut escaped) = (0usize, false);
+    for byte in inner.bytes() {
+        match byte {
+            _ if escaped => escaped = false,
+            b'\\' => escaped = true,
+            b'{' => depth += 1,
+            b'}' => depth = depth.checked_sub(1)?,
+            _ => {},
+        }
+    }
+    (depth == 0 && !escaped).then_some(inner)
+}
+
+/// Split a side of an empheq display at the `\empheqlbrace` or the like nearest
+/// to the display: what is outside of it, the delimiter, and what is between.
+fn split_empheq_delimiter(spec: &str, left: bool) -> Option<(&str, char, &str)> {
+    let mut found = None;
+    let mut depth = 0usize;
+    let mut at = 0;
+    while let Some(byte) = spec.as_bytes().get(at) {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'\\' => {
+                let name = &spec[at + 1..];
+                let end = name
+                    .find(|ch: char| !ch.is_ascii_alphabetic())
+                    .unwrap_or(name.len());
+                let (name, after) = name.split_at(end);
+                if depth == 0
+                    && let Some(delimiter) = empheq_delimiter(name)
+                {
+                    found = Some((&spec[..at], delimiter, after));
+                    if !left {
+                        break;
+                    }
+                }
+                // (Also past a brace that is a control symbol.)
+                at += end.max(
+                    after
+                        .chars()
+                        .next()
+                        .filter(|_| end == 0)
+                        .map_or(0, char::len_utf8),
+                );
+            },
+            _ => {},
+        }
+        at += 1;
+    }
+    found
+}
+
+/// empheq's delimiters as tall as the display.
+fn empheq_delimiter(command: &str) -> Option<char> {
+    let name = command.strip_prefix("empheq")?;
+    Some(match name.strip_prefix("big").unwrap_or(name) {
         "lbrace" => '{',
         "rbrace" => '}',
         "lbrack" => '[',
@@ -787,15 +831,8 @@ fn split_empheq_delimiter(spec: &str, left: bool) -> (&str, Option<char>) {
         "rfloor" => '\u{230B}',
         "lceil" => '\u{2308}',
         "rceil" => '\u{2309}',
-        _ => return (spec, None),
-    };
-    if left && after.trim().is_empty() {
-        (&spec[..at], Some(delimiter))
-    } else if !left {
-        (after, Some(delimiter))
-    } else {
-        (spec, None)
-    }
+        _ => return None,
+    })
 }
 
 /// Extract the `n`-th `{…}` group from a slice that begins after a command
@@ -3822,10 +3859,17 @@ impl LatexCompactParser {
             ))),
             "mathop" | "mathrel" | "mathbin" | "mathord" | "mathpunct" | "mathopen"
             | "mathclose" | "mathinner" => {
+                let source = input;
                 let (input, arg_id) = self.parse_required_group(input)?;
+                // `\mathop{⅀}`, and no other spelling of its content.
                 if name == "mathop"
-                    && let CompactNode::Symbol(SymbolKind::Ordinary, sid) = *self.arena.node(arg_id)
-                    && self.arena.str_val(sid).chars().eq([UNNAMED_NARY])
+                    && let CompactNode::Symbol(_, sid) = *self.arena.node(arg_id)
+                    && let group = source[..source.len() - input.len()].trim()
+                    && braced(group)
+                        .unwrap_or(group)
+                        .trim()
+                        .chars()
+                        .eq([UNNAMED_NARY])
                 {
                     let node = CompactNode::Symbol(SymbolKind::LargeOp, sid);
                     return Ok((input, self.arena.push_node(node)));
@@ -8365,16 +8409,21 @@ impl LatexCompactParser {
             node = self.apply_empheq_box(node, spec);
         }
         if left_spec.is_some() || right_spec.is_some() {
-            let (before, open) = self.parse_empheq_side(left_spec, true);
-            let (after, close) = self.parse_empheq_side(right_spec, false);
-            let content = self.arena.push_children_deferred(&[node]);
+            let (_, (before, open, inner)) = self.parse_empheq_side(left_spec, true)?;
+            let (_, (after, close, inner_after)) = self.parse_empheq_side(right_spec, false)?;
+            let mut content: SmallVec<[NodeId; 3]> = SmallVec::new();
+            content.extend(inner);
+            content.push(node);
+            content.extend(inner_after);
+            let content = self.arena.push_children_deferred(&content);
             node = self.arena.push_node(CompactNode::Fenced {
                 open,
                 close,
                 content,
             });
-            if !before.is_empty() || !after.is_empty() {
-                let mut ids = before;
+            if before.is_some() || after.is_some() {
+                let mut ids: SmallVec<[NodeId; 3]> = SmallVec::new();
+                ids.extend(before);
                 ids.push(node);
                 ids.extend(after);
                 let span = self.arena.push_children_deferred(&ids);
@@ -8410,33 +8459,62 @@ impl LatexCompactParser {
     }
 
     /// What empheq's `left=` or `right=` sets beside the display: a delimiter as
-    /// tall as it, or math, with such a delimiter (`f(x)=\empheqlbrace`) next to
-    /// the display.
-    fn parse_empheq_side(
+    /// tall as it, or math, which may hold such a delimiter (`f(x)=\empheqlbrace`).
+    /// Returns the math outside of the delimiter, it, and the math inside.
+    fn parse_empheq_side<'a>(
         &mut self,
-        spec: Option<&str>,
+        spec: Option<&'a str>,
         left: bool,
-    ) -> (SmallVec<[NodeId; 8]>, StrId) {
+    ) -> IResult<&'a str, (Option<NodeId>, StrId, Option<NodeId>)> {
         let spec = spec.unwrap_or("").trim();
         let null = self.arena.push_str("");
         if spec.is_empty() {
-            return (SmallVec::new(), null);
+            return Ok(("", (None, null, None)));
         }
         if let Ok((rest, delimiter)) = self.parse_delimiter_into(spec)
             && rest.trim().is_empty()
         {
-            return (SmallVec::new(), delimiter);
+            return Ok(("", (None, delimiter, None)));
         }
-        let (math, delimiter) = split_empheq_delimiter(spec, left);
-        let delimiter = delimiter.map_or(null, |ch| self.push_char_str(ch));
+        let Some((first, delimiter, last)) = split_empheq_delimiter(spec, left) else {
+            let (rest, math) = self.parse_empheq_math(spec)?;
+            return Ok((rest, (math, null, None)));
+        };
+        let delimiter = self.push_char_str(delimiter);
+        let (_, first) = self.parse_empheq_math(first)?;
+        let (_, last) = self.parse_empheq_math(last)?;
+        Ok(if left {
+            ("", (first, delimiter, last))
+        } else {
+            ("", (last, delimiter, first))
+        })
+    }
+
+    /// Math in a box of its own.
+    fn parse_empheq_math<'a>(&mut self, math: &'a str) -> IResult<&'a str, Option<NodeId>> {
         let fence = std::mem::replace(&mut self.in_left_right, false);
-        let parsed = self.parse_node_list(math).ok();
+        let parsed = self.parse_node_list(math);
         self.in_left_right = fence;
-        let (rest, ids) = parsed.unwrap_or((math, SmallVec::new()));
+        let (rest, ids) = match parsed {
+            Ok(parsed) => parsed,
+            Err(nom::Err::Error(error)) => (error.input, SmallVec::new()),
+            Err(error) => return Err(error),
+        };
         if !rest.trim().is_empty() {
+            if !self.lenient {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    rest,
+                    nom::error::ErrorKind::Verify,
+                )));
+            }
             self.warn(format!("empheq: `{rest}` was dropped"));
         }
-        (self.resolve_infix_fraction(ids), delimiter)
+        let ids = self.resolve_infix_fraction(ids);
+        if ids.is_empty() {
+            return Ok(("", None));
+        }
+        let span = self.arena.push_children_deferred(&ids);
+        Ok(("", Some(self.arena.push_node(CompactNode::Row(span)))))
     }
 
     fn parse_align_env<'a>(&mut self, input: &'a str, env_name: &str) -> IResult<&'a str, NodeId> {

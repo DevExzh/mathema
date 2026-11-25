@@ -2542,6 +2542,33 @@ fn an_operator_without_a_command_is_the_operator_again() {
     );
     let omml = mathema::convert(r"\mathop{⅀}_i^n x", LaTeX, Omml).unwrap();
     assert!(omml.contains("<m:nary>"), "{omml}");
+    // Its operand is spelled like that of an operator with a command.
+    for (input, expected) in [
+        (r"\bbsum{\bbsum}\prime", r"\mathop{⅀} {\mathop{⅀}}\prime"),
+        (r"\bbsum =\max", r"\mathop{⅀} =\max"),
+        (r"\bbsum^b++", r"\mathop{⅀}^b ++"),
+        // At the side of scripts it is a group.
+        (r"\sideset{}{^2}\bbsum x", r"{\mathop{⅀}}^{2}x"),
+        (r"\sideset{}{^2}\mathop{⅀} x", r"{\mathop{⅀}}^{2}x"),
+        (
+            r"\operatorname{\sideset{}{^2}\mathop{⅀}'}",
+            r"\operatorname{{\mathop{⅀}}^{2}'}",
+        ),
+        (r"\mathop ⅀x", r"\mathop{⅀} x"),
+        (r"\mathop{ ⅀ }x", r"\mathop{⅀} x"),
+        // Content that is the glyph once normalized is an operator atom.
+        (r"\mathop{{⅀}}x", r"\mathop{{⅀}}x"),
+        (r"\mathop{⅀\relax}{g}", r"\mathop{{⅀}}g"),
+        (r"\mathop{⅀\bf}x", r"\mathop{{⅀}}x"),
+        (r"\mathop{⅀{}}x", r"\mathop{{⅀}}x"),
+        (r"\mathop{\color{}⅀}x", r"\mathop{{⅀}}x"),
+        (r"\mathop{\bbsum}x", r"\mathop{\mathop{⅀}}x"),
+    ] {
+        let written = mathema::convert(input, LaTeX, LaTeX).unwrap();
+        assert_eq!(written, expected, "{input}");
+        let again = mathema::convert(&written, LaTeX, LaTeX).unwrap();
+        assert_eq!(again, written, "{input}");
+    }
     // Another atom around the glyph is that atom.
     for atom in [r"\mathord{⅀}", r"\mathrel{⅀}", r"\mathop{⅀⅀}"] {
         let read = mathema::from_latex(&format!("{atom}x")).unwrap();
@@ -2553,66 +2580,133 @@ fn an_operator_without_a_command_is_the_operator_again() {
 }
 
 /// empheq sets math beside its display, and some of its commands are
-/// delimiters.
+/// delimiters as tall as it.
 #[test]
 fn empheq_sides_are_math() {
-    for (options, before, after) in [
-        (r"left=\empheqlbrace", r"\left\{ ", r" \right."),
+    let display = r"\begin{aligned} a & = b \end{aligned}";
+    for (options, expected) in [
+        (r"left=\empheqlbrace", r"\left\{ @ \right."),
         (
             r"left=\empheqbiglbrack,right=\empheqrvert",
-            r"\left[ ",
-            r" \right|",
+            r"\left[ @ \right|",
         ),
-        (r"left=\{", r"\left\{ ", r" \right."),
-        (r"right=)", r"\left. ", r" \right)"),
         (
-            r"left={f(x)=}\empheqlbrace",
-            r"{{f(x)=}\left\{ ",
-            r" \right.}",
+            r"left=\empheqlangle,right=\empheqbigrangle",
+            r"\left\langle @ \right\rangle",
         ),
-        (r"right=\empheqrceil z", r"{\left. ", r" \right\rceil z}"),
-        (r"left={a\over b}", r"{\frac{a}{b}\left. ", r" \right.}"),
-        (r"left=\uppi", r"{\mathrm{\pi}\left. ", r" \right.}"),
-        ("left=3.", r"{3 .\left. ", r" \right.}"),
-        ("right=‖w", r"{\left. ", r" \right.\lVert w}"),
-        ("left=:w", r"{: w\left. ", r" \right.}"),
-        // Not next to the display, the command is an undefined one.
         (
-            r"left=\empheqlbrace x",
-            r"{\mathord{\text{\textbackslash{}empheqlbrace}}x\left. ",
-            r" \right.}",
+            r"left=\empheqlfloor,right=\empheqrfloor",
+            r"\left\lfloor @ \right\rfloor",
         ),
-        (r"left=a\over b", r"{\frac{a}{b}\left. ", r" \right.}"),
-        ("left=‖}", "", ""),
-        (r"left=\Rightarrow", r"\left⇒ ", r" \right."),
-        ("left=", r"\left. ", r" \right."),
+        (
+            r"left=\empheqlceil,right=\empheqrbrack",
+            r"\left\lceil @ \right]",
+        ),
+        (
+            r"left=\empheqlparen,right=\empheqrparen",
+            r"\left( @ \right)",
+        ),
+        (
+            r"left=\empheqlVert,right=\empheqrVert",
+            r"\left\| @ \right\|",
+        ),
+        (r"left=\empheqlvert", r"\left| @ \right."),
+        (r"left=\{", r"\left\{ @ \right."),
+        (r"right=)", r"\left. @ \right)"),
+        (r"left=\Rightarrow", r"\left⇒ @ \right."),
+        ("left=", r"\left. @ \right."),
+        // keyval takes off the braces around a whole value.
+        (r"left={\empheqlbrace}", r"\left\{ @ \right."),
+        (r"left={x=\empheqlbrace}", r"{{x=}\left\{ @ \right.}"),
+        (
+            r"left={f(x)=\empheqbiglbrace}",
+            r"{{f(x)=}\left\{ @ \right.}",
+        ),
+        (
+            r"right={\empheqrbrace\quad z}",
+            r"{\left. @ \right\}{\quad z}}",
+        ),
+        (r"left={f(x)=}\empheqlbrace", r"{{f(x)=}\left\{ @ \right.}"),
+        (r"left={\{\empheqlbrace}", r"{\{\left\{ @ \right.}"),
+        (r"right=\empheqrceil z", r"{\left. @ \right\rceil z}"),
+        // The delimiter next to the display, and what is inside of it.
+        (r"left=\empheqlbrace\,", r"\left\{ \,@ \right."),
+        (r"left=\empheqlbrace x", r"\left\{ x@ \right."),
+        (r"right=x\empheqrbrace y", r"{\left. @x \right\}y}"),
+        (
+            r"right=\empheqrbrace\empheqrbrack",
+            r"{\left. @ \right\}\mathord{\text{\textbackslash{}empheqrbrack}}}",
+        ),
+        (
+            r"left=\empheqlbrace\empheqlbrack",
+            r"{\mathord{\text{\textbackslash{}empheqlbrace}}\left[ @ \right.}",
+        ),
+        (
+            r"left={\empheqlbrace}x",
+            r"{{\mathord{\text{\textbackslash{}empheqlbrace}}x}\left. @ \right.}",
+        ),
+        (
+            r"right=x\empheqfoo",
+            r"{\left. @ \right.{x\mathord{\text{\textbackslash{}empheqfoo}}}}",
+        ),
+        // Math of its own, declarations too.
+        (r"left={a\over b}", r"{\frac{a}{b}\left. @ \right.}"),
+        (r"left=a\over b", r"{\frac{a}{b}\left. @ \right.}"),
+        (r"left=\uppi", r"{\mathrm{\pi}\left. @ \right.}"),
+        (r"left=\Large x", r"{{\Large x}\left. @ \right.}"),
+        (
+            r"right=\empheqrbrace\displaystyle x",
+            r"{\left. @ \right\}{\displaystyle x}}",
+        ),
+        ("left=3.", r"{{3 .}\left. @ \right.}"),
+        ("right=‖w", r"{\left. @ \right.{\lVert w}}"),
+        ("left=:w", r"{{: w}\left. @ \right.}"),
     ] {
         let input = format!(r"\begin{{empheq}}[{options}]{{align}}a&=b\end{{empheq}}");
         let written = mathema::from_latex(&input).unwrap().to_latex().unwrap();
-        if !before.is_empty() {
-            let expected = format!(r"{before}\begin{{aligned}} a & = b \end{{aligned}}{after}");
-            assert_eq!(written, expected, "{options}");
-        }
+        assert_eq!(written, expected.replace('@', display), "{options}");
         let again = mathema::from_latex(&written).unwrap().to_latex().unwrap();
         assert_eq!(again, written, "{options}");
     }
-    // A `\middle` there is not the enclosing fence's.
-    let fenced = r"\left(\begin{empheq}[left=x\middle|y]{align}a\end{empheq}\right)";
+    // A `\middle` there is not the enclosing fence's, one after it is.
+    let written = |input: &str| mathema::from_latex(input).unwrap().to_latex().unwrap();
     let alone = r"\begin{empheq}[left=x\middle|y]{align}a\end{empheq}";
-    let written = |input| mathema::from_latex(input).unwrap().to_latex().unwrap();
-    assert!(
-        written(fenced).contains(&written(alone)),
-        "{}",
-        written(fenced)
+    let fenced = written(&format!(r"\left({alone}\middle|z\right)"));
+    assert!(fenced.contains(&written(alone)), "{fenced}");
+    assert!(fenced.contains(r"\middle| z"), "{fenced}");
+    let fenced = written(&format!(r"\left({alone}{{z\middle|w}}\right)"));
+    assert!(fenced.contains(r"{z\middle|w}"), "{fenced}");
+    // What is no math is an error, or dropped with a warning when lenient.
+    let lenient = mathema::Config::default().with_strictness(mathema::Strictness::Lenient);
+    for side in [
+        "left=‖}",
+        r"left=\frac{a}",
+        "right=a&b",
+        r"left=\empheqlbrace&",
+    ] {
+        let input = format!(r"\begin{{empheq}}[{side}]{{align}}a\end{{empheq}}");
+        assert!(mathema::from_latex(&input).is_err(), "{side}");
+        let read = mathema::from_latex_with(&input, &lenient).unwrap();
+        assert!(
+            read.diagnostics()
+                .iter()
+                .any(|d| d.message.contains("was dropped")),
+            "{side}: {:?}",
+            read.diagnostics()
+        );
+    }
+    let deep = format!(
+        r"\begin{{empheq}}[left={}x{}]{{align}}a\end{{empheq}}",
+        "{".repeat(400),
+        "}".repeat(400)
     );
-    let dropped = mathema::from_latex(r"\begin{empheq}[left=‖}]{align}a\end{empheq}").unwrap();
+    assert!(mathema::from_latex(&deep).is_err());
+    let read = mathema::from_latex_with(&deep, &lenient).unwrap();
     assert!(
-        dropped
+        !read
             .diagnostics()
             .iter()
-            .any(|d| d.message.contains("was dropped")),
-        "{:?}",
-        dropped.diagnostics()
+            .any(|d| d.message.contains("was dropped"))
     );
 }
 
