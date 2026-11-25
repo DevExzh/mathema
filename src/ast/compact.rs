@@ -1394,8 +1394,20 @@ fn reconstruct_node(arena: &AstArena, id: NodeId) -> MathNode {
         },
 
         // Helper nodes — should not appear as standalone roots, but handle gracefully
+        // A delimiter below the fence's own list is the symbol it would be
+        // without `\middle`; a null one is nothing.
         CompactNode::Middle(sid) => {
-            MathNode::Symbol(SymbolKind::Fence, arena.str_val(sid).to_owned())
+            let delim = arena.str_val(sid);
+            let kind = match delim
+                .chars()
+                .next()
+                .map(crate::unicode::symbols::symbol_kind)
+            {
+                None => return MathNode::Row(Vec::new()),
+                Some(SymbolKind::Open | SymbolKind::Close) => SymbolKind::Fence,
+                Some(kind) => kind,
+            };
+            MathNode::Symbol(kind, delim.to_owned())
         },
         CompactNode::ColAlign(_) => MathNode::Space(Rational::zero()),
         CompactNode::Rule {

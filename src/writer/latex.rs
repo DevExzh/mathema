@@ -2536,7 +2536,13 @@ fn is_joining_mark(ch: char) -> bool {
 
 /// Whether `text` ends with a brace that is not part of a control symbol.
 fn ends_with_brace(text: &str) -> bool {
-    text.strip_suffix(['{', '}']).is_some_and(|before| {
+    ends_with_token(text, &['{', '}'])
+}
+
+/// Whether `text` ends with one of `tokens` that is not part of a control
+/// symbol.
+fn ends_with_token(text: &str, tokens: &[char]) -> bool {
+    text.strip_suffix(tokens).is_some_and(|before| {
         let backslashes = before.len() - before.trim_end_matches('\\').len();
         backslashes.is_multiple_of(2)
     })
@@ -3695,9 +3701,7 @@ fn write_text_content(buf: &mut LatexBuffer, text: &str, monospace: bool) {
         // A combining mark would join the brace or math shift before it. In
         // literal source text (what `\verb` reads) it is a character like any
         // other.
-        let joins = |buf: &LatexBuffer| {
-            buf.ends_with(['{', '}']) || buf.ends_with('$') && !buf.ends_with("\\$")
-        };
+        let joins = |buf: &LatexBuffer| buf.ends_with(['{', '}']) || ends_with_token(buf, &['$']);
         if is_joining_mark(ch) && (literal_marks || joins(buf)) {
             write_char_code(buf, ch, "{}");
         } else if !write_char(buf, ch, place) {

@@ -69,7 +69,8 @@ fn normalize_nodes_keeping_breaks(
                 // Phase 4: remove empty Rows
             },
             MathNode::Row(children)
-                if children.iter().any(is_declaration_math)
+                if is_idotsint_math(&children)
+                    || children.iter().any(is_declaration_math)
                     || keep_break_groups && children.contains(&MathNode::LineBreak) =>
             {
                 // Explicit groups containing a direct style declaration must
@@ -355,10 +356,19 @@ fn is_plain_group(item: &FencedItem) -> bool {
     matches!(item, FencedItem::Element(MathNode::Row(nodes)) if is_plain_group_row(nodes))
 }
 
-/// A group that holds no declaration to keep inside it, so that its nodes are
-/// nodes of the fence (none, for an empty one).
+/// A group that holds no declaration to keep inside it and is no `\idotsint`,
+/// so that its nodes are nodes of the fence (none, for an empty one).
 fn is_plain_group_row(nodes: &[MathNode]) -> bool {
-    !nodes.iter().any(is_declaration_math)
+    !nodes.iter().any(is_declaration_math) && !is_idotsint_math(nodes)
+}
+
+/// Heap form of `is_idotsint_row`.
+fn is_idotsint_math(nodes: &[MathNode]) -> bool {
+    let is = |node: &MathNode, kind, text: &str| matches!(node, MathNode::Symbol(k, t) if *k == kind && t == text);
+    matches!(nodes, [first, dots, last]
+        if is(first, SymbolKind::LargeOp, "\u{222B}")
+            && is(dots, SymbolKind::Ordinary, "\u{22EF}")
+            && is(last, SymbolKind::LargeOp, "\u{222B}"))
 }
 
 /// Whether a node can be the base of leading scripts. Mirrors

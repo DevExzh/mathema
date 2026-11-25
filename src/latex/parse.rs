@@ -2069,6 +2069,8 @@ pub(crate) struct LatexCompactParser {
     /// resumes the color after the delimiter, as the switch is in force to
     /// the end of the fence.
     color_at_middle: Option<(StrId, usize)>,
+    /// Sizing commands around the current element.
+    big_depth: u32,
     /// Used to identify the rare font argument that opened an alignment.
     arrays_built: usize,
     /// Undefined control words met so far, each with whether it is a macro
@@ -2125,6 +2127,7 @@ impl LatexCompactParser {
             in_left_right: false,
             fence_list: false,
             color_at_middle: None,
+            big_depth: 0,
             arrays_built: 0,
             undefined_commands: None,
             single_token: None,
@@ -5949,7 +5952,17 @@ impl LatexCompactParser {
             // parse_element (not parse_command) consumes the scripts and body
             // of an n-ary operator.
             Err(nom::Err::Error(_)) if input.starts_with('\\') => {
-                return self.parse_element(input);
+                // `\big\big…` recurses without a group.
+                if self.depth + self.big_depth >= MAX_PARSE_DEPTH {
+                    return Err(nom::Err::Failure(nom::error::Error::new(
+                        input,
+                        nom::error::ErrorKind::TooLarge,
+                    )));
+                }
+                self.big_depth += 1;
+                let result = self.parse_element(input);
+                self.big_depth -= 1;
+                return result;
             },
             Err(err) => return Err(err),
         };
@@ -6068,10 +6081,19 @@ impl LatexCompactParser {
         })
     }
 
+    /// The content of a color. It is a group in TeX, also around one operator.
+    fn parse_color_content<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
+        let (input, content) = self.parse_required_group(input)?;
+        if self.is_nary_id(content) {
+            return Ok((input, self.parse_nary_rest("", content)?.1));
+        }
+        Ok((input, content))
+    }
+
     fn parse_textcolor<'a>(&mut self, input: &'a str) -> IResult<&'a str, NodeId> {
         let (input, color_str) = self.parse_color_arg(input)?;
         let color_sid = self.arena.push_str(&color_str);
-        let (input, content_id) = self.parse_required_group(input)?;
+        let (input, content_id) = self.parse_color_content(input)?;
         Ok((
             input,
             self.arena.push_node(CompactNode::Color {
@@ -6552,7 +6574,7 @@ impl LatexCompactParser {
         let (input, model) = parse_optional_model(input)?;
         let (input, _) = ws(input)?;
         let (input, color) = braced_text(input)?;
-        let (input, content_id) = self.parse_required_group(input)?;
+        let (input, content_id) = self.parse_color_content(input)?;
         let bg_color = self.resolve_box_color(model.as_deref(), color);
         let bg_sid = self.arena.push_str(&bg_color);
         let border_sid = self.arena.push_str("");

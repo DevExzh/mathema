@@ -1582,6 +1582,10 @@ fn dropped_text_between_inline_math() {
             "\\angl{$\\foo\u{30a}\\relax\u{30a}'\\foo$}",
             "\\angl{$\\mathord{\\text{\\textbackslash{}foo}}\\relax \u{30a}{\\relax \u{30a}}^{\\prime}\\mathord{\\text{\\textbackslash{}foo}}$}",
         ),
+        (
+            "\\angl{$x\\char`\\\\$\\r\0}",
+            r"\angl{$x\char`\\$\char778{}}",
+        ),
         ("\\angl{\\$\\r\0}", "\\angl{\\$\u{30a}}"),
         (
             "\\angl{\\verb5d5\0\\verb\\{}",
@@ -1714,6 +1718,51 @@ fn scripts_and_limits_with_nothing_beside_them_are_stable() {
     }
 }
 
+/// The heap normalizer leaves what the compact one leaves.
+#[test]
+fn heap_and_compact_normalize_alike() {
+    for (source, latex) in [
+        (r"\left( \idotsint x \right)", r"\left( \idotsint x \right)"),
+        (r"\left( {\idotsint} \right)", r"\left( \idotsint \right)"),
+        (r"{}^a\idotsint", r"{{}^{a}\idotsint}"),
+    ] {
+        for written in normalized_latex(source).unwrap() {
+            assert_eq!(written, latex, "{source}");
+            assert_eq!(normalized_latex(&written).unwrap(), [latex, latex]);
+        }
+    }
+    for source in [
+        r"\left(\textcolor{red}{\big\middle/\texttt{a}}\right)",
+        r"\left({\middle.'}\right)",
+        r"\left({\middle/-}\right)",
+    ] {
+        let [heap, _] = normalized_latex(source).unwrap();
+        assert_eq!(normalized_latex(&heap).unwrap()[0], heap, "{source}");
+    }
+}
+
+#[test]
+fn colored_operator_tokens_are_groups() {
+    use mathema::Format::LaTeX;
+    for (source, latex) in [
+        ("_1\\textcolor{}\\int\u{300}", "{{}_{1}\\int}{}\u{300}"),
+        (r"\textcolor{red}\int x", r"\textcolor{red}{\int}x"),
+    ] {
+        assert_eq!(mathema::convert(source, LaTeX, LaTeX).unwrap(), latex);
+        assert_eq!(mathema::convert(latex, LaTeX, LaTeX).unwrap(), latex);
+    }
+}
+
+/// Sizing commands recurse without a group, so they have a depth limit.
+#[test]
+fn sizing_command_chains_are_bounded() {
+    let chain = |n| mathema::from_latex(&format!(r"{}\alpha", r"\big".repeat(n)));
+    assert_eq!(chain(100).unwrap().to_latex().unwrap(), r"\alpha");
+    for n in [200, 8_000, 100_000] {
+        assert!(chain(n).is_err(), "{n}");
+    }
+}
+
 /// An empty preamble is the preamble, not the first cell.
 #[test]
 fn empty_array_preamble() {
@@ -1784,6 +1833,9 @@ fn arb_latex() -> impl Strategy<Value = String> {
         r"\,",
         r"\hline ",
         r"\middle|",
+        r"\middle/",
+        r"\middle.",
+        r"\idotsint ",
         "-",
         r"\prime ",
         "x_1",
